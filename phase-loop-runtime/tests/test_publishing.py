@@ -1180,6 +1180,89 @@ def test_invalid_origin_does_not_poison_publication_epoch(
 # agent-harness#906: a SEALED prior transaction and a prebuilt refresh
 
 
+@pytest.mark.parametrize("drift", ["private_evidence", "untracked_source", "unstaged_source"])
+def test_fresh_publish_refuses_workspace_drift_before_commit(tmp_path, monkeypatch, drift):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    repo = _make_repo(tmp_path)
+    original_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
+    if drift == "private_evidence":
+        evidence = repo / ".dev-skills" / "verification"
+        evidence.mkdir(parents=True)
+        (evidence / "verification.json").write_text('{"status":"passed"}\n')
+    elif drift == "untracked_source":
+        (repo / "unrelated.py").write_text("value = 2\n", encoding="utf-8")
+    else:
+        (repo / "README.md").write_text("unrelated change\n", encoding="utf-8")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    broker = _Broker()
+
+    result = publish_from_worktree(
+        repo, ["owned.py"], broker_client=broker,
+        publish_authority=authority, checkpoint_root=authority.checkpoint_root,
+    )
+
+    assert result["reason"] == "publication_workspace_invalid"
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == original_head
+    assert not list(authority.checkpoint_root.rglob("publish-transactions/*/*.json"))
+    assert not broker.requests
+    assert (repo / "owned.py").read_text() == "value = 1\n"
+
+
+def test_committed_publish_resumes_exact_transaction_after_private_evidence_is_ignored(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    repo = _make_repo(tmp_path)
+    (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    class ValidatingBroker(_Broker):
+        def execute(self, request):
+            from phase_loop_runtime.convergence.broker.verbs import BrokerService
+            BrokerService._validated_envelope(self, request)
+            return super().execute(request)
+
+    broker = ValidatingBroker()
+    kwargs = dict(broker_client=broker, publish_authority=authority,
+                  checkpoint_root=authority.checkpoint_root)
+    with pytest.raises(publishing.PublishCrashInjected):
+        with publishing.crash_after("after_committed_checkpoint_before_broker_execute"):
+            publish_from_worktree(repo, ["owned.py"], **kwargs)
+    committed_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    store = publishing.PublishTransactionStore(authority.checkpoint_root, "repo-a")
+    pointer = store.active_pointer_path.read_bytes()
+    evidence = repo / ".dev-skills" / "verification.json"
+    evidence.parent.mkdir()
+    evidence.write_text('{"status":"passed"}\n')
+    (repo / "owned.py").write_text("value = 2\n", encoding="utf-8")
+    before_index = _git(repo, "write-tree").stdout
+
+    with pytest.raises(publishing.PublishTransactionConflict, match="active publish transaction is conflicted"):
+        publish_from_worktree(repo, ["owned.py"], **kwargs)
+    assert _git(repo, "write-tree").stdout == before_index
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == committed_head
+    assert store.active_pointer_path.read_bytes() == pointer
+    assert not broker.requests
+
+    (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
+    with pytest.raises(publishing.PublishTransactionConflict, match="active publish transaction is conflicted"):
+        publish_from_worktree(repo, ["owned.py"], **kwargs)
+    exclude = repo / ".git" / "info" / "exclude"
+    with exclude.open("a", encoding="utf-8") as stream:
+        stream.write("\n/.dev-skills/\n")
+
+    result = publish_from_worktree(repo, ["owned.py"], **kwargs)
+    assert result["status"] == "published"
+    assert result["head_sha"] == committed_head
+    assert len(broker.requests) == 1
+    assert broker.requests[0].admission.transaction_id == json.loads(pointer)["transaction_id"]
+    assert evidence.read_text() == '{"status":"passed"}\n'
+
+
 def _commit_prebuilt_work(repo: Path, name: str) -> str:
     (repo / name).write_text(f"{name}\n", encoding="utf-8")
     _git(repo, "add", "--", name)

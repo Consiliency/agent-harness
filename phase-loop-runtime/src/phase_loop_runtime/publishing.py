@@ -1679,6 +1679,8 @@ def publish_from_worktree(
         and candidate.state != PublishTransactionState.CONFLICTED
         and not sealed_prior
     )
+    if candidate.transaction is not None and candidate.state == PublishTransactionState.CONFLICTED:
+        raise PublishTransactionConflict("active publish transaction is conflicted")
     if not prebuilt and not owned_paths:
         return _blocked("no_owned_paths", "No owned paths to stage; nothing to publish")
     if not prebuilt and not resuming and _git(repo, "add", "--", *owned_paths).returncode:
@@ -1689,6 +1691,16 @@ def publish_from_worktree(
         return audit
     if broker_client is None:
         return _blocked("broker_required", "publish mutation requires an admitted broker client")
+    if active and authority is not None and not resuming:
+        unstaged = _git_bytes(repo, "diff", "--name-only", "-z")
+        untracked = _git_bytes(repo, "ls-files", "--others", "--exclude-standard", "-z")
+        if unstaged is None or untracked is None:
+            return _blocked("publication_workspace_invalid", "Cannot inspect publication workspace")
+        if unstaged or untracked:
+            return _blocked(
+                "publication_workspace_invalid",
+                "Publication workspace has unstaged or untracked changes; repair the workspace and ensure private evidence is Git-ignored before retrying",
+            )
 
     if not active:
         if admission is None:
@@ -1706,8 +1718,6 @@ def publish_from_worktree(
         if Path(checkpoint_root).resolve() != Path(publish_authority.checkpoint_root).resolve():
             return _blocked("checkpoint_root_mismatch", "checkpoint_root must equal the authority handoff root")
         if candidate.transaction is not None and not sealed_prior:
-            if candidate.state == PublishTransactionState.CONFLICTED:
-                raise PublishTransactionConflict("active publish transaction is conflicted")
             transaction = candidate.transaction
             if (
                 transaction.envelope_authority_preimage != authority

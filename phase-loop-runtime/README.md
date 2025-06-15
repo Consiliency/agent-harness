@@ -113,6 +113,19 @@ recovery against the frozen Git objects. The existing FABPUB tree binding and
 transaction identity are unchanged. Legacy and prebuilt publication do not gain
 the source exception; there is no caller-controlled path allowlist.
 
+Fresh FABPUB publication refuses unstaged or untracked workspace changes with
+`publication_workspace_invalid` before creating a transaction or advancing the
+branch. Private plan, verification and handoff files under `.dev-skills/` must
+be Git-ignored: `phase-loop init` adds `/.dev-skills/` to `.gitignore`, or a local
+Git `info/exclude` rule can keep this setup out of committed source. The publisher
+does not add ignore rules or suppress workspace changes itself.
+
+If a previous attempt already committed and then refused, repair the workspace
+and retry the same normal publication with its original plan and verification
+artifact. The exact committed transaction resumes without another commit.
+Conflicted transactions refuse before staging; switching to prebuilt mode does
+not repair a normal transaction. Authority and recovery checks still apply.
+
 ## Roadmap validation
 
 Lint a phase-plan roadmap spec (required headings, unique aliases, acyclic dependency
