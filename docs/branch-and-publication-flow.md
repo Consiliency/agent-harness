@@ -78,6 +78,29 @@ If your project would rather not have in-progress branches or draft PRs appear, 
 `mode = "none"` (nothing is pushed) or `mode = "draft-only"` (PRs stay drafts) for the
 interactive path, and use the runner with `--closeout-mode manual`.
 
+## PR descriptions
+
+Detailed execution supplies a meaningful commit subject and PR body to the human
+publication adapter; the broker derives the title from that subject. The execution
+skills share a packaged PR-writing reference. Descriptions explain the problem and
+resulting behavior, cite inspected edit locations and observed verification, and
+identify affected consumers and material rollback constraints. Repository templates,
+goal IDs, review/dependency links, human additions, and machine-readable trailers
+remain intact. Diagrams are optional; existing UI screenshot requirements still apply.
+
+For interactive agent-owned PRs, early draft descriptions mark pending work and
+verification. Before readiness, the agent reassesses the title and body against the
+final PR diff and current evidence, updates stale text, and only then marks the PR
+ready. A failed description update leaves it in draft. Material implementation,
+verification, or comparison-base changes require reassessment before merge.
+This does not authorize merging or automatically request another advisor round.
+
+Description edits obey publication mode: `ready` permits upkeep before readiness,
+`draft-only` permits upkeep while retaining draft status, and `none` or a resolver
+error permits no edits. These instructions apply to interactive agent-owned PRs;
+runner/broker-owned descriptions remain with their publication owner. Broker
+publication freezes body bytes before preparation and reuses them on retry.
+
 ## Interactive: publication mode
 
 When you invoke `execute-phase` directly in your harness, the agent in your session
@@ -110,7 +133,7 @@ mode = "none"   # none | draft-only | ready
 - **A malformed setting is an error, never a silent default.** Unknown keys, unknown
   values and invalid TOML all fail.
 
-Before any `git push`, `gh pr create` or `gh pr ready` on this path, the skill runs:
+Before any `git push`, `gh pr create`, `gh pr edit` or `gh pr ready` on this path, the skill runs:
 
 ```sh
 phase-loop publication-mode --repo .

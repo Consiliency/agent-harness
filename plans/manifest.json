@@ -13064,6 +13064,54 @@
       "task_summary": "Factor the seat launch closure and the seat credential source so both hosts can call them, with no behaviour change (agent-harness#896)",
       "type": "detailed",
       "updated_at": "2026-10-10T21:12:46Z"
+    },
+    {
+      "acceptance_criteria_count": 6,
+      "created_at": "2026-10-12T21:25:50Z",
+      "file": "plans/detailed-pr-writing-final-form-20261012-2125.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/pr-writing-final-form-20261012-2125.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-12T21:25:50Z",
+          "by": "codex-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        },
+        {
+          "at": "2026-10-12T21:27:04Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_path": "plans/detailed-pr-writing-final-form-20261012-2125.md",
+            "run_id": "pr-writing-final-form-20261012-2125"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-12T21:34:13Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria_count": 6,
+            "acceptance_criteria_satisfied": 6,
+            "dirty_path_classification": "all source/generated changes plan-owned; primary .pmcp/logs/gateway.log pre-existing unrelated",
+            "doc_delta_decision": "docs_updated",
+            "reflection_written": true,
+            "verification_artifact_path": ".dev-skills/handoffs/codex-execute-detailed/pr-writing-final-form-20261012-2125/verification/verification.json",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "pr-writing-final-form-20261012-2125",
+      "status": "completed",
+      "task_summary": "PR descriptions grounded in final implementation, with agent-owned readiness refresh",
+      "type": "detailed",
+      "updated_at": "2026-10-12T21:34:13Z"
     }
   ],
   "schema_version": 1

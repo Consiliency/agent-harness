@@ -238,12 +238,31 @@ _DRIVER = textwrap.dedent("""\
     mode=$(resolve)
     if [ "$mode" != none ]; then
         git push -q -u origin feature/phase-x
-        gh pr create --draft --fill
+        mode=$(resolve)
+        if [ "$mode" != none ]; then
+            gh pr create --draft --title "Phase in progress" --body-file "$PR_WRITING_BODY_DIR/draft.md"
+        fi
     fi
     echo two >> feature.txt && git commit -q -am "lane 2"
     mode=$(resolve)
     if [ "$mode" != none ]; then git push -q origin feature/phase-x; fi
+    cat feature.txt > "$PR_WRITING_BODY_DIR/final.md"
+    mode=$(resolve)
+    if [ "$mode" != none ]; then
+        gh pr edit --title "Phase complete" --body-file "$PR_WRITING_BODY_DIR/final.md"
+    fi
+    mode=$(resolve)
     if [ "$mode" = ready ]; then gh pr ready; fi
+    if [ "$PR_WRITING_LATER_CHANGE" = 1 ]; then
+        echo three >> feature.txt && git commit -q -am "later fix"
+        mode=$(resolve)
+        if [ "$mode" != none ]; then git push -q origin feature/phase-x; fi
+        cat feature.txt > "$PR_WRITING_BODY_DIR/final.md"
+        mode=$(resolve)
+        if [ "$mode" != none ]; then
+            gh pr edit --title "Phase complete" --body-file "$PR_WRITING_BODY_DIR/final.md"
+        fi
+    fi
     echo "completed mode=$mode"
 """)
 
@@ -251,7 +270,8 @@ _DRIVER = textwrap.dedent("""\
 class InteractivePublicationAcceptanceTest(unittest.TestCase):
     """Scratch repo + bare local remote + recording ``gh``: what reaches the remote."""
 
-    def _run_phase(self, repo_mode: str | None) -> tuple[subprocess.CompletedProcess, dict, str, dict]:
+    def _run_phase(self, repo_mode: str | None, *, edit_fails: bool = False,
+                   later_change: bool = False) -> tuple[subprocess.CompletedProcess, dict, str, dict]:
         td = TemporaryDirectory()
         self.addCleanup(td.cleanup)
         root = Path(td.name)
@@ -267,8 +287,16 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
         bin_dir = root / "bin"
         bin_dir.mkdir()
         gh_log = root / "gh.log"
+        (root / "draft.md").write_text("Implementation and verification pending.\n", encoding="utf-8")
         (bin_dir / "gh").write_text(
-            f'#!/bin/sh\necho "$*" >> "{gh_log}"\necho https://example.invalid/pr/1\n',
+            f'#!/bin/sh\necho "$1 $2" >> "{gh_log}"\n'
+            'if [ "$2" = create ] && [ "$3" != --draft ]; then exit 2; fi\n'
+            'if [ "$2" = edit ]; then\n'
+            '    if [ "$PR_WRITING_EDIT_FAIL" = 1 ]; then exit 1; fi\n'
+            f'    printf "body: " >> "{gh_log}"\n'
+            f'    tr "\\n" "," < "$PR_WRITING_BODY_DIR/final.md" >> "{gh_log}"\n'
+            f'    printf "\\n" >> "{gh_log}"\n'
+            'fi\necho https://example.invalid/pr/1\n',
             encoding="utf-8")
         (bin_dir / "phase-loop").write_text(
             f"#!/bin/sh\nexec {sys.executable} -c "
@@ -277,7 +305,9 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
         for exe in ("gh", "phase-loop"):
             (bin_dir / exe).chmod(0o755)
         env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-               "XDG_CONFIG_HOME": str(root / "xdg")}
+               "XDG_CONFIG_HOME": str(root / "xdg"), "PR_WRITING_BODY_DIR": str(root),
+               "PR_WRITING_EDIT_FAIL": str(int(edit_fails)),
+               "PR_WRITING_LATER_CHANGE": str(int(later_change))}
         proc = subprocess.run(["sh", "-c", _DRIVER], cwd=repo, env=env, text=True,
                               capture_output=True, check=False)
         gh_calls = gh_log.read_text(encoding="utf-8") if gh_log.exists() else ""
@@ -300,13 +330,26 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
         proc, before, gh_calls, after = self._run_phase("draft-only")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("refs/heads/feature/phase-x", after)
-        self.assertEqual(gh_calls.splitlines(), ["pr create --draft --fill"])
+        self.assertEqual(gh_calls.splitlines(), ["pr create", "pr edit", "body: one,two,"])
 
     def test_ready_default_pushes_opens_a_draft_and_flips_it_ready(self):
         proc, before, gh_calls, after = self._run_phase(None)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("refs/heads/feature/phase-x", after)
-        self.assertEqual(gh_calls.splitlines(), ["pr create --draft --fill", "pr ready"])
+        self.assertEqual(gh_calls.splitlines(), ["pr create", "pr edit", "body: one,two,", "pr ready"])
+
+    def test_description_edit_failure_does_not_mark_the_pr_ready(self):
+        proc, _, gh_calls, _ = self._run_phase(None, edit_fails=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(gh_calls.splitlines(), ["pr create", "pr edit"])
+
+    def test_material_changes_after_readiness_refresh_the_final_description(self):
+        proc, _, gh_calls, _ = self._run_phase(None, later_change=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(gh_calls.splitlines(), [
+            "pr create", "pr edit", "body: one,two,", "pr ready",
+            "pr edit", "body: one,two,three,",
+        ])
 
     def test_malformed_config_blocks_publication_before_any_push(self):
         # A committed config with a bad value: the resolver exits non-zero, nothing leaves.

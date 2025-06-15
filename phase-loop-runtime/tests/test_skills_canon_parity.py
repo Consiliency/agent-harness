@@ -53,6 +53,23 @@ def _bundle_files(root: Path) -> dict[Path, Path]:
 
 
 class SkillsCanonParityTest(unittest.TestCase):
+    def test_pr_writing_reference_resolves_for_every_installed_provider(self):
+        self._require_sources()
+        from phase_loop_runtime.skill_install import install_skills
+
+        authored = SKILLS_SRC["claude"] / "claude-execute-detailed" / "references" / "pr-writing.md"
+        with tempfile.TemporaryDirectory() as td:
+            for harness in SKILLS_SRC:
+                destination = Path(td) / harness
+                install_skills(harness=harness, source=COMMITTED_BUNDLE,
+                               destination=destination, mode="copy", apply=True)
+                detailed = destination / f"{harness}-execute-detailed"
+                phase = destination / f"{harness}-execute-phase"
+                self.assertEqual((detailed / "references" / "pr-writing.md").read_bytes(),
+                                 authored.read_bytes())
+                self.assertIn("references/pr-writing.md", (detailed / "SKILL.md").read_text())
+                self.assertIn(f"`{harness}-execute-detailed`", (phase / "SKILL.md").read_text())
+
     def _require_sources(self) -> None:
         if not all(root.is_dir() for root in SKILLS_SRC.values()):
             self.skipTest("canonical skills-src/ sources absent (from-wheel layout)")
