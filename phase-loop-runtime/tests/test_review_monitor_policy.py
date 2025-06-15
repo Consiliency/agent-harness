@@ -811,7 +811,7 @@ def test_heartbeat_network_helpers_end_with_owner(tmp_path, abrupt):
             for pid in children:
                 try:
                     state = Path(f"/proc/{pid}/stat").read_text().split()[2]
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     continue
                 if state != "Z":
                     alive.append(pid)

@@ -190,6 +190,9 @@ Add builder/timeout coverage in
 where those existing fixtures are the appropriate boundary. Keep frozen HARDEN
 tests unchanged. New tests initially fail on the input base for intended reasons;
 retain raw RED node IDs and output, review the tests before production edits.
+The existing network-helper cleanup poll must treat both ENOENT and ESRCH from
+an exiting process's `/proc` record as disappearance. Preserve its finite cleanup
+bound and rejection of a live helper; retain disappearance and live-helper controls.
 
 Required controls:
 
