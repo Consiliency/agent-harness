@@ -814,6 +814,16 @@ audit silence, compilation and mocks cannot establish it. Later command failure 
 recorded separately. Any missing proof, dropped capture, unexpected stack or global
 policy change is inconclusive. No capabilities are widened automatically.
 
+Audit matching accepts only the exact owned namespace name or its `root//`-qualified
+form, with the expected denying profile. A denial must come through the kernel journal
+transport and match the verified task, label, boot and capability. Its journal monotonic
+timestamp is journald's reception time, an upper bound on kernel generation time, and
+must fall within the observed primary syscall's entry/exit interval. Kernel
+audit timestamps use a [coarse clock](https://docs.kernel.org/core-api/timekeeping.html)
+and millisecond formatting, so they remain recorded with whole-arm realtime sanity
+bounds rather than serving as a submillisecond syscall clock. Missing syscall exit
+timing, a foreign namespace, audit loss or audit silence remains inconclusive.
+
 Normal cleanup reaps owned descendants, removes profiles using the recorded nonempty
 `--namespace phase_loop_codex_canary_<nonce>`, closes the held namespace descriptor,
 then removes **only** that apparmorfs namespace. The result must prove its absence and

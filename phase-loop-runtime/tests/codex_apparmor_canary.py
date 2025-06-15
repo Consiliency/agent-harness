@@ -796,6 +796,7 @@ def audit_capture(cursor, observation, begin, finish):
             fields[key] = quoted or plain
         if fields.get("pid") != str(observation["pid"]):
             continue
+        require(row.get("_TRANSPORT") == "kernel", "audit transport mismatch")
         real_ns = int(row["__REALTIME_TIMESTAMP"]) * 1000
         mono_ns = int(row["__MONOTONIC_TIMESTAMP"]) * 1000
         require(row.get("_BOOT_ID") == boot_id().replace("-", ""), "audit boot mismatch")
@@ -803,15 +804,18 @@ def audit_capture(cursor, observation, begin, finish):
         if event is None:
             continue
         event_real_ns = int(event.group(1)) * 1000000000 + int(event.group(2).ljust(9, "0")[:9])
-        # Audit event time has millisecond precision; journald ingestion can be later.
+        # Kernel audit time uses a coarse clock and millisecond formatting. Keep
+        # a whole-arm realtime sanity bound; attributed() uses the same-boot
+        # journal monotonic timestamp for the exact syscall entry/exit interval.
         in_interval = (begin["realtime_ns"] - 1000000 <= event_real_ns <= finish["realtime_ns"] + 1000000
                        and begin["monotonic_ns"] <= mono_ns <= capture_finish["monotonic_ns"])
         full = observation["label"].removesuffix(" (enforce)")
+        exact_namespaces = (namespace.group(1), "root//" + namespace.group(1))
         # Kernel aa_audit() reports the denying component as namespace+profile;
         # compound-subject audit paths instead report a fully qualified label.
-        subject = ((fields.get("namespace") == namespace.group(1) and fields.get("profile") == "unpriv_bwrap")
+        subject = ((fields.get("namespace") in exact_namespaces and fields.get("profile") == "unpriv_bwrap")
                    or (fields.get("label", fields.get("profile")) == full
-                       and fields.get("namespace") in (None, namespace.group(1))))
+                       and fields.get("namespace") in (None, *exact_namespaces)))
         if in_interval:
             if (fields.get("apparmor") == "DENIED" and fields.get("operation") == "capable"
                     and fields.get("capability") == "21" and fields.get("capname") == "sys_admin"
@@ -834,9 +838,9 @@ def attributed(arm):
             and request["pid"] == arm["gate"]["pid"] and request["start"] == arm["gate"]["start"] and any(
         a["pid"] == request["pid"] and a["start"] == request["start"]
         and a["capability"] == 21 and a["label"] == arm["gate"]["label"]
-        and request["monotonic_ns"] <= a["monotonic_ns"] <= arm.get("capture_finish", arm["finish"])["monotonic_ns"]
-        and request["realtime_ns"] <= a["realtime_ns"] + 1000000
-        and a["realtime_ns"] <= request["exit_realtime_ns"] + 1000000
+        and request["monotonic_ns"] <= a["monotonic_ns"] <= min(
+            request.get("exit_monotonic_ns", -1), arm.get("capture_finish", arm["finish"])["monotonic_ns"])
+        and arm["begin"]["realtime_ns"] - 1000000 <= a["realtime_ns"] <= arm["finish"]["realtime_ns"] + 1000000
         and a["operation"] == "capable" and a["boot_id"] == arm["boot_id"]
         for a in arm["audit"]))
 

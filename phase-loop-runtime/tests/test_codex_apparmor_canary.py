@@ -48,11 +48,14 @@ BINDS = {"/fixture.txt": ("8:1", "/fixture.txt")}
 def arm(result=-errno.EPERM, audit=True):
     observation = gate()
     request = {"pid": 45, "start": 123, "syscall": "unshare", "flags": 0x10020000,
-               "return": result, "monotonic_ns": 200, "realtime_ns": 1000000000, "exit_realtime_ns": 1001000000}
+               "return": result, "monotonic_ns": 200, "exit_monotonic_ns": 230,
+               "realtime_ns": 1000000000, "exit_realtime_ns": 1001000000}
     denial = {"pid": 45, "start": 123, "capability": 21, "operation": "capable",
               "label": observation["label"], "monotonic_ns": 210, "realtime_ns": 1000500000, "boot_id": "boot"}
     return {"gate": observation, "trace": [request], "audit": [denial] if audit else [],
-            "finish": {"monotonic_ns": 300}, "boot_id": "boot", "exit_codes": {45: 1}}
+            "begin": {"monotonic_ns": 100, "realtime_ns": 990000000},
+            "finish": {"monotonic_ns": 300, "realtime_ns": 1010000000},
+            "boot_id": "boot", "exit_codes": {45: 1}}
 
 
 def policy_tree(tmp_path):
@@ -329,6 +332,8 @@ def test_positive_syscall_evidence_and_all_three_outcomes():
 
 @pytest.mark.parametrize("key,value", [("pid", 99), ("start", 999), ("capability", 7),
                                        ("label", "foreign"), ("monotonic_ns", 199),
+                                       ("monotonic_ns", 231), ("realtime_ns", 988999999),
+                                       ("realtime_ns", 1011000001),
                                        ("boot_id", "other-boot"), ("operation", "other")])
 def test_denial_must_match_exact_task_label_boot_capability_and_interval(key, value):
     baseline = arm()
@@ -527,13 +532,15 @@ def test_bwrap_fixture_exposes_no_host_directory_or_arbitrary_command(tmp_path):
     assert "--clearenv" in argv and "--dev-bind" in argv
 
 
-@pytest.mark.parametrize("component", [True, False])
-def test_audit_capture_filters_exact_identity_and_detects_loss(monkeypatch, component):
+@pytest.mark.parametrize("namespace", [NS, "root//" + NS, None])
+def test_audit_capture_filters_exact_identity_and_detects_loss(monkeypatch, namespace):
     observation = gate()
-    subject = f'namespace="{NS}" profile="unpriv_bwrap"' if component else f'label="{observation["label"].removesuffix(" (enforce)")}"'
+    subject = (f'namespace="{namespace}" profile="unpriv_bwrap"' if namespace is not None
+               else f'label="{observation["label"].removesuffix(" (enforce)")}"')
     message = (f'audit(1.500:77): apparmor="DENIED" operation="capable" {subject} '
                'pid=45 capability=21 capname="sys_admin"')
-    row = {"MESSAGE": message, "_BOOT_ID": "boot", "__REALTIME_TIMESTAMP": "2000000", "__MONOTONIC_TIMESTAMP": "2000000"}
+    row = {"MESSAGE": message, "_BOOT_ID": "boot", "_TRANSPORT": "kernel",
+           "__REALTIME_TIMESTAMP": "2000000", "__MONOTONIC_TIMESTAMP": "2000000"}
     monkeypatch.setattr(aa, "boot_id", lambda: "boot")
     monkeypatch.setattr(aa, "bounded", lambda *a, **k: json.dumps(row).encode())
     result = aa.audit_capture("cursor", observation, {"realtime_ns": 1000000000, "monotonic_ns": 1000000000},
@@ -1058,17 +1065,74 @@ def test_pid_change_at_go_leaves_gate_closed(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("key,value", [("namespace", "foreign"), ("profile", "bwrap"),
+                                       ("namespace", "root//foreign"),
+                                       ("namespace", "foreign//" + NS),
+                                       ("namespace", "root//" + NS + "//child"),
+                                       ("namespace", "root//" + NS + "-other"),
+                                       ("namespace", "root//root//" + NS),
                                        ("capability", "7"), ("pid", "46"), ("capname", "setuid")])
 def test_audit_component_must_belong_to_exact_namespace_and_denied_capability(monkeypatch, key, value):
     fields = {"namespace": NS, "profile": "unpriv_bwrap", "capability": "21", "pid": "45", "capname": "sys_admin"}
     fields[key] = value
     message = 'audit(1.500:77): apparmor="DENIED" operation="capable" ' + " ".join(f'{k}="{v}"' for k, v in fields.items())
-    row = {"MESSAGE": message, "_BOOT_ID": "boot", "__REALTIME_TIMESTAMP": "2000000", "__MONOTONIC_TIMESTAMP": "2000000"}
+    row = {"MESSAGE": message, "_BOOT_ID": "boot", "_TRANSPORT": "kernel",
+           "__REALTIME_TIMESTAMP": "2000000", "__MONOTONIC_TIMESTAMP": "2000000"}
     monkeypatch.setattr(aa, "boot_id", lambda: "boot")
     monkeypatch.setattr(aa, "bounded", lambda *a, **k: json.dumps(row).encode())
     bounds = {"realtime_ns": 1000000000, "monotonic_ns": 1000000000}
     finish = {"realtime_ns": 3000000000, "monotonic_ns": 3000000000}
     assert aa.audit_capture("cursor", gate(), bounds, finish) == []
+
+
+def captured_audit_arm(monkeypatch):
+    path = Path(__file__).parent / "data/codex-apparmor-canary-denial-20261026.json"
+    captured = json.loads(path.read_text())
+    row = captured.pop("journal_row")
+    captured.pop("provenance")
+    captured["audit"] = []
+    monkeypatch.setattr(aa, "boot_id", lambda: captured["boot_id"])
+    monkeypatch.setattr(aa, "stamp", lambda: captured["capture_finish"])
+    monkeypatch.setattr(aa, "bounded", lambda *a, **kw: json.dumps(row).encode())
+    return captured, row
+
+
+def test_captured_kernel_denial_is_attributed_without_rewriting_its_timestamps(monkeypatch):
+    baseline, row = captured_audit_arm(monkeypatch)
+    message = row["MESSAGE"]
+    baseline["audit"] = aa.audit_capture("cursor", baseline["gate"], baseline["begin"], baseline["finish"])
+    assert len(baseline["audit"]) == 1
+    audit = baseline["audit"][0]
+    request = baseline["trace"][0]
+    assert request["realtime_ns"] - audit["realtime_ns"] == 1453924
+    assert request["monotonic_ns"] <= audit["monotonic_ns"] <= request["exit_monotonic_ns"]
+    assert aa.attributed(baseline)
+    assert row["MESSAGE"] == message
+
+
+@pytest.mark.parametrize("where", ["before_entry", "after_exit", "missing_exit"])
+def test_captured_audit_denial_requires_the_exact_syscall_monotonic_interval(monkeypatch, where):
+    baseline, row = captured_audit_arm(monkeypatch)
+    request = baseline["trace"][0]
+    if where == "before_entry":
+        row["__MONOTONIC_TIMESTAMP"] = str(request["monotonic_ns"] // 1000 - 1)
+    elif where == "after_exit":
+        row["__MONOTONIC_TIMESTAMP"] = str(request["exit_monotonic_ns"] // 1000 + 1)
+    else:
+        request.pop("exit_monotonic_ns")
+    baseline["audit"] = aa.audit_capture("cursor", baseline["gate"], baseline["begin"], baseline["finish"])
+    assert not aa.attributed(baseline)
+    assert aa.outcome(baseline, arm(result=0)) == "inconclusive"
+
+
+@pytest.mark.parametrize("transport", [None, "syslog", "stdout"])
+def test_audit_capture_refuses_non_kernel_transport(monkeypatch, transport):
+    baseline, row = captured_audit_arm(monkeypatch)
+    if transport is None:
+        row.pop("_TRANSPORT")
+    else:
+        row["_TRANSPORT"] = transport
+    with pytest.raises(aa.Inconclusive, match="transport"):
+        aa.audit_capture("cursor", baseline["gate"], baseline["begin"], baseline["finish"])
 
 
 def test_nonroot_fixture_startup_reaches_ready_and_refuses_eof(tmp_path, record_property):
