@@ -109,8 +109,8 @@ The complete snapshot, including project files and rules, must fit 64 KiB of UTF
 without embedded NUL characters for the SDK's command-line argument. Changed files
 or aliases during capture refuse rather than mixing versions. Project imports,
 path-scoped rules, descendant instructions, project or ancestor AGENTS.md contexts,
-and linked project instruction trees require an existing route. The explicit user
-`config/AGENTS.md` dependency remains user context when HOME is a project ancestor;
+and linked project instruction trees require an existing route. An explicitly imported
+AGENTS.md in the selected user configuration remains user context when HOME is a project ancestor;
 unreferenced config files gain no exception. The SDK route refuses unsupported layouts
 before connecting. Email addresses and ordinary Markdown separators
 remain literal instruction content.
