@@ -13631,6 +13631,15 @@
             "run_id": "20261015T192400Z-claude-sdk-stage3"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-17T15:45:04Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_artifact": "plans/detailed-claude-sdk-runner-20261015.md",
+            "run_id": "claude-sdk-stage3-impl-20261017"
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -13638,10 +13647,10 @@
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/e26f3560/codex-claude-sdk-stage3-plan-20261015/20261015T192400Z-claude-sdk-stage3.md",
       "roadmap_ref": null,
       "slug": "detailed-claude-sdk-runner-20261015",
-      "status": "committed",
+      "status": "executing",
       "task_summary": "Stage 3a: explicit subscription-proven Claude Agent SDK runner route, with proposed admission amendment; no default or panel activation.",
       "type": "detailed",
-      "updated_at": "2026-10-15T19:24:00Z"
+      "updated_at": "2026-10-17T15:45:04Z"
     }
   ],
   "schema_version": 1

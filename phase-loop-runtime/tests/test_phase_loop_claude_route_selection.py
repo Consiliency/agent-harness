@@ -52,6 +52,8 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertEqual(resolve_claude_route("claude-channel").route, "claude_channel")
         self.assertEqual(resolve_claude_route("agent_view").route, "claude_agent_view")
         self.assertEqual(resolve_claude_route("print").route, "claude_print")
+        self.assertEqual(resolve_claude_route("sdk").route, "claude_sdk")
+        self.assertEqual(resolve_claude_route("claude_sdk").reason, "explicit_sdk")
         # DFCHROUTE: empty/unset non-CI route now defaults to Channel (was print).
         self.assertEqual(resolve_claude_route("", env={}).route, "claude_channel")
         self.assertEqual(resolve_claude_route("tui").error, "unsupported Claude route `tui`")

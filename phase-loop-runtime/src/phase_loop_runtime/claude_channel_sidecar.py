@@ -19,7 +19,7 @@ import ipaddress
 
 
 ACK_POLICY_TOOL_REQUIRED = "tool_ack_required"
-CLAUDE_ROUTE_NAMES = {"claude_channel", "claude_agent_view", "claude_print"}
+CLAUDE_ROUTE_NAMES = {"claude_channel", "claude_agent_view", "claude_print", "claude_sdk"}
 CLAUDE_ROUTE_STATUSES = {"received", "working", "needs_permission", "needs_input", "blocked", "done", "error", "stale"}
 CLAUDE_AUTH_POSTURES = {"subscription_local", "api_key", "unknown"}
 CLAUDE_BILLING_POSTURES = {"subscription_included", "api_key_billed", "usage_credit", "unknown"}

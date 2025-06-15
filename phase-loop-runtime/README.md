@@ -36,6 +36,37 @@ canonical protocol document ships in the wheel as package data
 (from `src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`); an older copy is also
 installed to `share/phase-loop-runtime/protocol/protocol.md`.
 
+## Optional Claude SDK runner
+
+Install `phase-loop-runtime[claude-sdk]` and explicitly select
+`PHASE_LOOP_CLAUDE_ROUTE=sdk` to use the official Python SDK with your installed
+Claude Code CLI. Current defaults and the Channel, Agent View, print and panel TUI
+routes remain available. Select one of those existing routes to roll back.
+
+The initial SDK route supports Linux with working unprivileged Bubblewrap
+namespaces and a locally stored personal Pro/Max Claude Code login. Review actions,
+team execution, Team/Enterprise, profiles, cached remote policy and unknown login
+contexts are refused before authentication. SDK panel selection remains refused.
+Missing CLI capability, dependency or provenance produces a refusal with no
+automatic fallback. The helper preserves CLI loading of the selected login.
+
+Configuration is inspected before connecting and frozen in private read-only
+mounts shared by the auth probe and inference. Project settings currently support
+permission rules and hooks; project allow rules and hooks require stored project
+trust. Other project keys require a different route. User
+settings and inspectable host-managed policy are preserved. Initial instruction
+snapshots support plain instruction files and flat, unconditional rules. Imports,
+frontmatter, nested rules and instruction symlinks refuse this route rather than
+changing their meaning. These layouts require an existing route.
+Uninspectable policy refuses the route. Memory and subscription MCP
+connectors are disabled, and the existing permission and supervisor policies apply.
+Route metadata reports subscription provenance, rather than an account charge.
+
+The [ratified Stage 3a plan](https://github.com/Consiliency/agent-harness/blob/main/plans/detailed-claude-sdk-runner-20261015.md)
+requires synthetic transport and installed-package checks plus a non-skipped live
+qualification receipt before activation is considered qualified. The dependency
+extra is optional for every other route.
+
 ## Contributor test environment
 
 From the repository root, install the declared test tools and visual extra, then
@@ -46,8 +77,10 @@ uv sync --project phase-loop-runtime --group test --extra visual --python 3.14 -
 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests phase-loop-runtime/.venv/bin/python -m pytest -q phase-loop-runtime/tests/test_outside_agent_contract_drift.py phase-loop-runtime/tests/test_visual_avatar_evidence_validator.py
 ```
 
-The test group supplies pytest and package build/install tools, including pip;
-the visual extra supplies Pillow for image decoding. Both are opt-in. The native
+The test group supplies package build/install tools and the pinned SDK for
+credential-free transport tests; pytest is a runtime dependency. Ordinary installs
+without the SDK extra do not install the SDK. The visual extra supplies Pillow
+for image decoding. Both are opt-in. The native
 repository-wide interpreter guard includes the dagger subproject's Python 3.14
 floor, which is separate from this runtime package's Python 3.10 minimum and CI's
 interpreter matrix. These commands verify the two selected files; they do not
