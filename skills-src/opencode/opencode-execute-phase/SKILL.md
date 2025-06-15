@@ -188,7 +188,8 @@ clear interactive signal is present** — a run missing BOTH the adapter prompt 
   `PUBLICATION_ACTION:` line says (see "Interactive publication mode" below). With `ready`,
   push the merge-target branch and open a PR (`gh pr create`, `--draft` if dependencies
   remain or verification was partial/skipped, else ready) instead of leaving the lane merge
-  only local. With `draft-only`, push and open or keep a DRAFT PR; never flip it to ready.
+  only local. Before readiness, follow [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path).
+  With `draft-only`, push and open or keep a DRAFT PR; never flip it to ready.
   With `none`, do not push and do not open a PR: the work stays committed on the local
   feature branch, and the final report names that branch as unpublished.
 - (c) Merge target is `main` or a protected branch. Already STOPPED at the merge-target
@@ -203,6 +204,9 @@ unmerged work.
 
 ## Draft PR early — push on first commit (visibility)
 
+Use [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path)
+for pending-work draft text and the final description refresh before readiness.
+
 Do not let a phase branch accumulate commits only locally — that is how lanes drift 70–100 commits ahead of `origin` and in-flight work stays invisible. On the FIRST commit of a phase, unless the interactive publication mode below is `none`, push the branch to `origin` and open a DRAFT PR (`gh pr create --draft`); keep pushing as the phase progresses, and flip the PR to ready at closeout once verification is green. The early draft PR is the visibility contract, not a request to merge.
 
 Respect the publication ownership above: in runner-managed / governed mode the RUNNER owns publication, so the runner performs the early push and draft-PR — do not independently publish or bypass the governed pre-merge review panel. In the interactive-orchestrator path you perform the early push + draft PR yourself on the first commit, as the interactive publication mode allows.
@@ -214,8 +218,15 @@ from the installed `opencode-execute-detailed` directory, located with
 `resolve_skill_bundle_root("opencode")`. Draft text identifies pending work and verification.
 Create with an explicit title and `--body-file`; before readiness, reassess the title
 and body against the final PR diff and current verification artifact, then update
-with `gh pr edit <pr> --title <title> --body-file <file>`. Preserve human additions
-and machine-readable trailers. A failed update leaves the PR in draft.
+with `gh pr edit <pr> --body-file <file>`. Ownership is this session's created PR,
+recorded by URL in its repository-matching handoff. Read `gh pr view <pr> --json title,body`
+before composing and again immediately before editing. Preserve human additions and
+machine-readable trailers; replace only the unchanged delimited agent block. On
+concurrent change, append to the latest body. Add `--title` only if the title still
+equals this session's last authored title; preserve a human-changed title.
+A failed pre-readiness update leaves the initial PR in draft. For an already-ready
+PR, report `description refresh failed`, identify it, and do not claim freshness
+or proceed to merge; a failed edit does not change its draft status.
 
 Repeat the reassessment after material implementation, verification, or comparison-base
 changes before merge; refresh stale agent-owned text through the same mode check.

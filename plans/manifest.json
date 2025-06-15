@@ -13112,6 +13112,151 @@
       "task_summary": "PR descriptions grounded in final implementation, with agent-owned readiness refresh",
       "type": "detailed",
       "updated_at": "2026-10-12T21:34:13Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-10-13T03:23:14.864162+00:00",
+      "file": "plans/detailed-pr-description-hardening-20261013-0319.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/pr-description-hardening-20261013-0319.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-13T03:23:14.864162+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        },
+        {
+          "at": "2026-10-13T03:23:14Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "run_id": "pr-description-hardening-20261013-0319"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-13T03:43:28Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria_count": 5,
+            "acceptance_criteria_satisfied": 5,
+            "advisory_review": "Astra round2 AGREE; Opus provider rate limit unavailable",
+            "dirty_path_classification": "all isolated-worktree source and generated changes plan-owned; primary .pmcp pre-existing unrelated",
+            "doc_delta_decision": "docs_updated",
+            "verification_artifact_path": ".dev-skills/handoffs/codex-execute-detailed/pr-hardening-20261013-0319/verification/verification.json",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "pr-description-hardening-20261013-0319",
+      "status": "completed",
+      "task_summary": "pr description hardening",
+      "type": "detailed",
+      "updated_at": "2026-10-13T03:43:28Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-10-13T03:23:14.864162+00:00",
+      "file": "plans/detailed-publication-body-redaction-20261013-0319.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/publication-body-redaction-20261013-0319.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-13T03:23:14.864162+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        },
+        {
+          "at": "2026-10-13T03:23:14Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "run_id": "publication-body-redaction-20261013-0319"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-13T03:43:28Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria_count": 4,
+            "acceptance_criteria_satisfied": 4,
+            "advisory_review": "Astra round2 AGREE; Opus provider rate limit unavailable",
+            "dirty_path_classification": "all isolated-worktree source and generated changes plan-owned; primary .pmcp pre-existing unrelated",
+            "doc_delta_decision": "docs_updated",
+            "verification_artifact_path": ".dev-skills/handoffs/codex-execute-detailed/pr-hardening-20261013-0319/verification/verification.json",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "publication-body-redaction-20261013-0319",
+      "status": "completed",
+      "task_summary": "publication body redaction",
+      "type": "detailed",
+      "updated_at": "2026-10-13T03:43:28Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-10-13T03:55:20.165461+00:00",
+      "file": "plans/detailed-redaction-source-audit-compatibility-20261013.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/redaction-source-audit-compatibility-20261013.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-13T03:55:20.165461+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        },
+        {
+          "at": "2026-10-13T03:56:03Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "preliminary_review": "Astra independently confirmed unmodified production AST and equivalent fixture values",
+            "scope": "comments and identical runtime fixtures; audit policy unchanged"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-13T04:00:28Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria_count": 4,
+            "acceptance_criteria_satisfied": 4,
+            "advisory_review": "Astra final delta AGREE; unchanged runtime fixtures and executable redaction AST; Opus earlier unavailable",
+            "dirty_path_classification": "repair paths owned by this plan; all other staged paths owned by companion plans; primary gateway log pre-existing unrelated",
+            "doc_delta_decision": "no_doc_delta",
+            "doc_delta_reason": "comment and identical fixture representation only; no public behavior or audit policy change",
+            "reflection_written": true,
+            "verification_artifact_path": ".dev-skills/handoffs/codex-execute-detailed/redaction-source-audit-compatibility-20261013/verification/verification.json",
+            "verification_status": "passed",
+            "verification_summary": "1544 passed, 8 skipped in 88.54s (0:01:28)"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "redaction-source-audit-compatibility-20261013",
+      "status": "completed",
+      "task_summary": "Publication-compatible redaction comments and synthetic fixtures, without policy changes",
+      "type": "detailed",
+      "updated_at": "2026-10-13T04:00:28Z"
     }
   ],
   "schema_version": 1

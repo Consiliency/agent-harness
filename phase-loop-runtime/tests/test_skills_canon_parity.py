@@ -24,6 +24,7 @@ compared exactly.
 from __future__ import annotations
 
 import tempfile
+import shutil
 import unittest
 from pathlib import Path
 
@@ -53,15 +54,34 @@ def _bundle_files(root: Path) -> dict[Path, Path]:
 
 
 class SkillsCanonParityTest(unittest.TestCase):
+    def test_authored_provider_publication_requirements_are_retained(self):
+        self._require_sources()
+        for harness, root in SKILLS_SRC.items():
+            detailed = (root / f"{harness}-execute-detailed" / "SKILL.md").read_text()
+            phase = (root / f"{harness}-execute-phase" / "SKILL.md").read_text()
+            for snippet in ("pr_body=<body>", "commit_message=<subject>",
+                            "phase-loop-pr-text/<run-id>/body.md", "file 0600",
+                            "do not reformat an admitted transaction"):
+                self.assertIn(snippet, detailed, harness)
+            for snippet in ("recorded by URL", "gh pr view <pr> --json title,body",
+                            "append to the latest body", "human-changed title",
+                            "description refresh failed", "failed edit does not change its draft status"):
+                self.assertIn(snippet, phase, harness)
+            self.assertGreaterEqual(phase.count("(#pr-descriptions-on-the-interactive-path)"), 2)
+
     def test_pr_writing_reference_resolves_for_every_installed_provider(self):
         self._require_sources()
-        from phase_loop_runtime.skill_install import install_skills
+        from phase_loop_runtime.skill_install import REQUIRED_SKILLS, install_skills
 
         authored = SKILLS_SRC["claude"] / "claude-execute-detailed" / "references" / "pr-writing.md"
         with tempfile.TemporaryDirectory() as td:
             for harness in SKILLS_SRC:
+                staged = Path(td) / f"{harness}-source"
+                for skill in REQUIRED_SKILLS:
+                    shutil.copytree(PKG / "src" / "phase_loop_runtime" / "skills_bundle" / f"{harness}-{skill}",
+                                    staged / skill)
                 destination = Path(td) / harness
-                install_skills(harness=harness, source=COMMITTED_BUNDLE,
+                install_skills(harness=harness, source=staged,
                                destination=destination, mode="copy", apply=True)
                 detailed = destination / f"{harness}-execute-detailed"
                 phase = destination / f"{harness}-execute-phase"
@@ -69,6 +89,8 @@ class SkillsCanonParityTest(unittest.TestCase):
                                  authored.read_bytes())
                 self.assertIn("references/pr-writing.md", (detailed / "SKILL.md").read_text())
                 self.assertIn(f"`{harness}-execute-detailed`", (phase / "SKILL.md").read_text())
+                self.assertIn("pr_body=<body>", (detailed / "SKILL.md").read_text())
+                self.assertIn("description refresh failed", (phase / "SKILL.md").read_text())
 
     def _require_sources(self) -> None:
         if not all(root.is_dir() for root in SKILLS_SRC.values()):

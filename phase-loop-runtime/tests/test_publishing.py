@@ -174,6 +174,24 @@ def test_existing_source_exception_is_content_checked_and_blob_bound(tmp_path, p
     assert record["policy"] == "tracked-python-detect-secrets-1.5.0-v1"
 
 
+@pytest.mark.parametrize("path", [
+    "src/phase_loop_runtime/credential_redaction.py",
+    "tests/test_credential_redaction_shapes.py",
+])
+def test_redaction_sources_pass_the_governed_staged_audit(tmp_path, path):
+    from phase_loop_runtime.publishing import _audit_staged_diff
+
+    repo = _source_repo(tmp_path, path)
+    source = Path(__file__).resolve().parents[1] / path
+    _write_and_stage(repo, path, source.read_text(encoding="utf-8"))
+    evidence = {}
+    assert _audit_staged_diff(repo, [path], evidence=evidence) is None
+    record, = evidence["source_exceptions"]
+    assert record["path"] == path
+    assert record["blob_oid"] == _git(repo, "rev-parse", ":" + path).stdout.strip()
+    assert record["policy"] == "tracked-python-detect-secrets-1.5.0-v1"
+
+
 @pytest.mark.parametrize("path", [".env", ".env.py", "private.key", "private.key.py", "credentials.json"])
 def test_artifacts_remain_blocked_even_when_parseable_python(tmp_path, path):
     from phase_loop_runtime.publishing import _audit_staged_diff
@@ -789,11 +807,15 @@ def test_human_publish_builds_digest_bound_authority_and_releases_resources(
         plan_path=plan,
         verification_artifact_path=verification,
         draft=False,
+        pr_body="## Summary\nAuthorization: Bearer " + "X" * 24 + f"\nLocation: {repo}/owned.py",
     )
 
     assert result["status"] == "published"
     assert captured["broker_client"] is broker
     assert captured["draft"] is False
+    assert "X" * 24 not in captured["pr_body"]
+    assert str(repo) not in captured["pr_body"]
+    assert "## Summary" in captured["pr_body"]
     authority = captured["publish_authority"]
     preimage = authority.envelope_authority_preimage
     assert preimage["schema"] == "PublishEnvelopeAuthorityPreimage.v1"
@@ -1260,6 +1282,120 @@ def test_committed_publish_resumes_exact_transaction_after_private_evidence_is_i
     assert len(broker.requests) == 1
     assert broker.requests[0].admission.transaction_id == json.loads(pointer)["transaction_id"]
     assert evidence.read_text() == '{"status":"passed"}\n'
+
+
+def test_publication_redaction_preserves_relative_names_and_redacts_markdown_paths():
+    from phase_loop_runtime import publishing
+
+    benign = "Fixes agent-harness#1563.\nRun pytest -q .\n"
+    assert publishing._redact_publication_body(Path("agent-harness"), benign) == benign
+    assert publishing._redact_publication_body(Path("."), benign) == benign
+    repo = Path("/tmp/synthetic-review-repo")
+    text = f"Evidence: `{repo}/result.log`\n"
+    assert str(repo) not in publishing._redact_publication_body(repo, text)
+    assert publishing._redact_publication_body(repo, text).count("`") == 2
+
+
+@pytest.mark.parametrize("prebuilt", [False, True])
+def test_preparation_redacts_body_before_hashing_and_checkpointing(tmp_path, monkeypatch, prebuilt):
+    from phase_loop_runtime import publishing
+
+    repo = _make_repo(tmp_path)
+    _write_and_stage(repo, "owned.py", "value = 1\n")
+    if prebuilt:
+        _git(repo, "commit", "-m", "prebuilt work")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    original = publishing.build_pre_trailer_intent
+    captured = {}
+
+    def record_intent(inputs, **kwargs):
+        captured.update(inputs)
+        return original(inputs, **kwargs)
+
+    monkeypatch.setattr(publishing, "build_pre_trailer_intent", record_intent)
+    body = ("## Summary\nAuthorization: Bearer " + "X" * 24
+            + f"\nLocal source: {repo}/owned.py\nPrivate: /home/other-user/output.log"
+            + "\nagent-harness#1563\nRoadmap-Disposition: retain scope\n")
+    prepare = publishing.prepare_prebuilt_transaction if prebuilt else publishing.prepare_publish_transaction
+    transaction = prepare(repo, owned_paths=["owned.py"], checkpoint_root=authority.checkpoint_root,
+                          branch="feat/p1-test", envelope_authority_preimage=authority.envelope_authority_preimage,
+                          pr_body=body)
+    persisted = transaction.store.checkpoint_path(transaction.transaction_id).read_text()
+    for text in ("X" * 24, str(repo), "/home/other-user/output.log"):
+        assert text not in transaction.pr_body
+        assert text not in json.loads(persisted)["pr_body"]
+    for text in ("## Summary", "agent-harness#1563", "Roadmap-Disposition: retain scope"):
+        assert text in transaction.pr_body
+    assert captured["pr_body_sha256"] == publishing._sha256(transaction.pr_body.encode())
+    assert publishing._redact_publication_body(repo, transaction.pr_body, authority.checkpoint_root) == transaction.pr_body
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_adapter_forwards_sanitized_body_to_broker(tmp_path, monkeypatch, active):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: active)
+    repo = _make_repo(tmp_path)
+    (repo / "owned.py").write_text("value = 1\n")
+    broker = _Broker()
+    kwargs = {"broker_client": broker}
+    if active:
+        authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+        kwargs.update(publish_authority=authority, checkpoint_root=authority.checkpoint_root)
+    else:
+        kwargs["admission"] = _admission()
+    body = "## Summary\npassword=" + "Y" * 24 + f"\nLocal: {repo}/owned.py\nagent-harness#1563"
+    result = publish_from_worktree(repo, ["owned.py"], pr_body=body, **kwargs)
+    assert result["status"] == "published"
+    sent = broker.requests[0].pr_body
+    assert "Y" * 24 not in sent and str(repo) not in sent
+    assert "## Summary" in sent and "agent-harness#1563" in sent
+
+
+def test_safe_resume_uses_exact_checkpointed_body(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    repo = _make_repo(tmp_path)
+    (repo / "owned.py").write_text("value = 1\n")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    broker = _Broker()
+    kwargs = dict(broker_client=broker, publish_authority=authority, checkpoint_root=authority.checkpoint_root)
+    with pytest.raises(publishing.PublishCrashInjected):
+        with publishing.crash_after("after_committed_checkpoint_before_broker_execute"):
+            publish_from_worktree(repo, ["owned.py"], pr_body="## Observed implementation\n", **kwargs)
+    candidate = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+    frozen = candidate.transaction.pr_body
+    result = publish_from_worktree(repo, ["owned.py"], **kwargs)
+    assert result["status"] == "published"
+    assert broker.requests[0].pr_body == frozen
+
+
+def test_unsafe_historical_body_resume_refuses_without_changing_ref_or_checkpoint(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    repo = _make_repo(tmp_path)
+    (repo / "owned.py").write_text("value = 1\n")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    broker = _Broker()
+    kwargs = dict(broker_client=broker, publish_authority=authority, checkpoint_root=authority.checkpoint_root)
+    # Prepare an authentic old-format transaction through the old body treatment.
+    with monkeypatch.context() as old:
+        old.setattr(publishing, "_redact_publication_body", lambda _repo, body, _checkpoint=None: body or "")
+        with pytest.raises(publishing.PublishCrashInjected):
+            with publishing.crash_after("after_commit_object_checkpoint_before_ref_cas"):
+                publish_from_worktree(repo, ["owned.py"], pr_body="password=" + "Z" * 24, **kwargs)
+    candidate = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+    path = candidate.transaction.store.checkpoint_path(candidate.transaction.transaction_id)
+    before = path.read_bytes(), _git(repo, "rev-parse", "HEAD").stdout
+    result = publish_from_worktree(repo, ["owned.py"], **kwargs)
+    assert result["reason"] == "publication_transaction_conflicted"
+    assert (path.read_bytes(), _git(repo, "rev-parse", "HEAD").stdout) == before
+    assert not broker.requests
 
 
 def _commit_prebuilt_work(repo: Path, name: str) -> str:

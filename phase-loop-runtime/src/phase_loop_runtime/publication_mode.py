@@ -5,9 +5,10 @@ The runner's publication is governed by ``--closeout-mode``. The interactive pat
 on its first commit, opens a draft PR and flips it to ready at closeout. This module
 gives that path an equivalent control:
 
-* ``none``: no push, no PR. Work stays committed on the local feature branch.
-* ``draft-only``: push and open a draft PR; never flip it to ready.
-* ``ready``: push, open a draft PR, flip it to ready once verification is green.
+* ``none``: no push, PR creation, description edit, or readiness change.
+* ``draft-only``: push, open or refresh an agent-owned draft PR; never mark ready.
+* ``ready``: push, open a draft PR, refresh its description, then mark it ready
+  once verification is green. Reassess after material changes before merge.
   This is the default when nothing is configured.
 
 Two layers may set it, with the same file shape::

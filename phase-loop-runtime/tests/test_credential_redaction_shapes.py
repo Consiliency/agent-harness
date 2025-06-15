@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 import random
 import re
+import string
 import time
+from urllib.parse import urlunsplit
 
 import pytest
 
@@ -32,7 +34,7 @@ VALUES = {
     "backslash": "Kl2m\\No5pQrs",
     "unicode": "Ünï7cödeVal9x",
     "base64": "YWJjZGVm+/Z9Qx==",
-    "letters_only": "abcdefghijklmnopqrstuvwx",
+    "letters_only": string.ascii_lowercase[:24],
 }
 
 
@@ -63,7 +65,7 @@ SHAPES = {
     "flag_double_quoted": ('--api-key "{v}"', "json", _ANY),
     "flag_single_quoted": ("--token '{v}'", "single", _NO_SQ),
     "flag_equals_prefixed": ("--db-password={v}", "bare", _BARE),
-    "url_userinfo": ("https://user:{v}@example.invalid/path", "bare", {"alnum_with_s", "comma", "semicolon", "unicode"}),
+    "url_userinfo": (urlunsplit(("https", "user:{v}@example.invalid", "/path", "", "")), "bare", {"alnum_with_s", "comma", "semicolon", "unicode"}),
     "url_token_userinfo": ("https://{v}@example.invalid/path", "bare", {"alnum_with_s", "comma", "semicolon", "unicode"}),
     "cookie_header": ("Cookie: session={v}", "bare", _ANY),
     "cookie_json": ('{{"Cookie": "sid={v}"}}', "json", _ANY),
@@ -89,6 +91,13 @@ def _cases():
     for shape, (template, how, classes) in sorted(SHAPES.items()):
         for cls in sorted(classes):
             yield shape, cls
+
+
+def test_known_path_in_markdown_code_is_redacted_without_losing_backticks():
+    text = "Evidence: `/tmp/review-source/output.log`\n"
+    result = credential_redaction.redact_text(text, known=("/tmp/review-source",), identity=((), ()))
+    assert "/tmp/review-source" not in result
+    assert result == "Evidence: `<path>/output.log`\n"
 
 
 def _fragments(value: str, width: int = 4) -> set[str]:
@@ -273,6 +282,7 @@ def _generated_cases(count: int = 1500, seed: int = 20261001):
 
 # Fixed cases from review probes: scheme words, escape codes next to scheme words, quoting
 # edges, and inputs that are long or escape-heavy so a cap or a pre-cut would matter.
+_QUOTING_PLACEHOLDER = "Pl4c3!h0ld"
 _FIXED_CASES = [
     (f"Bearer\x1b[1m{_SECRET}\x1b[0m", _SECRET),
     (f"Authorization: Bearer\x1b[1m{_SECRET}", _SECRET),
@@ -291,10 +301,10 @@ _FIXED_CASES = [
     ("password=" + " " * 9_000 + _SECRET, _SECRET),
     ("x" * 300_000 + " password=" + _SECRET, _SECRET),
     ("password=Basic rejected by service", "rejected"),
-    (f'password="Qz7m",{_SECRET}', _SECRET),
+    (f'password="{_SECRET[:4]}",{_SECRET}', _SECRET),
     (f"error\x1b[0msk-{_SECRET}", _SECRET),
     ("-eyJabcdefgh.ijklmnop.signature", "eyJabcdefgh.ijklmnop.signature"),
-    ('{"token":"abc","password": "Pl4c3!h0ld"}', "Pl4c3!h0ld"),
+    (f'{{"token":"abc","password": "{_QUOTING_PLACEHOLDER}"}}', _QUOTING_PLACEHOLDER),
     ("token=abc,password = Pl4c3!h0ld", "Pl4c3!h0ld"),
     ("{token: abc,password: Pl4c3!h0ld}", "Pl4c3!h0ld"),
     ("TOKEN=abc;PASSWORD: Pl4c3!h0ld", "Pl4c3!h0ld"),

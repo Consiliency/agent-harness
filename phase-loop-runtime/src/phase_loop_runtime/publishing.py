@@ -25,6 +25,7 @@ from .convergence.contracts import AdmissionRequest, BrokerRequest, BrokerVerb, 
 from .convergence.provider_contracts import TerminalOutcomeState
 from .convergence.broker.live import canonical_repository_identity
 from .git_topology import collect_git_topology
+from .credential_redaction import redact_text
 
 
 PROTECTED_BRANCHES: frozenset[str] = frozenset({"main", "master", "develop", "release"})
@@ -628,6 +629,17 @@ def _construction_inputs(repo: Path, parent: str, tree: str) -> CommitConstructi
     )
 
 
+def _redact_publication_body(repo: Path, body: str | None, checkpoint_root: Path | None = None) -> str:
+    known = [Path(repo).resolve()]
+    if Path(repo).is_absolute():
+        known.append(repo)
+    if checkpoint_root is not None:
+        known.append(Path(checkpoint_root).resolve())
+        if Path(checkpoint_root).is_absolute():
+            known.append(checkpoint_root)
+    return redact_text(body or "", known=known)
+
+
 def _transaction_payload(
     *,
     repo: Path,
@@ -642,6 +654,7 @@ def _transaction_payload(
     mode: str,
     publication_audit: dict | None = None,
 ) -> dict:
+    pr_body = _redact_publication_body(repo, pr_body, checkpoint_root)
     parent = (
         _git_output(repo, "rev-parse", f"refs/heads/{branch}")
         or _git_output(repo, "rev-parse", branch)
@@ -1586,7 +1599,7 @@ def publish_human_invoked_from_worktree(
             repo,
             owned_paths,
             draft=draft,
-            pr_body=pr_body,
+            pr_body=_redact_publication_body(repo, pr_body, checkpoint_root),
             commit_message=commit_message,
             topology=topology,
             protected_branches=protected_branches,
@@ -1690,6 +1703,7 @@ def publish_from_worktree(
     checkpoint_root: Path | None = None,
 ) -> dict[str, Any]:
     """Publish only through the broker; FABPUB inputs construct an envelope post-commit."""
+    pr_body = _redact_publication_body(repo, pr_body, checkpoint_root)
     topo = dict(topology or collect_git_topology(repo))
     if not topo.get("available"):
         return _blocked("not_a_git_worktree", "Repo is not a git worktree")
@@ -1733,6 +1747,14 @@ def publish_from_worktree(
         and candidate.state != PublishTransactionState.CONFLICTED
         and not sealed_prior
     )
+    if resuming and _redact_publication_body(
+        repo, candidate.transaction.pr_body, checkpoint_root
+    ) != candidate.transaction.pr_body:
+        return _blocked(
+            "publication_transaction_conflicted",
+            "The frozen publication body requires redaction; preserve the checkpoint "
+            "and resolve its transaction before preparing sanitized publication text",
+        )
     if candidate.transaction is not None and candidate.state == PublishTransactionState.CONFLICTED:
         raise PublishTransactionConflict("active publish transaction is conflicted")
     if not prebuilt and not owned_paths:
@@ -1790,7 +1812,7 @@ def publish_from_worktree(
         transaction.resume()
         _crash_at("after_committed_checkpoint_before_broker_execute")
         envelope = _envelope_from_transaction(transaction, authority, repo)
-        execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, envelope, transaction.canonical_repository_identity, branch, transaction.committed_head_sha, transaction.owned_paths, base=base, draft=draft, pr_body=pr_body or "", adapter_worktree=str(Path(repo).resolve())))
+        execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, envelope, transaction.canonical_repository_identity, branch, transaction.committed_head_sha, transaction.owned_paths, base=base, draft=draft, pr_body=transaction.pr_body, adapter_worktree=str(Path(repo).resolve())))
         if execution.accepted:
             candidate = inspect_publish_resume_candidate(
                 repo,

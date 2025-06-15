@@ -88,10 +88,19 @@ identify affected consumers and material rollback constraints. Repository templa
 goal IDs, review/dependency links, human additions, and machine-readable trailers
 remain intact. Diagrams are optional; existing UI screenshot requirements still apply.
 
-For interactive agent-owned PRs, early draft descriptions mark pending work and
+An interactive agent-owned PR is the PR the session created and recorded by URL
+in its repository-matching handoff. Its description uses a delimited agent block.
+Before composing, read its title/body; immediately before editing, read them again.
+Preserve human additions and a human-changed title. Replace only an unchanged
+agent-authored block; on concurrent change, append to the latest body instead of
+overwriting it. A re-read reduces lost updates but is not an atomic GitHub edit.
+
+For these PRs, early draft descriptions mark pending work and
 verification. Before readiness, the agent reassesses the title and body against the
 final PR diff and current evidence, updates stale text, and only then marks the PR
-ready. A failed description update leaves it in draft. Material implementation,
+ready. A failed initial update leaves the PR in draft. For an already-ready PR,
+report the failed refresh and do not claim freshness or proceed to merge; failure
+does not itself change draft status. Material implementation,
 verification, or comparison-base changes require reassessment before merge.
 This does not authorize merging or automatically request another advisor round.
 
@@ -100,6 +109,15 @@ Description edits obey publication mode: `ready` permits upkeep before readiness
 error permits no edits. These instructions apply to interactive agent-owned PRs;
 runner/broker-owned descriptions remain with their publication owner. Broker
 publication freezes body bytes before preparation and reuses them on retry.
+Detailed execution persists its body in private Git-common-directory state at
+`phase-loop-pr-text/<run-id>/body.md` (directory 0700, file 0600), outside checked-out
+source and linked worktrees, and records its path/digest in the local handoff.
+
+The publication adapter applies the shared text-redaction pipeline before binding
+and storing a fresh body. Broker requests use those stored bytes. Historical frozen
+bodies that require sanitization are refused before effects rather than rewritten;
+resolve their transaction through the existing recovery process before preparing
+new publication text.
 
 ## Interactive: publication mode
 
