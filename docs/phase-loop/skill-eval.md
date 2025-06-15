@@ -74,6 +74,11 @@ or input requires a new experiment. Sequential execution claims each trial
 atomically under an exclusive lock. A started trial is never retried or replaced;
 later runs can execute only untouched trials. A crash without terminal evidence
 remains incomplete. Cancellation preserves receipts and stops the batch.
+This includes cancellation returned by the launcher: the trial stays invalid,
+even with exit zero and a complete response. Private launch receipts retain the
+returned interruption flag and cleanup evidence (null when unavailable); the
+terminal receipt records interruption before cancellation propagates. Later
+trials remain unclaimed until another explicit run.
 Elapsed time and emitted usage are retained, otherwise usage is unknown.
 
 ## Launch and access boundary
@@ -115,8 +120,10 @@ Keep roots private and prohibit concurrent inspection. See the
 Real owned-process read/open-only/no-read/self-report controls establish the
 observer boundary; they do not establish real Codex usability.
 
-Completion requires successful launch, a completed agent message and subsequent
-successful turn completion in the pinned CLI JSON stream. Failed, partial,
+Completion requires successful launch, one turn start, a completed agent message
+within that turn and subsequent successful turn completion in the pinned CLI JSON
+stream. Items before turn start, repeated turn starts and events after completion
+are refused; tool/item lifecycle events within the turn remain supported. Failed, partial,
 unknown, truncated or unexpectedly diagnostic streams are invalid.
 Launch/access/terminal evidence joins experiment, scheduled trial, fixture, guide
 and final-output digests; missing or swapped records refuse.
@@ -129,6 +136,12 @@ rationale and operator paths. A preregistered scan detects opaque arm IDs, full
 model IDs and operator/staging prefixes; ordinary words like producer, consumer
 and control are allowed. Identity-disclosing outputs stay original in private
 evidence, are not rewritten, and invalidate their comparison.
+Identity markers in natural tasks, fixture names/content or rubrics refuse packet
+export before any output can be omitted. Gold outputs with identity markers also
+refuse calibration export. Scans inspect raw strings, including structured keys
+and values, so JSON escaping does not hide path markers. Unblinded model outputs
+are excluded from the score form and reported as invalid scheduled trials during
+reduction; no scores are invented for them.
 
 Score forms require the same scorer ID, experiment, packet and rubric digests,
 and exactly one score for every scoreable output. Each rubric item requires an
@@ -140,7 +153,13 @@ Both calibration commands hold the experiment lock. Export creates one opaque
 packet, not an attempt. Calibration reduction claims the single attempt before
 evaluating scores and stores score bytes/digest, scorer/experiment/packet/rubric/
 gold identities and verdict. Failed or interrupted attempts cannot be retried
-with fresh IDs. All gold Booleans must match; annotations are never returned.
+with fresh IDs. Malformed UTF-8 JSON score documents or score shapes are refused
+with exit 2 and `skill-eval refused:`. For readable UTF-8 score bytes, calibration
+stores a failed receipt before that refusal, preserving the submitted bytes/digest;
+an absent or malformed scorer ID stays null. Missing/unreadable files, invalid UTF-8,
+or interruption can leave only the started claim, which still consumes the attempt.
+Well-formed judgments with wrong gold answers or declared prior exposure return a
+failed calibration result. All gold Booleans must match; annotations are never returned.
 The checked-in public examples are software test data; a human who has seen them
 must use a fresh independently annotated gold pack rather than claiming blinding.
 The scorer declares no prior gold exposure. Previously disclosed examples are

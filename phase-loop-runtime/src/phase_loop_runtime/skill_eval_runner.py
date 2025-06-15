@@ -141,6 +141,7 @@ def probe_sandbox(resolved, owned_command, profile, root):
 def parse_stream(output, allowlist):
     import json
     message = None
+    started = False
     completed = False
     usage = None
     for line in output.splitlines():
@@ -158,6 +159,15 @@ def parse_stream(output, allowlist):
         if kind not in {"thread.started", "turn.started", "item.started", "item.updated",
                         "item.completed", "turn.completed"}:
             raise ValueError("unknown Codex event")
+        if kind == "thread.started":
+            if started:
+                raise ValueError("unexpected thread start during turn")
+        elif kind == "turn.started":
+            if started:
+                raise ValueError("multiple Codex turns refused")
+            started = True
+        elif not started:
+            raise ValueError("Codex event before turn start")
         if kind.startswith("item."):
             item = event.get("item")
             if not isinstance(item, dict) or not isinstance(item.get("type"), str):
@@ -184,7 +194,8 @@ def run_trial(experiment, frozen, spec, trial):
     output = ""
     transcript = ""
     access = {"events": {}, "errors": ["observation_not_started"]}
-    launched = {"returncode": None, "probe": "not_passed", "stream_valid": False, "usage": None}
+    launched = {"returncode": None, "probe": "not_passed", "stream_valid": False, "usage": None,
+                "interrupted": None, "cleanup_evidence": None}
     status = "invalid"
     reason = "not_started"
     begin = time.monotonic()
@@ -215,10 +226,15 @@ def run_trial(experiment, frozen, spec, trial):
                     result = launcher.launch(
                         owned, action="review", _review_profile=profile, cwd=root,
                         env=dict(profile.env), log_path=directory / "subject.log", ephemeral_monitor=True)
-                access = observer.receipt()
-                verify_tree(root, files)
                 transcript = result.output
-                launched["returncode"] = result.returncode
+                launched.update(returncode=result.returncode, interrupted=result.interrupted,
+                                cleanup_evidence=result.cleanup_evidence)
+                if result.interrupted:
+                    interrupted = KeyboardInterrupt()
+                access = observer.receipt()
+                if interrupted is not None:
+                    raise interrupted
+                verify_tree(root, files)
                 if result.returncode != 0 or result.timed_out or result.stalled:
                     raise ValueError("subject launch failed")
                 output, launched["usage"] = parse_stream(transcript, spec.executable.diagnostic_allowlist)
@@ -243,6 +259,7 @@ def run_trial(experiment, frozen, spec, trial):
         write_new(directory / "access.json", access)
         write_new(directory / "terminal.json", {
             "binding": bound, "status": status, "reason": reason, "output": output,
+            "interrupted": interrupted is not None,
             "output_digest": joined["output_digest"], "launch_digest": digest(launched),
             "access_digest": digest(access)})
     if interrupted is not None:

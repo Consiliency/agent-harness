@@ -291,7 +291,12 @@ def test_calibration_is_one_shot_even_after_failure(experiment, tmp_path, bad):
     else:
         scores["scores"] = []
     rewrite(path, scores)
-    assert ev.reduce(root, path, tmp_path / "result", True) == {"calibration_passed": False}
+    if bad == "malformed":
+        with pytest.raises(ValueError, match="invalid calibration scores"):
+            ev.reduce(root, path, tmp_path / "result", True)
+    else:
+        assert ev.reduce(root, path, tmp_path / "result", True) == {"calibration_passed": False}
+    assert ev.load(root / "calibration-receipt.json")["passed"] is False
     with pytest.raises(FileExistsError):
         ev.reduce(root, path, tmp_path / "retry", True)
     assert not ev.calibration_valid(root, frozen, spec, "blind-human")
@@ -396,3 +401,171 @@ def test_resealed_packet_cannot_add_foreign_output(experiment, tmp_path):
     rewrite(path, scores)
     with pytest.raises(ValueError, match="unknown or no-longer-scoreable"):
         ev.reduce(root, path, tmp_path / "result")
+
+
+@pytest.mark.parametrize("calibration", [False, True])
+@pytest.mark.parametrize("field", ["prompt", "facts", "rubric"])
+@pytest.mark.parametrize("marker_kind", ["model", "escaped_root"])
+def test_packet_refuses_identity_in_natural_inputs(tmp_path, calibration, field, marker_kind):
+    root = tmp_path / 'operator-"slash\\café' / "experiment"
+    value = ev.load(PILOT)
+    marker = value["model"] if marker_kind == "model" else str(root.resolve())
+    case = value["comparisons"][0]["cases"][0]
+    if field == "prompt":
+        case["prompt"] += " " + marker
+    elif field == "facts":
+        case["files"]["notes.txt"] += marker
+    else:
+        case["rubric"]["r1"] += " " + marker
+    spec_path = tmp_path / "spec.json"
+    rewrite(spec_path, value)
+    frozen = ev.prepare(spec_path, root)
+    spec = ev.Spec.model_validate(frozen["spec"])
+    trial = next(t for t in frozen["schedule"] if t["case"] == case["id"])
+    seal(root, frozen, spec, trial)
+    with pytest.raises(ValueError, match="identity marker"):
+        ev.packet(root, tmp_path / "packet", calibration)
+    assert not (root / ("calibration-packet.json" if calibration else "packet.json")).exists()
+
+
+@pytest.mark.parametrize("marker_kind", ["model", "escaped_root"])
+def test_unblinded_outputs_stay_private_and_all_invalid_trials_reported(tmp_path, marker_kind):
+    root = tmp_path / 'operator-"slash\\café' / "experiment"
+    frozen = ev.prepare(PILOT, root)
+    spec = ev.Spec.model_validate(frozen["spec"])
+    qualify(root, tmp_path)
+    marker = spec.model if marker_kind == "model" else str(root.resolve())
+    invalid = set()
+    for trial in frozen["schedule"]:
+        leak = trial["repetition"] == 0
+        if leak:
+            invalid.add(trial["id"])
+        seal(root, frozen, spec, trial, text=marker if leak else "producer consumer control plan")
+    packet, _, scores = scored_packet(root, tmp_path / "packet")
+    assert len(packet["outputs"]) == 48 - len(invalid)
+    result = ev.reduce(root, scores, tmp_path / "result")
+    assert set(result["trials"]) == {t["id"] for t in frozen["schedule"]}
+    assert {k for k, v in result["trials"].items() if not v["valid"]} == invalid
+    assert all(result["trials"][k]["reason"] == "unblinded output" for k in invalid)
+    assert {c["status"] for c in result["comparisons"].values()} == {"inconclusive"}
+    for trial in frozen["schedule"]:
+        if trial["id"] in invalid:
+            assert ev.load(root / "trials" / trial["id"] / "terminal.json")["output"] == marker
+
+
+def test_calibration_refuses_identity_in_gold_output(tmp_path):
+    value = ev.load(PILOT)
+    value["gold"][0]["text"] += " " + value["model"]
+    path = tmp_path / "spec.json"
+    rewrite(path, value)
+    root = tmp_path / "experiment"
+    ev.prepare(path, root)
+    with pytest.raises(ValueError, match="identity marker"):
+        ev.packet(root, tmp_path / "gold", True)
+
+
+@pytest.mark.parametrize("calibration", [False, True])
+@pytest.mark.parametrize("shape", ["array", "scores_object", "row_array", "items_array", "item_array", "json"])
+def test_cli_refuses_malformed_scores_without_traceback(experiment, tmp_path, calibration, shape):
+    root, frozen, spec = experiment
+    seal(root, frozen, spec, frozen["schedule"][0])
+    _, scores, path = scored_packet(root, tmp_path / "packet", calibration=calibration)
+    if shape == "array":
+        scores = []
+    elif shape == "scores_object":
+        scores["scores"] = {}
+    elif shape == "row_array":
+        scores["scores"][0] = ["id", "items"]
+    elif shape == "items_array":
+        scores["scores"][0]["items"] = list(scores["scores"][0]["items"])
+    elif shape == "item_array":
+        scores["scores"][0]["items"]["r1"] = ["pass", "quote"]
+    rewrite(path, scores)
+    if shape == "json":
+        path.write_text("{malformed")
+    raw = path.read_bytes()
+    command = [str(Path(sys.executable).parent / "phase-loop-skill-eval"), "reduce",
+               "--experiment", str(root), "--scores", str(path), "--out", str(tmp_path / "result")]
+    if calibration:
+        command.append("--calibration")
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2 and "skill-eval refused:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (tmp_path / "result").exists()
+    if calibration:
+        receipt = ev.load(root / "calibration-receipt.json")
+        assert receipt["passed"] is False
+        assert receipt["score_digest"] == ev.digest(raw)
+        assert receipt["score_bytes"] == raw.decode()
+        assert receipt["scorer_id"] == (scores.get("scorer_id") if isinstance(scores, dict) and shape != "json" else None)
+        assert not ev.calibration_valid(root, frozen, spec, "blind-human")
+        retry = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        assert retry.returncode == 2 and "skill-eval refused:" in retry.stderr
+        assert ev.load(root / "calibration-receipt.json") == receipt
+    else:
+        assert not (root / "scores-sealed.json").exists()
+
+
+def test_malformed_nested_access_is_invalid_evidence(experiment):
+    root, frozen, spec = experiment
+    trial = frozen["schedule"][0]
+    seal(root, frozen, spec, trial)
+    directory = root / "trials" / trial["id"]
+    access = ev.load(directory / "access.json")
+    access["events"][ev.GUIDE] = ["open", "access"]
+    rewrite(directory / "access.json", access)
+    terminal = ev.load(directory / "terminal.json")
+    terminal["access_digest"] = ev.digest(access)
+    rewrite(directory / "terminal.json", terminal)
+    assert not ev.evidence(root, frozen, spec, trial)["valid"]
+
+
+@pytest.mark.parametrize("malformed", [None, "packet", 1, []])
+def test_non_object_packet_refused(experiment, tmp_path, malformed):
+    root, frozen, spec = experiment
+    rewrite(root / "packet.json", malformed)
+    with pytest.raises(ValueError):
+        ev.checked_packet(root, frozen, spec, False)
+
+
+def test_calibration_missing_file_consumes_attempt(experiment, tmp_path):
+    root, frozen, spec = experiment
+    ev.packet(root, tmp_path / "gold", True)
+    with pytest.raises(ValueError, match="regular JSON file"):
+        ev.reduce(root, tmp_path / "missing", tmp_path / "result", True)
+    assert (root / "calibration-started.json").exists()
+    assert not (root / "calibration-receipt.json").exists()
+    with pytest.raises(FileExistsError):
+        ev.reduce(root, tmp_path / "missing", tmp_path / "retry", True)
+    assert not ev.calibration_valid(root, frozen, spec, "blind-human")
+
+
+@pytest.mark.parametrize("malformed", [[], {"score_bytes": []}])
+def test_malformed_calibration_receipt_cannot_qualify(experiment, malformed):
+    root, frozen, spec = experiment
+    ev.write_new(root / "calibration-started.json", {"experiment": frozen["digest"]})
+    rewrite(root / "calibration-receipt.json", malformed)
+    assert not ev.calibration_valid(root, frozen, spec, "blind-human")
+
+
+def test_malformed_scorer_identity_stays_null_in_failed_receipt(experiment, tmp_path):
+    root, frozen, spec = experiment
+    _, scores, path = scored_packet(root, tmp_path / "gold", calibration=True)
+    scores["scorer_id"] = ["invented-scorer"]
+    rewrite(path, scores)
+    with pytest.raises(ValueError, match="invalid calibration scores"):
+        ev.reduce(root, path, tmp_path / "result", True)
+    receipt = ev.load(root / "calibration-receipt.json")
+    assert receipt["scorer_id"] is None and receipt["passed"] is False
+    assert not ev.calibration_valid(root, frozen, spec, "invented-scorer")
+
+
+def test_non_string_terminal_output_is_invalid_evidence(experiment):
+    root, frozen, spec = experiment
+    trial = frozen["schedule"][0]
+    seal(root, frozen, spec, trial)
+    path = root / "trials" / trial["id"] / "terminal.json"
+    terminal = ev.load(path)
+    terminal["output"] = []
+    rewrite(path, terminal)
+    assert not ev.evidence(root, frozen, spec, trial)["valid"]

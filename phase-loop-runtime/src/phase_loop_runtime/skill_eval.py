@@ -47,6 +47,10 @@ def canonical(value) -> bytes:
 def load(path: Path):
     if path.is_symlink() or not path.is_file():
         raise ValueError("expected a regular JSON file")
+    return parse_json(path.read_bytes())
+
+
+def parse_json(raw):
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -54,7 +58,7 @@ def load(path: Path):
                 raise ValueError("duplicate JSON key")
             result[key] = value
         return result
-    return json.loads(path.read_bytes(), object_pairs_hook=unique)
+    return json.loads(raw, object_pairs_hook=unique)
 
 
 def write_new(path: Path, value):
@@ -331,6 +335,8 @@ def evidence(root, frozen, spec, trial):
         if terminal["binding"] != expected:
             raise ValueError("terminal binding mismatch")
         output = terminal["output"]
+        if not isinstance(output, str):
+            raise ValueError("malformed final output")
         output_digest = digest(output.encode())
         for name in ("launch", "access"):
             receipt = load(directory / (name + ".json"))
@@ -345,8 +351,9 @@ def evidence(root, frozen, spec, trial):
                 launch["stream_valid"] is not True or not output.strip() or access["errors"]):
             raise ValueError("unsuccessful launch or observation")
         paths = files_for(frozen, spec, trial)
-        if set(access["events"]) != set(paths) or any(
-                set(events) != {"open", "access"} for events in access["events"].values()) or any(
+        if not isinstance(access["events"], dict) or set(access["events"]) != set(paths) or any(
+                not isinstance(events, dict) or set(events) != {"open", "access"}
+                for events in access["events"].values()) or any(
                 type(flag) is not bool for events in access["events"].values()
                 for flag in events.values()):
             raise ValueError("incomplete access map")
@@ -372,19 +379,36 @@ def identity_markers(root, frozen, spec):
             *[arm for group in frozen["arms"].values() for arm in group["bytes"]]]
 
 
-def unblinded(text, markers):
-    return any(marker in text for marker in markers)
+def unblinded(value, markers):
+    if isinstance(value, str):
+        return any(marker in value for marker in markers)
+    if isinstance(value, dict):
+        return any(unblinded(k, markers) or unblinded(v, markers) for k, v in value.items())
+    if isinstance(value, list):
+        return any(unblinded(item, markers) for item in value)
+    return False
+
+
+def check_blind_inputs(root, frozen, spec, calibration):
+    markers = identity_markers(root, frozen, spec)
+    for group in spec.comparisons:
+        for case in group.cases:
+            if unblinded([case.prompt, case.files, case.rubric], markers):
+                raise ValueError("packet input contains preregistered identity marker")
+    if calibration and unblinded([g.text for g in spec.gold], markers):
+        raise ValueError("gold packet contains preregistered identity marker")
+    return markers
 
 
 def packet(root: Path, out: Path, calibration=False):
     with experiment_lock(root):
         frozen, spec = open_experiment(root)
+        markers = check_blind_inputs(root, frozen, spec, calibration)
         name = "calibration-packet.json" if calibration else "packet.json"
         stored = root / name
         if stored.exists():
-            result = load(stored)
+            result = checked_packet(root, frozen, spec, calibration)
         else:
-            markers = identity_markers(root, frozen, spec)
             rows = []
             if calibration:
                 cases = {c.id: c for g in spec.comparisons for c in g.cases}
@@ -402,7 +426,7 @@ def packet(root: Path, out: Path, calibration=False):
                     row = {"id": trial["output_id"], "task": case.prompt, "facts": case.files,
                            "plan": item["output"], "rubric": case.rubric,
                            "access": {p: item["access"][p] for p in case.files}}
-                    if unblinded(json.dumps(row), markers):
+                    if unblinded(item["output"], markers):
                         continue
                     rows.append(row)
                 random.SystemRandom().shuffle(rows)
@@ -410,7 +434,7 @@ def packet(root: Path, out: Path, calibration=False):
                       "calibration": calibration, "outputs": rows}
             result["packet_digest"] = digest(result)
             # Refuse rather than redact any identity-bearing natural task or fixture.
-            if unblinded(json.dumps(rows), markers):
+            if unblinded(rows, markers):
                 raise ValueError("packet contains preregistered identity marker")
             write_new(stored, result)
         out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -426,23 +450,26 @@ def packet(root: Path, out: Path, calibration=False):
 
 
 def check_scores(scores, packet):
-    if set(scores) != {"scorer_id", "no_prior_gold_exposure", "experiment",
+    if not isinstance(scores, dict) or set(scores) != {"scorer_id", "no_prior_gold_exposure", "experiment",
                       "packet_digest", "rubric_digest", "scores"}:
         raise ValueError("unknown score fields")
     if (not isinstance(scores["scorer_id"], str) or not scores["scorer_id"].strip() or
             type(scores["no_prior_gold_exposure"]) is not bool or
             any(scores[key] != packet[key] for key in ("experiment", "packet_digest", "rubric_digest"))):
         raise ValueError("foreign score packet or missing scorer")
+    if not isinstance(scores["scores"], list):
+        raise ValueError("scores must be an array")
     rows = {row["id"]: row for row in packet["outputs"]}
     votes = {}
     for score in scores["scores"]:
-        if set(score) != {"id", "items"} or score["id"] not in rows or score["id"] in votes:
+        if (not isinstance(score, dict) or set(score) != {"id", "items"} or
+                not isinstance(score["id"], str) or score["id"] not in rows or score["id"] in votes):
             raise ValueError("unknown or duplicate score ID")
         row = rows[score["id"]]
-        if set(score["items"]) != set(row["rubric"]):
+        if not isinstance(score["items"], dict) or set(score["items"]) != set(row["rubric"]):
             raise ValueError("all rubric items required")
         for item in score["items"].values():
-            if (set(item) != {"pass", "quote"} or type(item["pass"]) is not bool or
+            if (not isinstance(item, dict) or set(item) != {"pass", "quote"} or type(item["pass"]) is not bool or
                     not isinstance(item["quote"], str) or not item["quote"] or
                     item["quote"] not in row["plan"]):
                 raise ValueError("exact Boolean score and output citation required")
@@ -453,16 +480,27 @@ def check_scores(scores, packet):
 
 
 def checked_packet(root, frozen, spec, calibration):
+    markers = check_blind_inputs(root, frozen, spec, calibration)
     stored = load(root / ("calibration-packet.json" if calibration else "packet.json"))
+    if (not isinstance(stored, dict) or set(stored) != {
+            "version", "experiment", "rubric_digest", "calibration", "outputs", "packet_digest"} or
+            type(stored["version"]) is not int or stored["version"] != 1 or
+            type(stored["calibration"]) is not bool or not isinstance(stored["outputs"], list)):
+        raise ValueError("invalid packet fields")
     payload = stored.copy()
     claimed = payload.pop("packet_digest")
     if (digest(payload) != claimed or stored["experiment"] != frozen["digest"] or
             stored["rubric_digest"] != rubric_digest(spec) or stored["calibration"] != calibration):
         raise ValueError("packet changed or foreign")
     rows = stored["outputs"]
-    if len({row["id"] for row in rows}) != len(rows) or any(
-            set(row) != {"id", "task", "facts", "plan", "rubric", "access"} for row in rows):
+    if any(not isinstance(row, dict) or
+           set(row) != {"id", "task", "facts", "plan", "rubric", "access"} or
+           any(not isinstance(row[key], str) for key in ("id", "task", "plan")) or
+           any(not isinstance(row[key], dict) for key in ("facts", "rubric", "access"))
+           for row in rows) or len({row["id"] for row in rows}) != len(rows):
         raise ValueError("invalid packet fields or duplicate IDs")
+    if unblinded(rows, markers):
+        raise ValueError("packet contains preregistered identity marker")
     if calibration:
         cases = {c.id: c for g in spec.comparisons for c in g.cases}
         expected = [{"task": cases[g.case_id].prompt, "facts": cases[g.case_id].files,
@@ -477,21 +515,31 @@ def calibrate(root, frozen, spec, scores_path):
     # Claim before parsing/evaluating; failed and interrupted attempts consume the slot.
     write_new(root / "calibration-started.json", {"experiment": frozen["digest"]})
     packet_data = checked_packet(root, frozen, spec, True)
+    if scores_path.is_symlink() or not scores_path.is_file():
+        raise ValueError("expected a regular JSON file")
     raw = scores_path.read_bytes()
-    scores = load(scores_path)
+    score_text = raw.decode()
+    scores = None
     verdict = False
+    error = None
     try:
+        scores = parse_json(raw)
         votes = check_scores(scores, packet_data)
         gold = {g.text: g for g in spec.gold}
         verdict = scores["no_prior_gold_exposure"] is True and all(
             votes[row["id"]] == gold[row["plan"]].annotations for row in packet_data["outputs"])
-    except (ValueError, KeyError, TypeError):
-        verdict = False
+    except (ValueError, KeyError, TypeError) as exc:
+        error = exc
+    scorer = scores.get("scorer_id") if isinstance(scores, dict) else None
+    if not isinstance(scorer, str) or not scorer.strip():
+        scorer = None
     receipt = {"experiment": frozen["digest"], "packet_digest": packet_data["packet_digest"],
                "rubric_digest": rubric_digest(spec), "gold_digest": digest(frozen["spec"]["gold"]),
-               "scorer_id": scores.get("scorer_id"), "scores": scores,
-               "score_bytes": raw.decode(), "score_digest": digest(raw), "passed": verdict}
+               "scorer_id": scorer, "scores": scores,
+               "score_bytes": score_text, "score_digest": digest(raw), "passed": verdict}
     write_new(root / "calibration-receipt.json", receipt)
+    if error is not None:
+        raise ValueError(f"invalid calibration scores: {error}") from error
     return {"calibration_passed": verdict}
 
 
@@ -500,6 +548,9 @@ def calibration_valid(root, frozen, spec, scorer):
         if load(root / "calibration-started.json") != {"experiment": frozen["digest"]}:
             return False
         receipt = load(root / "calibration-receipt.json")
+        if (not isinstance(receipt, dict) or
+                not isinstance(receipt.get("score_bytes"), str)):
+            return False
         packet_data = checked_packet(root, frozen, spec, True)
         votes = check_scores(receipt["scores"], packet_data)
         gold = {g.text: g for g in spec.gold}

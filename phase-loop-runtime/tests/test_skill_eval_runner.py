@@ -117,6 +117,36 @@ def test_complete_event_stream_and_exact_diagnostics():
         runner.parse_stream("pinned diagnostic with extra bytes\n" + COMPLETE, ["pinned diagnostic"])
 
 
+@pytest.mark.parametrize("events", [
+    ["message", "start", "complete"],
+    ["start", "message", "start", "complete"],
+    ["start", "complete", "message"],
+    ["start", "message", "complete", "message"],
+    ["message", "complete"],
+])
+def test_single_turn_ordering_refuses_stale_or_late_messages(events):
+    records = {
+        "start": {"type": "turn.started"},
+        "message": {"type": "item.completed", "item": {
+            "id": "answer", "type": "agent_message", "text": "plan"}},
+        "complete": {"type": "turn.completed"},
+    }
+    with pytest.raises(ValueError):
+        runner.parse_stream("\n".join(json.dumps(records[e]) for e in events), [])
+
+
+def test_single_turn_allows_tool_read_lifecycle_and_final_message():
+    events = [{"type": "thread.started", "thread_id": "opaque"}, {"type": "turn.started"}]
+    for kind in ("item.started", "item.updated", "item.completed"):
+        events.append({"type": kind, "item": {
+            "id": "read", "type": "command_execution", "command": "cat input.txt",
+            "aggregated_output": "fixture facts" if kind == "item.completed" else "",
+            "status": "completed" if kind == "item.completed" else "in_progress"}})
+    events.extend(json.loads(line) for line in COMPLETE.splitlines()[2:])
+    assert runner.parse_stream("\n".join(map(json.dumps, events)), []) == (
+        "Evidence plan.", {"input_tokens": 20, "output_tokens": 3})
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux inotify")
 @pytest.mark.parametrize("behavior", ["read", "open", "self_report", "none"])
 def test_real_owned_boundary_observes_only_final_copy(tmp_path, behavior):
@@ -186,6 +216,21 @@ def test_observer_invalidates_mutation_overflow_and_watch_loss(tmp_path, mutatio
         else:
             observer.feed(struct.pack("iIII", -1, 0x4000 if mutation == "overflow" else 0x8000, 0, 0))
     assert observer.errors
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux inotify")
+def test_observer_closes_descriptor_when_watch_initialization_fails(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from phase_loop_runtime import skill_eval_access
+    (tmp_path / "fixture").write_text("fixture")
+    fd = os.open(tmp_path / "fixture", os.O_RDONLY)
+    libc = SimpleNamespace(inotify_init1=Mock(return_value=fd),
+                           inotify_add_watch=Mock(return_value=-1))
+    monkeypatch.setattr(skill_eval_access.ctypes, "CDLL", lambda *a, **k: libc)
+    with pytest.raises(OSError, match="inotify_add_watch"):
+        AccessObserver(tmp_path, ["fixture"])
+    with pytest.raises(OSError):
+        os.fstat(fd)
 
 
 def test_tree_integrity_links_and_hash_drift(tmp_path):
@@ -278,6 +323,8 @@ def test_probe_failure_refuses_subject_and_binds_terminal(experiment, fake_bound
     terminal = ev.load(directory / "terminal.json")
     assert terminal["status"] == "invalid"
     assert terminal["binding"] == ev.binding(frozen, spec, trial)
+    launch = ev.load(directory / "launch.json")
+    assert launch["interrupted"] is None and launch["cleanup_evidence"] is None
     assert not ev.evidence(root, frozen, spec, trial)["valid"]
 
 
@@ -318,7 +365,7 @@ def test_probe_same_owned_profile_and_process_cleanup(tmp_path, monkeypatch, mod
     assert not panel_invoker._process_group_exists(captured[1].pid)
 
 
-@pytest.mark.parametrize("failure", [False, True, "interrupt"])
+@pytest.mark.parametrize("failure", [False, True, "interrupt", "system_exit"])
 def test_trial_observation_envelope_and_terminal_failure(experiment, fake_boundary, failure):
     root, frozen, spec = experiment
     trial = frozen["schedule"][0]
@@ -333,14 +380,16 @@ def test_trial_observation_envelope_and_terminal_failure(experiment, fake_bounda
         assert not any(launcher.CODEX_REVIEW_STAGE_PREFIX in arg for arg in argv)
         if failure == "interrupt":
             raise KeyboardInterrupt()
+        if failure == "system_exit":
+            raise SystemExit(2)
         for path in kwargs["cwd"].rglob("*"):
             if path.is_file():
                 path.read_bytes()
-        return SimpleNamespace(returncode=1 if failure else 0, output=COMPLETE,
-                               timed_out=False, stalled=False)
+        return launcher.LaunchResult(command=argv, returncode=1 if failure else 0,
+                                     output=COMPLETE)
     fake_boundary.setattr(launcher, "launch", subject)
-    if failure == "interrupt":
-        with pytest.raises(KeyboardInterrupt):
+    if failure in {"interrupt", "system_exit"}:
+        with pytest.raises(KeyboardInterrupt if failure == "interrupt" else SystemExit):
             runner.run_trial(root, frozen, spec, trial)
     else:
         runner.run_trial(root, frozen, spec, trial)
@@ -349,3 +398,99 @@ def test_trial_observation_envelope_and_terminal_failure(experiment, fake_bounda
     assert len(seen) == 1 and not seen[0]["cwd"].exists()
     terminal = ev.load(root / "trials" / trial["id"] / "terminal.json")
     assert terminal["status"] == ("invalid" if failure else "completed")
+    launch = ev.load(root / "trials" / trial["id"] / "launch.json")
+    assert launch["cleanup_evidence"] is None
+    assert terminal["interrupted"] == (failure in {"interrupt", "system_exit"})
+
+
+@pytest.mark.parametrize("returncode,transcript,cleanup", [
+    (-2, "", {"reason": "interrupt", "cleanup_scope": "process_group",
+              "signals_sent": ["SIGTERM"], "result": "terminated",
+              "final_returncode": -2, "process_alive_after_cleanup": False}),
+    (-2, '{"type":"turn.started"}', {"reason": "interrupt", "cleanup_scope": "process_group",
+                                      "signals_sent": ["SIGTERM", "SIGKILL"],
+                                      "result": "cleanup_failed", "final_returncode": None,
+                                      "process_alive_after_cleanup": True}),
+    (0, COMPLETE, {"reason": "interrupt", "cleanup_scope": "process_group",
+                   "signals_sent": [], "result": "already_exited",
+                   "final_returncode": 0, "process_alive_after_cleanup": False}),
+    (0, COMPLETE, None),
+])
+def test_returned_interrupt_retains_bound_evidence(
+        experiment, fake_boundary, returncode, transcript, cleanup):
+    root, frozen, spec = experiment
+    trial = frozen["schedule"][0]
+    directory = root / "trials" / trial["id"]
+    bound = ev.binding(frozen, spec, trial)
+    ev.write_new(directory / "started.json", bound)
+    fake_boundary.setattr(runner, "probe_sandbox", lambda *a: None)
+    stages = []
+    def subject(argv, **kwargs):
+        stages.append(kwargs["cwd"])
+        for path in kwargs["cwd"].rglob("*"):
+            if path.is_file():
+                path.read_bytes()
+        return launcher.LaunchResult(
+            command=argv, returncode=returncode, output=transcript,
+            interrupted=True, timed_out=False, stalled=False, cleanup_evidence=cleanup)
+    fake_boundary.setattr(launcher, "launch", subject)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run_trial(root, frozen, spec, trial)
+    terminal = ev.load(directory / "terminal.json")
+    launch = ev.load(directory / "launch.json")
+    access = ev.load(directory / "access.json")
+    assert terminal["binding"] == bound
+    assert terminal["status"] == "invalid" and terminal["reason"] == "KeyboardInterrupt"
+    assert terminal["interrupted"] is True and terminal["output"] == ""
+    assert launch["binding"] == access["binding"] == {
+        **bound, "output_digest": ev.digest(b"")}
+    assert launch["interrupted"] is True and launch["cleanup_evidence"] == cleanup
+    assert launch["returncode"] == returncode and launch["stream_valid"] is False
+    assert launch["usage"] is None
+    assert terminal["launch_digest"] == ev.digest(launch)
+    assert terminal["access_digest"] == ev.digest(access)
+    assert (directory / "transcript.txt").read_text() == transcript
+    assert launch["transcript_digest"] == ev.digest(transcript.encode())
+    assert not ev.evidence(root, frozen, spec, trial)["valid"]
+    assert len(stages) == 1 and not stages[0].exists()
+
+
+def test_run_stops_before_next_claim_on_returned_interrupt(experiment, fake_boundary):
+    root, frozen, spec = experiment
+    assert len(frozen["schedule"]) >= 2
+    fake_boundary.setattr(runner, "probe_sandbox", lambda *a: None)
+    calls = []
+    def subject(argv, **kwargs):
+        calls.append(kwargs["cwd"])
+        return launcher.LaunchResult(
+            command=argv, returncode=-2, output="", interrupted=True,
+            cleanup_evidence={"reason": "interrupt", "cleanup_scope": "process_group",
+                              "signals_sent": ["SIGTERM"], "result": "terminated",
+                              "final_returncode": -2, "process_alive_after_cleanup": False})
+    fake_boundary.setattr(launcher, "launch", subject)
+    cancelled = False
+    try:
+        ev.run(root)
+    except KeyboardInterrupt:
+        cancelled = True
+    assert len(calls) == 1
+    assert cancelled
+    first = root / "trials" / frozen["schedule"][0]["id"]
+    retained = {name: (first / name).read_bytes() for name in (
+        "started.json", "terminal.json", "launch.json", "access.json", "transcript.txt")}
+    terminal = ev.load(first / "terminal.json")
+    assert terminal["status"] == "invalid" and terminal["interrupted"] is True
+    assert not ev.evidence(root, frozen, spec, frozen["schedule"][0])["valid"]
+    for trial in frozen["schedule"][1:]:
+        directory = root / "trials" / trial["id"]
+        assert not (directory / "started.json").exists()
+        assert not (directory / "terminal.json").exists()
+    # A later explicit run skips the cancelled claim and can claim only untouched work.
+    with pytest.raises(KeyboardInterrupt):
+        ev.run(root)
+    assert len(calls) == 2
+    assert all((first / name).read_bytes() == raw for name, raw in retained.items())
+    second = root / "trials" / frozen["schedule"][1]["id"]
+    assert (second / "started.json").is_file()
+    assert ev.load(second / "terminal.json")["interrupted"] is True
+    assert not (root / "trials" / frozen["schedule"][2]["id"] / "started.json").exists()
