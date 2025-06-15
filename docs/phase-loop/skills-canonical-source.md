@@ -107,3 +107,9 @@ rejected because the harness cannot be inferred from it. Without `--apply` the c
 is read-only, and `--destination` defaults to `vendor/phase-loop-skills`, so name
 `phase-loop-skills` explicitly when regenerating this repository's bundle. The two
 scripts above are the supported regenerate path.
+
+## Clean-room verification inputs
+
+Gate A includes the agy conversion and verification scripts and qualification
+records in its sparse test checkout. These are test inputs; runtime imports still
+resolve to the installed wheel. Missing evidence is a failure, not a skipped check.
