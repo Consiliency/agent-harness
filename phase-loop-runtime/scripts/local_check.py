@@ -44,7 +44,7 @@ FULL_TRIGGERS = (f"{PKG}/tests/conftest.py", f"{PKG}/pyproject.toml", f"{PKG}/te
 # the clean env (agent-harness#1057), so they run CI's way here too (`copied_tree_cmd`).
 SUITE_IGNORES = ("tests/test_legible_roadmap_contract.py", "tests/test_legible_evidence.py")
 # The hosted lane's suite-environment install (test.yml), so local runs resolve what CI does.
-CI_TEST_DEPS = ("./phase-loop-runtime[visual]", "pytest", "pytest-xdist==3.8.0", "build==1.6.1", "setuptools>=70.1")
+CI_TEST_DEPS = ("./phase-loop-runtime[visual,claude-sdk]", "pytest", "pytest-xdist==3.8.0", "build==1.6.1", "setuptools>=70.1")
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 VENV_DIR = ".local-check-venv"
 VENV_PYTHON = "3.10"  # the CI floor lane pull requests run

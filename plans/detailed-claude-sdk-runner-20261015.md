@@ -5,7 +5,7 @@ owner_skill: codex-plan-detailed
 related_issues: [agent-harness#1391]
 automation:
   suite_command: >-
-    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_adapter_skill_references.py tests/test_seat_reference_inventory.py
+    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_adapter_skill_references.py tests/test_seat_reference_inventory.py tests/test_seat_launch_helpers_trusted.py tests/test_ci_xdist_adoption.py tests/test_local_check.py
   verification_status: not_run
 ---
 
@@ -59,7 +59,9 @@ Regenerate `uv.lock` with `uv lock`; verify locked synchronization with the extr
   Channel selection, CI explicit-route refusal, invalid-route refusal and legacy
   branches. Reject SDK `request.action == "review"` or requested mode in
   `{"subagent", "agent_team"}` before degradation, bundles, credential probes or subprocesses.
-- Build a helper command using `sys.executable -m phase_loop_runtime.claude_sdk_adapter`.
+- Build the helper command with
+  `seat_uid.trusted_module_argv("phase_loop_runtime.claude_sdk_adapter", ...)`,
+  using the parent's imported installation and the existing isolated bootstrap.
   Carry model, effort, cwd, tool lists, approval posture, bundle placeholders and
   output schema explicitly. The helper accepts only this adapter's defined flags,
   not arbitrary CLI overrides. On live launch resolve `claude` through the child
@@ -216,6 +218,23 @@ existing probe and I/O references under the static audit's existing roles. This
 records the implementation without an audit exception or a regenerated golden
 masking unrelated behavior. Integration verification also includes the upstream
 adapter-reference tests and `tests/test_seat_reference_inventory.py`.
+
+### CI dependency and helper-launch verification
+
+Include repository-root `.github/workflows/test.yml` and
+`ci/dagger/src/agent_harness_ci/main.py` so hosted and offloaded suite installs
+include the optional SDK extra. Keep the ordinary package dependency optional and
+the clean-room core-only path intact. Update the existing install-line consumers
+in `tests/test_ci_xdist_adoption.py`, `scripts/local_check.py` and
+`tests/test_local_check.py`, retaining their worker, restart and tool pins.
+SDK-dependent production refusal tests require the optional dependency and
+sandbox; dependency-absence and offline dry-run tests remain executable without
+the extra. Both helper entrypoints use the existing trusted-module launcher.
+Verify the existing trusted-helper suite and the new production provenance
+regression as part of the same targeted run, including the local CI mirror tests.
+Validate that the runtime's frontmatter parser and suite resolver read the complete
+prescribed command. These repairs preserve the declared admission and acceptance
+requirements.
 
 ## Documentation impact
 

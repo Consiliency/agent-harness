@@ -1507,10 +1507,12 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             closeout_schema=closeout_schema,
         )
     if route_selection.route == "claude_sdk":
+        from .seat_uid import trusted_module_argv
+
         # Reuse the CLI policy oracle; the helper accepts only these fixed flags.
         prompt = command[-1]
-        command = [sys.executable, "-m", "phase_loop_runtime.claude_sdk_adapter",
-                   "--cwd", str(request.repo), *command[5:-1]]
+        command = trusted_module_argv("phase_loop_runtime.claude_sdk_adapter",
+                                      "--cwd", str(request.repo), *command[5:-1])
         # command[5:] starts after --output-format stream-json; --verbose is omitted.
         if delivery_mode == "context_file":
             command += ["--context-prompt", prompt]

@@ -354,7 +354,10 @@ def bound_command(command: list[str], repo: Path, env: Mapping[str, str]):
 
 
 def auth_preflight(repo: Path, env: Mapping[str, str]) -> bool:
-    with bound_command([sys.executable, "-m", __name__, "--auth-only", "--cwd", str(repo)], repo, env) as (command, child_env):
+    from .seat_uid import trusted_module_argv
+
+    with bound_command(trusted_module_argv("phase_loop_runtime.claude_sdk_adapter",
+                                          "--auth-only", "--cwd", str(repo)), repo, env) as (command, child_env):
         result = subprocess.run(command, env=child_scratch_env(child_env, CHILD_SCRATCH_RELOCATE),
                                 cwd=repo, capture_output=True, timeout=45, check=False)
         return result.returncode == 0

@@ -181,6 +181,23 @@ def test_dry_run_offline_and_no_prompt_in_helper_argv(context):
     assert not record.exists()
 
 
+def test_helper_uses_the_trusted_installation_from_any_cwd(context, monkeypatch):
+    binding_available()
+    repo, _, record = context
+    marker = repo / "cwd-package-ran"
+    package = repo / "phase_loop_runtime"
+    package.mkdir()
+    (package / "__init__.py").write_text(f"from pathlib import Path; Path({str(marker)!r}).touch()\n")
+    (package / "claude_sdk_adapter.py").write_text("raise SystemExit(7)\n")
+    monkeypatch.setenv("PYTHONPATH", str(repo))
+    spec = build_launch_spec(request(repo))
+    assert run_auth_preflight(spec).ok
+    result = launch_with_spec(spec)
+    assert not result.failed, result.claude_route_result or result.output
+    assert not marker.exists()
+    assert any(json.loads(line)["mode"] == "inference" for line in record.read_text().splitlines())
+
+
 @pytest.mark.parametrize("kind", ["team", "enterprise", "", None, {}, []])
 def test_offline_context_class_before_any_probe(context, kind):
     repo, config, record = context
@@ -378,6 +395,7 @@ def test_project_allow_rules_require_bound_trust(context, name):
 
 
 def test_project_permission_modes_are_not_elevated(context):
+    binding_available()
     repo, _, record = context
     settings = repo / ".claude/settings.json"
     settings.parent.mkdir()
@@ -432,6 +450,7 @@ def test_home_symlinks_preserve_bound_targets(context):
 
 @pytest.mark.parametrize("layout", ["import", "nested_rule", "scoped_rule", "symlink", "encoding"])
 def test_instruction_layouts_fail_before_probes(context, layout):
+    binding_available()
     repo, _, record = context
     instruction = repo / "CLAUDE.md"
     if layout == "import":
@@ -498,6 +517,7 @@ def test_unconditional_rule_frontmatter_is_removed(context):
 @pytest.mark.parametrize("name", ["AGENTS.md", "src/AGENTS.md", "src/CLAUDE.md", "src/CLAUDE.local.md",
                                   "src/.claude/CLAUDE.md", "src/.claude/rules/a.md", "src/.claude/rules/deeper/a.md"])
 def test_dynamic_instruction_sources_refuse_before_probes(context, name):
+    binding_available()
     repo, _, record = context
     path = repo / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -509,6 +529,7 @@ def test_dynamic_instruction_sources_refuse_before_probes(context, name):
 
 @pytest.mark.parametrize("name", ["AGENTS.md", ".claude/AGENTS.md"])
 def test_ancestor_agents_refuse_before_probes(context, name):
+    binding_available()
     repo, _, record = context
     path = repo.parent / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,6 +552,7 @@ def test_config_agents_outside_project_ancestry_does_not_refuse(context):
 
 
 def test_config_agents_refuses_when_home_is_project_ancestor(context):
+    binding_available()
     _, config, record = context
     repo = config.parent / "project"
     repo.mkdir()

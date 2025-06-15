@@ -134,7 +134,7 @@ class AgentHarnessCi:
             .with_exec(
                 [
                     "python", "-m", "pip", "install", "--quiet",
-                    "./phase-loop-runtime[visual]", "pytest", "pytest-xdist==3.8.0",
+                    "./phase-loop-runtime[visual,claude-sdk]", "pytest", "pytest-xdist==3.8.0",
                     "build==1.6.1", "setuptools>=70.1",
                 ]
             )
