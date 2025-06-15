@@ -1249,17 +1249,33 @@ def _is_secret_path(path: str) -> bool:
 
 
 def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict | None:
-    """Classify existing Python modules, never merely a Python-looking filename."""
+    """Classify frozen implementation blobs before the source-only exception."""
     candidate = Path(path)
-    if candidate.suffix != ".py" or any(
+    typescript = (
+        candidate.suffix == ".ts" and candidate.parts[0] in {"src", "test", "tests"}
+        and not candidate.name.lower().endswith(".d.ts")
+    )
+    if (candidate.suffix != ".py" and not typescript) or any(
         part.lower().startswith(".env") or ".key" in part.lower()
         or part.lower().endswith((".pem", ".p12", ".pfx"))
         for part in candidate.parts
     ):
         return None
+    if typescript:
+        if version("tree-sitter") != "0.25.2" or version("tree-sitter-typescript") != "0.23.2":
+            raise ValueError("unsupported publication parser version")
+        from tree_sitter import Language, Parser
+        import tree_sitter_typescript
+
     blobs = []
     for ref in (parent, tree):
         entry = _git_bytes(repo, "--literal-pathspecs", "ls-tree", "-z", ref, "--", path)
+        if typescript and ref == parent and entry == b"":
+            changed = _git_bytes(repo, "diff", "--name-only", "--no-renames", "-z", parent, tree)
+            if changed is None or os.fsencode(path) not in changed.split(b"\0"):
+                return None
+            blobs.append((None, None))
+            continue
         if not entry or len(entry.split(b"\0")) != 2:
             return None
         metadata, _, returned_path = entry.partition(b"\t")
@@ -1278,11 +1294,30 @@ def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
-                module = ast.parse(blob, filename="<publication-source>")
-                compile(module, "<publication-source>", "exec", dont_inherit=True)
-        except (SyntaxError, ValueError, Warning):
+                if typescript:
+                    text = blob.decode("utf-8")
+                    if "\0" in text:
+                        return None
+                    parsed = Parser(Language(tree_sitter_typescript.language_typescript())).parse(blob)
+                    if parsed is None or parsed.root_node.has_error:
+                        return None
+                    declarations = [
+                        node.child_by_field_name("declaration") if node.type == "export_statement" else node
+                        for node in parsed.root_node.named_children
+                    ]
+                    if not any(
+                        node is not None
+                        and node.type in {"function_declaration", "generator_function_declaration", "class_declaration"}
+                        and node.child_by_field_name("body") is not None
+                        for node in declarations
+                    ):
+                        return None
+                else:
+                    module = ast.parse(blob, filename="<publication-source>")
+                    compile(module, "<publication-source>", "exec", dont_inherit=True)
+        except (SyntaxError, ValueError, UnicodeError, Warning):
             return None
-        if not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for node in module.body):
+        if not typescript and not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for node in module.body):
             return None
         blobs.append((oid, blob))
     # Instantiate only the pinned built-in detectors: no repo config, allowlist,
@@ -1299,12 +1334,19 @@ def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict
     import io
     import tokenize
 
-    encoding, _ = tokenize.detect_encoding(io.BytesIO(blob).readline)
+    if typescript:
+        encoding = "utf-8"
+    else:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(blob).readline)
     for number, line in enumerate(blob.decode(encoding).splitlines(), 1):
         if any(plugin.analyze_line(filename=path, line=line, line_number=number) for plugin in plugins):
             return None
-    return {"path": path, "parent_blob_oid": blobs[0][0], "blob_oid": oid,
-            "blob_sha256": _sha256(blob), "policy": "tracked-python-detect-secrets-1.5.0-v1"}
+    record = {"path": path, "parent_blob_oid": blobs[0][0], "blob_oid": oid,
+              "blob_sha256": _sha256(blob), "policy": "tracked-python-detect-secrets-1.5.0-v1"}
+    if typescript:
+        record.update(tree_sitter_version="0.25.2", tree_sitter_typescript_version="0.23.2",
+                      policy="typescript-detect-secrets-1.5.0-v1")
+    return record
 
 
 def _blocked(reason: str, detail: str = "") -> dict[str, Any]:

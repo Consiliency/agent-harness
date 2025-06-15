@@ -106,23 +106,42 @@ of agent-harness#841's dependency repair.
 Normal FABPUB publication can distinguish an existing Python implementation such
 as `credentials.py` from a credential artifact (Consiliency/agent-harness#893).
 The path must be owned, regular Python source in both the frozen parent and staged
-tree, parse and compile without warnings, and contain a top-level function or class. New files,
-data-only files, symlinks, `.env*` and `.key` names do not receive this exception.
-Other source languages remain subject to the existing filename guard.
+tree, parse and compile without warnings, and contain a top-level function or class.
+New Python files still do not receive this exception.
+
+Regular `.ts` files whose first path component is `src`, `test` or `tests` may
+qualify through a separate frozen source check. Both revisions of an existing
+file must be strict UTF-8 without NUL and parse without warnings, error or missing
+nodes (`has_error` must be false). A new file requires proven parent absence and
+membership in the frozen changed-path set. Each present revision must contain a named
+function, generator-function or class declaration with a body, optionally wrapped
+in one top-level export; imports, interfaces and type aliases may coexist.
+Other forms alone do not qualify. Declaration files (`.d.ts`), other roots,
+TSX/JavaScript and other languages, data-only files, nonregular entries, deletions,
+and `.env*`, `.key`, `.pem`, `.p12` and `.pfx` path components stay refused.
 
 The complete staged blob is scanned with pinned `detect-secrets` 1.5.0 built-in
 detectors. Repository configuration, inline suppressions, filter exemptions and
 online verification are not consulted. Findings and scanner failures block the
 exception without printing matched data. Parsing/compilation warnings reject the
 candidate rather than rendering source lines. No candidate code is executed.
-This heuristic scan is not proof that
-arbitrary or obfuscated secrets are absent; source review is still required.
+This heuristic scan is not proof that secrets are absent; source review remains
+required. For example, the quote-required TypeScript keyword rules can miss typed
+assignments or a keyword split from its literal across lines unless another
+detector fires. Encoded, obfuscated or separator-split values can also evade
+detection. New heuristic-named TypeScript files expose those detector limitations
+on the same basis as the existing Python exception; ordinary filenames already
+publish without this scan.
 
 Metadata-only evidence (parent/tree and blob identifiers, content hash and policy
 version) is retained in the local publication checkpoint and checked again on
 recovery against the frozen Git objects. The existing FABPUB tree binding and
 transaction identity are unchanged. Legacy and prebuilt publication do not gain
 the source exception; there is no caller-controlled path allowlist.
+
+The TypeScript parser pins are `tree-sitter==0.25.2` and
+`tree-sitter-typescript==0.23.2`. Its flat JSON evidence records both versions and
+a null parent blob only for a proven addition. Python evidence is unchanged.
 
 Fresh FABPUB publication refuses unstaged or untracked workspace changes with
 `publication_workspace_invalid` before creating a transaction or advancing the
