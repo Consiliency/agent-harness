@@ -507,6 +507,39 @@ def test_dynamic_instruction_sources_refuse_before_probes(context, name):
     assert result.failed and not record.exists()
 
 
+@pytest.mark.parametrize("name", ["AGENTS.md", ".claude/AGENTS.md"])
+def test_ancestor_agents_refuse_before_probes(context, name):
+    repo, _, record = context
+    path = repo.parent / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Ancestor project instruction\n")
+    result = launch_with_spec(build_launch_spec(request(repo)))
+    assert result.claude_route_result["event_id"] == "sdk_instruction_layout_unsupported"
+    assert result.failed and not record.exists()
+
+
+def test_config_agents_outside_project_ancestry_does_not_refuse(context):
+    binding_available()
+    repo, config, record = context
+    (config / "AGENTS.md").write_text("Unrelated config file\n")
+    text = "---\nsecurity@example.com\n```python\n@decorator\n```\n"
+    (repo / "CLAUDE.md").write_text(text)
+    assert sdk._instructions(config, repo) == text
+    result = launch_with_spec(build_launch_spec(request(repo)))
+    assert not result.failed, result.claude_route_result or result.output
+    assert any(json.loads(line)["mode"] == "inference" for line in record.read_text().splitlines())
+
+
+def test_config_agents_refuses_when_home_is_project_ancestor(context):
+    _, config, record = context
+    repo = config.parent / "project"
+    repo.mkdir()
+    (config / "AGENTS.md").write_text("Ancestor project instruction\n")
+    result = launch_with_spec(build_launch_spec(request(repo)))
+    assert result.claude_route_result["event_id"] == "sdk_instruction_layout_unsupported"
+    assert result.failed and not record.exists()
+
+
 def test_managed_memory_control_conflict_refuses(context):
     _, config, _ = context
     managed = config.parent / "managed-fixture"

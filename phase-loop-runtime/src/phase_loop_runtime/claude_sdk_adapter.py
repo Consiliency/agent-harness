@@ -222,9 +222,12 @@ def _instructions(config: Path, repo: Path) -> str:
                     or (directory.name == "rules" and directory.parent.name == ".claude"
                         and directory.parent.parent != repo))):
                 raise SDKRefused("sdk_instruction_layout_unsupported")
+        for directory in (repo, *repo.parents):
+            for name in ("AGENTS.md", ".claude/AGENTS.md"):
+                path = directory / name
+                if path.exists() or path.is_symlink():
+                    raise SDKRefused("sdk_instruction_layout_unsupported")
         for directory in (config, *reversed((repo, *repo.parents))):
-            if (directory / "AGENTS.md").exists() or (directory / "AGENTS.md").is_symlink():
-                raise SDKRefused("sdk_instruction_layout_unsupported")
             for name in ("CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"):
                 collect(directory / name, directory)
             rules = directory / ("rules" if directory == config else ".claude/rules")
