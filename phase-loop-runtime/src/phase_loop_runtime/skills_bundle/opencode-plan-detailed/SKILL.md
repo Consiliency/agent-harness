@@ -61,6 +61,8 @@ Do not run the verification commands while planning unless the user explicitly a
 # Detailed plan: <one-line task summary>
 
 ## Task
+**Outcome served:** <outcome line, or "standalone: what the user can do after">
+
 <task statement>
 
 ## Research summary

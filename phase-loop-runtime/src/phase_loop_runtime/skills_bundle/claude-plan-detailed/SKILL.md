@@ -209,6 +209,8 @@ Emit this structure verbatim.
 # Detailed plan: <one-line task summary>
 
 ## Task
+**Outcome served:** <outcome line, or "standalone: what the user can do after">
+
 <task statement — from args or conversation synthesis>
 
 ## Research summary
