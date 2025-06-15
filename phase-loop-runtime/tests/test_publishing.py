@@ -1182,7 +1182,6 @@ def test_invalid_origin_does_not_poison_publication_epoch(
 
 @pytest.mark.parametrize("drift", ["private_evidence", "untracked_source", "unstaged_source"])
 def test_fresh_publish_refuses_workspace_drift_before_commit(tmp_path, monkeypatch, drift):
-    from phase_loop_runtime import publishing
     from phase_loop_runtime.convergence.broker import live
 
     monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
