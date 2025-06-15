@@ -13597,6 +13597,88 @@
       "review_evidence_ref": "plans/evidence/codex-apparmor-canary/review.json",
       "review_status": "approved_by_owner_unanimity",
       "president_requirement_waived_by_owner": true
+    },
+    {
+      "acceptance_criteria_count": 6,
+      "created_at": "2026-10-16T06:19:46.104977+00:00",
+      "file": "plans/detailed-skill-eval-20261015-0614.md",
+      "git_state": "uncommitted",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "implementation_base": "036a90b2f6756f7a1e715f6d1d55d470509a495d",
+      "input_base_commit": "b9892d298aa23297e3f37eea5e2b4995c67ec60e",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-16T06:19:46Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "git_state": "uncommitted",
+            "plan_hash": "dec674e831b818e91a0003ee52172228a341566c38bf2b497967f6027341f989",
+            "run_id": "20261016-skill-eval-sol",
+            "setup_warning": "initial system Python lacked pydantic; used locked project venv"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-16T07:35:18Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_verdicts": {
+              "1": "satisfied",
+              "2": "satisfied",
+              "3": "satisfied",
+              "4": "satisfied",
+              "5": "unmet",
+              "6": "satisfied"
+            },
+            "dirty_path_classification": {
+              "CHANGELOG.md": "plan_owned",
+              "docs/phase-loop/skill-eval.md": "plan_owned",
+              "phase-loop-runtime/README.md": "plan_owned",
+              "phase-loop-runtime/pyproject.toml": "plan_owned",
+              "phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py": "plan_owned",
+              "phase-loop-runtime/src/phase_loop_runtime/skill_eval.py": "plan_owned",
+              "phase-loop-runtime/src/phase_loop_runtime/skill_eval_access.py": "plan_owned",
+              "phase-loop-runtime/src/phase_loop_runtime/skill_eval_runner.py": "plan_owned",
+              "phase-loop-runtime/tests/data/seat_launch_references.json": "plan_owned",
+              "phase-loop-runtime/tests/fixtures/skill_eval/pilot.json": "plan_owned",
+              "phase-loop-runtime/tests/test_agy_canary_evidence.py": "plan_owned",
+              "phase-loop-runtime/tests/test_skill_eval.py": "plan_owned",
+              "phase-loop-runtime/tests/test_skill_eval_runner.py": "plan_owned",
+              "plans/detailed-skill-eval-20261015-0614.md": "plan_owned",
+              "plans/manifest.json": "plan_owned",
+              "plans/reviews/skill-eval-20261015.md": "plan_owned"
+            },
+            "doc_delta_decision": "docs_updated",
+            "editor_gating": "pending",
+            "final_diagnostic": "verification failed",
+            "handoff_ref": ".dev-skills/handoffs/codex-execute-detailed/20261016-skill-eval-sol/closeout.md",
+            "live_pilot_qualification": "pending",
+            "plan_hash": "dec674e831b818e91a0003ee52172228a341566c38bf2b497967f6027341f989",
+            "publication_status": "not_attempted_verification_failed",
+            "reflection_metadata": {
+              "path": "codex-execute-detailed/reflections/9b645ccae438/exec-skill-eval-sol-20261016/20261016-skill-eval-sol-resume.md",
+              "sha256": "039d55269c7bf900ca453356387361b2620ccc099aa663abe984e3b9f849e154"
+            },
+            "run_id": "20261016-skill-eval-sol-resume",
+            "verification_artifact_path": ".dev-skills/handoffs/codex-execute-detailed/20261016-skill-eval-sol/broad-final/verification.json",
+            "verification_artifact_sha256": "0e233731f51408496057e833846f07084cd924586c88d3783607fe71a80fc382",
+            "verification_status": "failed",
+            "verification_summary": "make check exit 2; make check-full exit 2: 54 failed, 13517 passed, 648 skipped, 1 xfailed, 320 errors; copied-tree 85 passed"
+          },
+          "transition": "failed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-skill-eval-20261015-0614",
+      "status": "failed",
+      "task_summary": "Bounded blinded diagnostic skill evaluation",
+      "type": "detailed",
+      "updated_at": "2026-10-16T07:35:18Z"
     }
   ],
   "schema_version": 1

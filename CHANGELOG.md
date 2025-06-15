@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Diagnostic planning skill evaluation (agent-harness#1321)
+
+- Add the opt-in `phase-loop-skill-eval` command for frozen, independent planning
+  comparisons, owned Linux execution with access evidence, blinded human packets,
+  one-shot scorer calibration, and exact Boolean pair reduction. Live pilot
+  qualification and editor gating remain pending; no skill is automatically adopted.
+
 ### Gemini: a local model preference, `PHASE_LOOP_GEMINI_MODEL` (agent-harness#1604, ported from agent-harness#1615)
 
 - `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for the unpinned Gemini executor actions, model classes and composed/default board seats. Explicit task models, plan/roadmap model pins and configured board seats win; effort, other providers, subscription auth and sandbox admission are unchanged. Unset, the shipped defaults hold. An invalid value fails without fallback.
