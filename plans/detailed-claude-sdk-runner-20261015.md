@@ -5,7 +5,7 @@ owner_skill: codex-plan-detailed
 related_issues: [agent-harness#1391]
 automation:
   suite_command: >-
-    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_adapter_skill_references.py tests/test_seat_reference_inventory.py tests/test_seat_launch_helpers_trusted.py tests/test_ci_xdist_adoption.py tests/test_local_check.py
+    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_adapter_skill_references.py tests/test_seat_reference_inventory.py tests/test_seat_launch_helpers_trusted.py tests/test_ci_xdist_adoption.py tests/test_local_check.py tests/test_python_floor_1546.py tests/test_ci_chronology_scope.py tests/test_seat_jail_prerequisites_1357.py
   verification_status: not_run
 ---
 
@@ -32,8 +32,9 @@ panel transports.
 
 Pin the optional dependency to the inspected release
 `claude-agent-sdk==0.2.167`, upstream commit
-`c10b52c674e5c709c7263544b38e8a5dad10e01d`; its Python floor matches the runtime's
-3.10 floor. Dependency installation must still prove compatibility.
+`c10b52c674e5c709c7263544b38e8a5dad10e01d`; its Python floor matched the runtime's
+3.10 floor at planning time. Upstream agent-harness#1546 now requires Python 3.12;
+dependency installation and verification must prove compatibility with that floor.
 
 The [pinned subprocess transport](https://github.com/anthropics/claude-agent-sdk-python/blob/c10b52c674e5c709c7263544b38e8a5dad10e01d/src/claude_agent_sdk/_internal/transport/subprocess_cli.py)
 merges inherited environment with SDK options and launches its own version probe.
@@ -236,6 +237,14 @@ Validate that the runtime's frontmatter parser and suite resolver read the compl
 prescribed command. These repairs preserve the declared admission and acceptance
 requirements.
 
+### Current upstream Python floor
+
+Integrate agent-harness#1549 without changing its Python 3.12 minimum, single-lane
+CI, chronology selection or dependency posture. Keep the SDK optional and pinned;
+regenerate its lock entries on the upstream lockfile and verify installation,
+targeted tests and wheel behavior on Python 3.12. Include the upstream Python-floor,
+chronology-scope and jail-prerequisite consumer tests in the targeted suite.
+
 ## Documentation impact
 
 Ratification appends the amendment pointer to v11's cited ruling, preserving
@@ -265,11 +274,11 @@ task**. Use an interpreter with the runtime/test dependencies and SDK extra.
 2. From `phase-loop-runtime`, run
    `PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration'`.
 3. From that directory run `python -m build`. Install the built wheel in a clean
-   Python 3.10+ venv with its `claude-sdk` extra; run
+   Python 3.12+ venv with its `claude-sdk` extra; run
    `python -m phase_loop_runtime.claude_sdk_adapter --help` from outside the checkout
    with `PYTHONPATH` unset, and repeat the synthetic helper-process tests against
    that installation. A second install without the extra must still import the
-   launcher and refuse SDK cleanly. Check Python 3.10 dependency resolution.
+   launcher and refuse SDK cleanly. Check Python 3.12 dependency resolution.
 4. Add an opt-in `tests/test_claude_sdk_runner.py::test_live_subscription_qualification`
    gated by `PHASE_LOOP_SDK_LIVE_PROOF=1`. Invoke it with
    `PHASE_LOOP_SDK_LIVE_PROOF=1 PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q tests/test_claude_sdk_runner.py::test_live_subscription_qualification`.

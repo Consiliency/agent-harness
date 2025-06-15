@@ -4,7 +4,7 @@
 # The node (CHRONOLOGY_NODE below) is a ~50-60 minute proof that the frozen
 # CONFORM mutation definitions are unchanged and were never executed
 # pre-implementation. Measured on the offloaded suite (run 33709063249) it is
-# ~88% of the per-PR wall clock, and it runs twice per run (py3.10 lane + Gate A).
+# ~88% of the per-PR wall clock, and it runs twice per run (py3.12 lane + Gate A).
 # It proves a property of frozen HISTORY, not of the diff under review, so a
 # pull request DEFERS it: the landing push to main executes it on the exact
 # merged tree, and the nightly bounds how long a regression can stay invisible.
