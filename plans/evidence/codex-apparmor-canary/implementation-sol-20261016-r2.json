@@ -142,7 +142,7 @@
     }
   },
   "acceptance_status": "unmet_live_authorization_pending",
-  "implementation_review": "parent_owned_pending",
+  "implementation_review": "parent_reproductions_passed; independent_implementation_review_pending",
   "lifecycle_warnings": [
     "executing: invalid lifecycle transition: failed -> executing; prior terminal history preserved",
     "closeout: invalid lifecycle transition for codex-apparmor-canary-20261016-0227: failed -> failed"
@@ -168,5 +168,17 @@
     "non_plan_output": []
   },
   "no_root_helper_or_policy_operations": true,
-  "no_merge": true
+  "no_merge": true,
+  "parent_review": {
+    "reviewed_head": "df3675fe924f3d9787c73ddd7102cd8e1863f813",
+    "scope": "Parent read of revision diff and independent rerun of both original falsifiers; no independent cross-vendor or live-kernel approval claimed.",
+    "findings": {
+      "IMPL-001": "Resolved: actual non-root sealed fixture emitted READY, returned125 on permanent EOF with empty stderr; no GO or primary operation.",
+      "IMPL-002": "Resolved: original fake-clock expiry now raises Inconclusive before any parser launch."
+    },
+    "evidence_integrity": "Current helper and rendered-helper hashes match committed metadata; runner artifact SHA-256 matches revision evidence.",
+    "publication_input_repair": "Original narrow-scope transaction returned no_effect_terminal_proven. The corrected prebuilt retry rejected the adapter-created commit trailer. This real review-metadata update is submitted as a fresh normal transaction covering the entire owned branch diff; no frozen transaction or authority record is edited.",
+    "root_policy_operations": false,
+    "live_acceptance": "C1-C4 remain unmet"
+  }
 }
