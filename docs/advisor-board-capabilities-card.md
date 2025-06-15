@@ -125,7 +125,7 @@ on any host other than Claude Code through the subscription TUI adapter. No cell
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
-| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
+| host ↓ / seat vendor → | Anthropic (`claude-fable-5-1` / Opus) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
 | `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
@@ -147,8 +147,8 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-opus-5-5 · max · claude · correctness ; grok-4.7 · max · grok · adversarial |
-| `code-review`           | code-review           | grok-4.7 · max · grok · adversarial ; claude-opus-5-5 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
+| `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-fable-5-1 · max · claude · correctness ; grok-4.7 · max · grok · adversarial |
+| `code-review`           | code-review           | grok-4.7 · max · grok · adversarial ; claude-fable-5-1 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
 | `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-6-astra · high · codex · supportive ; gemini-3.8-flash · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-6-astra · medium · codex · structure |
 | `legal-review`          | legal-review          | gpt-6-astra · max · codex · opposing-counsel ; gemini-3.8-flash · high · gemini · risk-liability ; claude-opus-5-5 · max · claude · authority-verification |
@@ -169,14 +169,13 @@ the sum). `max_concurrency` is the knob: `None` (default) = parallel; `1` =
 sequential (the opt-in escape hatch for debugging / rate-limits / a constrained
 host); `N` = cap at N. Result order is always preserved regardless of finish order.
 
-**Review-class boards run on Opus 5.5, never the implementer.** Pre-merge and legal
-review are mid-tier decisions where being wrong is expensive, so the review-class
-boards (`default`, `code-review`, `legal-review`, `legal-strategy-review`) seat
-Opus 5.5 (`claude-opus-5-5`) on the claude lane — the maintainer's default for now
-(2026-09-23), replacing every former Fable default; Fable (`claude-fable-5-1`) remains
-an explicit, selectable id — decoupled from the implementer model `claude-sonnet-5`
-(`panel_invoker.DEFAULT_LEG_MODELS["claude"]` is the single source of truth, so the live
-governed gates `governed_review` / `governed_premerge` also review on Opus 5.5). The divergent-thinking boards (`brainstorm`, `doc-edit`,
+**Default review panels use Fable.** The `default` and `code-review` boards seat
+`claude-fable-5-1` at max effort. The `legal-review`, `legal-strategy-review`,
+`general` and `solo` presets retain Opus 5.5 (`claude-opus-5-5`). These choices are
+separate from the implementer model `claude-sonnet-5` and the executor tier matrix.
+`panel_invoker.DEFAULT_LEG_MODELS["claude"]` supplies the default to the live
+governed gates `governed_review` / `governed_premerge`, which also review on Fable.
+The divergent-thinking boards (`brainstorm`, `doc-edit`,
 `legal-brainstorm`) deliberately keep Sonnet, where a diverse / cheap voice is the
 right tool. The legal boards encode the PRIMARY review lens per seat; the richer
 4-lens-per-seat + apex-Opus seat + verify-round + retrieval-grounded
@@ -187,7 +186,9 @@ citation-verification treatment is a documented deep-seat follow-on
 The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
 separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
-The president availability ladder is Fable (the Anthropic seat — Opus 5.5 by default) → Sol → Grok 4.7 → Gemini 3.8 Flash
+The president availability ladder is Fable (the Anthropic seat alias, resolving
+the board's actual model: Fable on `default` / `code-review`, Opus 5.5 on the retained
+Opus presets) → Sol → Grok 4.7 → Gemini 3.8 Flash
 (`Sol` is the GPT seat alias: `gpt-6-astra` by default, `gpt-5.6-sol` accepted as an explicit legacy id).
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 `requires_president` landing policies execute it (`invoke_board(president_invoke=)`)

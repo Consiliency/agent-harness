@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fable restored as the default review panel model
+
+- Restore `claude-fable-5-1` at maximum effort for the default and code-review
+  boards and the default Claude panel leg, following the operator's cap-reset
+  instruction. This supersedes the panel-default portion of agent-harness#991.
+- Opus 5.5 remains selectable and stays the specialist preset and ULTRA/executor
+  default. The president's existing seat lookup follows the selected board;
+  its default-board Claude selection therefore returns to Fable without changing
+  the ladder or introducing a president execution route.
+
 ### Opus 5.5 replaces every Fable default
 
 - `claude-opus-5-5` is registered and replaces `claude-fable-5-1` wherever Fable was the

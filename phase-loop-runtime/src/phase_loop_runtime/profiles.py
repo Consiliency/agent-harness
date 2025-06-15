@@ -454,9 +454,9 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # implementation on grok-4.7 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
 # target is not yet live. There are TWO named model disagreements (grok single-model; gemini
 # LITE aspirational — agy exposes no flash-lite), not one. Panel/advisor legs
-# (panel_invoker.DEFAULT_LEG_MODELS = opus-5-5 / gpt-6-astra / 3.8-flash-high / grok-4.7) are a SEPARATE
+# (panel_invoker.DEFAULT_LEG_MODELS = fable-5-1 / gpt-6-astra / 3.8-flash-high / grok-4.7) are a SEPARATE
 # model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
-# are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
+# follow the operator's panel policy, independently of the executor tier matrix.
 # Effort is bound by shipped action policy and recorded at requested, policy,
 # and adapter-effective layers. Migrating the representational cases wholesale
 # is out of scope.

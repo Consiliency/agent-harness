@@ -20,11 +20,13 @@ Do not call dotfiles advisor-panel scripts, copy provider-specific shell scripts
 
 ## Boards & Availability-Aware Composition
 
-Named boards live in `phase_loop_runtime.advisor_board.presets`; the default review board is `code-review`, a 4-vendor cross-vendor panel: Claude Opus 5.5 (`claude-opus-5-5`), Grok 4.7 (`grok-4.7`), GPT-6 Astra (`gpt-6-astra`), and Gemini 3.8 Flash (`gemini-3.8-flash`). Each seat uses its maximum supported thinking level and a distinct review lens (correctness / adversarial / red-team / alternative-approach).
+Named boards live in `phase_loop_runtime.advisor_board.presets`; the default review board is `code-review`, a 4-vendor cross-vendor panel: Claude Fable 5 (`claude-fable-5-1`), Grok 4.7 (`grok-4.7`), GPT-6 Astra (`gpt-6-astra`), and Gemini 3.8 Flash (`gemini-3.8-flash`). Each seat uses its maximum supported thinking level and a distinct review lens (correctness / adversarial / red-team / alternative-approach).
+
+The `legal-review`, `legal-strategy-review`, `general` and `solo` presets retain Claude Opus 5.5 (`claude-opus-5-5`); executor model tiers are separate.
 
 Composition is AVAILABILITY-AWARE (`composition.compose_review_board`): it targets 4 independent reviewers (hard floor 3) and NEVER collapses to 1–2 when vendors are down. Each vendor that is both present on PATH AND authenticated gets one lens-distinct seat first; the remaining seats are BACKFILLED onto the available (up + authed) vendors with DIFFERENT lenses. So 2 vendors up still yields a full 4-seat board, and 1 vendor up yields 4 distinct-lens seats on that vendor. The `default`/premerge board uses the same four model defaults; only the explicit legacy `invoke_panel` API retains its three-leg shape.
 
-When a president is required, the availability ladder is Fable (the Anthropic seat alias — `claude-opus-5-5` by default; `claude-fable-5-1` stays accepted as an explicit id), then Sol (the GPT seat alias — `gpt-6-astra` by default; `gpt-5.6-sol` stays accepted as an explicit legacy id), then Grok 4.7, then Gemini 3.8 Flash. Advance only on a typed `president_unavailable` result; disagreement or a blocking ruling never triggers fallback.
+When a president is required, the availability ladder is Fable (the Anthropic seat alias — it resolves the board's actual seat: `claude-fable-5-1` on `default` / `code-review`, or `claude-opus-5-5` on the retained Opus presets), then Sol (the GPT seat alias — `gpt-6-astra` by default; `gpt-5.6-sol` stays accepted as an explicit legacy id), then Grok 4.7, then Gemini 3.8 Flash. Advance only on a typed `president_unavailable` result; disagreement or a blocking ruling never triggers fallback.
 
 ## Three Ways To Feed Material
 
@@ -144,7 +146,7 @@ other than Claude Code runs through the subscription TUI adapter. No cell admits
 gateway backing or alternate endpoint; a native fill is data handed back to the runtime and counts
 only once its verdict is bound (EC-REVIEWTRUTH-14).
 
-| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
+| host ↓ / seat vendor → | Anthropic (`claude-fable-5-1` / Opus) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
 | `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |

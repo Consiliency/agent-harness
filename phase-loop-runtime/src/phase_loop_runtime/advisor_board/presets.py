@@ -5,7 +5,7 @@ Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
 * ``default``     — IS ``fixtures.DEFAULT_BOARD`` (imported, not re-declared), so
                     the back-compat keystone holds by construction: the default
                     board defines the canonical four-vendor review seats (the claude seat
-                    on Opus 5.5, ``claude-opus-5-5``).
+                    on Fable, ``claude-fable-5-1``).
 * ``code-review`` — the 4-vendor cross-vendor board (grok / claude / codex /
                     gemini) at max thinking, distinct lenses, composed
                     availability-aware (``composition.compose_review_board``).
@@ -14,13 +14,10 @@ Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
 * ``legal-review`` / ``legal-strategy-review`` / ``legal-brainstorm`` — the legal
                     boards (see below).
 
-**Review-class boards run on frontier models, never the implementer.** Pre-merge
-and legal review are mid-tier decisions where being wrong is expensive, so the
-review-class boards (``default``, ``code-review``, ``legal-review``,
-``legal-strategy-review``) seat Opus 5.5 (``claude-opus-5-5``) on the claude lane --
-the maintainer's review default "for now" (2026-09-23; Fable ``claude-fable-5-1``
-before that) -- not the implementer ``claude-sonnet-5``. The catch-all ``general`` and
-``solo`` boards follow the same default. The divergent-thinking boards (``brainstorm``,
+**Review-class boards use a model separate from the implementer.** The ``default``
+and ``code-review`` boards seat Fable (``claude-fable-5-1``) on the claude lane.
+The ``legal-review``, ``legal-strategy-review``, ``general`` and ``solo`` presets
+retain Opus 5.5 (``claude-opus-5-5``). The divergent-thinking boards (``brainstorm``,
 ``doc-edit``, ``legal-brainstorm``) deliberately KEEP Sonnet — a diverse voice / a
 low-stakes copyedit / an aggressive-but-cheap ideation seat — where it is the right
 tool.

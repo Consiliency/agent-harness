@@ -15,9 +15,9 @@ import phase_loop_runtime.panel_invoker as pi
 
 
 def test_default_leg_models_exposed():
-    # The claude review leg defaults to Opus 5.5, DECOUPLED from the implementer model
-    # (claude-sonnet-5): pre-merge review runs on Opus 5.5, the implementer stays Sonnet.
-    assert pi.DEFAULT_LEG_MODELS["claude"] == "claude-opus-5-5"
+    # The claude review leg defaults to Fable, DECOUPLED from the implementer model
+    # (claude-sonnet-5): pre-merge review runs on Fable, the implementer stays Sonnet.
+    assert pi.DEFAULT_LEG_MODELS["claude"] == "claude-fable-5-1"
     assert pi.DEFAULT_LEG_MODELS["claude"] != pi.CLAUDE_IMPLEMENTER_MODEL
     assert pi.DEFAULT_LEG_MODELS["codex"] == "gpt-6-astra"
     assert pi.DEFAULT_LEG_MODELS["gemini"] == "gemini-3.8-flash-high"
@@ -25,14 +25,14 @@ def test_default_leg_models_exposed():
 
 
 def test_claude_tui_command_model_override(tmp_path):
-    cmd = pi._claude_tui_command(tmp_path, tmp_path, "claude-fable-5-1")
-    assert cmd[cmd.index("--model") + 1] == "claude-fable-5-1"
+    cmd = pi._claude_tui_command(tmp_path, tmp_path, "claude-opus-5-5")
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-5-5"
 
 
 def test_claude_tui_command_defaults_when_unset(tmp_path):
     cmd = pi._claude_tui_command(tmp_path, tmp_path)
-    # Unset → the panel default (Opus 5.5), not the implementer model.
-    assert cmd[cmd.index("--model") + 1] == pi.DEFAULT_LEG_MODELS["claude"] == "claude-opus-5-5"
+    # Unset → the panel default (Fable), not the implementer model.
+    assert cmd[cmd.index("--model") + 1] == pi.DEFAULT_LEG_MODELS["claude"] == "claude-fable-5-1"
 
 
 def _stage(tmp_path):

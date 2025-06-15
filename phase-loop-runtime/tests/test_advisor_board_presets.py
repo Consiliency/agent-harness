@@ -48,7 +48,7 @@ class PresetTests(unittest.TestCase):
 
     def test_default_preset_is_the_shared_default_board_fixture(self) -> None:
         # Identity, not equality: the preset is the canonical four-vendor default.
-        # The claude seat runs Opus 5.5 (review-path model), not the implementer.
+        # The claude seat runs Fable (review-path model), not the implementer.
         self.assertIs(PRESETS["default"], DEFAULT_BOARD)
         self.assertIs(get_preset("default"), DEFAULT_BOARD)
         self.assertEqual(
@@ -56,7 +56,7 @@ class PresetTests(unittest.TestCase):
             (
                 ("gpt-6-astra", "max", "codex"),
                 ("gemini-3.8-flash", "high", "gemini"),
-                ("claude-opus-5-5", "max", "claude"),
+                ("claude-fable-5-1", "max", "claude"),
                 ("grok-4.7", "max", "grok"),
             ),
         )
@@ -80,7 +80,7 @@ class PresetTests(unittest.TestCase):
             tuple((s.model, s.effort, s.harness, s.lens) for s in seats),
             (
                 ("grok-4.7", "max", "grok", "adversarial"),
-                ("claude-opus-5-5", "max", "claude", "correctness"),
+                ("claude-fable-5-1", "max", "claude", "correctness"),
                 ("gpt-6-astra", "max", "codex", "red-team"),
                 ("gemini-3.8-flash", "high", "gemini", "alternative-approach"),
             ),
@@ -88,11 +88,17 @@ class PresetTests(unittest.TestCase):
 
     def test_review_class_boards_seat_fable_not_the_implementer(self) -> None:
         # The review-class coding + legal boards never seat claude-sonnet-5.
-        for name in ("default", "code-review", "legal-review", "legal-strategy-review"):
+        expected = {
+            "default": "claude-fable-5-1",
+            "code-review": "claude-fable-5-1",
+            "legal-review": "claude-opus-5-5",
+            "legal-strategy-review": "claude-opus-5-5",
+        }
+        for name, model in expected.items():
             claude_seats = [s for s in PRESETS[name].seats if s.harness == "claude"]
             self.assertTrue(claude_seats, name)
             for s in claude_seats:
-                self.assertEqual(s.model, "claude-opus-5-5", f"{name}: {s.model}")
+                self.assertEqual(s.model, model, f"{name}: {s.model}")
 
     def test_brainstorm_and_doc_edit_are_byte_neutral(self) -> None:
         # The divergent-thinking boards deliberately KEEP Sonnet; their Gemini and GPT
