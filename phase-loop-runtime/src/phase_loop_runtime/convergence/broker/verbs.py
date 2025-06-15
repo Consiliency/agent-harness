@@ -483,6 +483,10 @@ class BrokerService:
 
     def _dedup_key(self, request: BrokerRequest) -> str:
         if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
+            if request.scope_correction_of:
+                from phase_loop_runtime.publish_scope_correction import effect_key
+
+                return effect_key(request.repo, request.branch, request.head_sha, request.scope_correction_of)
             base = publish_committed_branch_idempotency_key(request.repo, request.branch, request.head_sha)
         else:
             base = getattr(request.admission, "idempotency_key", None) or getattr(
@@ -604,6 +608,13 @@ class BrokerService:
             raise PermissionError("envelope does not bind the durable transaction")
         if request.branch != transaction.branch or tuple(request.owned_paths) != tuple(transaction.owned_paths):
             raise PermissionError("publish request differs from the durable transaction")
+        lineage = transaction._payload.get("scope_correction", {})
+        if request.scope_correction_of != lineage.get("predecessor_id", ""):
+            raise PermissionError("publish request differs from correction lineage")
+        if request.scope_correction_of:
+            from phase_loop_runtime.publish_scope_correction import validate_source
+
+            validate_source(Path(request.adapter_worktree), transaction)
         if Path(request.adapter_worktree).resolve() != transaction.repo:
             raise PermissionError("adapter worktree does not equal transaction workspace")
         authority = transaction.envelope_authority_preimage
@@ -627,10 +638,9 @@ class BrokerService:
             )
         }
         approval_digest = hashlib.sha256(json.dumps(approval_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        idempotency_key = (
-            f"{request.verb.value}\0"
-            f"{publish_committed_branch_idempotency_key(request.repo, request.branch, request.head_sha)}"
-        )
+        from phase_loop_runtime.publish_scope_correction import effect_key
+
+        idempotency_key = effect_key(request.repo, request.branch, request.head_sha, request.scope_correction_of)
         return AdmissionRequest(
             attempt_id,
             epoch,
@@ -1199,6 +1209,7 @@ class BrokerService:
         attempt_id = hashlib.sha256(
             b"FABPUB-PUBLISH-ATTEMPT-v1\0"
             + f"{request.repo}\0{request.branch}\0{request.head_sha}".encode()
+            + (b"\0scope-correction-v1" if request.scope_correction_of else b"")
         ).hexdigest()
         owner = AdapterStartOwnership(
             request.repo,
@@ -1302,6 +1313,7 @@ class BrokerService:
                 request.verb, finalized, request.repo, request.branch, request.head_sha,
                 request.owned_paths, base=request.base, draft=request.draft, pr_body=request.pr_body,
                 adapter_worktree=request.adapter_worktree,
+                scope_correction_of=request.scope_correction_of,
             )
             # agent-harness#1574 (SG-F1): set immediately before the adapter call.  A
             # failure before it (the service-generation lease, which a DRAINING
@@ -1422,6 +1434,12 @@ class BrokerService:
         )
 
     def execute(self, request: BrokerRequest) -> BrokerExecutionResult:
+        if request.scope_correction_of:
+            from phase_loop_runtime.publish_scope_correction import authorize
+
+            if not _fabpub_active():
+                raise PermissionError("scope correction requires active FABPUB")
+            authorize(self, request)
         key = self._dedup_key(request)
         current = self.evidence_store.replay().get(key)
         if current and current.state is not TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:

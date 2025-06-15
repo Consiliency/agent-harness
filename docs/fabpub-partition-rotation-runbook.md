@@ -400,6 +400,22 @@ restored from outside).
 
 ## 8a. Recovering a failed publication of the current head (`attested_not_landed`)
 
+**Scope corrections are not same-context recovery.** The human adapter hashes
+`owned_paths` into its checkpoint context. Supply the complete branch-to-base
+scope, including already-committed companion changes, rather than only dirty
+paths. Its early scope precheck refuses omitted committed paths before creating
+a commit or acquiring publication authority; the broker independently validates
+the final branch. Correct the scope and retry an early precheck refusal.
+
+If an older adapter already committed and received a broker scope rejection,
+changing `owned_paths` selects a different context. The procedure below does not
+authorize rebinding that transaction. Normal retry may report `nothing_staged`,
+and prebuilt preparation intentionally rejects a commit carrying a FABPUB intent
+trailer. Preserve the original commit and evidence; do not remove the trailer,
+make an empty commit, or edit checkpoints to escape the recorded terminal.
+Recovery with changed scope uses the explicit `PublishScopeCorrection.v1`
+operation below, not a same-context rotation claim.
+
 Use this when a human or governed publication failed with an ambiguous
 provider outcome (for example `outcome_ambiguous_blocked` / `push-unconfirmed`,
 or an adapter exception), the publish transaction for the **current** head is
@@ -572,6 +588,38 @@ anything, and escalate to the maintainer. If the retry is refused with `publicat
 message names what did not bind and the next step for that case (no disposition, a disposition already used or
 superseded in a later generation, no transaction id, a different transaction, or a chain that does not authenticate). Nothing was written;
 fix the input and retry.
+
+## 8b. Correct a sealed ownership-scope refusal
+
+`publish_human_invoked_from_worktree` accepts
+`scope_correction_from=(original_checkpoint_root, original_node_id)` with the
+corrected `owned_paths`. Keep the same worktree, branch, commit, detailed plan,
+verification artifact, base, draft intent and PR body; leave `prebuilt=False`.
+The corrected scope must strictly include the original scope and cover the real
+branch-to-base diff. The SDK creates a successor checkpoint with the original
+commit bytes and trailer, without creating a commit or changing a branch ref.
+
+The broker authenticates the active generation's exact original
+`no_effect_terminal_proven` row with an `owned-scope-exceeded:` reason and sealed
+owner. It reserves one immutable `PublishScopeCorrectionReceipt.v1` under the
+admission lock and admits a separate successor effect key. Competing corrections
+with different scopes refuse. An identical retry reuses the reservation and
+replays a completed successor without another provider call. The original
+checkpoint and canonical effect row remain unchanged; ordinary retries of the
+original request still replay its original result.
+
+Missing or changed predecessor/proof, a generic provider rejection, ambiguity,
+an observed effect, an unsealed owner or a retired generation does not authorize
+this operation. An ambiguous successor reports `review_scope_correction_outcome`;
+preserve its evidence and review the actual outcome. This version cannot
+authenticate the original no-effect row after partition rotation, so it does not
+offer rotate-then-retry recovery. A missing active predecessor returns
+`inspect_scope_correction_predecessor`; recovering it across generations needs
+an additional supported receipt-chain operation. There is no second
+scope-correction successor. A reservation alone is not a
+publication. Use matching SDK and broker support; older supported SDK entrypoints
+do not accept the new keyword. Do not edit receipts or use generic prebuilt mode
+to imitate it.
 
 ## 9. Residuals carried out of the 2026-09-09 preparation
 
