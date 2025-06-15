@@ -37,7 +37,8 @@ Tested wheel SHA-256:
 
 ## Review
 
-Round cap: three. Four seats across three vendors, with default heartbeat policy
+Initial round cap: three, explicitly lifted by the user for closure review.
+Four seats across three vendors, with default heartbeat policy
 and no shortened deadlines. Claude was unavailable under the typed TUI adapter
 condition tracked by Consiliency/agent-harness#806; a distinct-lens Grok seat was
 the explicit replacement, not a claimed Claude review.
@@ -57,12 +58,18 @@ Grok correctness carried from round two). GPT-6 Astra found that compiler warnin
 could render credential-bearing source lines before scanning. The local fix
 turns all parsing/compilation warnings into rejected input, uses a synthetic
 filename, and adds two diagnostic-redaction regressions. Verification above is
-for that fix, which has NOT received closure review.
+for that fix. After the user lifted the cap, GPT-6 Astra reviewed the exact helper
+delta against round three at commit `4348080d54c27d6f683549284b59944d92f86136`
+and returned AGREE: no blocking finding or directly introduced regression.
+The reviewer confirmed caught parser/compiler warnings, synthetic filenames,
+fixed rejection diagnostics, and both diagnostic-redaction regressions.
 
-The three-round cap is reached. One focused closure-review extension has been
-requested from the user; approval is pending. Do not merge or use this repair for
-downstream publication until the remaining review is closed. No blocking finding
-has been waived. Draft: Consiliency/agent-harness#894.
+All four seats now have standing AGREE verdicts: fresh GPT-6 Astra closure,
+carried Grok adversarial/Gemini round three, and carried Grok correctness round
+two. No blocking finding was waived. The current implementation commit passed
+GitHub suite, lint, chronology, docs, secret, check and package verification gates.
+Documentation-only closeout still requires its own publication checks.
+PR: Consiliency/agent-harness#894. This is not installed-door acceptance.
 
 | Artifact | SHA-256 |
 | --- | --- |
@@ -72,5 +79,7 @@ has been waived. Draft: Consiliency/agent-harness#894.
 | Round-two results | `6981817c80dd3b7f2b3b7197309cde7116c0dcc64fffc34935100a810619d876` |
 | Round-three bundle | `6b591557ae062ac6bd11bb535c7434b251e5c821a200fd004d4cd0825f590902` |
 | Round-three results | `7d5277d7a9d2c25e187dcf0db6188ef83460102fc26fc708ae7313897154b2ae` |
+| Warning closure bundle | `d1b4951c50dc957308587eaeea103d7306366fee0a3b7d4b420f9304f8dceadb` |
+| Warning closure results | `9b9bd72d3efb2c28d6fa4bb17e371ab5a6e48a5e01ff710c7cb0ce379f7ee99c` |
 
 No hardware, cloud credentials or installed services changed.
