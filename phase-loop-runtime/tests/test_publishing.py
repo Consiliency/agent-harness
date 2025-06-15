@@ -1332,7 +1332,6 @@ def test_preparation_redacts_body_before_hashing_and_checkpointing(tmp_path, mon
 
 @pytest.mark.parametrize("active", [False, True])
 def test_adapter_forwards_sanitized_body_to_broker(tmp_path, monkeypatch, active):
-    from phase_loop_runtime import publishing
     from phase_loop_runtime.convergence.broker import live
 
     monkeypatch.setattr(live, "fabpub_capability_active", lambda: active)
