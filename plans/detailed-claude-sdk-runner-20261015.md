@@ -5,7 +5,7 @@ owner_skill: codex-plan-detailed
 related_issues: [agent-harness#1391]
 automation:
   suite_command: >-
-    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py
+    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_adapter_skill_references.py tests/test_seat_reference_inventory.py
   verification_status: not_run
 ---
 
@@ -208,6 +208,14 @@ note. The owner approved these two required adjuncts during implementation; the
 targeted suite includes the inventory checks. This adds no scratch exception,
 transport authority or acceptance waiver. The ratified subscription amendment and
 acceptance criteria remain unchanged.
+
+### Verification inventory during owner-authorized continuation
+
+Include `tests/data/seat_launch_references.json` to classify the SDK helper's
+existing probe and I/O references under the static audit's existing roles. This
+records the implementation without an audit exception or a regenerated golden
+masking unrelated behavior. Integration verification also includes the upstream
+adapter-reference tests and `tests/test_seat_reference_inventory.py`.
 
 ## Documentation impact
 

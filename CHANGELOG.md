@@ -6,9 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Optional solo Claude SDK runner (agent-harness#1391)
+### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
 
-- Add the optional `claude-sdk` extra and explicit `PHASE_LOOP_CLAUDE_ROUTE=sdk` selection for supported personal Claude Code solo contexts. Existing defaults and panel routing are unchanged; unsupported contexts refuse without fallback. Live qualification remains required before landing.
+- Gemini and OpenCode launches carry each injected skill's `references/` files
+  beside the delivered `context.md` under `skills/<skill>/references/`, and the
+  context says where they are. Gemini uses its workspace mirror. Skills without
+  references are unchanged, so every current Gemini and OpenCode context is
+  byte-identical. The bundle digest and delivered files use the same captured
+  bytes, including a canonical `_overrides/<harness>/references/` file. This unblocks
+  splitting the codex, gemini and opencode plan and execute skills; codex reads its
+  installed skills and is not changed.
 
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 
@@ -16,6 +23,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   with `-rw`, so the job log lists every skill body over the size guidance. The
   step fails only where the test does: a stale allowlist entry, or, once `STRICT`
   is on, a new or grown offender. Changing the test now triggers the workflow.
+
+### Optional solo Claude SDK runner (agent-harness#1391)
+
+- Add the optional `claude-sdk` extra and explicit `PHASE_LOOP_CLAUDE_ROUTE=sdk` selection for supported personal Claude Code solo contexts. Existing defaults and panel routing are unchanged; unsupported contexts refuse without fallback. Live qualification remains required before landing.
 
 ### Provider admission and availability evidence
 
