@@ -96,3 +96,37 @@ Gate A and all six required PR checks must cover the published candidate before
 acceptance reduction/readiness reassessment. Dispatch acceptance is not PASS.
 No exact-head unanimous board, Frontier approval, live qualification, automatic
 skill adoption, or merge approval is claimed.
+
+## Gold-validation follow-up: bounded manual review
+
+The owner supplied a further manual T3 review by Opus 5.5
+(`claude-opus-5-5`, `t3-claude-regenesis`, high effort), returning **AGREE**
+with no blocking findings for frozen candidate identity
+`486799076c771577c5763c4d735eea3208ffd86d76b648a2b61059481b4001b9`.
+This identifies ordinary merge HEAD `004d60a2363bc8c41e9b824d89dc8bbeb49472ce`
+plus the four-file gold-validation overlay, against fixed main input
+`0fcc004bf105e023e9376c4c2ad5e31052cab4f2`. The overlay SHA-256 is
+`8f3f0f026d50f447f33a17dfe38089e244eb877882b57dcd5ff3fb7eedd977bd`.
+The publication operator independently reran the frozen verifier successfully
+before adding this procedural record; the packet remains unchanged.
+
+`Spec.validate_spec` now requires globally unique exact gold text before
+preparation. Four rejection regressions and an independently matched valid-pilot
+calibration control changed from four failed/one passed to five passed.
+The reviewer inspected supplied code and evidence, ran no new tests, and excluded
+canary/RT3 scope. Prior review qualifications above remain applicable; this is
+neither runtime-board approval nor unanimous exact-publication-head review.
+
+Current sealed bounded evidence records 166 feature tests, 74 required Linux
+controls with zero skips, 46 packaging, 11 inventory and 549 integration tests
+with one expected dotfiles skip, plus fresh wheel/help/pilot, docs, lint and
+whitespace checks. Five additional canary cases errored in shared-root fixture
+setup before assertions. The sealed aggregate remains **nonzero_exit**, not PASS;
+the reviewer verified that expected outcome before and after review. No fixture,
+host, exclusion or CI policy was changed.
+
+AC1–4 and AC6 are refreshed offline; **AC5 remains pending** fresh publication-head
+full source/copied/lint, installed-wheel Gate A and all six required PR checks.
+Dispatch 39077608472 proves only `cad52665afefde67286147178857be7febf19740`.
+Historical failed local receipts and the failed lifecycle remain unchanged.
+Publication authorization supplies no merge approval or live qualification.

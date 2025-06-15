@@ -109,6 +109,53 @@ def test_invalid_specs(mutate):
         ev.Spec.model_validate(value)
 
 
+@pytest.mark.parametrize("source,target", [(0, 1), (0, 3), (0, 2), (0, 9)], ids=[
+    "same-case-good-wrong", "cross-case-good-wrong", "cross-case-matching-annotations",
+    "cross-comparison-good-wrong",
+])
+def test_duplicate_gold_text_refused_before_preparation(tmp_path, source, target):
+    value = ev.load(PILOT)
+    original, duplicate = value["gold"][source], value["gold"][target]
+    duplicate["text"] = original["text"]
+    duplicate["citations"] = original["citations"].copy()
+    # Both rows retain valid annotations/citations; only the text join is ambiguous.
+    for row in value["gold"]:
+        ev.Gold.model_validate(row)
+        assert all(quote in row["text"] for quote in row["citations"].values())
+    path = tmp_path / "spec.json"
+    rewrite(path, value)
+    root = tmp_path / "experiment"
+    with pytest.raises(ValueError, match="duplicate gold text"):
+        ev.prepare(path, root)
+    assert not root.exists()
+    result = subprocess.run(
+        [str(Path(sys.executable).parent / "phase-loop-skill-eval"), "validate", "--spec", str(path)],
+        capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2 and "duplicate gold text" in result.stderr
+
+
+def test_pilot_calibration_preserves_each_gold_annotation(experiment, tmp_path):
+    root, frozen, spec = experiment
+    packet = ev.packet(root, tmp_path / "gold", True)
+    scores = ev.load(tmp_path / "gold" / "scores.json")
+    scores.update(scorer_id="blind-human", no_prior_gold_exposure=True)
+    cases = [case for group in spec.comparisons for case in group.cases]
+    for row, score in zip(packet["outputs"], scores["scores"]):
+        matches = [gold for gold in spec.gold if gold.text == row["plan"] and
+                   next(case.prompt for case in cases if case.id == gold.case_id) == row["task"]]
+        assert len(matches) == 1
+        gold = matches[0]
+        score["items"] = {key: {"pass": value, "quote": gold.citations[key]}
+                          for key, value in gold.annotations.items()}
+    assert len(scores["scores"]) == 16
+    assert sum(all(item["pass"] for item in score["items"].values())
+               for score in scores["scores"]) == 8
+    path = tmp_path / "scores.json"
+    rewrite(path, scores)
+    assert ev.reduce(root, path, tmp_path / "result", True) == {"calibration_passed": True}
+    assert ev.calibration_valid(root, frozen, spec, "blind-human")
+
+
 def test_input_links_and_duplicate_keys_refused(tmp_path):
     link = tmp_path / "linked"
     link.symlink_to(PILOT)

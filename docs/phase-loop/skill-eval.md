@@ -58,6 +58,8 @@ Unknown fields and duplicate JSON keys are refused. The required fields are:
   `decision: {target_wins: 3, target_losses: 0, control_losses: 0}`.
 - `gold`: independently annotated good and wrong outputs for every case, each
   with `case_id`, `text`, Boolean `annotations`, and output-span `citations`.
+  Every gold `text` must be unique across the entire pack, including different
+  cases and matching annotations, so calibration joins each output unambiguously.
 
 Fixture names cannot escape the snapshot, collide with directories, or replace
 `.git`, `AGENTS.md` or `.guidance`. Files are copied as regular files, never

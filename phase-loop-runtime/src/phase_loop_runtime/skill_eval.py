@@ -203,6 +203,8 @@ class Spec(Strict):
             ids.extend(c.id for c in comparison.cases)
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate case IDs")
+        if len({g.text for g in self.gold}) != len(self.gold):
+            raise ValueError("duplicate gold text")
         cases = {c.id: c for group in self.comparisons for c in group.cases}
         for case_id, case in cases.items():
             gold = [g for g in self.gold if g.case_id == case_id]

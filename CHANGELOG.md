@@ -17,6 +17,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   failed one-shot calibration evidence.
 - Stop the batch on returned launcher cancellation, retaining invalid trial
   receipts and the launcher's cleanup evidence before propagating interruption.
+- Reject duplicate gold output texts across the calibration pack before
+  preparation, preserving an unambiguous annotation mapping (agent-harness#1733).
 
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 
