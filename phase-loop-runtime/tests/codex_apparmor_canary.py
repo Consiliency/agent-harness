@@ -219,12 +219,20 @@ def fixture_inputs(deadline=None):
     # imports linecache before executing -c to register its source, even `pass`.
     paths.update(str(stdlib / name) for name in ("os.py", "linecache.py"))
     files = {path: executable(path, deadline) for path in sorted(paths)}
-    encoding_hashes = {}
+    protected(encodings, directory=True)
+    encoding_hashes, encoding_directories = {}, []
     for path in sorted(encodings.rglob("*")):
-        if path.is_file():
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            protected(path, directory=True)
+            encoding_directories.append(str(path.relative_to(encodings)))
+        else:
+            require(stat.S_ISREG(mode), "unsupported encoding entry")
+            protected(path)  # Check the original entry before executable resolves it.
             item = executable(path, deadline)
             encoding_hashes[str(path.relative_to(encodings))] = item["sha256"]
     return {"files": files, "encodings": str(encodings), "encoding_hashes": encoding_hashes,
+            "encoding_directories": encoding_directories,
             "dynload": str(stdlib / "lib-dynload")}
 
 
@@ -233,7 +241,48 @@ def tools(deadline=None):
              "/usr/bin/unshare", "/usr/bin/true", "/usr/bin/journalctl", "/usr/bin/ldd"]
     if Path("/usr/sbin/auditctl").exists():
         paths.append("/usr/sbin/auditctl")
-    return {path: executable(path, deadline) for path in paths}
+    inventory = {path: executable(path, deadline) for path in paths}
+    # ldd is itself executing code. Only its measured bash recipe is supported;
+    # bind every possible loader it probes before using it for dependency discovery.
+    ldd = Path(inventory["/usr/bin/ldd"]["path"]).read_text()
+    require(ldd.startswith("#!/bin/bash\n"), "unsupported ldd interpreter")
+    loaders = re.search(r'^RTLDLIST="([^"\n]+)"$', ldd, re.MULTILINE)
+    require(loaders is not None, "unknown ldd loader recipe")
+    probes = loaders[1].split()
+    require(probes and all(p.startswith("/") for p in probes), "invalid ldd loader paths")
+    dependencies = {"/bin/bash": executable("/bin/bash", deadline)}
+    for path in probes:
+        if Path(path).exists():
+            dependencies[path] = executable(path, deadline)
+    require(len(dependencies) > 1, "ldd loader unavailable")
+    # The protected Python trampoline also executes stdlib modules and native
+    # extensions. Inventory the same imports under the exact system interpreter,
+    # including existing bytecode caches rather than hashing only their sources.
+    probe = ("import __future__,argparse,ctypes,errno,fcntl,hashlib,json,os,pathlib,platform,re,"
+             "select,selectors,signal,stat,subprocess,sys,time,uuid; "
+             "argparse.ArgumentParser().parse_args([]); "
+             "print(json.dumps(sorted({str(pathlib.Path(p).resolve()) "
+             "for m in tuple(sys.modules.values()) "
+             "for p in (getattr(m,'__file__',None),getattr(m,'__cached__',None)) "
+             "if p and pathlib.Path(p).is_file()})))")
+    python_files = json.loads(bounded([PYTHON, "-I", "-S", "-c", probe], deadline=deadline))
+    require(isinstance(python_files, list) and python_files, "Python code closure unavailable")
+    for path in python_files:
+        require(isinstance(path, str) and path.startswith("/usr/lib/python"), "unexpected Python code path")
+        dependencies[path] = executable(path, deadline)
+    native = [path for path in python_files if path.endswith(".so")]
+    for path in [p for p in paths if p != "/usr/bin/ldd"] + ["/bin/bash", *native]:
+        with Path(path).open("rb") as stream:
+            require(stream.read(4) == b"\x7fELF", "unsupported tool interpreter")
+        output = bounded(["/usr/bin/ldd", str(Path(path).resolve())], deadline=deadline).decode()
+        require("not found" not in output, "missing tool loader dependency")
+        for line in output.splitlines():
+            match = re.search(r"(?:=>\s*)?(/[^\s]+)\s+\(", line)
+            if match:
+                dependency = match[1]
+                dependencies[dependency] = executable(dependency, deadline)
+    return {"executables": inventory, "dependencies": dependencies,
+            "ldd_interpreter": "/bin/bash", "ldd_loader_probes": probes}
 
 
 def render(out):
@@ -350,16 +399,20 @@ def bwrap_argv(root, manifest, uid, gid):
     return argv + ["--", PYTHON, "-I", "-S", "-c", WORKER]
 
 
-def trampoline(root, uid, gid, namespace):
+def trampoline(root, uid, gid, namespace, deadline):
     require(os.getuid() == 0 and os.geteuid() == 0, "drop trampoline requires root")
     require(re.fullmatch(r"phase_loop_codex_canary_[0-9a-f]{32}", namespace), "invalid trampoline namespace")
     label = Path("/proc/self/attr/current").read_text().strip()
     require(label == f":{namespace}:unconfined", "private unconfined Python entry not observed")
     manifest = json.loads((root / "manifest.json").read_text())
-    validate_inputs(root, manifest)
+    require(deadline <= time.monotonic() + 10, "invalid startup deadline")
+    remaining(deadline)
+    validate_inputs(root, manifest, deadline=deadline)
     # Protected code is executed by Python before bwrap ever receives on-exec selection.
     argv = bwrap_argv(root, manifest, uid, gid)
+    remaining(deadline)
     drop_identity(uid, gid)
+    remaining(deadline)
     os.execve(argv[0], argv, ENV)
 
 
@@ -373,6 +426,7 @@ class Process:
 
     def __init__(self, pid):
         self.pid = pid
+        self.reaped = False
         self.start = start_time(pid)
         self.fd = os.pidfd_open(pid)
         try:
@@ -392,10 +446,30 @@ class Process:
             signal.pidfd_send_signal(self.fd, sig)
 
     def close(self):
-        os.close(self.fd)
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def collect(self):
+        """Death is not reaping: consume even an already-readable pidfd's status."""
+        if self.reaped:
+            return True
+        try:
+            require(start_time(self.pid) == self.start, "PID reused before wait")
+        except FileNotFoundError:
+            return True  # Already reaped by the observer or its original parent.
+        try:
+            pid, state = os.waitpid(self.pid, os.WNOHANG | 0x40000000)
+        except ChildProcessError:
+            # A zombie still owned by an intermediary must become adopted/reaped.
+            return False
+        self.reaped = bool(pid and (os.WIFEXITED(state) or os.WIFSIGNALED(state)))
+        return self.reaped
 
 
-def descendants(owner, found):
+def descendants(owner, found, deadline=None):
+    if deadline is not None:
+        remaining(deadline)
     if not owner.alive():
         return
     children = Path(f"/proc/{owner.pid}/task/{owner.pid}/children").read_text().split()
@@ -403,14 +477,19 @@ def descendants(owner, found):
     for child in children:
         pid = int(child)
         if pid not in found:
+            require(len(found) < 64, "too many owned processes")
             handle = Process(pid)
-            require(owner.alive() and int(status(pid)["PPid"]) == owner.pid, "descendant ownership changed")
+            try:
+                require(owner.alive() and int(status(pid)["PPid"]) == owner.pid, "descendant ownership changed")
+            except BaseException:
+                handle.close()
+                raise
             found[pid] = handle
         try:
             require(start_time(pid) == found[pid].start, "descendant PID reused")
         except FileNotFoundError:
             continue
-        descendants(found[pid], found)
+        descendants(found[pid], found, deadline)
 
 
 def mount_rows(text, host=False):
@@ -524,7 +603,7 @@ def ptrace(request, pid, addr=0, data=0):
 class Observer:
     """Root-side syscall observer. No exec arguments, buffers, or payloads are traced."""
 
-    def __init__(self, worker, owned):
+    def __init__(self, worker, owned, deadline=None):
         require(platform.machine() in ("x86_64", "aarch64"), "unsupported syscall architecture")
         self.worker = worker
         self.owned = owned
@@ -532,10 +611,13 @@ class Observer:
         self.pending = {}
         self.records = []
         self.exits = {}
+        self.deadline = deadline
+        if deadline is not None:
+            remaining(deadline)
         # Unexpected forks fail closed; adopt their identity for cleanup before refusing.
         ptrace(0x4206, worker.pid, 0, 1 | 2 | 4 | 8)  # SEIZE, TRACESYSGOOD, fork/vfork/clone
         ptrace(0x4207, worker.pid)  # INTERRUPT before GO
-        self.wait_stop(worker.pid, time.monotonic() + 10)
+        self.wait_stop(worker.pid, deadline if deadline is not None else time.monotonic() + 10)
 
     def wait_stop(self, pid, end):
         while time.monotonic() < end:
@@ -548,9 +630,10 @@ class Observer:
 
     def run(self, go):
         require(self.worker.alive(), "worker changed before GO")
+        end = self.deadline if self.deadline is not None else time.monotonic() + 10
+        remaining(end)
         go()
         ptrace(24, self.worker.pid)  # SYSCALL
-        end = time.monotonic() + 10
         primary_nr = 272 if platform.machine() == "x86_64" else 97
         cap_nr = {125, 126, 157} if platform.machine() == "x86_64" else {90, 91, 167}
         while self.active:
@@ -563,6 +646,7 @@ class Observer:
                 progress = True
                 if os.WIFEXITED(state) or os.WIFSIGNALED(state):
                     self.exits[pid] = os.waitstatus_to_exitcode(state)
+                    handle.reaped = True
                     del self.active[pid]
                     continue
                 require(handle.alive(), "tracee PID changed")
@@ -614,12 +698,12 @@ def journal_cursor():
     return rows[0]["__CURSOR"]
 
 
-def loss_counters():
+def loss_counters(deadline=None):
     result = {"audit_status": "unavailable"}
     path = Path("/usr/sbin/auditctl")
     if path.exists():
-        executable(path)
-        output = bounded([str(path), "-s"]).decode()
+        executable(path, deadline)
+        output = bounded([str(path), "-s"], deadline=deadline).decode()
         result = {key: int(value) for key, value in re.findall(
             r"(?m)^(lost|rate_limit|backlog|backlog_limit|backlog_wait_time_actual)\s+(\d+)$", output)}
         require("lost" in result, "audit counters unreadable")
@@ -765,6 +849,9 @@ class Experiment:
         self.namespace = Namespace()
         self.children = {}
         self.child = None
+        self.session_pid = None
+        self.teardown_errors = []
+        self.operation_end = None
         self.before = None
         self.loaded = False
         self.evidence_created = False
@@ -776,6 +863,11 @@ class Experiment:
     def checkpoint(self):
         if self.evidence_created:
             self.result["processes"] = [{"pid": h.pid, "start": h.start} for h in self.children.values()]
+            if self.child is not None and self.child.pid not in self.children:
+                self.result["processes"].append({"pid": self.child.pid, "start": None,
+                                                  "ownership": "direct unreaped Popen child"})
+            self.result["process_session"] = self.session_pid
+            self.result["teardown_errors"] = list(self.teardown_errors)
             temp = self.evidence / ("checkpoint-" + uuid.uuid4().hex + ".tmp")
             fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w") as stream:
@@ -810,44 +902,98 @@ class Experiment:
         return output
 
     def reap(self):
-        if not self.children:
+        if not self.children and self.child is None and self.session_pid is None:
+            require(not self.teardown_errors, "; ".join(self.teardown_errors))
             return
-        end = self.cleanup_end if self.cleanup_end is not None else time.monotonic() + 30
-        # The tracked bwrap owns a private pid namespace and die-with-parent.
-        owners = list(self.children.values())
-        for handle in owners:
-            descendants(handle, self.children)
-        if self.child:
-            # A dead intermediary may have reparented a member of this dedicated
-            # session to our subreaper. Acquire a new pidfd before using its PID.
-            for raw in Path(f"/proc/self/task/{os.getpid()}/children").read_text().split():
-                pid = int(raw)
-                if pid not in self.children and os.getsid(pid) == self.child.pid:
-                    self.children[pid] = Process(pid)
-        for sig, deadline in ((signal.SIGTERM, min(end, time.monotonic() + 2)), (signal.SIGKILL, end)):
-            for handle in self.children.values():
-                handle.send(sig)
-                if handle.alive():
-                    handle.send(signal.SIGCONT)  # Release any ptrace stop for termination.
-            while time.monotonic() < deadline and any(h.alive() for h in self.children.values()):
-                for handle in self.children.values():
-                    try:
-                        os.waitpid(handle.pid, os.WNOHANG | 0x40000000)
-                    except ChildProcessError:
-                        pass
-                time.sleep(min(0.01, max(0, deadline - time.monotonic())))
-            if not any(h.alive() for h in self.children.values()):
-                break
-        require(not any(h.alive() for h in self.children.values()), "owned descendants survived cleanup")
-        if self.child:
-            # All handles are dead; poll/wait must still fit the shared budget.
-            self.child.wait(timeout=remaining(end))
-            for stream in (self.child.stdin, self.child.stdout, self.child.stderr):
-                stream.close()
-        for handle in self.children.values():
-            handle.close()
-        self.children.clear()
+        own_budget = self.cleanup_end is None
+        if own_budget:
+            self.cleanup_end = time.monotonic() + 30
+        end = self.cleanup_end
+        child = self.child
+        if child is not None:
+            self.session_pid = child.pid
+
+        def attempt(action):
+            try:
+                return action()
+            except BaseException as error:
+                message = str(error) if isinstance(error, Inconclusive) else type(error).__name__
+                if message not in self.teardown_errors:
+                    self.teardown_errors.append(message)
+                return None
+
+        def discover():
+            for handle in list(self.children.values()):
+                attempt(lambda: descendants(handle, self.children, deadline=end))
+            if self.session_pid is not None:
+                def adopted():
+                    remaining(end)
+                    entries = Path(f"/proc/self/task/{os.getpid()}/children").read_text().split()
+                    require(len(entries) <= 64, "too many adopted processes")
+                    for raw in entries:
+                        pid = int(raw)
+                        if pid not in self.children and (child is None or pid != child.pid):
+                            handle = Process(pid)
+                            try:
+                                if os.getsid(pid) != self.session_pid:
+                                    continue
+                                require(int(status(pid)["PPid"]) == os.getpid(), "adopted ownership changed")
+                                require(start_time(pid) == handle.start, "adopted PID reused")
+                                self.children[pid] = handle
+                            finally:
+                                if pid not in self.children:
+                                    handle.close()
+                attempt(adopted)
+
+        def collect():
+            if self.child is not None:
+                # Popen retains direct-child ownership even if pidfd acquisition
+                # failed. Its poll/send_signal/wait never signal an already-reaped PID.
+                def direct():
+                    if child.poll() is not None:
+                        child.wait(timeout=remaining(end))
+                        self.child = None
+                attempt(direct)
+            for pid, handle in list(self.children.items()):
+                if child is not None and pid == child.pid and self.child is not None:
+                    continue
+                if attempt(handle.collect):
+                    if attempt(lambda: (handle.close(), True)[1]):
+                        del self.children[pid]
+
+        try:
+            discover()
+            for sig, deadline in ((signal.SIGTERM, min(end, time.monotonic() + 2)), (signal.SIGKILL, end)):
+                while True:
+                    if self.child is not None:
+                        attempt(lambda: child.send_signal(sig))
+                        attempt(lambda: child.send_signal(signal.SIGCONT))
+                    for handle in list(self.children.values()):
+                        attempt(lambda: handle.send(sig))
+                        attempt(lambda: handle.send(signal.SIGCONT))
+                    collect()  # Also runs for processes dead before teardown began.
+                    discover()  # Intermediary exit can adopt additional children.
+                    collect()
+                    if not self.children and self.child is None:
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+                if not self.children and self.child is None:
+                    break
+        finally:
+            if child is not None:
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    attempt(stream.close)
+            # Only resolved handles are closed; unresolved pidfds and identities
+            # remain available for bounded retry and exact administrator recovery.
+            collect()
+        require(not self.children and self.child is None, "owned descendants not proved reaped")
+        require(not self.teardown_errors, "; ".join(self.teardown_errors))
+        self.session_pid = None
         remaining(end)
+        if own_budget:
+            self.cleanup_end = None
 
     def arm(self, name):
         self.parse(name + ".policy", "preprocess")
@@ -858,14 +1004,20 @@ class Experiment:
         require(actual == [("bwrap", "enforce"), ("unpriv_bwrap", "enforce")], "unexpected loaded arm profiles")
         cursor = journal_cursor()
         begin = stamp()
+        end = time.monotonic() + 10
         argv = ["/usr/bin/aa-exec", "-n", self.namespace.name, "-p", "unconfined", "--", PYTHON,
                 "-I", "-S", str(self.root / "codex_apparmor_canary.py"), "__drop",
-                str(self.uid), str(self.gid), self.namespace.name]
-        self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      close_fds=True, start_new_session=True, env=ENV)
-        owner = Process(self.child.pid)
-        self.children[owner.pid] = owner
-        end = time.monotonic() + 10
+                str(self.uid), str(self.gid), self.namespace.name, str(end)]
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
+        try:
+            self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                          close_fds=True, start_new_session=True, env=ENV, bufsize=0,
+                                          preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous))
+            self.session_pid = self.child.pid
+            owner = Process(self.child.pid)
+            self.children[owner.pid] = owner
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
         output = bytearray()
         while b"READY\n" not in output:
             require(time.monotonic() < end and owner.alive(), "outer setup failed or deadline")
@@ -875,30 +1027,41 @@ class Experiment:
                 require(data, "outer exited before gate")
                 output.extend(data)
                 require(len(output) <= META_LIMIT, "outer metadata overflow")
-        descendants(owner, self.children)
+        descendants(owner, self.children, deadline=end)
         workers = [h for h in self.children.values() if h.alive() and
                    Path(f"/proc/{h.pid}/exe").resolve() == Path(PYTHON).resolve()]
         require(len(workers) == 1, "fixed worker identity missing or ambiguous")
         worker = workers[0]
-        counters = loss_counters()
+        counters = loss_counters(deadline=end)
+        remaining(end)
         record = {"begin": begin, "cursor": cursor, "profiles": actual,
                   "trace": [], "audit": [], "go_sent": False, "boot_id": boot_id(), "loss_before": counters}
         self.result["arms"][name] = record
+        # Attachment, host gates, the primary and final drain share this operation
+        # budget. Startup has its own existing 10s bound, propagated to __drop.
+        self.operation_end = time.monotonic() + 10
         self.primary(worker, expected_binds(self.root, self.manifest), record)
         record["finish"] = stamp()
         # Drain synthetic diagnostics with a hard limit, without retaining their text.
         self.child.stdin.close()
-        self.child.stdin = open(os.devnull, "wb")
         for stream in (self.child.stdout, self.child.stderr):
             os.set_blocking(stream.fileno(), False)
-        size = 0
-        while time.monotonic() < end and self.child.poll() is None:
-            for stream in (self.child.stdout, self.child.stderr):
-                data = stream.read(META_LIMIT + 1) or b""
+        size = len(output)
+        streams = [self.child.stdout, self.child.stderr]
+        while streams or self.child.poll() is None:
+            remaining(self.operation_end)
+            ready, _, _ = select.select(streams, [], [], min(0.02, remaining(self.operation_end)))
+            for stream in ready:
+                try:
+                    data = os.read(stream.fileno(), 8192)
+                except BlockingIOError:
+                    continue
+                if not data:
+                    streams.remove(stream)
                 size += len(data)
                 require(size <= META_LIMIT, "inner diagnostic overflow")
-            time.sleep(0.005)
-        require(self.child.poll() is not None, "outer exit deadline")
+        remaining(self.operation_end)
+        record["diagnostic_bytes"] = size
         record["audit"] = audit_capture(cursor, record["gate"], begin, record["finish"])
         record["capture_finish"] = stamp()
         require(len(json.dumps({"trace": record["trace"], "audit": record["audit"]})) <= COLLECT_LIMIT,
@@ -909,13 +1072,15 @@ class Experiment:
         return record
 
     def primary(self, worker, binds, record):
-        observer = Observer(worker, self.children)  # Stopped and attached before GO.
+        observer = Observer(worker, self.children, deadline=self.operation_end)  # Stopped and attached before GO.
         record["gate"] = observe_gate(worker, self.child)
         validate_gate(record["gate"], self.uid, self.gid, self.namespace.name, binds)
         observer.expected_label = record["gate"]["label"]
         self.checkpoint()
 
         def go():
+            if self.operation_end is not None:
+                remaining(self.operation_end)
             require(worker.alive(), "worker identity changed before GO")
             self.child.stdin.write(b"G")
             self.child.stdin.flush()
@@ -957,7 +1122,8 @@ class Experiment:
         except BaseException as error:
             self.result.update(outcome="inconclusive", reason=str(error) if isinstance(error, Inconclusive) else type(error).__name__)
         finally:
-            self.cleanup_end = time.monotonic() + 30
+            if self.cleanup_end is None:
+                self.cleanup_end = time.monotonic() + 30
             cleanup = {"status": "failed", "owned_target": str(self.namespace.path) if self.namespace.created else None}
             self.result["cleanup"] = cleanup
             try:
@@ -980,6 +1146,7 @@ class Experiment:
                 cleanup["reason"] = str(error) if isinstance(error, Inconclusive) else type(error).__name__
                 self.result["outcome"] = "inconclusive"
             self.result["finished"] = stamp()
+            self.checkpoint()
             # Never overwrite an existing result or write through an evidence symlink.
             if self.evidence_created:
                 protected(self.evidence, directory=True)
@@ -993,8 +1160,8 @@ class Experiment:
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "__drop":
-        require(len(argv) == 4, "invalid internal entry")
-        trampoline(Path(__file__).parent, int(argv[1]), int(argv[2]), argv[3])
+        require(len(argv) == 5, "invalid internal entry")
+        trampoline(Path(__file__).parent, int(argv[1]), int(argv[2]), argv[3], float(argv[4]))
         return 125
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)

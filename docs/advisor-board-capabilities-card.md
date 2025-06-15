@@ -743,8 +743,14 @@ the protected evidence **parent**; the helper exclusively creates the final priv
 directory. Tool, library, kernel-feature and boot changes require a fresh render/review.
 The helper's self-check cannot substitute for checking code before executing it.
 
-The closed Python fixture binds hashed `os.py` and `linecache.py` bootstrap files,
-the encodings directory and selected executable dependencies. It creates an empty
+The manifest separately records the controller tools and their resolved loader/library
+dependencies, including the system Python's imported stdlib/bytecode/native modules
+and ldd's bash interpreter and loader probes; unsupported tool
+interpreter recipes fail closed. These controller dependencies are not added to the
+synthetic fixture. The closed Python fixture binds hashed `os.py` and `linecache.py`
+bootstrap files, the encodings directory and selected executable dependencies. Every
+encodings file and directory is protected and inventoried; links and special files
+are rejected before GO. It creates an empty
 `lib-dynload` directory rather than exposing the host stdlib tree. The non-root
 startup regression supplies EOF permanently: it must observe READY followed by exit
 125, without sending GO or invoking the primary operation. A host that prohibits
@@ -774,6 +780,15 @@ deadline. Expiry refuses a new parser, still attempts removal of the exact held 
 after descendants have been reaped, and reports failed cleanup if proof is incomplete.
 An unreaped parser or unavailable root-policy snapshot requires administrator recovery;
 a timeout never establishes successful cleanup.
+Spawned direct children remain owned if pidfd acquisition fails. Discovery errors
+still permit bounded teardown of known children, but prevent policy removal and a
+successful closeout. Dead descendants must have their wait status consumed (or prior
+reaping proved), and unresolved identities/pidfds remain recorded for recovery;
+resolved descriptors and the outer pipes are closed even on failure. Startup validation
+shares the controller's absolute 10-second startup deadline. Observer attachment,
+host gates, the primary and unconditional diagnostic drain share a separate 10-second
+operation budget, with startup and later output counted against one 64-KiB limit.
+An unsuccessful arm teardown retains its original cleanup deadline for final cleanup.
 After SIGKILL, an administrator must verify the recorded PID/start identities and
 namespace directory identity before recovery; never signal a numeric PID alone or
 substitute a root/empty namespace. With owned descendants reaped and identity checked,

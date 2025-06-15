@@ -277,7 +277,7 @@ def test_each_arm_holds_go_until_all_independent_host_gates_pass(tmp_path, monke
     events = []
     class FakeObserver:
         exits = {}
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             events.append("attached")
         def run(self, go):
             events.append("observer-run")
@@ -299,7 +299,7 @@ def test_successful_gate_attaches_before_go_and_records_trace(tmp_path, monkeypa
     events = []
     class FakeObserver:
         exits = {45: 1}
-        def __init__(self, *a):
+        def __init__(self, *a, **kw):
             events.append("attached")
         def run(self, go):
             events.append("observing")
@@ -500,12 +500,13 @@ def test_trampoline_consumes_onexec_before_drop_and_fixed_bwrap_exec(tmp_path, m
     monkeypatch.setattr(aa.os, "geteuid", lambda: 0)
     original = Path.read_text
     monkeypatch.setattr(Path, "read_text", lambda p: f":{NS}:unconfined" if str(p) == "/proc/self/attr/current" else original(p))
-    monkeypatch.setattr(aa, "validate_inputs", lambda *a: events.append("validated"))
+    deadline = aa.time.monotonic() + 10
+    monkeypatch.setattr(aa, "validate_inputs", lambda *a, **kw: events.append(("validated", kw["deadline"])))
     monkeypatch.setattr(aa, "bwrap_argv", lambda *a: ["/usr/bin/bwrap", "fixed"])
     monkeypatch.setattr(aa, "drop_identity", lambda u, g: events.append(("drop", u, g)))
     monkeypatch.setattr(aa.os, "execve", lambda *a: events.append(("exec", *a)))
-    aa.trampoline(ex.root, UID, GID, NS)
-    assert events[:2] == ["validated", ("drop", UID, GID)]
+    aa.trampoline(ex.root, UID, GID, NS, deadline)
+    assert events[:2] == [("validated", deadline), ("drop", UID, GID)]
     assert events[2] == ("exec", "/usr/bin/bwrap", ["/usr/bin/bwrap", "fixed"], aa.ENV)
 
 
@@ -537,21 +538,22 @@ def test_audit_capture_filters_exact_identity_and_detects_loss(monkeypatch, comp
         aa.audit_capture("cursor", observation, {}, {})
 
 
-def test_observer_requires_positive_verified_unshare_entry_and_exit(monkeypatch):
+@pytest.mark.parametrize("ops", [[1, 2], [1], [2]])
+def test_observer_requires_positive_verified_unshare_entry_and_exit(monkeypatch, ops):
     worker = SimpleNamespace(pid=45, start=123, alive=lambda: True)
     observer = aa.Observer.__new__(aa.Observer)
     observer.worker, observer.active, observer.pending = worker, {45: worker}, {}
+    observer.deadline = None
     observer.records, observer.exits = [], {}
     observer.expected_label = gate()["label"]
     original_read = Path.read_text
     original_resolve = Path.resolve
     monkeypatch.setattr(Path, "read_text", lambda p: gate()["label"] if str(p) == "/proc/45/attr/current" else original_read(p))
     monkeypatch.setattr(Path, "resolve", lambda p, **k: Path("/usr/bin/unshare").absolute() if str(p) in ("/proc/45/exe", "/usr/bin/unshare") else original_resolve(p, **k))
-    states = iter([(45, ((signal.SIGTRAP | 0x80) << 8) | 0x7f),
-                   (45, ((signal.SIGTRAP | 0x80) << 8) | 0x7f), (45, 0)])
+    states = iter([(45, ((signal.SIGTRAP | 0x80) << 8) | 0x7f)] * len(ops) + [(45, 0)])
     monkeypatch.setattr(aa.os, "waitpid", lambda *a: next(states))
     monkeypatch.setattr(aa.platform, "machine", lambda: "x86_64")
-    op = iter([1, 2])
+    op = iter(ops)
     def ptrace(request, pid, addr=0, data=0):
         if request == 0x420e:
             entry = next(op)
@@ -567,8 +569,12 @@ def test_observer_requires_positive_verified_unshare_entry_and_exit(monkeypatch)
     monkeypatch.setattr(aa, "ptrace", ptrace)
     events = []
     records = observer.run(lambda: events.append("GO"))
-    assert events == ["GO"] and len(records) == 1 and records[0]["return"] == 0
-    assert records[0]["flags"] == 0x10020000 and records[0]["start"] == 123
+    assert events == ["GO"] and worker.reaped
+    if ops == [1, 2]:
+        assert len(records) == 1 and records[0]["return"] == 0
+        assert records[0]["flags"] == 0x10020000 and records[0]["start"] == 123
+    else:
+        assert not records
 
 
 def test_observer_seizes_with_syscall_stop_tagging_before_waiting(monkeypatch):
@@ -599,6 +605,363 @@ def test_real_unprivileged_child_cleanup_preserves_bystander(tmp_path):
             child.wait(timeout=5)
         bystander.terminate()
         bystander.wait(timeout=5)
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_direct_child_teardown_survives_acquisition_or_discovery_failure(tmp_path, monkeypatch, registered):
+    ex = experiment(tmp_path)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                             start_new_session=True, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    ex.child = child
+    if registered:
+        ex.children[child.pid] = aa.Process(child.pid)
+        monkeypatch.setattr(aa, "descendants", lambda *a, **kw: aa.require(False, "discovery failed"))
+    try:
+        try:
+            ex.reap()
+        except aa.Inconclusive:
+            pass
+        assert child.poll() is not None
+        assert all(s.closed for s in (child.stdin, child.stdout, child.stderr))
+        if registered:
+            with pytest.raises(aa.Inconclusive, match="discovery failed"):
+                ex.reap()
+        else:
+            assert ex.child is None
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+        for stream in (child.stdin, child.stdout, child.stderr):
+            stream.close()
+        for handle in ex.children.values():
+            handle.close()
+
+
+def test_dead_owned_children_all_have_wait_status_consumed(tmp_path):
+    ex = experiment(tmp_path)
+    children = [subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True) for _ in range(2)]
+    try:
+        ex.child = children[0]
+        for child in children:
+            handle = aa.Process(child.pid)
+            ex.children[child.pid] = handle
+            assert aa.select.select([handle.fd], [], [], 5)[0]
+        ex.reap()
+        for child in children:
+            with pytest.raises(ChildProcessError):
+                os.waitpid(child.pid, os.WNOHANG)
+        assert not ex.children and ex.child is None
+    finally:
+        for child in children:
+            child.wait(timeout=5)
+            for stream in (child.stdin, child.stdout, child.stderr):
+                stream.close()
+        for handle in ex.children.values():
+            handle.close()
+
+
+def test_failed_descendant_revalidation_closes_unregistered_handle(monkeypatch):
+    closed = []
+    owner = SimpleNamespace(pid=45, alive=lambda: True)
+    handle = SimpleNamespace(pid=46, start=123, close=lambda: closed.append(46))
+    monkeypatch.setattr(Path, "read_text", lambda *a: "46")
+    monkeypatch.setattr(aa, "Process", lambda pid: handle)
+    monkeypatch.setattr(aa, "status", lambda pid: {"PPid": "99"})
+    found = {}
+    with pytest.raises(aa.Inconclusive, match="ownership changed"):
+        aa.descendants(owner, found)
+    assert closed == [46] and not found
+
+
+def scratch_fixture(tmp_path, monkeypatch):
+    stdlib = tmp_path / "python3.99"
+    encodings = stdlib / "encodings"
+    encodings.mkdir(parents=True)
+    (encodings / "__init__.py").write_text("pass")
+    monkeypatch.setattr(aa, "Path", lambda p: tmp_path if p == "/usr/lib" else Path(p))
+    monkeypatch.setattr(aa, "bounded", lambda argv, **kw: b"3.99" if argv[0] == aa.PYTHON else b"")
+    monkeypatch.setattr(aa, "executable", lambda p, *a: {"path": str(Path(p).resolve()), "sha256": "hash"})
+    monkeypatch.setattr(aa, "protected", lambda p, **kw: aa.require(
+        str(p) == str(Path(p).resolve()), "noncanonical staging"))
+    return encodings
+
+
+@pytest.mark.parametrize("entry", ["fifo", "symlink", "directory_symlink"])
+def test_encoding_inventory_rejects_unapproved_objects(tmp_path, monkeypatch, entry):
+    encodings = scratch_fixture(tmp_path, monkeypatch)
+    aa.fixture_inputs()
+    if entry == "fifo":
+        os.mkfifo(encodings / "extra")
+    elif entry == "symlink":
+        (encodings / "extra").symlink_to(encodings / "__init__.py")
+    else:
+        encodings.rename(encodings.with_name("elsewhere"))
+        encodings.symlink_to(encodings.with_name("elsewhere"), target_is_directory=True)
+    with pytest.raises(aa.Inconclusive, match="noncanonical|unsupported encoding"):
+        aa.fixture_inputs()
+
+
+def test_encoding_directory_membership_is_bound(tmp_path, monkeypatch):
+    encodings = scratch_fixture(tmp_path, monkeypatch)
+    before = aa.fixture_inputs()
+    (encodings / "new_directory").mkdir()
+    assert before != aa.fixture_inputs()
+
+
+def test_parser_only_library_change_changes_tool_closure(tmp_path, monkeypatch):
+    library_hash = ["before"]
+    monkeypatch.setattr(aa, "executable", lambda p, *a: {
+        "path": str(Path(p).resolve()),
+        "sha256": library_hash[0] if str(p) == "/fake/parser-only.so" else "unchanged"})
+    def command(argv, **kw):
+        if argv[0] == aa.PYTHON:
+            return b'["/usr/lib/python3.14/os.py"]'
+        return b"libparser => /fake/parser-only.so (0x1)\n" if aa.PARSER in argv else b""
+    monkeypatch.setattr(aa, "bounded", command)
+    before = aa.tools()
+    root = policy_tree(tmp_path)
+    manifest = {"inputs": aa.closure(root), "boot_id": aa.boot_id(),
+                "kernel": aa.platform.release(), "tools": before, "fixture": {}}
+    monkeypatch.setattr(aa, "protected", lambda *a, **kw: None)
+    monkeypatch.setattr(aa, "fixture_inputs", lambda **kw: {})
+    library_hash[0] = "after"
+    assert before != aa.tools()
+    with pytest.raises(aa.Inconclusive, match="executable closure changed"):
+        aa.validate_inputs(root, manifest)
+
+
+def fake_outer_arm(tmp_path, monkeypatch):
+    ex = experiment(tmp_path)
+    ex.namespace.path = tmp_path / "namespace"
+    for name in ("bwrap", "unpriv_bwrap"):
+        profile = ex.namespace.path / "profiles" / name
+        profile.mkdir(parents=True)
+        (profile / "name").write_text(name)
+        (profile / "mode").write_text("enforce")
+    monkeypatch.setattr(ex, "parse", lambda *a: None)
+    monkeypatch.setattr(ex.namespace, "check", lambda: None)
+    monkeypatch.setattr(aa, "journal_cursor", lambda: "cursor")
+    monkeypatch.setattr(aa, "loss_counters", lambda **kw: {})
+    monkeypatch.setattr(aa, "expected_binds", lambda *a: {})
+    monkeypatch.setattr(aa, "audit_capture", lambda *a: [])
+    monkeypatch.setattr(aa, "descendants", lambda *a, **kw: None)
+    monkeypatch.setattr(ex, "reap", lambda: None)
+    monkeypatch.setattr(ex, "primary", lambda worker, binds, record: record.update(gate=gate()))
+    owner = SimpleNamespace(pid=45, start=123, alive=lambda: True)
+    monkeypatch.setattr(aa, "Process", lambda pid: owner)
+    original = Path.resolve
+    monkeypatch.setattr(Path, "resolve", lambda p, **kw:
+                        original(Path(aa.PYTHON)) if str(p) == "/proc/45/exe" else original(p, **kw))
+    return ex
+
+
+def test_exited_outer_diagnostics_are_drained_and_aggregate_limited(tmp_path, monkeypatch):
+    ex = fake_outer_arm(tmp_path, monkeypatch)
+    class Pipe(io.BytesIO):
+        def fileno(self):
+            return 501
+    child = SimpleNamespace(pid=45, stdin=Pipe(), stdout=Pipe(), stderr=Pipe(), poll=lambda: 0)
+    monkeypatch.setattr(aa.subprocess, "Popen", lambda *a, **kw: child)
+    monkeypatch.setattr(aa.select, "select", lambda *a: ([child.stdout], [], []))
+    chunks = iter([b"READY\n", *([b"x" * 8192] * 8), b"", b""])
+    monkeypatch.setattr(aa.os, "read", lambda *a: next(chunks))
+    monkeypatch.setattr(aa.os, "set_blocking", lambda *a: None)
+    # 64 KiB after READY exceeds the single aggregate limit even though poll()==0.
+    with pytest.raises(aa.Inconclusive, match="diagnostic overflow"):
+        ex.arm("baseline")
+
+
+@pytest.mark.parametrize("failure", [aa.Inconclusive, OSError, KeyboardInterrupt])
+def test_spawn_acquisition_failure_retains_direct_ownership_and_signal_mask(tmp_path, monkeypatch, failure):
+    ex = fake_outer_arm(tmp_path, monkeypatch)
+    masks, spawned = [], []
+    child = SimpleNamespace(pid=45)
+    monkeypatch.setattr(aa.signal, "pthread_sigmask", lambda *a: masks.append(a) or set())
+    def spawn(argv, **kwargs):
+        spawned.append(kwargs)
+        return child
+    monkeypatch.setattr(aa.subprocess, "Popen", spawn)
+    monkeypatch.setattr(aa, "Process", lambda pid: (_ for _ in ()).throw(failure("acquisition")))
+    with pytest.raises(failure):
+        ex.arm("baseline")
+    assert ex.child is child and ex.session_pid == child.pid and not ex.children
+    assert masks[0][0] == signal.SIG_BLOCK and masks[-1] == (signal.SIG_SETMASK, set())
+    spawned[0]["preexec_fn"]()
+    assert masks[-1] == (signal.SIG_SETMASK, set())
+
+
+@pytest.mark.parametrize("operation_time,expected", [(5, "passed"), (10, "deadline")])
+def test_outer_drain_shares_primary_budget_instead_of_startup_clock(tmp_path, monkeypatch, operation_time, expected):
+    ex = fake_outer_arm(tmp_path, monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    class Pipe(io.BytesIO):
+        def fileno(self):
+            return 501
+    child = SimpleNamespace(pid=45, stdin=Pipe(), stdout=Pipe(), stderr=Pipe(), poll=lambda: 0)
+    monkeypatch.setattr(aa.subprocess, "Popen", lambda *a, **kw: child)
+    selected = [False]
+    def ready(streams, *a):
+        if not selected[0]:
+            selected[0] = True
+            return [child.stdout], [], []
+        return list(streams), [], []
+    monkeypatch.setattr(aa.select, "select", ready)
+    chunks = iter([b"READY\n", b"", b""])
+    monkeypatch.setattr(aa.os, "read", lambda *a: next(chunks))
+    monkeypatch.setattr(aa.os, "set_blocking", lambda *a: None)
+    def counters(**kw):
+        if "deadline" in kw:
+            assert kw["deadline"] == 10
+            clock[0] = 9
+        return {}
+    monkeypatch.setattr(aa, "loss_counters", counters)
+    def primary(worker, binds, record):
+        assert ex.operation_end == 19
+        record["gate"] = gate()
+        clock[0] += operation_time
+    monkeypatch.setattr(ex, "primary", primary)
+    if expected == "passed":
+        assert ex.arm("baseline")["diagnostic_bytes"] == len(b"READY\n")
+        assert clock[0] > 10  # Startup's end is no longer reused after primary.
+    else:
+        with pytest.raises(aa.Inconclusive, match="deadline"):
+            ex.arm("baseline")
+        assert clock[0] == 19  # No new drain budget after the operation expires.
+
+
+def test_trampoline_validation_expiry_prevents_drop_or_exec(tmp_path, monkeypatch):
+    ex = experiment(tmp_path)
+    clock = [0.0]
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(aa.os, "getuid", lambda: 0)
+    monkeypatch.setattr(aa.os, "geteuid", lambda: 0)
+    original = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda p: f":{NS}:unconfined" if str(p) == "/proc/self/attr/current" else original(p))
+    def validate(root, manifest, *, deadline):
+        assert deadline == 10
+        clock[0] = 10
+    monkeypatch.setattr(aa, "validate_inputs", validate)
+    monkeypatch.setattr(aa, "bwrap_argv", lambda *a: ["bwrap"])
+    monkeypatch.setattr(aa, "drop_identity", lambda *a: pytest.fail("drop after startup expiry"))
+    monkeypatch.setattr(aa.os, "execve", lambda *a: pytest.fail("exec after startup expiry"))
+    with pytest.raises(aa.Inconclusive, match="deadline"):
+        aa.trampoline(ex.root, UID, GID, NS, 10)
+
+
+def test_partial_teardown_closes_resolved_handles_and_keeps_unresolved(tmp_path, monkeypatch):
+    ex = experiment(tmp_path)
+    closed, signals = [], []
+    good = SimpleNamespace(pid=45, start=123, send=lambda sig: signals.append((45, sig)),
+                           collect=lambda: True, close=lambda: closed.append(45))
+    def unresolved():
+        raise aa.Inconclusive("wait identity unresolved")
+    bad = SimpleNamespace(pid=46, start=124, send=lambda sig: signals.append((46, sig)),
+                          collect=unresolved, close=lambda: pytest.fail("unresolved pidfd discarded"))
+    ex.children = {45: good, 46: bad}
+    clock = [0.0]
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(aa.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(aa, "descendants", lambda *a, **kw: None)
+    ex.cleanup_end = 0.01
+    with pytest.raises(aa.Inconclusive, match="not proved reaped"):
+        ex.reap()
+    assert closed == [45] and ex.children == {46: bad}
+    assert (46, signal.SIGKILL) in signals and "wait identity unresolved" in ex.teardown_errors
+
+
+def test_discovery_failure_blocks_policy_cleanup_after_known_teardown(tmp_path, monkeypatch):
+    ex, events = fake_run_environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(ex, "reap", aa.Experiment.reap.__get__(ex))
+    closed, signals = [], []
+    handle = SimpleNamespace(pid=45, start=123, send=signals.append,
+                             collect=lambda: True, close=lambda: closed.append(45))
+    def run_arm(name):
+        ex.children[45] = handle
+        ex.loaded = True
+        raise aa.Inconclusive("startup failure")
+    monkeypatch.setattr(ex, "arm", run_arm)
+    monkeypatch.setattr(aa, "descendants", lambda *a, **kw: aa.require(False, "discovery failed"))
+    result = ex.run()
+    try:
+        assert signals and closed == [45] and not ex.children
+        assert result["cleanup"]["status"] == "failed"
+        assert "discovery failed" in result["cleanup"]["reason"]
+        assert result["teardown_errors"] == ["discovery failed"]
+        assert ex.namespace.path.exists() and ("baseline.policy", "remove") not in events
+    finally:
+        if ex.namespace.fd is not None:
+            os.close(ex.namespace.fd)
+
+
+def test_failed_arm_teardown_keeps_same_budget_for_final_cleanup(tmp_path, monkeypatch):
+    ex, events = fake_run_environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(ex, "reap", aa.Experiment.reap.__get__(ex))
+    clock = [0.0]
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(aa.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    handle = SimpleNamespace(pid=45, start=123, send=lambda sig: None,
+                             collect=lambda: False, close=lambda: pytest.fail("unresolved handle closed"))
+    monkeypatch.setattr(aa, "descendants", lambda *a, **kw: None)
+    def run_arm(name):
+        ex.loaded = True
+        ex.children[45] = handle
+        ex.reap()
+    monkeypatch.setattr(ex, "arm", run_arm)
+    try:
+        result = ex.run()
+        assert ex.cleanup_end == 30 and clock[0] == 30
+        assert result["cleanup"]["status"] == "failed" and ex.children == {45: handle}
+        assert ex.namespace.path.exists() and ("baseline.policy", "remove") not in events
+        assert result["processes"] == [{"pid": 45, "start": 123}]
+    finally:
+        if ex.namespace.fd is not None:
+            os.close(ex.namespace.fd)
+
+
+def test_real_subreaper_consumes_already_exited_adopted_child(tmp_path):
+    root = policy_tree(tmp_path)
+    code = '''
+import json, os, select, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import codex_apparmor_canary as aa
+aa.prctl(36, 1)
+ex = aa.Experiment(Path(sys.argv[2]), Path(sys.argv[2])/'unused', os.getuid(), os.getgid())
+command = "import os,time; pid=os.fork(); (time.sleep(.1),os._exit(0)) if pid==0 else print(pid,flush=True)"
+child = subprocess.Popen([sys.executable,'-c',command],start_new_session=True,
+                         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ex.child = child
+grandpid = int(child.stdout.readline())
+try:
+    for pid in (child.pid, grandpid):
+        h = aa.Process(pid)
+        ex.children[pid] = h
+    for h in ex.children.values():
+        assert select.select([h.fd],[],[],5)[0]
+    assert int(aa.status(grandpid)['PPid']) == os.getpid()
+    ex.reap()
+    assert not ex.children and ex.child is None
+    try: os.waitpid(grandpid,os.WNOHANG)
+    except ChildProcessError: pass
+    else: raise AssertionError('adopted wait status was not consumed')
+    print('adopted dead descendant reaped')
+finally:
+    for h in ex.children.values():
+        h.send(9)
+        try: os.waitpid(h.pid,0)
+        except ChildProcessError: pass
+        h.close()
+    child.wait(timeout=5)
+'''
+    result = subprocess.run([sys.executable, "-c", code, str(Path(aa.__file__).parent), str(root)],
+                            capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr.decode()
+    assert result.stdout == b"adopted dead descendant reaped\n"
 
 
 def test_observed_partial_parser_load_is_removed_before_namespace(tmp_path, monkeypatch):
@@ -671,7 +1034,7 @@ def test_signal_cancellation_enters_cleanup_and_restores_handlers(tmp_path, monk
 def test_pid_change_at_go_leaves_gate_closed(tmp_path, monkeypatch):
     ex = experiment(tmp_path)
     class FakeObserver:
-        def __init__(self, *a):
+        def __init__(self, *a, **kw):
             pass
         def run(self, go):
             go()
