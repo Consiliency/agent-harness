@@ -181,7 +181,7 @@
     "root_policy_operations": false,
     "live_acceptance": "C1-C4 remain unmet"
   },
-  "current_revision": "round1_followup",
+  "current_revision": "reachability_followup",
   "round2_followup": {
     "run_id": "codex-apparmor-canary-sol-20261016-r4",
     "starting_head": "690f42b9eed10d57cbde9bb8f9540e27e6bbfed2",
@@ -844,5 +844,462 @@
     "staging_suffix": "sol-20261016-r3-3d3aeb0af23c",
     "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/1c5ef07a43e3/exec-codex-apparmor-canary-sol-20261016/codex-apparmor-canary-sol-20261016-r3.md",
     "handoff_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/codex-apparmor-canary-sol-20261016-r3/handoff.md"
+  },
+  "reachability_followup": {
+    "run_id": "sol-reachability-20261016",
+    "starting_head": "c1211692b58ad3d2a92fa27b27913e6e41de6392",
+    "branch": "exec/codex-apparmor-canary-sol-20261016",
+    "worktree": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan",
+    "plan_path": "plans/detailed-codex-apparmor-reachability-20261016.md",
+    "plan_sha256": "0b1b0cde3a1b22fbafd7b11781fa0061a9e9953865f333011bf0a06f2f544b5c",
+    "review_binding": {
+      "path": "r5/cristina-plan-review/review.json",
+      "sha256": "f3dddcd3aff44f05b855af5f6c13ce19d6cf5c08abfbd6b822162c7c9c9eb507",
+      "provider_instance": "t3-claude-cristina",
+      "model": "claude-opus-5-5",
+      "verdict": "AGREE",
+      "scope": "owner-directed supplement plan only, separate from failed canonical Claude seat; no implementation, governed, president, live or merge approval",
+      "literal_plan_review_status": "reviewed bytes retain pending planning-input frontmatter; actual subsequent provenance bound here"
+    },
+    "technical_original_plan_policies_and_canonical_records_unchanged": true,
+    "verification_status": "passed",
+    "verification_scope": "offline supplement only; no live acceptance",
+    "summary": "267 passed in 40.28s",
+    "helper_summary": "224 passed",
+    "nonroot_controls": "3 passed, no skips; permanent EOF, actual helper preparation and mount-call mutation",
+    "verification_artifact_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/sol-reachability-20261016/verification-final/verification.json",
+    "verification_artifact_sha256": "128b20eae15171eb4060bc91d4d3786569c857083848bdde1e25e52a4a39f488",
+    "runner_exit_summary": {
+      "commands": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "env_refresh": 0,
+      "suite": 0
+    },
+    "source_bindings": {
+      "phase-loop-runtime/tests/codex_apparmor_canary.py": "4860c2e75fd74695b3f449d033b7db84e999b8fb4b6f16a9de7c7f5fd2e4c1a0",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py": "c1311b0003a228df95f4db554522ae0ff2e96f50fb8fa8b86190f3a1171b05e7",
+      "docs/advisor-board-capabilities-card.md": "100d1724e4835441ec7da12331fff4d5329d9f57140deb9189ebbb9773b7269d",
+      "plans/detailed-codex-apparmor-reachability-20261016.md": "0b1b0cde3a1b22fbafd7b11781fa0061a9e9953865f333011bf0a06f2f544b5c",
+      "plans/detailed-codex-apparmor-canary-20261016-0227.md": "47fbdc0f2e62604fc86c4729917ca308a0d2df58a1e537485e4cc701437764dd",
+      "plans/evidence/codex-apparmor-canary/review.json": "29bd48b38053f83f2fd0132826fc85d97d8d7a40e9fe88e6118ab3de52b0b859",
+      "plans/evidence/codex-apparmor-canary/baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "plans/evidence/codex-apparmor-canary/candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793"
+    },
+    "rendered_files": {
+      "baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+      "codex_apparmor_canary.py": "4860c2e75fd74695b3f449d033b7db84e999b8fb4b6f16a9de7c7f5fd2e4c1a0",
+      "features.dump": "611413ba507a5c19522a9ae5f4b479d3f782c7a3553cc761fbff3c02cd20c927",
+      "fixture.txt": "f7096e77c3bdc78fc543225c8a5d42e08546b5e235509897d7dcd05089c0d986",
+      "manifest.json": "626d3a3e72665481485fe207730551e0b349a837007de4509eb4547f85dd9385",
+      "parser.conf": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "preprocessed_sha256": {
+      "baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793"
+    },
+    "closure_sha256": {
+      "inputs": "9f1f43a8efd70e0f028a0f608836745c093f04bdcba961eebafd57d722f4bd4e",
+      "tools": "bd6d5f34fa56507389707231723204311691ce1110213a5188bdabd9b110eb07",
+      "fixture": "ba50cc21783e5659d4e28b87873e096ec227ce7f352dd961f0ec373a88b51b45"
+    },
+    "boot_id": "989f21f5-fdbb-49fe-b11f-b10f2e07e4af",
+    "kernel": "7.0.0-34-generic",
+    "finding_responses": {
+      "T3C-F01": {
+        "status": "implemented_offline",
+        "response": "Self-view is exactly unconfined; independent held direct-child PID/start/pidfd, canonical Python, host userns and exact root-view :NS:unconfined are required before E. No initial poll/wait/reap. ENTRY/E precedes validation, drop, bwrap and primary GO.",
+        "source": [
+          451,
+          1111,
+          1196
+        ],
+        "tests": [
+          496,
+          1456,
+          1469,
+          1477,
+          1506,
+          1517,
+          1629,
+          1658
+        ],
+        "remaining": "Target-kernel label observation remains live C1/C3."
+      },
+      "T3C-F02": {
+        "status": "implemented_offline",
+        "response": "After acknowledgment and protected input validation, trusted child verifies controller-recorded starting mnt identity, calls only CLONE_NEWNS, requires changed identity, then recursively privatizes /. Final mount gate remains strict. Same setup in both arms; observer attaches only after READY.",
+        "source": [
+          428,
+          451,
+          605,
+          1111,
+          1235
+        ],
+        "tests": [
+          1421,
+          1533,
+          1565,
+          1621,
+          1639
+        ],
+        "remaining": "Root execution in the AppArmor namespace and dev0 mount tree remain unobserved."
+      },
+      "T3C-P01": {
+        "status": "implemented_and_measured",
+        "response": "Ordinary nonroot control invokes helper prepare_mounts inside a disposable userns, without util-linux propagation preparation. Actual sealed-fixture mountinfo is checked by validate_mounts, the exact extracted final-gate mount loop. Permanent EOF yields READY/125. Mutation replacing only helper libc mount with return0 exposes master:N and fails preparation and the strict mount loop.",
+        "source": [
+          428,
+          605
+        ],
+        "tests": [
+          1073,
+          1565,
+          1621
+        ],
+        "evidence": "r5/nonroot-controls.txt (runner-written JUnit properties include actual rows and observations); extra userns is test-only, not production topology proof."
+      },
+      "T3C-P02": {
+        "status": "implemented_offline",
+        "response": "Separate stdout/stderr before E; exactly ENTRY newline and empty stderr. A second nonblocking drain precedes E. READY is read only into fresh postack buffers and requires exact PREPARED/READY sequence. Child uses select against original deadline then os.read(0,1); no buffered stdin. Aggregate counts all phases and streams. Duplicate/preack READY, stderr, EOF, wrong ack, expiry/cancel/overflow refuse continuation.",
+        "source": [
+          451,
+          1111,
+          1196
+        ],
+        "tests": [
+          496,
+          768,
+          804,
+          1469,
+          1506,
+          1517,
+          1658
+        ]
+      },
+      "T3C-P03": {
+        "status": "implemented_offline",
+        "response": "Held direct-child ownership and liveness precede reads; pidfd liveness/start are checked again after exe/user/mnt/label proc observations and final marker drain. Exact Namespace.name label equality rejects host, foreign, nested and mode suffix variants. No poll/wait before E.",
+        "source": [
+          1196
+        ],
+        "tests": [
+          1456,
+          1477
+        ]
+      },
+      "T3C-P04": {
+        "status": "implemented_offline",
+        "response": "Bounded internal mnt:[digits] argument carries controller-observed entry identity. Before value must match; unshare return0 and changed identity are mandatory before mount. Explicit libc NULL source/type/data, c_ulong flags MS_REC|MS_PRIVATE, return/errno checks; all optional fields including unbindable must be empty. No namespace fds opened. Failed/unchanged unshare makes zero mount calls; preparation failure prevents drop/exec.",
+        "source": [
+          428,
+          451,
+          1111
+        ],
+        "tests": [
+          1421,
+          1533,
+          1639
+        ]
+      },
+      "T3C-PS1": {
+        "status": "nonblocking_not_adopted",
+        "response": "Keep preparation after input validation, as the exact reviewed plan specifies and parent selected. Moving it before validation would alter reviewed ordering. Root-only propagation window remains constrained by protected inputs and final bind identity checks."
+      },
+      "T3C-PS2": {
+        "status": "implemented_offline",
+        "response": "Entry mnt identity is independently observed by root controller. PREPARED identity is explicitly trusted-child self-report, retained in arm/checkpoint evidence, never labeled independent or primary evidence. Owned-child teardown bounds its lifetime.",
+        "source": [
+          451,
+          1111,
+          1196
+        ]
+      },
+      "T3C-PS3": {
+        "status": "documented",
+        "response": "Experimental note states private canary versus production shared/slave starting tree and unchanged primary capability-decision hypothesis.",
+        "docs": "docs/advisor-board-capabilities-card.md:760"
+      },
+      "T3C-S01": {
+        "status": "accepted_nonblocking_deferral",
+        "response": "Non-child PID reuse can cause conservative spurious cleanup failure; no false successful cleanup. Preserve existing identity-safe reaper; unrelated refactor excluded."
+      },
+      "T3C-S02": {
+        "status": "accepted_nonblocking_deferral",
+        "response": "Late adopted arm child may be attributed to command owner and cause conservative inconclusive. Preserve reviewed ownership logic; no scope expansion."
+      },
+      "T3C-S03": {
+        "status": "implemented_metadata",
+        "response": "Advance current_revision to reachability_followup; append new follow-up while preserving every historical vote and payload."
+      },
+      "T3C-S04": {
+        "status": "accepted_nonblocking_deferral",
+        "response": "Synchronous non-EEXIST mkdir uncertainty is conservative and requires exact recovery proof; preserve without unrelated cleanup change."
+      },
+      "IMPL-001": {
+        "status": "preserved_and_reverified",
+        "response": "Closed os.py/linecache bootstrap and actual READY/permanent EOF125 remain tested.",
+        "source": [
+          239,
+          402
+        ],
+        "tests": [
+          1073,
+          1565
+        ]
+      },
+      "IMPL-002": {
+        "status": "preserved_and_reverified",
+        "response": "Absolute deadlines still prevent post-expiry parser launch and renewed cleanup budgets.",
+        "source": [
+          127,
+          1008
+        ],
+        "tests": [
+          1100,
+          1116,
+          1168,
+          1325
+        ]
+      },
+      "R1-F01": {
+        "status": "preserved_and_reverified",
+        "response": "Child ownership registered before acquisition; direct Popen retained on pidfd failure; masked cancellation and bounded teardown unchanged.",
+        "source": [
+          1111,
+          1008
+        ],
+        "tests": [
+          616,
+          785
+        ]
+      },
+      "R1-F02": {
+        "status": "preserved_and_reverified",
+        "response": "Discovery failure stays sticky while known handles receive ownership-safe best-effort teardown; incomplete proof blocks removal.",
+        "source": [
+          1008
+        ],
+        "tests": [
+          616,
+          886
+        ]
+      },
+      "R1-F03": {
+        "status": "preserved_and_reverified",
+        "response": "Dead/adopted terminal wait consumption independent of liveness remains unchanged.",
+        "source": [
+          507,
+          1008
+        ],
+        "tests": [
+          647,
+          935
+        ]
+      },
+      "R1-F04": {
+        "status": "preserved_and_reverified",
+        "response": "Tool/dependency/interpreter closure unchanged; parser-only library mutation still rejects.",
+        "source": [
+          228,
+          265
+        ],
+        "tests": [
+          720
+        ]
+      },
+      "R1-F05": {
+        "status": "preserved_and_reverified",
+        "response": "Full encoding membership inventory and object-type refusals retained; fixed fixture binds unchanged.",
+        "source": [
+          228,
+          410
+        ],
+        "tests": [
+          699,
+          713
+        ]
+      },
+      "R1-F06": {
+        "status": "preserved_and_extended",
+        "response": "Unconditional EOF drain and one aggregate limit now span entry plus postack startup plus primary diagnostics; original operation and cleanup deadlines retained.",
+        "source": [
+          1111,
+          1196,
+          1008
+        ],
+        "tests": [
+          768,
+          804,
+          910,
+          1506
+        ]
+      },
+      "R1-F07": {
+        "status": "preserved_and_reverified",
+        "response": "Failed unregistered descendant closes pidfd; resolved handles/stdio close; unresolved handles and recovery targets remain owned.",
+        "source": [
+          524,
+          1008
+        ],
+        "tests": [
+          672,
+          865,
+          886
+        ]
+      },
+      "R1-F08": {
+        "status": "preserved_and_extended",
+        "response": "Single absolute startup end reaches ENTRY/E, input validation, preparation and pre-exec checks, without new budget.",
+        "source": [
+          451,
+          1111,
+          1196
+        ],
+        "tests": [
+          843,
+          1506
+        ]
+      },
+      "R1-F09": {
+        "status": "unresolved_live_only",
+        "response": "Live audit transport remains unmeasured. No raw journal reads or transport broadening. Exact baseline EPERM/sys_admin attribution still required or no candidate.",
+        "source": [
+          828,
+          844,
+          1263
+        ],
+        "tests": [
+          332,
+          436,
+          530
+        ],
+        "static_publication_blocker": false
+      },
+      "R1-F10": {
+        "status": "not_established",
+        "response": "No realistic false-success ptrace sequence established; preserve syscall entry/exit discrimination and require positive return0 for exact primary. No speculative observer rewrite or live observer claim.",
+        "source": [
+          695,
+          828,
+          844
+        ],
+        "tests": [
+          317,
+          340,
+          346,
+          547
+        ]
+      },
+      "R2-F01": {
+        "status": "preserved_and_reverified",
+        "response": "Controller subprocess ownership retained through postspawn/selector/teardown failure, adopted descendants and original absolute deadlines; removal still gated on complete reaping.",
+        "source": [
+          127,
+          935,
+          1253,
+          1263
+        ],
+        "tests": [
+          1176,
+          1275,
+          1325
+        ]
+      },
+      "R2-F02": {
+        "status": "preserved_and_reverified",
+        "response": "Namespace exclusive creation cancellation mask and identity registration unchanged; uncertain/unacquired and collision metadata remains truthful.",
+        "source": [
+          889,
+          1263
+        ],
+        "tests": [
+          372,
+          388,
+          1230
+        ]
+      }
+    },
+    "finding_responses_path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r5/finding-responses.json",
+    "finding_responses_sha256": "798a6f443cf06435b7ba6cfe7dd873c4c2e30b5352e4f3353b5f8de7a2ae1fd5",
+    "acceptance": {
+      "1": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      },
+      "2": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      },
+      "3": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      },
+      "4": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      },
+      "5": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      }
+    },
+    "original_acceptance": {
+      "C1": "unmet_live",
+      "C2": "unmet_live",
+      "C3": "unmet_live",
+      "C4": "unmet_live",
+      "C5": "truth_preserved"
+    },
+    "review_limits": "Prior votes bind prior inputs; canonical Claude failure and Consiliency/agent-harness#1734 remain separate. No new reviews or agents. Parent owns the one planned Cristina implementation re-review.",
+    "verification_history": "First helper run 14 failed/203 passed: readlink mock also intercepted system Python symlink; host fixture inventory attempted inside disposable userns where root files map to overflow uid. Test setup corrected by scoped readlink mock and host-validated manifest carried into userns. Second helper run 217 passed. Added startup/refusal cases; final runner 224 helper/267 suite passed. Initial evidence preserved. Root-level prerequisite probe lacked Python config; correct phase-loop-runtime preflight passed.",
+    "approval_packet_path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r5/approval-packet.txt",
+    "approval_packet_sha256": "0e6b5e03ea2b67d5ea5b24bc432338a51d215dd8f5af22db2db54e85c62fcf54",
+    "staging_suffix": "sol-20261016-r5-4860c2e75fd7",
+    "manifest_sha256": "626d3a3e72665481485fe207730551e0b349a837007de4509eb4547f85dd9385",
+    "doc_delta_decision": "docs_updated",
+    "doc_delta_scope": "experimental canary note only",
+    "owned_paths": [
+      "phase-loop-runtime/tests/codex_apparmor_canary.py",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+      "docs/advisor-board-capabilities-card.md",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016.json",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016-r2.json",
+      "plans/manifest.json",
+      "plans/detailed-codex-apparmor-reachability-20261016.md"
+    ],
+    "dirty_path_classification": {
+      "plan_owned": [
+        "docs/advisor-board-capabilities-card.md",
+        "phase-loop-runtime/tests/codex_apparmor_canary.py",
+        "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+        "plans/manifest.json",
+        "plans/detailed-codex-apparmor-reachability-20261016.md"
+      ],
+      "prepared_owned_inputs": [
+        "plans/detailed-codex-apparmor-reachability-20261016.md",
+        "plans/manifest.json"
+      ],
+      "pre_existing_unrelated": [],
+      "non_plan_output": []
+    },
+    "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/1c5ef07a43e3/exec-codex-apparmor-canary-sol-20261016/sol-reachability-20261016.md",
+    "handoff_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/sol-reachability-20261016/handoff.md",
+    "publication_intent": "draft",
+    "publication_pr_url": "https://github.com/Consiliency/agent-harness/pull/1731",
+    "no_root_helper_or_policy_operations": true,
+    "no_host_mount_operation": true,
+    "no_shared_tooling_installation": true,
+    "no_merge": true
   }
 }

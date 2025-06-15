@@ -756,6 +756,25 @@ startup regression supplies EOF permanently: it must observe READY followed by e
 125, without sending GO or invoking the primary operation. A host that prohibits
 unprivileged bubblewrap reports an explicit prerequisite skip.
 
+The protected Python trampoline requires self-view `unconfined` and sends exactly
+`ENTRY` before blocking for the one-byte `E` acknowledgment. The root controller
+independently verifies the unreaped direct child's PID/start/pidfd, canonical Python,
+host user namespace and exact `:<owned-namespace>:unconfined` label before acknowledging.
+After protected input validation, the trusted child creates a mount namespace,
+proves its identity changed from the controller-recorded entry identity, and makes
+only that tree recursively private before the existing complete identity/capability
+drop. Preparation failure prevents fixture execution. The prepared identity is
+recorded as child-reported evidence, separate from the independent entry observation.
+The final gate still rejects every propagation field, including slave `master:N`
+and `unbindable`. A disposable nonroot user-namespace control exercises the helper's
+own preparation and actual fixture mount checks with permanent EOF. Its extra user
+namespace is test-only and proves neither production mappings nor AppArmor behavior.
+The canary starts from a private mount tree, unlike production's shared/slave tree;
+the primary namespace capability-decision hypothesis is unchanged. Trusted preparation
+precedes READY and observer attachment and never counts as primary evidence. The
+single startup deadline and aggregate output bound span ENTRY/E and READY/G. These
+changes do not authorize administrator staging, privileged preparation or a live run.
+
 Only after separate live authorization, use nonzero host-operator ids and the staged
 system-Python invocation:
 

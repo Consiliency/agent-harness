@@ -425,15 +425,43 @@ def bwrap_argv(root, manifest, uid, gid):
     return argv + ["--", PYTHON, "-I", "-S", "-c", WORKER]
 
 
-def trampoline(root, uid, gid, namespace, deadline):
+def prepare_mounts(expected, deadline):
+    require(re.fullmatch(r"mnt:\[[0-9]{1,20}\]", expected), "invalid entry mount identity")
+    remaining(deadline)
+    before = os.readlink("/proc/self/ns/mnt")
+    require(before == expected, "entry mount namespace changed")
+    ctypes.set_errno(0)
+    result = LIBC.unshare(0x20000)  # CLONE_NEWNS only; no user namespace.
+    require(result == 0, f"mount namespace unshare refused: errno={ctypes.get_errno()}")
+    after = os.readlink("/proc/self/ns/mnt")
+    require(after != before, "mount namespace identity unchanged")
+    remaining(deadline)
+    LIBC.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+                          ctypes.c_ulong, ctypes.c_void_p]
+    LIBC.mount.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = LIBC.mount(None, b"/", None, 0x4000 | 0x40000, None)
+    require(result == 0, f"private propagation refused: errno={ctypes.get_errno()}")
+    rows = mount_rows(Path("/proc/self/mountinfo").read_text(), host=True)
+    require(rows and all(not row["propagation"] for row in rows), "prepared mount propagation not private")
+    remaining(deadline)
+    return after
+
+
+def trampoline(root, uid, gid, namespace, deadline, entry_mnt):
     require(os.getuid() == 0 and os.geteuid() == 0, "drop trampoline requires root")
     require(re.fullmatch(r"phase_loop_codex_canary_[0-9a-f]{32}", namespace), "invalid trampoline namespace")
     label = Path("/proc/self/attr/current").read_text().strip()
-    require(label == f":{namespace}:unconfined", "private unconfined Python entry not observed")
-    manifest = json.loads((root / "manifest.json").read_text())
+    require(label == "unconfined", "unconfined Python self-view not observed")
     require(deadline <= time.monotonic() + 10, "invalid startup deadline")
+    os.write(1, b"ENTRY\n")
+    require(select.select([0], [], [], remaining(deadline))[0], "entry acknowledgment deadline")
+    require(os.read(0, 1) == b"E", "entry acknowledgment refused")
     remaining(deadline)
+    manifest = json.loads((root / "manifest.json").read_text())
     validate_inputs(root, manifest, deadline=deadline)
+    prepared = prepare_mounts(entry_mnt, deadline)
+    os.write(1, ("PREPARED " + prepared + "\n").encode("ascii"))
     # Protected code is executed by Python before bwrap ever receives on-exec selection.
     argv = bwrap_argv(root, manifest, uid, gid)
     remaining(deadline)
@@ -571,8 +599,12 @@ def validate_gate(observation, uid, gid, namespace, binds):
     require(observation["uid_map"] == [[uid, uid, 1]], "wrong host-operator uid map")
     require(observation["gid_map"] == [[gid, gid, 1]], "wrong host-operator gid map")
     require(observation["fds"] == {"0": "gate", "1": "status", "2": "status"}, "descriptor leak")
+    validate_mounts(observation["mounts"], binds)
+
+
+def validate_mounts(mounts, binds):
     seen = set()
-    for row in observation["mounts"]:
+    for row in mounts:
         path = row["path"]
         require(path not in seen, "duplicate mount")
         require(not row["propagation"], "mount propagation not private")
@@ -583,7 +615,7 @@ def validate_gate(observation, uid, gid, namespace, binds):
         else:
             require((path, row["fs"]) in {("/", "tmpfs"), ("/proc", "proc"), ("/dev", "tmpfs")}, "unexpected mount")
     require(seen == set(binds), "missing fixture bind")
-    require(any(r["path"] == "/" and r["fs"] == "tmpfs" for r in observation["mounts"]), "root not synthetic")
+    require(any(r["path"] == "/" and r["fs"] == "tmpfs" for r in mounts), "root not synthetic")
 
 
 def observe_gate(worker, child):
@@ -1086,9 +1118,10 @@ class Experiment:
         cursor = journal_cursor()
         begin = stamp()
         end = time.monotonic() + 10
+        entry_mnt = os.readlink("/proc/self/ns/mnt")
         argv = ["/usr/bin/aa-exec", "-n", self.namespace.name, "-p", "unconfined", "--", PYTHON,
                 "-I", "-S", str(self.root / "codex_apparmor_canary.py"), "__drop",
-                str(self.uid), str(self.gid), self.namespace.name, str(end)]
+                str(self.uid), str(self.gid), self.namespace.name, str(end), entry_mnt]
         previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
         try:
             self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1099,15 +1132,25 @@ class Experiment:
             self.children[owner.pid] = owner
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous)
-        output = bytearray()
-        while b"READY\n" not in output:
+        record = {"begin": begin, "cursor": cursor, "profiles": actual,
+                  "trace": [], "audit": [], "go_sent": False, "boot_id": boot_id()}
+        self.result["arms"][name] = record
+        entry_size = self.entry(owner, end, entry_mnt, record)
+        output, errors = bytearray(), bytearray()
+        while not output.endswith(b"READY\n"):
             require(time.monotonic() < end and owner.alive(), "outer setup failed or deadline")
             ready, _, _ = select.select([self.child.stdout, self.child.stderr], [], [], 0.02)
             for stream in ready:
                 data = os.read(stream.fileno(), 4096)
                 require(data, "outer exited before gate")
-                output.extend(data)
-                require(len(output) <= META_LIMIT, "outer metadata overflow")
+                (output if stream is self.child.stdout else errors).extend(data)
+                require(entry_size + len(output) + len(errors) <= META_LIMIT, "outer metadata overflow")
+                require(not errors, "outer setup stderr")
+        require(re.fullmatch(rb"PREPARED mnt:\[[0-9]{1,20}\]\nREADY\n", output), "malformed fixture startup")
+        prepared = output.splitlines()[0].decode("ascii").removeprefix("PREPARED ")
+        require(prepared != entry_mnt, "reported prepared namespace unchanged")
+        record["preparation"] = {"mnt": prepared, "provenance": "trusted child self-report; not independently observed",
+                                 "primary_evidence": False}
         descendants(owner, self.children, deadline=end)
         workers = [h for h in self.children.values() if h.alive() and
                    Path(f"/proc/{h.pid}/exe").resolve() == Path(PYTHON).resolve()]
@@ -1115,9 +1158,7 @@ class Experiment:
         worker = workers[0]
         counters = loss_counters(deadline=end)
         remaining(end)
-        record = {"begin": begin, "cursor": cursor, "profiles": actual,
-                  "trace": [], "audit": [], "go_sent": False, "boot_id": boot_id(), "loss_before": counters}
-        self.result["arms"][name] = record
+        record["loss_before"] = counters
         # Attachment, host gates, the primary and final drain share this operation
         # budget. Startup has its own existing 10s bound, propagated to __drop.
         self.operation_end = time.monotonic() + 10
@@ -1127,7 +1168,7 @@ class Experiment:
         self.child.stdin.close()
         for stream in (self.child.stdout, self.child.stderr):
             os.set_blocking(stream.fileno(), False)
-        size = len(output)
+        size = entry_size + len(output) + len(errors)
         streams = [self.child.stdout, self.child.stderr]
         while streams or self.child.poll() is None:
             remaining(self.operation_end)
@@ -1151,6 +1192,45 @@ class Experiment:
         require(record["loss_after"].get("lost") == counters.get("lost"), "audit loss counter changed")
         self.reap()
         return record
+
+    def entry(self, owner, end, entry_mnt, record):
+        output, errors = bytearray(), bytearray()
+
+        def receive(ready):
+            for stream in ready:
+                data = os.read(stream.fileno(), 4096)
+                require(data, "outer exited before entry acknowledgment")
+                (output if stream is self.child.stdout else errors).extend(data)
+                require(len(output) + len(errors) <= META_LIMIT, "outer metadata overflow")
+                require(b"ENTRY\n".startswith(output) and not errors, "malformed entry marker")
+
+        while output != b"ENTRY\n":
+            remaining(end)
+            require(owner.alive(), "entry child exited")
+            receive(select.select([self.child.stdout, self.child.stderr], [], [], min(0.02, remaining(end)))[0])
+        base = Path(f"/proc/{owner.pid}")
+        require(owner.pid == self.child.pid and owner.alive(), "entry direct child identity changed")
+        observed = {"pid": owner.pid, "start": owner.start,
+                    "exe": str((base / "exe").resolve(strict=True)),
+                    "user": os.readlink(base / "ns/user"),
+                    "mnt": os.readlink(base / "ns/mnt"),
+                    "label": (base / "attr/current").read_text().strip(),
+                    "provenance": "independent root-controller proc observation"}
+        require(observed["exe"] == str(Path(PYTHON).resolve(strict=True)), "wrong entry executable")
+        require(observed["user"] == os.readlink("/proc/self/ns/user") == os.readlink("/proc/1/ns/user"),
+                "entry user namespace changed")
+        require(observed["mnt"] == entry_mnt, "entry mount namespace changed")
+        require(observed["label"] == f":{self.namespace.name}:unconfined", "wrong root-view entry label")
+        # No poll/wait here: the unreaped direct child reserves its numeric PID.
+        receive(select.select([self.child.stdout, self.child.stderr], [], [], 0)[0])
+        require(owner.alive() and start_time(owner.pid) == owner.start, "entry child identity changed after observation")
+        record["entry"] = observed
+        self.checkpoint()
+        remaining(end)
+        self.child.stdin.write(b"E")
+        self.child.stdin.flush()
+        record["entry_ack_sent"] = True
+        return len(output) + len(errors)
 
     def primary(self, worker, binds, record):
         observer = Observer(worker, self.children, deadline=self.operation_end)  # Stopped and attached before GO.
@@ -1269,8 +1349,8 @@ class Experiment:
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "__drop":
-        require(len(argv) == 5, "invalid internal entry")
-        trampoline(Path(__file__).parent, int(argv[1]), int(argv[2]), argv[3], float(argv[4]))
+        require(len(argv) == 6, "invalid internal entry")
+        trampoline(Path(__file__).parent, int(argv[1]), int(argv[2]), argv[3], float(argv[4]), argv[5])
         return 125
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)

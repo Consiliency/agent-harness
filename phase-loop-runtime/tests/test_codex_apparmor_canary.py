@@ -499,15 +499,20 @@ def test_trampoline_consumes_onexec_before_drop_and_fixed_bwrap_exec(tmp_path, m
     monkeypatch.setattr(aa.os, "getuid", lambda: 0)
     monkeypatch.setattr(aa.os, "geteuid", lambda: 0)
     original = Path.read_text
-    monkeypatch.setattr(Path, "read_text", lambda p: f":{NS}:unconfined" if str(p) == "/proc/self/attr/current" else original(p))
+    monkeypatch.setattr(Path, "read_text", lambda p: "unconfined" if str(p) == "/proc/self/attr/current" else original(p))
     deadline = aa.time.monotonic() + 10
+    monkeypatch.setattr(aa.os, "write", lambda fd, data: events.append(("write", fd, data)))
+    monkeypatch.setattr(aa.select, "select", lambda *a: ([0], [], []))
+    monkeypatch.setattr(aa.os, "read", lambda fd, size: b"E" if (fd, size) == (0, 1) else pytest.fail("buffered ack"))
     monkeypatch.setattr(aa, "validate_inputs", lambda *a, **kw: events.append(("validated", kw["deadline"])))
+    monkeypatch.setattr(aa, "prepare_mounts", lambda *a: events.append(("prepare", *a)) or "mnt:[2]")
     monkeypatch.setattr(aa, "bwrap_argv", lambda *a: ["/usr/bin/bwrap", "fixed"])
     monkeypatch.setattr(aa, "drop_identity", lambda u, g: events.append(("drop", u, g)))
     monkeypatch.setattr(aa.os, "execve", lambda *a: events.append(("exec", *a)))
-    aa.trampoline(ex.root, UID, GID, NS, deadline)
-    assert events[:2] == [("validated", deadline), ("drop", UID, GID)]
-    assert events[2] == ("exec", "/usr/bin/bwrap", ["/usr/bin/bwrap", "fixed"], aa.ENV)
+    aa.trampoline(ex.root, UID, GID, NS, deadline, "mnt:[1]")
+    assert events == [("write", 1, b"ENTRY\n"), ("validated", deadline),
+                      ("prepare", "mnt:[1]", deadline), ("write", 1, b"PREPARED mnt:[2]\n"),
+                      ("drop", UID, GID), ("exec", "/usr/bin/bwrap", ["/usr/bin/bwrap", "fixed"], aa.ENV)]
 
 
 def test_bwrap_fixture_exposes_no_host_directory_or_arbitrary_command(tmp_path):
@@ -751,6 +756,7 @@ def fake_outer_arm(tmp_path, monkeypatch):
     monkeypatch.setattr(aa, "descendants", lambda *a, **kw: None)
     monkeypatch.setattr(ex, "reap", lambda: None)
     monkeypatch.setattr(ex, "primary", lambda worker, binds, record: record.update(gate=gate()))
+    monkeypatch.setattr(ex, "entry", lambda *a: len(b"ENTRY\n"))
     owner = SimpleNamespace(pid=45, start=123, alive=lambda: True)
     monkeypatch.setattr(aa, "Process", lambda pid: owner)
     original = Path.resolve
@@ -767,7 +773,7 @@ def test_exited_outer_diagnostics_are_drained_and_aggregate_limited(tmp_path, mo
     child = SimpleNamespace(pid=45, stdin=Pipe(), stdout=Pipe(), stderr=Pipe(), poll=lambda: 0)
     monkeypatch.setattr(aa.subprocess, "Popen", lambda *a, **kw: child)
     monkeypatch.setattr(aa.select, "select", lambda *a: ([child.stdout], [], []))
-    chunks = iter([b"READY\n", *([b"x" * 8192] * 8), b"", b""])
+    chunks = iter([b"PREPARED mnt:[2]\nREADY\n", *([b"x" * 8192] * 8), b"", b""])
     monkeypatch.setattr(aa.os, "read", lambda *a: next(chunks))
     monkeypatch.setattr(aa.os, "set_blocking", lambda *a: None)
     # 64 KiB after READY exceeds the single aggregate limit even though poll()==0.
@@ -811,7 +817,7 @@ def test_outer_drain_shares_primary_budget_instead_of_startup_clock(tmp_path, mo
             return [child.stdout], [], []
         return list(streams), [], []
     monkeypatch.setattr(aa.select, "select", ready)
-    chunks = iter([b"READY\n", b"", b""])
+    chunks = iter([b"PREPARED mnt:[2]\nREADY\n", b"", b""])
     monkeypatch.setattr(aa.os, "read", lambda *a: next(chunks))
     monkeypatch.setattr(aa.os, "set_blocking", lambda *a: None)
     def counters(**kw):
@@ -826,7 +832,7 @@ def test_outer_drain_shares_primary_budget_instead_of_startup_clock(tmp_path, mo
         clock[0] += operation_time
     monkeypatch.setattr(ex, "primary", primary)
     if expected == "passed":
-        assert ex.arm("baseline")["diagnostic_bytes"] == len(b"READY\n")
+        assert ex.arm("baseline")["diagnostic_bytes"] == len(b"ENTRY\nPREPARED mnt:[2]\nREADY\n")
         assert clock[0] > 10  # Startup's end is no longer reused after primary.
     else:
         with pytest.raises(aa.Inconclusive, match="deadline"):
@@ -841,7 +847,10 @@ def test_trampoline_validation_expiry_prevents_drop_or_exec(tmp_path, monkeypatc
     monkeypatch.setattr(aa.os, "getuid", lambda: 0)
     monkeypatch.setattr(aa.os, "geteuid", lambda: 0)
     original = Path.read_text
-    monkeypatch.setattr(Path, "read_text", lambda p: f":{NS}:unconfined" if str(p) == "/proc/self/attr/current" else original(p))
+    monkeypatch.setattr(Path, "read_text", lambda p: "unconfined" if str(p) == "/proc/self/attr/current" else original(p))
+    monkeypatch.setattr(aa.os, "write", lambda *a: None)
+    monkeypatch.setattr(aa.select, "select", lambda *a: ([0], [], []))
+    monkeypatch.setattr(aa.os, "read", lambda *a: b"E")
     def validate(root, manifest, *, deadline):
         assert deadline == 10
         clock[0] = 10
@@ -850,7 +859,7 @@ def test_trampoline_validation_expiry_prevents_drop_or_exec(tmp_path, monkeypatc
     monkeypatch.setattr(aa, "drop_identity", lambda *a: pytest.fail("drop after startup expiry"))
     monkeypatch.setattr(aa.os, "execve", lambda *a: pytest.fail("exec after startup expiry"))
     with pytest.raises(aa.Inconclusive, match="deadline"):
-        aa.trampoline(ex.root, UID, GID, NS, 10)
+        aa.trampoline(ex.root, UID, GID, NS, 10, "mnt:[1]")
 
 
 def test_partial_teardown_closes_resolved_handles_and_keeps_unresolved(tmp_path, monkeypatch):
@@ -1061,7 +1070,7 @@ def test_audit_component_must_belong_to_exact_namespace_and_denied_capability(mo
     assert aa.audit_capture("cursor", gate(), bounds, finish) == []
 
 
-def test_nonroot_fixture_startup_reaches_ready_and_refuses_eof(tmp_path):
+def test_nonroot_fixture_startup_reaches_ready_and_refuses_eof(tmp_path, record_property):
     if os.getuid() == 0 or os.getgid() == 0:
         pytest.skip("startup-only regression requires a non-root operator")
     if sys.platform != "linux" or not shutil.which("bwrap") or not Path(aa.PYTHON).exists():
@@ -1072,6 +1081,8 @@ def test_nonroot_fixture_startup_reaches_ready_and_refuses_eof(tmp_path):
     # EOF is permanent: this process can never receive GO or execute PRIMARY.
     result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                             env=aa.ENV, close_fds=True, timeout=10)
+    record_property("startup", json.dumps({"returncode": result.returncode, "stdout": result.stdout.decode(),
+                                           "stderr": result.stderr.decode(), "go_sent": False}))
     if result.returncode != 125 and any(message in result.stderr for message in (
             b"No permissions to create new namespace", b"Creating new namespace failed",
             b"setting up uid map: Permission denied", b"unshare user namespace: Operation not permitted")):
@@ -1404,3 +1415,256 @@ def test_host_mount_escapes_decode_without_relaxing_fixture_mount_gate():
         aa.mount_rows(text)
     with pytest.raises(aa.Inconclusive, match="unknown host mount escape"):
         aa.mount_rows(text.replace(r"\040", r"\999"), host=True)
+
+
+@pytest.mark.parametrize("field", ["master:1", "shared:1", "propagate_from:1", "unbindable"])
+def test_gate_rejects_every_propagation_field(field):
+    observation = gate()
+    observation["mounts"][0]["propagation"] = [field]
+    with pytest.raises(aa.Inconclusive, match="propagation not private"):
+        aa.validate_gate(observation, UID, GID, NS, BINDS)
+
+
+def entry_case(tmp_path, monkeypatch, stdout=b"ENTRY\n", stderr=b"", extra=b""):
+    ex = experiment(tmp_path)
+    class Pipe(io.BytesIO):
+        def fileno(self):
+            return 501 if self is ex.child.stdout else 502
+    ex.child = SimpleNamespace(pid=45, stdin=Pipe(), stdout=Pipe(), stderr=Pipe(),
+                               poll=lambda: pytest.fail("entry reaped direct child"),
+                               wait=lambda: pytest.fail("entry waited direct child"))
+    owner = SimpleNamespace(pid=45, start=123, alive=lambda: True)
+    selections = iter([[ex.child.stdout] + ([ex.child.stderr] if stderr else []),
+                       [ex.child.stdout] if extra else []])
+    monkeypatch.setattr(aa.select, "select", lambda *a: (next(selections), [], []))
+    chunks = {501: iter([stdout, extra]), 502: iter([stderr])}
+    monkeypatch.setattr(aa.os, "read", lambda fd, size: next(chunks[fd]))
+    readlink = aa.os.readlink
+    monkeypatch.setattr(aa.os, "readlink", lambda p: ("mnt:[1]" if str(p).endswith("mnt") else "user:[1]")
+                        if str(p).startswith("/proc/") else readlink(p))
+    original = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda p: f":{NS}:unconfined\n"
+                        if str(p) == "/proc/45/attr/current" else original(p))
+    resolve = Path.resolve
+    monkeypatch.setattr(Path, "resolve", lambda p, **kw: resolve(Path(aa.PYTHON), **kw)
+                        if str(p) == "/proc/45/exe" else resolve(p, **kw))
+    monkeypatch.setattr(aa, "start_time", lambda pid: 123)
+    monkeypatch.setattr(ex, "checkpoint", lambda: None)
+    return ex, owner
+
+
+def test_entry_independent_view_and_held_child_before_ack(tmp_path, monkeypatch):
+    ex, owner = entry_case(tmp_path, monkeypatch)
+    record = {}
+    assert ex.entry(owner, aa.time.monotonic() + 10, "mnt:[1]", record) == 6
+    assert ex.child.stdin.getvalue() == b"E"
+    assert record["entry"]["label"] == f":{NS}:unconfined"
+    assert record["entry_ack_sent"] and record["entry"]["start"] == 123
+
+
+@pytest.mark.parametrize("stdout,stderr,extra", [
+    (b"ENTRY\nENTRY\n", b"", b""), (b"ENTRY\nREADY\n", b"", b""),
+    (b"READY\n", b"", b""), (b"ENTRY\n", b"error", b""),
+    (b"ENTRY\n", b"", b"ENTRY\n"), (b"ENTRY\n", b"", b"READY\n"), (b"", b"", b"")])
+def test_entry_refuses_malformed_duplicate_preack_ready_stderr_and_eof(tmp_path, monkeypatch, stdout, stderr, extra):
+    ex, owner = entry_case(tmp_path, monkeypatch, stdout, stderr, extra)
+    with pytest.raises(aa.Inconclusive):
+        ex.entry(owner, aa.time.monotonic() + 10, "mnt:[1]", {})
+    assert ex.child.stdin.getvalue() == b""
+
+
+@pytest.mark.parametrize("mutation", ["host_label", "foreign", "nested", "suffix", "exe", "user", "mnt", "start", "dead"])
+def test_entry_rechecks_exact_root_view_and_identity_after_proc_reads(tmp_path, monkeypatch, mutation):
+    ex, owner = entry_case(tmp_path, monkeypatch)
+    labels = {"host_label": "unconfined", "foreign": ":foreign:unconfined",
+              "nested": f":{NS}//sub:unconfined", "suffix": f":{NS}:unconfined (enforce)"}
+    read = Path.read_text
+    def changed(p):
+        text = read(p)
+        if str(p) == "/proc/45/attr/current":
+            if mutation == "start":
+                monkeypatch.setattr(aa, "start_time", lambda pid: 124)
+            if mutation == "dead":
+                owner.alive = lambda: False
+            return labels.get(mutation, text)
+        return text
+    monkeypatch.setattr(Path, "read_text", changed)
+    if mutation == "exe":
+        resolve = Path.resolve
+        monkeypatch.setattr(Path, "resolve", lambda p, **kw: Path("/foreign/python")
+                            if str(p) == "/proc/45/exe" else resolve(p, **kw))
+    if mutation in ("user", "mnt"):
+        link = aa.os.readlink
+        monkeypatch.setattr(aa.os, "readlink", lambda p: mutation + ":[9]"
+                            if str(p) == "/proc/45/ns/" + mutation else link(p))
+    with pytest.raises(aa.Inconclusive):
+        ex.entry(owner, aa.time.monotonic() + 10, "mnt:[1]", {})
+    assert ex.child.stdin.getvalue() == b""
+
+
+@pytest.mark.parametrize("failure", ["deadline", "cancel", "overflow"])
+def test_entry_deadline_cancellation_and_aggregate_limit_prevent_ack(tmp_path, monkeypatch, failure):
+    ex, owner = entry_case(tmp_path, monkeypatch, b"x" * (aa.META_LIMIT + 1))
+    end = aa.time.monotonic() - 1 if failure == "deadline" else aa.time.monotonic() + 10
+    if failure == "cancel":
+        monkeypatch.setattr(aa.select, "select", lambda *a: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises((aa.Inconclusive, KeyboardInterrupt)):
+        ex.entry(owner, end, "mnt:[1]", {})
+    assert not ex.child.stdin.getvalue()
+
+
+@pytest.mark.parametrize("ack", [b"", b"G", b"X", None])
+def test_trampoline_ack_failure_prevents_validation_preparation_drop_and_exec(tmp_path, monkeypatch, ack):
+    ex = experiment(tmp_path)
+    monkeypatch.setattr(aa.os, "getuid", lambda: 0)
+    monkeypatch.setattr(aa.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(Path, "read_text", lambda p: "unconfined")
+    monkeypatch.setattr(aa.os, "write", lambda *a: None)
+    monkeypatch.setattr(aa.select, "select", lambda *a: ([0] if ack is not None else [], [], []))
+    monkeypatch.setattr(aa.os, "read", lambda fd, size: ack)
+    for name in ("validate_inputs", "prepare_mounts", "drop_identity"):
+        monkeypatch.setattr(aa, name, lambda *a, **kw: pytest.fail("continued before acknowledgment"))
+    monkeypatch.setattr(aa.os, "execve", lambda *a: pytest.fail("exec before acknowledgment"))
+    with pytest.raises(aa.Inconclusive, match="acknowledgment"):
+        aa.trampoline(ex.root, UID, GID, NS, aa.time.monotonic() + 10, "mnt:[1]")
+
+
+@pytest.mark.parametrize("failure", [None, "entry", "unshare", "unchanged", "mount", "master:1", "shared:1", "propagate_from:1", "unbindable", "deadline"])
+def test_preparation_anchors_identity_checks_errno_and_orders_private_mount(monkeypatch, failure):
+    events = []
+    identities = iter(["mnt:[9]" if failure == "entry" else "mnt:[1]",
+                       "mnt:[1]" if failure == "unchanged" else "mnt:[2]"])
+    monkeypatch.setattr(aa.os, "readlink", lambda p: next(identities))
+    def unshare(flags):
+        events.append(("unshare", flags))
+        if failure == "unshare":
+            ctypes.set_errno(errno.EPERM)
+            return -1
+        return 0
+    def mount(*args):
+        events.append(("mount", *args))
+        if failure == "mount":
+            ctypes.set_errno(errno.EACCES)
+            return -1
+        return 0
+    monkeypatch.setattr(aa, "LIBC", SimpleNamespace(unshare=unshare, mount=mount))
+    optional = failure if failure in ("master:1", "shared:1", "propagate_from:1", "unbindable") else ""
+    monkeypatch.setattr(Path, "read_text", lambda p: f"1 0 0:1 / / rw {optional} - tmpfs tmpfs rw\n")
+    if failure:
+        with pytest.raises(aa.Inconclusive):
+            aa.prepare_mounts("mnt:[1]", aa.time.monotonic() + (-1 if failure == "deadline" else 10))
+    else:
+        assert aa.prepare_mounts("mnt:[1]", aa.time.monotonic() + 10) == "mnt:[2]"
+    if failure in ("entry", "unshare", "unchanged", "deadline"):
+        assert all(event[0] != "mount" for event in events)
+    else:
+        assert events == [("unshare", 0x20000), ("mount", None, b"/", None, 0x44000, None)]
+
+
+@pytest.mark.parametrize("disable_mount", [False, True])
+def test_nonroot_own_preparation_actual_fixture_mounts_and_mount_mutation(tmp_path, disable_mount, record_property):
+    if os.getuid() == 0 or os.getgid() == 0 or not shutil.which("unshare") or not shutil.which("bwrap"):
+        pytest.skip("ordinary nonroot userns, unshare and bwrap prerequisites required")
+    # Extra user namespace is test-only. No util-linux propagation change substitutes
+    # for prepare_mounts: the tested CLONE_NEWNS and mount are the helper's own calls.
+    # Validate root-owned fixture inputs in the host user namespace, where uid 0
+    # retains its host meaning; carry the measured recipe into the test namespace.
+    (tmp_path / "test-manifest.json").write_text(json.dumps({"fixture": aa.fixture_inputs()}))
+    script = '''
+import json,os,subprocess,sys,time
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import codex_apparmor_canary as aa
+root=Path(sys.argv[2])
+manifest=json.loads((root/"test-manifest.json").read_text())
+(root/"fixture.txt").write_bytes(b"synthetic fixture\\n")
+before=os.readlink("/proc/self/ns/mnt")
+disabled=sys.argv[3]=="True"
+if disabled:
+    aa.LIBC.mount=lambda *args:0
+try:
+    prepared=aa.prepare_mounts(before,time.monotonic()+10)
+except aa.Inconclusive as error:
+    print(json.dumps({"error":str(error),"mounts":aa.mount_rows(Path("/proc/self/mountinfo").read_text(),host=True)}))
+    sys.exit(0)
+argv=aa.bwrap_argv(root,manifest,os.getuid(),os.getgid())
+argv[-1]="import os; fd=os.open('/proc/self/mountinfo',0); os.write(1,os.read(fd,65536)); os.close(fd); "+aa.WORKER
+r=subprocess.run(argv,stdin=subprocess.DEVNULL,capture_output=True,env=aa.ENV,close_fds=True,timeout=10)
+print(json.dumps({"before":before,"prepared":prepared,"returncode":r.returncode,"stdout":r.stdout.decode(),"stderr":r.stderr.decode(),"binds":aa.expected_binds(root,manifest)}))
+'''
+    result = subprocess.run(["/usr/bin/unshare", "--user", "--map-root-user", "--propagation", "unchanged",
+                             aa.PYTHON, "-I", "-S", "-c", script, str(Path(aa.__file__).parent),
+                             str(tmp_path), str(disable_mount)], stdin=subprocess.DEVNULL,
+                            capture_output=True, close_fds=True, timeout=25)
+    if result.returncode and (b"unshare failed: Operation not permitted" in result.stderr
+                              or b"No space left on device" in result.stderr):
+        pytest.skip("host refuses disposable user namespace: " + result.stderr.decode()[:500])
+    assert result.returncode == 0, result.stderr.decode()
+    observed = json.loads(result.stdout)
+    record_property("observed", json.dumps(observed))
+    if disable_mount:
+        host = aa.mount_rows(Path("/proc/self/mountinfo").read_text(), host=True)
+        if not any(row["propagation"] for row in host):
+            pytest.skip("mount-call mutation requires a shared/slave starting host tree")
+        assert "prepared mount propagation not private" in observed["error"]
+        assert any(any(field.startswith("master:") for field in row["propagation"]) for row in observed["mounts"])
+        with pytest.raises(aa.Inconclusive, match="propagation not private"):
+            aa.validate_mounts(observed["mounts"], {})
+    else:
+        assert "error" not in observed, observed
+        assert observed["before"] != observed["prepared"]
+        assert observed["returncode"] == 125 and not observed["stderr"], observed
+        assert observed["stdout"].endswith("READY\n") and observed["stdout"].count("READY\n") == 1
+        aa.validate_mounts(aa.mount_rows(observed["stdout"].removesuffix("READY\n")), observed["binds"])
+
+
+def test_captured_unprepared_slave_mounts_still_fail_gate():
+    rows = aa.mount_rows("1 0 0:1 / / rw - tmpfs tmpfs rw\n"
+                         "2 1 0:2 /null /dev/null rw master:2 - devtmpfs devtmpfs rw\n")
+    with pytest.raises(aa.Inconclusive, match="propagation not private"):
+        aa.validate_mounts(rows, {"/dev/null": ("0:2", "/null")})
+
+
+@pytest.mark.parametrize("label", [f":{NS}:unconfined", "unconfined (enforce)", "foreign"])
+def test_trampoline_rejects_wrong_self_view_before_entry(tmp_path, monkeypatch, label):
+    ex = experiment(tmp_path)
+    monkeypatch.setattr(aa.os, "getuid", lambda: 0)
+    monkeypatch.setattr(aa.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(Path, "read_text", lambda p: label)
+    monkeypatch.setattr(aa.os, "write", lambda *a: pytest.fail("entry before self-view check"))
+    with pytest.raises(aa.Inconclusive, match="self-view"):
+        aa.trampoline(ex.root, UID, GID, NS, aa.time.monotonic() + 10, "mnt:[1]")
+
+
+def test_trampoline_preparation_failure_never_drops_or_executes(tmp_path, monkeypatch):
+    ex = experiment(tmp_path)
+    monkeypatch.setattr(aa.os, "getuid", lambda: 0)
+    monkeypatch.setattr(aa.os, "geteuid", lambda: 0)
+    read = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda p: "unconfined"
+                        if str(p) == "/proc/self/attr/current" else read(p))
+    monkeypatch.setattr(aa.os, "write", lambda *a: None)
+    monkeypatch.setattr(aa.select, "select", lambda *a: ([0], [], []))
+    monkeypatch.setattr(aa.os, "read", lambda *a: b"E")
+    monkeypatch.setattr(aa, "validate_inputs", lambda *a, **kw: None)
+    monkeypatch.setattr(aa, "prepare_mounts", lambda *a: (_ for _ in ()).throw(aa.Inconclusive("prep failed")))
+    monkeypatch.setattr(aa, "drop_identity", lambda *a: pytest.fail("drop after prep failure"))
+    monkeypatch.setattr(aa.os, "execve", lambda *a: pytest.fail("exec after prep failure"))
+    with pytest.raises(aa.Inconclusive, match="prep failed"):
+        aa.trampoline(ex.root, UID, GID, NS, aa.time.monotonic() + 10, "mnt:[1]")
+
+
+@pytest.mark.parametrize("output", [b"READY\n", b"ENTRY\nREADY\n", b"PREPARED mnt:[2]\nREADY\nREADY\n"])
+def test_postack_startup_requires_its_own_exact_prepared_and_ready_bytes(tmp_path, monkeypatch, output):
+    ex = fake_outer_arm(tmp_path, monkeypatch)
+    class Pipe(io.BytesIO):
+        def fileno(self):
+            return 501
+    child = SimpleNamespace(pid=45, stdin=Pipe(), stdout=Pipe(), stderr=Pipe(),
+                            poll=lambda: pytest.fail("wait before post-ack validation"))
+    monkeypatch.setattr(aa.subprocess, "Popen", lambda *a, **kw: child)
+    monkeypatch.setattr(aa.select, "select", lambda *a: ([child.stdout], [], []))
+    monkeypatch.setattr(aa.os, "read", lambda *a: output)
+    monkeypatch.setattr(ex, "primary", lambda *a: pytest.fail("GO after malformed startup"))
+    with pytest.raises(aa.Inconclusive, match="malformed fixture startup"):
+        ex.arm("baseline")

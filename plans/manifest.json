@@ -13633,6 +13633,88 @@
       "review_evidence_ref": "plans/evidence/codex-apparmor-canary/review.json",
       "review_status": "approved_by_owner_unanimity",
       "president_requirement_waived_by_owner": true
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-10-16T15:16:42.648677+00:00",
+      "file": "plans/detailed-codex-apparmor-reachability-20261016.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/codex-apparmor-reachability-20261016.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-16T15:16:42.648677+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "input_head": "c1211692b58ad3d2a92fa27b27913e6e41de6392",
+            "review_status": "pending_owner_directed_t3_cristina"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-10-16T15:27:26Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_path": "plans/detailed-codex-apparmor-reachability-20261016.md",
+            "review_scope": "owner-directed supplement plan only; no live authorization",
+            "review_sha256": "f3dddcd3aff44f05b855af5f6c13ce19d6cf5c08abfbd6b822162c7c9c9eb507",
+            "review_verdict": "AGREE",
+            "run_id": "sol-reachability-20261016"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-16T15:35:25Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance": "supplement offline criteria satisfied; original live C1-C4 unmet",
+            "approval_packet_path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r5/approval-packet.txt",
+            "approval_packet_sha256": "0e6b5e03ea2b67d5ea5b24bc432338a51d215dd8f5af22db2db54e85c62fcf54",
+            "dirty_path_classification": {
+              "non_plan_output": [],
+              "plan_owned": [
+                "docs/advisor-board-capabilities-card.md",
+                "phase-loop-runtime/tests/codex_apparmor_canary.py",
+                "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+                "plans/manifest.json",
+                "plans/detailed-codex-apparmor-reachability-20261016.md"
+              ],
+              "pre_existing_unrelated": [],
+              "prepared_owned_inputs": [
+                "plans/detailed-codex-apparmor-reachability-20261016.md",
+                "plans/manifest.json"
+              ]
+            },
+            "doc_delta_decision": "docs_updated",
+            "handoff_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/sol-reachability-20261016/handoff.md",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/1c5ef07a43e3/exec-codex-apparmor-canary-sol-20261016/sol-reachability-20261016.md",
+            "review_binding": {
+              "literal_plan_review_status": "reviewed bytes retain pending planning-input frontmatter; actual subsequent provenance bound here",
+              "model": "claude-opus-5-5",
+              "path": "r5/cristina-plan-review/review.json",
+              "provider_instance": "t3-claude-cristina",
+              "scope": "owner-directed supplement plan only, separate from failed canonical Claude seat; no implementation, governed, president, live or merge approval",
+              "sha256": "f3dddcd3aff44f05b855af5f6c13ce19d6cf5c08abfbd6b822162c7c9c9eb507",
+              "verdict": "AGREE"
+            },
+            "run_id": "sol-reachability-20261016",
+            "summary": "267 passed in 40.28s",
+            "verification_artifact_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/sol-reachability-20261016/verification-final/verification.json",
+            "verification_artifact_sha256": "128b20eae15171eb4060bc91d4d3786569c857083848bdde1e25e52a4a39f488",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "codex-apparmor-reachability-20261016",
+      "status": "completed",
+      "task_summary": "Correct namespace-relative entry and preserve private fixture propagation after Cristina review",
+      "type": "detailed",
+      "updated_at": "2026-10-16T15:35:25Z"
     }
   ],
   "schema_version": 1
