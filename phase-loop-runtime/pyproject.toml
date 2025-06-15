@@ -87,13 +87,13 @@ dependencies = [
 # every other command. Missing Pillow blocks the opt-in blocking gate;
 # warning mode intentionally stays silent without image decoding.
 visual = ["Pillow>=10,<13"]
-claude-sdk = ["claude-agent-sdk==0.2.167"]
+claude-sdk = ["claude-agent-sdk==0.2.167", "markdown-it-py==4.2.0"]
 
 [dependency-groups]
 # Keep build aligned with hosted pytest and Dagger _base. Gate A's inner
 # test environment intentionally installs unpinned tools.
 # pytest is a runtime dependency now (see [project].dependencies), so it is not repeated here.
-test = ["build==1.6.1", "setuptools>=70.1", "pip", "claude-agent-sdk==0.2.167"]
+test = ["build==1.6.1", "setuptools>=70.1", "pip", "claude-agent-sdk==0.2.167", "markdown-it-py==4.2.0"]
 
 [project.urls]
 Homepage = "https://github.com/Consiliency/agent-harness"

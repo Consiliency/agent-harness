@@ -14,6 +14,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   terminal and checkpoint. Ordinary replay and ambiguous-outcome recovery retain
   their existing behavior; see the FABPUB recovery runbook section 8b.
 
+### Optional solo Claude SDK runner (agent-harness#1391)
+
+- Add the optional `claude-sdk` extra and explicit `PHASE_LOOP_CLAUDE_ROUTE=sdk` selection for supported personal Claude Code solo contexts. Existing defaults and panel routing are unchanged; unsupported contexts refuse without fallback. Live qualification remains required before landing.
+- Preserve the selected linked user instruction file and supported explicit imports in the SDK route's private instruction snapshot, with bounded reads and refusal of ambiguous or changing inputs. The optional extra pins a CommonMark parser for source boundaries while retaining original instruction bytes and import spellings.
+
 ### OpenCode execute-phase loads interactive procedures on demand (agent-harness#1358)
 
 - Move interactive publication and worktree-pruning procedures into linked references,
@@ -232,10 +237,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   with `-rw`, so the job log lists every skill body over the size guidance. The
   step fails only where the test does: a stale allowlist entry, or, once `STRICT`
   is on, a new or grown offender. Changing the test now triggers the workflow.
-
-### Optional solo Claude SDK runner (agent-harness#1391)
-
-- Add the optional `claude-sdk` extra and explicit `PHASE_LOOP_CLAUDE_ROUTE=sdk` selection for supported personal Claude Code solo contexts. Existing defaults and panel routing are unchanged; unsupported contexts refuse without fallback. Live qualification remains required before landing.
 
 ### Provider admission and availability evidence
 

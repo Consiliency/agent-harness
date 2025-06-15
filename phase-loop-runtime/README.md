@@ -63,10 +63,56 @@ mounts shared by the auth probe and inference. Project settings currently suppor
 permission rules and hooks; project allow rules and hooks require stored project
 trust. Other project keys require a different route. User
 settings and inspectable host-managed policy are preserved. Initial instruction
-snapshots support plain instruction files and flat, unconditional rules. Native
-imports, path-scoped rules, descendant instructions, AGENTS.md contexts and
-linked instruction or project trees require an existing route. The SDK route refuses these layouts
-before connecting. Email addresses, code examples and ordinary Markdown separators
+snapshots support plain instruction files and flat, unconditional rules. The selected
+user `CLAUDE.md` may be linked and may explicitly import user files, including a
+linked `AGENTS.md`, to four import edges. Capture is limited to 32 MiB of total
+reads and 256 visits, including repeats, on known local filesystems. These files
+are included once as private,
+immutable UTF-8 instructions. Relative imports through links require the logical
+and resolved parent paths to identify the same file. Simple unquoted paths are
+supported, with `~/` bound to the selected HOME. Quote-wrapped paths stay literal;
+escaped spaces and ambiguous import or cross-block code-span syntax refuse the route.
+Canonical inline `@path` examples remain literal. Fenced or indented code containing
+import candidates, and inline spans containing whitespace before `@`, refuse.
+Backtick blocks
+containing an import candidate combined with escaped backticks, HTML, brackets,
+indentation, pipes or possible URLs refuse before probes. Underscore-adjacent and
+escaped `@` candidates also refuse before dependency reads.
+The optional extra pins `markdown-it-py==4.2.0` for CommonMark block source maps,
+including container fences and HTML boundaries. Scanning uses original source
+ranges with CR/LF line normalization, retaining reference definitions and entity
+spellings. It never discovers imports from rendered text. In candidate-bearing
+files, raw fence syntax mixed with HTML blocks, line-start HTML-like syntax or
+reference markers refuses. Fences require both a parser-proven explicit closing
+line and a compatible raw closer with trailing spaces only; native-like interior
+closers refuse. Candidate-bearing inline blocks with backticks inside a code span
+or any multiline span also refuse, even when the candidate is outside that span.
+Candidate-free multiline examples remain supported; separate paragraphs may import
+files normally. For inline ambiguity checks, a candidate anywhere in the enclosing
+run of non-blank lines applies to every parsed block in that run. Only lines made
+of spaces and tabs separate runs; raw list and quote prefixes remain non-blank.
+A run containing a candidate and any backtick refuses if it also contains `<`,
+`[` or `]`, including in an initial HTML block or a different parsed block.
+This conservative boundary avoids native link/title carriers across block joins.
+Separate unrelated link/HTML examples from imports with a real blank line.
+Fenced code and supported
+inline spans are masked with spaces, preserving separators; ordinary inline
+matching stays within one parsed block. Unmatched backticks and ambiguous inline
+contexts refuse. This remains a bounded subset; CommonMark parsing alone does not
+establish equivalence with native Claude.
+Native CLI inspection shows dialect differences and tight-list import behavior
+that conflict with some documented code exclusions. The guards define a bounded
+supported subset, rather than complete native Markdown compatibility.
+The existing raw HTML/reference handling and complete-byte snapshots do not emulate
+native comment or frontmatter stripping.
+The complete snapshot, including project files and rules, must fit 64 KiB of UTF-8
+without embedded NUL characters for the SDK's command-line argument. Changed files
+or aliases during capture refuse rather than mixing versions. Project imports,
+path-scoped rules, descendant instructions, project or ancestor AGENTS.md contexts,
+and linked project instruction trees require an existing route. The explicit user
+`config/AGENTS.md` dependency remains user context when HOME is a project ancestor;
+unreferenced config files gain no exception. The SDK route refuses unsupported layouts
+before connecting. Email addresses and ordinary Markdown separators
 remain literal instruction content.
 Uninspectable policy refuses the route. Memory and subscription MCP
 connectors are disabled, and the existing permission and supervisor policies apply.

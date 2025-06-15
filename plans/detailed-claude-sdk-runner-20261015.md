@@ -5,7 +5,7 @@ owner_skill: codex-plan-detailed
 related_issues: [agent-harness#1391]
 automation:
   suite_command: >-
-    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_adapter_skill_references.py tests/test_seat_reference_inventory.py tests/test_seat_launch_helpers_trusted.py tests/test_ci_xdist_adoption.py tests/test_local_check.py tests/test_python_floor_1546.py tests/test_ci_chronology_scope.py tests/test_seat_jail_prerequisites_1357.py
+    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_adapter_skill_references.py tests/test_seat_reference_inventory.py tests/test_seat_launch_helpers_trusted.py tests/test_ci_xdist_adoption.py tests/test_local_check.py tests/test_python_floor_1546.py tests/test_ci_chronology_scope.py tests/test_seat_jail_prerequisites_1357.py tests/test_verification_interpreter_guard_221.py tests/test_sandbox_staging_1147.py
   verification_status: not_run
 ---
 
@@ -48,7 +48,7 @@ Paths below are relative to `phase-loop-runtime/` unless stated otherwise.
 
 ### `pyproject.toml` and `uv.lock` (modify)
 
-Add optional extra `claude-sdk = ["claude-agent-sdk==0.2.167"]`. Ordinary installs
+Add optional extra `claude-sdk = ["claude-agent-sdk==0.2.167", "markdown-it-py==4.2.0"]`. Ordinary installs
 and non-SDK routes must work without it. Verify package availability without
 importing SDK code during module import or dry run.
 Regenerate `uv.lock` with `uv lock`; verify locked synchronization with the extra.
@@ -244,6 +244,141 @@ CI, chronology selection or dependency posture. Keep the SDK optional and pinned
 regenerate its lock entries on the upstream lockfile and verify installation,
 targeted tests and wheel behavior on Python 3.12. Include the upstream Python-floor,
 chronology-scope and jail-prerequisite consumer tests in the targeted suite.
+
+### Owner-approved linked user instructions — 2026-10-17
+
+Extend this implementation for the selected user `CLAUDE.md` file and its explicit
+unconditional instruction imports, including linked files. The owner approved
+preserving these instructions, regression testing and reviewed live qualification.
+Modify only `src/phase_loop_runtime/claude_sdk_adapter.py`,
+`tests/test_claude_sdk_runner.py`, the runtime `README.md`, repository `CHANGELOG.md`,
+this plan and the required explicit I/O entries in
+`tests/data/seat_launch_references.json` for this extension. Include the already-owned
+`pyproject.toml` and `uv.lock` for the exact-pinned optional Markdown parser and its
+test-group dependency. Repeated structural approximations omitted imports or
+refused ordinary examples; use the parser's CommonMark block source maps instead.
+This is an implementation dependency within the approved complete-capture scope.
+The ratified admission conditions, optional SDK
+pin, route vocabulary, acceptance criteria and required full/live gates remain.
+
+In `_instructions`, grant link/import handling only to the selected user
+`CLAUDE.md` and files it explicitly imports. Preserve complete parent and imported
+text in deterministic order in the existing private instruction snapshot, used by
+both probe and SDK contexts. Resolve links to regular UTF-8 files owned by the
+operator or root, enforce bounded reads and a four-hop import limit, deduplicate
+canonical targets, and refuse dangling/cyclic links, import cycles, unsafe file
+types, changed capture inputs and unsupported import syntax before authentication.
+Limit cumulative user-file reads to 32 MiB and user-file visits to 256, including
+repeated aliases; refuse without truncation. Validate every transitive path and
+depth even when its text was already captured. Admit only known ordinary local
+filesystems through the opened handle before reading; require bytes read to equal
+descriptor size, rejecting pseudo-files. Repeated targets must match their first
+capture, and revalidate captured identities and aliases before returning.
+Limit the complete UTF-8 snapshot, including project/rule bodies and joiners, to
+64 KiB with no embedded NUL; the pinned SDK passes it as one CLI argument.
+Read through a stable descriptor and reject link replacement or in-place changes
+during capture. After capture, host changes must not alter the frozen instructions.
+For a relative import through a linked file, admit only when the selected and
+canonical parent paths resolve it to the same target; otherwise refuse rather
+than guessing. Bind each validated import target and both relative interpretations
+through capture. Expand `~/` only against the admitted target HOME; named-user
+expansion is unsupported. Canonical inline `@path` examples, email addresses and
+quote-wrapped paths remain literal. Fenced/import-candidate combinations and
+whitespace-preceded `@` within inline spans are unsupported because inspected native
+and CommonMark interpretations conflict. Underscore-adjacent and escaped visible
+candidates refuse before dependency resolution.
+Use `markdown-it-py==4.2.0` with the explicit CommonMark preset and no plugins or
+rendering. Keep the original CR/LF-normalized scanning text and raw import grammar;
+never scan rendered text, decoded entities or token children as the import source.
+Only raw source ranges proved to be fenced code or supported inline code may be
+masked; candidate-free indented code may also be excluded. Reference definitions
+and other non-rendered source remain accounted for.
+Confine ordinary inline-code matching to parser-provided inline block line ranges;
+retain conservative raw-candidate guards for escapes, HTML/terminators, brackets,
+indentation and pipes, including GFM ambiguity. Refuse unsupported or unmatched
+backticks and unfenced indented import-like text. Preserve source/token boundaries
+when masking so code removal cannot concatenate a different import. Preserve
+original snapshot bytes. Parser conformance alone does not establish equivalence
+with native Claude; require fresh regression, adversarial and actual-layout review.
+Reject snapshot-size/NUL violations before parsing, and refuse parser nesting at
+its truncation boundary or overlapping/invalid processing maps.
+In candidate-bearing files, refuse raw triple-marker syntax combined with HTML
+blocks, lexical line-start HTML-like syntax after repeatable quote/list prefixes,
+or raw reference markers, even when the parser emits no fence. Refuse any
+candidate-bearing fence; other fences require an explicit compatible closer on
+the final mapped raw line, with space/blockquote prefixes and trailing spaces only.
+Require mapped extent to equal LF-counted parser body lines plus opener and closer;
+never use token content to discover imports. Refuse native-closer-shaped interior
+raw fence lines and candidate-bearing inline blocks with backticks inside matched
+code spans or any matched multiline span. Check every span in such a block before
+masking, including an earlier multiline span with no candidate: native-only block
+splits can change later single-line span pairing. Preserve candidate-free multiline
+examples, separate-paragraph complete capture, and the original multiline literal
+body as an explicit unsupported before-probe/never-open case. Use normalized LF for
+this structural check without changing original snapshot bytes.
+Determine candidate-bearing scope for both inline ambiguity checks over each
+enclosing run of raw non-blank lines, since native parsing can join CommonMark
+blocks without a blank boundary. A blank line contains only ASCII spaces/tabs;
+retain raw list/quote prefixes and other whitespace characters as non-blank.
+Precompute group candidate flags in one source pass and inspect all flags touched
+by each validated inline map. Do not discover dependencies from the grouped text
+or broaden masking beyond the original mapped block. Keep separate-blank-boundary
+literal/capture controls and before-probe/never-open native-join regressions.
+Refuse a raw run containing a candidate, any backtick and any `<`, `[` or `]`.
+Check the complete run before parsing rather than adding token-region or initial
+HTML exceptions: links/titles can open on otherwise uninspected carrier lines.
+This intentionally narrows support for initial-HTML/code mixtures. Preserve prior
+HTML mixture bodies as typed unsupported before-probe/never-open cases; retain
+the no-HTML blank-boundary literals, candidate-free multiline examples and real
+imports separated from unrelated code/link/HTML examples by a blank line.
+Preserve candidate-free internal-backtick examples and actual explicit
+closers across blank bodies, CR/LF endings and EOF without a final newline.
+Refuse possible URL/backtick ambiguity before inline masking. Keep the prior raw
+HTML/reference and native-stripping limitations; do not claim full native emulation.
+Existing project link, descendant, scoped-rule and managed-policy refusals remain.
+The exact selected `config/AGENTS.md` may be accepted as a user dependency only
+when explicitly reached and validated from the selected user file, even if HOME
+is a project ancestor. This is not ambient AGENTS discovery: project-tree AGENTS,
+HOME/AGENTS, unrelated ancestors and unreferenced config/AGENTS remain refused.
+
+Inspect the selected user instruction file and only its explicitly declared
+instruction dependencies privately for qualification; retain only path/hash/type
+metadata in evidence. Do not print instruction text, modify dotfiles, strip policy,
+copy authentication secrets or broaden project authority. The observed claw layout
+has one unconditional `@AGENTS.md` dependency with the same canonical target from
+both parent paths. Permission modes on its directories do not justify discarding
+the instructions; preserve the snapshot boundary rather than changing that setup.
+
+Add production-path regressions for the linked user file plus imported linked
+instructions, deterministic load order/deduplication, literal examples, invalid
+targets/imports/cycles, capture races and immutability after host retargeting.
+Retain the existing project-link refusal test. Run the expanded SDK file first,
+then the existing targeted command and installed-wheel checks. Obtain independent
+review and fresh presidential actual-HEAD binding before live qualification. The
+opt-in live test must restore actual read-only mount metadata hidden by the
+ordinary suite's host-state fixture. This
+extension does not waive the outstanding full standalone result or grant merge,
+activation, default-promotion or panel-SDK authority.
+
+### Reviewed baseline fixture corrections — 2026-10-18
+
+Under the owner's continuing convergence authority, include
+`tests/test_verification_interpreter_guard_221.py` and
+`tests/test_sandbox_staging_1147.py`. Independent presidential intake reviewed the
+concrete two-file patch (`93ff97f4f41c6d98b60cb7cfbd9dd378b2b4e759dfad702ac8d4d67a64a2e537`)
+and supported-runner differential evidence: three inherited-environment failures
+become passes. Nominal interpreter fixtures explicitly model absent versioned
+executables while retaining real version probes, resolver and shim construction.
+The default scratch-relocation fixture clears only its inherited `TMPDIR` and
+`CLAUDE_CODE_TMPDIR`; explicit caller-override coverage remains unchanged.
+Expanded whole-file verification exposed the same inherited-input assumption in
+the default RAM-refusal fixture. Presidential follow-up intake agreed to clear
+the same two variables there, retaining its failed-envelope and refusal-detail
+assertions and the separate explicit-caller tests.
+No production guard or scratch policy changes. Add both complete test files to
+the targeted command and verify under the supported outer interpreter guards,
+including inherited scratch values. The original full command remains required;
+these controls do not replace it or grant live, activation or merge authority.
 
 ## Documentation impact
 

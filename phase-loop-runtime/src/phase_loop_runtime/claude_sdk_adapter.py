@@ -21,13 +21,17 @@ from typing import Any, Mapping
 from . import seat_credentials
 from .advisor_board.backing import scrub_subscription_env
 from .claude_channel_sidecar import ClaudeRouteResult
-from .sandbox_policy import CHILD_SCRATCH_RELOCATE, child_scratch_env
+from .sandbox_policy import CHILD_SCRATCH_RELOCATE, child_scratch_env, _mount_fstype
 
 
 SDK_VERSION = "0.2.167"
+_MARKDOWN_VERSION = "4.2.0"
 _AUTH_ERRORS = {"authentication_failed", "billing_error", "oauth_org_not_allowed"}
 _MUTABLE_DIRS = ("debug", "projects", "todos", "plans", "session-env", "cache", "plugins", "telemetry")
 _PROBE_CWD = Path("/etc/phase-loop-sdk-probe")
+_INSTRUCTION_CAPTURE_BYTES = 32 << 20
+_INSTRUCTION_CAPTURE_VISITS = 256
+_INSTRUCTION_SNAPSHOT_BYTES = 64 << 10
 
 
 class SDKRefused(ValueError):
@@ -36,7 +40,8 @@ class SDKRefused(ValueError):
 
 def sdk_available() -> bool:
     try:
-        return importlib.metadata.version("claude-agent-sdk") == SDK_VERSION
+        return (importlib.metadata.version("claude-agent-sdk") == SDK_VERSION
+                and importlib.metadata.version("markdown-it-py") == _MARKDOWN_VERSION)
     except importlib.metadata.PackageNotFoundError:
         return False
 
@@ -157,24 +162,101 @@ def _write_private(path: Path, data: bytes) -> None:
     path.chmod(0o600)
 
 
-def _instructions(config: Path, repo: Path) -> str:
+def _instructions(config: Path, repo: Path, *, home: Path | None = None) -> str:
     import re
+    import stat
     import yaml
+    try:
+        from markdown_it import MarkdownIt
+    except ImportError:
+        raise SDKRefused("sdk_dependency_missing") from None
 
     instructions = []
     seen = set()
+    active = set()
+    user_dependencies = set()
+    user_captures = {}
+    user_aliases = []
+    snapshot_bytes = 0
+    remaining_bytes = _INSTRUCTION_CAPTURE_BYTES
+    remaining_visits = _INSTRUCTION_CAPTURE_VISITS
+    filesystems = {"btrfs", "ext2", "ext3", "ext4", "overlay", "tmpfs", "xfs", "zfs"}
 
-    def collect(path, directory, *, rule=False):
+    def identity(value):
+        return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+    def links(path):
+        pending = [path]
+        recorded = {}
+        inspected = set()
+        while pending:
+            candidate = pending.pop()
+            for part in (candidate, *candidate.parents):
+                if part in inspected:
+                    continue
+                inspected.add(part)
+                metadata = part.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    target = Path(os.readlink(part))
+                    recorded[part] = (identity(metadata), target)
+                    if len(recorded) > 40:
+                        raise SDKRefused("sdk_instruction_layout_unsupported")
+                    pending.append(target if target.is_absolute() else part.parent / target)
+        return recorded
+
+    def collect(path, directory, *, rule=False, user=False, depth=0, expected=None, edge=None):
+        nonlocal remaining_bytes, remaining_visits, snapshot_bytes
         if not path.exists() and not path.is_symlink():
+            if depth:
+                raise SDKRefused("sdk_instruction_layout_unsupported")
             return
-        if any(part.is_symlink() for part in (path, *path.parents) if part != directory and directory in part.parents):
+        if not user and any(part.is_symlink() for part in (path, *path.parents) if part != directory and directory in part.parents):
             raise SDKRefused("sdk_instruction_layout_unsupported")
+        before_links = links(path) if user else None
+        edge_links = links(edge) if edge is not None else None
         resolved = path.resolve(strict=True)
-        if resolved in seen:
-            return
-        if not path.is_file() or not resolved.is_relative_to(directory.resolve()) or path.stat().st_size > 32 << 20:
+        if depth > 4 or resolved in active:
             raise SDKRefused("sdk_instruction_layout_unsupported")
-        text = path.read_text(encoding="utf-8")
+        if user:
+            remaining_visits -= 1
+            if (remaining_visits < 0 or (expected is not None and resolved != expected)
+                    or (edge is not None and edge.resolve(strict=True) != resolved)
+                    or _mount_fstype(resolved) not in filesystems):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            fd = os.open(resolved, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
+            try:
+                before = os.fstat(fd)
+                if not stat.S_ISREG(before.st_mode) or before.st_uid not in (0, os.getuid()) or before.st_size > remaining_bytes:
+                    raise SDKRefused("sdk_instruction_layout_unsupported")
+                handle = Path(f"/proc/self/fd/{fd}")
+                opened_path = handle.resolve(strict=True)
+                previous = user_captures.get(resolved)
+                if (_mount_fstype(handle) not in filesystems
+                        or identity(opened_path.stat()) != identity(before)
+                        or (previous is not None and previous[0] != identity(before))):
+                    raise SDKRefused("sdk_instruction_layout_unsupported")
+                with os.fdopen(fd, "rb", closefd=False) as stream:
+                    data = stream.read(remaining_bytes + 1)
+                after = os.fstat(fd)
+            finally:
+                os.close(fd)
+            if (len(data) != before.st_size or identity(before) != identity(after)
+                    or path.resolve(strict=True) != resolved or before_links != links(path)
+                    or (edge is not None and (edge.resolve(strict=True) != resolved or edge_links != links(edge)))
+                    or identity(after) != identity(resolved.stat())):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            remaining_bytes -= len(data)
+            capture = (identity(after), data)
+            if user_captures.setdefault(resolved, capture) != capture:
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            user_aliases.append((path, resolved, before_links, edge, edge_links))
+            text = data.decode("utf-8")
+            if depth:
+                user_dependencies.add(path)
+        else:
+            if not path.is_file() or not resolved.is_relative_to(directory.resolve()) or path.stat().st_size > 32 << 20:
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            text = path.read_text(encoding="utf-8")
         if rule:
             frontmatter = re.match(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", text, re.S)
             if frontmatter:
@@ -185,25 +267,111 @@ def _instructions(config: Path, repo: Path) -> str:
                 if isinstance(metadata, dict) and "paths" in metadata:
                     raise SDKRefused("sdk_instruction_layout_unsupported")
                 text = text[frontmatter.end():]
-        visible = []
-        fence = None
-        for line in text.splitlines():
-            marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
-            if fence:
-                if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
-                    fence = None
+        if resolved not in seen:
+            size = len(text.encode("utf-8")) + (2 if instructions else 0)
+            if "\x00" in text or snapshot_bytes + size > _INSTRUCTION_SNAPSHOT_BYTES:
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+        import_pattern = r"(?<![^\W_])@([^\s`\"'][^\s]*)"
+        scanning = text.replace("\r\n", "\n").replace("\r", "\n")
+        has_import = re.search(import_pattern, scanning)
+        lines = scanning.split("\n")
+        candidate_lines = [False] * len(lines)
+        group_start = 0
+        for group_end in range(len(lines) + 1):
+            if group_end < len(lines) and lines[group_end].strip(" \t"):
                 continue
-            if marker:
-                if marker[1][0] == "`" and "`" in marker[2]:
-                    raise SDKRefused("sdk_instruction_layout_unsupported")
-                fence = marker[1]
-                continue
-            visible.append(line)
-        prose = re.sub(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", "", "\n".join(visible), flags=re.S)
-        if re.search(r"(?<!\w)@[^\s`\"']+", prose):
+            group = "\n".join(lines[group_start:group_end])
+            group_import = bool(re.search(import_pattern, group))
+            if group_import and "`" in group and any(char in group for char in "<[]"):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            candidate_lines[group_start:group_end] = [group_import] * (group_end - group_start)
+            group_start = group_end + 1
+        visible = lines.copy()
+        covered = set()
+        parser = MarkdownIt("commonmark")
+        tokens = parser.parse(scanning)
+        if any(token.level >= parser.options.maxNesting - 1 for token in tokens):
             raise SDKRefused("sdk_instruction_layout_unsupported")
-        seen.add(resolved)
-        instructions.append(text)
+        if has_import and re.search(r"`{3,}|~{3,}", scanning) and (
+                "]:" in scanning or any(token.type == "html_block" for token in tokens)
+                or re.search(r"(?m)^[ \t]*(?:(?:>[ \t]*|(?:[*+-]|\d{1,9}[.)])[ \t]+))*<", scanning)):
+            raise SDKRefused("sdk_instruction_layout_unsupported")
+        for token in tokens:
+            if token.type not in {"fence", "code_block", "inline"}:
+                continue
+            if token.map is None:
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            start, end = token.map
+            region = set(range(start, end))
+            if not 0 <= start < end <= len(lines) or covered & region:
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            covered.update(region)
+            block = "\n".join(lines[start:end])
+            if token.type in {"fence", "code_block"}:
+                if re.search(import_pattern, block):
+                    raise SDKRefused("sdk_instruction_layout_unsupported")
+                if token.type == "fence" and has_import:
+                    closer = r"(?: *> ?)* *" + re.escape(token.markup[0]) + "{" + str(len(token.markup)) + r",} *"
+                    native_closer = r"(?: *> ?)* *" + re.escape(token.markup[0]) + "{" + str(len(token.markup)) + r",}[`~]* *"
+                    body_lines = token.content.count("\n") + bool(token.content and not token.content.endswith("\n"))
+                    if (end - start != body_lines + 2 or not re.fullmatch(closer, lines[end - 1])
+                            or any(re.fullmatch(native_closer, line) for line in lines[start + 1:end - 1])):
+                        raise SDKRefused("sdk_instruction_layout_unsupported")
+                visible[start:end] = [" " * len(line) for line in lines[start:end]]
+                continue
+            group_has_import = any(candidate_lines[start:end])
+            indented = [line for line in block.split("\n") if line.expandtabs(4).startswith("    ")]
+            if ((group_has_import and "`" in block
+                 and ("\\`" in block or "<" in block or ">" in block or "[" in block or "]" in block or "|" in block or indented
+                                   or re.search(r"-->|\?>|\]\]>|(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)", block, re.I)))
+                    or any(re.search(import_pattern, line) for line in indented)):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            span_pattern = r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)"
+            if any(re.search(r"\s@\S", match[0])
+                   or (group_has_import
+                       and ("`" in match[0][len(match[1]):-len(match[1])] or "\n" in match[0]))
+                   for match in re.finditer(span_pattern, block, re.S)):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            plain = re.sub(span_pattern,
+                           lambda match: re.sub(r"[^\n]", " ", match[0]), block, flags=re.S)
+            if "`" in plain:
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            visible[start:end] = plain.split("\n")
+        prose = "\n".join(visible)
+        if "`" in prose:
+            raise SDKRefused("sdk_instruction_layout_unsupported")
+        dependencies = []
+        for match in re.finditer(import_pattern, prose):
+            if (not user or len(dependencies) >= remaining_visits
+                    or (match.start() and prose[match.start() - 1] in "_\\")):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            reference = match[1]
+            if not re.fullmatch(r"[A-Za-z0-9_./~+\-]+", reference):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            if reference.startswith("~"):
+                if not reference.startswith("~/") or reference.startswith("~//"):
+                    raise SDKRefused("sdk_instruction_layout_unsupported")
+                dependency = (home if home is not None else Path.home()) / reference[2:]
+            else:
+                dependency = Path(reference)
+            edge = None
+            if not dependency.is_absolute():
+                dependency = path.parent / dependency
+                edge = resolved.parent / reference
+            expected = dependency.resolve(strict=True)
+            if edge is not None and expected != edge.resolve(strict=True):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            dependencies.append((dependency, expected, edge))
+        if resolved not in seen:
+            snapshot_bytes += size
+            seen.add(resolved)
+            instructions.append(text)
+        active.add(resolved)
+        try:
+            for dependency, expected, edge in dependencies:
+                collect(dependency, directory, user=True, depth=depth + 1, expected=expected, edge=edge)
+        finally:
+            active.remove(resolved)
 
     try:
         def unreadable_tree(error):
@@ -222,14 +390,18 @@ def _instructions(config: Path, repo: Path) -> str:
                     or (directory.name == "rules" and directory.parent.name == ".claude"
                         and directory.parent.parent != repo))):
                 raise SDKRefused("sdk_instruction_layout_unsupported")
+        collect(config / "CLAUDE.md", config, user=True)
         for directory in (repo, *repo.parents):
             for name in ("AGENTS.md", ".claude/AGENTS.md"):
                 path = directory / name
+                if path == config / "AGENTS.md" and path in user_dependencies:
+                    continue
                 if path.exists() or path.is_symlink():
                     raise SDKRefused("sdk_instruction_layout_unsupported")
         for directory in (config, *reversed((repo, *repo.parents))):
             for name in ("CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"):
-                collect(directory / name, directory)
+                if directory / name != config / "CLAUDE.md":
+                    collect(directory / name, directory)
             rules = directory / ("rules" if directory == config else ".claude/rules")
             if rules.is_symlink():
                 raise SDKRefused("sdk_instruction_layout_unsupported")
@@ -239,6 +411,13 @@ def _instructions(config: Path, repo: Path) -> str:
                         raise SDKRefused("sdk_instruction_layout_unsupported")
                     if path.suffix == ".md":
                         collect(path, directory, rule=True)
+        for path, resolved, before_links, edge, edge_links in user_aliases:
+            if (path.resolve(strict=True) != resolved or links(path) != before_links
+                    or identity(resolved.stat()) != user_captures[resolved][0]
+                    or (edge is not None and (edge.resolve(strict=True) != resolved or links(edge) != edge_links))):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+    except (FileNotFoundError, RuntimeError):
+        raise SDKRefused("sdk_instruction_layout_unsupported") from None
     except (OSError, UnicodeError):
         raise SDKRefused("sdk_context_uninspectable") from None
     return "\n\n".join(instructions)
@@ -305,7 +484,7 @@ def bound_command(command: list[str], repo: Path, env: Mapping[str, str]):
         # The SDK's bare -v probe also sees the approved composite at the user tier.
         _write_private(selected / "settings.json", json.dumps(settings).encode())
         _write_private(root / "settings.json", json.dumps(settings).encode())
-        _write_private(root / "instructions.txt", _instructions(config, repo).encode())
+        _write_private(root / "instructions.txt", _instructions(config, repo, home=home).encode())
         for name in _MUTABLE_DIRS:
             (selected / name).mkdir()
         # Rebuild the two directories in tmpfs, so absent global/managed files
