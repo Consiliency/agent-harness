@@ -714,6 +714,73 @@ profile (Ubuntu 22.04, and 24.04 as measured) needs nothing. The jail itself is 
   `--local` print the two policy texts for review.
 - **Then:** run `phase-loop seat-sandbox qualify` on the host.
 
+**Experimental Codex AppArmor canary (administrator authorization required).**
+`phase-loop-runtime/tests/codex_apparmor_canary.py` is a standalone stdlib diagnostic,
+outside the installed runtime and CLI. The existing uid-drop override above addresses
+the seat's identity switch; this experiment compares two reviewed profiles in one
+fresh private policy namespace. It does not install a production policy or establish
+that a complete nested Codex sandbox works. Its direct-host-bubblewrap topology is
+deliberately different from the production seat topology. dev0 is the intended live
+target; claw supplied planning review only.
+
+Render as the operator on the intended host and boot, review the entire manifest and
+helper, then run both non-loading parser checks from
+`plans/detailed-codex-apparmor-canary-20261016-0227.md`. For example:
+
+```sh
+python3 phase-loop-runtime/tests/codex_apparmor_canary.py render --out "$EVIDENCE_ROOT/rendered"
+apparmor_parser -K -Q --config-file "$EVIDENCE_ROOT/rendered/parser.conf" --base "$EVIDENCE_ROOT/rendered" --Include "$EVIDENCE_ROOT/rendered" --policy-features "$EVIDENCE_ROOT/rendered/features.dump" "$EVIDENCE_ROOT/rendered/baseline.policy"
+apparmor_parser -K -Q --config-file "$EVIDENCE_ROOT/rendered/parser.conf" --base "$EVIDENCE_ROOT/rendered" --Include "$EVIDENCE_ROOT/rendered" --policy-features "$EVIDENCE_ROOT/rendered/features.dump" "$EVIDENCE_ROOT/rendered/candidate.policy"
+```
+
+Before any root execution, an administrator must independently compare **every**
+staged file, including helper and manifest, with the reviewed SHA-256 packet.
+Use a fresh directory such as `/var/lib/phase-loop-codex-canary/<run-id>/inputs`,
+with canonical root-owned, non-writable ancestors, regular single-link input files
+owned by root (mode 0644), and no additional files. The empty parser config and kernel
+feature dump are closed inputs; there are no host includes or cache writes. Create only
+the protected evidence **parent**; the helper exclusively creates the final private
+directory. Tool, library, kernel-feature and boot changes require a fresh render/review.
+The helper's self-check cannot substitute for checking code before executing it.
+
+Only after separate live authorization, use nonzero host-operator ids and the staged
+system-Python invocation:
+
+```sh
+sudo /usr/bin/python3 -I -S /var/lib/phase-loop-codex-canary/<run-id>/inputs/codex_apparmor_canary.py run --operator-uid <uid> --operator-gid <gid> --evidence /var/lib/phase-loop-codex-canary/<run-id>/result
+```
+
+Both arms hold the worker before the inner command until the external controller
+verifies identity/maps, capabilities, descriptors, mounts, namespaces and the exact
+owned enforce stack. Missing baseline syscall/audit attribution stops before candidate.
+Support requires a positive successful return from the same CLONE_NEWNS operation;
+audit silence, compilation and mocks cannot establish it. Later command failure is
+recorded separately. Any missing proof, dropped capture, unexpected stack or global
+policy change is inconclusive. No capabilities are widened automatically.
+
+Normal cleanup reaps owned descendants, removes profiles using the recorded nonempty
+`--namespace phase_loop_codex_canary_<nonce>`, closes the held namespace descriptor,
+then removes **only** that apparmorfs namespace. The result must prove its absence and
+unchanged disk **and loaded** root policy. Cleanup failure prevents a successful result.
+After SIGKILL, an administrator must verify the recorded PID/start identities and
+namespace directory identity before recovery; never signal a numeric PID alone or
+substitute a root/empty namespace. With owned descendants reaped and identity checked,
+the exact recovery operations are:
+
+```sh
+apparmor_parser -K --config-file "$STAGED/parser.conf" --base "$STAGED" --Include "$STAGED" --policy-features "$STAGED/features.dump" --namespace "$OWNED_NAMESPACE" -R "$STAGED/baseline.policy"
+rmdir -- "/sys/kernel/security/apparmor/policy/namespaces/$OWNED_NAMESPACE"
+```
+
+`OWNED_NAMESPACE` must equal the recorded unpredictable `phase_loop_codex_canary_`
+name, never a guessed or shared target. Verify namespace absence and root-policy
+invariance afterward. The root-owned `checkpoint.json` records namespace ownership
+and verified process identities before GO for interrupted-run recovery; `result.json`
+records the final outcome and cleanup. See the reviewed plan and its `review.json` for the owner’s
+unanimous-review waiver for plan landing; no president ruling or live-policy approval
+is claimed. Consiliency/agent-harness#1003 and Consiliency/agent-harness#1335 remain
+separate production work.
+
 **Gemini seat login.** A Gemini seat needs 10 minutes left on the agy login. agy renews a
 login that has expired, and before that only when it chooses to (its last 5 minutes on the
 builds measured). A seat whose login has under 10 minutes left and has not expired waits
