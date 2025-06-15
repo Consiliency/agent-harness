@@ -13310,6 +13310,58 @@
       "task_summary": "Preserve historical golden guard while recognizing approved PR-writing instruction delta",
       "type": "detailed",
       "updated_at": "2026-10-13T05:39:52Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-10-13T06:06:24.639840+00:00",
+      "file": "plans/detailed-publication-body-stability-20261013.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/publication-body-stability-20261013.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-13T06:06:24.639840+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        },
+        {
+          "at": "2026-10-13T06:06:24Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "merge_authorized": true,
+            "reason": "reproduced original idempotence/safe-retry acceptance violation",
+            "run_id": "publication-body-stability-20261013"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-13T06:22:56Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria_count": 4,
+            "acceptance_criteria_satisfied": 4,
+            "advisory_review": "Astra bounded-repair AGREE with 24 independent checks; Sol final committed-head delta pending",
+            "dirty_path_classification": "all five dirty paths plan-owned; prior companion changes committed; primary gateway log preserved",
+            "doc_delta_decision": "docs_updated",
+            "merge_authorized": true,
+            "reflection_written": true,
+            "verification_artifact_path": ".dev-skills/handoffs/codex-execute-detailed/publication-body-stability-20261013/verification/verification.json",
+            "verification_status": "passed",
+            "verification_summary": "1599 passed, 8 skipped in 90.21s; lint and wheel passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "publication-body-stability-20261013",
+      "status": "completed",
+      "task_summary": "Stable fresh publication body normalization preserving frozen retries",
+      "type": "detailed",
+      "updated_at": "2026-10-13T06:22:56Z"
     }
   ],
   "schema_version": 1

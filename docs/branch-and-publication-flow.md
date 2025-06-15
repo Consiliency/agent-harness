@@ -113,9 +113,10 @@ Detailed execution persists its body in private Git-common-directory state at
 `phase-loop-pr-text/<run-id>/body.md` (directory 0700, file 0600), outside checked-out
 source and linked worktrees, and records its path/digest in the local handoff.
 
-The publication adapter applies the shared text-redaction pipeline before binding
-and storing a fresh body. Broker requests use those stored bytes. Historical frozen
-bodies that require sanitization are refused before effects rather than rewritten;
+The publication adapter applies the shared text-redaction pipeline until the text
+is stable before binding and storing a fresh body. Broker requests use those stored
+bytes. Input that does not stabilize is refused before transaction construction.
+Historical frozen bodies that require sanitization are refused before effects rather than rewritten;
 resolve their transaction through the existing recovery process before preparing
 new publication text.
 
