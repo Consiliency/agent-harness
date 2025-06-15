@@ -13257,6 +13257,59 @@
       "task_summary": "Publication-compatible redaction comments and synthetic fixtures, without policy changes",
       "type": "detailed",
       "updated_at": "2026-10-13T04:00:28Z"
+    },
+    {
+      "acceptance_criteria_count": 3,
+      "created_at": "2026-10-13T05:37:57.290471+00:00",
+      "file": "plans/detailed-pr-hardening-golden-guard-20261013.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/pr-hardening-golden-guard-20261013.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-13T05:37:57.290471+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        },
+        {
+          "at": "2026-10-13T05:37:57Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "merge_authorized": true,
+            "publication": "existing draft agent-harness#1581",
+            "run_id": "pr-hardening-golden-guard-20261013"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-13T05:39:52Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria_count": 3,
+            "acceptance_criteria_satisfied": 3,
+            "dirty_path_classification": "all four new/modified files plan-owned; prior companion source committed; primary gateway log unrelated",
+            "doc_delta_decision": "no_doc_delta",
+            "doc_delta_reason": "test-only frozen-input normalization, no product behavior change",
+            "merge_authorized": true,
+            "reflection_written": true,
+            "review_delta_pending": true,
+            "verification_artifact_path": ".dev-skills/handoffs/codex-execute-detailed/pr-hardening-golden-guard-20261013/verification/verification.json",
+            "verification_status": "passed",
+            "verification_summary": "189 passed in 41.84s; pinned ruff passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "pr-hardening-golden-guard-20261013",
+      "status": "completed",
+      "task_summary": "Preserve historical golden guard while recognizing approved PR-writing instruction delta",
+      "type": "detailed",
+      "updated_at": "2026-10-13T05:39:52Z"
     }
   ],
   "schema_version": 1
