@@ -12,6 +12,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -1239,7 +1240,8 @@ def test_namespace_acquisition_interruption_keeps_honest_recovery(tmp_path, monk
             if failure == "injected_cancellation":
                 raise aa.Inconclusive("scratch cancellation")
             if failure == "signal":
-                os.kill(os.getpid(), signal.SIGHUP)
+                # Exercise this thread's signal mask even when pytest has background threads.
+                signal.pthread_kill(threading.get_ident(), signal.SIGHUP)
         return result
     monkeypatch.setattr(Path, "mkdir", create)
     def inspect(path, *a, **kw):
