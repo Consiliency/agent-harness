@@ -8,6 +8,7 @@ Mocks and compilation do not establish kernel enforcement or a production repair
 from __future__ import annotations
 
 import argparse
+import contextvars
 import ctypes
 import errno
 import fcntl
@@ -48,6 +49,8 @@ WORKER = ("import os; os.write(1,b'READY\\n'); "
           "os._exit(125) if go!=b'G' else os.execv('/usr/bin/unshare',"
           + repr(PRIMARY) + ")")
 LIBC = ctypes.CDLL(None, use_errno=True)
+COMMAND_OWNERS = contextvars.ContextVar("command_owners", default=None)
+CANCELLATION = {signal.SIGTERM, signal.SIGHUP, signal.SIGINT}
 
 
 class Inconclusive(RuntimeError):
@@ -128,12 +131,32 @@ def bounded(argv, timeout=30, limit=META_LIMIT, deadline=None):
         end = min(end, deadline)
     budget = remaining(end)  # Refuse an expired budget before spawning anything.
     work_end = end - min(1, budget / 4)  # Teardown consumes this same budget.
-    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, env=ENV, close_fds=True)
-    streams = selectors.DefaultSelector()
-    child_start = None
+    owner = CommandOwnership(end)
+    registry = COMMAND_OWNERS.get()
+    if registry is not None:
+        registry.append(owner)
+    streams = None
+    subreaper = ctypes.c_int()
+    subreaper_active = False
     try:
-        child_start = start_time(child.pid)
+        prctl(37, ctypes.byref(subreaper))
+        prctl(36, 1)  # Adopt command descendants even if their intermediary exits.
+        subreaper_active = True
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, CANCELLATION)
+        try:
+            owner.adopted_before = {int(pid): start_time(int(pid)) for pid in
+                                    Path(f"/proc/self/task/{os.getpid()}/children").read_text().split()}
+            owner.child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, env=ENV, close_fds=True,
+                                           start_new_session=registry is not None,
+                                           preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous))
+            child = owner.child
+            owner.session_pid = os.getsid(child.pid)
+            handle = Process(child.pid)
+            owner.children[handle.pid] = handle
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        streams = selectors.DefaultSelector()
         streams.register(child.stdout, selectors.EVENT_READ, 0)
         streams.register(child.stderr, selectors.EVENT_READ, 1)
         buffers = [bytearray(), bytearray()]
@@ -153,17 +176,20 @@ def bounded(argv, timeout=30, limit=META_LIMIT, deadline=None):
         require(code == 0, "command failed: " + Path(argv[0]).name)
         return bytes(buffers[0])
     finally:
-        streams.close()
-        child.stdout.close()
-        child.stderr.close()
-        # Popen.__exit__ waits without a timeout, so it must not own teardown.
-        if child.poll() is None:
-            child.kill()
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, CANCELLATION)
+        try:
             try:
-                child.wait(timeout=remaining(end))
-                remaining(end)
-            except (subprocess.TimeoutExpired, Inconclusive) as error:
-                raise Inconclusive(f"command teardown deadline; unreaped owned child pid={child.pid} start={child_start}") from error
+                if streams is not None:
+                    streams.close()
+            finally:
+                owner.reap()
+            if subreaper_active:
+                prctl(36, subreaper.value)
+            remaining(end)
+            if registry is not None:
+                registry.remove(owner)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def parser_argv(root, arm, operation, namespace=None):
@@ -258,7 +284,7 @@ def tools(deadline=None):
     # The protected Python trampoline also executes stdlib modules and native
     # extensions. Inventory the same imports under the exact system interpreter,
     # including existing bytecode caches rather than hashing only their sources.
-    probe = ("import __future__,argparse,ctypes,errno,fcntl,hashlib,json,os,pathlib,platform,re,"
+    probe = ("import __future__,argparse,contextvars,ctypes,errno,fcntl,hashlib,json,os,pathlib,platform,re,"
              "select,selectors,signal,stat,subprocess,sys,time,uuid; "
              "argparse.ArgumentParser().parse_args([]); "
              "print(json.dumps(sorted({str(pathlib.Path(p).resolve()) "
@@ -478,9 +504,15 @@ def descendants(owner, found, deadline=None):
         pid = int(child)
         if pid not in found:
             require(len(found) < 64, "too many owned processes")
-            handle = Process(pid)
+            try:
+                handle = Process(pid)
+            except FileNotFoundError:
+                continue  # The verified parent's child was already reaped.
             try:
                 require(owner.alive() and int(status(pid)["PPid"]) == owner.pid, "descendant ownership changed")
+            except FileNotFoundError:
+                handle.close()
+                continue
             except BaseException:
                 handle.close()
                 raise
@@ -819,20 +851,34 @@ class Namespace:
         self.fd = None
         self.identity = None
         self.created = False
+        self.acquired = False
+        self.creation_uncertain = False
 
     def create(self):
-        self.path.mkdir()  # Collision refuses; never reuse another experiment.
-        self.created = True
-        info = self.path.lstat()
-        self.identity = (info.st_dev, info.st_ino)
-        self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        info = os.fstat(self.fd)
-        require((info.st_dev, info.st_ino) == self.identity, "namespace replaced during acquisition")
-        self.check()
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, CANCELLATION)
+        try:
+            self.creation_uncertain = True
+            try:
+                self.path.mkdir()  # Collision refuses; never claim a foreign namespace.
+            except FileExistsError:
+                self.creation_uncertain = False
+                raise
+            self.created = True
+            self.creation_uncertain = False
+            info = self.path.lstat()
+            self.identity = (info.st_dev, info.st_ino)
+            self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            info = os.fstat(self.fd)
+            require((info.st_dev, info.st_ino) == self.identity, "namespace replaced during acquisition")
+            self.acquired = True
+            self.check()
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
     def check(self):
         info = self.path.lstat()
-        require(self.fd is not None and (info.st_dev, info.st_ino) == self.identity, "owned namespace identity changed")
+        require(self.acquired and self.fd is not None and (info.st_dev, info.st_ino) == self.identity,
+                "owned namespace identity changed")
 
     def remove(self):
         self.check()
@@ -840,6 +886,22 @@ class Namespace:
         self.fd = None
         self.path.rmdir()
         require(not self.path.exists(), "owned namespace survived removal")
+
+
+class CommandOwnership:
+    """Controller commands use the same pidfd/session reaper as the outer fixture."""
+
+    def __init__(self, end):
+        self.children = {}
+        self.child = None
+        self.session_pid = None
+        self.teardown_errors = []
+        self.cleanup_end = end
+        self.adopted_before = {}
+        self.term_grace = 0  # Reserve the command's remaining teardown time for KILL/reap.
+
+    def reap(self):
+        Experiment.reap(self)
 
 
 class Experiment:
@@ -856,6 +918,7 @@ class Experiment:
         self.loaded = False
         self.evidence_created = False
         self.cleanup_end = None
+        self.commands = []
         self.result = {"outcome": "inconclusive", "started": stamp(), "boot_id": boot_id(),
                        "kernel": platform.release(), "operator_uid": uid, "operator_gid": gid,
                        "namespace": self.namespace.name, "arms": {}, "parser": []}
@@ -868,6 +931,15 @@ class Experiment:
                                                   "ownership": "direct unreaped Popen child"})
             self.result["process_session"] = self.session_pid
             self.result["teardown_errors"] = list(self.teardown_errors)
+            self.result["controller_commands"] = [
+                {"session": owner.session_pid, "deadline": owner.cleanup_end,
+                 "direct_pid": owner.child.pid if owner.child is not None else None,
+                 "processes": [{"pid": h.pid, "start": h.start} for h in owner.children.values()],
+                 "errors": list(owner.teardown_errors)} for owner in self.commands]
+            self.result["namespace_identity"] = self.namespace.identity
+            self.result["namespace_created"] = self.namespace.created
+            self.result["namespace_acquired"] = self.namespace.acquired
+            self.result["namespace_creation_uncertain"] = self.namespace.creation_uncertain
             temp = self.evidence / ("checkpoint-" + uuid.uuid4().hex + ".tmp")
             fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w") as stream:
@@ -910,7 +982,7 @@ class Experiment:
             self.cleanup_end = time.monotonic() + 30
         end = self.cleanup_end
         child = self.child
-        if child is not None:
+        if child is not None and not isinstance(self, CommandOwnership):
             self.session_pid = child.pid
 
         def attempt(action):
@@ -935,11 +1007,17 @@ class Experiment:
                         if pid not in self.children and (child is None or pid != child.pid):
                             handle = Process(pid)
                             try:
-                                if os.getsid(pid) != self.session_pid:
+                                sid = os.getsid(pid)
+                                command = hasattr(self, "adopted_before")
+                                if command and self.adopted_before.get(pid) == handle.start:
+                                    continue
+                                if not command and sid != self.session_pid:
                                     continue
                                 require(int(status(pid)["PPid"]) == os.getpid(), "adopted ownership changed")
                                 require(start_time(pid) == handle.start, "adopted PID reused")
                                 self.children[pid] = handle
+                                if command and sid != self.session_pid:
+                                    self.teardown_errors.append("command descendant escaped owned session")
                             finally:
                                 if pid not in self.children:
                                     handle.close()
@@ -963,7 +1041,8 @@ class Experiment:
 
         try:
             discover()
-            for sig, deadline in ((signal.SIGTERM, min(end, time.monotonic() + 2)), (signal.SIGKILL, end)):
+            for sig, deadline in ((signal.SIGTERM, min(end, time.monotonic() + getattr(self, "term_grace", 2))),
+                                  (signal.SIGKILL, end)):
                 while True:
                     if self.child is not None:
                         attempt(lambda: child.send_signal(sig))
@@ -978,13 +1057,15 @@ class Experiment:
                         break
                     if time.monotonic() >= deadline:
                         break
-                    time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+                    time.sleep(min(0.001 if hasattr(self, "adopted_before") else 0.01,
+                                   max(0, deadline - time.monotonic())))
                 if not self.children and self.child is None:
                     break
         finally:
             if child is not None:
                 for stream in (child.stdin, child.stdout, child.stderr):
-                    attempt(stream.close)
+                    if stream is not None:
+                        attempt(stream.close)
             # Only resolved handles are closed; unresolved pidfds and identities
             # remain available for bounded retry and exact administrator recovery.
             collect()
@@ -1089,7 +1170,24 @@ class Experiment:
         record["trace"] = observer.run(go)
         record["exit_codes"] = observer.exits
 
+    def reap_commands(self):
+        errors = []
+        for owner in list(self.commands):
+            try:
+                owner.reap()  # Retains the command's original absolute deadline.
+                self.commands.remove(owner)
+            except BaseException as error:
+                errors.append(str(error) if isinstance(error, Inconclusive) else type(error).__name__)
+        require(not self.commands and not errors, "controller commands unresolved: " + "; ".join(errors))
+
     def run(self):
+        token = COMMAND_OWNERS.set(self.commands)
+        try:
+            return self._run()
+        finally:
+            COMMAND_OWNERS.reset(token)
+
+    def _run(self):
         try:
             protected(self.root, directory=True)
             require(self.evidence.parent.is_dir(), "missing protected evidence parent")
@@ -1124,15 +1222,25 @@ class Experiment:
         finally:
             if self.cleanup_end is None:
                 self.cleanup_end = time.monotonic() + 30
-            cleanup = {"status": "failed", "owned_target": str(self.namespace.path) if self.namespace.created else None}
+            cleanup = {"status": "failed", "owned_target": str(self.namespace.path)
+                       if self.namespace.created or self.namespace.creation_uncertain else None}
             self.result["cleanup"] = cleanup
             try:
-                self.reap()
+                previous = signal.pthread_sigmask(signal.SIG_BLOCK, CANCELLATION)
+                try:
+                    try:
+                        self.reap_commands()
+                    finally:
+                        self.reap()
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+                require(not self.namespace.creation_uncertain, "namespace creation ownership unresolved")
                 if self.namespace.created:
                     try:
                         if self.loaded:
                             self.parse("baseline.policy", "remove")
                     finally:
+                        self.reap_commands()
                         self.namespace.remove()
                     require(not self.namespace.path.exists(), "namespace absence unproven")
                 if self.before is not None:
@@ -1140,6 +1248,7 @@ class Experiment:
                     after = root_policy(deadline=self.cleanup_end)
                     self.result["root_after"] = after
                     require(after == self.before, "global policy changed; no automatic repair")
+                self.reap_commands()
                 remaining(self.cleanup_end)
                 cleanup["status"] = "passed"
             except BaseException as error:

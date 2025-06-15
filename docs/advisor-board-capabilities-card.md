@@ -780,6 +780,11 @@ deadline. Expiry refuses a new parser, still attempts removal of the exact held 
 after descendants have been reaped, and reports failed cleanup if proof is incomplete.
 An unreaped parser or unavailable root-policy snapshot requires administrator recovery;
 a timeout never establishes successful cleanup.
+Controller commands retain explicit process/session ownership through setup and teardown
+errors, including validation and removal commands. Unresolved ownership blocks profile or
+namespace removal. Handled cancellation is deferred across exclusive namespace creation
+and identity registration; uncertain acquisition retains the exact recovery target without
+claiming a colliding namespace or removing an object without its held identity.
 Spawned direct children remain owned if pidfd acquisition fails. Discovery errors
 still permit bounded teardown of known children, but prevent policy removal and a
 successful closeout. Dead descendants must have their wait status consumed (or prior
