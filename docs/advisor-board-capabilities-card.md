@@ -743,6 +743,13 @@ the protected evidence **parent**; the helper exclusively creates the final priv
 directory. Tool, library, kernel-feature and boot changes require a fresh render/review.
 The helper's self-check cannot substitute for checking code before executing it.
 
+The closed Python fixture binds hashed `os.py` and `linecache.py` bootstrap files,
+the encodings directory and selected executable dependencies. It creates an empty
+`lib-dynload` directory rather than exposing the host stdlib tree. The non-root
+startup regression supplies EOF permanently: it must observe READY followed by exit
+125, without sending GO or invoking the primary operation. A host that prohibits
+unprivileged bubblewrap reports an explicit prerequisite skip.
+
 Only after separate live authorization, use nonzero host-operator ids and the staged
 system-Python invocation:
 
@@ -762,6 +769,11 @@ Normal cleanup reaps owned descendants, removes profiles using the recorded none
 `--namespace phase_loop_codex_canary_<nonce>`, closes the held namespace descriptor,
 then removes **only** that apparmorfs namespace. The result must prove its absence and
 unchanged disk **and loaded** root policy. Cleanup failure prevents a successful result.
+Revalidation, parser subprocesses and their teardown share the same 30-second cleanup
+deadline. Expiry refuses a new parser, still attempts removal of the exact held namespace
+after descendants have been reaped, and reports failed cleanup if proof is incomplete.
+An unreaped parser or unavailable root-policy snapshot requires administrator recovery;
+a timeout never establishes successful cleanup.
 After SIGKILL, an administrator must verify the recorded PID/start identities and
 namespace directory identity before recovery; never signal a numeric PID alone or
 substitute a root/empty namespace. With owned descendants reaped and identity checked,

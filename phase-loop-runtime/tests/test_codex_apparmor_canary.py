@@ -1,4 +1,4 @@
-"""Synthetic adapters test orchestration; these tests never load policy or prove enforcement."""
+"""Offline orchestration and non-root EOF startup; never load policy or prove enforcement."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -182,8 +183,8 @@ def test_feature_and_closure_changes_abort_before_load(tmp_path, monkeypatch):
     manifest = {"inputs": inputs, "boot_id": aa.boot_id(), "kernel": aa.platform.release(),
                 "tools": {}, "fixture": {}, "parser_help_sha256": aa.digest(help_text)}
     monkeypatch.setattr(aa, "protected", lambda *a, **k: None)
-    monkeypatch.setattr(aa, "tools", lambda: {})
-    monkeypatch.setattr(aa, "fixture_inputs", lambda: {})
+    monkeypatch.setattr(aa, "tools", lambda **kw: {})
+    monkeypatch.setattr(aa, "fixture_inputs", lambda **kw: {})
     monkeypatch.setattr(aa, "bounded", lambda argv, **kw: help_text if argv[0] == aa.PARSER else b"new features")
     with pytest.raises(aa.Inconclusive, match="kernel features changed"):
         aa.validate_inputs(root, manifest)
@@ -418,10 +419,10 @@ def fake_run_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", lambda path, *a, **k:
                         "unconfined" if str(path) == "/proc/self/attr/current" else original_text(path, *a, **k))
     monkeypatch.setattr(aa.os, "readlink", lambda _: "user:[1]")
-    monkeypatch.setattr(aa, "validate_inputs", lambda *a: None)
+    monkeypatch.setattr(aa, "validate_inputs", lambda *a, **kw: None)
     monkeypatch.setattr(aa, "journal_cursor", lambda: "cursor")
     monkeypatch.setattr(aa, "prctl", lambda *a: None)
-    monkeypatch.setattr(aa, "root_policy", lambda: {"disk": "stable", "loaded": "stable"})
+    monkeypatch.setattr(aa, "root_policy", lambda **kw: {"disk": "stable", "loaded": "stable"})
     monkeypatch.setattr(ex, "reap", lambda: events.append("reap"))
     def parse(name, operation):
         events.append((name, operation))
@@ -470,7 +471,7 @@ def test_cleanup_failure_overrides_supported_hypothesis(tmp_path, monkeypatch, f
         monkeypatch.setattr(ex.namespace, "remove", lambda: aa.require(False, "removal failed"))
     elif failure == "root_policy_change":
         snapshots = iter([{"loaded": "before"}, {"loaded": "after"}])
-        monkeypatch.setattr(aa, "root_policy", lambda: next(snapshots))
+        monkeypatch.setattr(aa, "root_policy", lambda **kw: next(snapshots))
     else:
         monkeypatch.setattr(ex, "reap", lambda: aa.require(False, "reap failed"))
     try:
@@ -510,7 +511,8 @@ def test_trampoline_consumes_onexec_before_drop_and_fixed_bwrap_exec(tmp_path, m
 
 def test_bwrap_fixture_exposes_no_host_directory_or_arbitrary_command(tmp_path):
     manifest = {"fixture": {"files": {aa.PYTHON: {"path": "/usr/bin/python3.14"}},
-                             "encodings": "/usr/lib/python3.14/encodings"}}
+                             "encodings": "/usr/lib/python3.14/encodings",
+                             "dynload": "/usr/lib/python3.14/lib-dynload"}}
     argv = aa.bwrap_argv(tmp_path, manifest, UID, GID)
     assert argv[-1] == aa.WORKER and aa.PRIMARY == ["/usr/bin/unshare", "--user", "--map-root-user", "--mount", "/usr/bin/true"]
     assert "--cap-drop" in argv and "--unshare-user" in argv and "--die-with-parent" in argv
@@ -694,3 +696,167 @@ def test_audit_component_must_belong_to_exact_namespace_and_denied_capability(mo
     bounds = {"realtime_ns": 1000000000, "monotonic_ns": 1000000000}
     finish = {"realtime_ns": 3000000000, "monotonic_ns": 3000000000}
     assert aa.audit_capture("cursor", gate(), bounds, finish) == []
+
+
+def test_nonroot_fixture_startup_reaches_ready_and_refuses_eof(tmp_path):
+    if os.getuid() == 0 or os.getgid() == 0:
+        pytest.skip("startup-only regression requires a non-root operator")
+    if sys.platform != "linux" or not shutil.which("bwrap") or not Path(aa.PYTHON).exists():
+        pytest.skip("Linux, system Python and bubblewrap are required for actual fixture startup")
+    manifest = {"fixture": aa.fixture_inputs()}
+    (tmp_path / "fixture.txt").write_bytes(b"synthetic fixture\n")
+    argv = aa.bwrap_argv(tmp_path, manifest, os.getuid(), os.getgid())
+    # EOF is permanent: this process can never receive GO or execute PRIMARY.
+    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                            env=aa.ENV, close_fds=True, timeout=10)
+    if result.returncode != 125 and any(message in result.stderr for message in (
+            b"No permissions to create new namespace", b"Creating new namespace failed",
+            b"setting up uid map: Permission denied", b"unshare user namespace: Operation not permitted")):
+        pytest.skip("host denies unprivileged bubblewrap startup: " + result.stderr.decode(errors="replace")[:500])
+    assert result.returncode == 125, result.stderr.decode(errors="replace")
+    assert result.stdout == b"READY\n" and result.stderr == b""
+    stdlib = Path(manifest["fixture"]["encodings"]).parent
+    assert {str(stdlib / "os.py"), str(stdlib / "linecache.py")} <= set(manifest["fixture"]["files"])
+    assert str(stdlib) not in argv and str(stdlib / "lib-dynload") not in manifest["fixture"]["files"]
+    # Reading host mount metadata is unprivileged and does not open the gate.
+    assert str(stdlib / "lib-dynload") not in aa.expected_binds(tmp_path, manifest)
+
+
+@pytest.mark.parametrize("after_validation", [10, 11])
+def test_cleanup_revalidation_cannot_launch_parser_at_or_after_deadline(tmp_path, monkeypatch, after_validation):
+    ex = experiment(tmp_path)
+    clock = [0.0]
+    ex.cleanup_end = 10
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ex.namespace, "check", lambda: None)
+    def validate(root, manifest, *, deadline):
+        assert deadline == 10
+        clock[0] = after_validation
+    monkeypatch.setattr(aa, "validate_inputs", validate)
+    monkeypatch.setattr(aa, "bounded", lambda *a, **kw: pytest.fail("parser launched after expiry"))
+    with pytest.raises(aa.Inconclusive, match="deadline"):
+        ex.parse("baseline.policy", "remove")
+    assert not ex.result["parser"]
+
+
+def test_revalidation_subcommands_share_the_cleanup_deadline(tmp_path, monkeypatch):
+    ex = experiment(tmp_path)
+    clock = [0.0]
+    ex.cleanup_end = 10
+    help_text = b"Do not attempt to load or save cached profiles"
+    ex.manifest = {"inputs": aa.closure(ex.root), "boot_id": aa.boot_id(),
+                   "kernel": aa.platform.release(), "tools": {}, "fixture": {},
+                   "parser_help_sha256": aa.digest(help_text)}
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ex.namespace, "check", lambda: None)
+    monkeypatch.setattr(aa, "protected", lambda *a, **kw: None)
+    deadlines = []
+    def tools(*, deadline):
+        deadlines.append(deadline)
+        clock[0] = 3
+        return {}
+    def fixture(*, deadline):
+        deadlines.append(deadline)
+        clock[0] = 6
+        return {}
+    calls = []
+    def command(argv, *, deadline, **kw):
+        deadlines.append(deadline)
+        assert aa.remaining(deadline) <= 4
+        calls.append(argv)
+        clock[0] += 2
+        return help_text if "--help" in argv else (ex.root / "features.dump").read_bytes()
+    monkeypatch.setattr(aa, "tools", tools)
+    monkeypatch.setattr(aa, "fixture_inputs", fixture)
+    monkeypatch.setattr(aa, "bounded", command)
+    with pytest.raises(aa.Inconclusive, match="deadline"):
+        ex.parse("baseline.policy", "remove")
+    assert len(calls) == 2 and "--help" in calls[0] and calls[1][0] == aa.FEATURES
+    assert deadlines == [10] * 4 and not ex.result["parser"]
+
+
+def test_fixture_dependency_probes_receive_one_deadline(monkeypatch):
+    clock = [0.0]
+    calls = []
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    def command(argv, *, deadline, **kw):
+        aa.remaining(deadline)
+        calls.append((argv[0], deadline))
+        clock[0] += 4
+        aa.remaining(deadline)
+        return b""
+    monkeypatch.setattr(aa, "bounded", command)
+    with pytest.raises(aa.Inconclusive, match="deadline"):
+        aa.fixture_inputs(deadline=10)
+    assert calls == [("/usr/bin/ldd", 10)] * 3
+
+
+def test_bounded_refuses_expired_budget_before_spawn(monkeypatch):
+    monkeypatch.setattr(aa.time, "monotonic", lambda: 10)
+    monkeypatch.setattr(aa.subprocess, "Popen", lambda *a, **kw: pytest.fail("expired spawn"))
+    with pytest.raises(aa.Inconclusive, match="deadline"):
+        aa.bounded(["parser"], deadline=10)
+
+
+def test_subprocess_teardown_cannot_obtain_a_new_budget(monkeypatch):
+    clock = [0.0]
+    waits, killed = [], []
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(aa, "start_time", lambda pid: 456)
+    class Selector:
+        def register(self, *a):
+            pass
+        def get_map(self):
+            return {}
+        def close(self):
+            pass
+    class Child:
+        pid = 123
+        stdout, stderr = io.BytesIO(), io.BytesIO()
+        def poll(self):
+            return None
+        def kill(self):
+            killed.append(clock[0])
+        def wait(self, *, timeout):
+            waits.append((clock[0], timeout))
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired("parser", timeout)
+        def __exit__(self, *a):
+            pytest.fail("unbounded Popen context-manager wait")
+    monkeypatch.setattr(aa.selectors, "DefaultSelector", Selector)
+    monkeypatch.setattr(aa.subprocess, "Popen", lambda *a, **kw: Child())
+    with pytest.raises(aa.Inconclusive, match="teardown deadline; unreaped owned child pid=123 start=456"):
+        aa.bounded(["parser"], deadline=10)
+    assert waits == [(0, 9), (9, 1)] and killed == [9] and clock[0] == 10
+    assert Child.stdout.closed and Child.stderr.closed
+
+
+def test_expired_cleanup_still_removes_exact_namespace_and_reports_failed_proof(tmp_path, monkeypatch):
+    ex, events = fake_run_environment(tmp_path, monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(aa.time, "monotonic", lambda: clock[0])
+    def run_arm(name):
+        ex.loaded = True
+        return arm() if name == "baseline" else arm(result=0)
+    monkeypatch.setattr(ex, "arm", run_arm)
+    original_parse = ex.parse
+    def parse(name, operation):
+        if operation == "remove":
+            clock[0] = ex.cleanup_end + 1
+            raise aa.Inconclusive("cleanup deadline")
+        original_parse(name, operation)
+    monkeypatch.setattr(ex, "parse", parse)
+    result = ex.run()
+    assert result["cleanup"]["status"] == "failed" and result["outcome"] == "inconclusive"
+    assert not ex.namespace.path.exists() and "root_after" not in result
+    assert result["cleanup"]["owned_target"] == str(ex.namespace.path)
+
+
+def test_host_mount_escapes_decode_without_relaxing_fixture_mount_gate():
+    text = r"11 1 8:1 /root\040space /mnt\134path rw - ext4 /dev/sda rw"
+    row = aa.mount_rows(text, host=True)[0]
+    assert row["root"] == "/root space" and row["path"] == "/mnt\\path"
+    with pytest.raises(aa.Inconclusive, match="escaped mount path"):
+        aa.mount_rows(text)
+    with pytest.raises(aa.Inconclusive, match="unknown host mount escape"):
+        aa.mount_rows(text.replace(r"\040", r"\999"), host=True)

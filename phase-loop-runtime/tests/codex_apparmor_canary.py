@@ -63,11 +63,23 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def file_digest(path):
+def remaining(deadline):
+    budget = deadline - time.monotonic()
+    require(budget > 0, "command/cleanup deadline")
+    return budget
+
+
+def file_digest(path, deadline=None):
+    if deadline is not None:
+        remaining(deadline)
     value = hashlib.sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(65536), b""):
+            if deadline is not None:
+                remaining(deadline)
             value.update(chunk)
+    if deadline is not None:
+        remaining(deadline)
     return value.hexdigest()
 
 
@@ -93,7 +105,7 @@ def protected(path, directory=False):
     return path
 
 
-def executable(path):
+def executable(path, deadline=None):
     resolved = Path(path).resolve(strict=True)
     info = resolved.stat()
     require(stat.S_ISREG(info.st_mode) and not info.st_mode & 0o6022, "privileged or writable executable")
@@ -106,36 +118,52 @@ def executable(path):
         capabilities = b""
     require(not capabilities, "file capabilities on executable")
     protected(resolved)
-    return {"path": str(resolved), "sha256": file_digest(resolved)}
+    return {"path": str(resolved), "sha256": file_digest(resolved, deadline)}
 
 
-def bounded(argv, timeout=30, limit=META_LIMIT):
+def bounded(argv, timeout=30, limit=META_LIMIT, deadline=None):
     """Drain both pipes concurrently; never buffer unbounded command output."""
-    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, env=ENV, close_fds=True) as child:
-        streams = selectors.DefaultSelector()
+    end = time.monotonic() + timeout
+    if deadline is not None:
+        end = min(end, deadline)
+    budget = remaining(end)  # Refuse an expired budget before spawning anything.
+    work_end = end - min(1, budget / 4)  # Teardown consumes this same budget.
+    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=ENV, close_fds=True)
+    streams = selectors.DefaultSelector()
+    child_start = None
+    try:
+        child_start = start_time(child.pid)
         streams.register(child.stdout, selectors.EVENT_READ, 0)
         streams.register(child.stderr, selectors.EVENT_READ, 1)
         buffers = [bytearray(), bytearray()]
-        end = time.monotonic() + timeout
+        while streams.get_map():
+            for key, _ in streams.select(min(0.05, remaining(work_end))):
+                data = os.read(key.fileobj.fileno(), 8192)
+                if not data:
+                    streams.unregister(key.fileobj)
+                else:
+                    buffers[key.data].extend(data)
+                    require(sum(map(len, buffers)) <= limit, "command output overflow")
         try:
-            while streams.get_map():
-                require(time.monotonic() < end, "command deadline")
-                for key, _ in streams.select(min(0.05, max(0, end - time.monotonic()))):
-                    data = os.read(key.fileobj.fileno(), 8192)
-                    if not data:
-                        streams.unregister(key.fileobj)
-                    else:
-                        buffers[key.data].extend(data)
-                        require(sum(map(len, buffers)) <= limit, "command output overflow")
-            code = child.wait(timeout=max(0.01, end - time.monotonic()))
-            require(code == 0, "command failed: " + Path(argv[0]).name)
-            return bytes(buffers[0])
-        finally:
-            streams.close()
-            if child.poll() is None:
-                child.kill()
-                child.wait(timeout=30)
+            code = child.wait(timeout=remaining(work_end))
+        except subprocess.TimeoutExpired as error:
+            raise Inconclusive("command deadline") from error
+        remaining(work_end)
+        require(code == 0, "command failed: " + Path(argv[0]).name)
+        return bytes(buffers[0])
+    finally:
+        streams.close()
+        child.stdout.close()
+        child.stderr.close()
+        # Popen.__exit__ waits without a timeout, so it must not own teardown.
+        if child.poll() is None:
+            child.kill()
+            try:
+                child.wait(timeout=remaining(end))
+                remaining(end)
+            except (subprocess.TimeoutExpired, Inconclusive) as error:
+                raise Inconclusive(f"command teardown deadline; unreaped owned child pid={child.pid} start={child_start}") from error
 
 
 def parser_argv(root, arm, operation, namespace=None):
@@ -167,40 +195,45 @@ def policy_check(root):
     require((root / "features.dump").stat().st_size > 0, "empty features input")
 
 
-def closure(root):
-    return {name: file_digest(root / name) for name in INPUT_NAMES}
+def closure(root, deadline=None):
+    return {name: file_digest(root / name, deadline) for name in INPUT_NAMES}
 
 
-def fixture_inputs():
-    """Only fixed executable dependencies and Python's encoding bootstrap are bound."""
+def fixture_inputs(deadline=None):
+    """Bind fixed executable and interpreter bootstrap files, never host stdlib trees."""
     paths = {PYTHON, "/usr/bin/unshare", "/usr/bin/true"}
     for path in tuple(paths):
-        output = bounded(["/usr/bin/ldd", str(Path(path).resolve())]).decode()
+        output = bounded(["/usr/bin/ldd", str(Path(path).resolve())], deadline=deadline).decode()
         for line in output.splitlines():
             match = re.search(r"(?:=>\s*)?(/[^\s]+)\s+\(", line)
             if match:
                 paths.add(match.group(1))
         require("not found" not in output, "missing loader dependency")
     version = bounded([PYTHON, "-I", "-S", "-c",
-                       "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"]).decode().strip()
+                       "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"], deadline=deadline).decode().strip()
     require(re.fullmatch(r"3\.\d+", version), "unexpected system Python")
-    encodings = Path("/usr/lib") / ("python" + version) / "encodings"
+    stdlib = Path("/usr/lib") / ("python" + version)
+    encodings = stdlib / "encodings"
     require(encodings.is_dir(), "missing Python encodings")
-    files = {path: executable(path) for path in sorted(paths)}
+    # os.py is CPython's prefix landmark even when os is frozen. Python 3.14
+    # imports linecache before executing -c to register its source, even `pass`.
+    paths.update(str(stdlib / name) for name in ("os.py", "linecache.py"))
+    files = {path: executable(path, deadline) for path in sorted(paths)}
     encoding_hashes = {}
     for path in sorted(encodings.rglob("*")):
         if path.is_file():
-            executable(path)
-            encoding_hashes[str(path.relative_to(encodings))] = file_digest(path)
-    return {"files": files, "encodings": str(encodings), "encoding_hashes": encoding_hashes}
+            item = executable(path, deadline)
+            encoding_hashes[str(path.relative_to(encodings))] = item["sha256"]
+    return {"files": files, "encodings": str(encodings), "encoding_hashes": encoding_hashes,
+            "dynload": str(stdlib / "lib-dynload")}
 
 
-def tools():
+def tools(deadline=None):
     paths = [PARSER, FEATURES, "/usr/bin/aa-exec", "/usr/bin/bwrap", PYTHON,
              "/usr/bin/unshare", "/usr/bin/true", "/usr/bin/journalctl", "/usr/bin/ldd"]
     if Path("/usr/sbin/auditctl").exists():
         paths.append("/usr/sbin/auditctl")
-    return {path: executable(path) for path in paths}
+    return {path: executable(path, deadline) for path in paths}
 
 
 def render(out):
@@ -224,21 +257,25 @@ def render(out):
     return manifest
 
 
-def validate_inputs(root, manifest):
+def validate_inputs(root, manifest, deadline=None):
+    if deadline is not None:
+        remaining(deadline)
     require(set(manifest["inputs"]) == set(INPUT_NAMES), "manifest input inventory changed")
     require({p.name for p in root.iterdir()} == {*manifest["inputs"], "manifest.json"}, "input closure inventory changed")
     for name in (*manifest["inputs"], "manifest.json"):
         protected(root / name)
     policy_check(root)
-    require(closure(root) == manifest["inputs"], "input closure changed")
+    require(closure(root, deadline) == manifest["inputs"], "input closure changed")
     require(manifest["boot_id"] == boot_id(), "boot changed since render")
     require(manifest["kernel"] == platform.release(), "kernel changed since render")
-    require(tools() == manifest["tools"] and fixture_inputs() == manifest["fixture"], "executable closure changed")
-    help_text = bounded(parser_argv(root, "baseline.policy", "compile")[:-1] + ["--help"])
+    require(tools(deadline=deadline) == manifest["tools"] and fixture_inputs(deadline=deadline) == manifest["fixture"], "executable closure changed")
+    help_text = bounded(parser_argv(root, "baseline.policy", "compile")[:-1] + ["--help"], deadline=deadline)
     require(b"Do not attempt to load or save cached profiles" in help_text, "parser cache contract unavailable")
     require(digest(help_text) == manifest["parser_help_sha256"], "parser interface changed")
-    features = bounded([FEATURES, "--extract", "--stdout"], limit=COLLECT_LIMIT)
+    features = bounded([FEATURES, "--extract", "--stdout"], limit=COLLECT_LIMIT, deadline=deadline)
     require(digest(features) == manifest["inputs"]["features.dump"], "kernel features changed")
+    if deadline is not None:
+        remaining(deadline)
 
 
 def close_fds():
@@ -305,7 +342,8 @@ def bwrap_argv(root, manifest, uid, gid):
     for destination, item in manifest["fixture"]["files"].items():
         argv += ["--ro-bind", item["path"], destination]
     encodings = manifest["fixture"]["encodings"]
-    argv += ["--ro-bind", encodings, encodings, "--ro-bind", str(root / "fixture.txt"), "/fixture.txt",
+    argv += ["--dir", manifest["fixture"]["dynload"],
+             "--ro-bind", encodings, encodings, "--ro-bind", str(root / "fixture.txt"), "/fixture.txt",
              "--chdir", "/scratch", "--clearenv"]
     for name, value in ENV.items():
         argv += ["--setenv", name, value]
@@ -375,12 +413,17 @@ def descendants(owner, found):
         descendants(found[pid], found)
 
 
-def mount_rows(text):
+def mount_rows(text, host=False):
     rows = []
     for line in text.splitlines():
         left, right = line.split(" - ", 1)
         fields, tail = left.split(), right.split()
-        require(not any("\\" in x for x in fields[3:5]), "escaped mount path")
+        if host:
+            for index in (3, 4):
+                require(not re.search(r"\\(?!040|011|012|134)", fields[index]), "unknown host mount escape")
+                fields[index] = re.sub(r"\\(040|011|012|134)", lambda m: chr(int(m[1], 8)), fields[index])
+        else:
+            require(not any("\\" in x for x in fields[3:5]), "escaped mount path")
         rows.append({"dev": fields[2], "root": fields[3], "path": fields[4],
                      "options": fields[5].split(","), "propagation": fields[6:], "fs": tail[0]})
     return rows
@@ -394,7 +437,7 @@ def expected_binds(root, manifest):
     bindings["/dev/null"] = "/dev/null"
     result = {}
     # Resolve a host file against the longest matching host mountpoint.
-    host = mount_rows(Path("/proc/self/mountinfo").read_text())
+    host = mount_rows(Path("/proc/self/mountinfo").read_text(), host=True)
     for dest, path in bindings.items():
         containing = [r for r in host if Path(path).is_relative_to(r["path"])]
         row = max(containing, key=lambda r: len(r["path"]))
@@ -663,23 +706,25 @@ def outcome(baseline, candidate):
     return "hypothesis_refuted" if attributed(candidate) else "inconclusive"
 
 
-def root_policy(disk_root=None, aa_root=None):
+def root_policy(disk_root=None, aa_root=None, deadline=None):
     disk_root = Path("/etc/apparmor.d") if disk_root is None else disk_root
     aa_root = AA if aa_root is None else aa_root
     disk = {}
     for path in sorted(disk_root.rglob("*")):
         if path.is_file():
-            disk[str(path.relative_to(disk_root))] = file_digest(path)
+            disk[str(path.relative_to(disk_root))] = file_digest(path, deadline)
     loaded = {}
     for path in sorted((aa_root / "policy/profiles").rglob("raw_data")):
         parent = path.parent
         name = (parent / "name").read_text().strip()
         mode = (parent / "mode").read_text().strip()
         loaded[str(parent.relative_to(aa_root / "policy/profiles"))] = {
-            "name": name, "mode": mode, "sha256": file_digest(path)}
+            "name": name, "mode": mode, "sha256": file_digest(path, deadline)}
     require(disk and loaded, "disk or loaded root-policy evidence unreadable")
     labels = sorted((aa_root / "profiles").read_text().splitlines())
     require(labels, "loaded root profile set unreadable")
+    if deadline is not None:
+        remaining(deadline)
     return {"disk": disk, "loaded": loaded, "labels": labels}
 
 
@@ -740,11 +785,16 @@ class Experiment:
             os.replace(temp, self.evidence / "checkpoint.json")
 
     def parse(self, arm, operation):
+        end = time.monotonic() + 30
+        if self.cleanup_end is not None:
+            end = min(end, self.cleanup_end)
+        remaining(end)
         if operation in ("load", "remove"):
             self.namespace.check()
         # Cleanup must never parse a policy/config/features file that changed after
         # admission. If revalidation fails, still remove the exact held namespace.
-        validate_inputs(self.root, self.manifest)
+        validate_inputs(self.root, self.manifest, deadline=end)
+        remaining(end)
         argv = parser_argv(self.root, arm, operation,
                            self.namespace.name if operation in ("load", "remove") else None)
         row = {"argv": argv, "argv_sha256": digest(json.dumps(argv).encode()),
@@ -752,8 +802,8 @@ class Experiment:
         self.result["parser"].append(row)
         if operation == "load":
             self.loaded = True  # A failed load may have installed one profile.
-        timeout = 30 if self.cleanup_end is None else max(0.01, self.cleanup_end - time.monotonic())
-        output = bounded(argv, timeout=timeout, limit=COLLECT_LIMIT)
+        output = bounded(argv, timeout=remaining(end), limit=COLLECT_LIMIT, deadline=end)
+        remaining(end)
         if operation == "preprocess":
             require(digest(output) == self.manifest["preprocessed_sha256"][arm], "preprocessed policy changed")
         row.update(status="passed", output_sha256=digest(output))
@@ -785,17 +835,19 @@ class Experiment:
                         os.waitpid(handle.pid, os.WNOHANG | 0x40000000)
                     except ChildProcessError:
                         pass
-                time.sleep(0.01)
+                time.sleep(min(0.01, max(0, deadline - time.monotonic())))
             if not any(h.alive() for h in self.children.values()):
                 break
         require(not any(h.alive() for h in self.children.values()), "owned descendants survived cleanup")
         if self.child:
-            self.child.wait(timeout=max(0.01, end - time.monotonic()))
+            # All handles are dead; poll/wait must still fit the shared budget.
+            self.child.wait(timeout=remaining(end))
             for stream in (self.child.stdin, self.child.stdout, self.child.stderr):
                 stream.close()
         for handle in self.children.values():
             handle.close()
         self.children.clear()
+        remaining(end)
 
     def arm(self, name):
         self.parse(name + ".policy", "preprocess")
@@ -918,9 +970,11 @@ class Experiment:
                         self.namespace.remove()
                     require(not self.namespace.path.exists(), "namespace absence unproven")
                 if self.before is not None:
-                    after = root_policy()
+                    remaining(self.cleanup_end)
+                    after = root_policy(deadline=self.cleanup_end)
                     self.result["root_after"] = after
                     require(after == self.before, "global policy changed; no automatic repair")
+                remaining(self.cleanup_end)
                 cleanup["status"] = "passed"
             except BaseException as error:
                 cleanup["reason"] = str(error) if isinstance(error, Inconclusive) else type(error).__name__
