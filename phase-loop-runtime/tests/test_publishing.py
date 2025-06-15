@@ -182,6 +182,8 @@ def test_artifacts_remain_blocked_even_when_parseable_python(tmp_path, path):
 @pytest.mark.parametrize("content", [
     "password = 'a-private-value'\n",
     "def load(:\n",
+    "def load(value, value): return None\n",
+    "def load(): return None\nreturn None\n",
     "def load():\n    return {}\npassword = 'a-private-value' # pragma: allowlist secret\n",
     'def load():\n    return "-----BEGIN PRIVATE KEY-----"\n',
     'def load():\n    return {}\ncredentials = {"client_secret": "a-private-value"}\n',
@@ -301,7 +303,8 @@ def test_direct_preparation_cannot_construct_source_without_audit(tmp_path):
             branch="feat/p1-test", envelope_authority_preimage=authority.envelope_authority_preimage,
         )
     assert _git(repo, "rev-parse", "HEAD").stdout == original
-    assert not list(authority.checkpoint_root.rglob("*.checkpoint.json"))
+    assert publishing.PublishTransactionStore(authority.checkpoint_root, "repo-a").load_active() is None
+    assert not list(authority.checkpoint_root.rglob("publish-transactions/*/*.json"))
 
 
 def test_direct_resume_recomputes_audit_after_durable_object(tmp_path):
@@ -356,6 +359,52 @@ def test_scanner_version_mismatch_blocks_exception(tmp_path, monkeypatch):
     repo = _source_repo(tmp_path)
     monkeypatch.setattr(publishing, "version", lambda name: "unsupported")
     assert publishing._audit_staged_diff(repo, ["credentials.py"], evidence={})["reason"] == "source_scan_failed"
+
+
+def test_literal_source_path_cannot_select_clean_glob_decoy(tmp_path):
+    from phase_loop_runtime import publishing
+    path = "agent/credentials[prod].py"
+    repo = _source_repo(tmp_path, path)
+    _write_and_stage(repo, "agent/credentialsp.py", "def load(): return None\n")
+    _git(repo, "commit", "-m", "literal and decoy sources")
+    _write_and_stage(repo, path, "def load(): return None\npassword = 'a-private-value'\n")
+    assert publishing._audit_staged_diff(repo, [path], evidence={})["reason"] == "secret_staged_path"
+    _write_and_stage(repo, path, "def load(): return 2\n")
+    evidence = {}
+    assert publishing._audit_staged_diff(repo, [path], evidence=evidence) is None
+    assert evidence["source_exceptions"][0]["blob_oid"] == _git(repo, "rev-parse", ":" + path).stdout.strip()
+
+
+def test_source_lookup_rejects_mismatched_returned_name(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    repo = _source_repo(tmp_path)
+    real = publishing._git_bytes
+    def wrong_name(repo, *args):
+        result = real(repo, *args)
+        if "ls-tree" in args and result:
+            return result.partition(b"\t")[0] + b"\tother.py\0"
+        return result
+    monkeypatch.setattr(publishing, "_git_bytes", wrong_name)
+    assert publishing._audit_staged_diff(repo, ["credentials.py"], evidence={})["reason"] == "secret_staged_path"
+
+
+@pytest.mark.parametrize("trigger", [
+    "def load(password):\n    return password is 'sensitive-value'\n",
+    "def load():\n    return '\\q'\n",
+])
+def test_source_warnings_cannot_print_credential_lines(tmp_path, monkeypatch, capsys, trigger):
+    import warnings
+    from phase_loop_runtime import publishing
+    repo = _source_repo(tmp_path)
+    _write_and_stage(repo, "credentials.py", "password = 'sensitive-value'\n" + trigger)
+    monkeypatch.chdir(repo)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result = publishing._audit_staged_diff(repo, ["credentials.py"], evidence={})
+    assert result["reason"] == "secret_staged_path"
+    assert not recorded
+    captured = capsys.readouterr()
+    assert "sensitive-value" not in captured.out + captured.err + str(result)
 
 
 # ---------------------------------------------------------------------------

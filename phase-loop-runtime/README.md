@@ -95,14 +95,16 @@ of agent-harness#841's dependency repair.
 Normal FABPUB publication can distinguish an existing Python implementation such
 as `credentials.py` from a credential artifact (Consiliency/agent-harness#893).
 The path must be owned, regular Python source in both the frozen parent and staged
-tree, parse successfully, and contain a top-level function or class. New files,
+tree, parse and compile without warnings, and contain a top-level function or class. New files,
 data-only files, symlinks, `.env*` and `.key` names do not receive this exception.
 Other source languages remain subject to the existing filename guard.
 
 The complete staged blob is scanned with pinned `detect-secrets` 1.5.0 built-in
 detectors. Repository configuration, inline suppressions, filter exemptions and
 online verification are not consulted. Findings and scanner failures block the
-exception without printing matched data. This heuristic scan is not proof that
+exception without printing matched data. Parsing/compilation warnings reject the
+candidate rather than rendering source lines. No candidate code is executed.
+This heuristic scan is not proof that
 arbitrary or obfuscated secrets are absent; source review is still required.
 
 Metadata-only evidence (parent/tree and blob identifiers, content hash and policy

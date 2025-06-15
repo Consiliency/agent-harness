@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import threading
+import warnings
 from importlib.metadata import version
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -961,10 +962,12 @@ def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict
         return None
     blobs = []
     for ref in (parent, tree):
-        entry = _git_bytes(repo, "ls-tree", "-z", ref, "--", path)
+        entry = _git_bytes(repo, "--literal-pathspecs", "ls-tree", "-z", ref, "--", path)
         if not entry or len(entry.split(b"\0")) != 2:
             return None
-        metadata, _, _ = entry.partition(b"\t")
+        metadata, _, returned_path = entry.partition(b"\t")
+        if returned_path != os.fsencode(path) + b"\0":
+            return None
         fields = metadata.split()
         if len(fields) != 3 or fields[0] not in (b"100644", b"100755") or fields[1] != b"blob":
             return None
@@ -976,8 +979,11 @@ def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict
         if blob is None:
             return None
         try:
-            module = ast.parse(blob)
-        except (SyntaxError, ValueError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                module = ast.parse(blob, filename="<publication-source>")
+                compile(module, "<publication-source>", "exec", dont_inherit=True)
+        except (SyntaxError, ValueError, Warning):
             return None
         if not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for node in module.body):
             return None
