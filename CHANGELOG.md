@@ -46,6 +46,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   gemini runner launches get the references beside
   `context.md`. The duplicate closeout-audit block in Core Rules now points to Closeout.
 
+### Unadmitted prebuilt publication recovery (agent-harness#1758)
+
+- Human publication supports exact-ID retirement of an unused, unadmitted
+  prebuilt transaction through `abandon_unadmitted_prebuilt`, preserving its
+  history before ordinary publication. Fresh prebuilt publication refuses a
+  nonempty staged index before checkpoint preparation (agent-harness#1758).
+
 ## [0.7.27] - 2026-10-18
 
 ### Upgrade notes

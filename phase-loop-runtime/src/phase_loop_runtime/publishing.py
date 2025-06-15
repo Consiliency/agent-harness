@@ -91,11 +91,11 @@ def _atomic_json(path: Path, payload: dict, *, mode: int = 0o666) -> None:
         os.close(descriptor)
 
 
-def _read_json_nofollow(path: Path) -> dict | None:
-    """``None`` when ``path`` is absent; its JSON object when it is a regular file.
+def _read_bytes_nofollow(path: Path) -> bytes | None:
+    """``None`` when ``path`` is absent; its bytes when it is a regular file.
 
     A symlink, a non-regular file (a FIFO included, without blocking), or bytes
-    that are not a JSON object refuse with ``PublishTransactionConflict``
+    that cannot be read refuse with ``PublishTransactionConflict``
     (agent-harness#1296 recovery records).
     """
     try:
@@ -112,7 +112,13 @@ def _read_json_nofollow(path: Path) -> dict | None:
         os.close(descriptor)
         raise PublishTransactionConflict(f"{path} is not a regular file")
     with os.fdopen(descriptor, "rb") as stream:
-        raw = stream.read()
+        return stream.read()
+
+
+def _read_json_nofollow(path: Path) -> dict | None:
+    raw = _read_bytes_nofollow(path)
+    if raw is None:
+        return None
     try:
         value = json.loads(raw)
     except ValueError as error:
@@ -237,6 +243,10 @@ class PublishCrashInjected(RuntimeError):
 
 class PublishTransactionConflict(RuntimeError):
     pass
+
+
+class UnadmittedPrebuiltConflict(PublishTransactionConflict):
+    provider_call_made = False
 
 
 class RecoveryRecordConflict(PublishTransactionConflict):
@@ -537,6 +547,7 @@ class PublishTransaction:
         # split, two writers can both read the same current state and both
         # advance it.
         with self.store.exclusive():
+            self._require_no_tombstone()
             durable = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
             if durable.get("transaction_id") != self.transaction_id:
                 raise PublishTransactionConflict(
@@ -632,13 +643,19 @@ class PublishTransaction:
 
     def _conflict(self, detail: str) -> None:
         with self.store.exclusive():
+            self._require_no_tombstone()
             self.write_tombstone(PublishTransactionState.CONFLICTED)
             self.clear_active_pointer()
             self.state = PublishTransactionState.CONFLICTED
             self._write()
         raise PublishTransactionConflict(f"CONFLICTED: {detail}")
 
+    def _require_no_tombstone(self) -> None:
+        if _read_json_nofollow(self.tombstone_path) is not None:
+            raise PublishTransactionConflict("tombstoned transaction cannot advance")
+
     def resume(self) -> "PublishTransaction":
+        self._require_no_tombstone()
         if self.state in (PublishTransactionState.ABANDONED, PublishTransactionState.CONFLICTED):
             raise PublishTransactionConflict("tombstoned transaction cannot resume")
         _validate_transaction_source_audit(self.repo, self)
@@ -1050,6 +1067,91 @@ def validate_transaction_owned_workspace(repo: Path, transaction: PublishTransac
         raise RuntimeError("resolved transaction workspace must be clean")
 
 
+def _unused_prebuilt_transaction(
+    repo: Path, store: PublishTransactionStore, transaction_id: str, identity: str,
+    *, complete: bool = True,
+) -> PublishTransaction:
+    payload = _read_json_nofollow(store.checkpoint_path(transaction_id))
+    tombstone = _read_json_nofollow(store.tombstone_path(transaction_id))
+    expected_tombstone = {
+        "schema": "PublishTransactionTombstone.v1", "transaction_id": transaction_id,
+        "state": PublishTransactionState.ABANDONED,
+    }
+    if payload is None or (tombstone != expected_tombstone and (complete or tombstone is not None)):
+        raise UnadmittedPrebuiltConflict("no exact unused prebuilt transaction pair")
+    required_state = PublishTransactionState.ABANDONED if complete else PublishTransactionState.COMMITTED_HEAD_RESOLVED
+    if (
+        payload.get("schema") != "PublishCheckpoint.v1"
+        or payload.get("transaction_id") != transaction_id
+        or payload.get("canonical_repository_identity") != identity
+        or payload.get("repo") != str(Path(repo).resolve())
+        or payload.get("checkpoint_root") != str(store.root.parent.parent)
+        or payload.get("envelope_authority_preimage", {}).get("node_id") != store.node_id
+        or payload.get("node_id", store.node_id) != store.node_id
+        or payload.get("state") != required_state
+        or payload.get("mode") != "prebuilt"
+        or not isinstance(payload.get("staged_diff_sha256"), str)
+        or len(payload["staged_diff_sha256"]) != 64
+        or payload["staged_diff_sha256"] == _sha256(b"")
+        or not payload.get("base_tip_sha")
+        or any(payload.get(name) != payload["base_tip_sha"] for name in (
+            "parent_head_sha", "expected_commit_oid", "committed_head_sha",
+        ))
+        or payload.get("exact_ref") != f"refs/heads/{payload.get('branch')}"
+    ):
+        raise UnadmittedPrebuiltConflict("transaction is not an unused-base prebuilt checkpoint")
+    raw = _git_bytes(Path(repo), "cat-file", "commit", payload["expected_commit_oid"])
+    if raw is None or _sha256(raw) != payload.get("final_commit_object_sha256"):
+        raise UnadmittedPrebuiltConflict("unused prebuilt commit object differs")
+    return PublishTransaction(Path(repo), store, payload)
+
+
+def _retired_prebuilt_remainder(repo: Path, store: PublishTransactionStore, tombstones: tuple[Path, ...]):
+    triggered = False
+    for path in tombstones:
+        try:
+            tombstone = _read_json_nofollow(path)
+            payload = _read_json_nofollow(store.checkpoint_path(path.name.removesuffix(".tombstone.json")))
+            triggered = triggered or bool(
+                tombstone and payload and tombstone.get("state") == PublishTransactionState.ABANDONED
+                and tombstone.get("transaction_id") == payload.get("transaction_id")
+                and tombstone.get("transaction_id") == path.name.removesuffix(".tombstone.json")
+                and payload.get("mode") == "prebuilt"
+            )
+        except Exception:
+            continue
+    if not triggered:
+        return None
+    from .convergence.broker import live
+    from .convergence.broker.verbs import require_unadmitted_prebuilt_witnesses
+
+    remaining = list(tombstones)
+    try:
+        snapshot = live.repository_snapshot(repo)
+        root = live.active_store_root(snapshot.container)
+        for path in tombstones:
+            try:
+                transaction = _unused_prebuilt_transaction(
+                    repo, store, path.name.removesuffix(".tombstone.json"), snapshot.identity,
+                )
+                require_unadmitted_prebuilt_witnesses(root, transaction)
+            except Exception:
+                continue
+            remaining.remove(path)
+    except Exception:
+        pass
+    if not remaining:
+        return PublishResumeCandidate(PublishTransactionState.CONFLICTED)
+    if len(remaining) == 1:
+        try:
+            payload = _read_json_nofollow(store.checkpoint_path(remaining[0].name.removesuffix(".tombstone.json")))
+            if payload is not None:
+                return PublishResumeCandidate(PublishTransactionState.CONFLICTED, PublishTransaction(repo, store, payload))
+        except Exception as error:
+            raise PublishTransactionConflict("remaining publication checkpoint is unreadable") from error
+    raise PublishTransactionConflict("retired prebuilt history has conflicting remaining transactions")
+
+
 def inspect_publish_resume_candidate(repo: Path, *, checkpoint_root: Path, node_id: str) -> PublishResumeCandidate:
     """Read-only resume inspection; it never chooses a semantic substitute OID."""
     store = PublishTransactionStore(Path(checkpoint_root), node_id)
@@ -1059,6 +1161,9 @@ def inspect_publish_resume_candidate(repo: Path, *, checkpoint_root: Path, node_
     active = store.load_active()
     if active is None:
         tombstones = tuple(sorted(store.root.glob("*.tombstone.json"))) if store.root.exists() else ()
+        remainder = _retired_prebuilt_remainder(Path(repo), store, tombstones)
+        if remainder is not None:
+            return remainder
         if len(tombstones) == 1:
             transaction_id = tombstones[0].name.removesuffix(".tombstone.json")
             transaction = _load_transaction(
@@ -1908,12 +2013,21 @@ def publish_human_invoked_from_worktree(
     prebuilt: bool = False,
     base: str = "main",
     scope_correction_from: tuple[Path, str] | None = None,
+    abandon_unadmitted_prebuilt: str | None = None,
 ) -> dict[str, Any]:
     """Publish a human-invoked detailed-plan run through authenticated FABPUB.
 
     This adapter derives only pre-admission authority. The broker still allocates
     all fencing fields, and repository routing remains receipt- and lease-gated.
     """
+    if abandon_unadmitted_prebuilt is not None and (
+        prebuilt or scope_correction_from is not None or not isinstance(abandon_unadmitted_prebuilt, str)
+        or len(abandon_unadmitted_prebuilt) != 64
+        or any(character not in "0123456789abcdef" for character in abandon_unadmitted_prebuilt)
+    ):
+        result = _blocked("publication_transaction_conflicted", "recovery requires one exact lowercase transaction ID and normal publication")
+        result["provider_call_made"] = False
+        return result
     required = [
         name
         for name, value in (
@@ -2042,6 +2156,10 @@ def publish_human_invoked_from_worktree(
     broker_client = None
     try:
         pr_body = _redact_publication_body(repo, pr_body, checkpoint_root)
+        if abandon_unadmitted_prebuilt is not None:
+            from .convergence.broker.verbs import capture_unadmitted_prebuilt_history
+
+            capture_unadmitted_prebuilt_history(live.active_store_root(snapshot.container))
         barrier_report = live.fabpub_activation_barrier([repo])
         authenticated = {
             str(Path(worktree).resolve())
@@ -2067,6 +2185,13 @@ def publish_human_invoked_from_worktree(
             checkpoint_root=checkpoint_root,
         )
         broker_client = live.build_routing_broker_client()
+        if abandon_unadmitted_prebuilt is not None:
+            broker_client.abandon_unadmitted_prebuilt(
+                repo, abandon_unadmitted_prebuilt, checkpoint_root=checkpoint_root,
+                node_id=resolve_transaction_node_id(authority.envelope_authority_preimage, authority.envelope_authority_preimage.get("node_id")),
+                authority=authority.envelope_authority_preimage, branch=branch,
+                owned_paths=tuple(sorted(owned_paths)), base=base, draft=draft, pr_body=pr_body,
+            )
         result = publish_from_worktree(
             repo,
             owned_paths,
@@ -2116,6 +2241,8 @@ def publish_human_invoked_from_worktree(
         return result
     except PublishTransactionConflict as error:
         result = _blocked("publication_transaction_conflicted", str(error))
+        if isinstance(error, UnadmittedPrebuiltConflict):
+            result["provider_call_made"] = False
         result["handoff"] = _human_publication_handoff(
             repo,
             next_step="resolve_publication_transaction_conflict",
@@ -2276,6 +2403,10 @@ def publish_from_worktree(
     if broker_client is None:
         return _blocked("broker_required", "publish mutation requires an admitted broker client")
     if active and authority is not None and not resuming:
+        if prebuilt:
+            staged = _git_bytes(repo, "diff", "--cached", "--binary")
+            if staged is None or staged:
+                return _blocked("publication_workspace_invalid", "prebuilt publication requires a readable empty staged index")
         unstaged = _git_bytes(repo, "diff", "--name-only", "-z")
         untracked = _git_bytes(repo, "ls-files", "--others", "--exclude-standard", "-z")
         if unstaged is None or untracked is None:
