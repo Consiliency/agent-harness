@@ -109,6 +109,7 @@ If no plan path is explicit, read [references/interactive-path.md](references/in
    - run `pipeline_write_boundary_diagnostic` when the plan has Pipeline metadata, and fail closed on unauthorized `.pipeline/**`, protected Pipeline, `pipeline.definition.json`, or portal contract writes;
    - record completed gates.
 4. After all lanes:
+   - Observe the named outcome on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome.
    - run the full phase verification commands;
   - if execution discoveries change downstream work, amend the phase roadmap at the nearest downstream phase in the amended roadmap that is not already executing;
   - treat any older downstream phase plan or handoff as stale after a roadmap amendment and route the next step back through `codex-plan-phase` for the newly selected downstream phase;
@@ -121,6 +122,8 @@ Use worker subagents only when the user explicitly authorizes parallel agent wor
 Before briefing workers, read [references/worker-fanout.md](references/worker-fanout.md). The main thread remains responsible for integration, diff review, final verification, and conflicts.
 
 ## Failure Policy
+
+Report newly discovered prerequisites with their source: an owner instruction, standing rule, reproduced defect, or concrete harm and its cheapest existing control. Otherwise record them as LATER in the closeout and continue authorized work. At the existing one-repair bound, retain the stop and explain whether the failed check protects the outcome or a blocking requirement. Evidence is not waived: rerun the check or follow the required plan-amendment route before changing its verdict.
 
 - Test failure in a lane: diagnose once, fix within the lane if the cause is local, otherwise stop and report.
 - Ownership violation: stop and revise the plan before continuing.
@@ -186,6 +189,8 @@ Manual TUI runs remain valid without the outer phase loop. When `.phase-loop/` e
 This manual event import must preserve the same machine-readable closeout contract. If execution amended the roadmap downstream, compute `roadmap_sha256` and `phase_sha256` from the amended roadmap for the completed current phase before appending the event; do not reuse stale plan frontmatter, next-phase hashes, or pre-amendment roadmap hashes.
 
 Report:
+
+- outcome criterion, state reached, observed target or limitation and responsible observer;
 
 - lanes completed;
 - files changed;

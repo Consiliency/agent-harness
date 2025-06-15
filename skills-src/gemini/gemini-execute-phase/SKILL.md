@@ -83,6 +83,7 @@ Interactive only: before execution read [references/interactive-path.md](referen
    - for any phase-owned generated path under an ignored parent, confirm the plan/source bundle explicitly allows it to be preserved or force-staged;
    - record completed gates.
 4. After all lanes:
+   - Observe the named outcome on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome.
    - run the full phase verification commands;
    - if execution discoveries change downstream work, amend the nearest
      downstream roadmap phase that is not already executing;
@@ -97,6 +98,8 @@ Interactive only: before execution read [references/interactive-path.md](referen
 Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes have machine-verified disjoint ownership and scheduler-owned worktree assignments; brief them as [references/worker-fanout.md](references/worker-fanout.md) says. The main thread still integrates, reviews and verifies.
 
 ## Failure Policy
+
+Report newly discovered prerequisites with their source: an owner instruction, standing rule, reproduced defect, or concrete harm and its cheapest existing control. Otherwise record them as LATER in the closeout and continue authorized work. At the existing one-repair bound, retain the stop and explain whether the failed check protects the outcome or a blocking requirement. Evidence is not waived: rerun the check or follow the required plan-amendment route before changing its verdict.
 
 - Test failure in a lane: diagnose once, fix within the lane if the cause is local, otherwise stop and report.
 - Ownership violation: stop and revise the plan before continuing.
@@ -152,6 +155,8 @@ Add a machine-readable `automation:` handoff with `verification_status` that agr
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("gemini")/gemini-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 Report:
+
+- outcome criterion, state reached, observed target or limitation and responsible observer;
 
 - lanes completed;
 - files changed;

@@ -174,7 +174,9 @@ Write the plan first, then write the reflection and handoff serially. The handof
 Resolve `REFLECTION_PATH` (`resolve_skill_bundle_root("claude")/claude-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`) and the repo-local handoff slot (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `phase_loop_runtime.handoff_path`). Then spawn ONE close-out agent on the `frontier` tier; it writes both files via the Write tool:
 
 - FILE 1, a repo-agnostic reflection with `## Run context`, `## What worked`, `## What didn't` and `## Improvements to SKILL.md`. It must not reference this project or the specific plan produced.
-- FILE 2, the repo-specific handoff (`from: claude-plan-detailed`, `timestamp`, `artifact`), opening with the consumer-validation preamble described under `## Consumer contract`.
+- FILE 2, the repo-specific handoff (`from: claude-plan-detailed`, `timestamp`, `artifact`), opening with the consumer-validation preamble described under `## Consumer contract
+
+The plan leaves no decision open that changes what the user gets. Details found during implementation are recorded as bounded deviations.`.
 
 The path-resolution script and the agent prompt with both templates are in [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
 

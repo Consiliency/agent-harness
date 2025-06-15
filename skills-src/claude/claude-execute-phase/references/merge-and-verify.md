@@ -148,6 +148,8 @@ On second failure:
 
 ## Step 9 — Final verification, cleanup, and summary
 
+For the phase's outcome criterion: Observe the named outcome on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome.
+
 After all lanes merged:
 
 1. Run every command under the plan doc's `## Verification` section against the merged tree.

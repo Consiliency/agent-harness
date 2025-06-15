@@ -7,6 +7,10 @@ cutover (decision **A — agent-harness owns the skill sources**).
 
 ## Canonical source location
 
+Execution guidance records observed outcomes and bounded detailed-plan deviations.
+It preserves phase ownership, required checks and publication admission. Newly
+discovered prerequisites carry their source; optional work is recorded for later.
+
 The authored skill *sources* live in this repository at:
 
 ```

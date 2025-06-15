@@ -106,6 +106,11 @@ Architecture-first planner for a single phase of a multi-phase specification. Pr
 
 ## When to use
 
+A first working slice that fits one lane does not need a lane plan; route it to
+`<harness>-plan-detailed`. If an active phase contract requires lane artifacts,
+reconcile it through the existing amendment route first; do not silently skip
+required artifacts or ownership checks.
+
 - The input is a multi-phase spec (e.g., `specs/phase-plans-v1.md`) and the user wants to plan a specific phase.
 - The work touches more than one area of the codebase and would benefit from parallel lane execution.
 - You need interface contracts frozen before lanes diverge.

@@ -90,7 +90,7 @@ Do not run the verification commands while planning unless the user explicitly a
 - Acceptance criteria are testable, not aspirational.
 - Plan references concrete files and entities.
 - Documentation impact is explicit.
-- The plan leaves no implementation decisions open.
+- The plan leaves no decision open that changes what the user gets. Details found during implementation are recorded as bounded deviations.
 
 
 ## Verification Contract
