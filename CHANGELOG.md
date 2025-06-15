@@ -6,6 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Gate A retains agy qualification helpers and catalog records in its sparse
+  test checkout, while continuing to import the runtime from the installed wheel.
+
 - Execution skills observe intended outcomes, record bounded detailed-plan
   deviations and distinguish required prerequisites from deferred work. Single-lane
   first slices use the detailed planner while preserving active phase contracts.
