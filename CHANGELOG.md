@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Optional solo Claude SDK runner (agent-harness#1391)
+
+- Add the optional `claude-sdk` extra and explicit `PHASE_LOOP_CLAUDE_ROUTE=sdk` selection for supported personal Claude Code solo contexts. Existing defaults and panel routing are unchanged; unsupported contexts refuse without fallback. Live qualification remains required before landing.
+
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 
 - `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,

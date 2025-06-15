@@ -81,6 +81,14 @@ for line in sys.stdin:
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
         Path(os.environ["SDK_FAKE_PID"]).write_text(str(child.pid))
         time.sleep(300)
+    if case == "workspace_write":
+        Path("sdk-project-artifact.txt").write_text("project remains writable")
+        try:
+            Path("context.md").write_text("must stay frozen")
+        except OSError:
+            pass
+        else:
+            raise AssertionError("context snapshot must be read-only")
     if case == "assistant_only":
         emit({"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":"not terminal"}]}})
         raise SystemExit(0)
@@ -328,7 +336,8 @@ def test_snapshot_under_home_remains_readonly(context, monkeypatch):
 
 
 @pytest.mark.parametrize("action", ["plan", "execute"])
-def test_context_file_bundle_without_log(context, action):
+@pytest.mark.parametrize("log_location", ["none", "repo"])
+def test_context_file_bundle_without_log(context, action, log_location, monkeypatch):
     binding_available()
     repo, _, _ = context
     launch_request = request(repo, action)
@@ -339,13 +348,18 @@ def test_context_file_bundle_without_log(context, action):
     skill = repo / "fixture-skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: claude-execute-phase\n---\nFollow the fixture workflow.\n")
+    log_path = None if log_location == "none" else repo / "output.log"
+    if log_path:
+        monkeypatch.setenv("SDK_FAKE_CASE", "workspace_write")
     with patch("phase_loop_runtime.injection.resolve_source_skill_dir", return_value=skill):
-        result = launch_with_spec(spec, log_path=None)
+        result = launch_with_spec(spec, log_path=log_path)
     assert not result.failed, result.claude_route_result or result.output
     assert not any("__PHASE_LOOP_" in part for part in result.command)
     assert "--context-prompt" not in result.command
-    assert result.log_path is None
+    assert result.log_path == (str(log_path) if log_path else None)
     assert "--context-dir" in result.command
+    if log_path:
+        assert (repo / "sdk-project-artifact.txt").read_text() == "project remains writable"
 
 
 @pytest.mark.parametrize("name", ["settings.json", "settings.local.json"])
@@ -453,6 +467,44 @@ def test_user_instructions_under_home_are_not_duplicated(context):
     (rules / "a.md").write_text("USER_RULE\n")
     text = sdk._instructions(config, repo)
     assert text.count("USER_INSTRUCTION") == text.count("USER_RULE") == 1
+
+
+@pytest.mark.parametrize("name", ["CLAUDE.md", ".claude/CLAUDE.md"])
+def test_plain_instruction_syntax_is_preserved(context, name):
+    binding_available()
+    repo, config, _ = context
+    path = repo / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = "---\nPLAIN_ONCE security@example.com\n`@README` and ``@other``\n```python\n@decorator\n```\n~~~text\n@literal\n~~~\n"
+    path.write_text(text)
+    assert sdk._instructions(config, repo).count(text) == 1
+    result = launch_with_spec(build_launch_spec(request(repo)))
+    assert not result.failed, result.claude_route_result or result.output
+
+
+def test_unconditional_rule_frontmatter_is_removed(context):
+    binding_available()
+    repo, config, _ = context
+    path = repo / ".claude/rules/plain.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\ndescription: unused metadata\n---\nUNCONDITIONAL_RULE\n")
+    text = sdk._instructions(config, repo)
+    assert text.count("UNCONDITIONAL_RULE") == 1
+    assert "description:" not in text
+    result = launch_with_spec(build_launch_spec(request(repo)))
+    assert not result.failed, result.claude_route_result or result.output
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", "src/AGENTS.md", "src/CLAUDE.md", "src/CLAUDE.local.md",
+                                  "src/.claude/CLAUDE.md", "src/.claude/rules/a.md", "src/.claude/rules/deeper/a.md"])
+def test_dynamic_instruction_sources_refuse_before_probes(context, name):
+    repo, _, record = context
+    path = repo / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Dynamically discovered instruction\n")
+    result = launch_with_spec(build_launch_spec(request(repo)))
+    assert result.claude_route_result["event_id"] == "sdk_instruction_layout_unsupported"
+    assert result.failed and not record.exists()
 
 
 def test_managed_memory_control_conflict_refuses(context):

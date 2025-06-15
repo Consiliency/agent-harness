@@ -55,9 +55,11 @@ mounts shared by the auth probe and inference. Project settings currently suppor
 permission rules and hooks; project allow rules and hooks require stored project
 trust. Other project keys require a different route. User
 settings and inspectable host-managed policy are preserved. Initial instruction
-snapshots support plain instruction files and flat, unconditional rules. Imports,
-frontmatter, nested rules and instruction symlinks refuse this route rather than
-changing their meaning. These layouts require an existing route.
+snapshots support plain instruction files and flat, unconditional rules. Native
+imports, path-scoped rules, descendant instructions, AGENTS.md contexts and
+linked instruction or project trees require an existing route. The SDK route refuses these layouts
+before connecting. Email addresses, code examples and ordinary Markdown separators
+remain literal instruction content.
 Uninspectable policy refuses the route. Memory and subscription MCP
 connectors are disabled, and the existing permission and supervisor policies apply.
 Route metadata reports subscription provenance, rather than an account charge.

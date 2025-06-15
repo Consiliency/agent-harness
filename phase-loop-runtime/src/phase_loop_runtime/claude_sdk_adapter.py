@@ -158,10 +158,13 @@ def _write_private(path: Path, data: bytes) -> None:
 
 
 def _instructions(config: Path, repo: Path) -> str:
+    import re
+    import yaml
+
     instructions = []
     seen = set()
 
-    def collect(path, directory):
+    def collect(path, directory, *, rule=False):
         if not path.exists() and not path.is_symlink():
             return
         if any(part.is_symlink() for part in (path, *path.parents) if part != directory and directory in part.parents):
@@ -172,14 +175,56 @@ def _instructions(config: Path, repo: Path) -> str:
         if not path.is_file() or not resolved.is_relative_to(directory.resolve()) or path.stat().st_size > 32 << 20:
             raise SDKRefused("sdk_instruction_layout_unsupported")
         text = path.read_text(encoding="utf-8")
-        # These layouts require native dynamic discovery, disabled on this route.
-        if "@" in text or text.lstrip().startswith("---"):
+        if rule:
+            frontmatter = re.match(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", text, re.S)
+            if frontmatter:
+                try:
+                    metadata = yaml.safe_load(frontmatter.group(1))
+                except yaml.YAMLError:
+                    raise SDKRefused("sdk_instruction_layout_unsupported") from None
+                if isinstance(metadata, dict) and "paths" in metadata:
+                    raise SDKRefused("sdk_instruction_layout_unsupported")
+                text = text[frontmatter.end():]
+        visible = []
+        fence = None
+        for line in text.splitlines():
+            marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
+            if fence:
+                if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                    fence = None
+                continue
+            if marker:
+                if marker[1][0] == "`" and "`" in marker[2]:
+                    raise SDKRefused("sdk_instruction_layout_unsupported")
+                fence = marker[1]
+                continue
+            visible.append(line)
+        prose = re.sub(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", "", "\n".join(visible), flags=re.S)
+        if re.search(r"(?<!\w)@[^\s`\"']+", prose):
             raise SDKRefused("sdk_instruction_layout_unsupported")
         seen.add(resolved)
         instructions.append(text)
 
     try:
+        def unreadable_tree(error):
+            raise SDKRefused("sdk_context_uninspectable") from None
+
+        for root, directories, files in os.walk(repo, followlinks=False, onerror=unreadable_tree):
+            directories[:] = [name for name in directories if name != ".git"]
+            directory = Path(root)
+            if any((directory / name).is_symlink() for name in directories):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
+            nested_names = {"CLAUDE.md", "CLAUDE.local.md"} & set(files)
+            if directory == repo / ".claude":
+                nested_names.discard("CLAUDE.md")
+            if "AGENTS.md" in files or (directory != repo and (
+                    nested_names
+                    or (directory.name == "rules" and directory.parent.name == ".claude"
+                        and directory.parent.parent != repo))):
+                raise SDKRefused("sdk_instruction_layout_unsupported")
         for directory in (config, *reversed((repo, *repo.parents))):
+            if (directory / "AGENTS.md").exists() or (directory / "AGENTS.md").is_symlink():
+                raise SDKRefused("sdk_instruction_layout_unsupported")
             for name in ("CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"):
                 collect(directory / name, directory)
             rules = directory / ("rules" if directory == config else ".claude/rules")
@@ -190,7 +235,7 @@ def _instructions(config: Path, repo: Path) -> str:
                     if path.is_dir() or path.is_symlink():
                         raise SDKRefused("sdk_instruction_layout_unsupported")
                     if path.suffix == ".md":
-                        collect(path, directory)
+                        collect(path, directory, rule=True)
     except (OSError, UnicodeError):
         raise SDKRefused("sdk_context_uninspectable") from None
     return "\n\n".join(instructions)
@@ -294,7 +339,9 @@ def bound_command(command: list[str], repo: Path, env: Mapping[str, str]):
             owner += ["--ro-bind", plugin, plugin]
         if "--context-dir" in resolved:
             directory = resolved[resolved.index("--context-dir") + 1]
-            owner += ["--ro-bind", directory, directory]
+            context = Path(directory) / "context.md"
+            _write_private(root / "context.md", context.read_bytes())
+            owner += ["--ro-bind", str(root / "context.md"), str(context)]
         # Mount after HOME overlays, including when scratch itself is under HOME.
         owner += ["--ro-bind", str(root), str(root)]
         resolved += ["--cli-path", cli, "--instructions-file", str(root / "instructions.txt")]
@@ -305,7 +352,8 @@ def bound_command(command: list[str], repo: Path, env: Mapping[str, str]):
 
 def auth_preflight(repo: Path, env: Mapping[str, str]) -> bool:
     with bound_command([sys.executable, "-m", __name__, "--auth-only", "--cwd", str(repo)], repo, env) as (command, child_env):
-        result = subprocess.run(command, env=child_env, cwd=repo, capture_output=True, timeout=45, check=False)
+        result = subprocess.run(command, env=child_scratch_env(child_env, CHILD_SCRATCH_RELOCATE),
+                                cwd=repo, capture_output=True, timeout=45, check=False)
         return result.returncode == 0
 
 
@@ -487,7 +535,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         _check_bound_context(tuple(Path(path) for path in
-            (args.settings, args.instructions_file, args.mcp_config, args.plugin_dir, args.context_dir) if path))
+            (args.settings, args.instructions_file, args.mcp_config, args.plugin_dir,
+             str(Path(args.context_dir) / "context.md") if args.context_dir else None) if path))
         version = _check_cli(args.cli_path, args.settings)
         if args.auth_only:
             return 0

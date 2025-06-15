@@ -5,7 +5,7 @@ owner_skill: codex-plan-detailed
 related_issues: [agent-harness#1391]
 automation:
   suite_command: >-
-    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py
+    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py tests/test_agent_cli_scratch_inventory_1147.py
   verification_status: not_run
 ---
 
@@ -198,6 +198,16 @@ subscription login, no silent fallback, qualification evidence and rollback by
 selecting an existing route. Update the frozen capability statement only through
 the ratified amendment/canonical-doc owner; do not rewrite a packaged historical
 snapshot as if it were its upstream source.
+
+### Owner-approved execution scope addendum — 2026-10-17
+
+Include `tests/test_agent_cli_scratch_inventory_1147.py` to declare the new helper's
+auth and capability probes as relocated launches using `child_scratch_env`, and
+repository-root `CHANGELOG.md` for the contributor-required user-visible release
+note. The owner approved these two required adjuncts during implementation; the
+targeted suite includes the inventory checks. This adds no scratch exception,
+transport authority or acceptance waiver. The ratified subscription amendment and
+acceptance criteria remain unchanged.
 
 ## Documentation impact
 
