@@ -143,6 +143,221 @@ def test_secret_path_ignores_normal_files():
     assert not _is_secret_path("tests/test_foo.py")
 
 
+def _source_repo(tmp_path, path="credentials.py"):
+    repo = _make_repo(tmp_path)
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    _write_and_stage(repo, path, "def load():\n    return None\n")
+    _git(repo, "commit", "-m", "source module")
+    _write_and_stage(repo, path, "def load():\n    return {}\n")
+    return repo
+
+
+@pytest.mark.parametrize("path", ["agent/credentials.py", "tests/test_credentials.py", "secrets.py", "private_impl.py"])
+def test_existing_source_exception_is_content_checked_and_blob_bound(tmp_path, path, monkeypatch):
+    from phase_loop_runtime.publishing import _audit_staged_diff
+    import requests
+
+    def no_network(*args, **kwargs):
+        pytest.fail("source scanning must not access the network")
+
+    monkeypatch.setattr(requests.sessions.Session, "request", no_network)
+    repo = _source_repo(tmp_path, path)
+    evidence = {}
+    assert _audit_staged_diff(repo, [path], evidence=evidence) is None
+    assert evidence["tree_oid"] == _git(repo, "write-tree").stdout.strip()
+    assert evidence["parent_head_sha"] == _git(repo, "rev-parse", "HEAD").stdout.strip()
+    record, = evidence["source_exceptions"]
+    assert record["path"] == path
+    assert record["blob_oid"] == _git(repo, "rev-parse", ":" + path).stdout.strip()
+    assert record["policy"] == "tracked-python-detect-secrets-1.5.0-v1"
+
+
+@pytest.mark.parametrize("path", [".env", ".env.py", "private.key", "private.key.py", "credentials.json"])
+def test_artifacts_remain_blocked_even_when_parseable_python(tmp_path, path):
+    from phase_loop_runtime.publishing import _audit_staged_diff
+    repo = _source_repo(tmp_path, path)
+    assert _audit_staged_diff(repo, [path], evidence={})["reason"] == "secret_staged_path"
+
+
+@pytest.mark.parametrize("content", [
+    "password = 'a-private-value'\n",
+    "def load(:\n",
+    "def load():\n    return {}\npassword = 'a-private-value' # pragma: allowlist secret\n",
+    'def load():\n    return "-----BEGIN PRIVATE KEY-----"\n',
+    'def load():\n    return {}\ncredentials = {"client_secret": "a-private-value"}\n',
+])
+def test_source_content_deny_scans_index_not_worktree(tmp_path, content):
+    from phase_loop_runtime.publishing import _audit_staged_diff
+    repo = _source_repo(tmp_path)
+    _write_and_stage(repo, "credentials.py", content)
+    (repo / "credentials.py").write_text("def load():\n    return {}\n")
+    result = _audit_staged_diff(repo, ["credentials.py"], evidence={})
+    assert result["reason"] == "secret_staged_path"
+    assert "a-private-value" not in str(result)
+
+
+def test_new_source_and_symlink_do_not_get_exception(tmp_path):
+    from phase_loop_runtime.publishing import _audit_staged_diff
+    repo = _make_repo(tmp_path)
+    _write_and_stage(repo, "credentials.py", "def load():\n    return {}\n")
+    assert _audit_staged_diff(repo, ["credentials.py"], evidence={})["reason"] == "secret_staged_path"
+    _git(repo, "commit", "-m", "source")
+    (repo / "credentials.py").unlink()
+    (repo / "credentials.py").symlink_to("README.md")
+    _git(repo, "add", "credentials.py")
+    assert _audit_staged_diff(repo, ["credentials.py"], evidence={})["reason"] == "secret_staged_path"
+
+
+def test_source_exception_requires_governed_audit(tmp_path):
+    from phase_loop_runtime.publishing import _audit_staged_diff
+    repo = _source_repo(tmp_path)
+    assert _audit_staged_diff(repo, ["credentials.py"])["reason"] == "secret_staged_path"
+
+
+def test_source_scanner_failure_is_redacted(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    repo = _source_repo(tmp_path)
+    def fail(*args):
+        raise RuntimeError("never-print-this")
+    monkeypatch.setattr(publishing, "version", fail)
+    result = publishing._audit_staged_diff(repo, ["credentials.py"], evidence={})
+    assert result["reason"] == "source_scan_failed"
+    assert "never-print-this" not in str(result)
+
+
+def test_audit_detects_index_change_and_preserves_literal_paths(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    path = " credentials\nmodule.py"
+    repo = _source_repo(tmp_path, path)
+    real = publishing._source_path_evidence
+    def change(*args):
+        result = real(*args)
+        _write_and_stage(repo, path, "def changed():\n    return 1\n")
+        return result
+    monkeypatch.setattr(publishing, "_source_path_evidence", change)
+    assert publishing._audit_staged_diff(repo, [path], evidence={})["reason"] == "staged_audit_changed"
+
+
+def test_frozen_source_audit_is_checked_on_recovery(tmp_path):
+    from phase_loop_runtime import publishing
+    repo = _source_repo(tmp_path)
+    evidence = {}
+    assert publishing._audit_staged_diff(repo, ["credentials.py"], evidence=evidence) is None
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    transaction = publishing.prepare_publish_transaction(
+        repo, owned_paths=["credentials.py"], checkpoint_root=tmp_path / "checkpoints",
+        branch="feat/p1-test", envelope_authority_preimage=authority.envelope_authority_preimage,
+        publication_audit=evidence,
+    )
+    publishing.validate_transaction_owned_workspace(repo.resolve(), transaction)
+    transaction._payload["publication_audit"]["source_exceptions"][0]["blob_sha256"] = "tampered"
+    with pytest.raises(RuntimeError, match="source publication audit failed"):
+        publishing.validate_transaction_owned_workspace(repo.resolve(), transaction)
+    transaction._payload.pop("publication_audit")
+    with pytest.raises(RuntimeError, match="requires a matching"):
+        publishing.validate_transaction_owned_workspace(repo.resolve(), transaction)
+
+
+def test_changed_tree_cannot_be_prepared_with_old_audit(tmp_path):
+    from phase_loop_runtime import publishing
+    repo = _source_repo(tmp_path)
+    evidence = {}
+    assert publishing._audit_staged_diff(repo, ["credentials.py"], evidence=evidence) is None
+    _write_and_stage(repo, "credentials.py", "def changed():\n    return 1\n")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    with pytest.raises(ValueError, match="audit no longer matches"):
+        publishing.prepare_publish_transaction(
+            repo, owned_paths=["credentials.py"], checkpoint_root=tmp_path / "checkpoints",
+            branch="feat/p1-test", envelope_authority_preimage=authority.envelope_authority_preimage,
+            publication_audit=evidence,
+        )
+
+
+def test_governed_publish_accepts_source_and_retains_audit(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    repo = _source_repo(tmp_path)
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    result = publish_from_worktree(
+        repo, ["credentials.py"], broker_client=_Broker(),
+        publish_authority=authority, checkpoint_root=authority.checkpoint_root,
+    )
+    assert result["status"] == "published"
+    candidate = publishing.inspect_publish_resume_candidate(
+        repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a",
+    )
+    assert candidate.transaction.publication_audit["source_exceptions"][0]["path"] == "credentials.py"
+
+
+def test_direct_preparation_cannot_construct_source_without_audit(tmp_path):
+    from phase_loop_runtime import publishing
+    repo = _source_repo(tmp_path)
+    original = _git(repo, "rev-parse", "HEAD").stdout
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    with pytest.raises(RuntimeError, match="source exception requires"):
+        publishing.prepare_publish_transaction(
+            repo, owned_paths=["credentials.py"], checkpoint_root=authority.checkpoint_root,
+            branch="feat/p1-test", envelope_authority_preimage=authority.envelope_authority_preimage,
+        )
+    assert _git(repo, "rev-parse", "HEAD").stdout == original
+    assert not list(authority.checkpoint_root.rglob("*.checkpoint.json"))
+
+
+def test_direct_resume_recomputes_audit_after_durable_object(tmp_path):
+    from phase_loop_runtime import publishing
+    repo = _source_repo(tmp_path)
+    original = _git(repo, "rev-parse", "HEAD").stdout
+    evidence = {}
+    assert publishing._audit_staged_diff(repo, ["credentials.py"], evidence=evidence) is None
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    transaction = publishing.prepare_publish_transaction(
+        repo, owned_paths=["credentials.py"], checkpoint_root=authority.checkpoint_root,
+        branch="feat/p1-test", envelope_authority_preimage=authority.envelope_authority_preimage,
+        publication_audit=evidence,
+    )
+    assert transaction.state == publishing.PublishTransactionState.COMMIT_OBJECT_DURABLE
+    transaction._payload.pop("publication_audit")
+    with pytest.raises(RuntimeError, match="source exception requires"):
+        transaction.resume()
+    assert _git(repo, "rev-parse", "HEAD").stdout == original
+
+
+@pytest.mark.parametrize("path", ["credentials.py", "credentials.json"])
+def test_unchanged_owned_suspect_path_does_not_require_exception(tmp_path, monkeypatch, path):
+    from phase_loop_runtime.convergence.broker import live
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    repo = _source_repo(tmp_path, path)
+    _git(repo, "commit", "-m", "source update")
+    (repo / "owned.py").write_text("value = 1\n")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    result = publish_from_worktree(
+        repo, [path, "owned.py"], broker_client=_Broker(),
+        publish_authority=authority, checkpoint_root=authority.checkpoint_root,
+    )
+    assert result["status"] == "published"
+
+
+def test_prebuilt_contract_unchanged_for_suspect_owned_source(tmp_path, monkeypatch):
+    from phase_loop_runtime.convergence.broker import live
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    repo = _source_repo(tmp_path)
+    _git(repo, "commit", "-m", "prebuilt source update")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    result = publish_from_worktree(
+        repo, ["credentials.py"], prebuilt=True, broker_client=_Broker(),
+        publish_authority=authority, checkpoint_root=authority.checkpoint_root,
+    )
+    assert result["status"] == "published"
+
+
+def test_scanner_version_mismatch_blocks_exception(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    repo = _source_repo(tmp_path)
+    monkeypatch.setattr(publishing, "version", lambda name: "unsupported")
+    assert publishing._audit_staged_diff(repo, ["credentials.py"], evidence={})["reason"] == "source_scan_failed"
+
+
 # ---------------------------------------------------------------------------
 # Invariant: main / protected branch → publication_blocked
 # ---------------------------------------------------------------------------

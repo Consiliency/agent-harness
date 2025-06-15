@@ -90,6 +90,27 @@ nested-discovery and diagnostic-redaction test failures remain separate work und
 agent-harness#428; this repair does not establish full-suite success or completion
 of agent-harness#841's dependency repair.
 
+## Publication source audit
+
+Normal FABPUB publication can distinguish an existing Python implementation such
+as `credentials.py` from a credential artifact (Consiliency/agent-harness#893).
+The path must be owned, regular Python source in both the frozen parent and staged
+tree, parse successfully, and contain a top-level function or class. New files,
+data-only files, symlinks, `.env*` and `.key` names do not receive this exception.
+Other source languages remain subject to the existing filename guard.
+
+The complete staged blob is scanned with pinned `detect-secrets` 1.5.0 built-in
+detectors. Repository configuration, inline suppressions, filter exemptions and
+online verification are not consulted. Findings and scanner failures block the
+exception without printing matched data. This heuristic scan is not proof that
+arbitrary or obfuscated secrets are absent; source review is still required.
+
+Metadata-only evidence (parent/tree and blob identifiers, content hash and policy
+version) is retained in the local publication checkpoint and checked again on
+recovery against the frozen Git objects. The existing FABPUB tree binding and
+transaction identity are unchanged. Legacy and prebuilt publication do not gain
+the source exception; there is no caller-controlled path allowlist.
+
 ## Roadmap validation
 
 Lint a phase-plan roadmap spec (required headings, unique aliases, acyclic dependency
