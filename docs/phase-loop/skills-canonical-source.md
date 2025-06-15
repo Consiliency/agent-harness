@@ -7,6 +7,11 @@ cutover (decision **A — agent-harness owns the skill sources**).
 
 ## Canonical source location
 
+Roadmap templates capture a First Working Outcome with observable evidence and a
+carrying exit-criterion ID. Detailed plans state the outcome served, and advisor
+boards pass the outcome line to every seat. These prompts do not add required
+roadmap lint headings or change runtime enforcement.
+
 The authored skill *sources* live in this repository at:
 
 ```

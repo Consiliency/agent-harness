@@ -7,6 +7,7 @@ Emit this exact structure. Heading names are stable IDs that `/claude-plan-phase
 The template's sections, in order:
 
 - Context
+- First Working Outcome
 - Architecture North Star
 - Assumptions (fail-loud if wrong)
 - Non-Goals
@@ -32,6 +33,10 @@ After the template: Notes on filling in the template.
 <One-page synthesis: the problem, the current state, the refactor/build thesis. Lead with the *why*. If existing code already contains raw material for the refactor, name it — future lane teammates will reuse rather than rewrite.>
 
 ---
+
+## First Working Outcome
+
+<Outcome line; observation proving it; carrying EC-<ALIAS>-<N>; what deliberately remains rough in the first slice. For security, performance or technical-debt work, name that property as the outcome.>
 
 ## Architecture North Star
 
