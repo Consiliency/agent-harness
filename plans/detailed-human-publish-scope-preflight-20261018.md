@@ -10,10 +10,14 @@ Prevent the commit-then-scope-refusal failure observed in Consiliency/jev-assemb
 - docs/fabpub-partition-rotation-runbook.md: explain that corrected scope changes human publication context and that same-context recovery must not be represented as corrected-scope recovery.
 - Add the operation's bounded exception to `convergence/provider_contracts.py`, user-visible changelog, and CLI/SDK documentation as needed. The operation is distinct from ordinary canonical-effect replay; old callers and old readers retain their existing refusal/replay behavior. The shared original effect row is never changed.
 - This plan and ignored test outputs in .phase-loop/runs/human-publish-scope-preflight-20261018/**.
+- phase-loop-runtime/tests/data/seat_launch_references.json: classify the new admission-lock open as host I/O in the existing exact runtime-reference inventory. Preserve every prior classification and the inventory test.
+- Integrate current `origin/main` when required for a mergeable candidate. Preserve upstream skill-source/generated-bundle changes and both changelog entries; retain the owned inventory repair. Renew source-bound affected checks after integration, then qualify the actual published head in hosted CI and Gate A.
 
 ## Verification
 Run targeted new pytest controls before and after repair, then the complete publishing and broker-credential-separation test modules. Run git diff --check. Use installed dependency environment with source PYTHONPATH; do not replace the installed runtime or access host publisher stores.
 Run correction tests, existing sealed-head recovery/owner/evidence modules and repository-mandated `make check` as applicable. Live application is a separate action from isolated implementation and testing.
+After the hosted inventory failure, run its exact test and the unchanged BAML owner-death case that failed during initial echo setup. A narrow diagnostic pass does not replace the corrected head's required hosted suite.
+If the affected suite times out in temporary repository setup, preserve that failure and reproduce the exact node with unchanged assertions/timeouts before renewing `make check` with bounded CPU affinity. Resource scheduling must not weaken test semantics or substitute for hosted checks.
 
 ## Acceptance criteria
 - Omitted committed paths refuse before authority construction, staging or commit; adding complete ownership reaches the existing publication path.
