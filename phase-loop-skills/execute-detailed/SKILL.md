@@ -58,7 +58,7 @@ handoff roots, helper roots, and reflection roots.
    If satisfying acceptance criteria needs an unnamed file or behavior, proceed
    only within existing authority on paths that are not protected, ignored,
    private or owned by another run. Record the path, reason and acceptance
-   criterion in the plan and verification evidence as a bounded deviation;
+   criterion in the closeout and verification evidence as a bounded deviation;
    include it in caller-owned publication paths before admission. Stop if it
    changes the intended outcome or crosses a write boundary. Runner-owned lane
    scopes remain binding. Never rewrite an admitted publication transaction;
@@ -67,7 +67,7 @@ handoff roots, helper roots, and reflection roots.
    by missing credentials. Report each command with pass/fail status.
 8. Compare the final state against each item in `## Acceptance criteria` and
    report satisfied or unmet status.
-   Observe the named outcome on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome.
+   If the plan names an outcome served, observe it on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome.
 9. Run `git status --short --untracked-files=all` and classify every dirty path
    as plan-owned (including recorded permitted deviations), pre-existing unrelated, or non-plan output.
 10. If the diff touches a user-visible public surface (CLI flags, exported
@@ -94,7 +94,7 @@ Report newly discovered prerequisites with their source: an owner instruction, s
   satisfied, or the detailed plan lacks `## Changes`, `## Verification`, or
   `## Acceptance criteria`.
 - `dirty worktree from non-plan output`: closeout finds a dirty path that was
-  not pre-existing and is not produced by the detailed plan's declared changes.
+  not pre-existing and is not produced by the detailed plan's declared changes or recorded permitted deviations.
 - `publication blocked`: a publication precheck failed (no remote / no push auth / no `gh` /
   branch-name collision / push rejected / unresolved base ref), or publishing would otherwise
   require committing to `main`/a protected branch or a branch this run does not own. Verified
@@ -152,7 +152,7 @@ Call `phase_loop_runtime.publishing.publish_human_invoked_from_worktree(repo,
 owned_paths, plan_path=<plan>, verification_artifact_path=<artifact>, draft=<intent>,
 pr_body=<body>, commit_message=<subject>)`
 (IF-0-P1-1 — the supported human publication adapter), supplying the worktree root, the
-plan's owned paths, the exact detailed plan and verification artifact, and the draft/ready
+plan's owned paths plus recorded permitted deviations, the exact detailed plan and verification artifact, and the draft/ready
 intent:
 - `draft=True` when dependencies remain or verification was partial/skipped;
 - `draft=False` when verification is complete (skipped or partial verification never opens
