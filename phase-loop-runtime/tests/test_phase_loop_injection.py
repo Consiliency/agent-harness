@@ -54,7 +54,7 @@ class PhaseLoopInjectionTest(unittest.TestCase):
             self.assertEqual(bundle.workflow_command, f"codex-plan-phase {roadmap} RUNNER")
             self.assertEqual(bundle.injection_mode, "prompt_only")
             self.assertEqual(bundle.expected_skill_pack, ("codex-plan-phase",))
-            self.assertEqual(bundle.body, "")
+            self.assertIn("EmitPhaseCloseout", bundle.body)
             self.assertIn(bundle.workflow_command, bundle.render_context())
             self.assertIn("## Skill: codex-plan-phase", bundle.render_context())
             self.assertTrue(bundle.skill_bundle_sha256)
@@ -83,7 +83,8 @@ class PhaseLoopInjectionTest(unittest.TestCase):
                 "claude-phase-loop",
             ),
         )
-        self.assertEqual(bundle.body, "Do the bounded phase work.")
+        self.assertIn("Do the bounded phase work.", bundle.body)
+        self.assertIn("EmitPhaseCloseout", bundle.body)
         self.assertEqual(bundle.skill_bundle_id, "phase-loop-claude-execute")
         self.assertIn("Do the bounded phase work.", bundle.render_context())
         self.assertIn("## Repo-owned Claude bundle", bundle.render_context())
@@ -223,7 +224,7 @@ class PhaseLoopInjectionTest(unittest.TestCase):
             self.assertIn("execution_policy:", context)
             self.assertIn("Delegation broker contract:", context)
             self.assertIn("Do not spawn peer harnesses directly.", context)
-            self.assertIn("automation.status", context)
+            self.assertIn("EmitPhaseCloseout", context)
             self.assertIn("Do not widen into whole-phase implementation authority", context)
 
     def test_dfparsoak_prompt_context_records_route_model_effort_and_current_prompt_inputs(self):

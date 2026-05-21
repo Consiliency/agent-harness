@@ -9,6 +9,10 @@ description = "Vendored phase-loop runtime and CLI for dotfiles phase workflows"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Private" }
+dependencies = [
+    "baml-py>=0.222,<0.223",
+    "pydantic>=2,<3",
+]
 
 [project.scripts]
 phase-loop = "phase_loop_runtime.cli:main"
@@ -25,3 +29,4 @@ phase_loop_runtime = ["py.typed"]
 
 [tool.setuptools.data-files]
 "share/phase-loop-runtime/protocol" = ["protocol/protocol.md"]
+"share/phase-loop-runtime/baml_src" = ["baml_src/emit_phase_closeout.baml"]

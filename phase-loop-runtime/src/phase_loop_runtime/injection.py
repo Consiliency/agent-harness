@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 
+from .baml_modular import BamlValidationError, build_baml_request
 from .models import HarnessLaneAssignment, PromptBundle
 from .runtime_paths import (
     phase_loop_claude_agents_file,
@@ -160,22 +162,28 @@ def build_prompt_bundle(
     fallback_mode = fallback_mode_override or default_fallback_mode
     parity = inspect_skill_parity(repo, harness_target, expected_skill_pack)
     skill_bundle_id = _skill_bundle_id(harness_target, action, expected_skill_pack)
+    closeout_instruction = _render_baml_closeout_instruction(
+        phase_alias=phase or "unknown",
+        plan_produces=_extract_plan_produces(plan),
+        plan_owned_files=(),
+    )
+    bundle_body = "\n\n".join(part for part in (body.strip(), closeout_instruction) if part)
     bundle_sha = _bundle_sha256(
         repo=repo,
         harness_target=harness_target,
         action=action,
         workflow_command=workflow_command,
-        body=body,
+        body=bundle_body,
         expected_skill_pack=expected_skill_pack,
     )
     return PromptBundle(
         workflow_command=workflow_command,
-        body=body.strip(),
+        body=bundle_body,
         context_body=_render_context_body(
             repo=repo,
             harness_target=harness_target,
             action=action,
-            body=body,
+            body=bundle_body,
             expected_skill_pack=expected_skill_pack,
             injection_mode=injection_mode,
         ),
@@ -268,6 +276,13 @@ def _render_harness_assignment_context(
     policy = json.dumps(assignment.execution_policy, sort_keys=True) if assignment.execution_policy else "{}"
     worktree = assignment.worktree_assignment.to_json() if assignment.worktree_assignment else {}
     worktree_text = json.dumps(worktree, sort_keys=True) if worktree else "{}"
+    closeout_instruction = _render_baml_closeout_instruction(
+        phase_alias=assignment.phase,
+        plan_produces=tuple(
+            item for item in assignment.consumed_interfaces if isinstance(item, str) and item.startswith("IF-")
+        ),
+        plan_owned_files=assignment.owned_files,
+    )
     return "\n".join(
         [
             f"## {title}",
@@ -291,8 +306,8 @@ def _render_harness_assignment_context(
             "",
             extra,
             "",
-            "Required shared automation closeout fields:",
-            *[f"- `{field}`" for field in assignment.closeout_schema_required],
+            "BAML closeout schema instruction:",
+            closeout_instruction,
             "",
             "Delegation broker contract:",
             "- Do not spawn peer harnesses directly.",
@@ -300,6 +315,38 @@ def _render_harness_assignment_context(
             "- Approved cross-harness child work is limited to `codex` or `claude` for `execute`, `repair`, and `review`.",
         ]
     )
+
+
+def _render_baml_closeout_instruction(
+    *,
+    phase_alias: str,
+    plan_produces: tuple[str, ...] | list[str],
+    plan_owned_files: tuple[str, ...] | list[str],
+    closeout_commit_sha: str | None = None,
+) -> str:
+    payload = {
+        "phase_alias": phase_alias,
+        "plan_produces": list(plan_produces),
+        "plan_owned_files": list(plan_owned_files),
+        "closeout_commit_sha": closeout_commit_sha,
+    }
+    try:
+        prompt = build_baml_request("EmitPhaseCloseout", payload).prompt
+    except BamlValidationError as exc:
+        prompt = f"Emit one closeout conforming to emit_phase_closeout.baml / EmitPhaseCloseout. BAML prompt render failed: {exc}"
+    return "EmitPhaseCloseout (`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`):\n" + prompt
+
+
+def _extract_plan_produces(plan: Path | None) -> tuple[str, ...]:
+    if plan is None or not plan.exists():
+        return ()
+    text = plan.read_text(encoding="utf-8")
+    gates: list[str] = []
+    for match in re.finditer(r"IF-[A-Za-z0-9_.-]+", text):
+        gate = match.group(0)
+        if gate not in gates:
+            gates.append(gate)
+    return tuple(gates)
 
 
 def materialize_claude_plugin_bundle(*, repo: Path, run_root: Path, prompt_bundle: PromptBundle) -> dict[str, object]:

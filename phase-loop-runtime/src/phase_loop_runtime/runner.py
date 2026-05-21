@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .broker import validate_delegation_request
+from .baml_modular import BamlValidationError, parse_baml_response
 from .capability_registry import default_executor_for_work_unit, describe_dispatch_decision, resolve_dispatch_decision
 from .classifier import classify_all
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
@@ -1786,7 +1787,8 @@ def run_loop(
                         classifications[alias] = status_after_launch
                         event_blocker = {
                             "human_required": False,
-                            "blocker_class": "repeated_verification_failure",
+                            "blocker_class": child_automation.get("automation_parse_error_blocker_class")
+                            or "repeated_verification_failure",
                             "blocker_summary": str(child_automation["automation_parse_error"]),
                             "required_human_inputs": (),
                             "access_attempts": (),
@@ -3781,7 +3783,9 @@ def _task_ledger_event_metadata(
 
 def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
     text = extract_executor_output_text(result, spec)
-    parsed = _parse_native_closeout_status(text) or parse_automation_status(text)
+    parsed = _parse_native_closeout_status(text)
+    if not parsed:
+        parsed = parse_automation_status(text)
     if text and parsed:
         parsed["raw_output_excerpt"] = text[:1000]
         delegation_request = _parse_delegation_request(text)
@@ -3792,9 +3796,23 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
 
 
 def _parse_native_closeout_status(text: str) -> dict[str, object]:
-    payload = _find_json_closeout_payload(text)
-    if not payload:
+    if not _find_json_closeout_payload(text):
         return {}
+    try:
+        payload = parse_baml_response("EmitPhaseCloseout", text).payload
+    except BamlValidationError as exc:
+        return {
+            "automation_status": "blocked",
+            "automation_next_skill": "codex-plan-phase",
+            "automation_next_command": "none",
+            "automation_human_required": "false",
+            "automation_blocker_class": "contract_bug",
+            "automation_blocker_summary": f"BAML closeout validation failed: {exc}",
+            "automation_required_human_inputs": [],
+            "automation_verification_status": "blocked",
+            "automation_parse_error": f"BAML closeout validation failed: {exc}",
+            "automation_parse_error_blocker_class": "contract_bug",
+        }
     terminal_status = str(payload.get("terminal_status") or "")
     verification_status = str(payload.get("verification_status") or "not_run")
     blocker_class = str(payload.get("blocker_class") or "none")

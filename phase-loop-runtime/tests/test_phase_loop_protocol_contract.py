@@ -24,6 +24,13 @@ from phase_loop_runtime.observability import NOTIFICATION_PAYLOAD_FIELDS, build_
 
 
 class PhaseLoopProtocolContractTest(unittest.TestCase):
+    def test_protocol_documents_baml_closeout_schema_and_strict_transition(self):
+        text = (ROOT / "vendor/phase-loop-runtime/protocol/protocol.md").read_text(encoding="utf-8")
+        self.assertIn("## BAML Closeout Schema", text)
+        self.assertIn("### Strict Mode Transition", text)
+        self.assertIn("EmitPhaseCloseout", text)
+        self.assertIn("parse_baml_response", text)
+
     def test_lane_ir_contract_is_documented(self):
         text = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
         for expected in (

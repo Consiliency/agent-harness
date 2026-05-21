@@ -635,6 +635,37 @@ The NATIVE runner still accepts legacy rendered `automation:` blocks during the
 compatibility window. Native JSON closeouts are normalized back into the shared
 automation fields before reducer logic runs.
 
+## BAML Closeout Schema
+
+BAMLBASE moves the closeout-emission boundary to the declarative
+`EmitPhaseCloseout` function in
+`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`. The BAML source
+defines `PhaseLoopCloseoutV1` with the same root fields as the NATIVE closeout
+schema: `terminal_status`, `verification_status`, `dirty_paths`,
+`produced_if_gates`, `next_action`, blocker metadata, and
+`required_human_inputs`.
+
+`phase_loop_runtime.baml_modular.build_baml_request("EmitPhaseCloseout",
+payload)` loads the vendored BAML source and returns the model-facing prompt
+plus request metadata. Harness prompt injection consumes that rendered prompt
+instead of duplicating the closeout field ceremony in each skill.
+
+`phase_loop_runtime.baml_modular.parse_baml_response("EmitPhaseCloseout",
+raw_text)` parses child closeout output through the BAML runtime and then
+normalizes the typed value back into the runner's shared automation fields.
+BAML validation errors are reported as repairable non-human `contract_bug`
+blockers with non-secret summaries.
+
+### Strict Mode Transition
+
+BAMLBASE ends the NATIVE compatibility window for native JSON closeouts.
+Completed closeouts that omit `produced_if_gates`, report an empty gate list,
+or otherwise violate `PhaseLoopCloseoutV1` are rejected before runner state can
+advance. Legacy rendered `automation:` blocks remain a compatibility path only
+for actions that do not emit native JSON closeouts. IF-Gate Tier 1 validation
+continues to compare the typed `produced_if_gates` list with the active phase
+plan's declared gates.
+
 ## IF-Gate Tier 1 Validation
 
 NATIVE adds `validate_produced_gates(plan_path, closeout_payload)` in
