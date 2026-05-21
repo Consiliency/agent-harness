@@ -232,7 +232,21 @@ CLOSEOUT_SCHEMA: dict[str, Any] = {
     "title": "PhaseLoopNativeCloseout",
     "type": "object",
     "additionalProperties": False,
-    "required": ("terminal_status", "verification_status", "dirty_paths", "produced_if_gates"),
+    # NOTE: OpenAI Responses API (Codex --output-schema) requires `required`
+    # to list EVERY property. "Optional" fields are expressed via nullable
+    # types (e.g., type: ["string", "null"]) — the field must always be
+    # present but may be null.
+    "required": (
+        "terminal_status",
+        "verification_status",
+        "dirty_paths",
+        "produced_if_gates",
+        "next_action",
+        "blocker_class",
+        "blocker_summary",
+        "human_required",
+        "required_human_inputs",
+    ),
     "properties": {
         "terminal_status": {
             "type": "string",
@@ -259,26 +273,26 @@ CLOSEOUT_SCHEMA: dict[str, Any] = {
             "description": "Interface-freeze gates actually produced by this closeout.",
         },
         "next_action": {
-            "type": "string",
-            "description": "Concise next action for the operator or runner.",
+            "type": ["string", "null"],
+            "description": "Concise next action for the operator or runner. May be null.",
         },
         "blocker_class": {
-            "type": "string",
-            "enum": (*BLOCKER_CLASSES, "none"),
-            "description": "Frozen blocker class when terminal_status is blocked.",
+            "type": ["string", "null"],
+            "enum": (*BLOCKER_CLASSES, "none", None),
+            "description": "Frozen blocker class when terminal_status is blocked. Null otherwise.",
         },
         "blocker_summary": {
-            "type": "string",
-            "description": "Actionable non-secret blocker summary.",
+            "type": ["string", "null"],
+            "description": "Actionable non-secret blocker summary. Null when not blocked.",
         },
         "human_required": {
-            "type": "boolean",
-            "description": "Whether the blocker requires a human decision or access action.",
+            "type": ["boolean", "null"],
+            "description": "Whether the blocker requires a human decision. Null when not blocked.",
         },
         "required_human_inputs": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Non-secret human inputs required to unblock execution.",
+            "description": "Non-secret human inputs required to unblock execution. Empty when not blocked.",
         },
     },
     # NOTE: the conditional rule "when terminal_status=complete, produced_if_gates

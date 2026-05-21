@@ -8,15 +8,23 @@ from phase_loop_runtime.models import BLOCKER_CLASSES, CLOSEOUT_SCHEMA, PHASE_ST
 class PhaseLoopCloseoutSchemaTest(unittest.TestCase):
     def test_closeout_schema_requires_native_fields(self):
         self.assertEqual(CLOSEOUT_SCHEMA["type"], "object")
-        self.assertEqual(
-            tuple(CLOSEOUT_SCHEMA["required"]),
-            ("terminal_status", "verification_status", "dirty_paths", "produced_if_gates"),
-        )
         properties = CLOSEOUT_SCHEMA["properties"]
-        for field in CLOSEOUT_SCHEMA["required"]:
+        # OpenAI Responses API requires `required` to list EVERY property.
+        # "Optional" fields are nullable instead.
+        self.assertEqual(
+            set(CLOSEOUT_SCHEMA["required"]),
+            set(properties.keys()),
+            msg="OpenAI Responses API requires every property to be in `required`",
+        )
+        # Core native fields must be present:
+        for field in ("terminal_status", "verification_status", "dirty_paths", "produced_if_gates"):
             self.assertIn(field, properties)
+            self.assertIn(field, CLOSEOUT_SCHEMA["required"])
         self.assertEqual(tuple(properties["terminal_status"]["enum"]), PHASE_STATUSES)
-        self.assertEqual(tuple(properties["blocker_class"]["enum"]), (*BLOCKER_CLASSES, "none"))
+        # blocker_class now includes None in its enum (nullable for "no blocker"):
+        self.assertIn(None, properties["blocker_class"]["enum"])
+        for cls in BLOCKER_CLASSES:
+            self.assertIn(cls, properties["blocker_class"]["enum"])
 
     def test_complete_closeout_requires_at_least_one_produced_gate_via_runner_check(self):
         # The conditional rule "when terminal_status=complete, produced_if_gates
