@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -10,6 +11,7 @@ from .broker import validate_delegation_request
 from .capability_registry import default_executor_for_work_unit, describe_dispatch_decision, resolve_dispatch_decision
 from .classifier import classify_all
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
+from .closeout_validation import validate_produced_gates
 from .discovery import (
     PLAN_RE,
     dispatch_hints_for_action,
@@ -1736,6 +1738,25 @@ def run_loop(
                     child_automation["failed_launch_closeout_override"] = failed_launch_closeout_override
                     child_automation["original_returncode"] = failed_launch_closeout_override.get("original_returncode")
                 automation_status = child_automation.get("automation_status")
+                validation_plan = post_launch_plan or plan
+                if validation_plan is not None and child_automation:
+                    gate_validation = validate_produced_gates(validation_plan, child_automation)
+                    if gate_validation.warning:
+                        child_automation["produced_gates_warning"] = gate_validation.warning
+                        child_automation["produced_gates_validation"] = gate_validation.to_json()
+                    if not gate_validation.ok:
+                        status_after_launch = "blocked"
+                        classifications[alias] = status_after_launch
+                        child_automation["produced_gates_validation"] = gate_validation.to_json()
+                        event_blocker = {
+                            "human_required": False,
+                            "blocker_class": gate_validation.blocker_class or "contract_bug",
+                            "blocker_summary": gate_validation.blocker_summary
+                            or "completed closeout produced_if_gates failed validation",
+                            "required_human_inputs": (),
+                            "access_attempts": (),
+                        }
+                        automation_status = status_after_launch
                 if not automation_status and launch_action == "plan" and post_launch_plan is not None:
                     artifact_automation = _parsed_artifact_automation(post_launch_plan, spec)
                     artifact_status = artifact_automation.get("automation_status")
@@ -3760,7 +3781,7 @@ def _task_ledger_event_metadata(
 
 def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
     text = extract_executor_output_text(result, spec)
-    parsed = parse_automation_status(text)
+    parsed = _parse_native_closeout_status(text) or parse_automation_status(text)
     if text and parsed:
         parsed["raw_output_excerpt"] = text[:1000]
         delegation_request = _parse_delegation_request(text)
@@ -3768,6 +3789,47 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
             parsed["delegation_request"] = delegation_request
     _annotate_automation_parse_error(parsed, _executor_display_name(spec.executor), spec.prompt_bundle.workflow_command)
     return parsed
+
+
+def _parse_native_closeout_status(text: str) -> dict[str, object]:
+    payload = _find_json_closeout_payload(text)
+    if not payload:
+        return {}
+    terminal_status = str(payload.get("terminal_status") or "")
+    verification_status = str(payload.get("verification_status") or "not_run")
+    blocker_class = str(payload.get("blocker_class") or "none")
+    blocker_summary = str(payload.get("blocker_summary") or "none")
+    human_required = bool(payload.get("human_required", False))
+    required_inputs = payload.get("required_human_inputs")
+    if not isinstance(required_inputs, list):
+        required_inputs = []
+    return {
+        "automation_status": terminal_status,
+        "automation_next_skill": "none",
+        "automation_next_command": str(payload.get("next_action") or "none"),
+        "automation_human_required": "true" if human_required else "false",
+        "automation_blocker_class": blocker_class,
+        "automation_blocker_summary": blocker_summary,
+        "automation_required_human_inputs": [str(item) for item in required_inputs],
+        "automation_verification_status": verification_status,
+        "produced_if_gates": payload.get("produced_if_gates"),
+        "dirty_paths": payload.get("dirty_paths"),
+        "native_closeout_payload": payload,
+    }
+
+
+def _find_json_closeout_payload(text: str) -> dict[str, object] | None:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            data, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and {"terminal_status", "verification_status", "dirty_paths"}.issubset(data):
+            return data
+    return None
 
 
 def _parsed_artifact_automation(plan: Path, spec) -> dict[str, object]:

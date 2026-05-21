@@ -220,7 +220,10 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(spec.auth_preflight_probes, ("codex --version", "codex --help", "codex login status"))
         self.assertEqual(spec.output_capture_format, "json_stream")
         self.assertEqual(spec.terminal_summary_artifact, "terminal-summary.json")
-        self.assertEqual(spec.command, build_codex_command(Path("/repo"), selection, bundle.render_prompt(), json_output=True))
+        self.assertIn("--output-schema", spec.command)
+        self.assertEqual(spec.command[-1], bundle.render_prompt())
+        self.assertEqual(len(spec.cleanup_paths), 1)
+        Path(spec.cleanup_paths[0]).unlink(missing_ok=True)
         self.assertIn("<prompt redacted sha256=", spec.to_json()["command"][-1])
 
     def test_launch_spec_preserves_harness_lane_assignment_metadata(self):

@@ -136,6 +136,23 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("`.codex/phase-loop/`: legacy compatibility root", text)
         self.assertIn("The PI package calls `phase-loop`, not `codex-phase-loop`.", text)
 
+    def test_native_contracts_are_documented_at_canonical_protocol_path(self):
+        protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
+        shared = (ROOT / "shared" / "phase-loop" / "protocol.md").read_text(encoding="utf-8")
+
+        for token in (
+            "Native Output Schema Enforcement",
+            "IF-Gate Tier 1 Validation",
+            "`phase-loop init [--repo <path>] [--dry-run]`",
+            "`--output-schema <path>`",
+            "`--json-schema <compact-json>`",
+            "`produced_if_gates: []`",
+        ):
+            self.assertIn(token, protocol)
+        self.assertIn("Native Output Schema Enforcement", shared)
+        self.assertIn("IF-Gate Tier 1 Validation", shared)
+        self.assertIn("`phase-loop init`", shared)
+
     def test_profiledoc_docs_freeze_granular_policy_contract(self):
         guide = (ROOT / "docs" / "phase-loop" / "granular-execution-policy.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

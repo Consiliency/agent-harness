@@ -448,6 +448,31 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         for field in TERMINAL_SUMMARY_FIELDS:
             self.assertRegex(self.protocol_text, rf"`{re.escape(field)}`")
 
+    def test_native_schema_and_if_gate_contract_are_documented(self):
+        for token in (
+            "## Native Output Schema Enforcement",
+            "`CLOSEOUT_SCHEMA`",
+            "`terminal_status`",
+            "`verification_status`",
+            "`dirty_paths`",
+            "`produced_if_gates`",
+            "`--output-schema <path>`",
+            "`LaunchSpec.cleanup_paths`",
+            "`--json-schema <compact-json>`",
+            "Gemini, OpenCode, PI, command adapters, and manual paths",
+            "## IF-Gate Tier 1 Validation",
+            "`validate_produced_gates(plan_path, closeout_payload)`",
+            "`Produces`",
+            "`Interfaces provided`",
+            "NATIVE compatibility window",
+            "`contract_bug`",
+            "filesystem evidence verification remains out of scope",
+            "`phase-loop init [--repo <path>] [--dry-run]`",
+            "`/.dev-skills/`",
+            "`.dev-skills/handoffs/`",
+        ):
+            self.assertIn(token, self.protocol_text)
+
     def test_notification_payload_fields_are_frozen_in_code(self):
         payload = build_notification_payload(
             repo=ROOT,

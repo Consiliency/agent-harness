@@ -7,9 +7,10 @@ import signal
 import shlex
 import string
 import subprocess
+import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
@@ -89,6 +90,7 @@ class LaunchSpec:
     claude_execution_mode: str | None = None
     claude_team_policy: ClaudeTeamPolicy | None = None
     phase_team_eligibility: PhaseTeamEligibility | None = None
+    cleanup_paths: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -124,6 +126,7 @@ class LaunchSpec:
             "claude_execution_mode": self.claude_execution_mode,
             "claude_team_policy": self.claude_team_policy.to_json() if self.claude_team_policy else None,
             "phase_team_eligibility": self.phase_team_eligibility.to_json() if self.phase_team_eligibility else None,
+            "cleanup_paths": list(self.cleanup_paths),
         }
 
     def delivery_payload(self) -> str | None:
@@ -240,6 +243,7 @@ def build_codex_command(
     prompt: str,
     json_output: bool = False,
     bypass_approvals: bool = False,
+    closeout_schema: dict[str, Any] | None = None,
 ) -> list[str]:
     command = [
         "codex",
@@ -257,6 +261,9 @@ def build_codex_command(
         command.extend(["--sandbox", "danger-full-access"])
     if json_output:
         command.append("--json")
+    if closeout_schema is not None:
+        schema_path = _write_temp_schema(closeout_schema)
+        command.extend(["--output-schema", str(schema_path)])
     command.append(prompt)
     return command
 
@@ -270,6 +277,7 @@ def build_claude_command(
     allowed_tools: str = CLAUDE_ADAPTER_ALLOWED_TOOLS,
     disallowed_tools: str = CLAUDE_ADAPTER_DISALLOWED_TOOLS,
     bypass_approvals: bool = False,
+    closeout_schema: dict[str, Any] | None = None,
 ) -> list[str]:
     command = [
         "claude",
@@ -298,10 +306,38 @@ def build_claude_command(
         "--effort",
         selection.effort,
     ]
+    if closeout_schema is not None:
+        command.extend(["--json-schema", json.dumps(closeout_schema, separators=(",", ":"), sort_keys=True)])
     if bypass_approvals:
         command.append("--dangerously-skip-permissions")
     command.append(prompt)
     return command
+
+
+def _write_temp_schema(schema: dict[str, Any]) -> Path:
+    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix="-phase-loop-closeout-schema.json", delete=False)
+    with handle:
+        json.dump(schema, handle, sort_keys=True)
+        handle.write("\n")
+    return Path(handle.name)
+
+
+def _schema_cleanup_paths(command: list[str]) -> tuple[str, ...]:
+    paths: list[str] = []
+    for index, part in enumerate(command):
+        if part == "--output-schema" and index + 1 < len(command):
+            paths.append(command[index + 1])
+    return tuple(paths)
+
+
+def _closeout_schema_for_request(request: LaunchRequest) -> dict[str, Any] | None:
+    if request.executor not in {"codex", "claude"}:
+        return None
+    if request.action not in {"roadmap", "plan", "execute", "repair", "review", "maintain-skills"}:
+        return None
+    from .models import CLOSEOUT_SCHEMA
+
+    return CLOSEOUT_SCHEMA
 
 
 def build_gemini_command(
@@ -477,16 +513,19 @@ def build_launch_request(
 
 def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
     capability = capability_registry()[request.executor]
+    closeout_schema = _closeout_schema_for_request(request)
     if request.executor == "codex":
+        command = build_codex_command(
+            request.repo,
+            request.model_selection,
+            request.prompt_bundle.render_prompt(),
+            json_output=request.json_output,
+            bypass_approvals=request.bypass_approvals,
+            closeout_schema=closeout_schema,
+        )
         return LaunchSpec(
             executor="codex",
-            command=build_codex_command(
-                request.repo,
-                request.model_selection,
-                request.prompt_bundle.render_prompt(),
-                json_output=request.json_output,
-                bypass_approvals=request.bypass_approvals,
-            ),
+            command=command,
             prompt_bundle=request.prompt_bundle,
             injection_metadata=request.injection_metadata,
             delivery_mode=request.injection_metadata.injection_mode,
@@ -508,6 +547,7 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             override_reason=request.model_selection.override_reason,
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
+            cleanup_paths=_schema_cleanup_paths(command),
         )
     if request.executor == "claude":
         delivery_mode = "context_file" if _claude_uses_context_file(request.prompt_bundle) else request.injection_metadata.injection_mode
@@ -563,6 +603,7 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
                 allowed_tools=",".join(claude_policy.allowed_tools) if claude_policy.allowed_tools else CLAUDE_ADAPTER_ALLOWED_TOOLS,
                 disallowed_tools=",".join(claude_policy.disallowed_tools) if claude_policy.disallowed_tools else CLAUDE_ADAPTER_DISALLOWED_TOOLS,
                 bypass_approvals=request.bypass_approvals,
+                closeout_schema=closeout_schema,
             ),
             prompt_bundle=request.prompt_bundle,
             injection_metadata=request.injection_metadata,
@@ -1039,20 +1080,50 @@ def launch_with_spec(
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
     command = _resolve_command_context(spec, log_path)
-    result = launch(
-        command,
-        dry_run=dry_run,
-        log_path=log_path,
-        stdin_text=spec.delivery_payload() if spec.delivery_mode == "stdin" else None,
-        stream_output=stream_output,
-        heartbeat_path=heartbeat_path,
-        heartbeat_interval_seconds=heartbeat_interval_seconds,
-        quiet_warning_seconds=quiet_warning_seconds,
-        quiet_blocker_seconds=quiet_blocker_seconds,
-        timeout_seconds=spec.launch_timeout_seconds,
-        cwd=spec.wrapped_cwd,
-    )
+    try:
+        result = launch(
+            command,
+            dry_run=dry_run,
+            log_path=log_path,
+            stdin_text=spec.delivery_payload() if spec.delivery_mode == "stdin" else None,
+            stream_output=stream_output,
+            heartbeat_path=heartbeat_path,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            quiet_warning_seconds=quiet_warning_seconds,
+            quiet_blocker_seconds=quiet_blocker_seconds,
+            timeout_seconds=spec.launch_timeout_seconds,
+            cwd=spec.wrapped_cwd,
+        )
+    finally:
+        cleanup_evidence = _cleanup_paths(spec.cleanup_paths)
+    if cleanup_evidence:
+        result = replace(
+            result,
+            cleanup_evidence={
+                **(result.cleanup_evidence or {}),
+                "schema_cleanup": cleanup_evidence,
+            },
+        )
     return _result_with_spec(result, spec)
+
+
+def _cleanup_paths(paths: tuple[str, ...]) -> dict[str, Any] | None:
+    if not paths:
+        return None
+    removed: list[str] = []
+    missing: list[str] = []
+    errors: list[dict[str, str]] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        try:
+            if path.exists():
+                path.unlink()
+                removed.append(str(path))
+            else:
+                missing.append(str(path))
+        except OSError as exc:
+            errors.append({"path": str(path), "error": exc.__class__.__name__})
+    return {"removed": removed, "missing": missing, "errors": errors}
 
 
 def extract_executor_output_text(result: LaunchResult, spec: LaunchSpec) -> str:

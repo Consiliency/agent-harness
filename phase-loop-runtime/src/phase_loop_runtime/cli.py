@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-bundle")
     parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"))
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -182,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     repo = resolve_repo(args.repo or ".")
     as_json = bool(args.json)
+    if command == "init":
+        return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json)
     if command in {"run", "resume", "dry-run"} and bool(getattr(args, "reset_capability", False)):
         clear_degradation(repo)
 
@@ -428,6 +430,40 @@ def _run_returncode(snapshot: StateSnapshot, results: list) -> int:
         return 5
     if snapshot.blocker_class:
         return 5
+    return 0
+
+
+def _init_command(*, repo: Path, dry_run: bool, as_json: bool) -> int:
+    gitignore = repo / ".gitignore"
+    handoffs = repo / ".dev-skills" / "handoffs"
+    entry = "/.dev-skills/"
+    existing = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.exists() else []
+    needs_entry = entry not in existing
+    needs_handoffs = not handoffs.is_dir()
+    actions = {
+        "repo": str(repo),
+        "dry_run": dry_run,
+        "gitignore": str(gitignore),
+        "gitignore_entry": entry,
+        "gitignore_changed": needs_entry,
+        "handoffs": str(handoffs),
+        "handoffs_created": needs_handoffs,
+    }
+    if not dry_run:
+        if needs_entry:
+            lines = list(existing)
+            lines.append(entry)
+            gitignore.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        handoffs.mkdir(parents=True, exist_ok=True)
+    if as_json:
+        print(json.dumps(actions, indent=2, sort_keys=True))
+    else:
+        mode = "would update" if dry_run else "updated"
+        if not needs_entry and not needs_handoffs:
+            mode = "already initialized"
+        print(f"phase-loop init: {mode} {repo}")
+        print(f"gitignore_entry: {entry} ({'needed' if needs_entry else 'present'})")
+        print(f"handoffs: {handoffs} ({'needed' if needs_handoffs else 'present'})")
     return 0
 
 

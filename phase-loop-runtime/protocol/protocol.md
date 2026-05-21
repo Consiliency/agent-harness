@@ -615,6 +615,39 @@ inside the nested `automation` object.
 Terminal-summary extraction remains a legacy compatibility path for rendered
 `automation:` blocks; it is not the native JSON fixture contract.
 
+## Native Output Schema Enforcement
+
+NATIVE adds a hand-written `CLOSEOUT_SCHEMA` in
+`phase_loop_runtime.models` as the temporary structured-output contract before
+BAML becomes the single source of truth. The schema requires
+`terminal_status`, `verification_status`, `dirty_paths`, and
+`produced_if_gates`. A closeout that claims `terminal_status=complete` must
+report at least one produced IF gate at the schema layer.
+
+Codex live launches that require a closeout write `CLOSEOUT_SCHEMA` to a
+temporary JSON file, append `--output-schema <path>`, record the path on
+`LaunchSpec.cleanup_paths`, and remove it after subprocess completion. Claude
+live launches that require a closeout append `--json-schema <compact-json>`
+with the same schema. Gemini, OpenCode, PI, command adapters, and manual paths
+do not receive native CLI schema flags during NATIVE.
+
+The NATIVE runner still accepts legacy rendered `automation:` blocks during the
+compatibility window. Native JSON closeouts are normalized back into the shared
+automation fields before reducer logic runs.
+
+## IF-Gate Tier 1 Validation
+
+NATIVE adds `validate_produced_gates(plan_path, closeout_payload)` in
+`phase_loop_runtime.closeout_validation`. It extracts the active phase plan's
+declared IF gates from `Produces` and lane `Interfaces provided` declarations,
+then compares them with closeout `produced_if_gates`.
+
+During the NATIVE compatibility window, a completed legacy closeout with no
+`produced_if_gates` field records a warning and remains compatible. A completed
+closeout with `produced_if_gates: []`, missing expected gates, or unexpected
+gates is blocked as repairable non-human `contract_bug`. This is the Tier 1
+scope check only; filesystem evidence verification remains out of scope.
+
 #### Automation Object
 
 Phase-loop aware skills and manual TUI runs must emit a machine-readable `automation` object with this exact field set:
@@ -1287,6 +1320,11 @@ For this roadmap family, `.phase-loop/` is the canonical durable runtime path
 for state, ledger, handoff, and observed-run artifacts. Existing
 `.codex/phase-loop/` artifacts remain a legacy read fallback so active repos are
 not stranded during migration. New writes use `.phase-loop/`.
+
+`phase-loop init [--repo <path>] [--dry-run]` initializes the repo-local
+handoff storage expected by workflow skills. It idempotently adds
+`/.dev-skills/` to the target repo `.gitignore` without duplication and creates
+`.dev-skills/handoffs/` unless `--dry-run` is set.
 
 ## Runtime Boundary
 

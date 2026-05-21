@@ -227,6 +227,65 @@ TERMINAL_SUMMARY_FIELDS = (
     "artifact_paths",
 )
 
+CLOSEOUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "PhaseLoopNativeCloseout",
+    "type": "object",
+    "additionalProperties": False,
+    "required": ("terminal_status", "verification_status", "dirty_paths", "produced_if_gates"),
+    "properties": {
+        "terminal_status": {
+            "type": "string",
+            "enum": PHASE_STATUSES,
+            "description": "Final phase status claimed by the executor closeout.",
+        },
+        "verification_status": {
+            "type": "string",
+            "enum": ("not_run", "passed", "failed", "blocked"),
+            "description": "Verification outcome for the reported phase work.",
+        },
+        "dirty_paths": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Repo-relative dirty paths left after execution.",
+        },
+        "produced_if_gates": {
+            "type": "array",
+            "items": {"type": "string"},
+            "uniqueItems": True,
+            "description": "Interface-freeze gates actually produced by this closeout.",
+        },
+        "next_action": {
+            "type": "string",
+            "description": "Concise next action for the operator or runner.",
+        },
+        "blocker_class": {
+            "type": "string",
+            "enum": (*BLOCKER_CLASSES, "none"),
+            "description": "Frozen blocker class when terminal_status is blocked.",
+        },
+        "blocker_summary": {
+            "type": "string",
+            "description": "Actionable non-secret blocker summary.",
+        },
+        "human_required": {
+            "type": "boolean",
+            "description": "Whether the blocker requires a human decision or access action.",
+        },
+        "required_human_inputs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Non-secret human inputs required to unblock execution.",
+        },
+    },
+    "allOf": (
+        {
+            "if": {"properties": {"terminal_status": {"const": "complete"}}, "required": ("terminal_status",)},
+            "then": {"properties": {"produced_if_gates": {"minItems": 1}}},
+        },
+    ),
+}
+
 INJECTION_MODES = ("prompt_only", "inline", "stdin", "context_file", "manual")
 PRODUCT_LOOP_ACTIONS = ("roadmap", "plan", "execute", "repair", "review", "maintain-skills")
 COMMAND_ADAPTER_SUPPORTED_ACTIONS = ("roadmap", "plan", "execute", "repair", "review")
