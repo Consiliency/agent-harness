@@ -151,6 +151,45 @@ Reflections remain in harness-specific `reflections/` trees and are not moved
 by HANDOFFS. The root `.gitignore` excludes `/.dev-skills/` so migrated or newly
 written handoffs do not become source artifacts.
 
+## Skills Bundle
+
+The harness-neutral workflow skill source bundle lives at
+`vendor/phase-loop-skills/`. Base source directories are unprefixed:
+`execute-phase`, `plan-phase`, `plan-detailed`, `phase-roadmap-builder`,
+`phase-loop`, `skill-editor`, `skill-improvement-planner`, and
+`task-contextualizer`. Installed names retain the harness prefix, for example
+`codex-execute-phase` and `claude-plan-phase`.
+
+Harness-specific differences are escape hatches, not a second source tree.
+Per-harness overlays live under
+`vendor/phase-loop-skills/<skill-name>/_overrides/<harness>/` and are layered
+over the unprefixed source during installation. Operators author those overlay
+files explicitly; the installer does not auto-generate operator-authored
+exceptions.
+
+`phase_loop_runtime.skill_paths` exposes the resolver API used by workflow
+skills and installers:
+
+- `current_harness(harness: str | None = None) -> str`
+- `resolve_skill_bundle_root(harness: str | None = None) -> Path`
+- `resolve_skill_helper_root(harness: str | None = None) -> Path`
+- `resolve_handoff_root(repo: Path) -> Path`
+- `resolve_reflection_root(skill_name: str, harness: str | None = None) -> Path`
+
+Resolver precedence is explicit function argument, `PHASE_LOOP_HARNESS`,
+`PHASE_LOOP_SKILL_BUNDLE`, then the documented harness defaults:
+`~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills`, and
+`~/.config/opencode/skills`. Handoffs resolve to repo-local
+`.dev-skills/handoffs/`; reflections remain under the selected harness skill
+root.
+
+`phase-loop install --harness {claude,codex,gemini,opencode}
+[--source <bundle-path>] [--destination <install-root>] [--symlink|--copy]
+[--dry-run|--apply]` is the metadata-only install surface. Dry-run mode reports
+planned source, destination, harness, skill name, install mode, and action
+without mutating destinations. Apply mode is idempotent and installs
+harness-prefixed workflow skills from `vendor/phase-loop-skills/`.
+
 ## Operating Modes
 
 The phase-loop runner supports three operating modes:

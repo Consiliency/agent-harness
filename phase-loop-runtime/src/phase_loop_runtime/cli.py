@@ -20,6 +20,7 @@ from .provenance import event_provenance, snapshot_provenance
 from .reconcile import reconcile
 from .render import render_archive_result, render_skill_sync_result, render_state_inspection, render_status
 from .runner import run_loop, status_snapshot
+from .skill_install import actions_to_json, install_skills
 from .state import write_state
 from .state_degradation import clear as clear_degradation
 from .state_ops import archive_state, inspect_state
@@ -68,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-bundle")
     parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"))
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "migrate-handoffs"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "migrate-handoffs"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -125,6 +126,15 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Audit or repair harness-local phase-loop bridge skills for manual reentry."
             sub.add_argument("--harness", action="append", default=[], choices=("codex", "claude", "gemini", "opencode"))
             sub.add_argument("--check", action="store_true")
+            sub.add_argument("--apply", action="store_true")
+        if name == "install":
+            sub.description = "Install harness-prefixed workflow skills from a harness-neutral phase-loop skills bundle."
+            sub.add_argument("--harness", required=True, choices=("codex", "claude", "gemini", "opencode"))
+            sub.add_argument("--source", default="vendor/phase-loop-skills")
+            sub.add_argument("--destination")
+            mode = sub.add_mutually_exclusive_group()
+            mode.add_argument("--symlink", action="store_true")
+            mode.add_argument("--copy", action="store_true")
             sub.add_argument("--apply", action="store_true")
         if name == "migrate-handoffs":
             sub.description = "Move current-repo legacy skill handoffs into repo-local .dev-skills storage."
@@ -225,6 +235,29 @@ def main(argv: list[str] | None = None) -> int:
         print(render_skill_sync_result(summary, as_json=as_json))
         blocker = summary.get("blocker")
         return 1 if isinstance(blocker, dict) and blocker.get("blocker_class") else 0
+    if command == "install":
+        source = Path(args.source)
+        if not source.is_absolute():
+            source = repo / source
+        destination = Path(args.destination).expanduser() if args.destination else None
+        mode = "copy" if bool(args.copy) else "symlink"
+        actions = install_skills(
+            harness=args.harness,
+            source=source,
+            destination=destination,
+            mode=mode,
+            apply=bool(args.apply),
+        )
+        if as_json:
+            print(actions_to_json(actions))
+        else:
+            verb = "applied" if args.apply else "planned"
+            for action in actions:
+                print(
+                    f"{verb}\t{action.harness}\t{action.installed_name}\t"
+                    f"{action.mode}\t{action.action}\t{action.destination}"
+                )
+        return 0
     if command == "migrate-handoffs":
         records = migrate_handoffs(repo, apply=bool(getattr(args, "apply", False)))
         if as_json:

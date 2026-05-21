@@ -64,6 +64,33 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("phase-loop", text)
         self.assertIn("separate backward-compatible entrypoints over the same parser", text)
 
+    def test_neutralize_docs_define_skills_bundle_contract(self):
+        protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
+        readme = (ROOT / "vendor" / "phase-loop-runtime" / "README.md").read_text(encoding="utf-8")
+        bootstrap = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+        runtime_docs = [
+            (ROOT / "claude-config" / "shared" / "runtime-state.md").read_text(encoding="utf-8"),
+            (ROOT / "codex-config" / "shared" / "runtime-state.md").read_text(encoding="utf-8"),
+            (ROOT / "gemini-config" / "shared" / "runtime-state.md").read_text(encoding="utf-8"),
+            (ROOT / "opencode-config" / "shared" / "runtime-state.md").read_text(encoding="utf-8"),
+        ]
+
+        for text in (protocol, readme):
+            self.assertIn("Skills Bundle", text)
+            self.assertIn("phase_loop_runtime.skill_paths", text)
+            self.assertIn("phase-loop install", text)
+            self.assertIn("vendor/phase-loop-skills", text)
+            self.assertIn("_overrides/<harness>", text)
+
+        for token in ("~/.claude/skills", "~/.codex/skills", "~/.gemini/skills", "~/.config/opencode/skills"):
+            self.assertIn(token, protocol)
+
+        self.assertIn("phase-loop install --harness", bootstrap)
+        for text in runtime_docs:
+            self.assertIn("phase_loop_runtime.skill_paths", text)
+            self.assertIn("repo-local resolver path under `.dev-skills/handoffs/<skill>/`", text)
+            self.assertNotIn("write handoffs under harness home skill roots", text)
+
     def test_runnerpack_docs_freeze_package_boundary(self):
         runtime = (ROOT / "docs" / "phase-loop" / "runtime-boundary.md").read_text(encoding="utf-8")
         extraction = (ROOT / "docs" / "phase-loop" / "extraction-readiness.md").read_text(encoding="utf-8")
