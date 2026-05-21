@@ -102,7 +102,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
                 if status in {"blocked", "unknown", "executed", "awaiting_phase_closeout"}:
                     latest_untrusted_terminal_event[phase] = event
                 continue
-            if status == "planned" and find_plan_artifact(repo, phase, roadmap=roadmap) is None:
+            if status == "planned" and event.get("action") != "phase_reopen" and find_plan_artifact(repo, phase, roadmap=roadmap) is None:
                 continue
             latest_untrusted_terminal_event.pop(phase, None)
             pending_event_warnings.pop(phase, None)

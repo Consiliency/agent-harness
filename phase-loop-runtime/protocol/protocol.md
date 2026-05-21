@@ -359,6 +359,33 @@ to one CLI call. Use only as a recovery tool when the executor's work is
 correct but ownership classification or lane-evidence gaps left the runner
 blocked; do not use to bypass legitimate verification failures.
 
+## Reopen Command
+
+`phase-loop reopen --phase <ALIAS> --reason <text> [--allow-dirty]` is the
+symmetric counterpart to `reconcile`: where `reconcile` advances a `blocked`
+phase to `complete`, `reopen` reverts a spurious `complete` phase back to
+`planned`. Use when an executor reported a phase as complete +
+`verification_status=passed` but the underlying IF gates were not actually
+satisfied (e.g., a repair iteration that reported done with zero diff and no
+real work).
+
+The command appends a typed `phase_reopen` event with `status: planned` and
+metadata `{reason, prior_status, prior_closeout_commit, reopen_commit}`. The
+reducer recognizes `action: phase_reopen` and flips the phase back to
+`planned` regardless of plan-artifact existence. Subsequent
+`phase-loop run` invocations re-execute the phase.
+
+Refuses if the phase is not currently `complete` (cannot reopen what isn't
+closed). Refuses if the working tree is dirty (override with `--allow-dirty`)
+so `reopen_commit` references a clean state. The `--reason` field is
+required and recorded on the event for audit.
+
+This command exists because the runner trusts the executor's reported
+terminal status by default; if an executor hallucinates completion, the
+runner has no way to independently verify the IF gates were satisfied. A
+future "closeout-payload IF-gate cross-check" would prevent the bug at
+emission time; `reopen` is the recovery path until that ships.
+
 ### Verified Dirty Closeout Auto-Recovery
 
 When the runner has already performed a verified dirty closeout recovery, a

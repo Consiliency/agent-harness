@@ -641,6 +641,85 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("not found in roadmap", result.stderr)
 
+    def test_reopen_flips_complete_phase_back_to_planned(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # Reconcile first to mark RUNNER complete (uses the same approach used by F5c)
+            subprocess.run(
+                [str(BIN), "reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--repair-summary", "fixture"],
+                text=True, capture_output=True, check=True,
+            )
+            # Confirm RUNNER is complete
+            status_pre = subprocess.run(
+                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertEqual(json.loads(status_pre.stdout)["phases"]["RUNNER"], "complete")
+
+            # Reopen
+            result = subprocess.run(
+                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "spurious completion at fixture SHA"],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            # Phase should be back to planned
+            status_post = subprocess.run(
+                [str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertEqual(json.loads(status_post.stdout)["phases"]["RUNNER"], "planned")
+
+            # Confirm the typed event landed
+            from phase_loop_runtime.events import read_events
+            events = read_events(repo)
+            self.assertEqual(events[-1]["action"], "phase_reopen")
+            self.assertEqual(events[-1]["status"], "planned")
+            self.assertEqual(events[-1]["phase"], "RUNNER")
+            self.assertIn("spurious completion", events[-1]["metadata"]["phase_reopen"]["reason"])
+
+    def test_reopen_refuses_phase_that_is_not_complete(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # RUNNER starts as unplanned — cannot reopen
+            result = subprocess.run(
+                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "test"],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("not 'complete'", result.stderr)
+            self.assertIn("phase-loop reconcile", result.stderr)  # hints at the other tool
+
+    def test_reopen_refuses_dirty_tree(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            (repo / "dirty.txt").write_text("untracked-but-tracked-mod\n")
+            # Track + modify a file so the tree is dirty in a tracked sense
+            subprocess.run(["git", "-C", str(repo), "add", "dirty.txt"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture-dirty-precondition"], check=True)
+            (repo / "dirty.txt").write_text("modified-after-commit\n")
+
+            result = subprocess.run(
+                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER", "--reason", "test"],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("working tree is dirty", result.stderr)
+
+    def test_reopen_requires_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # Missing --reason argparse rejection
+            result = subprocess.run(
+                [str(BIN), "reopen", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", "RUNNER"],
+                text=True, capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--reason", result.stderr)
+
     def test_run_returns_0_on_clean_complete(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

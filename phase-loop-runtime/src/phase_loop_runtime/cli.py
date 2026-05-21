@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-bundle")
     parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"))
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "migrate-handoffs"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -149,6 +149,15 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--closeout-commit", help="Commit SHA to record as the closeout commit. Defaults to current HEAD.")
             sub.add_argument("--repair-summary", help="Optional human-authored note explaining the repair.")
             sub.add_argument("--verification-status", choices=("not_run", "passed", "failed"), default="not_run")
+            sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
+        if name == "reopen":
+            sub.description = (
+                "Reverse a spurious closeout: append a typed phase_reopen event so the reducer "
+                "flips the named phase from complete back to planned. Use when an executor reported "
+                "complete + verification_status=passed but the underlying IF gates were not actually "
+                "satisfied (e.g., zero-diff repair iteration that did not produce the phase's work)."
+            )
+            sub.add_argument("--reason", required=True, help="Operator-supplied reason for reopening. Recorded on the event.")
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
         if name == "monitor":
             sub.add_argument("--poll-seconds", type=int, default=60)
@@ -332,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if command == "reconcile":
         return _reconcile_command(repo=repo, roadmap=roadmap, args=args, as_json=as_json)
+    if command == "reopen":
+        return _reopen_command(repo=repo, roadmap=roadmap, args=args, as_json=as_json)
 
     dry_run = command == "dry-run" or bool(args.dry_run)
     model_profile = args.model_profile or ("skill-maintenance" if command == "maintain-skills" else None)
@@ -490,6 +501,86 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     snapshot = reconcile(repo, roadmap)
     write_state(repo, snapshot)
     write_tui_handoff(repo, roadmap, snapshot, action="reconcile")
+    print(render_status(snapshot, as_json=as_json))
+    return 0
+
+
+def _reopen_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, as_json: bool) -> int:
+    """Reverse a spurious closeout: append a typed phase_reopen event for --phase.
+
+    Use when an executor reported a phase as complete + verification_status=passed
+    but the underlying IF gates were not actually satisfied (e.g., a repair iteration
+    that reported done with zero diff and no real work). Appending a phase_reopen
+    event flips the phase back to planned in the reducer; the next phase-loop run
+    will re-execute it.
+
+    Refuses by default if the working tree is dirty (override with --allow-dirty)
+    so the recorded prior_closeout_commit corresponds to a clean state.
+    """
+    phase = (args.phase or "").strip().upper()
+    if not phase:
+        print("phase-loop reopen: --phase is required", file=sys.stderr)
+        return 2
+    reason = (args.reason or "").strip()
+    if not reason:
+        print("phase-loop reopen: --reason is required", file=sys.stderr)
+        return 2
+
+    topology = collect_git_topology(repo)
+    if not topology.get("available"):
+        print(f"phase-loop reopen: {topology.get('reason') or 'git topology unavailable'}", file=sys.stderr)
+        return 2
+
+    if not topology.get("clean") and not bool(getattr(args, "allow_dirty", False)):
+        print(
+            "phase-loop reopen: working tree is dirty. Commit or stash work "
+            "before reopening (or pass --allow-dirty to override).",
+            file=sys.stderr,
+        )
+        return 2
+
+    snapshot_before = reconcile(repo, roadmap)
+    if phase not in snapshot_before.phases:
+        print(f"phase-loop reopen: phase {phase!r} not found in roadmap {roadmap}", file=sys.stderr)
+        return 2
+    prior_status = snapshot_before.phases.get(phase)
+    if prior_status != "complete":
+        print(
+            f"phase-loop reopen: phase {phase!r} is currently {prior_status!r}, not 'complete'. "
+            "Only complete phases can be reopened. Use `phase-loop reconcile` for blocked phases.",
+            file=sys.stderr,
+        )
+        return 2
+
+    head = topology.get("head")
+    prior_closeout = snapshot_before.closeout_summary.get("closeout_commit") if isinstance(snapshot_before.closeout_summary, dict) else None
+
+    phase_reopen = {
+        "reason": reason,
+        "prior_status": "complete",
+        "prior_closeout_commit": prior_closeout,
+        "reopen_commit": head,
+    }
+
+    event = LoopEvent(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phase=phase,
+        action="phase_reopen",
+        status="planned",
+        model="manual",
+        reasoning_effort="manual",
+        source="reopen",
+        metadata={"phase_reopen": phase_reopen},
+        git_topology=dict(topology),
+        **event_provenance(roadmap, phase),
+    )
+    append_event(repo, event)
+
+    snapshot = reconcile(repo, roadmap)
+    write_state(repo, snapshot)
+    write_tui_handoff(repo, roadmap, snapshot, action="reopen")
     print(render_status(snapshot, as_json=as_json))
     return 0
 
