@@ -146,10 +146,12 @@ class PhaseLoopDocsTest(unittest.TestCase):
             "`phase-loop init [--repo <path>] [--dry-run]`",
             "`--output-schema <path>`",
             "`--json-schema <compact-json>`",
+            "Schema-Flow Architecture",
             "`produced_if_gates: []`",
         ):
             self.assertIn(token, protocol)
         self.assertIn("Native Output Schema Enforcement", shared)
+        self.assertIn("Schema-Flow Architecture", shared)
         self.assertIn("IF-Gate Tier 1 Validation", shared)
         self.assertIn("`phase-loop init`", shared)
 

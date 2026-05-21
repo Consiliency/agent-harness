@@ -2,11 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from phase_loop_runtime.baml_modular import export_function_schema
 from phase_loop_runtime.models import BLOCKER_CLASSES, CLOSEOUT_SCHEMA, PHASE_STATUSES
 
 
 class PhaseLoopCloseoutSchemaTest(unittest.TestCase):
     def test_closeout_schema_requires_native_fields(self):
+        self.assertEqual(CLOSEOUT_SCHEMA, export_function_schema("EmitPhaseCloseout"))
         self.assertEqual(CLOSEOUT_SCHEMA["type"], "object")
         properties = CLOSEOUT_SCHEMA["properties"]
         # OpenAI Responses API requires `required` to list EVERY property.

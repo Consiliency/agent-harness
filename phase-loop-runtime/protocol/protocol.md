@@ -617,9 +617,9 @@ Terminal-summary extraction remains a legacy compatibility path for rendered
 
 ## Native Output Schema Enforcement
 
-NATIVE adds a hand-written `CLOSEOUT_SCHEMA` in
-`phase_loop_runtime.models` as the temporary structured-output contract before
-BAML becomes the single source of truth. The schema requires
+NATIVE added `CLOSEOUT_SCHEMA` in `phase_loop_runtime.models` as the temporary
+structured-output contract before BAML became the single source of truth. The
+schema requires
 `terminal_status`, `verification_status`, `dirty_paths`, and
 `produced_if_gates`. A closeout that claims `terminal_status=complete` must
 report at least one produced IF gate at the schema layer.
@@ -655,6 +655,35 @@ raw_text)` parses child closeout output through the BAML runtime and then
 normalizes the typed value back into the runner's shared automation fields.
 BAML validation errors are reported as repairable non-human `contract_bug`
 blockers with non-secret summaries.
+
+## Schema-Flow Architecture
+
+`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` is the canonical
+closeout contract. `phase_loop_runtime.baml_modular.export_function_schema(
+"EmitPhaseCloseout")` reads that BAML function, exports the `PhaseLoopCloseoutV1`
+object shape, applies documented Codex/Claude JSON Schema dialect
+normalization, and fails with `BamlValidationError` when the BAML function or
+return class cannot be exported. Missing BAML schema export is a repairable
+non-human `contract_bug`; the runtime must not silently downgrade to a duplicate
+hand-written schema.
+The canonical helper call is `export_function_schema("EmitPhaseCloseout")`.
+
+`phase_loop_runtime.models.CLOSEOUT_SCHEMA` is a compatibility import path for
+existing callers and is computed from
+`export_function_schema("EmitPhaseCloseout")` at module import time. Codex
+launches that require closeout write that schema to `--output-schema <path>`;
+Claude launches pass the same canonical schema through
+`--json-schema <compact-json>`. Gemini, OpenCode, and PI do not expose matching
+native flags, so their closeout prompts embed deterministic schema-description
+text from `inject_schema_description(prompt, schema)` with the canonical schema
+hash and ordered fields.
+
+All executor closeouts still pass through `parse_baml_response(
+"EmitPhaseCloseout", raw_text)` and then through IF-Gate Tier 1 validation.
+The runner compares `produced_if_gates` with the active plan's declared
+`Produces` / `Interfaces provided` gates, so native flags, prompt embedding,
+BAML parse, and IF-gate cross-check all consume the same BAML-authored schema
+flow.
 
 ### Strict Mode Transition
 

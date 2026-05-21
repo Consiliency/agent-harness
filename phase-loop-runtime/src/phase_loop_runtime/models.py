@@ -227,82 +227,10 @@ TERMINAL_SUMMARY_FIELDS = (
     "artifact_paths",
 )
 
-CLOSEOUT_SCHEMA: dict[str, Any] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "PhaseLoopNativeCloseout",
-    "type": "object",
-    "additionalProperties": False,
-    # NOTE: OpenAI Responses API (Codex --output-schema) requires `required`
-    # to list EVERY property. "Optional" fields are expressed via nullable
-    # types (e.g., type: ["string", "null"]) — the field must always be
-    # present but may be null.
-    "required": (
-        "terminal_status",
-        "verification_status",
-        "dirty_paths",
-        "produced_if_gates",
-        "next_action",
-        "blocker_class",
-        "blocker_summary",
-        "human_required",
-        "required_human_inputs",
-    ),
-    "properties": {
-        "terminal_status": {
-            "type": "string",
-            "enum": PHASE_STATUSES,
-            "description": "Final phase status claimed by the executor closeout.",
-        },
-        "verification_status": {
-            "type": "string",
-            "enum": ("not_run", "passed", "failed", "blocked"),
-            "description": "Verification outcome for the reported phase work.",
-        },
-        "dirty_paths": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Repo-relative dirty paths left after execution.",
-        },
-        "produced_if_gates": {
-            "type": "array",
-            "items": {"type": "string"},
-            # NOTE: `uniqueItems` removed for OpenAI Responses API compatibility
-            # (Codex --output-schema dialect — same constraint as the `allOf`
-            # removal above). Duplicate-gate detection moves to runner-side
-            # closeout_validation.validate_produced_gates if needed.
-            "description": "Interface-freeze gates actually produced by this closeout.",
-        },
-        "next_action": {
-            "type": ["string", "null"],
-            "description": "Concise next action for the operator or runner. May be null.",
-        },
-        "blocker_class": {
-            "type": ["string", "null"],
-            "enum": (*BLOCKER_CLASSES, "none", None),
-            "description": "Frozen blocker class when terminal_status is blocked. Null otherwise.",
-        },
-        "blocker_summary": {
-            "type": ["string", "null"],
-            "description": "Actionable non-secret blocker summary. Null when not blocked.",
-        },
-        "human_required": {
-            "type": ["boolean", "null"],
-            "description": "Whether the blocker requires a human decision. Null when not blocked.",
-        },
-        "required_human_inputs": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Non-secret human inputs required to unblock execution. Empty when not blocked.",
-        },
-    },
-    # NOTE: the conditional rule "when terminal_status=complete, produced_if_gates
-    # must be non-empty" was previously expressed via `allOf` + if/then. OpenAI's
-    # response_format JSON Schema dialect (consumed by Codex --output-schema)
-    # rejects `allOf` (and `anyOf`/`oneOf`/`not`/`if`/`then`) — only a strict
-    # subset is permitted. Moving the conditional enforcement to runner-side
-    # IF-gate Tier 1 validation (closeout_validation.validate_produced_gates),
-    # which already covers the same case.
-}
+from .baml_modular import export_function_schema
+
+
+CLOSEOUT_SCHEMA: dict[str, Any] = export_function_schema("EmitPhaseCloseout")
 
 INJECTION_MODES = ("prompt_only", "inline", "stdin", "context_file", "manual")
 PRODUCT_LOOP_ACTIONS = ("roadmap", "plan", "execute", "repair", "review", "maintain-skills")

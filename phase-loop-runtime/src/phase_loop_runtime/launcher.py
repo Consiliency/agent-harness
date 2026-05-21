@@ -331,8 +331,6 @@ def _schema_cleanup_paths(command: list[str]) -> tuple[str, ...]:
 
 
 def _closeout_schema_for_request(request: LaunchRequest) -> dict[str, Any] | None:
-    if request.executor not in {"codex", "claude"}:
-        return None
     # Only the actions whose FINAL model response is the closeout JSON itself.
     # Plan/roadmap/maintain-skills produce markdown artifacts as the primary
     # output; constraining their response to CLOSEOUT_SCHEMA prevents them
@@ -344,6 +342,35 @@ def _closeout_schema_for_request(request: LaunchRequest) -> dict[str, Any] | Non
     from .models import CLOSEOUT_SCHEMA
 
     return CLOSEOUT_SCHEMA
+
+
+def _prompt_bundle_with_closeout_schema(
+    executor: str,
+    prompt_bundle: PromptBundle,
+    closeout_schema: dict[str, Any] | None,
+) -> PromptBundle:
+    if closeout_schema is None or executor not in {"gemini", "opencode", "pi"}:
+        return prompt_bundle
+    from .baml_modular import inject_schema_description
+
+    return replace(
+        prompt_bundle,
+        body=inject_schema_description(prompt_bundle.body, closeout_schema),
+        context_body=(
+            inject_schema_description(prompt_bundle.context_body, closeout_schema)
+            if prompt_bundle.context_body is not None
+            else None
+        ),
+    )
+
+
+def _injection_metadata_for_prompt_bundle(metadata: InjectionMetadata, prompt_bundle: PromptBundle) -> InjectionMetadata:
+    return replace(
+        metadata,
+        context_sha256=prompt_bundle.context_sha256(),
+        context_line_count=prompt_bundle.context_line_count(),
+        context_char_count=prompt_bundle.context_char_count(),
+    )
 
 
 def build_gemini_command(
@@ -520,11 +547,13 @@ def build_launch_request(
 def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
     capability = capability_registry()[request.executor]
     closeout_schema = _closeout_schema_for_request(request)
+    prompt_bundle = _prompt_bundle_with_closeout_schema(request.executor, request.prompt_bundle, closeout_schema)
+    injection_metadata = _injection_metadata_for_prompt_bundle(request.injection_metadata, prompt_bundle)
     if request.executor == "codex":
         command = build_codex_command(
             request.repo,
             request.model_selection,
-            request.prompt_bundle.render_prompt(),
+            prompt_bundle.render_prompt(),
             json_output=request.json_output,
             bypass_approvals=request.bypass_approvals,
             closeout_schema=closeout_schema,
@@ -532,9 +561,9 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
         return LaunchSpec(
             executor="codex",
             command=command,
-            prompt_bundle=request.prompt_bundle,
-            injection_metadata=request.injection_metadata,
-            delivery_mode=request.injection_metadata.injection_mode,
+            prompt_bundle=prompt_bundle,
+            injection_metadata=injection_metadata,
+            delivery_mode=injection_metadata.injection_mode,
             dispatch_decision=request.dispatch_decision,
             available=True,
             harness_lane_assignment=request.harness_lane_assignment,
@@ -556,7 +585,7 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             cleanup_paths=_schema_cleanup_paths(command),
         )
     if request.executor == "claude":
-        delivery_mode = "context_file" if _claude_uses_context_file(request.prompt_bundle) else request.injection_metadata.injection_mode
+        delivery_mode = "context_file" if _claude_uses_context_file(prompt_bundle) else injection_metadata.injection_mode
         claude_policy = request.claude_team_policy or _claude_policy_for_mode(
             capability,
             request.claude_execution_mode or capability.default_claude_execution_mode or "solo",
@@ -572,8 +601,8 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             return LaunchSpec(
                 executor="claude",
                 command=_stub_command(request, policy_error),
-                prompt_bundle=request.prompt_bundle,
-                injection_metadata=request.injection_metadata,
+                prompt_bundle=prompt_bundle,
+                injection_metadata=injection_metadata,
                 delivery_mode=delivery_mode,
                 dispatch_decision=request.dispatch_decision,
                 available=False,
@@ -604,15 +633,15 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             command=build_claude_command(
                 request.repo,
                 request.model_selection,
-                CLAUDE_CONTEXT_PLACEHOLDER if delivery_mode == "context_file" else request.prompt_bundle.render_context(),
+                CLAUDE_CONTEXT_PLACEHOLDER if delivery_mode == "context_file" else prompt_bundle.render_context(),
                 permission_mode=_claude_permission_mode(request.action, request.bypass_approvals),
                 allowed_tools=",".join(claude_policy.allowed_tools) if claude_policy.allowed_tools else CLAUDE_ADAPTER_ALLOWED_TOOLS,
                 disallowed_tools=",".join(claude_policy.disallowed_tools) if claude_policy.disallowed_tools else CLAUDE_ADAPTER_DISALLOWED_TOOLS,
                 bypass_approvals=request.bypass_approvals,
                 closeout_schema=closeout_schema,
             ),
-            prompt_bundle=request.prompt_bundle,
-            injection_metadata=request.injection_metadata,
+            prompt_bundle=prompt_bundle,
+            injection_metadata=injection_metadata,
             delivery_mode=delivery_mode,
             dispatch_decision=request.dispatch_decision,
             available=True,
@@ -646,9 +675,9 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
                 context_file=GEMINI_CONTEXT_PLACEHOLDER,
                 bypass_approvals=request.bypass_approvals,
             ),
-            prompt_bundle=request.prompt_bundle,
-            injection_metadata=request.injection_metadata,
-            delivery_mode=request.injection_metadata.injection_mode,
+            prompt_bundle=prompt_bundle,
+            injection_metadata=injection_metadata,
+            delivery_mode=injection_metadata.injection_mode,
             dispatch_decision=request.dispatch_decision,
             available=True,
             harness_lane_assignment=request.harness_lane_assignment,
@@ -681,9 +710,9 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
         return LaunchSpec(
             executor="opencode",
             command=command,
-            prompt_bundle=request.prompt_bundle,
-            injection_metadata=request.injection_metadata,
-            delivery_mode=request.injection_metadata.injection_mode,
+            prompt_bundle=prompt_bundle,
+            injection_metadata=injection_metadata,
+            delivery_mode=injection_metadata.injection_mode,
             dispatch_decision=request.dispatch_decision,
             available=True,
             harness_lane_assignment=request.harness_lane_assignment,
@@ -715,9 +744,9 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
                 plan=request.plan,
                 bypass_approvals=request.bypass_approvals,
             ),
-            prompt_bundle=request.prompt_bundle,
-            injection_metadata=request.injection_metadata,
-            delivery_mode=request.injection_metadata.injection_mode,
+            prompt_bundle=prompt_bundle,
+            injection_metadata=injection_metadata,
+            delivery_mode=injection_metadata.injection_mode,
             dispatch_decision=request.dispatch_decision,
             available=True,
             harness_lane_assignment=request.harness_lane_assignment,
@@ -743,9 +772,9 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
     return LaunchSpec(
         executor=request.executor,
         command=_stub_command(request, reason),
-        prompt_bundle=request.prompt_bundle,
-        injection_metadata=request.injection_metadata,
-        delivery_mode=request.injection_metadata.injection_mode,
+        prompt_bundle=prompt_bundle,
+        injection_metadata=injection_metadata,
+        delivery_mode=injection_metadata.injection_mode,
         dispatch_decision=request.dispatch_decision,
         available=False,
         harness_lane_assignment=request.harness_lane_assignment,

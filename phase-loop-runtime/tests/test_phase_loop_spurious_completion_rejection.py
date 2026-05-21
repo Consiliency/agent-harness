@@ -37,14 +37,15 @@ class PhaseLoopSpuriousCompletionRejectionTest(unittest.TestCase):
                 }
                 return LaunchResult(command=spec.command, returncode=0, output=json.dumps(payload), executor=spec.executor)
 
-            with patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})), patch(
-                "phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch
-            ):
-                snapshot, _results = run_loop(repo, roadmap, phase="RUNNER", executor="codex", action="repair")
+            for executor in ("codex", "claude", "gemini", "opencode", "pi"):
+                with self.subTest(executor=executor), patch(
+                    "phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})
+                ), patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch):
+                    snapshot, _results = run_loop(repo, roadmap, phase="RUNNER", executor=executor, action="repair")
 
-            self.assertEqual(snapshot.phases["RUNNER"], "blocked")
-            self.assertEqual(snapshot.blocker_class, "contract_bug")
-            self.assertIn("zero produced_if_gates", snapshot.blocker_summary)
+                self.assertEqual(snapshot.phases["RUNNER"], "blocked")
+                self.assertEqual(snapshot.blocker_class, "contract_bug")
+                self.assertIn("zero produced_if_gates", snapshot.blocker_summary)
 
 
 if __name__ == "__main__":
