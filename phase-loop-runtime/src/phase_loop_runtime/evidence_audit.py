@@ -22,9 +22,13 @@ import json
 import math
 import re
 import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+from .baml_modular import BamlRequest, build_baml_request, parse_baml_response
 
 
 # Heuristic-shaped string that might be a file path. Triggers on slashes;
@@ -84,6 +88,14 @@ class SizeDistributionFinding:
     coefficient_of_variation: float
 
 
+@dataclass(frozen=True)
+class EvidenceJudgment:
+    verdict: str
+    confidence: float
+    reasoning: str
+    specific_concerns: tuple[str, ...]
+
+
 @dataclass
 class EvidenceAuditResult:
     repo: str
@@ -96,6 +108,8 @@ class EvidenceAuditResult:
     loose_uniform: list[LooseUniformFinding] = field(default_factory=list)
     boilerplate_text: list[BoilerplateFinding] = field(default_factory=list)
     size_distribution: list[SizeDistributionFinding] = field(default_factory=list)
+    tier3_enabled: bool = False
+    tier3_judgments: list[EvidenceJudgment] = field(default_factory=list)
 
     def is_clean(self) -> bool:
         return not (
@@ -165,6 +179,16 @@ class EvidenceAuditResult:
                     for f in self.size_distribution
                 ],
             }
+        if self.tier3_enabled:
+            payload["tier3_judgments"] = [
+                {
+                    "verdict": judgment.verdict,
+                    "confidence": judgment.confidence,
+                    "reasoning": judgment.reasoning,
+                    "specific_concerns": list(judgment.specific_concerns),
+                }
+                for judgment in self.tier3_judgments
+            ]
         return payload
 
 
@@ -551,6 +575,92 @@ def detect_size_distribution(
     return findings
 
 
+def _finding_summary(finding: Any) -> str:
+    if isinstance(finding, LooseUniformFinding):
+        return json.dumps(
+            {
+                "kind": "tier2_uncertain_loose_uniform",
+                "json_artifact": finding.json_artifact,
+                "json_pointer": finding.json_pointer,
+                "array_length": finding.array_length,
+                "mean": finding.mean,
+                "stdev": finding.stdev,
+                "coefficient_of_variation": finding.coefficient_of_variation,
+            },
+            sort_keys=True,
+        )
+    return json.dumps({"kind": type(finding).__name__, "summary": str(finding)}, sort_keys=True)
+
+
+def _uncertain_fallback(reason: str) -> EvidenceJudgment:
+    redacted = re.sub(r"\s+", " ", str(reason or "unknown")).strip()[:240]
+    return EvidenceJudgment(
+        verdict="uncertain",
+        confidence=0.0,
+        reasoning=f"tier3_call_error: {redacted}",
+        specific_concerns=(redacted,),
+    )
+
+
+def _read_sample_artifact(sample_path: Path, max_sample_bytes: int) -> str:
+    data = sample_path.read_bytes()[:max_sample_bytes]
+    return data.decode("utf-8", errors="replace")
+
+
+def _execute_baml_request(request: BamlRequest, *, timeout_seconds: int) -> str:
+    data = json.dumps(request.body).encode("utf-8")
+    http_request = urllib.request.Request(
+        request.url,
+        data=data,
+        headers=request.headers,
+        method=request.method,
+    )
+    with urllib.request.urlopen(http_request, timeout=timeout_seconds) as response:
+        return response.read().decode("utf-8", errors="replace")
+
+
+def evaluate_suspected_fake_evidence(
+    tier2_finding: Any,
+    sample_path: Path,
+    expected: str,
+    *,
+    max_sample_bytes: int = 8192,
+    timeout_seconds: int = 30,
+) -> EvidenceJudgment:
+    try:
+        sample = _read_sample_artifact(Path(sample_path), max_sample_bytes)
+        request = build_baml_request(
+            "EvaluateSuspectedFakeEvidence",
+            {
+                "tier2_signal_summary": _finding_summary(tier2_finding),
+                "sample_artifact_content": sample,
+                "expected_artifact_characteristics": str(expected),
+            },
+        )
+        raw_response = _execute_baml_request(request, timeout_seconds=timeout_seconds)
+        parsed = parse_baml_response("EvidenceJudgment", raw_response).payload
+        return EvidenceJudgment(
+            verdict=str(parsed["verdict"]),
+            confidence=float(parsed["confidence"]),
+            reasoning=str(parsed["reasoning"]),
+            specific_concerns=tuple(str(item) for item in parsed["specific_concerns"]),
+        )
+    except (
+        OSError,
+        TimeoutError,
+        urllib.error.URLError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        return _uncertain_fallback(str(exc))
+
+
+def _tier3_sample_path(finding: LooseUniformFinding) -> Path:
+    return Path(finding.json_artifact)
+
+
 def run_evidence_audit(
     repo: Path,
     *,
@@ -564,6 +674,8 @@ def run_evidence_audit(
     boilerplate_min_group_size: int = 3,
     size_distribution_variance_threshold: float = 0.05,
     size_distribution_min_group_size: int = 3,
+    enable_tier_3: bool = False,
+    expected_artifact_characteristics: str = "Real evidence should contain provenance-specific, naturally varied values and references.",
 ) -> EvidenceAuditResult:
     """Run all three detectors against the repo's dirty (or full) tree.
 
@@ -572,7 +684,8 @@ def run_evidence_audit(
     every tracked file (slower; useful for forensic sweeps).
     """
     repo = repo.expanduser().resolve()
-    result = EvidenceAuditResult(repo=str(repo), tier2_enabled=tier2_enabled)
+    effective_tier2_enabled = bool(tier2_enabled or enable_tier_3)
+    result = EvidenceAuditResult(repo=str(repo), tier2_enabled=effective_tier2_enabled, tier3_enabled=enable_tier_3)
 
     if dirty_only:
         rels = _git_dirty_paths(repo)
@@ -593,7 +706,7 @@ def run_evidence_audit(
             detect_uniform_numeric(jp, min_array_length=uniform_min_length, epsilon=uniform_epsilon)
         )
         result.missing_references.extend(detect_missing_references(jp, repo))
-        if tier2_enabled:
+        if effective_tier2_enabled:
             result.loose_uniform.extend(
                 detect_loose_uniform(
                     jp,
@@ -602,7 +715,7 @@ def run_evidence_audit(
                 )
             )
 
-    if tier2_enabled:
+    if effective_tier2_enabled:
         result.boilerplate_text = detect_boilerplate_text(
             files,
             token_overlap_threshold=boilerplate_token_overlap_threshold,
@@ -613,6 +726,18 @@ def run_evidence_audit(
             variance_threshold=size_distribution_variance_threshold,
             min_group_size=size_distribution_min_group_size,
         )
+
+    if enable_tier_3 and not result.duplicate_content and not result.uniform_numeric and not result.missing_references:
+        for finding in result.loose_uniform:
+            sample_path = _tier3_sample_path(finding)
+            if sample_path.is_file():
+                result.tier3_judgments.append(
+                    evaluate_suspected_fake_evidence(
+                        finding,
+                        sample_path,
+                        expected_artifact_characteristics,
+                    )
+                )
 
     return result
 
@@ -635,6 +760,8 @@ def render_text(result: EvidenceAuditResult) -> str:
                 f"  tier2: size-distribution findings:   {len(result.size_distribution)}",
             ]
         )
+    if result.tier3_enabled:
+        lines.append(f"  tier3: EvidenceJudgment results:       {len(result.tier3_judgments)}")
     if result.is_clean():
         lines.append("")
         lines.append("CLEAN — no fake-evidence patterns detected.")

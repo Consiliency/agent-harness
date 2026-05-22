@@ -197,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--boilerplate-min-group-size", type=int, default=3, help="Tier 2 minimum text file group size for boilerplate detection. Default 3.")
             sub.add_argument("--size-distribution-variance-threshold", type=float, default=0.05, help="Tier 2 coefficient-of-variation threshold for sibling file sizes. Default 0.05.")
             sub.add_argument("--size-distribution-min-group-size", type=int, default=3, help="Tier 2 minimum sibling file group size for size-distribution detection. Default 3.")
+            sub.add_argument("--enable-tier-3", action="store_true", help="Enable default-off Tier 3 LLM judgment for Tier 2 uncertain findings only.")
     return parser
 
 
@@ -687,12 +688,13 @@ def _evidence_audit_command(*, repo: Path, args: argparse.Namespace, as_json: bo
         min_duplicates=getattr(args, "min_duplicates", 3),
         uniform_epsilon=getattr(args, "uniform_epsilon", 1e-6),
         uniform_min_length=getattr(args, "uniform_min_length", 4),
-        tier2_enabled=getattr(args, "tier_2", False),
+        tier2_enabled=bool(getattr(args, "tier_2", False) or getattr(args, "enable_tier_3", False)),
         loose_uniform_stdev_threshold=getattr(args, "loose_uniform_stdev_threshold", 1e-3),
         boilerplate_token_overlap_threshold=getattr(args, "boilerplate_token_overlap_threshold", 0.80),
         boilerplate_min_group_size=getattr(args, "boilerplate_min_group_size", 3),
         size_distribution_variance_threshold=getattr(args, "size_distribution_variance_threshold", 0.05),
         size_distribution_min_group_size=getattr(args, "size_distribution_min_group_size", 3),
+        enable_tier_3=getattr(args, "enable_tier_3", False),
     )
     if as_json:
         print(json.dumps(result.to_json(), indent=2))

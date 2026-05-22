@@ -497,6 +497,30 @@ out of scope for this shipped detector set:
 Text output renders Tier 2 findings with `tier2:` prefixes. JSON output
 includes the `tier2_findings` object only when `--tier-2` is enabled.
 
+Tier 3 is default OFF and operator-invoked with `--enable-tier-3`. The flag
+enables the `EvaluateSuspectedFakeEvidence` BAML call only for Tier 2
+uncertain loose-uniform findings, after Tier 1 duplicate-content,
+uniform-numeric, and missing-reference detectors do not already produce
+suspect findings. Clean audits, Tier 1 suspect audits, and Tier 2
+certain-suspect findings bypass Tier 3.
+
+The Tier 3 input contract is bounded: the wrapper sends a Tier 2 signal
+summary, the sample artifact content truncated to 8192 bytes by default,
+and expected artifact characteristics. The structured output is
+`EvidenceJudgment` with `verdict`, `confidence`, `reasoning`, and
+`specific_concerns`. On timeout or parse failure, the wrapper returns an
+uncertain judgment with `confidence: 0.0` and redacted `tier3_call_error`
+reasoning.
+
+Operator invocation example:
+
+```bash
+phase-loop evidence-audit --repo . --enable-tier-3 --json
+```
+
+Closeout-path integration, audit events, durable per-phase configuration,
+and v23 self-exclusion are deferred to T3RUNNER.
+
 Exit codes: 0 if clean (no findings), 5 if suspect findings present.
 Use the exit code as a pre-reconcile gate:
 
