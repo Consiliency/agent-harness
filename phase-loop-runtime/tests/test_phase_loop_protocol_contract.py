@@ -117,7 +117,28 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             "tier2:",
             "tier2_findings",
             "default invocation\nremains Tier 1 only",
-            "closeout-time runner auto-fire is deliberately\nout of scope",
+            "Runner closeout integration may also run Tier 2",
+        ):
+            self.assertIn(token, self.protocol_text)
+
+    def test_protocol_documents_tier3_runner_integration_contract(self):
+        for token in (
+            "--tier-3-budget",
+            "tier3_budget",
+            "tier3_calls_made",
+            "UNCERTAIN-OPERATOR-REVIEW",
+            "evidence_audit_tier3",
+            "prompt_sha256",
+            "response_sha256",
+            "token_counts",
+            "estimated_cost_usd",
+            ".phase-loop/evidence-audit.yaml",
+            "phase_aliases_exclude_tier3",
+            "T2DETECTORS",
+            "T3SCHEMA",
+            "T3RUNNER",
+            "T3VALIDATE",
+            "metadata.tier3_judgment",
         ):
             self.assertIn(token, self.protocol_text)
 

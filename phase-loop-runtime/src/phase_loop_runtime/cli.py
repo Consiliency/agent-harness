@@ -118,6 +118,8 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--rotate-executors")
             sub.add_argument("--rotation-mode", choices=("phase", "work_unit"))
             sub.add_argument("--rotation-on-policy-pin", choices=("skip", "fallback-next"))
+            sub.add_argument("--enable-tier-3", action="store_true", help="Enable default-off closeout-time Tier 3 evidence audit.")
+            sub.add_argument("--tier-3-budget", type=int, default=3, help="Maximum Tier 3 evidence-audit calls per closeout. Default 3.")
         if name == "maintain-skills":
             sub.description = "Skill Maintenance: planner-only by default; edits require --apply-skill-edits and --allow-skill."
             sub.add_argument("--min-reflections", type=int, default=2)
@@ -427,6 +429,8 @@ def main(argv: list[str] | None = None) -> int:
         quiet_blocker_seconds=args.quiet_blocker_seconds or 1800,
         heartbeat_enabled=not bool(args.no_heartbeat),
         closeout_mode=args.closeout_mode or "manual",
+        enable_tier_3=bool(getattr(args, "enable_tier_3", False)),
+        tier_3_budget=3 if getattr(args, "tier_3_budget", 3) is None else getattr(args, "tier_3_budget", 3),
         command_adapter_name=args.command_name,
         command_template=args.command_template,
         claude_execution_mode=args.claude_execution_mode,

@@ -476,8 +476,9 @@ Tier 1 detectors run by default:
   pattern.
 
 Tier 2 detectors are operator-invoked with `--tier-2`; default invocation
-remains Tier 1 only, and closeout-time runner auto-fire is deliberately
-out of scope for this shipped detector set:
+remains Tier 1 only. Runner closeout integration may also run Tier 2 as the
+first fuzzy stage before a default-OFF Tier 3 check when closeout-time Tier 3
+is explicitly enabled:
 
 - **`loose-uniform`** — numeric arrays >= 4 elements (or object arrays
   where every object has a common numeric field) whose coefficient of
@@ -497,12 +498,23 @@ out of scope for this shipped detector set:
 Text output renders Tier 2 findings with `tier2:` prefixes. JSON output
 includes the `tier2_findings` object only when `--tier-2` is enabled.
 
-Tier 3 is default OFF and operator-invoked with `--enable-tier-3`. The flag
-enables the `EvaluateSuspectedFakeEvidence` BAML call only for Tier 2
+Tier 3 is default OFF. Operator invocations use `phase-loop evidence-audit
+--enable-tier-3`; runner closeout invocations use `phase-loop run
+--enable-tier-3` or a per-phase config opt-in. The runner also accepts
+`--tier-3-budget` and records `tier3_budget` and `tier3_calls_made` per
+closeout invocation. The default budget is 3. When budget is exhausted,
+remaining Tier 2 uncertain findings are recorded as
+`UNCERTAIN-OPERATOR-REVIEW` without another Tier 3 call.
+
+Tier 3 enables the `EvaluateSuspectedFakeEvidence` BAML call only for Tier 2
 uncertain loose-uniform findings, after Tier 1 duplicate-content,
 uniform-numeric, and missing-reference detectors do not already produce
 suspect findings. Clean audits, Tier 1 suspect audits, and Tier 2
-certain-suspect findings bypass Tier 3.
+certain-suspect findings bypass Tier 3. For runner closeouts, a `fake`
+verdict or a non-uncertain judgment below the effective confidence threshold
+produces a non-human `contract_bug` blocker with `metadata.tier3_judgment`.
+`real` at or above threshold proceeds. `uncertain`, timeout, parse failure,
+or wrapper error emits warning metadata but does not automatically block.
 
 The Tier 3 input contract is bounded: the wrapper sends a Tier 2 signal
 summary, the sample artifact content truncated to 8192 bytes by default,
@@ -512,14 +524,49 @@ and expected artifact characteristics. The structured output is
 uncertain judgment with `confidence: 0.0` and redacted `tier3_call_error`
 reasoning.
 
+Every runner-triggered Tier 3 call appends an `evidence_audit_tier3` event to
+`.phase-loop/events.jsonl`. Event metadata includes `prompt_sha256`,
+`response_sha256`, `verdict`, `confidence`, `token_counts`, `latency_ms`, and
+`estimated_cost_usd`, plus the active budget counters. Token counts and
+estimated cost may be null when the current provider wrapper does not expose
+usage details. The ledger shape is prepared for the downstream
+`phase-loop status --tier-3-history` query surface.
+
+Per-phase config is optional at `.phase-loop/evidence-audit.yaml`:
+
+```yaml
+tier2_enabled: true
+tier3_enabled: false
+tier3_confidence_threshold: 0.85
+phase_aliases_exclude_tier3:
+  - T2DETECTORS
+  - T3SCHEMA
+  - T3RUNNER
+  - T3VALIDATE
+phases:
+  FUTUREPHASE:
+    tier2_enabled: true
+    tier3_enabled: true
+    tier3_confidence_threshold: 0.85
+    disable_detectors: []
+```
+
+The shipped default excludes `T2DETECTORS`, `T3SCHEMA`, `T3RUNNER`, and
+`T3VALIDATE` so v23 cannot trigger Tier 3 against itself even if an operator
+sets the global flag. Malformed config is a repairable non-human
+`contract_bug`.
+
 Operator invocation example:
 
 ```bash
 phase-loop evidence-audit --repo . --enable-tier-3 --json
 ```
 
-Closeout-path integration, audit events, durable per-phase configuration,
-and v23 self-exclusion are deferred to T3RUNNER.
+Runner invocation example:
+
+```bash
+phase-loop run --repo . --enable-tier-3 --tier-3-budget 3
+```
 
 Exit codes: 0 if clean (no findings), 5 if suspect findings present.
 Use the exit code as a pre-reconcile gate:

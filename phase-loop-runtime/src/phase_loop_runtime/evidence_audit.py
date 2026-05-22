@@ -22,6 +22,7 @@ import json
 import math
 import re
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ from .baml_modular import BamlRequest, build_baml_request, parse_baml_response
 _PATH_HINT_RE = re.compile(r"^[A-Za-z0-9_.\-/]+\.[A-Za-z0-9]{1,8}$")
 # Skip when the "string" is actually a URL or known non-path
 _NON_PATH_PREFIXES = ("http://", "https://", "git@", "ssh://", "file://")
+UNCERTAIN_OPERATOR_REVIEW = "UNCERTAIN-OPERATOR-REVIEW"
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,60 @@ class EvidenceJudgment:
     confidence: float
     reasoning: str
     specific_concerns: tuple[str, ...]
+
+
+@dataclass
+class Tier3Budget:
+    tier3_budget: int = 3
+    tier3_calls_made: int = 0
+
+    def __post_init__(self) -> None:
+        if self.tier3_budget < 0:
+            raise ValueError("tier3_budget must be non-negative")
+        if self.tier3_calls_made < 0:
+            raise ValueError("tier3_calls_made must be non-negative")
+
+    def consume(self) -> bool:
+        if self.tier3_calls_made >= self.tier3_budget:
+            return False
+        self.tier3_calls_made += 1
+        return True
+
+
+@dataclass(frozen=True)
+class Tier3InvocationRecord:
+    finding_kind: str
+    sample_path: str
+    judgment: EvidenceJudgment
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Tier3RunnerAudit:
+    tier3_budget: int
+    tier3_calls_made: int
+    invocations: tuple[Tier3InvocationRecord, ...]
+    operator_review_markers: tuple[dict[str, Any], ...]
+    warnings: tuple[str, ...]
+    blocker: dict[str, Any] | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "tier3_budget": self.tier3_budget,
+            "tier3_calls_made": self.tier3_calls_made,
+            "operator_review_markers": list(self.operator_review_markers),
+            "warnings": list(self.warnings),
+            "invocations": [
+                {
+                    "finding_kind": record.finding_kind,
+                    "sample_path": record.sample_path,
+                    "judgment": evidence_judgment_to_json(record.judgment),
+                    "metadata": record.metadata,
+                }
+                for record in self.invocations
+            ],
+            **({"blocker": self.blocker} if self.blocker else {}),
+        }
 
 
 @dataclass
@@ -600,6 +656,12 @@ def _finding_summary(finding: Any) -> str:
     return json.dumps({"kind": type(finding).__name__, "summary": str(finding)}, sort_keys=True)
 
 
+def _finding_kind(finding: Any) -> str:
+    if isinstance(finding, LooseUniformFinding):
+        return "tier2_uncertain_loose_uniform"
+    return type(finding).__name__
+
+
 def _uncertain_fallback(reason: str) -> EvidenceJudgment:
     redacted = re.sub(r"\s+", " ", str(reason or "unknown")).strip()[:240]
     return EvidenceJudgment(
@@ -607,6 +669,144 @@ def _uncertain_fallback(reason: str) -> EvidenceJudgment:
         confidence=0.0,
         reasoning=f"tier3_call_error: {redacted}",
         specific_concerns=(redacted,),
+    )
+
+
+def evidence_judgment_to_json(judgment: EvidenceJudgment) -> dict[str, Any]:
+    return {
+        "verdict": judgment.verdict,
+        "confidence": judgment.confidence,
+        "reasoning": judgment.reasoning,
+        "specific_concerns": list(judgment.specific_concerns),
+    }
+
+
+def tier3_judgment_blocker(judgment: EvidenceJudgment, *, confidence_threshold: float) -> dict[str, Any] | None:
+    verdict = judgment.verdict.strip().lower()
+    if verdict == "uncertain":
+        return None
+    if verdict == "fake" or judgment.confidence < confidence_threshold:
+        return {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": (
+                f"Tier 3 evidence audit judged closeout evidence as {verdict!r} "
+                f"with confidence {judgment.confidence:.3f}."
+            ),
+            "required_human_inputs": (),
+            "access_attempts": (),
+            "metadata": {"tier3_judgment": evidence_judgment_to_json(judgment)},
+        }
+    return None
+
+
+def build_tier3_audit_event_metadata(
+    *,
+    tier2_finding: Any,
+    sample_path: Path,
+    expected_artifact_characteristics: str,
+    judgment: EvidenceJudgment,
+    latency_ms: int,
+    token_counts: dict[str, int] | None = None,
+    estimated_cost_usd: float | None = None,
+) -> dict[str, Any]:
+    prompt_payload = {
+        "tier2_signal_summary": _finding_summary(tier2_finding),
+        "sample_path": str(sample_path),
+        "expected_artifact_characteristics": str(expected_artifact_characteristics),
+    }
+    response_payload = evidence_judgment_to_json(judgment)
+    prompt_json = json.dumps(prompt_payload, sort_keys=True, separators=(",", ":"))
+    response_json = json.dumps(response_payload, sort_keys=True, separators=(",", ":"))
+    return {
+        "prompt_sha256": hashlib.sha256(prompt_json.encode("utf-8")).hexdigest(),
+        "response_sha256": hashlib.sha256(response_json.encode("utf-8")).hexdigest(),
+        "verdict": judgment.verdict,
+        "confidence": judgment.confidence,
+        "token_counts": token_counts,
+        "latency_ms": latency_ms,
+        "estimated_cost_usd": estimated_cost_usd,
+        "tier3_budget_marker": "tier3_calls_made",
+        "finding_kind": _finding_kind(tier2_finding),
+        "sample_path": str(sample_path),
+        "judgment": response_payload,
+    }
+
+
+def run_tier3_runner_audit(
+    repo: Path,
+    *,
+    tier3_budget: int = 3,
+    confidence_threshold: float = 0.85,
+    expected_artifact_characteristics: str = "Real evidence should contain provenance-specific, naturally varied values and references.",
+    dirty_only: bool = True,
+) -> Tier3RunnerAudit:
+    result = run_evidence_audit(
+        repo,
+        dirty_only=dirty_only,
+        tier2_enabled=True,
+        enable_tier_3=False,
+        expected_artifact_characteristics=expected_artifact_characteristics,
+    )
+    budget = Tier3Budget(tier3_budget=tier3_budget)
+    invocations: list[Tier3InvocationRecord] = []
+    markers: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    blocker: dict[str, Any] | None = None
+    if result.duplicate_content or result.uniform_numeric or result.missing_references:
+        return Tier3RunnerAudit(tier3_budget, budget.tier3_calls_made, (), (), ())
+    for finding in result.loose_uniform:
+        sample_path = _tier3_sample_path(finding)
+        if not sample_path.is_file():
+            continue
+        if not budget.consume():
+            markers.append(
+                {
+                    "marker": UNCERTAIN_OPERATOR_REVIEW,
+                    "finding_kind": _finding_kind(finding),
+                    "sample_path": str(sample_path),
+                    "tier3_budget": budget.tier3_budget,
+                    "tier3_calls_made": budget.tier3_calls_made,
+                }
+            )
+            continue
+        started = time.monotonic()
+        try:
+            judgment = evaluate_suspected_fake_evidence(
+                finding,
+                sample_path,
+                expected_artifact_characteristics,
+            )
+        except Exception as exc:
+            judgment = _uncertain_fallback(str(exc))
+        latency_ms = max(0, int((time.monotonic() - started) * 1000))
+        metadata = build_tier3_audit_event_metadata(
+            tier2_finding=finding,
+            sample_path=sample_path,
+            expected_artifact_characteristics=expected_artifact_characteristics,
+            judgment=judgment,
+            latency_ms=latency_ms,
+        )
+        invocations.append(
+            Tier3InvocationRecord(
+                finding_kind=_finding_kind(finding),
+                sample_path=str(sample_path),
+                judgment=judgment,
+                metadata=metadata,
+            )
+        )
+        candidate = tier3_judgment_blocker(judgment, confidence_threshold=confidence_threshold)
+        if candidate is not None and blocker is None:
+            blocker = candidate
+        if judgment.verdict.strip().lower() == "uncertain":
+            warnings.append(judgment.reasoning)
+    return Tier3RunnerAudit(
+        tier3_budget=tier3_budget,
+        tier3_calls_made=budget.tier3_calls_made,
+        invocations=tuple(invocations),
+        operator_review_markers=tuple(markers),
+        warnings=tuple(warnings),
+        blocker=blocker,
     )
 
 

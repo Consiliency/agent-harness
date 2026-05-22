@@ -34,6 +34,8 @@ from .discovery import (
     plan_artifact_diagnostic,
 )
 from .events import append_event, event_path, read_events
+from .evidence_audit import run_tier3_runner_audit
+from .evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
 from .events import append_work_unit_event
 from .git_ops import pipeline_write_boundary_diagnostic
 from .git_topology import collect_git_topology, resolve_closeout_push_target
@@ -307,6 +309,8 @@ def run_loop(
     quiet_blocker_seconds: int = 1800,
     heartbeat_enabled: bool = True,
     closeout_mode: str = "manual",
+    enable_tier_3: bool = False,
+    tier_3_budget: int = 3,
     command_adapter_name: str | None = None,
     command_template: str | None = None,
     product_action_override: str | None = None,
@@ -1866,6 +1870,28 @@ def run_loop(
                             "access_attempts": (),
                         }
                         automation_status = status_after_launch
+                if (
+                    event_blocker is None
+                    and child_automation
+                    and _phase_status_literal(automation_status) == "complete"
+                ):
+                    tier3_audit = _runner_tier3_closeout_audit(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        cli_enable_tier3=enable_tier_3,
+                        tier3_budget=tier_3_budget,
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                    )
+                    if tier3_audit is not None:
+                        child_automation["tier3_audit"] = tier3_audit["summary"]
+                        if tier3_audit.get("blocker"):
+                            status_after_launch = "blocked"
+                            classifications[alias] = status_after_launch
+                            event_blocker = tier3_audit["blocker"]
+                            automation_status = status_after_launch
                 if not automation_status and launch_action == "plan" and post_launch_plan is not None:
                     artifact_automation = _parsed_artifact_automation(post_launch_plan, spec)
                     artifact_status = artifact_automation.get("automation_status")
@@ -2117,6 +2143,8 @@ def run_loop(
                 if boundary_blocker is not None:
                     status_after_launch, event_blocker = "blocked", boundary_blocker
                     dirty_summary["pipeline_write_boundary"] = boundary_blocker
+                elif event_blocker is not None:
+                    status_after_launch = "blocked"
                 else:
                     status_after_launch, event_blocker = _dirty_outcome(
                         dirty_summary,
@@ -3455,6 +3483,101 @@ def _launch_event_metadata(
     if metadata["terminal_summary"].get("metric_id"):
         metadata["launch"]["metric_id"] = metadata["terminal_summary"]["metric_id"]
     return metadata
+
+
+def _runner_tier3_closeout_audit(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    cli_enable_tier3: bool,
+    tier3_budget: int,
+    model: str,
+    reasoning_effort: str,
+    source: str,
+) -> dict[str, object] | None:
+    try:
+        config = load_evidence_audit_config(repo)
+    except EvidenceAuditConfigError as exc:
+        return {
+            "summary": {
+                "tier3_enabled": False,
+                "config_error": str(exc),
+            },
+            "blocker": {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": f"Malformed evidence-audit config: {exc}",
+                "required_human_inputs": (),
+                "access_attempts": (),
+            },
+        }
+
+    phase_config = config.phase_config(phase)
+    excluded = config.tier3_excluded(phase)
+    tier3_enabled = bool(phase_config.tier3_enabled or cli_enable_tier3)
+    summary: dict[str, object] = {
+        "tier2_enabled": phase_config.tier2_enabled,
+        "tier3_enabled": tier3_enabled and not excluded,
+        "tier3_excluded": excluded,
+        "tier3_budget": max(0, int(tier3_budget)),
+        "tier3_calls_made": 0,
+    }
+    if not phase_config.tier2_enabled or not tier3_enabled or excluded:
+        return {"summary": summary}
+
+    audit = run_tier3_runner_audit(
+        repo,
+        tier3_budget=max(0, int(tier3_budget)),
+        confidence_threshold=phase_config.tier3_confidence_threshold,
+    )
+    summary.update(audit.to_json())
+    for record in audit.invocations:
+        _append_tier3_audit_event(
+            repo=repo,
+            roadmap=roadmap,
+            phase=phase,
+            metadata={
+                **record.metadata,
+                "tier3_budget": audit.tier3_budget,
+                "tier3_calls_made": audit.tier3_calls_made,
+            },
+            model=model,
+            reasoning_effort=reasoning_effort,
+            source=source,
+        )
+    return {"summary": summary, **({"blocker": audit.blocker} if audit.blocker else {})}
+
+
+def _append_tier3_audit_event(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    metadata: dict[str, object],
+    model: str,
+    reasoning_effort: str,
+    source: str,
+) -> None:
+    path = event_path(repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": utc_now(),
+        "repo": str(repo),
+        "roadmap": str(roadmap),
+        "phase": phase,
+        "action": "evidence_audit_tier3",
+        "status": "executed",
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "source": source,
+        "metadata": metadata,
+        "git_topology": collect_git_topology(repo),
+        "schema_version": 2,
+        **event_provenance(roadmap, phase),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _attach_work_unit_metric(
