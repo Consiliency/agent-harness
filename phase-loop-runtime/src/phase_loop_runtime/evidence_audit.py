@@ -236,7 +236,7 @@ def _sha256_of_file(path: Path, max_bytes: int = 50 * 1024 * 1024) -> tuple[str,
 
 
 def detect_duplicate_content(
-    files: Iterable[Path], min_duplicates: int = 3
+    files: Iterable[Path], min_duplicates: int = 3, min_size_bytes: int = 1
 ) -> list[DuplicateContentFinding]:
     """Flag when N or more files share the same sha256.
 
@@ -244,6 +244,12 @@ def detect_duplicate_content(
     19 identical files; a value of 2 would false-positive on legitimate
     duplicates (e.g., template files copied verbatim). The pattern we
     want to catch is "many supposedly-distinct artifacts all the same."
+
+    min_size_bytes default of 1 excludes empty files from dedup detection.
+    Empty marker files (e.g., .gitkeep) all share sha256
+    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 by
+    definition — surfacing this as "duplicate content" produces spurious
+    findings on full-tree scans of repos with multiple empty marker files.
     """
     by_hash: dict[str, list[tuple[str, int]]] = {}
     for p in files:
@@ -253,6 +259,8 @@ def detect_duplicate_content(
         if h is None:
             continue
         sha, size = h
+        if size < min_size_bytes:
+            continue
         by_hash.setdefault(sha, []).append((str(p), size))
     findings: list[DuplicateContentFinding] = []
     for sha, entries in by_hash.items():

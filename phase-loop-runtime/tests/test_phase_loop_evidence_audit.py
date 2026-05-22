@@ -181,3 +181,32 @@ class FullAuditIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyFileExclusionTest(unittest.TestCase):
+    """Empty marker files (.gitkeep, etc.) all share sha256
+    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.
+    Without exclusion they trigger false-positive duplicate-content findings."""
+
+    def test_empty_files_excluded_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            # 10 empty .gitkeep files like a real monorepo
+            for i in range(10):
+                sub = d / f"dir-{i}"
+                sub.mkdir()
+                (sub / ".gitkeep").write_text("")
+            findings = detect_duplicate_content(list(d.rglob(".gitkeep")), min_duplicates=3)
+            self.assertEqual(findings, [], "empty files should not trigger duplicate-content")
+
+    def test_explicit_min_size_zero_includes_empty(self):
+        """Operator can opt-in to seeing empty-file dedup if they want."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            for i in range(5):
+                (d / f"empty-{i}.txt").write_text("")
+            findings = detect_duplicate_content(
+                list(d.glob("*.txt")), min_duplicates=3, min_size_bytes=0
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0].size_bytes, 0)
