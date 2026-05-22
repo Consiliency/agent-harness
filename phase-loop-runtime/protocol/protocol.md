@@ -445,7 +445,7 @@ emission time; `reopen` is the recovery path until that ships.
 
 ## Evidence Audit Command
 
-`phase-loop evidence-audit --repo . [--dirty-only|--full-tree]` is an
+`phase-loop evidence-audit --repo . [--dirty-only|--full-tree] [--tier-2]` is an
 operator-callable spot-check for fake-evidence patterns in dirty-tree
 artifacts. Run it before `phase-loop reconcile` on phases producing
 comparison/verdict evidence (visual-fidelity diffs, audit reports,
@@ -462,7 +462,7 @@ that produced gate names match plan `## Produces` names — it cannot
 see evidence content. Operators must spot-check; `phase-loop
 evidence-audit` codifies the spot-check.
 
-Three detectors:
+Tier 1 detectors run by default:
 
 - **`duplicate-content`** — N or more files share the same sha256.
   Default threshold N=3 (`--min-duplicates`). Catches the placeholder-
@@ -475,6 +475,28 @@ Three detectors:
   values that don't exist on disk. Catches the cited-but-never-created
   pattern.
 
+Tier 2 detectors are operator-invoked with `--tier-2`; default invocation
+remains Tier 1 only, and closeout-time runner auto-fire is deliberately
+out of scope for this shipped detector set:
+
+- **`loose-uniform`** — numeric arrays >= 4 elements (or object arrays
+  where every object has a common numeric field) whose coefficient of
+  variation is below `--loose-uniform-stdev-threshold` (default 1e-3).
+  Exact uniformity is left to the Tier 1 `uniform-numeric` detector and
+  is not double-reported as loose-uniform.
+- **`boilerplate-text`** — text files with high non-path token overlap.
+  The detector normalizes whitespace and punctuation, lower-cases tokens,
+  strips path-shaped tokens, skips binary files, and reports groups with
+  overlap above `--boilerplate-token-overlap-threshold` (default 0.80)
+  and size at least `--boilerplate-min-group-size` (default 3).
+- **`size-distribution`** — sibling-directory file groups whose byte-size
+  coefficient of variation is below
+  `--size-distribution-variance-threshold` (default 0.05), with at least
+  `--size-distribution-min-group-size` files (default 3).
+
+Text output renders Tier 2 findings with `tier2:` prefixes. JSON output
+includes the `tier2_findings` object only when `--tier-2` is enabled.
+
 Exit codes: 0 if clean (no findings), 5 if suspect findings present.
 Use the exit code as a pre-reconcile gate:
 
@@ -483,17 +505,6 @@ phase-loop evidence-audit --repo . && \
   phase-loop reconcile --repo . --roadmap specs/phase-plans-vN.md \
                        --phase <ALIAS> ...
 ```
-
-Detectors deliberately omitted from this hotfix:
-
-- **Boilerplate-text detection** — fuzzy heuristic, harder to get right.
-  Add later if needed.
-- **Statistical anomaly detection** beyond exact-uniformity — could
-  catch cases where values vary slightly but suspiciously. Defer.
-
-Full Tier 2 evidence verification with runner-enforced spot-checks at
-closeout time is a deferred follow-up roadmap. `evidence-audit` is the
-operator-driven Tier 1.5 until then.
 
 ### Verified Dirty Closeout Auto-Recovery
 

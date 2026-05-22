@@ -108,6 +108,19 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         for heading in headings:
             self.assertIn(heading, self.protocol_text)
 
+    def test_protocol_documents_tier2_evidence_audit_contract(self):
+        for token in (
+            "--tier-2",
+            "loose-uniform",
+            "boilerplate-text",
+            "size-distribution",
+            "tier2:",
+            "tier2_findings",
+            "default invocation\nremains Tier 1 only",
+            "closeout-time runner auto-fire is deliberately\nout of scope",
+        ):
+            self.assertIn(token, self.protocol_text)
+
     def test_protocol_includes_frozen_literals(self):
         for literal in PHASE_STATUSES:
             self.assertIn(f"`{literal}`", self.protocol_text)

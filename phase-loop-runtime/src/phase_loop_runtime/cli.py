@@ -191,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--min-duplicates", type=int, default=3, help="Min number of files sharing a sha256 before flagging. Default 3.")
             sub.add_argument("--uniform-epsilon", type=float, default=1e-6, help="Numeric uniformity tolerance. Default 1e-6.")
             sub.add_argument("--uniform-min-length", type=int, default=4, help="Min array length to check for uniformity. Default 4.")
+            sub.add_argument("--tier-2", action="store_true", help="Enable Tier 2 fuzzy detectors: loose-uniform, boilerplate-text, and size-distribution.")
+            sub.add_argument("--loose-uniform-stdev-threshold", type=float, default=1e-3, help="Tier 2 coefficient-of-variation threshold for near-uniform numeric arrays. Default 1e-3.")
+            sub.add_argument("--boilerplate-token-overlap-threshold", type=float, default=0.80, help="Tier 2 token overlap threshold for boilerplate text groups. Default 0.80.")
+            sub.add_argument("--boilerplate-min-group-size", type=int, default=3, help="Tier 2 minimum text file group size for boilerplate detection. Default 3.")
+            sub.add_argument("--size-distribution-variance-threshold", type=float, default=0.05, help="Tier 2 coefficient-of-variation threshold for sibling file sizes. Default 0.05.")
+            sub.add_argument("--size-distribution-min-group-size", type=int, default=3, help="Tier 2 minimum sibling file group size for size-distribution detection. Default 3.")
     return parser
 
 
@@ -681,6 +687,12 @@ def _evidence_audit_command(*, repo: Path, args: argparse.Namespace, as_json: bo
         min_duplicates=getattr(args, "min_duplicates", 3),
         uniform_epsilon=getattr(args, "uniform_epsilon", 1e-6),
         uniform_min_length=getattr(args, "uniform_min_length", 4),
+        tier2_enabled=getattr(args, "tier_2", False),
+        loose_uniform_stdev_threshold=getattr(args, "loose_uniform_stdev_threshold", 1e-3),
+        boilerplate_token_overlap_threshold=getattr(args, "boilerplate_token_overlap_threshold", 0.80),
+        boilerplate_min_group_size=getattr(args, "boilerplate_min_group_size", 3),
+        size_distribution_variance_threshold=getattr(args, "size_distribution_variance_threshold", 0.05),
+        size_distribution_min_group_size=getattr(args, "size_distribution_min_group_size", 3),
     )
     if as_json:
         print(json.dumps(result.to_json(), indent=2))

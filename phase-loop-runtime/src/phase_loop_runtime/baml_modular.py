@@ -286,6 +286,10 @@ def _schema_for_baml_field(
         schema: dict[str, Any] = {"type": ["string", "null"] if optional else "string"}
     elif field_type == "bool":
         schema = {"type": ["boolean", "null"] if optional else "boolean"}
+    elif field_type == "float":
+        schema = {"type": ["number", "null"] if optional else "number"}
+    elif field_type == "int":
+        schema = {"type": ["integer", "null"] if optional else "integer"}
     elif array_item_type == "string":
         if optional:
             schema = {"type": ["array", "null"], "items": {"type": "string"}}
@@ -374,6 +378,13 @@ def _validate_payload_against_schema(payload: Any, schema: dict[str, Any], path:
     elif effective_type == "boolean":
         if not isinstance(payload, bool):
             raise BamlValidationError(f"{path} must be a boolean")
+    elif effective_type == "number":
+        # JSON Schema "number" accepts both int and float (but rejects bool which subclasses int in Python)
+        if not isinstance(payload, (int, float)) or isinstance(payload, bool):
+            raise BamlValidationError(f"{path} must be a number")
+    elif effective_type == "integer":
+        if not isinstance(payload, int) or isinstance(payload, bool):
+            raise BamlValidationError(f"{path} must be an integer")
     else:
         raise BamlValidationError(f"{path} has unsupported schema type: {allowed_type}")
     if "enum" in schema and payload not in schema["enum"]:

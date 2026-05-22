@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -56,6 +57,33 @@ class MissingReferenceFinding:
     missing_path: str
 
 
+@dataclass(frozen=True)
+class LooseUniformFinding:
+    json_artifact: str
+    json_pointer: str
+    array_length: int
+    mean: float
+    stdev: float
+    coefficient_of_variation: float
+
+
+@dataclass(frozen=True)
+class BoilerplateFinding:
+    paths: tuple[str, ...]
+    token_overlap: float
+    shared_token_count: int
+    sample_tokens: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SizeDistributionFinding:
+    sibling_directory: str
+    paths: tuple[str, ...]
+    mean_size_bytes: float
+    stdev_size_bytes: float
+    coefficient_of_variation: float
+
+
 @dataclass
 class EvidenceAuditResult:
     repo: str
@@ -64,12 +92,23 @@ class EvidenceAuditResult:
     duplicate_content: list[DuplicateContentFinding] = field(default_factory=list)
     uniform_numeric: list[UniformNumericFinding] = field(default_factory=list)
     missing_references: list[MissingReferenceFinding] = field(default_factory=list)
+    tier2_enabled: bool = False
+    loose_uniform: list[LooseUniformFinding] = field(default_factory=list)
+    boilerplate_text: list[BoilerplateFinding] = field(default_factory=list)
+    size_distribution: list[SizeDistributionFinding] = field(default_factory=list)
 
     def is_clean(self) -> bool:
-        return not (self.duplicate_content or self.uniform_numeric or self.missing_references)
+        return not (
+            self.duplicate_content
+            or self.uniform_numeric
+            or self.missing_references
+            or self.loose_uniform
+            or self.boilerplate_text
+            or self.size_distribution
+        )
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "repo": self.repo,
             "files_scanned": self.files_scanned,
             "json_artifacts_scanned": self.json_artifacts_scanned,
@@ -93,6 +132,40 @@ class EvidenceAuditResult:
                 for f in self.missing_references
             ],
         }
+        if self.tier2_enabled:
+            payload["tier2_findings"] = {
+                "loose_uniform": [
+                    {
+                        "json_artifact": f.json_artifact,
+                        "json_pointer": f.json_pointer,
+                        "array_length": f.array_length,
+                        "mean": f.mean,
+                        "stdev": f.stdev,
+                        "coefficient_of_variation": f.coefficient_of_variation,
+                    }
+                    for f in self.loose_uniform
+                ],
+                "boilerplate_text": [
+                    {
+                        "paths": list(f.paths),
+                        "token_overlap": f.token_overlap,
+                        "shared_token_count": f.shared_token_count,
+                        "sample_tokens": list(f.sample_tokens),
+                    }
+                    for f in self.boilerplate_text
+                ],
+                "size_distribution": [
+                    {
+                        "sibling_directory": f.sibling_directory,
+                        "paths": list(f.paths),
+                        "mean_size_bytes": f.mean_size_bytes,
+                        "stdev_size_bytes": f.stdev_size_bytes,
+                        "coefficient_of_variation": f.coefficient_of_variation,
+                    }
+                    for f in self.size_distribution
+                ],
+            }
+        return payload
 
 
 def _git_dirty_paths(repo: Path) -> list[str]:
@@ -292,6 +365,192 @@ def detect_missing_references(
     return findings
 
 
+def _population_stdev(values: list[float], mean: float) -> float:
+    return math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+
+
+def _loose_uniform_finding(
+    *,
+    json_path: Path,
+    pointer: str,
+    values: list[float],
+    stdev_threshold: float,
+) -> LooseUniformFinding | None:
+    if len(set(values)) == 1:
+        return None
+    mean = sum(values) / len(values)
+    stdev = _population_stdev(values, mean)
+    coefficient = stdev if mean == 0 else stdev / abs(mean)
+    if coefficient >= stdev_threshold:
+        return None
+    return LooseUniformFinding(
+        json_artifact=str(json_path),
+        json_pointer=pointer,
+        array_length=len(values),
+        mean=mean,
+        stdev=stdev,
+        coefficient_of_variation=coefficient,
+    )
+
+
+def detect_loose_uniform(
+    json_path: Path, min_array_length: int = 4, stdev_threshold: float = 1e-3
+) -> list[LooseUniformFinding]:
+    """Flag near-uniform numeric arrays without double-reporting exact uniformity."""
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    findings: list[LooseUniformFinding] = []
+    for pointer, value in _walk_json(data):
+        if isinstance(value, list):
+            numerics = [float(x) for x in value if isinstance(x, (int, float)) and not isinstance(x, bool)]
+            if len(numerics) == len(value) and len(numerics) >= min_array_length:
+                finding = _loose_uniform_finding(
+                    json_path=json_path,
+                    pointer=pointer,
+                    values=numerics,
+                    stdev_threshold=stdev_threshold,
+                )
+                if finding is not None:
+                    findings.append(finding)
+            if len(value) < min_array_length or not all(isinstance(item, dict) for item in value):
+                continue
+            common_keys = set(value[0].keys())
+            for item in value[1:]:
+                common_keys &= set(item.keys())
+            for key in common_keys:
+                field_values = [item.get(key) for item in value]
+                numerics = [
+                    float(v)
+                    for v in field_values
+                    if isinstance(v, (int, float)) and not isinstance(v, bool)
+                ]
+                if len(numerics) != len(field_values):
+                    continue
+                finding = _loose_uniform_finding(
+                    json_path=json_path,
+                    pointer=f"{pointer}[*].{key}",
+                    values=numerics,
+                    stdev_threshold=stdev_threshold,
+                )
+                if finding is not None:
+                    findings.append(finding)
+    return findings
+
+
+_TEXT_TOKEN_RE = re.compile(r"[A-Za-z0-9_./\\:-]+")
+
+
+def _text_tokens(path: Path) -> set[str] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    tokens: set[str] = set()
+    for raw in _TEXT_TOKEN_RE.findall(text.lower()):
+        token = raw.strip("._-:/\\")
+        if not token:
+            continue
+        if "/" in raw or "\\" in raw or _PATH_HINT_RE.match(raw):
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _token_overlap(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def detect_boilerplate_text(
+    file_group: Iterable[Path], token_overlap_threshold: float = 0.80, min_group_size: int = 3
+) -> list[BoilerplateFinding]:
+    """Flag groups of text files with high non-path token overlap."""
+    entries: list[tuple[Path, set[str]]] = []
+    for path in file_group:
+        if not path.is_file():
+            continue
+        tokens = _text_tokens(path)
+        if tokens:
+            entries.append((path, tokens))
+
+    neighbors: dict[int, set[int]] = {i: set() for i in range(len(entries))}
+    for i, (_, left) in enumerate(entries):
+        for j in range(i + 1, len(entries)):
+            _, right = entries[j]
+            if _token_overlap(left, right) >= token_overlap_threshold:
+                neighbors[i].add(j)
+                neighbors[j].add(i)
+
+    findings: list[BoilerplateFinding] = []
+    seen: set[int] = set()
+    for start in range(len(entries)):
+        if start in seen:
+            continue
+        stack = [start]
+        component: set[int] = set()
+        while stack:
+            item = stack.pop()
+            if item in component:
+                continue
+            component.add(item)
+            stack.extend(neighbors[item] - component)
+        seen |= component
+        if len(component) < min_group_size:
+            continue
+        token_sets = [entries[i][1] for i in sorted(component)]
+        shared = set.intersection(*token_sets)
+        overlap = min(
+            _token_overlap(token_sets[i], token_sets[j])
+            for i in range(len(token_sets))
+            for j in range(i + 1, len(token_sets))
+        )
+        if overlap < token_overlap_threshold:
+            continue
+        findings.append(
+            BoilerplateFinding(
+                paths=tuple(str(entries[i][0]) for i in sorted(component)),
+                token_overlap=overlap,
+                shared_token_count=len(shared),
+                sample_tokens=tuple(sorted(shared)[:12]),
+            )
+        )
+    return findings
+
+
+def detect_size_distribution(
+    file_paths: Iterable[Path], variance_threshold: float = 0.05, min_group_size: int = 3
+) -> list[SizeDistributionFinding]:
+    """Flag sibling-directory groups whose byte sizes are tightly clustered."""
+    by_parent: dict[Path, list[Path]] = {}
+    for path in file_paths:
+        if path.is_file():
+            by_parent.setdefault(path.parent, []).append(path)
+
+    findings: list[SizeDistributionFinding] = []
+    for parent, paths in sorted(by_parent.items(), key=lambda item: str(item[0])):
+        if len(paths) < min_group_size:
+            continue
+        sizes = [float(path.stat().st_size) for path in paths]
+        mean = sum(sizes) / len(sizes)
+        stdev = _population_stdev(sizes, mean)
+        coefficient = 0.0 if mean == 0 else stdev / mean
+        if coefficient >= variance_threshold:
+            continue
+        findings.append(
+            SizeDistributionFinding(
+                sibling_directory=str(parent),
+                paths=tuple(str(path) for path in sorted(paths)),
+                mean_size_bytes=mean,
+                stdev_size_bytes=stdev,
+                coefficient_of_variation=coefficient,
+            )
+        )
+    return findings
+
+
 def run_evidence_audit(
     repo: Path,
     *,
@@ -299,6 +558,12 @@ def run_evidence_audit(
     min_duplicates: int = 3,
     uniform_epsilon: float = 1e-6,
     uniform_min_length: int = 4,
+    tier2_enabled: bool = False,
+    loose_uniform_stdev_threshold: float = 1e-3,
+    boilerplate_token_overlap_threshold: float = 0.80,
+    boilerplate_min_group_size: int = 3,
+    size_distribution_variance_threshold: float = 0.05,
+    size_distribution_min_group_size: int = 3,
 ) -> EvidenceAuditResult:
     """Run all three detectors against the repo's dirty (or full) tree.
 
@@ -307,7 +572,7 @@ def run_evidence_audit(
     every tracked file (slower; useful for forensic sweeps).
     """
     repo = repo.expanduser().resolve()
-    result = EvidenceAuditResult(repo=str(repo))
+    result = EvidenceAuditResult(repo=str(repo), tier2_enabled=tier2_enabled)
 
     if dirty_only:
         rels = _git_dirty_paths(repo)
@@ -328,6 +593,26 @@ def run_evidence_audit(
             detect_uniform_numeric(jp, min_array_length=uniform_min_length, epsilon=uniform_epsilon)
         )
         result.missing_references.extend(detect_missing_references(jp, repo))
+        if tier2_enabled:
+            result.loose_uniform.extend(
+                detect_loose_uniform(
+                    jp,
+                    min_array_length=uniform_min_length,
+                    stdev_threshold=loose_uniform_stdev_threshold,
+                )
+            )
+
+    if tier2_enabled:
+        result.boilerplate_text = detect_boilerplate_text(
+            files,
+            token_overlap_threshold=boilerplate_token_overlap_threshold,
+            min_group_size=boilerplate_min_group_size,
+        )
+        result.size_distribution = detect_size_distribution(
+            files,
+            variance_threshold=size_distribution_variance_threshold,
+            min_group_size=size_distribution_min_group_size,
+        )
 
     return result
 
@@ -342,6 +627,14 @@ def render_text(result: EvidenceAuditResult) -> str:
         f"  uniform-numeric findings:    {len(result.uniform_numeric)}",
         f"  missing-references findings: {len(result.missing_references)}",
     ]
+    if result.tier2_enabled:
+        lines.extend(
+            [
+                f"  tier2: loose-uniform findings:       {len(result.loose_uniform)}",
+                f"  tier2: boilerplate-text findings:    {len(result.boilerplate_text)}",
+                f"  tier2: size-distribution findings:   {len(result.size_distribution)}",
+            ]
+        )
     if result.is_clean():
         lines.append("")
         lines.append("CLEAN — no fake-evidence patterns detected.")
@@ -364,5 +657,23 @@ def render_text(result: EvidenceAuditResult) -> str:
     for f in result.missing_references:
         lines.append(
             f"  missing-reference: {f.json_artifact} {f.json_pointer} -> {f.missing_path!r}"
+        )
+    for f in result.loose_uniform:
+        lines.append(
+            f"  tier2: loose-uniform: {f.json_artifact} {f.json_pointer} — "
+            f"{f.array_length} entries cv={f.coefficient_of_variation:.6g}"
+        )
+    for f in result.boilerplate_text:
+        lines.append(
+            f"  tier2: boilerplate-text: {len(f.paths)} files overlap={f.token_overlap:.2f}"
+        )
+        for p in f.paths[:5]:
+            lines.append(f"    {p}")
+        if len(f.paths) > 5:
+            lines.append(f"    ...and {len(f.paths) - 5} more")
+    for f in result.size_distribution:
+        lines.append(
+            f"  tier2: size-distribution: {f.sibling_directory} — "
+            f"{len(f.paths)} files cv={f.coefficient_of_variation:.6g}"
         )
     return "\n".join(lines)
