@@ -120,6 +120,9 @@ class PhaseLoopDriftAuditTest(unittest.TestCase):
             self.assertEqual(roundtripped["allowlists"]["executor"], list(EXECUTORS))
             self.assertEqual(roundtripped["allowlists"]["dispatch_capability"], list(DISPATCH_CAPABILITIES))
 
+    def test_closeout_evidence_drift_is_frozen_blocker_class(self):
+        self.assertIn("closeout_evidence_drift", BLOCKER_CLASSES)
+
     def test_cli_help_lists_closeout_drift_audit_flags(self):
         stdout = io.StringIO()
         with self.assertRaises(SystemExit) as raised, redirect_stdout(stdout):

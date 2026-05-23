@@ -27,6 +27,7 @@ from phase_loop_runtime.discovery import (
     plan_artifact_diagnostic,
     plan_is_stale,
     repo_identity,
+    roadmap_closeout_evidence_audit_enabled,
     roadmap_fingerprint,
     select_roadmap,
 )
@@ -99,6 +100,50 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
                 "### Phase 6A - Parallel Branch (P6A, parallel after P1)\n"
             )
             self.assertEqual(parse_roadmap_phases(roadmap), ["P1", "P2A", "P2B", "P40", "P6A"])
+
+    def test_roadmap_closeout_evidence_audit_enabled_from_frontmatter(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v2.md"
+            roadmap.write_text(
+                "---\n"
+                "closeout_evidence_audit: true\n"
+                "---\n"
+                "# Roadmap\n\n"
+                "## Context\n\n"
+                "### Phase 0 - Contract (CONTRACT)\n"
+            )
+
+            self.assertTrue(roadmap_closeout_evidence_audit_enabled(roadmap))
+
+    def test_roadmap_closeout_evidence_audit_enabled_from_first_h2_block(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v2.md"
+            roadmap.write_text(
+                "# Roadmap\n\n"
+                "## Metadata\n\n"
+                "- closeout_evidence_audit: true\n\n"
+                "## Context\n\n"
+                "### Phase 0 - Contract (CONTRACT)\n"
+            )
+
+            self.assertTrue(roadmap_closeout_evidence_audit_enabled(roadmap))
+
+    def test_roadmap_closeout_evidence_audit_absent_defaults_false(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v2.md"
+            roadmap.write_text(
+                "# Roadmap\n\n"
+                "## Context\n\n"
+                "General context.\n\n"
+                "## Metadata\n\n"
+                "- closeout_evidence_audit: true\n\n"
+                "### Phase 0 - Contract (CONTRACT)\n"
+            )
+
+            self.assertFalse(roadmap_closeout_evidence_audit_enabled(roadmap))
 
     def test_single_roadmap_selection_and_multiple_roadmap_ambiguity(self):
         with tempfile.TemporaryDirectory() as td:

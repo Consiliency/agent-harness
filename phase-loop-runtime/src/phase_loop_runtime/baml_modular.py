@@ -297,6 +297,11 @@ def _enum_literal_map() -> dict[str, tuple[str, ...]]:
             continue
         if current and line and not line.startswith("//"):
             current = None
+    from . import models
+
+    result["terminal_status"] = list(models.PHASE_STATUSES)
+    result["verification_status"] = ["not_run", "passed", "failed", "blocked"]
+    result["blocker_class"] = [*models.BLOCKER_CLASSES, "none"]
     return {key: tuple(values) for key, values in result.items()}
 
 

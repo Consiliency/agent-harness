@@ -861,7 +861,11 @@ def _event_closeout_summary(event: dict) -> dict[str, object]:
 def _closeout_completed(status: object, closeout: dict[str, object]) -> bool:
     if status == "complete":
         return True
+    if status == "blocked":
+        return False
     if status == "planned":
+        return False
+    if closeout.get("verification_status") in {"blocked", "failed"}:
         return False
     action = closeout.get("closeout_action")
     commit = closeout.get("closeout_commit")

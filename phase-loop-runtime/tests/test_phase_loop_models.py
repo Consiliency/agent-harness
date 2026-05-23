@@ -103,6 +103,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "upstream_phase_unmet",
                 "contract_bug",
                 "gold_record_amendment",
+                "closeout_evidence_drift",
                 "unretryable_external_outage",
                 "stuck_loop",
             ),

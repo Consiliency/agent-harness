@@ -11,6 +11,7 @@ from .broker import validate_delegation_request
 from .baml_modular import BamlValidationError, parse_baml_response
 from .capability_registry import default_executor_for_work_unit, describe_dispatch_decision, resolve_dispatch_decision
 from .classifier import classify_all
+from .closeout_evidence_audit import audit_closeout_evidence
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
 from .closeout_validation import validate_produced_gates
 from .discovery import (
@@ -34,6 +35,7 @@ from .discovery import (
     pipeline_execution_plan_diagnostic,
     phase_source_bundle_diagnostic,
     plan_artifact_diagnostic,
+    roadmap_closeout_evidence_audit_enabled,
 )
 from .events import append_event, event_path, read_events
 from .evidence_audit import run_tier3_runner_audit
@@ -5005,6 +5007,28 @@ def _perform_phase_closeout(
                 "closeout_commit": commit,
             }
         )
+        if roadmap_closeout_evidence_audit_enabled(roadmap):
+            audit = audit_closeout_evidence(commit, phase, repo)
+            total_claims = len(audit.matched_claims) + len(audit.unmatched_claims)
+            metadata["closeout"]["closeout_evidence_audit"] = {
+                "audit_status": audit.audit_status,
+                "matched_claim_count": len(audit.matched_claims),
+                "unmatched_claim_count": len(audit.unmatched_claims),
+                "total_claim_count": total_claims,
+            }
+            if audit.audit_status == "drift_detected":
+                status = "blocked"
+                metadata["closeout"]["verification_status"] = "blocked"
+                blocker = {
+                    "human_required": False,
+                    "blocker_class": "closeout_evidence_drift",
+                    "blocker_summary": (
+                        f"{len(audit.unmatched_claims)} of {total_claims} "
+                        "closeout claims have no matching files in the closeout diff"
+                    ),
+                    "required_human_inputs": (),
+                    "access_attempts": (),
+                }
         if closeout_mode == "push":
             decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
             if decision.get("allowed"):

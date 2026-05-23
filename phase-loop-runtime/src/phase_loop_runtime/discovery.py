@@ -404,6 +404,39 @@ def parse_roadmap_phases(roadmap: Path) -> list[str]:
     return aliases
 
 
+def roadmap_closeout_evidence_audit_enabled(roadmap: Path) -> bool:
+    text = roadmap.read_text(encoding="utf-8")
+    frontmatter = parse_frontmatter(text)
+    if _truthy_metadata_value(frontmatter.get("closeout_evidence_audit")):
+        return True
+    body_start = 0
+    if text.startswith("---\n"):
+        end = text.find("\n---", 4)
+        if end != -1:
+            body_start = end + len("\n---")
+    body = text[body_start:]
+    first_h2 = re.search(r"^##\s+.*$", body, re.MULTILINE)
+    if first_h2 is None:
+        return False
+    second_h2 = re.search(r"^##\s+.*$", body[first_h2.end() :], re.MULTILINE)
+    first_h2_body = (
+        body[first_h2.end() :]
+        if second_h2 is None
+        else body[first_h2.end() : first_h2.end() + second_h2.start()]
+    )
+    return bool(
+        re.search(
+            r"^\s*(?:-\s*)?closeout_evidence_audit\s*:\s*true\s*$",
+            first_h2_body,
+            re.IGNORECASE | re.MULTILINE,
+        )
+    )
+
+
+def _truthy_metadata_value(value: object) -> bool:
+    return str(value or "").strip().lower() in {"true", "yes", "1", "on"}
+
+
 def parse_dispatch_hints(path: Path, *, kind: str) -> dict[str, DispatchHints]:
     """Backward-compat entry: returns just the hints dict, silently dropping
     buckets that contain unknown literals (which used to crash). For the

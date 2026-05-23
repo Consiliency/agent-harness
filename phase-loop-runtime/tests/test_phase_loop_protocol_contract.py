@@ -156,6 +156,18 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         ):
             self.assertIn(token, self.protocol_text)
 
+    def test_protocol_documents_closeout_evidence_audit(self):
+        for token in (
+            "Closeout Evidence Audit",
+            "closeout_evidence_audit",
+            "closeout_evidence_drift",
+            "closeout claims have no matching files",
+            "closeout diff",
+            "raw commit bodies",
+            "raw diff bodies",
+        ):
+            self.assertIn(token, self.protocol_text)
+
     def test_protocol_includes_frozen_literals(self):
         for literal in PHASE_STATUSES:
             self.assertIn(f"`{literal}`", self.protocol_text)

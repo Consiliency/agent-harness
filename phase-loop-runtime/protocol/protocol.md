@@ -1158,6 +1158,26 @@ BAML runtime placeholders such as `{{ phase_alias }}`, `{{ ctx.output_format
 Unknown taxonomy constants are repairable `BamlValidationError` failures, not
 silent downgrades to stale hard-coded prompt text.
 
+### Closeout Evidence Audit
+
+Roadmaps may opt in to the post-commit closeout evidence audit with
+`closeout_evidence_audit: true` in roadmap frontmatter or in the first H2
+metadata block. When enabled, commit closeout runs the audit after the closeout
+commit lands and never amends that commit.
+
+The audit compares parseable closeout claims such as `Added`, `Created`,
+`Wrote`, and `Updated` backticked symbols to the closeout commit diff. Filename
+basename matches, path-suffix matches, or identifier matches in the diff content
+count as evidence. If evidence is missing, the closeout event is downgraded to
+`blocked` with `blocker_class: closeout_evidence_drift` and the redacted
+summary shape `<N> of <M> closeout claims have no matching files in the
+closeout diff`.
+
+The frozen blocker literal for this downgrade is `closeout_evidence_drift`.
+Audit metadata may record only status and counts. Blocker summaries, metadata,
+logs, and terminal summaries must not include raw commit bodies, raw diff bodies,
+secret-bearing payloads, or unmatched symbol text.
+
 ### Closeout Hardening
 
 `EmitPhaseCloseout` uses field-anchored enum lists for `terminal_status` and
