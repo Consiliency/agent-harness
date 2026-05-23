@@ -346,6 +346,9 @@ def run_loop(
     roadmap: Path,
     phase: str | None = None,
     max_phases: int = 1,
+    max_phases_explicit: bool = False,
+    full_phase: bool = False,
+    no_deprecation_hints: bool = False,
     model_profile: str | None = None,
     executor: str | None = None,
     allowed_executors: tuple[str, ...] = (),
@@ -546,8 +549,36 @@ def run_loop(
 
     loop_context = active_loop(repo, "product") if not dry_run else _null_context()
     current = selected
+    phase_cycles_completed = 0
+    iterations_remaining = max_phases if not full_phase else max(max_phases * 4, max_phases)
+    if max_phases_explicit and not full_phase and not no_deprecation_hints and selected is not None:
+        append_event(
+            repo,
+            LoopEvent(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phase=selected,
+                action=action,
+                status=classifications.get(selected, "unknown"),
+                model=selection.model,
+                reasoning_effort=selection.effort,
+                source=selection.source,
+                override_reason=selection.override_reason,
+                metadata={
+                    "max_phases_hint": {
+                        "status": "emitted",
+                        "legacy_unit": "dispatched_actions",
+                        "full_phase_unit": "complete_phase_cycles",
+                        "message": "--max-phases counts dispatched actions unless --full-phase is set.",
+                    }
+                },
+                **event_provenance(roadmap, selected),
+            ),
+        )
     with loop_context:
-        for _ in range(max_phases):
+        while iterations_remaining > 0 and (not full_phase or phase_cycles_completed < max_phases):
+            iterations_remaining -= 1
             snapshot = reconcile(repo, roadmap)
             classifications = snapshot.phases
             alias = _select_ready_phase(repo, roadmap, classifications, phase)
@@ -2388,6 +2419,14 @@ def run_loop(
                     closeout_mode=closeout_mode,
                 )
                 append_event(repo, closeout_event)
+            if full_phase:
+                if status_after_launch in {"complete", "blocked", "awaiting_phase_closeout", "unknown"}:
+                    phase_cycles_completed += 1
+                    if phase_cycles_completed >= max_phases or phase:
+                        break
+                    continue
+                if phase and status_after_launch == "planned":
+                    continue
             if phase:
                 break
 

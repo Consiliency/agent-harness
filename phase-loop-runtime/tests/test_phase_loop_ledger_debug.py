@@ -69,7 +69,9 @@ class PhaseLoopLedgerDebugTest(unittest.TestCase):
             payload = json.loads(render_status(snapshot, as_json=True, ledger_debug=True))
 
             self.assertIn("Rejected events:\n  none", text)
+            self.assertIn("Duplicates skipped:\n  none", text)
             self.assertEqual(payload["rejected_events"], [])
+            self.assertEqual(payload["duplicates_skipped"], [])
 
     def test_default_output_is_unchanged_without_ledger_debug(self):
         with tempfile.TemporaryDirectory() as td:
@@ -81,7 +83,9 @@ class PhaseLoopLedgerDebugTest(unittest.TestCase):
 
             self.assertIn("Ledger warnings: 7", text)
             self.assertNotIn("Rejected events:", text)
+            self.assertNotIn("Duplicates skipped:", text)
             self.assertNotIn("rejected_events", payload)
+            self.assertNotIn("duplicates_skipped", payload)
 
     def test_rejected_events_use_safe_raw_event_summary(self):
         with tempfile.TemporaryDirectory() as td:
@@ -107,6 +111,35 @@ class PhaseLoopLedgerDebugTest(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(stdout.getvalue())
             self.assertEqual(len(payload["rejected_events"]), 7)
+
+    def test_text_ledger_debug_outputs_duplicates_skipped_after_rejections(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo, roadmap = _make_duplicate_fixture(Path(td))
+            snapshot = reconcile(repo, roadmap)
+
+            output = render_status(snapshot, ledger_debug=True)
+
+            self.assertIn("Ledger warnings: 1", output)
+            self.assertLess(output.index("Rejected events:"), output.index("Duplicates skipped:"))
+            self.assertIn("count=1", output)
+            self.assertIn("phase=CONTRACT", output)
+            self.assertIn("duplicate_key=", output)
+
+    def test_json_ledger_debug_outputs_duplicates_skipped_array(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo, roadmap = _make_duplicate_fixture(Path(td))
+            snapshot = reconcile(repo, roadmap)
+
+            payload = json.loads(render_status(snapshot, as_json=True, ledger_debug=True))
+
+            self.assertEqual(len(payload["rejected_events"]), 1)
+            self.assertEqual(len(payload["duplicates_skipped"]), 1)
+            duplicate = payload["duplicates_skipped"][0]
+            self.assertEqual(duplicate["phase"], "CONTRACT")
+            self.assertEqual(duplicate["duplicate_key"]["status"], "plan_skipped")
+            serialized = json.dumps(duplicate, sort_keys=True)
+            self.assertNotIn("metadata", serialized)
+            self.assertNotIn("provider_payload", serialized)
 
 
 def _make_rejection_fixture(tmp_path: Path) -> tuple[Path, Path]:
@@ -194,6 +227,27 @@ def _make_rejection_fixture(tmp_path: Path) -> tuple[Path, Path]:
             phase_sha256=phase_sha256(roadmap, "CONTRACT"),
         ),
     )
+    return repo, roadmap
+
+
+def _make_duplicate_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    payload = {
+        "timestamp": utc_now(),
+        "repo": str(repo),
+        "roadmap": str(roadmap),
+        "phase": "CONTRACT",
+        "action": "run",
+        "status": "plan_skipped",
+        "source": "fixture",
+        "schema_version": 2,
+        "roadmap_sha256": roadmap_sha256(roadmap),
+        "phase_sha256": phase_sha256(roadmap, "CONTRACT"),
+        "metadata": {"provider_payload": "SECRET_TOKEN"},
+    }
+    _append_raw_event(repo, payload)
+    _append_raw_event(repo, dict(payload))
     return repo, roadmap
 
 

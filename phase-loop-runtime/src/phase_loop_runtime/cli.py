@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 
+from .adoption_bundle import adoption_bundle_status, refresh_adoption_bundle
 from .closeout import build_phase_loop_closeout
 from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, select_roadmap
 from .events import append_event, read_events
@@ -40,7 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--roadmap")
     parser.add_argument("--phase")
-    parser.add_argument("--max-phases", type=int, default=1)
+    parser.add_argument(
+        "--max-phases",
+        type=int,
+        help="Maximum dispatched actions by default; combine with --full-phase to count complete phase cycles.",
+    )
+    parser.add_argument("--full-phase", action="store_true", help="Count --max-phases as complete plan-plus-execute phase cycles.")
+    parser.add_argument("--no-deprecation-hints", action="store_true", help="Suppress legacy --max-phases action-count hints.")
     parser.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES))
     parser.add_argument("--model")
     parser.add_argument("--effort")
@@ -72,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default="standalone")
     parser.add_argument("--force-replan", action="store_true")
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init", "evidence-audit", "closeout-drift-audit"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "init", "adoption-bundle", "evidence-audit", "closeout-drift-audit"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -85,7 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--repo")
         sub.add_argument("--roadmap")
         sub.add_argument("--phase")
-        sub.add_argument("--max-phases", type=int)
+        sub.add_argument(
+            "--max-phases",
+            type=int,
+            help="Maximum dispatched actions by default; combine with --full-phase to count complete phase cycles.",
+        )
         sub.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES))
         sub.add_argument("--model")
         sub.add_argument("--effort")
@@ -125,6 +136,9 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--rotation-on-policy-pin", choices=("skip", "fallback-next"))
             sub.add_argument("--enable-tier-3", action="store_true", help="Enable default-off closeout-time Tier 3 evidence audit.")
             sub.add_argument("--tier-3-budget", type=int, default=3, help="Maximum Tier 3 evidence-audit calls per closeout. Default 3.")
+        if name in {"run", "resume"}:
+            sub.add_argument("--full-phase", action="store_true", help="Count --max-phases as complete plan-plus-execute phase cycles.")
+            sub.add_argument("--no-deprecation-hints", action="store_true", help="Suppress legacy --max-phases action-count hints.")
         if name == "maintain-skills":
             sub.description = "Skill Maintenance: planner-only by default; edits require --apply-skill-edits and --allow-skill."
             sub.add_argument("--min-reflections", type=int, default=2)
@@ -153,6 +167,11 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "migrate-handoffs":
             sub.description = "Move current-repo legacy skill handoffs into repo-local .dev-skills storage."
             sub.add_argument("--apply", action="store_true")
+        if name == "init":
+            sub.add_argument("--install-hooks", action="store_true", help="Install opt-in local git hooks for this repo.")
+        if name == "adoption-bundle":
+            sub.description = "Check or refresh the committed dotfiles adoption bundle."
+            sub.add_argument("adoption_bundle_action", choices=("status", "refresh"))
         if name == "archive-state":
             sub.add_argument("--reason")
         if name == "reconcile":
@@ -162,8 +181,9 @@ def build_parser() -> argparse.ArgumentParser:
             )
             sub.add_argument("--closeout-commit", help="Commit SHA to record as the closeout commit. Defaults to current HEAD.")
             sub.add_argument("--repair-summary", help="Optional human-authored note explaining the repair.")
-            sub.add_argument("--verification-status", choices=("not_run", "passed", "failed"), default="not_run")
+            sub.add_argument("--verification-status", choices=("not_run", "passed", "failed"))
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
+            sub.add_argument("--recovery-mode", action="store_true", help="Allow dirty recovery-state reconciliation with explicit audit fields.")
         if name == "reopen":
             sub.description = (
                 "Reverse a spurious closeout: append a typed phase_reopen event so the reducer "
@@ -219,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    if command not in {"run", "resume"} and (
+        bool(getattr(args, "full_phase", False)) or bool(getattr(args, "no_deprecation_hints", False))
+    ):
+        parser.error("--full-phase and --no-deprecation-hints are only valid for run and resume")
     if command == "version":
         print(f"phase-loop {__version__}")
         return 0
@@ -234,7 +258,9 @@ def main(argv: list[str] | None = None) -> int:
         return _closeout_drift_audit_command(args=args, as_json=as_json)
     repo = resolve_repo(args.repo or ".")
     if command == "init":
-        return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json)
+        return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json, install_hooks=bool(getattr(args, "install_hooks", False)))
+    if command == "adoption-bundle":
+        return _adoption_bundle_command(repo=repo, action=args.adoption_bundle_action, as_json=as_json)
     if command == "evidence-audit":
         if args.roadmap:
             _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
@@ -439,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
         roadmap=roadmap,
         phase=effective_phase,
         max_phases=args.max_phases or 1,
+        max_phases_explicit=args.max_phases is not None,
+        full_phase=bool(getattr(args, "full_phase", False)),
+        no_deprecation_hints=bool(getattr(args, "no_deprecation_hints", False)),
         model_profile=model_profile,
         model=args.model,
         effort=args.effort,
@@ -569,13 +598,43 @@ def _run_returncode(snapshot: StateSnapshot, results: list) -> int:
     return 0
 
 
-def _init_command(*, repo: Path, dry_run: bool, as_json: bool) -> int:
+def _adoption_bundle_command(*, repo: Path, action: str, as_json: bool) -> int:
+    try:
+        if action == "status":
+            payload = adoption_bundle_status(repo)
+            code = 0 if payload["status"] == "fresh" else 1
+        elif action == "refresh":
+            payload = refresh_adoption_bundle(repo)
+            code = 0
+        else:
+            raise ValueError(f"unknown adoption-bundle action: {action}")
+    except Exception as exc:
+        payload = {
+            "status": "error",
+            "bundle": "docs/adoption/dotfiles-adoption-bundle.json",
+            "error": str(exc),
+        }
+        code = 2 if action == "status" else 1
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"adoption-bundle {action}: {payload['status']} {payload['bundle']}")
+        if payload.get("error"):
+            print(f"error: {payload['error']}", file=sys.stderr)
+    return code
+
+
+def _init_command(*, repo: Path, dry_run: bool, as_json: bool, install_hooks: bool) -> int:
     gitignore = repo / ".gitignore"
     handoffs = repo / ".dev-skills" / "handoffs"
+    hook_source = repo / ".githooks" / "pre-commit-adoption-bundle"
+    hook_target = repo / ".git" / "hooks" / "pre-commit"
     entry = "/.dev-skills/"
     existing = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.exists() else []
     needs_entry = entry not in existing
     needs_handoffs = not handoffs.is_dir()
+    hook_installable = hook_source.exists()
+    needs_hook = install_hooks and (not hook_target.exists() or hook_target.read_text(encoding="utf-8") != hook_source.read_text(encoding="utf-8"))
     actions = {
         "repo": str(repo),
         "dry_run": dry_run,
@@ -584,22 +643,39 @@ def _init_command(*, repo: Path, dry_run: bool, as_json: bool) -> int:
         "gitignore_changed": needs_entry,
         "handoffs": str(handoffs),
         "handoffs_created": needs_handoffs,
+        "install_hooks": install_hooks,
+        "hook_source": str(hook_source),
+        "hook_target": str(hook_target),
+        "hook_installable": hook_installable,
+        "hook_changed": needs_hook,
     }
+    if install_hooks and not hook_installable:
+        actions["error"] = f"hook source not found: {hook_source}"
+        if as_json:
+            print(json.dumps(actions, indent=2, sort_keys=True))
+        else:
+            print(f"phase-loop init: hook source not found: {hook_source}", file=sys.stderr)
+        return 2
     if not dry_run:
         if needs_entry:
             lines = list(existing)
             lines.append(entry)
             gitignore.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
         handoffs.mkdir(parents=True, exist_ok=True)
+        if needs_hook:
+            hook_target.parent.mkdir(parents=True, exist_ok=True)
+            hook_target.write_text(hook_source.read_text(encoding="utf-8"), encoding="utf-8")
+            hook_target.chmod(0o755)
     if as_json:
         print(json.dumps(actions, indent=2, sort_keys=True))
     else:
         mode = "would update" if dry_run else "updated"
-        if not needs_entry and not needs_handoffs:
+        if not needs_entry and not needs_handoffs and not needs_hook:
             mode = "already initialized"
         print(f"phase-loop init: {mode} {repo}")
         print(f"gitignore_entry: {entry} ({'needed' if needs_entry else 'present'})")
         print(f"handoffs: {handoffs} ({'needed' if needs_handoffs else 'present'})")
+        print(f"hooks: {hook_target} ({'needed' if needs_hook else 'not requested' if not install_hooks else 'present'})")
     return 0
 
 
@@ -621,13 +697,27 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
         print(f"phase-loop reconcile: {topology.get('reason') or 'git topology unavailable'}", file=sys.stderr)
         return 2
 
-    if not topology.get("clean") and not bool(getattr(args, "allow_dirty", False)):
+    recovery_mode = bool(getattr(args, "recovery_mode", False))
+    allow_dirty = bool(getattr(args, "allow_dirty", False)) or recovery_mode
+    if not topology.get("clean") and not allow_dirty:
         print(
             "phase-loop reconcile: working tree is dirty. Commit or stash recovery work "
             "before reconciling (or pass --allow-dirty to override).",
             file=sys.stderr,
         )
         return 2
+
+    if recovery_mode:
+        missing = []
+        if not getattr(args, "closeout_commit", None):
+            missing.append("--closeout-commit")
+        if not getattr(args, "repair_summary", None):
+            missing.append("--repair-summary")
+        if not getattr(args, "verification_status", None):
+            missing.append("--verification-status")
+        if missing:
+            print(f"phase-loop reconcile: --recovery-mode requires {', '.join(missing)}", file=sys.stderr)
+            return 2
 
     closeout_commit = getattr(args, "closeout_commit", None) or topology.get("head")
     if not isinstance(closeout_commit, str) or not closeout_commit:
@@ -653,6 +743,8 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     repair_summary = getattr(args, "repair_summary", None)
     if repair_summary:
         manual_repair["repair_summary"] = repair_summary
+    if recovery_mode:
+        manual_repair["recovery_mode"] = True
 
     event = LoopEvent(
         timestamp=utc_now(),

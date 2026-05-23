@@ -19,6 +19,9 @@ def render_status(snapshot: StateSnapshot, as_json: bool = False, ledger_debug: 
             payload["execution_policy"] = policy_block
         if ledger_debug:
             payload["rejected_events"] = [_ledger_debug_record(warning) for warning in snapshot.ledger_warnings]
+            payload["duplicates_skipped"] = [
+                _ledger_duplicate_debug_record(record) for record in snapshot.ledger_duplicates_skipped
+            ]
         return json.dumps(payload, indent=2, sort_keys=True)
     lines = [f"Roadmap: {snapshot.roadmap}", "Phase statuses:"]
     for phase, status in snapshot.phases.items():
@@ -62,6 +65,7 @@ def render_status(snapshot: StateSnapshot, as_json: bool = False, ledger_debug: 
         lines.append(f"Ledger warnings: {len(snapshot.ledger_warnings)}")
     if ledger_debug:
         lines.extend(_ledger_debug_lines(snapshot.ledger_warnings))
+        lines.extend(_ledger_duplicate_debug_lines(snapshot.ledger_duplicates_skipped))
     return "\n".join(lines)
 
 
@@ -257,6 +261,42 @@ def _ledger_debug_record(warning: dict[str, object]) -> dict[str, object]:
         "status": warning.get("status"),
         "reason": warning.get("canonical_reason") or warning.get("reason"),
         "raw_event_summary": warning.get("raw_event_summary") or _legacy_raw_event_summary(warning),
+    }
+
+
+def _ledger_duplicate_debug_lines(duplicates: tuple[dict[str, object], ...]) -> list[str]:
+    lines = ["Duplicates skipped:"]
+    if not duplicates:
+        lines.append("  none")
+        return lines
+    lines.append(f"  count={len(duplicates)}")
+    for duplicate in duplicates:
+        record = _ledger_duplicate_debug_record(duplicate)
+        summary = _format_raw_event_summary(record.get("raw_event_summary"))
+        lines.append(
+            "  "
+            f"phase={record.get('phase') or 'unknown'} "
+            f"timestamp={record.get('timestamp') or 'unknown'} "
+            f"action={record.get('action') or 'unknown'} "
+            f"status={record.get('status') or 'unknown'} "
+            f"automation_status={record.get('automation_status') or 'unknown'} "
+            f"blocker_class={record.get('blocker_class') or 'none'} "
+            f"duplicate_key={_format_raw_event_summary(record.get('duplicate_key'))} "
+            f"raw_event_summary={summary}"
+        )
+    return lines
+
+
+def _ledger_duplicate_debug_record(duplicate: dict[str, object]) -> dict[str, object]:
+    return {
+        "phase": duplicate.get("phase"),
+        "timestamp": duplicate.get("timestamp"),
+        "action": duplicate.get("action"),
+        "status": duplicate.get("status"),
+        "automation_status": duplicate.get("automation_status"),
+        "blocker_class": duplicate.get("blocker_class"),
+        "duplicate_key": duplicate.get("duplicate_key") or {},
+        "raw_event_summary": duplicate.get("raw_event_summary") or _legacy_raw_event_summary(duplicate),
     }
 
 

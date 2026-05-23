@@ -38,6 +38,8 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
     latest_closeout_summary = None
     latest_terminal_summary = None
     ledger_warnings: list[dict] = []
+    ledger_duplicates_skipped: list[dict] = []
+    seen_event_keys: set[tuple[object, ...]] = set()
     blocker_phase: str | None = None
     dirty_summary_by_phase: dict[str, dict[str, object]] = {}
     closeout_summary_by_phase: dict[str, dict[str, object]] = {}
@@ -94,6 +96,14 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
         if Path(str(event.get("roadmap", ""))).expanduser().resolve() != roadmap.resolve():
             continue
+        dedup_key = _event_dedup_key(event)
+        if event.get("action") == "phase_reopen":
+            seen_event_keys = {key for key in seen_event_keys if key[1] != dedup_key[1]}
+        dedup_identity = _event_dedup_identity(event, dedup_key)
+        if dedup_identity in seen_event_keys:
+            ledger_duplicates_skipped.append(_ledger_duplicate_record(event, dedup_key))
+            continue
+        seen_event_keys.add(dedup_identity)
         phase = str(event.get("phase", "")).upper()
         status = event.get("status")
         if phase not in phases:
@@ -294,6 +304,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
                 closeout_terminal_status=closeout_terminal_status,
                 closeout_summary=closeout_summary,
                 ledger_warnings=tuple(ledger_warnings),
+                ledger_duplicates_skipped=tuple(ledger_duplicates_skipped),
                 **snapshot_provenance(roadmap),
             )
         repair_closeout = _clean_manual_repair_complete_supersedes_blocker(
@@ -345,6 +356,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         closeout_terminal_status=closeout_terminal_status,
         closeout_summary=closeout_summary,
         ledger_warnings=tuple(ledger_warnings),
+        ledger_duplicates_skipped=tuple(ledger_duplicates_skipped),
         **snapshot_provenance(roadmap),
     )
 
@@ -591,6 +603,112 @@ def _ledger_warning_record(source: str, phase: str, status: str, reason: str, *,
         warning["action"] = _optional_text(raw_event.get("action"))
         warning["raw_event_summary"] = _raw_event_summary(raw_event)
     return {key: value for key, value in warning.items() if value is not None}
+
+
+def _event_dedup_key(event: dict) -> tuple[object, ...]:
+    phase = str(event.get("phase", "")).upper()
+    automation_status = _event_automation_status(event)
+    blocker_class = _event_blocker_class(event)
+    return (
+        _optional_text(event.get("timestamp")),
+        phase,
+        _optional_text(event.get("action")),
+        _optional_text(event.get("status")),
+        automation_status,
+        blocker_class,
+    )
+
+
+def _event_dedup_identity(event: dict, dedup_key: tuple[object, ...]) -> tuple[object, ...]:
+    return (
+        *dedup_key,
+        _optional_text(event.get("roadmap_sha256")),
+        _optional_text(event.get("phase_sha256")),
+        event.get("schema_version"),
+    )
+
+
+def _ledger_duplicate_record(event: dict, dedup_key: tuple[object, ...]) -> dict:
+    timestamp, phase, action, status, automation_status, blocker_class = dedup_key
+    duplicate_key = {
+        "timestamp": timestamp,
+        "phase": phase,
+        "action": action,
+        "status": status,
+        "automation_status": automation_status,
+        "blocker_class": blocker_class,
+    }
+    return {
+        "phase": phase,
+        "timestamp": timestamp,
+        "action": action,
+        "status": status,
+        "automation_status": automation_status,
+        "blocker_class": blocker_class,
+        "duplicate_key": {key: value for key, value in duplicate_key.items() if value is not None},
+        "raw_event_summary": _raw_event_summary(event),
+    }
+
+
+def _event_automation_status(event: dict) -> str | None:
+    value = _optional_text(event.get("automation_status"))
+    if value:
+        return value
+    automation = event.get("automation")
+    if isinstance(automation, dict):
+        value = _optional_text(automation.get("status") or automation.get("automation_status"))
+        if value:
+            return value
+    metadata = event.get("metadata")
+    if isinstance(metadata, dict):
+        child_automation = metadata.get("child_automation")
+        if isinstance(child_automation, dict):
+            value = _optional_text(child_automation.get("automation_status") or child_automation.get("status"))
+            if value:
+                return value
+        closeout = metadata.get("closeout")
+        if isinstance(closeout, dict):
+            value = _optional_text(closeout.get("status") or closeout.get("terminal_status"))
+            if value:
+                return value
+        terminal = metadata.get("terminal_summary")
+        if isinstance(terminal, dict):
+            value = _optional_text(terminal.get("terminal_status"))
+            if value:
+                return value
+    return None
+
+
+def _event_blocker_class(event: dict) -> str | None:
+    blocker = _event_blocker(event)
+    value = _optional_text(blocker.get("blocker_class")) if blocker else None
+    if value:
+        return value
+    value = _optional_text(event.get("blocker_class"))
+    if value:
+        return _normalize_blocker_class(value)
+    automation = event.get("automation")
+    if isinstance(automation, dict):
+        value = _optional_text(automation.get("blocker_class") or automation.get("automation_blocker_class"))
+        if value:
+            return _normalize_blocker_class(value)
+    metadata = event.get("metadata")
+    if isinstance(metadata, dict):
+        child_automation = metadata.get("child_automation")
+        if isinstance(child_automation, dict):
+            value = _optional_text(
+                child_automation.get("automation_blocker_class") or child_automation.get("blocker_class")
+            )
+            if value:
+                return _normalize_blocker_class(value)
+        terminal = metadata.get("terminal_summary")
+        if isinstance(terminal, dict):
+            terminal_blocker = terminal.get("terminal_blocker")
+            if isinstance(terminal_blocker, dict):
+                value = _optional_text(terminal_blocker.get("blocker_class"))
+                if value:
+                    return _normalize_blocker_class(value)
+    return None
 
 
 def _canonical_ledger_reason(reason: str) -> str:

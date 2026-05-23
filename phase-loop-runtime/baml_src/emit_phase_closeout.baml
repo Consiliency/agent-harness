@@ -41,13 +41,13 @@ function EmitPhaseCloseout(
 Emit the phase-loop closeout for phase {{ phase_alias }} as one JSON object.
 
 Required contract:
-- Field-anchored enum list for terminal_status: unplanned, planned, executing, executed, awaiting_phase_closeout, complete, blocked, unknown.
-- Field-anchored enum list for verification_status: not_run, passed, failed, blocked.
+- Field-anchored enum list for terminal_status: {{ allowed_terminal_statuses | join(', ') }}.
+- Field-anchored enum list for verification_status: {{ allowed_verification_statuses | join(', ') }}.
 - terminal_status must never use dry_run. dry_run is an event-level execution mode, not a phase closeout status.
 - dirty_paths must list repo-relative dirty paths left after execution.
 - produced_if_gates must list the interface-freeze gates actually produced by this closeout.
 - Completed closeouts must include every IF gate produced by the active plan and must not leave produced_if_gates empty.
-- blocker_class must be null or one frozen blocker class; use none only when a non-null no-blocker marker is required.
+- blocker_class must be null or one frozen blocker class: {{ allowed_blocker_classes | join(', ') }}. Use none only when a non-null no-blocker marker is required.
 - blocker_summary must be non-secret and null when there is no blocker.
 - human_required must be true only for a true human decision or access blocker, false for repairable automation blockers, and null when not blocked.
 - required_human_inputs must contain only non-secret inputs needed from a human.

@@ -160,6 +160,33 @@ def inject_schema_description(prompt: str, schema: dict[str, Any]) -> str:
     return f"{rendered}\n\n{body}" if body else rendered
 
 
+def render_baml_prompt(prompt_template: str, context_constants: dict[str, Any]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        expression = match.group("expression").strip()
+        name_match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)", expression)
+        join_match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*\|\s*join\((['\"])(.*?)\2\)", expression)
+        if join_match:
+            name = join_match.group(1)
+            if name not in context_constants:
+                if _is_taxonomy_constant(name):
+                    raise BamlValidationError(f"BAML prompt taxonomy constant not found: {name}")
+                return match.group(0)
+            value = context_constants[name]
+            if not isinstance(value, (list, tuple)):
+                raise BamlValidationError(f"BAML prompt taxonomy constant is not joinable: {name}")
+            return join_match.group(3).join(str(item) for item in value)
+        if name_match:
+            name = name_match.group(1)
+            if name not in context_constants:
+                if _is_taxonomy_constant(name):
+                    raise BamlValidationError(f"BAML prompt taxonomy constant not found: {name}")
+                return match.group(0)
+            return str(context_constants[name])
+        return match.group(0)
+
+    return re.sub(r"\{\{\s*(?P<expression>.*?)\s*\}\}", replace, str(prompt_template or ""))
+
+
 @lru_cache(maxsize=1)
 def _runtime():
     from baml_py import BamlCtxManager, BamlRuntime
@@ -171,11 +198,26 @@ def _runtime():
 
 def _read_baml_files() -> dict[str, str]:
     src_dir = _baml_src_dir()
+    context_constants = _baml_prompt_context_constants()
     return {
-        path.name: path.read_text(encoding="utf-8")
+        path.name: render_baml_prompt(path.read_text(encoding="utf-8"), context_constants)
         for path in sorted(src_dir.glob("*.baml"))
         if path.is_file()
     }
+
+
+def _baml_prompt_context_constants() -> dict[str, tuple[str, ...]]:
+    from . import models
+
+    return {
+        "allowed_terminal_statuses": tuple(models.PHASE_STATUSES),
+        "allowed_verification_statuses": ("not_run", "passed", "failed", "blocked"),
+        "allowed_blocker_classes": (*models.BLOCKER_CLASSES, "none"),
+    }
+
+
+def _is_taxonomy_constant(name: str) -> bool:
+    return name in {"allowed_terminal_statuses", "allowed_verification_statuses", "allowed_blocker_classes"}
 
 
 def _baml_src_dir() -> Path:

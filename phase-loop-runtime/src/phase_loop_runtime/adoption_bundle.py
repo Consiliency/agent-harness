@@ -16,6 +16,7 @@ C4_DOCUMENT = Path("docs/c4/phase-loop-runtime-c4-document.md")
 TASK_CATALOG = Path("docs/tasks/dotfiles-task-catalog.md")
 RUNTIME_PROJECTION_SURFACE = "phase-loop status --runtime-projection --json"
 BAML_SCHEMA_ROOT = Path("vendor/phase-loop-runtime/baml_src")
+ADOPTION_BUNDLE_PATH = Path("docs/adoption/dotfiles-adoption-bundle.json")
 
 
 def generate_adoption_bundle(
@@ -41,6 +42,86 @@ def generate_adoption_bundle(
 
 def stable_json_bytes(payload: dict[str, object]) -> bytes:
     return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def adoption_bundle_status(repo: Path) -> dict[str, object]:
+    root = repo.resolve()
+    bundle_path = root / ADOPTION_BUNDLE_PATH
+    bundle = _load_committed_bundle(bundle_path)
+    current_refs = _schema_refs(root)
+    bundled_refs = bundle.get("schema_refs")
+    if not isinstance(bundled_refs, list):
+        raise ValueError("adoption bundle schema_refs must be a list")
+    stale_refs = _stale_schema_refs(bundled_refs, current_refs)
+    return {
+        "status": "stale" if stale_refs else "fresh",
+        "bundle": str(ADOPTION_BUNDLE_PATH),
+        "stale_refs": stale_refs,
+        "schema_refs": current_refs,
+    }
+
+
+def refresh_adoption_bundle(repo: Path) -> dict[str, object]:
+    root = repo.resolve()
+    bundle_path = root / ADOPTION_BUNDLE_PATH
+    bundle = _load_committed_bundle(bundle_path)
+    generated = generate_adoption_bundle(
+        root,
+        generated_at=str(bundle.get("generated_at") or ""),
+        operating_mode=str(bundle.get("operating_mode") or "standalone"),
+    )
+    refreshed = stable_json_bytes(generated) != bundle_path.read_bytes()
+    if refreshed:
+        bundle_path.write_bytes(stable_json_bytes(generated))
+    return {
+        "status": "fresh",
+        "bundle": str(ADOPTION_BUNDLE_PATH),
+        "refreshed": refreshed,
+    }
+
+
+def _load_committed_bundle(path: Path) -> dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(f"adoption bundle not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("adoption bundle must be a JSON object")
+    parse_baml_response("DotfilesAdoptionManifest", json.dumps(payload, sort_keys=True))
+    return payload
+
+
+def _stale_schema_refs(bundled_refs: list[object], current_refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    current_by_path = {ref["source_path"]: ref["digest"] for ref in current_refs}
+    bundled_by_path: dict[str, str] = {}
+    for ref in bundled_refs:
+        if not isinstance(ref, dict):
+            raise ValueError("adoption bundle schema_refs entries must be objects")
+        source_path = ref.get("source_path")
+        digest = ref.get("digest")
+        if not isinstance(source_path, str) or not isinstance(digest, str):
+            raise ValueError("adoption bundle schema_refs entries require source_path and digest")
+        bundled_by_path[source_path] = digest
+    stale: list[dict[str, str]] = []
+    for source_path, current_digest in current_by_path.items():
+        bundled_digest = bundled_by_path.get(source_path)
+        if bundled_digest != current_digest:
+            stale.append(
+                {
+                    "source_path": source_path,
+                    "bundle_digest": bundled_digest or "missing",
+                    "current_digest": current_digest,
+                }
+            )
+    for source_path, bundled_digest in bundled_by_path.items():
+        if source_path not in current_by_path:
+            stale.append(
+                {
+                    "source_path": source_path,
+                    "bundle_digest": bundled_digest,
+                    "current_digest": "missing",
+                }
+            )
+    return sorted(stale, key=lambda item: item["source_path"])
 
 
 def _source_roots(repo: Path) -> list[dict[str, str]]:

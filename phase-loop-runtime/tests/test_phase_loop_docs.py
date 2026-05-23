@@ -155,6 +155,19 @@ class PhaseLoopDocsTest(unittest.TestCase):
         self.assertIn("IF-Gate Tier 1 Validation", shared)
         self.assertIn("`phase-loop init`", shared)
 
+    def test_adoption_bundle_lifecycle_docs_freeze_refresh_contract(self):
+        protocol = (ROOT / "vendor" / "phase-loop-runtime" / "protocol" / "protocol.md").read_text(encoding="utf-8")
+
+        for token in (
+            "Adoption Bundle Lifecycle",
+            "phase-loop adoption-bundle status",
+            "phase-loop adoption-bundle refresh",
+            ".githooks/pre-commit-adoption-bundle",
+            "phase-loop init --install-hooks",
+            "never installed by default",
+        ):
+            self.assertIn(token, protocol)
+
     def test_profiledoc_docs_freeze_granular_policy_contract(self):
         guide = (ROOT / "docs" / "phase-loop" / "granular-execution-policy.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

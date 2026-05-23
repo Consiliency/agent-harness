@@ -95,6 +95,29 @@ repo-relative `plan_artifact`, and `forced_replan: false`.
 to `PHASE_STATUSES`, `automation.status`, closeout `terminal_status`, or
 reducer phase-state outputs.
 
+## Run Loop Mode
+
+`phase-loop run` and `phase-loop resume` count `--max-phases N` as dispatched actions by default.
+This preserves the legacy behavior: `--max-phases 1`
+launches exactly one child action, so an unplanned phase launches planning and
+stops before the later execute action.
+
+`--full-phase` changes the counting unit from dispatched actions to complete phase cycles.
+In full-phase mode, `--max-phases 1 --full-phase` keeps dispatching
+within the selected phase until one plan-plus-execute cycle reaches `complete`,
+`blocked`, `awaiting_phase_closeout`, or another no-launch terminal state. A
+phase that already has a current plan can skip planning through the
+`plan_skipped` path and count the following execute launch as one complete phase
+cycle. `--max-phases 2 --full-phase` completes two such phase cycles when the
+roadmap has two ready phases.
+
+Existing operators who rely on action-count behavior should keep using
+`--max-phases` without `--full-phase`. Operators who intend complete phase
+cycles should add `--full-phase`. When `--max-phases` is explicitly supplied
+without `--full-phase`, the runner may emit a non-blocking legacy-unit hint once
+per run session. `--no-deprecation-hints` suppresses that hint for `run` and
+`resume`.
+
 `PIPELINE_PROTECTED_SOURCE_CATEGORIES` freezes the protected source vocabulary
 for Pipeline bridge work:
 
@@ -186,6 +209,10 @@ With `--ledger-debug`, text status appends a `Rejected events` section after
 the ledger warning count. Each row reports the rejected event phase, timestamp,
 action, status, canonical reason, and a redacted `raw_event_summary`.
 
+The same debug mode then appends `Duplicates skipped`. This section reports
+events that matched an earlier event in the same reconcile call and were not
+processed again. The zero-duplicate case is explicit as `none`.
+
 `phase-loop status --json --ledger-debug` adds a top-level
 `rejected_events` array:
 
@@ -214,6 +241,10 @@ action, status, canonical reason, and a redacted `raw_event_summary`.
 The JSON field is present as `[]` in debug mode when there are no rejected
 events, and absent from default JSON status output.
 
+Debug JSON also adds `duplicates_skipped` as `[]` or as records with phase,
+timestamp, action, status, automation_status, blocker_class, duplicate_key, and
+redacted raw_event_summary. The field is absent from default JSON output.
+
 The frozen ledger-debug rejection reasons are:
 
 - `provenance_mismatch`
@@ -234,6 +265,32 @@ historical events. After reading the debug output, operators continue to use
 the existing reconcile, reopen, manual repair, or roadmap amendment workflows.
 Persistent rejection logs and automatic repair are out of scope for this
 surface.
+
+## Ledger Dedup
+
+Each `reconcile(repo, roadmap)` call performs an in-memory duplicate pass over
+normalized automation events after roadmap filtering and before validation or
+phase-state mutation. The duplicate key is:
+
+```text
+(timestamp, phase, action, status, automation_status, blocker_class)
+```
+
+`phase` is uppercased before comparison. `automation_status` and
+`blocker_class` are read from top-level event fields when present, otherwise
+from nested automation, child_automation, terminal summary, or blocker metadata.
+
+Dedup is first-event-wins. The first event for a key is processed normally.
+Subsequent events with the same key do not append ledger warnings, do not update
+phase state, do not replace closeout summaries, and are recorded on
+`StateSnapshot.ledger_duplicates_skipped` in encounter order. The ledger itself
+is never rewritten or truncated.
+
+This de-noises repeated identical events only. Rejected non-duplicate events
+remain visible under `Rejected events`, and genuine provenance, status, schema,
+planned-artifact, or blocker-supersession warnings still contribute to
+`Ledger warnings: N`. Ledger Dedup extends the v25 LEDGERDEBUG operator surface;
+it does not repair historical event content.
 
 ## Skills Bundle
 
@@ -357,6 +414,23 @@ schema sources. This handoff does not produce canonical HTML, rendered Mermaid,
 Portal views, governed-pipeline files, archives, mirrors, or any alternate
 schema authority; the `.baml` files remain the schema source of truth.
 
+### Adoption Bundle Lifecycle
+
+The runtime exposes `phase-loop adoption-bundle status --repo <path>` to compare
+current `vendor/phase-loop-runtime/baml_src/*.baml` digests with
+`docs/adoption/dotfiles-adoption-bundle.json`. It exits `0` when fresh, `1`
+when stale, and `2` when the bundle or schema contract cannot be loaded.
+`phase-loop adoption-bundle refresh --repo <path>` regenerates that JSON bundle
+through `generate_adoption_bundle`, preserving the committed fixture metadata
+for `generated_at` and `operating_mode`; it exits `0` after a successful
+refresh or idempotent no-op and `1` when regeneration fails.
+
+`.githooks/pre-commit-adoption-bundle` is the optional local automation path.
+When staged BAML files are present it runs the status command, runs refresh only
+for stale bundles, and stages `docs/adoption/dotfiles-adoption-bundle.json`
+after a successful refresh. The hook is never installed by default; operators
+opt in with `phase-loop init --install-hooks`.
+
 In standalone mode, root `specs/**` is the default human-visible future-spec
 discovery root when no phase plan, source bundle, or repo-local config
 overrides it. Legacy or project-specific seed roots such as `Specs/**` are
@@ -419,6 +493,32 @@ Dispatch hint precedence is:
 
 Disabled executors and required capabilities remain conservative filters: they
 must not be silently ignored when a preferred executor conflicts with them.
+
+## Planner Validation
+
+Planner skills validate emitted plan-document literals before writing a plan
+artifact. The shared entrypoint is
+`phase_loop_runtime.planner_validation.validate_plan_dispatch_hints(plan_text,
+*, dispatch_capabilities=None, executors=None, product_loop_actions=None)`.
+It returns metadata-only `ValidationFinding` records with `field_path`,
+`literal`, `allowed_values`, and `suggested_fix`; it never writes files, mutates
+runner state, prints output, or raises on invalid plan text.
+
+The validator defaults to `DISPATCH_CAPABILITIES`, `EXECUTORS`, and
+`PRODUCT_LOOP_ACTIONS` from `phase_loop_runtime.models`. It checks
+`Dispatch Hints` executor and required-capability literals, `Execution Policy`
+selectors and executor assignments, and closeout example literals for
+`terminal_status`, `verification_status`, and `blocker_class`. Markdown body
+content outside those planner-emitted protocol surfaces is not validated.
+
+Planner skills must call the validator after the complete draft exists and
+before the project-path plan document is written. A finding blocks the write and
+surfaces a validation_failed closeout with `terminal_status=blocked`,
+`verification_status=blocked`, `blocker_class=contract_bug`,
+`human_required=false`, and a non-secret summary of the findings. This is a
+source-side guard: v24 CLOSEOUTHARDEN remains the runtime soft-fail layer for
+child executor closeout drift, and neither layer coerces unknown literals into
+nearby valid statuses.
 
 ## Execution Policy
 
@@ -486,7 +586,8 @@ Portal, Greenfield, or any acknowledged Pipeline contract.
 ## Reconcile Command
 
 `phase-loop reconcile --phase <ALIAS> [--closeout-commit <SHA>]
-[--repair-summary <text>] [--verification-status <not_run|passed|failed>]`
+[--repair-summary <text>] [--verification-status <not_run|passed|failed>]
+[--recovery-mode]`
 synthesizes a v28-shape `manual_repair` event for the named phase, recording
 the current `HEAD` (or the supplied SHA) as the closeout commit and marking
 `clears_blocker=true`. It then re-reconciles so `phase-loop status` reflects
@@ -499,6 +600,24 @@ manually authoring the v28 P3/P4 event shape and appending to events.jsonl —
 to one CLI call. Use only as a recovery tool when the executor's work is
 correct but ownership classification or lane-evidence gaps left the runner
 blocked; do not use to bypass legitimate verification failures.
+
+### Recovery Mode
+
+`phase-loop reconcile --recovery-mode` is for recovery states where the operator
+intentionally needs to reconcile while the worktree is dirty. It implies the
+dirty-tree override, records `manual_repair.recovery_mode=true`, and requires
+explicit `--closeout-commit`, `--repair-summary`, and `--verification-status`
+arguments so the audit trail does not silently inherit defaults.
+
+Use recovery mode for parallel-race recovery when a plan doc or other recovery
+artifact is dirty because another runner already produced the phase-owned
+output; the repair summary should state which runner or closeout created the
+dirty path. Use it for stale-event recovery when a clean closeout event exists
+but the active status still reflects an older blocked event. Use it for a
+manual-repair flow only after the operator has verified the repair and can name
+the commit and verification result. Recovery mode does not replace legitimate
+verification repair; failed verification still requires repair or a blocked
+closeout, not a reconciled completion.
 
 ## Reopen Command
 
@@ -1017,6 +1136,27 @@ raw_text)` parses child closeout output through the BAML runtime and then
 normalizes the typed value back into the runner's shared automation fields.
 BAML validation errors are reported as repairable non-human `contract_bug`
 blockers with non-secret summaries.
+
+### BAML Prompt Template
+
+`phase_loop_runtime.baml_modular.render_baml_prompt(prompt_template,
+context_constants)` performs the repo-local prompt-template pass before BAML
+loads source text. It supports `{{ name }}` and `{{ name | join(', ') }}` for
+explicitly provided constants, without adding Jinja2 or changing BAML runtime
+syntax.
+
+Closeout prompts currently expose `allowed_terminal_statuses`,
+`allowed_verification_statuses`, and `allowed_blocker_classes`. These values
+render from `phase_loop_runtime.models.PHASE_STATUSES`,
+`phase_loop_runtime.models.BLOCKER_CLASSES`, and the verification-status
+allowlist so model-facing taxonomy text stays aligned with `models.py`. The
+blocker-class rendering includes the compatibility `none` marker; closeout
+payloads should still use `null` when no blocker is present.
+
+BAML runtime placeholders such as `{{ phase_alias }}`, `{{ ctx.output_format
+}}`, and control blocks remain BAML-owned and must pass through unchanged.
+Unknown taxonomy constants are repairable `BamlValidationError` failures, not
+silent downgrades to stale hard-coded prompt text.
 
 ### Closeout Hardening
 

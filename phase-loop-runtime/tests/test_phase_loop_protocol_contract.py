@@ -188,6 +188,18 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         ):
             self.assertIn(token, self.protocol_text)
 
+    def test_protocol_documents_run_loop_mode(self):
+        for token in (
+            "Run Loop Mode",
+            "--max-phases",
+            "dispatched actions by default",
+            "--full-phase",
+            "complete phase cycles",
+            "--no-deprecation-hints",
+            "Existing operators",
+        ):
+            self.assertIn(token, self.protocol_text)
+
     def test_protocol_mentions_plan_frontmatter_and_manual_repair_rules(self):
         for token in (
             "phase_loop_plan_version: 1",

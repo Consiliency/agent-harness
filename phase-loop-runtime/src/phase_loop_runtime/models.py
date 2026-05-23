@@ -1842,6 +1842,7 @@ class StateSnapshot:
     roadmap_sha256: str | None = None
     phase_sha256: dict[str, str] = field(default_factory=dict)
     ledger_warnings: tuple[dict[str, Any], ...] = ()
+    ledger_duplicates_skipped: tuple[dict[str, Any], ...] = ()
     git_topology: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
