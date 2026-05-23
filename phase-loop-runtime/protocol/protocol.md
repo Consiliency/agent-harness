@@ -174,6 +174,67 @@ Reflections remain in harness-specific `reflections/` trees and are not moved
 by HANDOFFS. The root `.gitignore` excludes `/.dev-skills/` so migrated or newly
 written handoffs do not become source artifacts.
 
+## Ledger Debug
+
+`phase-loop status --ledger-debug` is a read-only operator diagnostic surface
+for reducer-rejected ledger events. The flag belongs only to the `status`
+subcommand. Default text status output remains unchanged without the flag:
+operators still see only the existing `Ledger warnings: N` summary when warning
+records exist.
+
+With `--ledger-debug`, text status appends a `Rejected events` section after
+the ledger warning count. Each row reports the rejected event phase, timestamp,
+action, status, canonical reason, and a redacted `raw_event_summary`.
+
+`phase-loop status --json --ledger-debug` adds a top-level
+`rejected_events` array:
+
+```json
+[
+  {
+    "phase": "RUNNER",
+    "timestamp": "2026-05-23T00:00:00Z",
+    "action": "execute",
+    "status": "complete",
+    "reason": "provenance_mismatch",
+    "raw_event_summary": {
+      "schema_version": 2,
+      "source": "fixture",
+      "phase": "RUNNER",
+      "action": "execute",
+      "status": "complete",
+      "timestamp": "2026-05-23T00:00:00Z",
+      "roadmap_sha256_present": true,
+      "phase_sha256_present": true
+    }
+  }
+]
+```
+
+The JSON field is present as `[]` in debug mode when there are no rejected
+events, and absent from default JSON status output.
+
+The frozen ledger-debug rejection reasons are:
+
+- `provenance_mismatch`
+- `phase_missing`
+- `not_in_allowed_status_set`
+- `legacy_pre_schema_v2`
+- `planned_without_plan_artifact`
+- `blocker_supersession`
+
+The `raw_event_summary` is an event identity summary only. It may include
+schema version, source, phase, action, status, timestamp, and whether roadmap
+or phase hashes were present. It must not serialize raw event payloads,
+provider output, prompts, local environment values, credentials, or arbitrary
+nested metadata.
+
+Ledger Debug is diagnostic-only. It does not repair, rewrite, or reclassify
+historical events. After reading the debug output, operators continue to use
+the existing reconcile, reopen, manual repair, or roadmap amendment workflows.
+Persistent rejection logs and automatic repair are out of scope for this
+surface.
+
 ## Skills Bundle
 
 The harness-neutral workflow skill source bundle lives at
@@ -1179,6 +1240,34 @@ frozen to `PHASE_STATUSES`:
 
 - `plan_skipped`
 
+## Roadmap Validation
+
+Roadmap-aware command-start paths run warning-only phase heading validation
+after roadmap selection and before normal execution. The validator only
+examines `### Phase ...` heading lines; it does not validate roadmap body
+content, enforce a numbering convention, rewrite roadmap files, or change event
+provenance semantics.
+
+Each validation finding carries:
+
+- `line_number`
+- `raw_text`
+- `reason`
+- `suggested_fix`
+
+Warnings are emitted to stderr using this operator-facing shape:
+
+```text
+phase-loop roadmap warning: line <line>: <reason>; raw heading: '<heading>'; suggested fix: <fix>
+```
+
+The validator reports loose phase-heading candidates that strict
+`PHASE_HEADING_RE` would not include in phase hash lookup, duplicate phase
+aliases, and aliases outside `[A-Z][A-Z0-9._-]*`. Commands must continue with
+their existing return-code policy and stdout payloads. Common fixes are to use
+`### Phase <number> - Title (ALIAS)`, keep aliases uppercase, and give each
+phase a unique final parenthesized alias.
+
 ## Event Ledger Records
 
 Durable loop events are append-only records stored in the active runtime ledger.
@@ -1203,6 +1292,28 @@ Shared event semantics include:
 Manual/operator events must use the same contract surface as autonomous runs.
 Legacy hashless records may remain visible for audit but must not drive future
 autonomous execution.
+
+## Closeout Event Emission
+
+After a live child executor emits a valid native closeout, the runner appends an
+executor-terminal `LoopEvent` before applying later runner-owned dirty-path or
+closeout classification. The event is append-only evidence with:
+
+- `action: run`
+- `status` equal to the executor closeout `terminal_status`
+- current `roadmap_sha256` and `phase_sha256` from
+  `event_provenance(roadmap, phase)`
+- `metadata.executor_closeout_event.source_status`
+- `metadata.executor_closeout_event.verification_status`
+- `metadata.executor_closeout_event.produced_if_gates`
+- `metadata.executor_closeout_event.dirty_paths`
+- normalized child automation metadata under `metadata.child_automation`
+
+The executor-terminal event does not replace the later runner-classified event.
+Reducer authority remains ledger-order based: the most recent terminal event
+with valid provenance wins. A later runner-classified `blocked` event therefore
+supersedes an earlier executor-terminal `complete`, while the earlier executor
+event remains preserved for audit and recovery.
 
 ## Live Adapter Contract
 
@@ -1558,6 +1669,21 @@ promoted to `phase_owned_dirty` automatically so a "sensible refactor
 instinct" move does not fire as `unowned_dirty_paths`. Detection is exact,
 not similarity-based: a move that also rewrites content is not paired, and
 must be declared in the plan's owned-file contract explicitly.
+
+## Parallel Plan Safety
+
+Planning turns that run concurrently for the same roadmap may leave sibling
+phase plan documents in the worktree. A dirty path is expected sibling planning
+dirt only when it is a repo-relative `plans/phase-plan-<roadmap-version>-<alias>.md`
+artifact, `<alias>` exists in the selected roadmap, `<alias>` is not the current
+phase, and `<roadmap-version>` matches the selected roadmap filename.
+
+Runner dirty-path classification must report those paths as
+`expected_sibling_dirty_paths` with `expected_sibling_dirty: true`, and must not
+also include them in `unowned_dirty_paths` or let them cause a
+`dirty_worktree_conflict`. Current-phase plan docs, foreign roadmap versions,
+alternate directories, absolute paths, path traversal, and non-plan dirt remain
+governed by the ordinary owned-file and control-path rules.
 
 ## Harness Lane Workflows
 

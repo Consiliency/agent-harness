@@ -10,13 +10,15 @@ from .models import StateSnapshot
 EXECUTION_POLICY_ACTIONS = ("plan", "execute", "repair", "review")
 
 
-def render_status(snapshot: StateSnapshot, as_json: bool = False) -> str:
+def render_status(snapshot: StateSnapshot, as_json: bool = False, ledger_debug: bool = False) -> str:
     snapshot = attach_git_topology(Path(snapshot.repo), snapshot)
     if as_json:
         payload = snapshot.to_json()
         policy_block = _resolve_execution_policy_block(snapshot)
         if policy_block:
             payload["execution_policy"] = policy_block
+        if ledger_debug:
+            payload["rejected_events"] = [_ledger_debug_record(warning) for warning in snapshot.ledger_warnings]
         return json.dumps(payload, indent=2, sort_keys=True)
     lines = [f"Roadmap: {snapshot.roadmap}", "Phase statuses:"]
     for phase, status in snapshot.phases.items():
@@ -58,6 +60,8 @@ def render_status(snapshot: StateSnapshot, as_json: bool = False) -> str:
         )
     if snapshot.ledger_warnings:
         lines.append(f"Ledger warnings: {len(snapshot.ledger_warnings)}")
+    if ledger_debug:
+        lines.extend(_ledger_debug_lines(snapshot.ledger_warnings))
     return "\n".join(lines)
 
 
@@ -223,6 +227,53 @@ def _metrics_summary_lines(summary: dict[str, object]) -> list[str]:
 
 def _format_counts(bucket: dict[str, object]) -> str:
     return ", ".join(f"{key}={value}" for key, value in sorted(bucket.items()))
+
+
+def _ledger_debug_lines(warnings: tuple[dict[str, object], ...]) -> list[str]:
+    lines = ["Rejected events:"]
+    if not warnings:
+        lines.append("  none")
+        return lines
+    for warning in warnings:
+        record = _ledger_debug_record(warning)
+        summary = _format_raw_event_summary(record.get("raw_event_summary"))
+        lines.append(
+            "  "
+            f"phase={record.get('phase') or 'unknown'} "
+            f"timestamp={record.get('timestamp') or 'unknown'} "
+            f"action={record.get('action') or 'unknown'} "
+            f"status={record.get('status') or 'unknown'} "
+            f"reason={record.get('reason') or 'unknown'} "
+            f"raw_event_summary={summary}"
+        )
+    return lines
+
+
+def _ledger_debug_record(warning: dict[str, object]) -> dict[str, object]:
+    return {
+        "phase": warning.get("phase"),
+        "timestamp": warning.get("timestamp"),
+        "action": warning.get("action"),
+        "status": warning.get("status"),
+        "reason": warning.get("canonical_reason") or warning.get("reason"),
+        "raw_event_summary": warning.get("raw_event_summary") or _legacy_raw_event_summary(warning),
+    }
+
+
+def _legacy_raw_event_summary(warning: dict[str, object]) -> dict[str, object]:
+    return {
+        key: warning[key]
+        for key in ("source", "phase", "status")
+        if warning.get(key) not in (None, "")
+    }
+
+
+def _format_raw_event_summary(value: object) -> str:
+    if isinstance(value, dict):
+        return ",".join(f"{key}={value[key]}" for key in sorted(value))
+    if value is None:
+        return "none"
+    return str(value)
 
 
 def _resolve_execution_policy_block(snapshot: StateSnapshot) -> dict[str, dict[str, dict[str, object]]]:

@@ -17,7 +17,7 @@ from .maintenance import MaintenanceOptions, SyncSkillsOptions, sync_bridge_skil
 from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import build_notification_payload, run_notification_command
 from .profiles import DEFAULT_PROFILES
-from .provenance import event_provenance, snapshot_provenance
+from .provenance import ValidationFinding, event_provenance, snapshot_provenance, validate_roadmap_phase_headings
 from .reconcile import reconcile
 from .render import render_archive_result, render_skill_sync_result, render_state_inspection, render_status
 from .runner import run_loop, status_snapshot
@@ -149,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "status":
             sub.add_argument("--runtime-projection", action="store_true")
             sub.add_argument("--tier-3-history", action="store_true", help="Print recent Tier 3 evidence-audit summaries without raw prompts or responses.")
+            sub.add_argument("--ledger-debug", action="store_true", help="Print redacted rejected ledger event diagnostics.")
         if name == "migrate-handoffs":
             sub.description = "Move current-repo legacy skill handoffs into repo-local .dev-skills storage."
             sub.add_argument("--apply", action="store_true")
@@ -223,11 +224,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     as_json = bool(args.json)
     if command == "closeout-drift-audit":
+        if args.roadmap:
+            repo_args = args.repo or ["."]
+            if isinstance(repo_args, str):
+                repo_args = [repo_args]
+            for repo_arg in repo_args:
+                audit_repo = resolve_repo(repo_arg)
+                _warn_roadmap_validation(select_roadmap(audit_repo, args.roadmap))
         return _closeout_drift_audit_command(args=args, as_json=as_json)
     repo = resolve_repo(args.repo or ".")
     if command == "init":
         return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json)
     if command == "evidence-audit":
+        if args.roadmap:
+            _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
         return _evidence_audit_command(repo=repo, args=args, as_json=as_json)
     if command in {"run", "resume", "dry-run"} and bool(getattr(args, "reset_capability", False)):
         clear_degradation(repo)
@@ -235,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     if command == "execute":
         phase = args.phase_arg
         output_path = args.output
+        execute_roadmap = select_roadmap(repo, args.roadmap)
+        _warn_roadmap_validation(execute_roadmap)
         if not output_path:
             snapshot = StateSnapshot(
                 timestamp=utc_now(),
@@ -246,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
                 human_required=False,
                 blocker_class="contract_bug",
                 blocker_summary="Direct invocation 'execute' requires --output <path>.",
-                **snapshot_provenance(select_roadmap(repo, args.roadmap) if args.roadmap else Path(".")),
+                **snapshot_provenance(execute_roadmap),
                 )
 
             write_state(repo, snapshot)
@@ -269,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
             repo,
             source_bundle_path,
             phase=phase,
-            roadmap=select_roadmap(repo, args.roadmap),
+            roadmap=execute_roadmap,
             pipeline_mode=effective_pipeline_mode,
         )
         if bundle_diagnostic is not None:
@@ -337,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         roadmap = select_roadmap(repo, args.roadmap)
+        _warn_roadmap_validation(roadmap)
     except RuntimeError as exc:
         if "ambiguous roadmap selection" not in str(exc):
             raise
@@ -391,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(projection, indent=2, sort_keys=True) if as_json else json.dumps(projection, sort_keys=True))
             return 0
-        print(render_status(snapshot, as_json=as_json))
+        print(render_status(snapshot, as_json=as_json, ledger_debug=bool(getattr(args, "ledger_debug", False))))
         return 0
     if command == "handoff":
         snapshot = reconcile(repo, roadmap)
@@ -484,6 +497,20 @@ def main(argv: list[str] | None = None) -> int:
                 print("Log:", result.log_path)
         print(render_status(snapshot, as_json=False))
     return _run_returncode(snapshot, results)
+
+
+def _format_roadmap_validation_warning(finding: ValidationFinding) -> str:
+    return (
+        "phase-loop roadmap warning: "
+        f"line {finding.line_number}: {finding.reason}; "
+        f"raw heading: {finding.raw_text!r}; "
+        f"suggested fix: {finding.suggested_fix}"
+    )
+
+
+def _warn_roadmap_validation(roadmap: Path) -> None:
+    for finding in validate_roadmap_phase_headings(roadmap):
+        print(_format_roadmap_validation_warning(finding), file=sys.stderr)
 
 
 def _tier_3_history(repo: Path, *, as_json: bool = False, limit: int = 10) -> str:

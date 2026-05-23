@@ -96,17 +96,42 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
             continue
         phase = str(event.get("phase", "")).upper()
         status = event.get("status")
+        if phase not in phases:
+            ledger_warnings.append(_ledger_warning("event", phase, str(status or ""), "phase_missing", raw_event=event))
+            continue
+        if status not in {"complete", "blocked", "unknown", "executed", "awaiting_phase_closeout", "executing", "planned"}:
+            ledger_warnings.append(_ledger_warning("event", phase, str(status or ""), "not_in_allowed_status_set", raw_event=event))
+            continue
+        if int(event.get("schema_version") or 1) < 2:
+            ledger_warnings.append(_ledger_warning("event", phase, str(status), "legacy_pre_schema_v2", raw_event=event))
+            continue
         if phase in phases and status in {"complete", "blocked", "unknown", "executed", "awaiting_phase_closeout", "executing", "planned"}:
             if not status_provenance_matches(status, event.get("roadmap_sha256"), event.get("phase_sha256"), current_roadmap_sha, current_phase_sha.get(phase)):
-                pending_event_warnings.setdefault(phase, []).append(_ledger_warning("event", phase, str(status), provenance_mismatch_reason(str(status), event.get("roadmap_sha256"), event.get("phase_sha256"), current_roadmap_sha, current_phase_sha.get(phase))))
+                pending_event_warnings.setdefault(phase, []).append(
+                    _ledger_warning(
+                        "event",
+                        phase,
+                        str(status),
+                        provenance_mismatch_reason(
+                            str(status),
+                            event.get("roadmap_sha256"),
+                            event.get("phase_sha256"),
+                            current_roadmap_sha,
+                            current_phase_sha.get(phase),
+                        ),
+                        raw_event=event,
+                    )
+                )
                 if status in {"blocked", "unknown", "executed", "awaiting_phase_closeout"}:
                     latest_untrusted_terminal_event[phase] = event
                 continue
             if status == "planned" and event.get("action") != "phase_reopen" and find_plan_artifact(repo, phase, roadmap=roadmap) is None:
+                ledger_warnings.append(_ledger_warning("event", phase, str(status), "planned_without_plan_artifact", raw_event=event))
                 continue
             latest_untrusted_terminal_event.pop(phase, None)
             pending_event_warnings.pop(phase, None)
             if phases.get(phase) == "blocked" and status == "planned" and not _planned_event_clears_blocker(event):
+                ledger_warnings.append(_ledger_warning("event", phase, str(status), "blocker_supersession", raw_event=event))
                 continue
             closeout_summary = _event_closeout_summary(event)
             if _closeout_completed(status, closeout_summary):
@@ -549,8 +574,49 @@ def invalidate_stale_downstream_plans(repo: Path, roadmap: Path, completed_phase
     }
 
 
-def _ledger_warning(source: str, phase: str, status: str, reason: str) -> dict[str, str]:
-    return {"source": source, "phase": phase, "status": status, "reason": reason}
+def _ledger_warning(source: str, phase: str, status: str, reason: str, *, raw_event: dict | None = None) -> dict:
+    return _ledger_warning_record(source, phase, status, reason, raw_event=raw_event)
+
+
+def _ledger_warning_record(source: str, phase: str, status: str, reason: str, *, raw_event: dict | None = None) -> dict:
+    warning = {
+        "source": source,
+        "phase": phase,
+        "status": status,
+        "reason": reason,
+        "canonical_reason": _canonical_ledger_reason(reason),
+    }
+    if raw_event is not None:
+        warning["timestamp"] = _optional_text(raw_event.get("timestamp"))
+        warning["action"] = _optional_text(raw_event.get("action"))
+        warning["raw_event_summary"] = _raw_event_summary(raw_event)
+    return {key: value for key, value in warning.items() if value is not None}
+
+
+def _canonical_ledger_reason(reason: str) -> str:
+    if reason in {
+        "phase_missing",
+        "not_in_allowed_status_set",
+        "legacy_pre_schema_v2",
+        "planned_without_plan_artifact",
+        "blocker_supersession",
+    }:
+        return reason
+    return "provenance_mismatch"
+
+
+def _raw_event_summary(event: dict) -> dict[str, object]:
+    summary = {
+        "schema_version": event.get("schema_version"),
+        "source": event.get("source"),
+        "phase": event.get("phase"),
+        "action": event.get("action"),
+        "status": event.get("status"),
+        "timestamp": event.get("timestamp"),
+        "roadmap_sha256_present": bool(event.get("roadmap_sha256")),
+        "phase_sha256_present": bool(event.get("phase_sha256")),
+    }
+    return {key: value for key, value in summary.items() if value not in (None, "")}
 
 
 def _normalize_automation_event(repo: Path, roadmap: Path, event: dict, current_roadmap_sha: str, current_phase_sha: dict[str, str]) -> dict:

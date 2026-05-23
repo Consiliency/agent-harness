@@ -25,6 +25,14 @@ class PhaseProvenance:
     phase_sha256: str
 
 
+@dataclass(frozen=True)
+class ValidationFinding:
+    line_number: int
+    raw_text: str
+    reason: str
+    suggested_fix: str
+
+
 def roadmap_sha256(roadmap: Path) -> str:
     return hashlib.sha256(roadmap.read_bytes()).hexdigest()
 
@@ -38,6 +46,58 @@ def phase_blocks(roadmap: Path) -> dict[str, str]:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         blocks[alias] = text[match.start() : end]
     return blocks
+
+
+def validate_roadmap_phase_headings(roadmap: Path) -> list[ValidationFinding]:
+    text = roadmap.read_text()
+    findings: list[ValidationFinding] = []
+    seen_aliases: dict[str, int] = {}
+    alias_re = re.compile(r"\(([^\s()]+)\)[ \t]*(?:\S[^\n]*)?$")
+    valid_alias_re = re.compile(r"^[A-Z][A-Z0-9._-]*$")
+    fix = "Use `### Phase <number> - Title (ALIAS)` with alias matching [A-Z][A-Z0-9._-]*."
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not re.match(r"^###\s+Phase\b", line):
+            continue
+        strict_match = PHASE_HEADING_RE.match(line)
+        alias_match = alias_re.search(line)
+        alias = alias_match.group(1) if alias_match else None
+        normalized_alias = alias.upper() if alias else None
+
+        if alias is not None and not valid_alias_re.fullmatch(alias):
+            findings.append(
+                ValidationFinding(
+                    line_number=line_number,
+                    raw_text=line,
+                    reason=f"invalid-alias: alias {alias!r} does not match [A-Z][A-Z0-9._-]*",
+                    suggested_fix=fix,
+                )
+            )
+        elif strict_match is None:
+            findings.append(
+                ValidationFinding(
+                    line_number=line_number,
+                    raw_text=line,
+                    reason="loose-match: heading starts with `### Phase` but did not yield a phase_sha256 entry",
+                    suggested_fix=fix,
+                )
+            )
+
+        if normalized_alias and valid_alias_re.fullmatch(normalized_alias):
+            first_line = seen_aliases.get(normalized_alias)
+            if first_line is None:
+                seen_aliases[normalized_alias] = line_number
+            else:
+                findings.append(
+                    ValidationFinding(
+                        line_number=line_number,
+                        raw_text=line,
+                        reason=f"duplicate-alias: alias {normalized_alias} first appeared on line {first_line}",
+                        suggested_fix="Give each roadmap phase a unique alias in the final parenthesized token.",
+                    )
+                )
+
+    return findings
 
 
 def phase_sha256(roadmap: Path, phase: str) -> str | None:

@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .broker import validate_delegation_request
 from .baml_modular import BamlValidationError, parse_baml_response
@@ -239,6 +239,24 @@ def is_plan_doc_current(repo: Path, phase: str, plan: Path, roadmap: Path, *, re
     except Exception:
         return False
     return rel_plan in {line.strip() for line in output.splitlines()}
+
+
+def is_sibling_phase_plan_doc(path: str, roadmap: Path, current_phase: str) -> bool:
+    rel = PurePosixPath(path)
+    if rel.is_absolute() or ".." in rel.parts or len(rel.parts) != 2 or rel.parts[0] != "plans":
+        return False
+
+    roadmap_match = re.fullmatch(r"phase-plans-(v[\w.-]+)\.md", roadmap.name)
+    if not roadmap_match:
+        return False
+    plan_match = re.fullmatch(r"phase-plan-(v[\w.-]+)-([A-Za-z0-9._-]+)\.md", rel.name)
+    if not plan_match or plan_match.group(1) != roadmap_match.group(1):
+        return False
+
+    alias = plan_match.group(2).upper()
+    if alias == current_phase.upper():
+        return False
+    return alias in {phase.upper() for phase in parse_roadmap_phases(roadmap)}
 
 
 def _latest_phase_event_status(repo: Path, phase: str) -> str | None:
@@ -2110,6 +2128,18 @@ def run_loop(
             if post_launch_plan is not None:
                 plan = post_launch_plan
 
+            executor_closeout_event = _executor_closeout_event(
+                repo=repo,
+                roadmap=roadmap,
+                phase=alias,
+                selection=selection,
+                spec=spec,
+                dispatch_decision=dispatch_decision,
+                child_automation=child_automation,
+            )
+            if executor_closeout_event is not None:
+                append_event(repo, executor_closeout_event)
+
             missing_plan_after_planning: dict[str, object] = {}
             if (
                 launch_action == "plan"
@@ -2199,6 +2229,7 @@ def run_loop(
                     pre_launch_dirty_paths,
                     completion_dirty_paths,
                     allow_pre_existing_phase_owned=repair_completion_success,
+                    current_phase=alias,
                 )
                 boundary_blocker = _pipeline_boundary_blocker(
                     repo,
@@ -2219,7 +2250,9 @@ def run_loop(
                     )
                 classifications[alias] = status_after_launch
             elif plan_dirty_paths:
-                dirty_summary = _classify_dirty_paths(repo, roadmap, plan, pre_launch_dirty_paths, plan_dirty_paths)
+                dirty_summary = _classify_dirty_paths(
+                    repo, roadmap, plan, pre_launch_dirty_paths, plan_dirty_paths, current_phase=alias
+                )
                 status_after_launch, event_blocker = _dirty_outcome(
                     dirty_summary,
                     blocked_summary="Phase planning turn produced dirty paths that are not closeout-safe.",
@@ -2227,14 +2260,18 @@ def run_loop(
                 classifications[alias] = status_after_launch
             elif blocked_plan_dirty_paths:
                 plan_dirty_paths = blocked_plan_dirty_paths
-                dirty_summary = _classify_dirty_paths(repo, roadmap, plan, pre_launch_dirty_paths, plan_dirty_paths)
+                dirty_summary = _classify_dirty_paths(
+                    repo, roadmap, plan, pre_launch_dirty_paths, plan_dirty_paths, current_phase=alias
+                )
                 status_after_launch, event_blocker = _dirty_outcome(
                     dirty_summary,
                     blocked_summary="Phase planning turn reported a stale or non-human blocker and produced dirty paths that are not closeout-safe.",
                 )
                 classifications[alias] = status_after_launch
             elif incomplete_execute_dirty_paths:
-                dirty_summary = _classify_dirty_paths(repo, roadmap, plan, pre_launch_dirty_paths, incomplete_execute_dirty_paths)
+                dirty_summary = _classify_dirty_paths(
+                    repo, roadmap, plan, pre_launch_dirty_paths, incomplete_execute_dirty_paths, current_phase=alias
+                )
                 boundary_blocker = _pipeline_boundary_blocker(
                     repo,
                     roadmap,
@@ -2259,7 +2296,9 @@ def run_loop(
             ):
                 verified_dirty_paths = _dirty_paths(repo)
                 if verified_dirty_paths:
-                    dirty_summary = _classify_dirty_paths(repo, roadmap, plan, pre_launch_dirty_paths, verified_dirty_paths)
+                    dirty_summary = _classify_dirty_paths(
+                        repo, roadmap, plan, pre_launch_dirty_paths, verified_dirty_paths, current_phase=alias
+                    )
                     boundary_blocker = _pipeline_boundary_blocker(
                         repo,
                         roadmap,
@@ -3552,6 +3591,54 @@ def _launch_event_metadata(
     return metadata
 
 
+def _executor_closeout_event(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    selection,
+    spec,
+    dispatch_decision: DispatchDecision,
+    child_automation: dict[str, object],
+) -> LoopEvent | None:
+    payload = child_automation.get("native_closeout_payload")
+    if not isinstance(payload, dict):
+        return None
+    if child_automation.get("automation_parse_error"):
+        return None
+    validation = child_automation.get("produced_gates_validation")
+    if isinstance(validation, dict) and validation.get("ok") is False:
+        return None
+    source_status = _phase_status_literal(payload.get("terminal_status"))
+    if source_status is None:
+        return None
+    metadata = {
+        "executor_closeout_event": {
+            "source_status": source_status,
+            "verification_status": payload.get("verification_status"),
+            "produced_if_gates": list(payload.get("produced_if_gates") or ()),
+            "dirty_paths": list(payload.get("dirty_paths") or ()),
+        },
+        "child_automation": child_automation,
+    }
+    return LoopEvent(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phase=phase,
+        action="run",
+        status=source_status,
+        model=selection.model,
+        reasoning_effort=selection.effort,
+        source=selection.source,
+        override_reason=selection.override_reason,
+        command=metadata_command(spec.command, spec.prompt_bundle.render_prompt()),
+        metadata=metadata,
+        selected_executor=dispatch_decision.selected_executor,
+        **event_provenance(roadmap, phase),
+    )
+
+
 def _runner_tier3_closeout_audit(
     *,
     repo: Path,
@@ -3803,7 +3890,7 @@ def _recover_verified_dirty_closeout(
     if not dirty_paths:
         return None
     plan_for_ownership = plan or _latest_launch_plan_path(repo, phase)
-    dirty_summary = _classify_dirty_paths(repo, roadmap, plan_for_ownership, [], dirty_paths)
+    dirty_summary = _classify_dirty_paths(repo, roadmap, plan_for_ownership, [], dirty_paths, current_phase=phase)
     status, blocker = _dirty_outcome(
         dirty_summary,
         blocked_summary="Phase reported verified dirty closeout but left dirty paths that are not closeout-safe.",
@@ -4738,9 +4825,14 @@ def _classify_dirty_paths(
     post_launch_dirty_paths: list[str],
     *,
     allow_pre_existing_phase_owned: bool = False,
+    current_phase: str | None = None,
 ) -> dict[str, object]:
     ownership = parse_plan_ownership(repo, roadmap, plan)
     pre_launch = set(pre_launch_dirty_paths)
+    expected_sibling_dirty = [
+        path for path in post_launch_dirty_paths if current_phase and is_sibling_phase_plan_doc(path, roadmap, current_phase)
+    ]
+    expected_sibling_set = set(expected_sibling_dirty)
     phase_owned = [path for path in post_launch_dirty_paths if ownership.matches(path)]
     phase_owned_set = set(phase_owned)
 
@@ -4761,13 +4853,16 @@ def _classify_dirty_paths(
         for path in post_launch_dirty_paths
         if path in pre_launch
         and path not in ownership.control_paths
+        and path not in expected_sibling_set
         and not (allow_pre_existing_phase_owned and path in phase_owned_set)
     ]
-    unowned = [path for path in post_launch_dirty_paths if path not in phase_owned_set]
+    unowned = [path for path in post_launch_dirty_paths if path not in phase_owned_set and path not in expected_sibling_set]
     control_only_dirty = bool(post_launch_dirty_paths) and all(path in ownership.control_paths for path in post_launch_dirty_paths)
     return {
         "dirty_paths": post_launch_dirty_paths,
         "phase_owned_dirty_paths": phase_owned,
+        "expected_sibling_dirty_paths": expected_sibling_dirty,
+        "expected_sibling_dirty": bool(expected_sibling_dirty),
         "unowned_dirty_paths": unowned,
         "pre_existing_dirty_paths": pre_existing,
         "phase_owned_dirty": (ownership.valid or control_only_dirty) and not pre_existing and not unowned and bool(post_launch_dirty_paths),
@@ -5022,7 +5117,7 @@ def _write_deterministic_closeout(
 
     changed_paths = snapshot.phase_owned_dirty_paths if not override_phase or override_phase == snapshot.current_phase else ()
     if not changed_paths and plan is not None:
-        dirty_summary = _classify_dirty_paths(repo, roadmap, plan, [], _dirty_paths(repo))
+        dirty_summary = _classify_dirty_paths(repo, roadmap, plan, [], _dirty_paths(repo), current_phase=phase)
         changed_paths = tuple(dirty_summary.get("phase_owned_dirty_paths", ()))
 
     closeout = build_phase_loop_closeout(
