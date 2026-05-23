@@ -7,7 +7,15 @@ from pathlib import Path
 
 
 ROADMAP_LEDGER_SCHEMA_VERSION = 2
-PHASE_HEADING_RE = re.compile(r"^###\s+Phase\s+\d+\s+.*?\(([A-Z][A-Z0-9._-]*)\)[ \t]*(?:\S[^\n]*)?$", re.MULTILINE)
+# Phase headings accept integer phase numbers (Phase 1, Phase 2, ...) and
+# decimal sub-phase numbers (Phase 2.1, Phase 3.5, ...). Decimal sub-phases
+# are added post-hoc when an executor formalizes a recurring operator-fix
+# pattern (e.g. v24's Phase 2.1 ADOPTBUNDLEREFRESH formalizing the
+# adoption-bundle refresh that ran as operator-fix in v23 and v24).
+# Without the (?:\.\d+)? group, decimal-phase aliases fail phase_sha256
+# lookup → status_provenance_matches returns False → reducer rejects
+# manual_repair/complete events → state stuck in stale state.
+PHASE_HEADING_RE = re.compile(r"^###\s+Phase\s+\d+(?:\.\d+)?\s+.*?\(([A-Z][A-Z0-9._-]*)\)[ \t]*(?:\S[^\n]*)?$", re.MULTILINE)
 
 
 @dataclass(frozen=True)

@@ -791,3 +791,31 @@ class PhaseLoopModelsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_phase_heading_regex_accepts_decimal_subphase_numbers():
+    """Regression test for the reducer-state bug surfaced during v24:
+    Phase 2.1 ADOPTBUNDLEREFRESH was added by an executor post-hoc to
+    formalize the adoption-bundle refresh pattern, but the original
+    PHASE_HEADING_RE only matched integer phase numbers (Phase 1, 2, etc).
+    Result: phase_sha256 returned None → status_provenance_matches
+    returned False → manual_repair status=complete events rejected →
+    phase stuck in 'planned' despite ledger showing complete events.
+
+    Fix: allow optional decimal portion (.N) after the integer in the
+    Phase number.
+    """
+    from phase_loop_runtime.provenance import PHASE_HEADING_RE
+
+    # Integer phase numbers (legacy)
+    assert PHASE_HEADING_RE.search("### Phase 1 — Foo (ALPHA)") is not None
+    assert PHASE_HEADING_RE.search("### Phase 12 — Bar (BETA12)") is not None
+
+    # Decimal sub-phase numbers (v24 ADOPTBUNDLEREFRESH case)
+    assert PHASE_HEADING_RE.search("### Phase 2.1 — Adoption Bundle (ADOPTBUNDLEREFRESH)") is not None
+    assert PHASE_HEADING_RE.search("### Phase 3.5 — Some Sub-Phase (SUBPHASE35)") is not None
+
+    # Extract alias correctly
+    match = PHASE_HEADING_RE.search("### Phase 2.1 — Adoption Bundle Digest Refresh (ADOPTBUNDLEREFRESH)")
+    assert match is not None
+    assert match.group(1) == "ADOPTBUNDLEREFRESH"
