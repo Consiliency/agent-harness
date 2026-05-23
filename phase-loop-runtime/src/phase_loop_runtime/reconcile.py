@@ -546,7 +546,7 @@ def detect_downstream_plan_staleness(repo: Path, roadmap: Path, completed_phase:
     for alias in aliases[start:]:
         for plan in sorted((repo / "plans").glob("phase-plan-v*-*.md")):
             match = PLAN_RE.search(plan.name)
-            if not match or match.group(1).upper() != alias:
+            if not match or match.group(2).upper() != alias:
                 continue
             metadata = parse_frontmatter(plan.read_text(encoding="utf-8"))
             reasons: list[str] = []
@@ -637,7 +637,7 @@ def _normalize_automation_event(repo: Path, roadmap: Path, event: dict, current_
     match = PLAN_RE.search(artifact_path.name)
     if not match or not artifact_path.exists():
         return event
-    phase = match.group(1).upper()
+    phase = match.group(2).upper()
     if not plan_matches_roadmap(repo, artifact_path, roadmap, phase):
         return event
 

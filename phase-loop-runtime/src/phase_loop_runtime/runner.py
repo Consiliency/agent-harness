@@ -246,15 +246,19 @@ def is_sibling_phase_plan_doc(path: str, roadmap: Path, current_phase: str) -> b
     if rel.is_absolute() or ".." in rel.parts or len(rel.parts) != 2 or rel.parts[0] != "plans":
         return False
 
+    # Use the roadmap's known version-segment as ground truth, then derive
+    # the alias as whatever follows. Avoids the regex-greedy ambiguity
+    # (e.g. phase-plan-v32-VISUALPARITY-SL-1.md naively parses as
+    # v32 + VISUALPARITY-SL-1 vs v32-VISUALPARITY + SL-1; only the
+    # roadmap's known version disambiguates).
     roadmap_match = re.fullmatch(r"phase-plans-(v[\w.-]+)\.md", roadmap.name)
     if not roadmap_match:
         return False
-    plan_match = re.fullmatch(r"phase-plan-(v[\w.-]+)-([A-Za-z0-9._-]+)\.md", rel.name)
-    if not plan_match or plan_match.group(1) != roadmap_match.group(1):
+    expected_prefix = f"phase-plan-{roadmap_match.group(1)}-"
+    if not rel.name.startswith(expected_prefix) or not rel.name.endswith(".md"):
         return False
-
-    alias = plan_match.group(2).upper()
-    if alias == current_phase.upper():
+    alias = rel.name[len(expected_prefix):-len(".md")].upper()
+    if not alias or alias == current_phase.upper():
         return False
     return alias in {phase.upper() for phase in parse_roadmap_phases(roadmap)}
 
@@ -297,7 +301,7 @@ def _pipeline_boundary_blocker(
 def _stale_pipeline_plan_candidate(repo: Path, roadmap: Path, phase: str):
     for candidate in sorted((repo / "plans").glob("phase-plan-v*-*.md")):
         match = PLAN_RE.search(candidate.name)
-        if not match or match.group(1).lower() != phase.lower():
+        if not match or match.group(2).lower() != phase.lower():
             continue
         diagnostic = pipeline_execution_plan_diagnostic(repo, candidate, phase=phase, roadmap=roadmap)
         if diagnostic is not None:
@@ -2151,7 +2155,7 @@ def run_loop(
                 invalid_plan_artifacts: list[dict[str, str]] = []
                 for candidate in sorted((repo / "plans").glob("phase-plan-v*-*.md")):
                     match = PLAN_RE.search(candidate.name)
-                    if not match or match.group(1).lower() != alias.lower():
+                    if not match or match.group(2).lower() != alias.lower():
                         continue
                     diagnostic = plan_artifact_diagnostic(repo, candidate, roadmap, alias)
                     if diagnostic:

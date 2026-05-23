@@ -35,7 +35,7 @@ PHASE_RE = re.compile(
     r"^###\s+Phase\s+\d+(?:\.\d+)?[A-Z]?\s+.*?\(([A-Z][A-Z0-9._-]*)(?:\s*,[^)]*)?\)[ \t]*(?:\S[^\n]*)?$",
     re.MULTILINE,
 )
-PLAN_RE = re.compile(r"phase-plan-v[\w.-]+-([A-Za-z0-9._-]+)\.md$")
+PLAN_RE = re.compile(r"phase-plan-(v[\w.-]+?)-([A-Z][A-Za-z0-9._-]*?)\.md$")
 LANE_SECTION_RE = re.compile(
     r"^###\s+(?:SL-\d+[A-Z]?|[A-Z][A-Z0-9]*-\d+[A-Z]?|Lane\s+\d+|Swim\s*lane\s+\d+)\b.*$",
     re.IGNORECASE | re.MULTILINE,
@@ -658,14 +658,35 @@ def _merge_execution_policy_rules(
 
 
 def find_plan_artifact(repo: Path, phase: str, roadmap: Path | None = None) -> Path | None:
+    # Fast path: when we know the roadmap, construct the exact expected
+    # plan-doc filename and check it directly. This handles cases the legacy
+    # glob+regex iteration can't disambiguate, including hyphenated aliases
+    # (e.g. SL-1 in v32) and suffix-bearing spec names (e.g.
+    # phase-plans-v32-VISUALPARITY.md → phase-plan-v32-VISUALPARITY-SL-1.md).
+    # Surfaced by the regen 2026-05-22/23 v32-VISUALPARITY incident; see
+    # plans/detailed-phase-loop-plan-discovery-bugs-20260523-0224.md.
+    if roadmap is not None:
+        m = re.fullmatch(r"phase-plans-(v[\w.-]+)\.md", roadmap.name)
+        if m:
+            version = m.group(1)
+            expected = repo / "plans" / f"phase-plan-{version}-{phase}.md"
+            if expected.is_file():
+                if plan_matches_roadmap(repo, expected, roadmap, phase):
+                    return expected.resolve()
+    # Fallback: glob+regex iteration (back-compat for case-folded matching
+    # or when roadmap is None). PLAN_RE captures (version, alias);
+    # group(2) is the alias.
     phase_lower = phase.lower()
     plans = sorted((repo / "plans").glob("phase-plan-v*-*.md"))
     for plan in plans:
         match = PLAN_RE.search(plan.name)
-        if match and match.group(1).lower() == phase_lower:
-            if roadmap is not None and not plan_matches_roadmap(repo, plan, roadmap, phase):
-                continue
-            return plan.resolve()
+        if not match:
+            continue
+        if match.group(2).lower() != phase_lower:
+            continue
+        if roadmap is not None and not plan_matches_roadmap(repo, plan, roadmap, phase):
+            continue
+        return plan.resolve()
     return None
 
 
@@ -1474,7 +1495,7 @@ def list_plan_artifacts(repo: Path) -> dict[str, Path]:
     for plan in sorted((repo / "plans").glob("phase-plan-v*-*.md")):
         match = PLAN_RE.search(plan.name)
         if match:
-            result[match.group(1).upper()] = plan.resolve()
+            result[match.group(2).upper()] = plan.resolve()
     return result
 
 

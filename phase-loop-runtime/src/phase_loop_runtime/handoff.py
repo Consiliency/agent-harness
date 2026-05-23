@@ -823,7 +823,7 @@ def _trusted_workflow_handoff(repo: Path, roadmap: Path) -> dict[str, str] | Non
     if artifact:
         match = PLAN_RE.search(Path(str(artifact)).name)
         if match:
-            phase = match.group(1).upper()
+            phase = match.group(2).upper()
     return {
         "workflow_skill": str(handoff.get("workflow_skill") or ""),
         "originating_harness": str(handoff.get("originating_harness") or ""),
