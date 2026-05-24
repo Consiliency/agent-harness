@@ -77,6 +77,18 @@ def _migration_wave_body() -> str:
 
 
 class PhaseLoopRunnerTest(unittest.TestCase):
+    def _latest_event_with_metadata(self, events: list[dict], key: str) -> dict:
+        for event in reversed(events):
+            if key in event.get("metadata", {}):
+                return event
+        raise AssertionError(f"expected event metadata key {key}")
+
+    def _latest_event_with_action(self, events: list[dict], action: str) -> dict:
+        for event in reversed(events):
+            if event.get("action") == action:
+                return event
+        raise AssertionError(f"expected event action {action}")
+
     def test_standalone_harness_closeout_includes_advisory_impact_hints(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -1107,8 +1119,9 @@ class PhaseLoopRunnerTest(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(snapshot.phases["RUNNER"], "complete")
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
-            self.assertEqual(events[-2]["metadata"]["incomplete_execute_dirty_worktree"]["phase_owned_dirty"], True)
+            dirty_event = self._latest_event_with_metadata(events, "incomplete_execute_dirty_worktree")
+            self.assertEqual(dirty_event["status"], "awaiting_phase_closeout")
+            self.assertEqual(dirty_event["metadata"]["incomplete_execute_dirty_worktree"]["phase_owned_dirty"], True)
             self.assertEqual(events[-1]["status"], "complete")
             self.assertEqual(events[-1]["metadata"]["closeout"]["closeout_action"], "commit")
             self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
@@ -1194,7 +1207,7 @@ class PhaseLoopRunnerTest(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(snapshot.phases["RUNNER"], "complete")
             events = read_events(repo)
-            self.assertEqual(events[-2]["action"], "manual_repair")
+            self.assertEqual(self._latest_event_with_action(events, "manual_repair")["action"], "manual_repair")
             self.assertEqual(events[-1]["status"], "complete")
             self.assertNotIn("blocker", events[-1])
 
@@ -1271,9 +1284,10 @@ class PhaseLoopRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot.phases["RUNNER"], "planned")
             self.assertFalse(snapshot.human_required)
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
-            self.assertEqual(events[-2]["metadata"]["child_automation"]["automation_status"], "blocked")
-            self.assertEqual(events[-2]["metadata"]["plan_dirty_worktree"]["phase_owned_dirty"], True)
+            dirty_event = self._latest_event_with_metadata(events, "plan_dirty_worktree")
+            self.assertEqual(dirty_event["status"], "awaiting_phase_closeout")
+            self.assertEqual(dirty_event["metadata"]["child_automation"]["automation_status"], "blocked")
+            self.assertEqual(dirty_event["metadata"]["plan_dirty_worktree"]["phase_owned_dirty"], True)
             self.assertEqual(events[-1]["status"], "planned")
             self.assertEqual(events[-1]["metadata"]["closeout"]["closeout_action"], "commit")
             self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
@@ -1379,11 +1393,12 @@ class PhaseLoopRunnerTest(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(snapshot.phases["RUNNER"], "complete")
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
-            self.assertIsNone(events[-2].get("blocker"))
-            self.assertEqual(events[-2]["metadata"]["child_automation"]["automation_status"], "complete")
-            self.assertEqual(events[-2]["metadata"]["completion_dirty_worktree"]["phase_owned_dirty"], True)
-            self.assertEqual(events[-2]["metadata"]["completion_dirty_worktree"]["pre_existing_dirty_paths"], [])
+            dirty_event = self._latest_event_with_metadata(events, "completion_dirty_worktree")
+            self.assertEqual(dirty_event["status"], "awaiting_phase_closeout")
+            self.assertIsNone(dirty_event.get("blocker"))
+            self.assertEqual(dirty_event["metadata"]["child_automation"]["automation_status"], "complete")
+            self.assertEqual(dirty_event["metadata"]["completion_dirty_worktree"]["phase_owned_dirty"], True)
+            self.assertEqual(dirty_event["metadata"]["completion_dirty_worktree"]["pre_existing_dirty_paths"], [])
             self.assertEqual(events[-1]["status"], "complete")
             self.assertEqual(events[-1]["metadata"]["closeout"]["closeout_action"], "commit")
             self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
@@ -1635,10 +1650,11 @@ automation:
             self.assertEqual(len(results), 1)
             self.assertEqual(snapshot.phases["RUNNER"], "planned")
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
-            self.assertIsNone(events[-2].get("blocker"))
-            self.assertNotIn("terminal_blocker", events[-2]["metadata"]["terminal_summary"])
-            self.assertEqual(events[-2]["metadata"]["terminal_summary"]["verification_status"], "not_run")
+            dirty_event = self._latest_event_with_metadata(events, "plan_dirty_worktree")
+            self.assertEqual(dirty_event["status"], "awaiting_phase_closeout")
+            self.assertIsNone(dirty_event.get("blocker"))
+            self.assertNotIn("terminal_blocker", dirty_event["metadata"]["terminal_summary"])
+            self.assertEqual(dirty_event["metadata"]["terminal_summary"]["verification_status"], "not_run")
             self.assertEqual(events[-1]["status"], "planned")
             self.assertEqual(events[-1]["metadata"]["closeout"]["closeout_action"], "commit")
             self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
@@ -1834,8 +1850,9 @@ automation:
             self.assertEqual(len(results), 1)
             self.assertEqual(snapshot.phases["RUNNER"], "complete")
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
-            self.assertEqual(events[-2]["metadata"]["completion_dirty_worktree"]["phase_owned_dirty"], True)
+            dirty_event = self._latest_event_with_metadata(events, "completion_dirty_worktree")
+            self.assertEqual(dirty_event["status"], "awaiting_phase_closeout")
+            self.assertEqual(dirty_event["metadata"]["completion_dirty_worktree"]["phase_owned_dirty"], True)
             self.assertEqual(events[-1]["status"], "complete")
             self.assertEqual(events[-1]["metadata"]["closeout"]["closeout_action"], "commit")
             self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
@@ -1901,10 +1918,13 @@ automation:
             self.assertEqual(results, [])
             self.assertEqual(snapshot.phases["RUNNER"], "complete")
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
-            self.assertEqual(events[-2]["metadata"]["verified_dirty_closeout_recovery"]["plan_source"], "latest_launch")
-            self.assertIn("specs/phase-plans-v1.md", events[-2]["metadata"]["completion_dirty_worktree"]["phase_owned_dirty_paths"])
-            self.assertIn("README.md", events[-2]["metadata"]["completion_dirty_worktree"]["phase_owned_dirty_paths"])
+            recovery_event = next(
+                event for event in events if event.get("metadata", {}).get("verified_dirty_closeout_recovery")
+            )
+            self.assertEqual(recovery_event["status"], "awaiting_phase_closeout")
+            self.assertEqual(recovery_event["metadata"]["verified_dirty_closeout_recovery"]["plan_source"], "latest_launch")
+            self.assertIn("specs/phase-plans-v1.md", recovery_event["metadata"]["completion_dirty_worktree"]["phase_owned_dirty_paths"])
+            self.assertIn("README.md", recovery_event["metadata"]["completion_dirty_worktree"]["phase_owned_dirty_paths"])
             self.assertEqual(events[-1]["status"], "complete")
             self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
 
@@ -2725,9 +2745,10 @@ automation:
             self.assertEqual(snapshot.phases["CONTRACT"], "planned")
             self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
-            self.assertEqual(events[-2]["metadata"]["plan_dirty_worktree"]["phase_owned_dirty"], True)
-            self.assertEqual(events[-2]["metadata"]["plan_dirty_worktree"]["ownership_errors"], [])
+            dirty_event = self._latest_event_with_metadata(events, "plan_dirty_worktree")
+            self.assertEqual(dirty_event["status"], "awaiting_phase_closeout")
+            self.assertEqual(dirty_event["metadata"]["plan_dirty_worktree"]["phase_owned_dirty"], True)
+            self.assertEqual(dirty_event["metadata"]["plan_dirty_worktree"]["ownership_errors"], [])
 
     def test_live_mixed_harness_plan_execute_matrix(self):
         executors = enabled_live_smoke_executors()
@@ -3003,7 +3024,8 @@ automation:
             self.assertEqual(len(results), 1)
             self.assertEqual(snapshot.phases["CONTRACT"], "complete")
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
+            dirty_event = self._latest_event_with_metadata(events, "incomplete_execute_dirty_worktree")
+            self.assertEqual(dirty_event["status"], "awaiting_phase_closeout")
             self.assertEqual(events[-1]["status"], "complete")
             self.assertEqual(events[-1]["metadata"]["closeout"]["closeout_action"], "commit")
             self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
@@ -3033,8 +3055,9 @@ automation:
             self.assertEqual(len(results), 1)
             self.assertEqual(snapshot.phases["CONTRACT"], "planned")
             events = read_events(repo)
-            self.assertEqual(events[-2]["status"], "awaiting_phase_closeout")
-            self.assertEqual(events[-2]["metadata"]["plan_dirty_worktree"]["terminal_status"], "planned")
+            dirty_event = self._latest_event_with_metadata(events, "plan_dirty_worktree")
+            self.assertEqual(dirty_event["status"], "awaiting_phase_closeout")
+            self.assertEqual(dirty_event["metadata"]["plan_dirty_worktree"]["terminal_status"], "planned")
             self.assertEqual(events[-1]["status"], "planned")
             self.assertEqual(events[-1]["metadata"]["closeout"]["closeout_action"], "commit")
             self.assertEqual(events[-1]["metadata"]["closeout"]["verification_status"], "not_run")

@@ -14,6 +14,62 @@ from phase_loop_test_utils import make_repo, provenanced_state
 
 
 class PhaseLoopWorkUnitObservabilityTest(unittest.TestCase):
+    def test_terminal_summary_applies_child_baml_closeout_overlay(self):
+        summary = build_terminal_summary(
+            terminal_status="executing",
+            terminal_blocker=None,
+            verification_status="not_run",
+            next_action="Await runner closeout.",
+            child_baml_closeout={
+                "terminal_status": "awaiting_phase_closeout",
+                "verification_status": "passed",
+                "produced_if_gates": ["IF-0-RECONCILESTATEAUDIT-1"],
+                "dirty_paths": [],
+                "blocker_class": "none",
+                "blocker_summary": "none",
+                "human_required": False,
+                "required_human_inputs": [],
+            },
+        )
+
+        self.assertEqual(summary["terminal_status"], "awaiting_phase_closeout")
+        self.assertEqual(summary["verification_status"], "passed")
+        self.assertEqual(summary["produced_if_gates"], ["IF-0-RECONCILESTATEAUDIT-1"])
+        self.assertIsNone(summary["terminal_blocker"])
+
+    def test_terminal_summary_preserves_existing_shape_without_child_closeout(self):
+        summary = build_terminal_summary(
+            terminal_status="executed",
+            terminal_blocker=None,
+            verification_status="not_run",
+            next_action="Await closeout.",
+        )
+
+        self.assertEqual(summary["terminal_status"], "executed")
+        self.assertEqual(summary["verification_status"], "not_run")
+        self.assertNotIn("produced_if_gates", summary)
+        self.assertNotIn("extraction_failure", summary)
+
+    def test_terminal_summary_sanitizes_extraction_failure_metadata(self):
+        summary = build_terminal_summary(
+            terminal_status="executed",
+            terminal_blocker=None,
+            verification_status="not_run",
+            next_action="Await closeout.",
+            extraction_failure={
+                "reason": "missing_native_closeout",
+                "source": "output",
+                "classification": "native_closeout_extraction",
+                "raw_output": "api_key=should-not-survive",
+                "detail": "safe metadata",
+            },
+        )
+
+        self.assertEqual(summary["extraction_failure"]["reason"], "missing_native_closeout")
+        self.assertEqual(summary["extraction_failure"]["detail"], "safe metadata")
+        self.assertNotIn("raw_output", summary["extraction_failure"])
+        self.assertNotIn("api_key", str(summary["extraction_failure"]))
+
     def test_terminal_summary_metric_monitor_and_handoff_render_work_unit(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

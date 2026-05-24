@@ -115,6 +115,9 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         if int(event.get("schema_version") or 1) < 2:
             ledger_warnings.append(_ledger_warning("event", phase, str(status), "legacy_pre_schema_v2", raw_event=event))
             continue
+        if event.get("action") == "state_transition" and _state_transition_metadata(event) is None:
+            ledger_warnings.append(_ledger_warning("event", phase, str(status), "malformed_state_transition", raw_event=event))
+            continue
         if phase in phases and status in {"complete", "blocked", "unknown", "executed", "awaiting_phase_closeout", "executing", "planned"}:
             if not status_provenance_matches(status, event.get("roadmap_sha256"), event.get("phase_sha256"), current_roadmap_sha, current_phase_sha.get(phase)):
                 pending_event_warnings.setdefault(phase, []).append(
@@ -747,6 +750,7 @@ def _canonical_ledger_reason(reason: str) -> str:
         "planned_without_plan_artifact",
         "blocker_supersession",
         "event_only_status",
+        "malformed_state_transition",
     }:
         return reason
     return "provenance_mismatch"
@@ -763,6 +767,9 @@ def _raw_event_summary(event: dict) -> dict[str, object]:
         "roadmap_sha256_present": bool(event.get("roadmap_sha256")),
         "phase_sha256_present": bool(event.get("phase_sha256")),
     }
+    transition = _state_transition_metadata(event)
+    if transition is not None:
+        summary["state_transition"] = transition
     return {key: value for key, value in summary.items() if value not in (None, "")}
 
 
@@ -945,6 +952,9 @@ def _default_closeout_summary(terminal_status: object) -> dict[str, object]:
 
 
 def _planned_event_clears_blocker(event: dict) -> bool:
+    transition = _state_transition_metadata(event)
+    if transition is not None and event.get("status") in {"planned", "executing"}:
+        return transition.get("reason") == "repair_precondition_cleared"
     if event.get("action") != "manual_repair":
         return False
     metadata = event.get("metadata")
@@ -954,6 +964,21 @@ def _planned_event_clears_blocker(event: dict) -> bool:
     if isinstance(manual_repair, dict):
         return bool(manual_repair.get("clears_blocker"))
     return bool(metadata.get("clears_blocker"))
+
+
+def _state_transition_metadata(event: dict) -> dict[str, object] | None:
+    if event.get("action") != "state_transition":
+        return None
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    transition = metadata.get("state_transition")
+    if not isinstance(transition, dict):
+        return None
+    required = ("from", "to", "reason", "trigger")
+    if any(not _optional_text(transition.get(key)) for key in required):
+        return None
+    return transition
 
 
 def _event_clears_terminal_summary(event: dict, status: object) -> bool:

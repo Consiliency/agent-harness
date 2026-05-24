@@ -735,6 +735,8 @@ def build_terminal_summary(
     verification_commands: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     latest_verification_unit: dict[str, Any] | None = None,
     phase_loop_closeout: dict[str, Any] | None = None,
+    child_baml_closeout: dict[str, Any] | None = None,
+    extraction_failure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = {
         "metric_id": metric_id,
@@ -749,15 +751,99 @@ def build_terminal_summary(
         "pre_existing_dirty_paths": list(pre_existing_dirty_paths),
         "artifact_paths": artifact_paths or {},
     }
+    summary = apply_child_terminal_summary_overlay(
+        summary,
+        child_baml_closeout=child_baml_closeout,
+        extraction_failure=extraction_failure,
+    )
     return {
         **({"metric_id": metric_id} if metric_id else {}),
         **{field: summary[field] for field in TERMINAL_SUMMARY_FIELDS},
+        **({"produced_if_gates": summary["produced_if_gates"]} if "produced_if_gates" in summary else {}),
+        **({"extraction_failure": summary["extraction_failure"]} if "extraction_failure" in summary else {}),
         **({"evidence_refs": list(evidence_refs)} if evidence_refs else {}),
         **({"work_unit": work_unit} if work_unit else {}),
         **({"verification_commands": list(verification_commands)} if verification_commands else {}),
         **({"latest_verification_unit": latest_verification_unit} if latest_verification_unit else {}),
         **({"phase_loop_closeout": phase_loop_closeout} if phase_loop_closeout else {}),
     }
+
+
+def apply_child_terminal_summary_overlay(
+    summary: dict[str, Any],
+    *,
+    child_baml_closeout: dict[str, Any] | None = None,
+    extraction_failure: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    updated = dict(summary)
+    if isinstance(child_baml_closeout, dict):
+        terminal_status = _nonempty_text(child_baml_closeout.get("terminal_status"))
+        if terminal_status is not None:
+            updated["terminal_status"] = terminal_status
+        verification_status = _nonempty_text(child_baml_closeout.get("verification_status"))
+        if verification_status is not None:
+            updated["verification_status"] = verification_status
+        next_action = _nonempty_text(child_baml_closeout.get("next_action"))
+        if next_action is not None:
+            updated["next_action"] = next_action
+        produced = _string_list(child_baml_closeout.get("produced_if_gates"))
+        if produced is not None:
+            updated["produced_if_gates"] = produced
+        dirty_paths = _string_list(child_baml_closeout.get("dirty_paths"))
+        if dirty_paths is not None and not updated.get("dirty_paths"):
+            updated["dirty_paths"] = dirty_paths
+
+        blocker_class = _optional_child_literal(child_baml_closeout.get("blocker_class"))
+        blocker_summary = _optional_child_literal(child_baml_closeout.get("blocker_summary"))
+        human_required = bool(child_baml_closeout.get("human_required", False))
+        required_inputs = _string_list(child_baml_closeout.get("required_human_inputs")) or []
+        if blocker_class or blocker_summary or human_required:
+            updated["terminal_blocker"] = {
+                "human_required": human_required,
+                "blocker_class": blocker_class,
+                "blocker_summary": blocker_summary,
+                "required_human_inputs": required_inputs,
+                "access_attempts": (),
+            }
+        elif updated.get("terminal_blocker") is None:
+            updated["terminal_blocker"] = None
+
+    sanitized_failure = _sanitize_extraction_failure(extraction_failure)
+    if sanitized_failure is not None:
+        updated["extraction_failure"] = sanitized_failure
+    return updated
+
+
+def _nonempty_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_child_literal(value: Any) -> str | None:
+    text = _nonempty_text(value)
+    if text is None or text.lower() in {"none", "null"}:
+        return None
+    return text
+
+
+def _string_list(value: Any) -> list[str] | None:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return None
+
+
+def _sanitize_extraction_failure(value: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    allowed = ("reason", "source", "classification", "detail")
+    sanitized = {
+        key: str(value[key])
+        for key in allowed
+        if value.get(key) is not None and "\n" not in str(value[key])
+    }
+    return sanitized or None
 
 
 def run_heartbeat_summary(

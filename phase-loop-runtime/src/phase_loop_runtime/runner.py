@@ -78,6 +78,7 @@ from .models import (
     utc_now,
 )
 from .observability import (
+    apply_child_terminal_summary_overlay,
     append_work_unit_metric,
     build_terminal_summary,
     build_work_unit_metric,
@@ -271,6 +272,60 @@ def _latest_phase_event_status(repo: Path, phase: str) -> str | None:
             status = event.get("status")
             return str(status) if status is not None else None
     return None
+
+
+def set_phase_status(
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    classifications: dict[str, str],
+    next_status: str,
+    *,
+    reason: str,
+    trigger: str,
+    selection,
+    action: str,
+    metadata: dict[str, object] | None = None,
+) -> str:
+    if next_status not in PHASE_STATUSES:
+        raise ValueError(f"invalid phase status: {next_status}")
+    reason = reason.strip()
+    trigger = trigger.strip()
+    if not reason:
+        raise ValueError("phase status transition reason is required")
+    if not trigger:
+        raise ValueError("phase status transition trigger is required")
+    previous = classifications.get(phase, "unplanned")
+    classifications[phase] = next_status
+    if previous == next_status:
+        return next_status
+    transition = {
+        "from": previous,
+        "to": next_status,
+        "reason": reason,
+        "trigger": trigger,
+    }
+    event_metadata = {"state_transition": transition}
+    if metadata:
+        event_metadata.update(metadata)
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action="state_transition",
+            status=next_status,
+            model=selection.model,
+            reasoning_effort=selection.effort,
+            source=selection.source,
+            override_reason=selection.override_reason,
+            metadata={**event_metadata, "trigger_action": action},
+            **event_provenance(roadmap, phase),
+        ),
+    )
+    return next_status
 
 
 def _pipeline_boundary_blocker(
@@ -866,6 +921,7 @@ def run_loop(
                         break
                     continue
                 break
+            launch_action = None
             if explicit_product_action == "repair" or status == "blocked":
                 if snapshot.human_required:
                     break
@@ -898,52 +954,70 @@ def run_loop(
                             break
                         continue
                     break
-                repair_context, repair_missing = _build_repair_context(repo, alias, plan, snapshot)
-                if repair_missing:
-                    append_event(
+                repair_precondition = repair_precondition_for_snapshot(repo, roadmap, alias, plan, snapshot)
+                if repair_precondition["status"] == "cleared":
+                    status = "planned" if plan is not None else "unplanned"
+                    set_phase_status(
                         repo,
-                        LoopEvent(
-                            timestamp=utc_now(),
-                            repo=str(repo),
-                            roadmap=str(roadmap),
-                            phase=alias,
-                            action=action,
-                            status="blocked",
-                            model=selection.model,
-                            reasoning_effort=selection.effort,
-                            source=selection.source,
-                            override_reason=selection.override_reason,
-                            blocker={
-                                "human_required": False,
-                                "blocker_class": snapshot.blocker_class,
-                                "blocker_summary": (
-                                    "Repair launch skipped because trusted repair context is incomplete. "
-                                    "Inspect `.phase-loop/tui-handoff.md`, run `phase-loop handoff`, "
-                                    "then verify `phase-loop status --json` before retrying repair."
-                                ),
-                                "required_human_inputs": (),
-                                "access_attempts": (),
-                            },
-                            metadata={
-                                "repair_launch": {
-                                    "status": "blocked",
-                                    "reason": "missing_trusted_repair_context",
-                                    "missing": repair_missing,
-                                    "state_path": str(state_path(repo)),
-                                    "events_path": str(event_path(repo)),
-                                    "handoff_path": str(tui_handoff_path(repo)),
-                                    "recovery_commands": [
-                                        "phase-loop handoff",
-                                        "phase-loop status --json",
-                                    ],
-                                }
-                            },
-                            **event_provenance(roadmap, alias),
-                        ),
+                        roadmap,
+                        alias,
+                        classifications,
+                        status,
+                        reason="repair_precondition_cleared",
+                        trigger="live_dirty_worktree_check",
+                        selection=selection,
+                        action=action,
+                        metadata={"repair_precondition": repair_precondition},
                     )
+                elif repair_precondition["status"] == "sticky":
                     break
-                launch_action = "repair"
-            else:
+                if repair_precondition["status"] != "cleared":
+                    repair_context, repair_missing = _build_repair_context(repo, alias, plan, snapshot)
+                    if repair_missing:
+                        append_event(
+                            repo,
+                            LoopEvent(
+                                timestamp=utc_now(),
+                                repo=str(repo),
+                                roadmap=str(roadmap),
+                                phase=alias,
+                                action=action,
+                                status="blocked",
+                                model=selection.model,
+                                reasoning_effort=selection.effort,
+                                source=selection.source,
+                                override_reason=selection.override_reason,
+                                blocker={
+                                    "human_required": False,
+                                    "blocker_class": snapshot.blocker_class,
+                                    "blocker_summary": (
+                                        "Repair launch skipped because trusted repair context is incomplete. "
+                                        "Inspect `.phase-loop/tui-handoff.md`, run `phase-loop handoff`, "
+                                        "then verify `phase-loop status --json` before retrying repair."
+                                    ),
+                                    "required_human_inputs": (),
+                                    "access_attempts": (),
+                                },
+                                metadata={
+                                    "repair_launch": {
+                                        "status": "blocked",
+                                        "reason": "missing_trusted_repair_context",
+                                        "missing": repair_missing,
+                                        "state_path": str(state_path(repo)),
+                                        "events_path": str(event_path(repo)),
+                                        "handoff_path": str(tui_handoff_path(repo)),
+                                        "recovery_commands": [
+                                            "phase-loop handoff",
+                                            "phase-loop status --json",
+                                        ],
+                                    }
+                                },
+                                **event_provenance(roadmap, alias),
+                            ),
+                        )
+                        break
+                    launch_action = "repair"
+            if launch_action is None:
                 repair_context = None
                 if explicit_product_action in {"roadmap", "plan", "execute", "review"}:
                     launch_action = explicit_product_action
@@ -1996,7 +2070,17 @@ def run_loop(
                 if post_launch in {"planned", "complete", "blocked", "unknown", "executed", "awaiting_phase_closeout"}
                 else ("planned" if dry_run else "executed")
             )
-            classifications[alias] = status_after_launch
+            set_phase_status(
+                repo,
+                roadmap,
+                alias,
+                classifications,
+                status_after_launch,
+                reason="launch_result_reduction",
+                trigger=launch_action,
+                selection=selection,
+                action=action,
+            )
             event_blocker = None
             child_automation: dict[str, object] = {}
             post_launch_plan = find_plan_artifact(repo, alias, roadmap=roadmap)
@@ -2014,7 +2098,17 @@ def run_loop(
                         child_automation["produced_gates_validation"] = gate_validation.to_json()
                     if not gate_validation.ok:
                         status_after_launch = "blocked"
-                        classifications[alias] = status_after_launch
+                        set_phase_status(
+                            repo,
+                            roadmap,
+                            alias,
+                            classifications,
+                            status_after_launch,
+                            reason="gate_validation_failed",
+                            trigger=launch_action,
+                            selection=selection,
+                            action=action,
+                        )
                         child_automation["produced_gates_validation"] = gate_validation.to_json()
                         event_blocker = {
                             "human_required": False,
@@ -2044,7 +2138,17 @@ def run_loop(
                         child_automation["tier3_audit"] = tier3_audit["summary"]
                         if tier3_audit.get("blocker"):
                             status_after_launch = "blocked"
-                            classifications[alias] = status_after_launch
+                            set_phase_status(
+                                repo,
+                                roadmap,
+                                alias,
+                                classifications,
+                                status_after_launch,
+                                reason="tier3_audit_blocked",
+                                trigger=launch_action,
+                                selection=selection,
+                                action=action,
+                            )
                             event_blocker = tier3_audit["blocker"]
                             automation_status = status_after_launch
                 if not automation_status and launch_action == "plan" and post_launch_plan is not None:
@@ -2061,7 +2165,17 @@ def run_loop(
                 ):
                     if not automation_status:
                         status_after_launch = "blocked"
-                        classifications[alias] = status_after_launch
+                        set_phase_status(
+                            repo,
+                            roadmap,
+                            alias,
+                            classifications,
+                            status_after_launch,
+                            reason="missing_shared_automation_closeout",
+                            trigger=launch_action,
+                            selection=selection,
+                            action=action,
+                        )
                         event_blocker = {
                             "human_required": False,
                             "blocker_class": "repeated_verification_failure",
@@ -2073,7 +2187,17 @@ def run_loop(
                         }
                     elif child_automation.get("automation_parse_error"):
                         status_after_launch = "blocked"
-                        classifications[alias] = status_after_launch
+                        set_phase_status(
+                            repo,
+                            roadmap,
+                            alias,
+                            classifications,
+                            status_after_launch,
+                            reason="automation_parse_error",
+                            trigger=launch_action,
+                            selection=selection,
+                            action=action,
+                        )
                         event_blocker = {
                             "human_required": False,
                             "blocker_class": child_automation.get("automation_parse_error_blocker_class")
@@ -2120,11 +2244,31 @@ def run_loop(
                                         "required_human_inputs": (),
                                         "access_attempts": (),
                                     }
-                                classifications[alias] = status_after_launch
+                                set_phase_status(
+                                    repo,
+                                    roadmap,
+                                    alias,
+                                    classifications,
+                                    status_after_launch,
+                                    reason="delegated_child_reduction",
+                                    trigger=launch_action,
+                                    selection=selection,
+                                    action=action,
+                                )
                                 automation_status = status_after_launch
                             else:
                                 status_after_launch = "blocked"
-                                classifications[alias] = status_after_launch
+                                set_phase_status(
+                                    repo,
+                                    roadmap,
+                                    alias,
+                                    classifications,
+                                    status_after_launch,
+                                    reason="delegation_request_invalid",
+                                    trigger=launch_action,
+                                    selection=selection,
+                                    action=action,
+                                )
                                 child_automation["automation_parse_error"] = (
                                     f"{_executor_display_name(spec.executor)} live launch for {alias} requested delegation "
                                     "without a typed delegation_request block."
@@ -2155,7 +2299,17 @@ def run_loop(
                                 automation_status = status_after_launch
                             else:
                                 status_after_launch = automation_status_literal
-                        classifications[alias] = status_after_launch
+                        set_phase_status(
+                            repo,
+                            roadmap,
+                            alias,
+                            classifications,
+                            status_after_launch,
+                            reason="launch_result_reduction",
+                            trigger=launch_action,
+                            selection=selection,
+                            action=action,
+                        )
                         automation_human_required = str(child_automation.get("automation_human_required", "")).lower() == "true"
                         automation_blocker_class = _optional_automation_literal(child_automation.get("automation_blocker_class"))
                         automation_blocker_summary = _optional_automation_literal(child_automation.get("automation_blocker_summary"))
@@ -2194,7 +2348,17 @@ def run_loop(
                 and event_blocker is None
             ):
                 status_after_launch = "planned"
-                classifications[alias] = status_after_launch
+                set_phase_status(
+                    repo,
+                    roadmap,
+                    alias,
+                    classifications,
+                    status_after_launch,
+                    reason="planning_launch_produced_plan",
+                    trigger=launch_action,
+                    selection=selection,
+                    action=action,
+                )
             if post_launch_plan is not None:
                 plan = post_launch_plan
 
@@ -2232,7 +2396,17 @@ def run_loop(
                             }
                         )
                 status_after_launch = "blocked"
-                classifications[alias] = status_after_launch
+                set_phase_status(
+                    repo,
+                    roadmap,
+                    alias,
+                    classifications,
+                    status_after_launch,
+                    reason="planning_launch_missing_current_plan_artifact",
+                    trigger=launch_action,
+                    selection=selection,
+                    action=action,
+                )
                 missing_plan_after_planning = {
                     "reason": "planning_launch_missing_current_plan_artifact",
                     "expected_phase": alias,
@@ -2318,7 +2492,17 @@ def run_loop(
                         dirty_summary,
                         blocked_summary="Phase reported complete but left dirty paths that are not closeout-safe.",
                     )
-                classifications[alias] = status_after_launch
+                set_phase_status(
+                    repo,
+                    roadmap,
+                    alias,
+                    classifications,
+                    status_after_launch,
+                    reason="completion_dirty_worktree_outcome",
+                    trigger=launch_action,
+                    selection=selection,
+                    action=action,
+                )
             elif plan_dirty_paths:
                 dirty_summary = _classify_dirty_paths(
                     repo, roadmap, plan, pre_launch_dirty_paths, plan_dirty_paths, current_phase=alias
@@ -2327,7 +2511,17 @@ def run_loop(
                     dirty_summary,
                     blocked_summary="Phase planning turn produced dirty paths that are not closeout-safe.",
                 )
-                classifications[alias] = status_after_launch
+                set_phase_status(
+                    repo,
+                    roadmap,
+                    alias,
+                    classifications,
+                    status_after_launch,
+                    reason="planning_dirty_worktree_outcome",
+                    trigger=launch_action,
+                    selection=selection,
+                    action=action,
+                )
             elif blocked_plan_dirty_paths:
                 plan_dirty_paths = blocked_plan_dirty_paths
                 dirty_summary = _classify_dirty_paths(
@@ -2337,7 +2531,17 @@ def run_loop(
                     dirty_summary,
                     blocked_summary="Phase planning turn reported a stale or non-human blocker and produced dirty paths that are not closeout-safe.",
                 )
-                classifications[alias] = status_after_launch
+                set_phase_status(
+                    repo,
+                    roadmap,
+                    alias,
+                    classifications,
+                    status_after_launch,
+                    reason="blocked_planning_dirty_worktree_outcome",
+                    trigger=launch_action,
+                    selection=selection,
+                    action=action,
+                )
             elif incomplete_execute_dirty_paths:
                 dirty_summary = _classify_dirty_paths(
                     repo, roadmap, plan, pre_launch_dirty_paths, incomplete_execute_dirty_paths, current_phase=alias
@@ -2357,7 +2561,17 @@ def run_loop(
                         dirty_summary,
                         blocked_summary="Phase execute turn ended without completion evidence and left dirty paths that are not closeout-safe.",
                     )
-                classifications[alias] = status_after_launch
+                set_phase_status(
+                    repo,
+                    roadmap,
+                    alias,
+                    classifications,
+                    status_after_launch,
+                    reason="incomplete_execute_dirty_worktree_outcome",
+                    trigger=launch_action,
+                    selection=selection,
+                    action=action,
+                )
             elif (
                 launch_action == "execute"
                 and status_after_launch == "blocked"
@@ -2386,7 +2600,17 @@ def run_loop(
                         )
                     if status_after_launch == "awaiting_phase_closeout":
                         completion_dirty_paths = verified_dirty_paths
-                    classifications[alias] = status_after_launch
+                    set_phase_status(
+                        repo,
+                        roadmap,
+                        alias,
+                        classifications,
+                        status_after_launch,
+                        reason="verified_dirty_closeout_outcome",
+                        trigger=launch_action,
+                        selection=selection,
+                        action=action,
+                    )
             if (
                 status_after_launch == "blocked"
                 and post_snapshot.current_phase == alias
@@ -3628,6 +3852,14 @@ def _launch_event_metadata(
     verification_status = _terminal_verification_status(terminal_status, event_blocker)
     terminal_blocker = event_blocker
     next_action = _terminal_next_action(terminal_status, event_blocker, dirty_summary)
+    child_baml_closeout = child_automation.get("native_closeout_payload") if isinstance(child_automation, dict) else None
+    if not isinstance(child_baml_closeout, dict):
+        child_baml_closeout = None
+    extraction_failure = (
+        child_automation.get("native_closeout_extraction_failure") if isinstance(child_automation, dict) else None
+    )
+    if not isinstance(extraction_failure, dict) and child_baml_closeout is None:
+        extraction_failure = _native_closeout_extraction_failure(result, spec)
     terminal_summary = build_terminal_summary(
             terminal_status=terminal_status,
             terminal_blocker=terminal_blocker,
@@ -3639,6 +3871,8 @@ def _launch_event_metadata(
             unowned_dirty_paths=dirty_summary.get("unowned_dirty_paths", ()),
             pre_existing_dirty_paths=dirty_summary.get("pre_existing_dirty_paths", ()),
             artifact_paths=artifact_paths,
+            child_baml_closeout=child_baml_closeout,
+            extraction_failure=extraction_failure,
         )
     terminal_summary = _attach_phase_loop_closeout(
         repo=Path(str(request.repo)),
@@ -3653,6 +3887,8 @@ def _launch_event_metadata(
     metadata["terminal_summary"] = _persist_terminal_summary(
         artifacts,
         terminal_summary,
+        child_baml_closeout=child_baml_closeout,
+        extraction_failure=extraction_failure,
     )
     metadata["terminal_summary"] = _attach_work_unit_metric(
         repo=Path(str(request.repo)),
@@ -3951,6 +4187,63 @@ def _build_repair_context(
     return (context if not missing else None), missing
 
 
+def repair_precondition_for_snapshot(
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    plan: Path | None,
+    snapshot: StateSnapshot,
+) -> dict[str, object]:
+    blocker_class = snapshot.blocker_class
+    sticky_blockers = {
+        "missing_secret",
+        "account_or_billing_setup",
+        "admin_approval",
+        "product_decision_missing",
+        "destructive_operation",
+    }
+    if snapshot.human_required or blocker_class in sticky_blockers:
+        return {
+            "status": "sticky",
+            "reason": "sticky_blocker",
+            "dirty_summary": {},
+        }
+    if blocker_class != "dirty_worktree_conflict":
+        return {
+            "status": "repair_required",
+            "reason": "unsupported_live_repair_precondition",
+            "dirty_summary": {},
+        }
+
+    dirty_paths = _dirty_paths(repo)
+    dirty_summary = _classify_dirty_paths(repo, roadmap, plan, [], dirty_paths, current_phase=phase) if dirty_paths else {
+        "dirty_paths": [],
+        "phase_owned_dirty_paths": [],
+        "expected_sibling_dirty_paths": [],
+        "expected_sibling_dirty": False,
+        "unowned_dirty_paths": [],
+        "pre_existing_dirty_paths": [],
+        "phase_owned_dirty": False,
+        "ownership_errors": [],
+        "rename_sources_promoted": [],
+    }
+    if (
+        not dirty_summary.get("unowned_dirty_paths")
+        and not dirty_summary.get("pre_existing_dirty_paths")
+        and not dirty_summary.get("ownership_errors")
+    ):
+        return {
+            "status": "cleared",
+            "reason": "live_dirty_worktree_precondition_cleared",
+            "dirty_summary": dirty_summary,
+        }
+    return {
+        "status": "repair_required",
+        "reason": "live_dirty_worktree_still_blocked",
+        "dirty_summary": dirty_summary,
+    }
+
+
 def _recover_verified_dirty_closeout(
     repo: Path,
     roadmap: Path,
@@ -4195,7 +4488,17 @@ def _launch_failure_metadata(result: LaunchResult, artifacts: dict[str, Path], *
     return payload
 
 
-def _persist_terminal_summary(artifacts: dict[str, Path], summary: dict[str, object]) -> dict[str, object]:
+def _persist_terminal_summary(
+    artifacts: dict[str, Path],
+    summary: dict[str, object],
+    child_baml_closeout: dict[str, object] | None = None,
+    extraction_failure: dict[str, object] | None = None,
+) -> dict[str, object]:
+    summary = apply_child_terminal_summary_overlay(
+        summary,
+        child_baml_closeout=child_baml_closeout,
+        extraction_failure=extraction_failure,
+    )
     terminal_path = artifacts.get("terminal")
     if terminal_path is not None:
         write_terminal_summary(terminal_path, summary)
@@ -4322,9 +4625,30 @@ def _task_ledger_event_metadata(
 
 def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
     text = extract_executor_output_text(result, spec)
-    parsed = _parse_native_closeout_status(text)
+    parsed = {}
+    native_failure: dict[str, object] | None = None
+    for source, candidate in _native_closeout_text_candidates(result, spec, text):
+        native = _parse_native_closeout_status(candidate)
+        if native and not native.get("automation_parse_error"):
+            native["native_closeout_source"] = source
+            parsed = native
+            text = candidate
+            native_failure = None
+            break
+        if native and native_failure is None:
+            native_failure = {
+                "reason": "malformed_native_closeout",
+                "source": source,
+                "classification": "native_closeout_extraction",
+            }
+            native["native_closeout_extraction_failure"] = native_failure
+            parsed = native
+            text = candidate
     if not parsed:
         parsed = parse_automation_status(text)
+        native_failure = _native_closeout_extraction_failure(result, spec, text=text)
+        if parsed and native_failure:
+            parsed["native_closeout_extraction_failure"] = native_failure
     if text and parsed:
         parsed["raw_output_excerpt"] = text[:1000]
         delegation_request = _parse_delegation_request(text)
@@ -4414,6 +4738,7 @@ def _parse_native_closeout_status(text: str) -> dict[str, object]:
 
 def _find_json_closeout_payload(text: str) -> dict[str, object] | None:
     decoder = json.JSONDecoder()
+    closeout: dict[str, object] | None = None
     for index, char in enumerate(text):
         if char != "{":
             continue
@@ -4422,8 +4747,51 @@ def _find_json_closeout_payload(text: str) -> dict[str, object] | None:
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict) and {"terminal_status", "verification_status", "dirty_paths"}.issubset(data):
-            return data
-    return None
+            closeout = data
+    return closeout
+
+
+def _native_closeout_text_candidates(result: LaunchResult, spec, output_text: str) -> tuple[tuple[str, str], ...]:
+    candidates: list[tuple[str, str]] = [("output", output_text)]
+    log_path = Path(result.log_path) if result.log_path else None
+    if log_path is not None:
+        try:
+            log_text = log_path.read_text(encoding="utf-8")
+        except OSError:
+            log_text = ""
+        if log_text and log_text != output_text:
+            candidates.append(("output_log", log_text))
+    return tuple(candidates)
+
+
+def _native_closeout_extraction_failure(
+    result: LaunchResult,
+    spec,
+    *,
+    source: str = "output",
+    text: str | None = None,
+) -> dict[str, object] | None:
+    if text is None:
+        text = extract_executor_output_text(result, spec)
+        for candidate_source, candidate in _native_closeout_text_candidates(result, spec, text):
+            if _find_json_closeout_payload(candidate):
+                return None
+            source = candidate_source
+            text = candidate
+    if _find_json_closeout_payload(text):
+        return None
+    stripped = text.strip()
+    if result.timed_out or result.interrupted or stripped.count("{") > stripped.count("}"):
+        reason = "truncated_output"
+    elif "terminal_status" in stripped or "verification_status" in stripped:
+        reason = "malformed_native_closeout"
+    else:
+        reason = "missing_native_closeout"
+    return {
+        "reason": reason,
+        "source": source,
+        "classification": "native_closeout_extraction",
+    }
 
 
 def _parsed_artifact_automation(plan: Path, spec) -> dict[str, object]:

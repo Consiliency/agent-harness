@@ -142,6 +142,69 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             self.assertIsNone(snapshot.blocker_class)
             self.assertIsNone(snapshot.blocker_summary)
 
+    def test_state_transition_event_clears_stale_dirty_blocker_idempotently(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "CONTRACT", roadmap)
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="CONTRACT",
+                    action="execute",
+                    status="blocked",
+                    model="gpt-5.4",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    blocker={
+                        "human_required": False,
+                        "blocker_class": "dirty_worktree_conflict",
+                        "blocker_summary": "stale dirty blocker",
+                        "required_human_inputs": (),
+                        "access_attempts": (),
+                    },
+                    **event_provenance(roadmap, "CONTRACT"),
+                ),
+            )
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="CONTRACT",
+                    action="state_transition",
+                    status="planned",
+                    model="gpt-5.4",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    metadata={
+                        "state_transition": {
+                            "from": "blocked",
+                            "to": "planned",
+                            "reason": "repair_precondition_cleared",
+                            "trigger": "live_dirty_worktree_check",
+                        }
+                    },
+                    **event_provenance(roadmap, "CONTRACT"),
+                ),
+            )
+
+            first = reconcile(repo, roadmap)
+            second = reconcile(repo, roadmap)
+
+            self.assertEqual(first.phases["CONTRACT"], "planned")
+            self.assertEqual(second.phases["CONTRACT"], "planned")
+            self.assertFalse(first.human_required)
+            self.assertFalse(second.human_required)
+            self.assertIsNone(first.blocker_class)
+            self.assertIsNone(second.blocker_class)
+            self.assertEqual(first.current_phase, second.current_phase)
+            self.assertEqual(first.ledger_warnings, second.ledger_warnings)
+
     def test_placeholder_none_blocker_class_is_ignored(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
