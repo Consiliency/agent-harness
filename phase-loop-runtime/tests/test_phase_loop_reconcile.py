@@ -691,6 +691,55 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             self.assertEqual(snapshot.phase_owned_dirty_paths, ("README.md",))
             self.assertTrue(snapshot.phase_owned_dirty)
 
+    def test_previous_phase_owned_paths_round_trip_from_dirty_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_two_phase_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="BETA",
+                    action="execute",
+                    status="awaiting_phase_closeout",
+                    model="gpt-5.4",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    metadata={
+                        "incomplete_execute_dirty_worktree": {
+                            "reason": "execute_status_without_completion_with_dirty_worktree",
+                            "terminal_status": "executed",
+                            "dirty_paths": ["README.md"],
+                            "phase_owned_dirty_paths": [],
+                            "previous_phase_owned_paths": ["README.md"],
+                            "unowned_dirty_paths": [],
+                            "pre_existing_dirty_paths": [],
+                            "phase_owned_dirty": True,
+                        },
+                        "terminal_summary": {
+                            "terminal_status": "executed",
+                            "verification_status": "not_run",
+                            "dirty_paths": ["README.md"],
+                            "phase_owned_dirty": True,
+                            "phase_owned_dirty_paths": [],
+                            "previous_phase_owned_paths": ["README.md"],
+                            "unowned_dirty_paths": [],
+                            "pre_existing_dirty_paths": [],
+                        },
+                    },
+                    **event_provenance(roadmap, "BETA"),
+                ),
+            )
+
+            first = reconcile(repo, roadmap)
+            second = reconcile(repo, roadmap)
+
+            self.assertEqual(first.previous_phase_owned_paths, ("README.md",))
+            self.assertEqual(second.previous_phase_owned_paths, ("README.md",))
+            self.assertEqual(first.pre_existing_dirty_paths, ())
+
     def test_completed_upstream_terminal_summary_is_not_current_phase_summary(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_two_phase_repo(Path(td))

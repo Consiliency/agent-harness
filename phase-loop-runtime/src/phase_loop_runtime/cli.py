@@ -736,6 +736,7 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
         "dirty_paths": [],
         "phase_owned_dirty": False,
         "phase_owned_dirty_paths": [],
+        "previous_phase_owned_paths": [],
         "pre_existing_dirty_paths": [],
         "unowned_dirty_paths": [],
         "verification_status": getattr(args, "verification_status", None) or "not_run",

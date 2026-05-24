@@ -46,6 +46,8 @@ def render_status(snapshot: StateSnapshot, as_json: bool = False, ledger_debug: 
         lines.append(f"Phase-owned dirty: {'yes' if snapshot.phase_owned_dirty else 'no'}")
         if snapshot.phase_owned_dirty_paths:
             lines.append(f"Phase-owned paths: {', '.join(snapshot.phase_owned_dirty_paths)}")
+        if snapshot.previous_phase_owned_paths:
+            lines.append(f"Previous phase-owned paths: {', '.join(snapshot.previous_phase_owned_paths)}")
         if snapshot.unowned_dirty_paths:
             lines.append(f"Unowned paths: {', '.join(snapshot.unowned_dirty_paths)}")
         if snapshot.pre_existing_dirty_paths:
@@ -107,6 +109,8 @@ def render_state_inspection(summary: dict[str, object], as_json: bool = False) -
         lines.append(f"Phase-owned dirty: {summary.get('phase_owned_dirty', False)}")
         if summary.get("phase_owned_dirty_paths"):
             lines.append(f"Phase-owned paths: {', '.join(summary['phase_owned_dirty_paths'])}")
+        if summary.get("previous_phase_owned_paths"):
+            lines.append(f"Previous phase-owned paths: {', '.join(summary['previous_phase_owned_paths'])}")
         if summary.get("unowned_dirty_paths"):
             lines.append(f"Unowned paths: {', '.join(summary['unowned_dirty_paths'])}")
         if summary.get("pre_existing_dirty_paths"):

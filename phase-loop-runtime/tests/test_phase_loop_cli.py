@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -826,6 +827,29 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertIn("stop_file", data)
             self.assertIn("tui_handoff_path", data)
             self.assertNotIn("secret-value", result.stdout)
+
+    def test_state_json_reports_previous_phase_owned_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            snapshot = replace(
+                provenanced_state(repo, roadmap, {"RUNNER": "awaiting_phase_closeout"}),
+                current_phase="RUNNER",
+                dirty_paths=("README.md",),
+                previous_phase_owned_paths=("README.md",),
+                phase_owned_dirty=True,
+            )
+            write_state(repo, snapshot)
+
+            result = subprocess.run(
+                [str(BIN), "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(result.stdout)
+
+            self.assertEqual(data["previous_phase_owned_paths"], ["README.md"])
 
     def test_monitor_notify_command_receives_blocked_payload(self):
         with tempfile.TemporaryDirectory() as td:

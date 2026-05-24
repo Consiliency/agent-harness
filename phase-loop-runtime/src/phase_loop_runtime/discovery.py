@@ -10,6 +10,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from .events import read_events
 from .models import (
     BLOCKER_CLASSES,
     DispatchHints,
@@ -114,6 +115,49 @@ class PlanLane:
     owned_patterns: tuple[str, ...]
     read_only: bool
     text: str
+
+
+DIRTY_WORKTREE_METADATA_KEYS = (
+    "completion_dirty_worktree",
+    "plan_dirty_worktree",
+    "incomplete_execute_dirty_worktree",
+)
+
+
+def previous_phase_owned_dirty_paths(repo: Path, phase: str | None) -> tuple[str, ...]:
+    if not phase:
+        return ()
+    phase_alias = phase.upper()
+    for event in reversed(read_events(repo)):
+        if str(event.get("phase", "")).upper() != phase_alias:
+            continue
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        for key in DIRTY_WORKTREE_METADATA_KEYS:
+            dirty = metadata.get(key)
+            if isinstance(dirty, dict) and "dirty_paths" in dirty:
+                return _normalized_path_tuple(dirty.get("phase_owned_dirty_paths"))
+        terminal = metadata.get("terminal_summary")
+        if isinstance(terminal, dict) and "dirty_paths" in terminal:
+            return _normalized_path_tuple(terminal.get("phase_owned_dirty_paths"))
+    return ()
+
+
+def _normalized_path_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    paths: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        path = item.strip()
+        if not path or path in seen:
+            continue
+        paths.append(path)
+        seen.add(path)
+    return tuple(paths)
 
 
 @dataclass(frozen=True)

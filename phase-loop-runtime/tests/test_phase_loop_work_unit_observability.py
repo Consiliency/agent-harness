@@ -14,6 +14,39 @@ from phase_loop_test_utils import make_repo, provenanced_state
 
 
 class PhaseLoopWorkUnitObservabilityTest(unittest.TestCase):
+    def test_terminal_summary_and_handoff_render_previous_phase_owned_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            summary = build_terminal_summary(
+                terminal_status="executed",
+                terminal_blocker=None,
+                verification_status="not_run",
+                next_action="Preserve previous phase output.",
+                dirty_paths=("README.md",),
+                phase_owned_dirty=True,
+                previous_phase_owned_paths=("README.md",),
+            )
+            rendered = render_tui_handoff(
+                repo,
+                roadmap,
+                StateSnapshot(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phases={"RUNNER": "awaiting_phase_closeout"},
+                    current_phase="RUNNER",
+                    dirty_paths=("README.md",),
+                    previous_phase_owned_paths=("README.md",),
+                    phase_owned_dirty=True,
+                    terminal_summary=summary,
+                ),
+                action="status",
+            )
+
+            self.assertEqual(summary["previous_phase_owned_paths"], ["README.md"])
+            self.assertIn("previous phase-owned paths: `README.md`", rendered)
+
     def test_terminal_summary_applies_child_baml_closeout_overlay(self):
         summary = build_terminal_summary(
             terminal_status="executing",

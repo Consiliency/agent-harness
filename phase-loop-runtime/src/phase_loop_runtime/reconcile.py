@@ -29,6 +29,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
     access_attempts: tuple[dict, ...] = ()
     dirty_paths: tuple[str, ...] = ()
     phase_owned_dirty_paths: tuple[str, ...] = ()
+    previous_phase_owned_paths: tuple[str, ...] = ()
     unowned_dirty_paths: tuple[str, ...] = ()
     pre_existing_dirty_paths: tuple[str, ...] = ()
     phase_owned_dirty = False
@@ -75,6 +76,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
                 dirty_summary_by_phase[snapshot.current_phase] = {
                     "dirty_paths": list(snapshot.dirty_paths),
                     "phase_owned_dirty_paths": list(snapshot.phase_owned_dirty_paths),
+                    "previous_phase_owned_paths": list(snapshot.previous_phase_owned_paths),
                     "unowned_dirty_paths": list(snapshot.unowned_dirty_paths),
                     "pre_existing_dirty_paths": list(snapshot.pre_existing_dirty_paths),
                     "phase_owned_dirty": snapshot.phase_owned_dirty,
@@ -228,6 +230,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         latest_dirty = dirty_summary_by_phase.get(current, {})
         dirty_paths = tuple(latest_dirty.get("dirty_paths", ()))
         phase_owned_dirty_paths = tuple(latest_dirty.get("phase_owned_dirty_paths", ()))
+        previous_phase_owned_paths = tuple(latest_dirty.get("previous_phase_owned_paths", ()))
         unowned_dirty_paths = tuple(latest_dirty.get("unowned_dirty_paths", ()))
         pre_existing_dirty_paths = tuple(latest_dirty.get("pre_existing_dirty_paths", ()))
         phase_owned_dirty = bool(latest_dirty.get("phase_owned_dirty", False))
@@ -262,6 +265,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         access_attempts = ()
         dirty_paths = ()
         phase_owned_dirty_paths = ()
+        previous_phase_owned_paths = ()
         unowned_dirty_paths = ()
         pre_existing_dirty_paths = ()
         phase_owned_dirty = False
@@ -286,6 +290,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
             access_attempts = ()
             dirty_paths = ()
             phase_owned_dirty_paths = ()
+            previous_phase_owned_paths = ()
             unowned_dirty_paths = ()
             pre_existing_dirty_paths = ()
             phase_owned_dirty = False
@@ -311,6 +316,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
                 access_attempts=access_attempts,
                 dirty_paths=dirty_paths,
                 phase_owned_dirty_paths=phase_owned_dirty_paths,
+                previous_phase_owned_paths=previous_phase_owned_paths,
                 unowned_dirty_paths=unowned_dirty_paths,
                 pre_existing_dirty_paths=pre_existing_dirty_paths,
                 phase_owned_dirty=phase_owned_dirty,
@@ -338,6 +344,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
             access_attempts = ()
             dirty_paths = ()
             phase_owned_dirty_paths = ()
+            previous_phase_owned_paths = ()
             unowned_dirty_paths = ()
             pre_existing_dirty_paths = ()
             phase_owned_dirty = False
@@ -363,6 +370,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
         access_attempts=access_attempts,
         dirty_paths=dirty_paths,
         phase_owned_dirty_paths=phase_owned_dirty_paths,
+        previous_phase_owned_paths=previous_phase_owned_paths,
         unowned_dirty_paths=unowned_dirty_paths,
         pre_existing_dirty_paths=pre_existing_dirty_paths,
         phase_owned_dirty=phase_owned_dirty,
@@ -865,6 +873,7 @@ def _event_dirty_summary(event: dict) -> dict[str, object]:
             return {
                 "dirty_paths": list(value.get("dirty_paths", ())),
                 "phase_owned_dirty_paths": list(value.get("phase_owned_dirty_paths", ())),
+                "previous_phase_owned_paths": list(value.get("previous_phase_owned_paths", ())),
                 "unowned_dirty_paths": list(value.get("unowned_dirty_paths", ())),
                 "pre_existing_dirty_paths": list(value.get("pre_existing_dirty_paths", ())),
                 "phase_owned_dirty": bool(value.get("phase_owned_dirty", False)),
@@ -923,6 +932,7 @@ def _event_terminal_summary(event: dict) -> dict[str, object]:
         "dirty_paths": list(terminal.get("dirty_paths", ())),
         "phase_owned_dirty": bool(terminal.get("phase_owned_dirty", False)),
         "phase_owned_dirty_paths": list(terminal.get("phase_owned_dirty_paths", ())),
+        "previous_phase_owned_paths": list(terminal.get("previous_phase_owned_paths", ())),
         "unowned_dirty_paths": list(terminal.get("unowned_dirty_paths", ())),
         "pre_existing_dirty_paths": list(terminal.get("pre_existing_dirty_paths", ())),
         "artifact_paths": dict(terminal.get("artifact_paths", {})) if isinstance(terminal.get("artifact_paths"), dict) else {},

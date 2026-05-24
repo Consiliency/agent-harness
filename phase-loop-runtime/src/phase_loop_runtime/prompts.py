@@ -95,9 +95,16 @@ def build_prompt(
         artifact_paths = context.get("artifact_paths") or {}
         dirty_paths = context.get("dirty_paths") or ()
         phase_owned_dirty_paths = context.get("phase_owned_dirty_paths") or ()
+        previous_phase_owned_paths = context.get("previous_phase_owned_paths") or ()
         unowned_dirty_paths = context.get("unowned_dirty_paths") or ()
         pre_existing_dirty_paths = context.get("pre_existing_dirty_paths") or ()
         phase_owned_dirty = str(bool(context.get("phase_owned_dirty", False))).lower()
+        continuation_guidance = (
+            "These paths were recorded as phase-owned output from a previous attempt for this same phase. "
+            "Continue or restart the previous execute attempt; do not treat these as unrelated dirty files.\n"
+            if previous_phase_owned_paths
+            else ""
+        )
         return _with_delegation_guidance(
             build_prompt_bundle(
             repo=repo,
@@ -124,6 +131,7 @@ def build_prompt(
                 "If adapter constraints make `.phase-loop/` read-only or ignored, do not claim ledger mutation; emit a valid shared automation closeout so the parent runner can reconcile the repair.\n"
                 "9. Treat ignored, private, raw-data, credential, and evidence-source files as read-protected unless the phase plan or source bundle explicitly allowlists the exact path or glob for read access.\n"
                 "10. Before repair closeout, classify every dirty path against the active owned-file contract; preserve ignored phase-owned outputs only when the plan/source bundle includes an explicit allowlist or staging policy.\n\n"
+                f"{continuation_guidance}"
                 "Allowed outcomes only:\n"
                 "- Make the smallest local repair that clears the blocker and leaves the phase resume-ready.\n"
                 "- Refresh stale roadmap or phase-plan artifacts when the repair is purely mechanical.\n"
@@ -135,6 +143,7 @@ def build_prompt(
                 f"- dirty_paths={', '.join(dirty_paths) if dirty_paths else 'none'}\n"
                 f"- phase_owned_dirty={phase_owned_dirty}\n"
                 f"- phase_owned_dirty_paths={', '.join(phase_owned_dirty_paths) if phase_owned_dirty_paths else 'none'}\n"
+                f"- previous_phase_owned_paths={', '.join(previous_phase_owned_paths) if previous_phase_owned_paths else 'none'}\n"
                 f"- unowned_dirty_paths={', '.join(unowned_dirty_paths) if unowned_dirty_paths else 'none'}\n"
                 f"- pre_existing_dirty_paths={', '.join(pre_existing_dirty_paths) if pre_existing_dirty_paths else 'none'}\n"
                 f"- closeout_mode={closeout_summary.get('closeout_mode', 'none')}\n"

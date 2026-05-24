@@ -4,6 +4,7 @@ import unittest
 import json
 import os
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,13 +22,15 @@ from phase_loop_runtime.models import (
     PipelinePlanMetadata,
     PhaseSourceBundle,
     PipelineProtectedSource,
+    StateSnapshot,
     utc_now,
 )
 from phase_loop_runtime.observability import read_work_unit_metrics
+from phase_loop_runtime.prompts import build_prompt
 from phase_loop_runtime.provenance import event_provenance
 from phase_loop_runtime.runtime_paths import phase_loop_stop_file
-from phase_loop_runtime.runner import _classify_dirty_paths, _detect_dirty_renames, _write_deterministic_closeout, launch_delegated_child, launch_harness_lane_work_unit, run_loop, status_snapshot
-from phase_loop_runtime.state import load_work_unit_state
+from phase_loop_runtime.runner import _build_repair_context, _classify_dirty_paths, _detect_dirty_renames, _write_deterministic_closeout, launch_delegated_child, launch_harness_lane_work_unit, run_loop, status_snapshot
+from phase_loop_runtime.state import load_work_unit_state, write_state
 from phase_loop_runtime.state_degradation import load_degradation
 from phase_loop_smoke_utils import (
     claude_team_live_smoke_enabled,
@@ -49,6 +52,7 @@ from phase_loop_test_utils import (
     make_regenesis_amendment_fixture,
     make_repo,
     provenanced_event,
+    provenanced_state,
     validate_fake_executor_matrix,
     validate_dffakesmoke_fake_smoke_matrix,
     write_phase_plan,
@@ -77,6 +81,77 @@ def _migration_wave_body() -> str:
 
 
 class PhaseLoopRunnerTest(unittest.TestCase):
+    def test_repair_context_and_prompt_include_previous_phase_owned_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "RUNNER", roadmap, owned_files=("README.md",))
+            snapshot = StateSnapshot(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phases={"RUNNER": "blocked"},
+                current_phase="RUNNER",
+                dirty_paths=("README.md",),
+                phase_owned_dirty_paths=(),
+                previous_phase_owned_paths=("README.md",),
+                unowned_dirty_paths=(),
+                pre_existing_dirty_paths=(),
+                phase_owned_dirty=True,
+                terminal_summary={
+                    "phase": "RUNNER",
+                    "terminal_status": "blocked",
+                    "verification_status": "blocked",
+                    "next_action": "Repair previous execution.",
+                    "dirty_paths": ["README.md"],
+                    "previous_phase_owned_paths": ["README.md"],
+                },
+            )
+
+            context, missing = _build_repair_context(repo, "RUNNER", plan, snapshot)
+            self.assertEqual(missing, [])
+            self.assertEqual(context["previous_phase_owned_paths"], ["README.md"])
+            prompt = build_prompt(
+                "repair",
+                roadmap,
+                phase="RUNNER",
+                plan=plan,
+                blocker_summary="dirty output from previous attempt",
+                repair_context=context,
+            ).render_prompt()
+
+            self.assertIn("previous_phase_owned_paths=README.md", prompt)
+            self.assertIn("Continue or restart the previous execute attempt", prompt)
+            self.assertIn("do not treat these as unrelated dirty files", prompt)
+
+    def test_closeout_commit_uses_previous_phase_owned_paths_as_continuation(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "RUNNER", roadmap, owned_files=("README.md",))
+            commit_fixture_paths(repo, "add runner plan", plan)
+            (repo / "README.md").write_text("previous execute output\n", encoding="utf-8")
+            snapshot = replace(
+                provenanced_state(repo, roadmap, {"RUNNER": "awaiting_phase_closeout"}),
+                current_phase="RUNNER",
+                dirty_paths=("README.md",),
+                phase_owned_dirty_paths=(),
+                previous_phase_owned_paths=("README.md",),
+                phase_owned_dirty=True,
+                closeout_terminal_status="executed",
+            )
+            write_state(repo, snapshot)
+
+            result, launches = run_loop(repo, roadmap, phase="RUNNER", closeout_mode="commit")
+
+            self.assertEqual(launches, [])
+            self.assertEqual(result.phases["RUNNER"], "complete")
+            self.assertEqual(
+                subprocess.check_output(["git", "-C", str(repo), "log", "-1", "--format=%s"], text=True).strip(),
+                "phase-loop continuation: RUNNER",
+            )
+            self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).strip(), "")
+
     def _latest_event_with_metadata(self, events: list[dict], key: str) -> dict:
         for event in reversed(events):
             if key in event.get("metadata", {}):

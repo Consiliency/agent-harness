@@ -125,6 +125,8 @@ def render_tui_handoff(
         lines.append(f"- dirty paths: `{', '.join(snapshot.dirty_paths)}`")
         if snapshot.phase_owned_dirty_paths:
             lines.append(f"- phase-owned paths: `{', '.join(snapshot.phase_owned_dirty_paths)}`")
+        if snapshot.previous_phase_owned_paths:
+            lines.append(f"- previous phase-owned paths: `{', '.join(snapshot.previous_phase_owned_paths)}`")
         if snapshot.unowned_dirty_paths:
             lines.append(f"- unowned paths: `{', '.join(snapshot.unowned_dirty_paths)}`")
         if snapshot.pre_existing_dirty_paths:

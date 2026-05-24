@@ -166,6 +166,7 @@ def inspect_state(repo: Path, roadmap: Path | None = None) -> dict[str, object]:
                 "access_attempts": snapshot.access_attempts,
                 "dirty_paths": snapshot.dirty_paths,
                 "phase_owned_dirty_paths": snapshot.phase_owned_dirty_paths,
+                "previous_phase_owned_paths": snapshot.previous_phase_owned_paths,
                 "unowned_dirty_paths": snapshot.unowned_dirty_paths,
                 "pre_existing_dirty_paths": snapshot.pre_existing_dirty_paths,
                 "phase_owned_dirty": snapshot.phase_owned_dirty,

@@ -35,6 +35,7 @@ from .discovery import (
     pipeline_execution_plan_diagnostic,
     phase_source_bundle_diagnostic,
     plan_artifact_diagnostic,
+    previous_phase_owned_dirty_paths,
     roadmap_closeout_evidence_audit_enabled,
 )
 from .events import append_event, event_path, read_events
@@ -384,6 +385,7 @@ def status_snapshot(repo: Path, roadmap: Path, pipeline_mode: str = "standalone"
         access_attempts=snapshot.access_attempts,
         dirty_paths=snapshot.dirty_paths,
         phase_owned_dirty_paths=snapshot.phase_owned_dirty_paths,
+        previous_phase_owned_paths=snapshot.previous_phase_owned_paths,
         unowned_dirty_paths=snapshot.unowned_dirty_paths,
         pre_existing_dirty_paths=snapshot.pre_existing_dirty_paths,
         phase_owned_dirty=snapshot.phase_owned_dirty,
@@ -2666,6 +2668,7 @@ def run_loop(
                 **event_provenance(roadmap, alias),
             )
             append_event(repo, event)
+            status_after_closeout = status_after_launch
             if status_after_launch == "awaiting_phase_closeout" and closeout_mode != "manual":
                 closeout_snapshot = reconcile(repo, roadmap)
                 classifications[alias], closeout_event = _perform_phase_closeout(
@@ -2678,13 +2681,14 @@ def run_loop(
                     closeout_mode=closeout_mode,
                 )
                 append_event(repo, closeout_event)
+                status_after_closeout = classifications[alias]
             if full_phase:
-                if status_after_launch in {"complete", "blocked", "awaiting_phase_closeout", "unknown"}:
+                if status_after_closeout in {"complete", "blocked", "awaiting_phase_closeout", "unknown"}:
                     phase_cycles_completed += 1
                     if phase_cycles_completed >= max_phases or phase:
                         break
                     continue
-                if phase and status_after_launch == "planned":
+                if phase and status_after_closeout == "planned":
                     continue
             if phase:
                 break
@@ -2710,6 +2714,7 @@ def run_loop(
         access_attempts=snapshot.access_attempts,
         dirty_paths=snapshot.dirty_paths,
         phase_owned_dirty_paths=snapshot.phase_owned_dirty_paths,
+        previous_phase_owned_paths=snapshot.previous_phase_owned_paths,
         unowned_dirty_paths=snapshot.unowned_dirty_paths,
         pre_existing_dirty_paths=snapshot.pre_existing_dirty_paths,
         phase_owned_dirty=snapshot.phase_owned_dirty,
@@ -3868,6 +3873,7 @@ def _launch_event_metadata(
             dirty_paths=dirty_summary.get("dirty_paths", completion_dirty_paths or plan_dirty_paths or incomplete_execute_dirty_paths),
             phase_owned_dirty=bool(dirty_summary.get("phase_owned_dirty", False)),
             phase_owned_dirty_paths=dirty_summary.get("phase_owned_dirty_paths", ()),
+            previous_phase_owned_paths=dirty_summary.get("previous_phase_owned_paths", ()),
             unowned_dirty_paths=dirty_summary.get("unowned_dirty_paths", ()),
             pre_existing_dirty_paths=dirty_summary.get("pre_existing_dirty_paths", ()),
             artifact_paths=artifact_paths,
@@ -4161,6 +4167,9 @@ def _build_repair_context(
     phase_owned_dirty_paths = list(snapshot.phase_owned_dirty_paths) or list(
         (terminal_summary or {}).get("phase_owned_dirty_paths", ())
     )
+    previous_phase_owned_paths = list(snapshot.previous_phase_owned_paths) or list(
+        (terminal_summary or {}).get("previous_phase_owned_paths", ())
+    )
     unowned_dirty_paths = list(snapshot.unowned_dirty_paths) or list((terminal_summary or {}).get("unowned_dirty_paths", ()))
     pre_existing_dirty_paths = list(snapshot.pre_existing_dirty_paths) or list(
         (terminal_summary or {}).get("pre_existing_dirty_paths", ())
@@ -4178,6 +4187,7 @@ def _build_repair_context(
         "terminal_summary": terminal_summary or {},
         "dirty_paths": dirty_paths,
         "phase_owned_dirty_paths": phase_owned_dirty_paths,
+        "previous_phase_owned_paths": previous_phase_owned_paths,
         "unowned_dirty_paths": unowned_dirty_paths,
         "pre_existing_dirty_paths": pre_existing_dirty_paths,
         "phase_owned_dirty": phase_owned_dirty,
@@ -4216,9 +4226,10 @@ def repair_precondition_for_snapshot(
         }
 
     dirty_paths = _dirty_paths(repo)
-    dirty_summary = _classify_dirty_paths(repo, roadmap, plan, [], dirty_paths, current_phase=phase) if dirty_paths else {
+    dirty_summary = _classify_dirty_paths(repo, roadmap, plan, dirty_paths, dirty_paths, current_phase=phase) if dirty_paths else {
         "dirty_paths": [],
         "phase_owned_dirty_paths": [],
+        "previous_phase_owned_paths": [],
         "expected_sibling_dirty_paths": [],
         "expected_sibling_dirty": False,
         "unowned_dirty_paths": [],
@@ -4289,6 +4300,7 @@ def _recover_verified_dirty_closeout(
             dirty_paths=dirty_summary.get("dirty_paths", dirty_paths),
             phase_owned_dirty=bool(dirty_summary.get("phase_owned_dirty", False)),
             phase_owned_dirty_paths=dirty_summary.get("phase_owned_dirty_paths", ()),
+            previous_phase_owned_paths=dirty_summary.get("previous_phase_owned_paths", ()),
             unowned_dirty_paths=dirty_summary.get("unowned_dirty_paths", ()),
             pre_existing_dirty_paths=dirty_summary.get("pre_existing_dirty_paths", ()),
             artifact_paths=_latest_phase_artifacts(repo, phase),
@@ -5279,7 +5291,16 @@ def _classify_dirty_paths(
         path for path in post_launch_dirty_paths if current_phase and is_sibling_phase_plan_doc(path, roadmap, current_phase)
     ]
     expected_sibling_set = set(expected_sibling_dirty)
-    phase_owned = [path for path in post_launch_dirty_paths if ownership.matches_dirty_output(path)]
+    previous_evidence = set(previous_phase_owned_dirty_paths(repo, current_phase)) if current_phase else set()
+    previous_phase_owned = [
+        path for path in post_launch_dirty_paths if path in previous_evidence and (not pre_launch or path in pre_launch)
+    ]
+    previous_phase_owned_set = set(previous_phase_owned)
+    phase_owned = [
+        path
+        for path in post_launch_dirty_paths
+        if path not in previous_phase_owned_set and ownership.matches_dirty_output(path)
+    ]
     phase_owned_set = set(phase_owned)
 
     rename_map = _detect_dirty_renames(repo)
@@ -5300,18 +5321,25 @@ def _classify_dirty_paths(
         if path in pre_launch
         and path not in ownership.control_paths
         and path not in expected_sibling_set
+        and path not in previous_phase_owned_set
         and not (allow_pre_existing_phase_owned and path in phase_owned_set)
     ]
-    unowned = [path for path in post_launch_dirty_paths if path not in phase_owned_set and path not in expected_sibling_set]
+    unowned = [
+        path
+        for path in post_launch_dirty_paths
+        if path not in phase_owned_set and path not in previous_phase_owned_set and path not in expected_sibling_set
+    ]
     control_only_dirty = bool(post_launch_dirty_paths) and all(path in ownership.control_paths for path in post_launch_dirty_paths)
+    closeout_safe_dirty = bool(post_launch_dirty_paths) and not pre_existing and not unowned
     return {
         "dirty_paths": post_launch_dirty_paths,
         "phase_owned_dirty_paths": phase_owned,
+        "previous_phase_owned_paths": previous_phase_owned,
         "expected_sibling_dirty_paths": expected_sibling_dirty,
         "expected_sibling_dirty": bool(expected_sibling_dirty),
         "unowned_dirty_paths": unowned,
         "pre_existing_dirty_paths": pre_existing,
-        "phase_owned_dirty": (ownership.valid or control_only_dirty) and not pre_existing and not unowned and bool(post_launch_dirty_paths),
+        "phase_owned_dirty": (ownership.valid or control_only_dirty) and closeout_safe_dirty,
         "ownership_errors": [] if control_only_dirty else list(ownership.errors),
         "rename_sources_promoted": rename_sources_promoted,
     }
@@ -5381,7 +5409,10 @@ def _perform_phase_closeout(
     }
     blocker = None
     status = terminal_status
-    if not snapshot.phase_owned_dirty or not snapshot.phase_owned_dirty_paths:
+    closeout_dirty_paths = tuple(
+        dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths))
+    )
+    if not snapshot.phase_owned_dirty or not closeout_dirty_paths:
         status = "blocked"
         blocker = {
             "human_required": False,
@@ -5397,39 +5428,76 @@ def _perform_phase_closeout(
             }
         )
     else:
-        _git(repo, "add", "--", *snapshot.phase_owned_dirty_paths)
-        _git(repo, "commit", "-m", f"phase-loop closeout: {phase}")
-        commit = _git_output(repo, "rev-parse", "HEAD")
-        status = "planned" if terminal_status == "planned" else "complete"
-        metadata["closeout"]["verification_status"] = "not_run" if status == "planned" else "passed"
-        metadata["closeout"].update(
-            {
-                "closeout_action": "commit",
-                "closeout_commit": commit,
-            }
+        commit_action = _closeout_commit_action(action, terminal_status)
+        plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+        commit_message = _closeout_commit_message(
+            repo,
+            phase,
+            action=commit_action,
+            terminal_status=terminal_status,
+            plan=plan,
+            coauthor_trailers=_closeout_coauthor_trailers(repo, roadmap, phase),
+            continuation=bool(snapshot.previous_phase_owned_paths),
         )
-        if roadmap_closeout_evidence_audit_enabled(roadmap):
-            audit = audit_closeout_evidence(commit, phase, repo)
-            total_claims = len(audit.matched_claims) + len(audit.unmatched_claims)
-            metadata["closeout"]["closeout_evidence_audit"] = {
-                "audit_status": audit.audit_status,
-                "matched_claim_count": len(audit.matched_claims),
-                "unmatched_claim_count": len(audit.unmatched_claims),
-                "total_claim_count": total_claims,
-            }
-            if audit.audit_status == "drift_detected":
-                status = "blocked"
-                metadata["closeout"]["verification_status"] = "blocked"
-                blocker = {
-                    "human_required": False,
-                    "blocker_class": "closeout_evidence_drift",
-                    "blocker_summary": (
-                        f"{len(audit.unmatched_claims)} of {total_claims} "
-                        "closeout claims have no matching files in the closeout diff"
-                    ),
-                    "required_human_inputs": (),
-                    "access_attempts": (),
-                }
+        add_result = _run_git_closeout(repo, "add", "--", *closeout_dirty_paths)
+        if add_result.returncode != 0:
+            status, blocker = _commit_failure_closeout(
+                metadata,
+                stage="add",
+                returncode=add_result.returncode,
+                stderr=add_result.stderr or add_result.stdout,
+            )
+        else:
+            commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
+            if commit_result.returncode != 0:
+                status, blocker = _commit_failure_closeout(
+                    metadata,
+                    stage="commit",
+                    returncode=commit_result.returncode,
+                    stderr=commit_result.stderr or commit_result.stdout,
+                )
+            else:
+                commit = _git_output(repo, "rev-parse", "HEAD")
+                status = "planned" if terminal_status == "planned" else "complete"
+                metadata["closeout"]["verification_status"] = "not_run" if status == "planned" else "passed"
+                metadata["closeout"].update(
+                    {
+                        "closeout_action": "commit",
+                        "closeout_commit": commit,
+                    }
+                )
+                if roadmap_closeout_evidence_audit_enabled(roadmap):
+                    try:
+                        audit = audit_closeout_evidence(commit, phase, repo)
+                    except Exception as exc:
+                        status, blocker = _commit_failure_closeout(
+                            metadata,
+                            stage="audit",
+                            returncode=1,
+                            stderr=str(exc),
+                            blocker_class="repeated_verification_failure",
+                        )
+                    else:
+                        total_claims = len(audit.matched_claims) + len(audit.unmatched_claims)
+                        metadata["closeout"]["closeout_evidence_audit"] = {
+                            "audit_status": audit.audit_status,
+                            "matched_claim_count": len(audit.matched_claims),
+                            "unmatched_claim_count": len(audit.unmatched_claims),
+                            "total_claim_count": total_claims,
+                        }
+                        if audit.audit_status == "drift_detected":
+                            status = "blocked"
+                            metadata["closeout"]["verification_status"] = "blocked"
+                            blocker = {
+                                "human_required": False,
+                                "blocker_class": "closeout_evidence_drift",
+                                "blocker_summary": (
+                                    f"{len(audit.unmatched_claims)} of {total_claims} "
+                                    "closeout claims have no matching files in the closeout diff"
+                                ),
+                                "required_human_inputs": (),
+                                "access_attempts": (),
+                            }
         if closeout_mode == "push":
             decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
             if decision.get("allowed"):
@@ -5464,6 +5532,134 @@ def _perform_phase_closeout(
         **event_provenance(roadmap, phase),
     )
     return status, event
+
+
+def _closeout_commit_action(action: str, terminal_status: str) -> str:
+    if action in {"plan", "execute", "repair", "review", "roadmap", "maintain-skills"}:
+        return action
+    return "plan" if terminal_status == "planned" else "execute"
+
+
+def _closeout_commit_message(
+    repo: Path,
+    phase: str,
+    *,
+    action: str,
+    terminal_status: str,
+    plan: Path | None,
+    coauthor_trailers: tuple[str, ...] = (),
+    continuation: bool = False,
+) -> str:
+    prefix = "phase-loop continuation" if continuation else f"phase-loop {action}"
+    lines = [f"{prefix}: {phase}", ""]
+    if plan is not None and plan.exists():
+        lines.append(f"Plan: {_repo_relative(repo, plan)}")
+    lines.extend(
+        [
+            f"Terminal-Status: {terminal_status}",
+            "Closeout-Commit: pending",
+        ]
+    )
+    if phase.upper() == "CAC":
+        lines.append("Fixes #8 Fixes #10")
+    if continuation:
+        lines.append("Refs #10")
+    if coauthor_trailers:
+        lines.append("")
+        lines.extend(coauthor_trailers)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _closeout_coauthor_trailers(repo: Path, roadmap: Path, phase: str) -> tuple[str, ...]:
+    trailers: list[str] = []
+    provenance = event_provenance(roadmap, phase)
+    for event in reversed(read_events(repo)):
+        if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        if str(event.get("roadmap_sha256") or "") != provenance.get("roadmap_sha256"):
+            continue
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        child = metadata.get("child_automation")
+        if isinstance(child, dict):
+            _collect_coauthor_trailers(child, trailers)
+        terminal = metadata.get("terminal_summary")
+        if isinstance(terminal, dict):
+            _collect_coauthor_trailers(terminal, trailers)
+        if trailers:
+            break
+    return tuple(dict.fromkeys(trailers))
+
+
+def _collect_coauthor_trailers(payload: dict[str, object], trailers: list[str]) -> None:
+    for key in ("co_authored_by", "coauthored_by", "coauthor_trailers", "co_authored_by_trailers"):
+        _append_valid_coauthor_values(payload.get(key), trailers)
+    native = payload.get("native_closeout_payload")
+    if isinstance(native, dict):
+        _collect_coauthor_trailers(native, trailers)
+    raw = payload.get("raw_output_excerpt")
+    if isinstance(raw, str):
+        for line in raw.splitlines():
+            _append_valid_coauthor_values(line.strip(), trailers)
+
+
+def _append_valid_coauthor_values(value: object, trailers: list[str]) -> None:
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    for item in values:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if re.fullmatch(r"Co-Authored-By: [^<>\n]+ <[^<>\s]+@[^<>\s]+>", text):
+            trailers.append(text)
+
+
+def _run_git_closeout(repo: Path, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        input=input_text,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def _commit_failure_closeout(
+    metadata: dict[str, object],
+    *,
+    stage: str,
+    returncode: int,
+    stderr: str,
+    blocker_class: str = "dirty_worktree_conflict",
+) -> tuple[str, dict[str, object]]:
+    closeout = metadata.setdefault("closeout", {})
+    if isinstance(closeout, dict):
+        closeout["closeout_action"] = "commit_failed"
+        closeout["verification_status"] = "blocked"
+        closeout["commit_failure"] = {
+            "stage": stage,
+            "returncode": returncode,
+            "stderr_excerpt": _redacted_stderr_excerpt(stderr),
+        }
+    return (
+        "awaiting_phase_closeout",
+        {
+            "human_required": False,
+            "blocker_class": blocker_class,
+            "blocker_summary": f"Commit closeout failed during {stage}; inspect commit_failure metadata before rerunning closeout.",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        },
+    )
+
+
+def _redacted_stderr_excerpt(text: str, max_chars: int = 500) -> str:
+    redacted = re.sub(r"(?i)(api[_-]?key|authorization|token|secret|password)(\s*[:=]\s*)\S+", r"\1\2<redacted>", text or "")
+    redacted = " ".join(redacted.split())
+    if len(redacted) > max_chars:
+        return redacted[: max_chars - 3] + "..."
+    return redacted
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -5583,10 +5779,21 @@ def _write_deterministic_closeout(
             next_action="Repair or replan the Pipeline-aware phase before accepting deterministic closeout.",
         )
 
-    changed_paths = snapshot.phase_owned_dirty_paths if not override_phase or override_phase == snapshot.current_phase else ()
+    changed_paths = (
+        tuple(dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths)))
+        if not override_phase or override_phase == snapshot.current_phase
+        else ()
+    )
     if not changed_paths and plan is not None:
         dirty_summary = _classify_dirty_paths(repo, roadmap, plan, [], _dirty_paths(repo), current_phase=phase)
-        changed_paths = tuple(dirty_summary.get("phase_owned_dirty_paths", ()))
+        changed_paths = tuple(
+            dict.fromkeys(
+                (
+                    *dirty_summary.get("phase_owned_dirty_paths", ()),
+                    *dirty_summary.get("previous_phase_owned_paths", ()),
+                )
+            )
+        )
 
     closeout = build_phase_loop_closeout(
         phase_alias=phase or "UNKNOWN",

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
+from phase_loop_runtime.events import append_event
 from phase_loop_runtime.discovery import (
     WORKFLOW_EXECUTE_SKILLS,
     classify_phase_team_eligibility,
@@ -26,19 +27,112 @@ from phase_loop_runtime.discovery import (
     parse_roadmap_phases,
     pipeline_plan_metadata_diagnostic,
     plan_artifact_diagnostic,
+    previous_phase_owned_dirty_paths,
     plan_is_stale,
     repo_identity,
     roadmap_closeout_evidence_audit_enabled,
     roadmap_fingerprint,
     select_roadmap,
 )
-from phase_loop_runtime.models import StateSnapshot, utc_now
+from phase_loop_runtime.models import LoopEvent, StateSnapshot, utc_now
+from phase_loop_runtime.provenance import event_provenance
 from phase_loop_runtime.state import write_state
 from phase_loop_test_utils import make_repo, write_phase_plan
 from test_phase_loop_pipeline_bundle import _write_bundle, _write_protected_source
 
 
 class PhaseLoopDiscoveryTest(unittest.TestCase):
+    def test_previous_phase_owned_dirty_paths_uses_latest_same_phase_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            self._append_dirty_event(repo, roadmap, "RUNNER", ["old.md"])
+            self._append_dirty_event(repo, roadmap, "OTHER", ["other.md"])
+            self._append_dirty_event(repo, roadmap, "RUNNER", ["latest.md"])
+
+            self.assertEqual(previous_phase_owned_dirty_paths(repo, "RUNNER"), ("latest.md",))
+
+    def test_previous_phase_owned_dirty_paths_uses_terminal_summary_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="RUNNER",
+                    action="execute",
+                    status="blocked",
+                    model="gpt-5.4",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    metadata={
+                        "terminal_summary": {
+                            "dirty_paths": ["README.md"],
+                            "phase_owned_dirty_paths": ["README.md"],
+                        }
+                    },
+                    **event_provenance(roadmap, "RUNNER"),
+                ),
+            )
+
+            self.assertEqual(previous_phase_owned_dirty_paths(repo, "RUNNER"), ("README.md",))
+
+    def test_previous_phase_owned_dirty_paths_ignores_malformed_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="RUNNER",
+                    action="execute",
+                    status="blocked",
+                    model="gpt-5.4",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    metadata={
+                        "completion_dirty_worktree": {
+                            "dirty_paths": ["README.md"],
+                            "phase_owned_dirty_paths": "README.md",
+                        }
+                    },
+                    **event_provenance(roadmap, "RUNNER"),
+                ),
+            )
+
+            self.assertEqual(previous_phase_owned_dirty_paths(repo, "RUNNER"), ())
+
+    def _append_dirty_event(self, repo: Path, roadmap: Path, phase: str, paths: list[str]) -> None:
+        append_event(
+            repo,
+            LoopEvent(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phase=phase,
+                action="execute",
+                status="awaiting_phase_closeout",
+                model="gpt-5.4",
+                reasoning_effort="medium",
+                source="fixture",
+                metadata={
+                    "completion_dirty_worktree": {
+                        "dirty_paths": paths,
+                        "phase_owned_dirty_paths": paths,
+                        "unowned_dirty_paths": [],
+                        "pre_existing_dirty_paths": [],
+                    }
+                },
+                **event_provenance(roadmap, phase),
+            ),
+        )
+
     def test_explicit_roadmap_selection_and_phase_aliases(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

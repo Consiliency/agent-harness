@@ -204,6 +204,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "dirty_paths",
                 "phase_owned_dirty",
                 "phase_owned_dirty_paths",
+                "previous_phase_owned_paths",
                 "unowned_dirty_paths",
                 "pre_existing_dirty_paths",
                 "artifact_paths",
