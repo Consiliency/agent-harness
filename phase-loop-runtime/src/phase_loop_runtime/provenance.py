@@ -54,7 +54,11 @@ def validate_roadmap_phase_headings(roadmap: Path) -> list[ValidationFinding]:
     seen_aliases: dict[str, int] = {}
     alias_re = re.compile(r"\(([^\s()]+)\)[ \t]*(?:\S[^\n]*)?$")
     valid_alias_re = re.compile(r"^[A-Z][A-Z0-9._-]*$")
-    fix = "Use `### Phase <number> - Title (ALIAS)` with alias matching [A-Z][A-Z0-9._-]*."
+    fix = (
+        "Use `### Phase <number> <dash> Title (ALIAS)` where <dash> is either "
+        "ASCII hyphen-minus `-` or em-dash `—` (both accepted) and alias matches "
+        "[A-Z][A-Z0-9._-]*. The constraint is the alias-in-parens, not the dash style."
+    )
 
     for line_number, line in enumerate(text.splitlines(), start=1):
         if not re.match(r"^###\s+Phase\b", line):
