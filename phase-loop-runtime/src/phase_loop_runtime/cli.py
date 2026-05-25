@@ -217,6 +217,16 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--reason", help="Required with --to-status planned. Recorded on manual_recovery.")
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
             sub.add_argument("--recovery-mode", action="store_true", help="Allow dirty recovery-state reconciliation with explicit audit fields.")
+            sub.add_argument(
+                "--force",
+                action="store_true",
+                help=(
+                    "With --to-status planned: bypass the sticky-blocker allowlist on operator "
+                    "attestation. Recorded as forced_recovery=true in the manual_recovery event. "
+                    "Required --reason becomes the audit trail. Use only when you know the underlying "
+                    "blocker condition has been resolved."
+                ),
+            )
         if name == "reopen":
             sub.description = (
                 "Reverse a spurious closeout: append a typed phase_reopen event so the reducer "
@@ -852,9 +862,15 @@ def _reconcile_to_planned_command(
         )
         return 2
 
+    forced = bool(getattr(args, "force", False))
     allowed, refusal = _dirty_blocker_recovery_allowed(snapshot_before)
-    if not allowed:
-        print(f"phase-loop reconcile: cannot recover sticky blocker {refusal}", file=sys.stderr)
+    if not allowed and not forced:
+        print(
+            f"phase-loop reconcile: cannot recover sticky blocker {refusal}. "
+            "Pass --force if the underlying blocker condition has been resolved; "
+            "your --reason will be the audit trail.",
+            file=sys.stderr,
+        )
         return 2
 
     target_status = "planned" if find_plan_artifact(repo, phase, roadmap=roadmap) is not None else "unplanned"
@@ -871,6 +887,7 @@ def _reconcile_to_planned_command(
         "phase_owned_dirty_paths": list(snapshot_before.phase_owned_dirty_paths),
         "previous_phase_owned_paths": list(snapshot_before.previous_phase_owned_paths),
         "dirty_paths": list(snapshot_before.dirty_paths),
+        "forced_recovery": forced,
     }
     event = LoopEvent(
         timestamp=utc_now(),
@@ -915,6 +932,15 @@ def _dirty_blocker_recovery_allowed(snapshot: StateSnapshot) -> tuple[bool, str]
         or snapshot.dirty_paths
     )
     if blocker_class == "dirty_worktree_conflict" or explicit_dirty_evidence:
+        return True, ""
+    # Issue #12 (filed post-v30 by sister session): the recovery command
+    # excluded blocker_class='unknown' from its allowlist, leaving phases
+    # that hit the pre-v29/v30 issue-#11 cascade quarantined. The v29/v30
+    # runtime fixes prevent NEW genuine 'unknown' blockers from accumulating,
+    # so legacy 'unknown' from pre-fix runs IS recoverable. Treat as
+    # dirty-state-derived for recovery purposes; operator attestation via
+    # --reason becomes the audit trail.
+    if blocker_class == "unknown":
         return True, ""
     return False, blocker_class
 
