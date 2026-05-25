@@ -4,4 +4,4 @@ import os
 
 
 def branchgov_enabled() -> bool:
-    return os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE") == "true"
+    return os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE") != "false"
