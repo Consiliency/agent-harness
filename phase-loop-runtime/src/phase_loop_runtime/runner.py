@@ -103,7 +103,7 @@ from .reconcile import reconcile
 from .release_guard import release_dispatch_blocker
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
-from .worker_pool import worker_summary_path
+from .worker_pool import read_worker_summary, worker_summary_path, write_worker_summary
 
 try:  # Optional in the adapter runtime; tests and normal installs provide it.
     import yaml
@@ -3241,10 +3241,24 @@ def run_loop(
                 latest_statuses = latest_snapshot.phases
                 worker_terminal = launch_metadata.get("terminal_summary") if isinstance(launch_metadata, dict) else None
                 if isinstance(worker_terminal, dict):
-                    summary_path = worker_summary_path(repo, roadmap, alias)
-                    write_terminal_summary(summary_path, {"phase": alias, **worker_terminal})
+                    summary_path = write_worker_summary(repo, roadmap, alias, worker_terminal)
                 else:
                     summary_path = worker_summary_path(repo, roadmap, alias)
+                worker_summary_read = read_worker_summary(repo, roadmap, alias)
+                if worker_summary_read["status"] != "ok":
+                    set_phase_status(
+                        repo,
+                        roadmap,
+                        alias,
+                        classifications,
+                        "blocked",
+                        reason="worker_summary_ingest_failed",
+                        trigger=launch_action,
+                        selection=selection,
+                        action=action,
+                    )
+                    latest_snapshot = reconcile(repo, roadmap)
+                    latest_statuses = latest_snapshot.phases
                 _append_coordinator_event(
                     repo=repo,
                     roadmap=roadmap,
@@ -3258,6 +3272,7 @@ def run_loop(
                         "phase_aliases": list(phase_aliases),
                         "phase_status": latest_statuses.get(alias, status_after_closeout),
                         "summary_path": str(summary_path),
+                        "summary_read": worker_summary_read,
                     },
                 )
                 _append_coordinator_event(
