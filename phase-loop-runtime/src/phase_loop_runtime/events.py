@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,8 +25,7 @@ def append_event(repo: Path, event: LoopEvent) -> None:
     event = attach_git_topology(repo, event)
     path = event_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event.to_json(), sort_keys=True) + "\n")
+    _append_jsonl(path, event.to_json())
 
 
 def append_work_unit_event(repo: Path, event: WorkUnitEventMetadata, *, roadmap: Path | None = None) -> None:
@@ -48,8 +48,16 @@ def append_work_unit_event(repo: Path, event: WorkUnitEventMetadata, *, roadmap:
     )
     path = event_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    _append_jsonl(path, payload)
+
+
+def _append_jsonl(path: Path, payload: dict) -> None:
+    encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
+    try:
+        os.write(fd, encoded)
+    finally:
+        os.close(fd)
 
 
 def read_events(repo: Path) -> list[dict]:

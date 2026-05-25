@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from time import time
+from typing import Any
 
 from .launcher import LaunchResult, LaunchSpec, launch_with_spec
 from .observability import write_terminal_summary
@@ -33,6 +36,40 @@ class PhaseWorkerResult:
 
 def worker_summary_path(repo: Path, roadmap: Path, phase: str) -> Path:
     return phase_loop_dir(repo) / _roadmap_slug(repo, roadmap) / "workers" / f"{phase}.summary.json"
+
+
+def write_worker_summary(repo: Path, roadmap: Path, phase: str, summary: dict[str, Any]) -> Path:
+    path = worker_summary_path(repo, roadmap, phase)
+    write_terminal_summary(path, {"phase": phase, **summary})
+    return path
+
+
+def read_worker_summary(
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    *,
+    stale_after_seconds: float = 1.0,
+) -> dict[str, Any]:
+    path = worker_summary_path(repo, roadmap, phase)
+    if not path.exists():
+        return {"status": "missing", "path": str(path)}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        stat = path.stat()
+        age_seconds = max(0.0, time() - stat.st_mtime)
+        status = "torn" if age_seconds >= stale_after_seconds and stat.st_size > 0 else "pending"
+        return {
+            "status": status,
+            "path": str(path),
+            "size": stat.st_size,
+            "age_seconds": age_seconds,
+            "error": str(exc),
+        }
+    if not isinstance(data, dict):
+        return {"status": "malformed", "path": str(path), "summary": data}
+    return {"status": "ok", "path": str(path), "summary": data}
 
 
 def run_phase_worker_pool(
@@ -74,8 +111,7 @@ def _run_one(repo: Path, roadmap: Path, job: PhaseWorkerJob) -> PhaseWorkerResul
         "executor": result.executor,
         "log_path": result.log_path,
     }
-    path = worker_summary_path(repo, roadmap, job.phase)
-    write_terminal_summary(path, summary)
+    path = write_worker_summary(repo, roadmap, job.phase, summary)
     return PhaseWorkerResult(phase=job.phase, result=result, summary_path=path, terminal_summary=summary)
 
 
