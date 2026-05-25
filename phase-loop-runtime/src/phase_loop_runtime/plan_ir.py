@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from fnmatch import fnmatchcase
 from pathlib import Path
 
@@ -23,6 +24,44 @@ LANE_INDEX_LINE_RE = re.compile(
 )
 FIELD_RE = re.compile(r"^\s*(?:-\s+)?\*\*(?P<label>[^*]+)\*\*:\s*(?P<value>.+?)\s*$", re.IGNORECASE)
 TASK_RE = re.compile(r"^\s*-\s*(?P<bucket>test|impl|verify)\s*:\s*(?P<value>.+?)\s*$", re.IGNORECASE)
+ROADMAP_PHASE_RE = re.compile(
+    r"^###\s+Phase\s+\d+(?:\.\d+)?[A-Z]?\s+.*?\((?P<alias>[A-Z][A-Z0-9._-]*)(?:\s*,[^)]*)?\)[ \t]*(?:\S[^\n]*)?$",
+    re.MULTILINE,
+)
+ROADMAP_DEPENDS_RE = re.compile(
+    r"^\s*\*\*Depends on\*\*\s*$\n(?P<body>.*?)(?=^\s*\*\*[A-Z][^*]*\*\*|^---\s*$|^##\s+\S|^###\s+Phase|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+ROADMAP_DAG_SECTION_RE = re.compile(
+    r"^##\s+Phase Dependency DAG\s*$\n(?P<body>.*?)(?=^##\s+\S|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+ROADMAP_ARROW_RE = re.compile(r"\s*(?:[-=]+>|[─-]+>|→)\s*")
+ROADMAP_ALIAS_TOKEN_RE = re.compile(r"\b[A-Z][A-Z0-9._-]*\b")
+
+
+def iter_waves(roadmap_path: Path) -> Iterator[tuple[str, ...]]:
+    """Yield roadmap phase aliases in dependency waves."""
+    text = roadmap_path.read_text(encoding="utf-8")
+    aliases = tuple(match.group("alias").strip().upper() for match in ROADMAP_PHASE_RE.finditer(text))
+    if not aliases:
+        return
+
+    dependencies = _roadmap_phase_dependencies(text, aliases)
+    emitted: set[str] = set()
+    remaining = set(aliases)
+    while remaining:
+        wave = tuple(alias for alias in aliases if alias in remaining and dependencies[alias] <= emitted)
+        if not wave:
+            cycle_aliases = tuple(alias for alias in aliases if alias in remaining)
+            raise LaneIRDiagnostic(
+                kind="cycle",
+                message=f"roadmap phase dependency cycle detected: {' -> '.join(cycle_aliases)}",
+                details={"cycle": cycle_aliases},
+            )
+        yield wave
+        emitted.update(wave)
+        remaining.difference_update(wave)
 
 
 def parse_phase_plan_ir(plan: Path) -> PhasePlanIR:
@@ -103,6 +142,51 @@ def parse_phase_plan_ir(plan: Path) -> PhasePlanIR:
         dispatch_hints=dispatch_hints,
         merge_policy=merge_policy,
     )
+
+
+def _roadmap_phase_dependencies(text: str, aliases: tuple[str, ...]) -> dict[str, set[str]]:
+    alias_set = set(aliases)
+    dependencies = {alias: set() for alias in aliases}
+    phase_matches = list(ROADMAP_PHASE_RE.finditer(text))
+    for index, match in enumerate(phase_matches):
+        alias = match.group("alias").strip().upper()
+        end = phase_matches[index + 1].start() if index + 1 < len(phase_matches) else len(text)
+        section = text[match.end() : end]
+        depends_match = ROADMAP_DEPENDS_RE.search(section)
+        if not depends_match:
+            continue
+        for dependency in ROADMAP_ALIAS_TOKEN_RE.findall(depends_match.group("body")):
+            dependency = dependency.upper()
+            if dependency in alias_set and dependency != alias:
+                dependencies[alias].add(dependency)
+
+    if not any(dependencies.values()):
+        for source, target in _roadmap_dag_edges(text, alias_set):
+            if source != target:
+                dependencies[target].add(source)
+    return dependencies
+
+
+def _roadmap_dag_edges(text: str, aliases: set[str]) -> tuple[tuple[str, str], ...]:
+    match = ROADMAP_DAG_SECTION_RE.search(text)
+    if not match:
+        return ()
+    edges: list[tuple[str, str]] = []
+    for raw_line in match.group("body").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("```") or line.startswith("#"):
+            continue
+        line = re.sub(r"\([^)]*\)", "", line)
+        parts = [part.strip() for part in ROADMAP_ARROW_RE.split(line) if part.strip()]
+        if len(parts) < 2:
+            continue
+        chain: list[str] = []
+        for part in parts:
+            tokens = [token.upper() for token in ROADMAP_ALIAS_TOKEN_RE.findall(part) if token.upper() in aliases]
+            if len(tokens) == 1:
+                chain.append(tokens[0])
+        edges.extend((left, right) for left, right in zip(chain, chain[1:]))
+    return tuple(edges)
 
 
 def parse_lane_sections(text: str) -> tuple[tuple[str, str, str], ...]:
