@@ -1,0 +1,66 @@
+[
+  {
+    "action": "state_transition",
+    "child_automation": {
+      "blocker_class": null,
+      "human_required": null,
+      "status": null,
+      "verification_status": null
+    },
+    "dispatch": {
+      "selected_executor": null,
+      "selected_via": null,
+      "source": null
+    },
+    "model": "gpt-5.5",
+    "phase": "RUNNER",
+    "reasoning_effort": "medium",
+    "selected_executor": null,
+    "source": "registry defaults",
+    "status": "complete",
+    "terminal_summary": {
+      "dirty_paths": null,
+      "phase_owned_dirty": null,
+      "terminal_status": null,
+      "verification_status": null
+    },
+    "transition": {
+      "from": "planned",
+      "reason": "launch_result_reduction",
+      "to": "complete",
+      "trigger": "execute"
+    }
+  },
+  {
+    "action": "run",
+    "child_automation": {
+      "blocker_class": "none",
+      "human_required": "false",
+      "status": "complete",
+      "verification_status": "passed"
+    },
+    "dispatch": {
+      "selected_executor": "codex",
+      "selected_via": "preferred",
+      "source": "registry_default"
+    },
+    "model": "gpt-5.5",
+    "phase": "RUNNER",
+    "reasoning_effort": "medium",
+    "selected_executor": "codex",
+    "source": "registry defaults",
+    "status": "complete",
+    "terminal_summary": {
+      "dirty_paths": [],
+      "phase_owned_dirty": false,
+      "terminal_status": "complete",
+      "verification_status": "passed"
+    },
+    "transition": {
+      "from": null,
+      "reason": null,
+      "to": null,
+      "trigger": null
+    }
+  }
+]

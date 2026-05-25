@@ -1,0 +1,51 @@
+{
+  "current_phase": "CONTRACT",
+  "dirty_paths": [],
+  "human_required": false,
+  "last_action": "run",
+  "latest_metric": {
+    "action": "execute",
+    "effort": "medium",
+    "executor": "codex",
+    "model": "gpt-5.5",
+    "phase": "RUNNER",
+    "returncode": 0,
+    "terminal_status": "complete",
+    "verification_status": "passed"
+  },
+  "metrics_summary": {
+    "by_blocker_class": {
+      "unknown": 1
+    },
+    "by_effort": {
+      "medium": 1
+    },
+    "by_executor": {
+      "codex": 1
+    },
+    "by_model": {
+      "gpt-5.5": 1
+    },
+    "by_terminal_status": {
+      "complete": 1
+    },
+    "by_verification_status": {
+      "passed": 1
+    },
+    "total": 1
+  },
+  "model": "gpt-5.5",
+  "phase_owned_dirty": false,
+  "phase_owned_dirty_paths": [],
+  "phases": {
+    "ACCESS": "unplanned",
+    "CONTRACT": "unplanned",
+    "RUNNER": "complete"
+  },
+  "pipeline_mode": "standalone",
+  "pre_existing_dirty_paths": [],
+  "reasoning_effort": "medium",
+  "source": "registry defaults",
+  "unowned_dirty_paths": [],
+  "work_units": {}
+}
