@@ -9,6 +9,7 @@ from .events import read_events
 from .models import BLOCKER_CLASSES, StateSnapshot, utc_now
 from .provenance import (
     phase_provenance_map,
+    phase_sha256,
     provenance_mismatch_reason,
     roadmap_sha256,
     snapshot_provenance,
@@ -421,12 +422,16 @@ def _plan_blocker(repo: Path, roadmap: Path, phase: str) -> dict:
 
     lane_ir = parse_phase_plan_ir(plan)
     if lane_ir.lanes and lane_ir.diagnostics:
+        override = _lane_ir_override(repo, roadmap, phase, plan)
+        remaining = tuple(diagnostic for diagnostic in lane_ir.diagnostics if diagnostic.kind not in override)
+        if not remaining:
+            return {}
         return {
             "human_required": False,
             "blocker_class": "contract_bug",
             "blocker_summary": "Lane IR diagnostics failed closed for the current phase plan.",
             "required_human_inputs": (),
-            "lane_ir_diagnostics": tuple(diagnostic.to_json() for diagnostic in lane_ir.diagnostics),
+            "lane_ir_diagnostics": tuple(diagnostic.to_json() for diagnostic in remaining),
         }
     automation = parse_automation_status(plan.read_text(encoding="utf-8"))
     if automation.get("automation_status") != "blocked":
@@ -441,6 +446,45 @@ def _plan_blocker(repo: Path, roadmap: Path, phase: str) -> dict:
         "blocker_summary": automation.get("automation_blocker_summary"),
         "required_human_inputs": automation.get("automation_required_human_inputs", ()),
     }
+
+
+def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tuple[str, ...]:
+    roadmap_path = roadmap.resolve()
+    plan_path = plan.resolve()
+    current_roadmap_sha = roadmap_sha256(roadmap)
+    current_phase_sha = phase_sha256(roadmap, phase)
+    override_kinds: tuple[str, ...] = ()
+    for event in read_events(repo):
+        if event.get("action") != "lane_ir_override":
+            continue
+        if event.get("roadmap_sha256") != current_roadmap_sha or event.get("phase_sha256") != current_phase_sha:
+            continue
+        if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        try:
+            event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
+        except OSError:
+            continue
+        if event_roadmap != roadmap_path:
+            continue
+        metadata = event.get("metadata")
+        payload = metadata.get("runner.lane_ir_override_invoked") if isinstance(metadata, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        if not str(payload.get("operator_reason") or "").strip():
+            continue
+        event_plan = payload.get("plan_path")
+        if event_plan:
+            try:
+                if Path(str(event_plan)).expanduser().resolve() != plan_path:
+                    continue
+            except OSError:
+                continue
+        kinds = payload.get("diagnostic_kinds_overridden")
+        if not isinstance(kinds, list):
+            continue
+        override_kinds = tuple(str(kind) for kind in kinds if kind)
+    return override_kinds
 
 
 def _clean_planned_artifact_supersedes_blocker(repo: Path, roadmap: Path, phase: str, warnings: list[dict] | tuple[dict, ...]) -> bool:

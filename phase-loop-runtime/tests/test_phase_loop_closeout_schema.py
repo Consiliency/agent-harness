@@ -29,7 +29,7 @@ class PhaseLoopCloseoutSchemaTest(unittest.TestCase):
             self.assertIn(cls, properties["blocker_class"]["enum"])
         blocker_enum = tuple(item for item in properties["blocker_class"]["enum"] if item in BLOCKER_CLASSES)
         self.assertEqual(blocker_enum, BLOCKER_CLASSES)
-        self.assertEqual(BLOCKER_CLASSES[-1], "merge_conflict")
+        self.assertIn("merge_conflict", BLOCKER_CLASSES)
 
     def test_complete_closeout_requires_at_least_one_produced_gate_via_runner_check(self):
         # The conditional rule "when terminal_status=complete, produced_if_gates

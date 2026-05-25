@@ -106,6 +106,7 @@ BLOCKER_CLASSES = (
     "unretryable_external_outage",
     "stuck_loop",
     "merge_conflict",
+    "operator_override_missing_reason",
 )
 
 LANE_IR_DIAGNOSTIC_KINDS = (

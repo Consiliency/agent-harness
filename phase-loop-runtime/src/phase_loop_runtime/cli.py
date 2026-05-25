@@ -13,10 +13,11 @@ from .events import append_event, read_events
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
-from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_SCHEDULER_MODES, LoopEvent, PipelinePlanMetadata, StateSnapshot, utc_now
+from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PipelinePlanMetadata, StateSnapshot, utc_now
 from .maintenance import MaintenanceOptions, SyncSkillsOptions, sync_bridge_skills
 from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import build_notification_payload, run_notification_command
+from .pipeline_adapter.flag import allow_lane_ir_override_enabled
 from .profiles import DEFAULT_PROFILES
 from .provenance import ValidationFinding, event_provenance, snapshot_provenance, validate_roadmap_phase_headings
 from .reconcile import reconcile
@@ -138,6 +139,12 @@ def build_parser() -> argparse.ArgumentParser:
                 "--allow-cross-phase-dirty",
                 help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
             )
+            if allow_lane_ir_override_enabled():
+                sub.add_argument(
+                    "--allow-lane-ir-override",
+                    help="Comma-separated lane-IR diagnostic kinds to override. Requires --reason.",
+                )
+                sub.add_argument("--reason", help="Operator-supplied reason for the lane-IR override audit trail.")
             sub.add_argument("--reset-capability", action="store_true")
             sub.add_argument("--rotate-executors")
             sub.add_argument("--rotation-mode", choices=("phase", "work_unit"))
@@ -289,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--allow-cross-phase-dirty requires a non-empty reason")
     if command not in {"run", "resume", "dry-run"} and allow_cross_phase_dirty_reason is not None:
         parser.error("--allow-cross-phase-dirty is only valid for run, resume, and dry-run")
+    lane_ir_override_kinds = _parse_lane_ir_override(parser, args, command)
     if command not in {"run", "resume"} and (
         bool(getattr(args, "full_phase", False)) or bool(getattr(args, "no_deprecation_hints", False))
     ):
@@ -503,6 +511,16 @@ def main(argv: list[str] | None = None) -> int:
     effective_phase = getattr(args, "phase_arg", None) or args.phase
     effective_source_bundle = getattr(args, "bundle", None) or args.source_bundle
     effective_output_path = getattr(args, "output", None)
+    if lane_ir_override_kinds:
+        if not effective_phase:
+            parser.error("--allow-lane-ir-override requires --phase")
+        _append_lane_ir_override_event(
+            repo=repo,
+            roadmap=roadmap,
+            phase=str(effective_phase).upper(),
+            diagnostic_kinds=lane_ir_override_kinds,
+            reason=str(getattr(args, "reason", "")).strip(),
+        )
 
     snapshot, results = run_loop(
         repo=repo,
@@ -571,6 +589,58 @@ def main(argv: list[str] | None = None) -> int:
                 print("Log:", result.log_path)
         print(render_status(snapshot, as_json=False))
     return _run_returncode(snapshot, results)
+
+
+def _parse_lane_ir_override(parser: argparse.ArgumentParser, args: argparse.Namespace, command: str) -> tuple[str, ...]:
+    raw = getattr(args, "allow_lane_ir_override", None)
+    if raw is None:
+        return ()
+    if command not in {"run", "resume", "dry-run"}:
+        parser.error("--allow-lane-ir-override is only valid for run, resume, and dry-run")
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not reason:
+        parser.error("--allow-lane-ir-override requires --reason (blocker_class=operator_override_missing_reason)")
+    kinds = tuple(kind.strip() for kind in str(raw).split(",") if kind.strip())
+    if not kinds:
+        parser.error("--allow-lane-ir-override requires at least one diagnostic kind")
+    unsupported = tuple(kind for kind in kinds if kind not in LANE_IR_DIAGNOSTIC_KINDS)
+    if unsupported:
+        parser.error(f"unsupported lane-IR diagnostic override kind(s): {', '.join(unsupported)}")
+    return tuple(dict.fromkeys(kinds))
+
+
+def _append_lane_ir_override_event(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    diagnostic_kinds: tuple[str, ...],
+    reason: str,
+) -> None:
+    plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action="lane_ir_override",
+            status="planned",
+            model="operator",
+            reasoning_effort="manual",
+            source="cli",
+            override_reason=reason,
+            metadata={
+                "runner.lane_ir_override_invoked": {
+                    "diagnostic_kinds_overridden": list(diagnostic_kinds),
+                    "plan_path": str(plan) if plan else None,
+                    "operator_reason": reason,
+                }
+            },
+            **event_provenance(roadmap, phase),
+        ),
+    )
 
 
 def _format_roadmap_validation_warning(finding: ValidationFinding) -> str:

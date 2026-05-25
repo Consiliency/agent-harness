@@ -9,3 +9,7 @@ def branchgov_enabled() -> bool:
 
 def trust_executor_evidence_enabled() -> bool:
     return os.environ.get("PHASE_LOOP_TRUST_EXECUTOR_EVIDENCE") == "true"
+
+
+def allow_lane_ir_override_enabled() -> bool:
+    return os.environ.get("PHASE_LOOP_ALLOW_LANE_IR_OVERRIDE") == "true"
