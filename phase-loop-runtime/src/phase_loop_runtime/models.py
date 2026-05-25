@@ -1056,7 +1056,7 @@ class LaneTaskSet:
 
 
 @dataclass(frozen=True)
-class LaneIRDiagnostic:
+class LaneIRDiagnostic(Exception):
     kind: str
     message: str
     lane_id: str | None = None
