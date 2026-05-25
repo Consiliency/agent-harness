@@ -227,6 +227,75 @@ def _repo_relative(repo: Path, path: Path) -> str:
         return str(path)
 
 
+def _pipeline_branchgov_active(repo: Path) -> bool:
+    from .pipeline_adapter.flag import branchgov_enabled
+    from .pipeline_adapter.markers import detect_pipeline_mode
+
+    return detect_pipeline_mode(repo) and branchgov_enabled()
+
+
+def _roadmap_version(roadmap: Path) -> str:
+    match = re.fullmatch(r"phase-plans-(v[\w.-]+)\.md", roadmap.name)
+    return match.group(1) if match else roadmap.stem
+
+
+def _default_branch(repo: Path) -> str:
+    remote_head = _git_output_or_empty(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    if remote_head.startswith("origin/"):
+        return remote_head.removeprefix("origin/")
+    upstream = _git_output_or_empty(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if upstream.startswith("origin/"):
+        return upstream.removeprefix("origin/")
+    return "main"
+
+
+def _git_output_or_empty(repo: Path, *args: str) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _pipeline_branch_blocker_from_error(exc: Exception) -> dict[str, object]:
+    blocker_class = getattr(exc, "blocker_class", None) or "contract_bug"
+    blocker_summary = getattr(exc, "blocker_summary", None) or str(exc)
+    return {
+        "human_required": False,
+        "blocker_class": blocker_class,
+        "blocker_summary": str(blocker_summary),
+        "required_human_inputs": (),
+        "access_attempts": (),
+    }
+
+
+def _ensure_pipeline_branch_before_dispatch(repo: Path, roadmap: Path) -> dict[str, object] | None:
+    if not _pipeline_branchgov_active(repo):
+        return None
+    from .pipeline_adapter.branch_ops import ensure_pipeline_branch
+
+    try:
+        ensure_pipeline_branch(repo, _roadmap_version(roadmap), _default_branch(repo))
+    except Exception as exc:
+        return _pipeline_branch_blocker_from_error(exc)
+    return None
+
+
+def _refuse_pipeline_default_branch_commit(repo: Path) -> dict[str, object] | None:
+    if not _pipeline_branchgov_active(repo):
+        return None
+    from .pipeline_adapter.branch_ops import refuse_default_branch_commit
+
+    try:
+        refuse_default_branch_commit(repo, _default_branch(repo))
+    except Exception as exc:
+        return _pipeline_branch_blocker_from_error(exc)
+    return None
+
+
 def is_plan_doc_current(repo: Path, phase: str, plan: Path, roadmap: Path, *, recent_commit_window: int = 50) -> bool:
     current_plan = find_plan_artifact(repo, phase, roadmap=roadmap)
     if current_plan is None or current_plan.resolve() != plan.resolve():
@@ -902,6 +971,41 @@ def run_loop(
             status = classifications.get(alias, "unknown")
             plan = find_plan_artifact(repo, alias, roadmap=roadmap)
             stale_pipeline_plan = _stale_pipeline_plan_candidate(repo, roadmap, alias) if plan is None else None
+            if not dry_run and status in {"planned", "executed"}:
+                branch_blocker = _ensure_pipeline_branch_before_dispatch(repo, roadmap)
+                if branch_blocker is not None:
+                    classifications[alias] = "blocked"
+                    append_event(
+                        repo,
+                        LoopEvent(
+                            timestamp=utc_now(),
+                            repo=str(repo),
+                            roadmap=str(roadmap),
+                            phase=alias,
+                            action=action,
+                            status="blocked",
+                            model=selection.model,
+                            reasoning_effort=selection.effort,
+                            source=selection.source,
+                            override_reason=selection.override_reason,
+                            blocker=branch_blocker,
+                            metadata={
+                                "pipeline_branch_governance": {
+                                    "status": "blocked",
+                                    "roadmap_version": _roadmap_version(roadmap),
+                                    "default_branch": _default_branch(repo),
+                                },
+                                "terminal_summary": build_terminal_summary(
+                                    terminal_status="blocked",
+                                    terminal_blocker=branch_blocker,
+                                    verification_status="blocked",
+                                    next_action="Resolve the pipeline branch governance blocker before dispatch.",
+                                ),
+                            },
+                            **event_provenance(roadmap, alias),
+                        ),
+                    )
+                    break
             if (status in {"planned", "executed"} or explicit_product_action in {"execute", "review"}) and stale_pipeline_plan is not None:
                 stale_plan, execution_diagnostic = stale_pipeline_plan
                 classifications[alias] = "blocked"
@@ -5632,56 +5736,68 @@ def _perform_phase_closeout(
                 stderr=add_result.stderr or add_result.stdout,
             )
         else:
-            commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
-            if commit_result.returncode != 0:
-                status, blocker = _commit_failure_closeout(
-                    metadata,
-                    stage="commit",
-                    returncode=commit_result.returncode,
-                    stderr=commit_result.stderr or commit_result.stdout,
-                )
-            else:
-                commit = _git_output(repo, "rev-parse", "HEAD")
-                status = "planned" if terminal_status == "planned" else "complete"
-                metadata["closeout"]["verification_status"] = "not_run" if status == "planned" else "passed"
+            guard_blocker = _refuse_pipeline_default_branch_commit(repo)
+            if guard_blocker is not None:
+                status = "blocked"
+                blocker = guard_blocker
                 metadata["closeout"].update(
                     {
-                        "closeout_action": "commit",
-                        "closeout_commit": commit,
+                        "closeout_action": "commit_refused",
+                        "verification_status": "blocked",
+                        "closeout_refusal_reason": "pipeline_default_branch_commit",
                     }
                 )
-                if roadmap_closeout_evidence_audit_enabled(roadmap):
-                    try:
-                        audit = audit_closeout_evidence(commit, phase, repo)
-                    except Exception as exc:
-                        status, blocker = _commit_failure_closeout(
-                            metadata,
-                            stage="audit",
-                            returncode=1,
-                            stderr=str(exc),
-                            blocker_class="repeated_verification_failure",
-                        )
-                    else:
-                        total_claims = len(audit.matched_claims) + len(audit.unmatched_claims)
-                        metadata["closeout"]["closeout_evidence_audit"] = {
-                            "audit_status": audit.audit_status,
-                            "matched_claim_count": len(audit.matched_claims),
-                            "unmatched_claim_count": len(audit.unmatched_claims),
-                            "total_claim_count": total_claims,
+            else:
+                commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
+                if commit_result.returncode != 0:
+                    status, blocker = _commit_failure_closeout(
+                        metadata,
+                        stage="commit",
+                        returncode=commit_result.returncode,
+                        stderr=commit_result.stderr or commit_result.stdout,
+                    )
+                else:
+                    commit = _git_output(repo, "rev-parse", "HEAD")
+                    status = "planned" if terminal_status == "planned" else "complete"
+                    metadata["closeout"]["verification_status"] = "not_run" if status == "planned" else "passed"
+                    metadata["closeout"].update(
+                        {
+                            "closeout_action": "commit",
+                            "closeout_commit": commit,
                         }
-                        if audit.audit_status == "drift_detected":
-                            status = "blocked"
-                            metadata["closeout"]["verification_status"] = "blocked"
-                            blocker = {
-                                "human_required": False,
-                                "blocker_class": "closeout_evidence_drift",
-                                "blocker_summary": (
-                                    f"{len(audit.unmatched_claims)} of {total_claims} "
-                                    "closeout claims have no matching files in the closeout diff"
-                                ),
-                                "required_human_inputs": (),
-                                "access_attempts": (),
+                    )
+                    if roadmap_closeout_evidence_audit_enabled(roadmap):
+                        try:
+                            audit = audit_closeout_evidence(commit, phase, repo)
+                        except Exception as exc:
+                            status, blocker = _commit_failure_closeout(
+                                metadata,
+                                stage="audit",
+                                returncode=1,
+                                stderr=str(exc),
+                                blocker_class="repeated_verification_failure",
+                            )
+                        else:
+                            total_claims = len(audit.matched_claims) + len(audit.unmatched_claims)
+                            metadata["closeout"]["closeout_evidence_audit"] = {
+                                "audit_status": audit.audit_status,
+                                "matched_claim_count": len(audit.matched_claims),
+                                "unmatched_claim_count": len(audit.unmatched_claims),
+                                "total_claim_count": total_claims,
                             }
+                            if audit.audit_status == "drift_detected":
+                                status = "blocked"
+                                metadata["closeout"]["verification_status"] = "blocked"
+                                blocker = {
+                                    "human_required": False,
+                                    "blocker_class": "closeout_evidence_drift",
+                                    "blocker_summary": (
+                                        f"{len(audit.unmatched_claims)} of {total_claims} "
+                                        "closeout claims have no matching files in the closeout diff"
+                                    ),
+                                    "required_human_inputs": (),
+                                    "access_attempts": (),
+                                }
         if closeout_mode == "push":
             decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
             if decision.get("allowed"):

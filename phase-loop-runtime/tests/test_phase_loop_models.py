@@ -106,6 +106,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "closeout_evidence_drift",
                 "unretryable_external_outage",
                 "stuck_loop",
+                "merge_conflict",
             ),
         )
         self.assertEqual(WORK_UNIT_KINDS, ("roadmap_build", "phase_plan", "lane_execute", "lane_review", "phase_reducer", "phase_verify", "repair", "closeout"))

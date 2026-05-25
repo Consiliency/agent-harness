@@ -16,7 +16,8 @@ client<llm> PhaseLoopCloseoutClient {
 // ambiguous_roadmap_selection, product_decision_missing, dirty_worktree_conflict,
 // branch_sync_conflict, stalled_child_observation, repeated_verification_failure,
 // sandbox_command_restriction, upstream_phase_unmet, contract_bug,
-// gold_record_amendment, unretryable_external_outage, stuck_loop, none
+// gold_record_amendment, closeout_evidence_drift, unretryable_external_outage,
+// stuck_loop, merge_conflict, none
 
 class PhaseLoopCloseoutV1 {
   terminal_status string

@@ -1722,6 +1722,7 @@ The blocker taxonomy is frozen to these literals:
 - `repeated_verification_failure`
 - `unretryable_external_outage`
 - `stuck_loop`
+- `merge_conflict`
 
 `stuck_loop` fires when a phase has been ping-ponging in
 `(action=run, status=executing)` past the runner's iteration cap
