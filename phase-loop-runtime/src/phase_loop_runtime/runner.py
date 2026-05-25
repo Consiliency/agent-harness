@@ -92,6 +92,8 @@ from .observability import (
     summarize_work_unit_metrics,
     write_terminal_summary,
 )
+from .pipeline_adapter.flag import trust_executor_evidence_enabled
+from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
 from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
@@ -2824,6 +2826,7 @@ def run_loop(
                 }
             dirty_summary: dict[str, object] = {}
             repair_completion_success = launch_action == "repair" and _repair_completion_success(child_automation)
+            executor_terminal_summary = _executor_terminal_summary(child_automation)
             completion_dirty_paths = _dirty_paths(repo) if status_after_launch == "complete" else []
             plan_dirty_paths = (
                 _dirty_paths(repo)
@@ -2862,6 +2865,8 @@ def run_loop(
                     completion_dirty_paths,
                     allow_pre_existing_phase_owned=repair_completion_success,
                     current_phase=alias,
+                    terminal_summary=executor_terminal_summary,
+                    emit_runtime_relaxation_event=True,
                 )
                 boundary_blocker = _pipeline_boundary_blocker(
                     repo,
@@ -2893,7 +2898,14 @@ def run_loop(
                 )
             elif plan_dirty_paths:
                 dirty_summary = _classify_dirty_paths(
-                    repo, roadmap, plan, pre_launch_dirty_paths, plan_dirty_paths, current_phase=alias
+                    repo,
+                    roadmap,
+                    plan,
+                    pre_launch_dirty_paths,
+                    plan_dirty_paths,
+                    current_phase=alias,
+                    terminal_summary=executor_terminal_summary,
+                    emit_runtime_relaxation_event=True,
                 )
                 status_after_launch, event_blocker = _dirty_outcome(
                     dirty_summary,
@@ -2913,7 +2925,14 @@ def run_loop(
             elif blocked_plan_dirty_paths:
                 plan_dirty_paths = blocked_plan_dirty_paths
                 dirty_summary = _classify_dirty_paths(
-                    repo, roadmap, plan, pre_launch_dirty_paths, plan_dirty_paths, current_phase=alias
+                    repo,
+                    roadmap,
+                    plan,
+                    pre_launch_dirty_paths,
+                    plan_dirty_paths,
+                    current_phase=alias,
+                    terminal_summary=executor_terminal_summary,
+                    emit_runtime_relaxation_event=True,
                 )
                 status_after_launch, event_blocker = _dirty_outcome(
                     dirty_summary,
@@ -2932,7 +2951,14 @@ def run_loop(
                 )
             elif incomplete_execute_dirty_paths:
                 dirty_summary = _classify_dirty_paths(
-                    repo, roadmap, plan, pre_launch_dirty_paths, incomplete_execute_dirty_paths, current_phase=alias
+                    repo,
+                    roadmap,
+                    plan,
+                    pre_launch_dirty_paths,
+                    incomplete_execute_dirty_paths,
+                    current_phase=alias,
+                    terminal_summary=executor_terminal_summary,
+                    emit_runtime_relaxation_event=True,
                 )
                 boundary_blocker = _pipeline_boundary_blocker(
                     repo,
@@ -2969,7 +2995,14 @@ def run_loop(
                 verified_dirty_paths = _dirty_paths(repo)
                 if verified_dirty_paths:
                     dirty_summary = _classify_dirty_paths(
-                        repo, roadmap, plan, pre_launch_dirty_paths, verified_dirty_paths, current_phase=alias
+                        repo,
+                        roadmap,
+                        plan,
+                        pre_launch_dirty_paths,
+                        verified_dirty_paths,
+                        current_phase=alias,
+                        terminal_summary=executor_terminal_summary,
+                        emit_runtime_relaxation_event=True,
                     )
                     boundary_blocker = _pipeline_boundary_blocker(
                         repo,
@@ -5134,6 +5167,13 @@ def _parse_native_closeout_status(text: str) -> dict[str, object]:
     }
 
 
+def _executor_terminal_summary(child_automation: dict[str, object]) -> dict[str, object]:
+    payload = child_automation.get("native_closeout_payload")
+    if isinstance(payload, dict):
+        return payload
+    return child_automation
+
+
 def _find_json_closeout_payload(text: str) -> dict[str, object] | None:
     decoder = json.JSONDecoder()
     closeout: dict[str, object] | None = None
@@ -5670,6 +5710,8 @@ def _classify_dirty_paths(
     *,
     allow_pre_existing_phase_owned: bool = False,
     current_phase: str | None = None,
+    terminal_summary: dict[str, object] | None = None,
+    emit_runtime_relaxation_event: bool = False,
 ) -> dict[str, object]:
     ownership = parse_plan_ownership(repo, roadmap, plan)
     pre_launch = set(pre_launch_dirty_paths)
@@ -5715,6 +5757,29 @@ def _classify_dirty_paths(
         for path in post_launch_dirty_paths
         if path not in phase_owned_set and path not in previous_phase_owned_set and path not in expected_sibling_set
     ]
+    runtime_relaxation = _runtime_relaxation_evidence(
+        ownership.owned_patterns,
+        post_launch_dirty_paths,
+        unowned,
+        terminal_summary,
+    )
+    if runtime_relaxation:
+        for item in runtime_relaxation:
+            path = item["path"]
+            if path not in phase_owned_set:
+                phase_owned.append(path)
+                phase_owned_set.add(path)
+        relaxed_paths = {item["path"] for item in runtime_relaxation}
+        unowned = [path for path in unowned if path not in relaxed_paths]
+        if emit_runtime_relaxation_event and current_phase:
+            _append_runtime_relaxation_event(
+                repo,
+                roadmap,
+                current_phase,
+                declared_paths=ownership.owned_patterns,
+                actual_paths=post_launch_dirty_paths,
+                evidence=runtime_relaxation,
+            )
     control_only_dirty = bool(post_launch_dirty_paths) and all(path in ownership.control_paths for path in post_launch_dirty_paths)
     closeout_safe_dirty = bool(post_launch_dirty_paths) and not pre_existing and not unowned
     return {
@@ -5728,7 +5793,58 @@ def _classify_dirty_paths(
         "phase_owned_dirty": (ownership.valid or control_only_dirty) and closeout_safe_dirty,
         "ownership_errors": [] if control_only_dirty else list(ownership.errors),
         "rename_sources_promoted": rename_sources_promoted,
+        "runtime_relaxation_evidence": runtime_relaxation,
     }
+
+
+def _runtime_relaxation_evidence(
+    declared_paths: tuple[str, ...],
+    actual_paths: list[str],
+    unowned_paths: list[str],
+    terminal_summary: dict[str, object] | None,
+) -> tuple[dict[str, str], ...]:
+    if not unowned_paths or not trust_executor_evidence_enabled() or not terminal_summary:
+        return ()
+    if terminal_summary.get("phase_owned_dirty") is not True:
+        return ()
+    accepted = validate_phase_owned_evidence(
+        declared_paths,
+        tuple(actual_paths),
+        terminal_summary.get("phase_owned_evidence"),
+    )
+    accepted_by_path = {item["path"]: item for item in accepted}
+    return tuple(accepted_by_path[path] for path in unowned_paths if path in accepted_by_path)
+
+
+def _append_runtime_relaxation_event(
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    *,
+    declared_paths: tuple[str, ...],
+    actual_paths: list[str],
+    evidence: tuple[dict[str, str], ...],
+) -> None:
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action="runner.runtime_relaxation_invoked",
+            status="executed",
+            model="phase-loop-runtime",
+            reasoning_effort="none",
+            source="runner",
+            metadata={
+                "declared_paths": list(declared_paths),
+                "actual_paths": list(actual_paths),
+                "evidence": list(evidence),
+            },
+            **event_provenance(roadmap, phase),
+        ),
+    )
 
 
 def _dirty_outcome(dirty_summary: dict[str, object], *, blocked_summary: str) -> tuple[str, dict | None]:
