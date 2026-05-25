@@ -22,7 +22,8 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   - use `explorer` for read-only reconnaissance;
   - use `worker` only for bounded implementation tasks, not this planning synthesis;
   - brief every agent with `<harness>-task-contextualizer`.
-- File ownership must be disjoint across lanes. Shared index/config/init files belong in a preamble lane.
+- File ownership must be disjoint across lanes. Shared index/config/init files belong in a preamble lane. **Before emitting the plan, scan every lane's owned files for overlap with every other lane in the same wave. If overlap is found, either (a) move the shared file into a preamble lane that all dependents consume, or (b) collapse the overlapping lanes into a single lane. Overlap surviving into the final plan triggers `overlapping_write_ownership` lane-IR diagnostic and refuses execution (Pattern B from 2026-05-25 runner failure analysis).**
+- Owned files MUST enumerate the COMPLETE set the executor will touch — not just the headline source files. **For every primary file added or modified, include the matching test file(s), snapshot file(s), generated artifact file(s), `.env.example` / `.env.local.example` if env shape changes, `package.json` + `pnpm-lock.yaml` (or equivalent) if dependencies change, and migration files matching the timestamp pattern (e.g., `supabase/migrations/<timestamp>_*.sql` + matching `__tests__/*.test.sql`).** Under-enumeration causes the closeout's `phase_owned_dirty` check to fail closed because the executor's actual dirty paths exceed the plan's declared ownership set (Pattern A from 2026-05-25 runner failure analysis: hit ~70% of phases in that drive).
 - Plans may describe write-capable parallel execution only when lane safety is machine-verified: writable lanes are disjoint, dependencies are explicit, reducer nodes are excluded from writer waves, and each writable lane consumes a scheduler-owned worktree assignment. Do not imply that prose `Parallel-safe: yes` alone authorizes fanout.
 - Claude Code CLI exception wording means local Claude Code CLI execution through the phase-loop launcher, not Anthropic API-key execution or PI provider fallback. Harness and Gemini fallback wording must stay CLI-based and reason-coded.
 
@@ -45,7 +46,8 @@ If no roadmap path is explicit, first check the current repo and branch handoff 
    - no vague gates like "the data model".
 5. Decompose lanes:
    - each lane has one sentence of scope;
-   - owned files or globs are disjoint;
+   - owned files or globs are disjoint (run the disjointness self-check from Core Rules — overlap kills execution at the lane-IR validator);
+   - owned files enumerate the complete touch set per Core Rules (tests + snapshots + generated + lockfiles + env examples + migrations alongside the headline source files);
    - provided and consumed interfaces are explicit;
    - dependencies form an acyclic lane DAG;
    - every lane has test, implementation, and verification tasks.
