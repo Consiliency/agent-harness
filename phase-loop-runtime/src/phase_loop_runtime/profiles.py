@@ -10,7 +10,7 @@ from .models import (
 )
 
 
-CLAUDE_HEAVY_MODEL = "claude-opus-4-7"
+CLAUDE_HEAVY_MODEL = "claude-opus-4-8"
 OPENAI_HEAVY_MODEL = "gpt-5.5"
 OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.5"
 GEMINI_PRO_ROUTED_MODEL = "pro"

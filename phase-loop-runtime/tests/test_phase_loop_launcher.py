@@ -35,10 +35,10 @@ class PhaseLoopLauncherTest(unittest.TestCase):
 
     def test_claude_executor_uses_executor_specific_model_alias(self):
         selection = resolve_profile_for_executor(action="plan", executor="claude")
-        self.assertEqual(selection.model, "claude-opus-4-7")
+        self.assertEqual(selection.model, "claude-opus-4-8")
         self.assertEqual(selection.effort, "high")
         execute_selection = resolve_profile_for_executor(action="execute", executor="claude")
-        self.assertEqual(execute_selection.model, "claude-opus-4-7")
+        self.assertEqual(execute_selection.model, "claude-opus-4-8")
         self.assertEqual(execute_selection.effort, "high")
         self.assertEqual(selection.source, "claude_default")
 

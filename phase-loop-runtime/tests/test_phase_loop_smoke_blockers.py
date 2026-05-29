@@ -204,7 +204,7 @@ class PhaseLoopSmokeBlockersTest(unittest.TestCase):
                 roadmap.read_text(encoding="utf-8")
                 + "\n## Execution Policy\n"
                 + "- execute: executor=`codex`, model=`gpt-5.5`, effort=`high`\n"
-                + "- review: executor=`claude`, model=`claude-opus-4-7`, effort=`high`\n",
+                + "- review: executor=`claude`, model=`claude-opus-4-8`, effort=`high`\n",
                 encoding="utf-8",
             )
             snapshot = reconcile(repo, roadmap)

@@ -788,7 +788,7 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
                 roadmap.read_text(encoding="utf-8")
                 + "\n## Execution Policy\n"
                 + "- work-unit defaults: work-unit=`lane_execute`, effort=`medium`, unsupported=`inherit_default`, inherit-default=`true`\n"
-                + "- execute: executor=`claude`, model=`claude-opus-4-7`, effort=`high`, reason=`prefer Claude for this phase`\n"
+                + "- execute: executor=`claude`, model=`claude-opus-4-8`, effort=`high`, reason=`prefer Claude for this phase`\n"
                 + "- SL-2: executor=`codex`, effort=`xhigh`, work-unit=`phase_reducer`\n",
                 encoding="utf-8",
             )
@@ -872,7 +872,7 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
                 "## Execution Policy\n"
                 "- execute: executor=`codex`, model=`gpt-5.5`, effort=`high`\n"
                 "- repair: effort=`ultra`\n"
-                "- review: executor=`claude`, model=`claude-opus-4-7`, effort=`high`\n",
+                "- review: executor=`claude`, model=`claude-opus-4-8`, effort=`high`\n",
                 encoding="utf-8",
             )
             document = parse_execution_policy(roadmap, kind="roadmap")

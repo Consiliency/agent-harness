@@ -11,7 +11,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
     def test_dfparsoak_policy_precedence_keeps_execute_default_and_explicit_fallbacks(self):
         self.assertEqual(DEFAULT_EXECUTOR_POLICY["execute"], "codex")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="pi").model, "auto")
-        self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-opus-4-7")
+        self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-opus-4-8")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "auto")
 
         roadmap = ExecutionPolicyRule(
@@ -53,7 +53,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
             selector="execute",
             action="execute",
             executor="claude",
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             effort="high",
             work_unit_kind="lane_execute",
             source="roadmap:execute",
@@ -71,7 +71,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         resolved = resolve_execution_policy(
             action="execute",
             executor="claude",
-            model_selection=ModelSelection(profile="execute", model="claude-opus-4-7", effort="high"),
+            model_selection=ModelSelection(profile="execute", model="claude-opus-4-8", effort="high"),
             plan_policy=plan,
             roadmap_policy=roadmap,
         )
@@ -223,7 +223,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         defaulted = resolve_execution_policy(
             action="execute",
             executor="pi",
-            model_selection=ModelSelection(profile="execute", model="claude-opus-4-7", effort="high"),
+            model_selection=ModelSelection(profile="execute", model="claude-opus-4-8", effort="high"),
         )
         self.assertEqual(defaulted.executor, "claude")
 
@@ -231,7 +231,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
             selector="execute",
             action="execute",
             executor="pi",
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             effort="medium",
             work_unit_kind="lane_execute",
             unsupported_policy_behavior="inherit_default",
@@ -242,7 +242,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         selected = resolve_execution_policy(
             action="execute",
             executor="pi",
-            model_selection=ModelSelection(profile="execute", model="claude-opus-4-7", effort="medium"),
+            model_selection=ModelSelection(profile="execute", model="claude-opus-4-8", effort="medium"),
             plan_policy=explicit_pi,
         )
         self.assertEqual(selected.executor, "pi")

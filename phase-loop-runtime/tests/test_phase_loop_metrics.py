@@ -121,7 +121,7 @@ class PhaseLoopMetricsTest(unittest.TestCase):
                 repo=repo,
                 phase="RUNNER",
                 action="plan",
-                launch_metadata={"executor": "claude", "selected_model": "claude-opus-4-7"},
+                launch_metadata={"executor": "claude", "selected_model": "claude-opus-4-8"},
                 terminal_summary=build_terminal_summary(
                     terminal_status="blocked",
                     terminal_blocker={"blocker_class": "repeated_verification_failure"},

@@ -292,7 +292,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="claude-opus-4-7",
+                    model="claude-opus-4-8",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -326,7 +326,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="claude-opus-4-7",
+                    model="claude-opus-4-8",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -360,7 +360,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="CONTRACT",
                     action="execute",
                     status="blocked",
-                    model="claude-opus-4-7",
+                    model="claude-opus-4-8",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
@@ -1432,7 +1432,7 @@ class PhaseLoopReconcileTest(unittest.TestCase):
                     phase="BETA",
                     action="run",
                     status="blocked",
-                    model="claude-opus-4-7",
+                    model="claude-opus-4-8",
                     reasoning_effort="medium",
                     source="fixture",
                     blocker={
