@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from .capability_registry import DEFAULT_EXECUTOR, default_model_profile_for_executor, provider_policy_capabilities
+from .capability_registry import (
+    CLAUDE_HEAVY_MODEL,
+    DEFAULT_EXECUTOR,
+    default_model_profile_for_executor,
+    provider_policy_capabilities,
+)
 from .models import (
     ExecutionPolicyRule,
     ModelSelection,
@@ -10,7 +15,6 @@ from .models import (
 )
 
 
-CLAUDE_HEAVY_MODEL = "claude-opus-4-8"
 OPENAI_HEAVY_MODEL = "gpt-5.5"
 OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.5"
 GEMINI_PRO_ROUTED_MODEL = "pro"
