@@ -142,6 +142,10 @@ The main thread remains responsible for integrating results, reviewing diffs, ru
 
 ## Closeout
 
+### Manifest lifecycle
+
+After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available. Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, and dirty-worktree behavior.
+
 Before final closeout, run `git status --short -- <plan_path> <roadmap_path>` for every consumed or updated planning artifact. If any planning artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <path>` for each artifact. Rerun status and report `Artifact state: staged|tracked|modified|unstaged|blocked` for each artifact. Do not commit unless requested.
 
 Also run a whole-tree `git status --short` closeout audit. Classify every dirty path as phase-owned, planning/control, pre-existing unrelated, or unowned. For ignored phase-owned outputs that must be preserved, verify an explicit plan/source-bundle allowlist or staging policy before using `git add -f`; otherwise report a repairable `dirty_worktree_conflict`. Never report `complete` while unowned generated files, unauthorized ignored outputs, or outputs derived from unauthorized raw/private reads remain in the worktree.
