@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from .classifier import classify_all
-from .discovery import PLAN_RE, find_plan_artifact, parse_automation_status, plan_matches_roadmap
+from .discovery import PLAN_RE, find_plan_artifact, manifest_plan_artifact, parse_automation_status, plan_matches_roadmap
 from .events import read_events
 from .models import BLOCKER_CLASSES, StateSnapshot, utc_now
 from .pipeline_adapter.branch_ops import REFUSE_DEFAULT_BRANCH_COMMIT_PREFIX
@@ -59,6 +59,7 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
     dirty_summary_by_phase: dict[str, dict[str, object]] = {}
     closeout_summary_by_phase: dict[str, dict[str, object]] = {}
     terminal_summary_by_phase: dict[str, dict[str, object]] = {}
+    ledger_warnings.extend(_reconcile_plan_manifest(repo, roadmap, phases))
     if snapshot:
         same_roadmap = Path(snapshot.roadmap).expanduser().resolve() == roadmap.resolve()
         if same_roadmap:
@@ -467,6 +468,70 @@ def reconcile(repo: Path, roadmap: Path) -> StateSnapshot:
     )
 
 
+def _reconcile_plan_manifest(repo: Path, roadmap: Path, phases: dict[str, str]) -> list[dict]:
+    from .discovery import _phase_manifest_disabled
+
+    if _phase_manifest_disabled():
+        return []
+    if not (repo / "plans" / "manifest.json").exists():
+        return []
+    warnings: list[dict] = []
+    try:
+        from .plan_manifest import append_entry, import_existing_phase_plans, read_manifest, update_lifecycle
+    except Exception as exc:
+        return [_ledger_warning("manifest", "", "unknown", "manifest_import_unavailable", value=str(exc))]
+    try:
+        manifest = read_manifest(repo)
+    except Exception as exc:
+        return [_ledger_warning("manifest", "", "unknown", "manifest_read_failed", value=str(exc))]
+    known_slugs = {entry.slug for entry in manifest.plans}
+    for entry in manifest.plans:
+        if entry.type != "phase" or entry.status in {"orphaned", "completed", "failed"}:
+            continue
+        if not (repo / entry.file).exists():
+            try:
+                update_lifecycle(
+                    repo,
+                    entry.slug,
+                    "orphaned",
+                    "phase-loop-reconcile",
+                    {"reason": "manifest_plan_file_missing", "file": entry.file},
+                )
+            except Exception as exc:
+                warnings.append(_ledger_warning("manifest", str(entry.phase_alias or ""), entry.status, "manifest_orphan_update_failed", value=str(exc)))
+            warnings.append(_ledger_warning("manifest", str(entry.phase_alias or ""), "orphaned", "manifest_plan_file_missing", value=entry.file))
+    try:
+        imported = import_existing_phase_plans(repo)
+    except Exception as exc:
+        warnings.append(_ledger_warning("manifest", "", "unknown", "manifest_auto_import_scan_failed", value=str(exc)))
+        return warnings
+    for entry in imported.plans:
+        if entry.slug in known_slugs:
+            continue
+        if entry.phase_alias and entry.phase_alias.upper() not in phases:
+            continue
+        try:
+            append_entry(repo, entry)
+            known_slugs.add(entry.slug)
+        except Exception as exc:
+            warnings.append(_ledger_warning("manifest", str(entry.phase_alias or ""), "imported", "manifest_auto_import_failed", value=str(exc)))
+        else:
+            pass
+    for phase in phases:
+        _manifest_plan, conflict = manifest_plan_artifact(repo, phase, roadmap=roadmap)
+        if conflict:
+            warnings.append(
+                _ledger_warning(
+                    "manifest",
+                    str(conflict.get("phase") or phase),
+                    str(conflict.get("status") or "unknown"),
+                    str(conflict.get("reason") or "manifest_warning"),
+                    value=conflict,
+                )
+            )
+    return warnings
+
+
 def _blocker_precondition_cleared(repo: Path, blocker_class: str, *, blocker_summary: str = "") -> bool:
     """True when the current repo/git state no longer satisfies the cached
     blocker's precondition. The runner should drop the cached blocker in
@@ -646,7 +711,7 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
 def _clean_planned_artifact_supersedes_blocker(repo: Path, roadmap: Path, phase: str, warnings: list[dict] | tuple[dict, ...]) -> bool:
     if not any(warning.get("source") == "event" and warning.get("status") == "planned" for warning in warnings):
         return False
-    if _dirty(repo):
+    if _dirty_except_plan_manifest(repo):
         return False
     plan = find_plan_artifact(repo, phase, roadmap=roadmap)
     if not plan:
@@ -656,6 +721,14 @@ def _clean_planned_artifact_supersedes_blocker(repo: Path, roadmap: Path, phase:
     except OSError:
         return False
     return automation.get("automation_status") == "planned"
+
+
+def _dirty_except_plan_manifest(repo: Path) -> bool:
+    try:
+        lines = subprocess.check_output(["git", "-C", str(repo), "status", "--short"], text=True).splitlines()
+    except Exception:
+        return False
+    return any(line[3:] != "plans/manifest.json" for line in lines if len(line) > 3)
 
 
 def _clean_manual_repair_complete_supersedes_blocker(

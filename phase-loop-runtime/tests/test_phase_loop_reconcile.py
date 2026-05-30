@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.events import append_event
 from phase_loop_runtime.models import LoopEvent, StateSnapshot, utc_now
+from phase_loop_runtime.plan_manifest import DotfilesPlanEntry, DotfilesPlanRef, append_entry, read_manifest
 from phase_loop_runtime.provenance import event_provenance
 from phase_loop_runtime.reconcile import _clean_verified_dirty_closeout_recovery_supersedes_blocker, reconcile
 from phase_loop_runtime.state import write_state
@@ -401,6 +402,67 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             snapshot = reconcile(repo, roadmap)
 
             self.assertEqual(snapshot.phases["RUNNER"], "unplanned")
+
+    def test_reconcile_auto_imports_regex_only_phase_plans(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            (repo / "plans" / "manifest.json").write_text('{"schema_version": 1, "plans": []}\n', encoding="utf-8")
+
+            snapshot = reconcile(repo, roadmap)
+            manifest = read_manifest(repo)
+
+            self.assertEqual(snapshot.phases["RUNNER"], "planned")
+            self.assertTrue(any(entry.slug == "v1-RUNNER" and entry.status == "imported" for entry in manifest.plans))
+
+    def test_reconcile_marks_missing_manifest_phase_plan_orphaned(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            missing_plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            append_entry(
+                repo,
+                DotfilesPlanEntry(
+                    slug="v1-RUNNER",
+                    file="plans/phase-plan-v1-RUNNER.md",
+                    type="phase",
+                    status="committed",
+                    created_at="2026-05-30T00:00:00Z",
+                    updated_at="2026-05-30T00:00:00Z",
+                    owner_skill="codex-plan-phase",
+                    roadmap_ref=DotfilesPlanRef(
+                        slug=roadmap.stem,
+                        file="specs/phase-plans-v1.md",
+                        type="phase",
+                        status="committed",
+                    ),
+                    phase_alias="RUNNER",
+                    if_gates_produced=("IF-0-RUNNER-1",),
+                    lanes=("SL-0",),
+                ),
+            )
+            self.assertFalse(missing_plan.exists())
+
+            snapshot = reconcile(repo, roadmap)
+            manifest = read_manifest(repo)
+            entry = next(entry for entry in manifest.plans if entry.slug == "v1-RUNNER")
+
+            self.assertEqual(snapshot.phases["RUNNER"], "unplanned")
+            self.assertEqual(entry.status, "orphaned")
+            self.assertTrue(any(warning["reason"] == "manifest_plan_file_missing" for warning in snapshot.ledger_warnings))
+
+    def test_reconcile_escape_hatch_skips_manifest_import_and_orphaning(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+
+            with unittest.mock.patch.dict("os.environ", {"PHASE_LOOP_MANIFEST_DISABLED": "1"}):
+                snapshot = reconcile(repo, roadmap)
+
+            self.assertEqual(snapshot.phases["RUNNER"], "planned")
+            self.assertFalse(read_manifest(repo).plans)
 
     def test_stale_executing_state_becomes_unknown_in_dirty_repo(self):
         with tempfile.TemporaryDirectory() as td:

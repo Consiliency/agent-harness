@@ -372,6 +372,10 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
     if state_roadmap is not None:
         return state_roadmap
 
+    manifest_roadmap = manifest_backed_roadmap(repo)
+    if manifest_roadmap is not None:
+        return manifest_roadmap
+
     handoff = latest_handoff_roadmap(repo_identity(repo), "codex-phase-roadmap-builder")
     if handoff is not None:
         return handoff
@@ -404,6 +408,24 @@ def active_state_roadmap(repo: Path) -> Path | None:
     except (OSError, ValueError):
         return None
     return resolved if resolved.exists() else None
+
+
+def manifest_backed_roadmap(repo: Path) -> Path | None:
+    if _phase_manifest_disabled():
+        return None
+    candidates: list[Path] = []
+    for entry in _phase_manifest_entries(repo):
+        if entry.roadmap_ref is None or entry.status == "orphaned":
+            continue
+        path = repo / entry.roadmap_ref.file
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(repo.resolve())
+        except (OSError, ValueError):
+            continue
+        if resolved.exists() and resolved not in candidates:
+            candidates.append(resolved)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def latest_handoff_roadmap(identity: RepoIdentity, predecessor: str) -> Path | None:
@@ -738,6 +760,12 @@ def _merge_execution_policy_rules(
 
 
 def find_plan_artifact(repo: Path, phase: str, roadmap: Path | None = None) -> Path | None:
+    manifest_plan, regex_conflict = manifest_plan_artifact(repo, phase, roadmap=roadmap)
+    if manifest_plan is not None:
+        return manifest_plan
+    if regex_conflict is not None:
+        return None
+
     # Fast path: when we know the roadmap, construct the exact expected
     # plan-doc filename and check it directly. This handles cases the legacy
     # glob+regex iteration can't disambiguate, including hyphenated aliases
@@ -768,6 +796,88 @@ def find_plan_artifact(repo: Path, phase: str, roadmap: Path | None = None) -> P
             continue
         return plan.resolve()
     return None
+
+
+def manifest_plan_artifact(repo: Path, phase: str, roadmap: Path | None = None) -> tuple[Path | None, dict[str, object] | None]:
+    if _phase_manifest_disabled():
+        return None, None
+    phase_upper = phase.upper()
+    candidates: list[tuple[object, Path]] = []
+    for entry in _phase_manifest_entries(repo):
+        if str(entry.phase_alias or "").upper() != phase_upper:
+            continue
+        if entry.status == "orphaned":
+            continue
+        plan = repo / entry.file
+        if not plan.exists():
+            return None, {
+                "source": "manifest",
+                "phase": phase_upper,
+                "status": entry.status,
+                "reason": "manifest_plan_file_missing",
+                "file": entry.file,
+                "slug": entry.slug,
+            }
+        if roadmap is not None:
+            roadmap_ref = entry.roadmap_ref.file if entry.roadmap_ref else None
+            if roadmap_ref != roadmap_repo_relative_path(repo, roadmap):
+                continue
+            if not plan_matches_roadmap(repo, plan, roadmap, phase):
+                continue
+        candidates.append((entry.updated_at, plan.resolve()))
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda item: str(item[0]))
+    manifest_plan = candidates[-1][1]
+    regex_plan = _regex_plan_artifact(repo, phase, roadmap=roadmap)
+    if regex_plan is not None and regex_plan.resolve() != manifest_plan.resolve():
+        return manifest_plan, {
+            "source": "manifest",
+            "phase": phase_upper,
+            "status": "conflict",
+            "reason": "manifest_regex_plan_conflict",
+            "manifest_file": str(manifest_plan.relative_to(repo.resolve())),
+            "regex_file": str(regex_plan.relative_to(repo.resolve())),
+        }
+    return manifest_plan, None
+
+
+def _regex_plan_artifact(repo: Path, phase: str, roadmap: Path | None = None) -> Path | None:
+    if roadmap is not None:
+        m = re.fullmatch(r"phase-plans-(v[\w.-]+)\.md", roadmap.name)
+        if m:
+            version = m.group(1)
+            expected = repo / "plans" / f"phase-plan-{version}-{phase}.md"
+            if expected.is_file() and plan_matches_roadmap(repo, expected, roadmap, phase):
+                return expected.resolve()
+    phase_lower = phase.lower()
+    for plan in sorted((repo / "plans").glob("phase-plan-v*-*.md")):
+        match = PLAN_RE.search(plan.name)
+        if not match or match.group(2).lower() != phase_lower:
+            continue
+        if roadmap is not None and not plan_matches_roadmap(repo, plan, roadmap, phase):
+            continue
+        return plan.resolve()
+    return None
+
+
+def _phase_manifest_disabled() -> bool:
+    return os.environ.get("PHASE_LOOP_MANIFEST_DISABLED") == "1"
+
+
+def _phase_manifest_entries(repo: Path) -> tuple[object, ...]:
+    try:
+        from .plan_manifest import read_manifest, validate_manifest
+    except Exception:
+        return ()
+    manifest_path = repo / "plans" / "manifest.json"
+    if manifest_path.exists() and not validate_manifest(manifest_path).valid:
+        return ()
+    try:
+        manifest = read_manifest(repo)
+    except Exception:
+        return ()
+    return tuple(entry for entry in manifest.plans if entry.type == "phase")
 
 
 def plan_is_stale(plan: Path, roadmap: Path) -> bool:

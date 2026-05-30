@@ -35,6 +35,7 @@ from phase_loop_runtime.discovery import (
     select_roadmap,
 )
 from phase_loop_runtime.models import LoopEvent, StateSnapshot, utc_now
+from phase_loop_runtime.plan_manifest import DotfilesPlanEntry, DotfilesPlanRef, append_entry
 from phase_loop_runtime.provenance import event_provenance
 from phase_loop_runtime.state import write_state
 from phase_loop_test_utils import make_repo, write_phase_plan
@@ -265,6 +266,48 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
             plan = write_phase_plan(repo, "RUNNER", repo / "specs" / "phase-plans-v1.md")
             self.assertEqual(find_plan_artifact(repo, "runner"), plan.resolve())
 
+    def test_find_plan_artifact_prefers_manifest_only_entry(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = repo / "plans" / "custom-runner-plan.md"
+            plan.write_text(
+                "---\n"
+                "phase_loop_plan_version: 1\n"
+                "phase: RUNNER\n"
+                "roadmap: specs/phase-plans-v1.md\n"
+                f"roadmap_sha256: {roadmap_fingerprint(roadmap)}\n"
+                "---\n"
+                "# RUNNER\n",
+                encoding="utf-8",
+            )
+            append_entry(repo, self._phase_manifest_entry(plan, roadmap, "RUNNER"))
+
+            self.assertEqual(find_plan_artifact(repo, "RUNNER", roadmap=roadmap), plan.resolve())
+
+    def test_find_plan_artifact_prefers_manifest_on_conflict(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            regex_plan = write_phase_plan(repo, "RUNNER", roadmap)
+            manifest_plan = repo / "plans" / "manifest-runner-plan.md"
+            manifest_plan.write_text(regex_plan.read_text(encoding="utf-8"), encoding="utf-8")
+            append_entry(repo, self._phase_manifest_entry(manifest_plan, roadmap, "RUNNER"))
+
+            self.assertEqual(find_plan_artifact(repo, "RUNNER", roadmap=roadmap), manifest_plan.resolve())
+
+    def test_manifest_escape_hatch_uses_regex_only_behavior(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            regex_plan = write_phase_plan(repo, "RUNNER", roadmap)
+            manifest_plan = repo / "plans" / "manifest-runner-plan.md"
+            manifest_plan.write_text(regex_plan.read_text(encoding="utf-8"), encoding="utf-8")
+            append_entry(repo, self._phase_manifest_entry(manifest_plan, roadmap, "RUNNER"))
+
+            with patch.dict(os.environ, {"PHASE_LOOP_MANIFEST_DISABLED": "1"}):
+                self.assertEqual(find_plan_artifact(repo, "RUNNER", roadmap=roadmap), regex_plan.resolve())
+
     def test_plan_metadata_controls_staleness(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -278,6 +321,26 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
             os.utime(roadmap, (50, 50))
             self.assertTrue(plan_is_stale(plan, roadmap))
             self.assertIsNone(find_plan_artifact(repo, "runner", roadmap=roadmap))
+
+    def _phase_manifest_entry(self, plan: Path, roadmap: Path, phase: str) -> DotfilesPlanEntry:
+        return DotfilesPlanEntry(
+            slug=f"manifest-{phase.lower()}",
+            file=plan.relative_to(plan.parents[1]).as_posix(),
+            type="phase",
+            status="committed",
+            created_at="2026-05-30T00:00:00Z",
+            updated_at="2026-05-30T00:00:00Z",
+            owner_skill="codex-plan-phase",
+            roadmap_ref=DotfilesPlanRef(
+                slug=roadmap.stem,
+                file=roadmap.relative_to(plan.parents[1]).as_posix(),
+                type="phase",
+                status="committed",
+            ),
+            phase_alias=phase,
+            if_gates_produced=("IF-0-PH-1",),
+            lanes=("SL-0",),
+        )
 
     def test_plan_artifact_detection_skips_stale_same_alias_candidates(self):
         with tempfile.TemporaryDirectory() as td:
