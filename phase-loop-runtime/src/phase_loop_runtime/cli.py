@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -9,7 +11,7 @@ from pathlib import Path
 from .adoption_bundle import adoption_bundle_status, refresh_adoption_bundle
 from .build_bundle import DEFAULT_SOURCES, build_bundle
 from .closeout import build_phase_loop_closeout
-from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, select_roadmap
+from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
@@ -18,7 +20,7 @@ from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_D
 from .maintenance import MaintenanceOptions, SyncSkillsOptions, sync_bridge_skills
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
-from .observability import build_notification_payload, run_notification_command
+from .observability import append_work_unit_metric, build_notification_payload, build_terminal_summary, build_work_unit_metric, hotfix_run_artifacts, run_notification_command
 from .pipeline_adapter.flag import allow_lane_ir_override_enabled, dispatch_lock_enabled, parallel_dispatch_enabled
 from .profiles import DEFAULT_PROFILES
 from .provenance import ValidationFinding, event_provenance, snapshot_provenance, validate_roadmap_phase_headings
@@ -30,7 +32,7 @@ from .skill_install import actions_to_json, install_skills
 from .state import write_state
 from .state_degradation import clear as clear_degradation
 from .state_ops import archive_state, inspect_state
-from .verification_evidence import ARTIFACT_NAME, LOG_NAME, validate_verification_artifact
+from .verification_evidence import ARTIFACT_NAME, LOG_NAME, detect_changed_dependency_manifests, resolve_install_command, run_verification, validate_verification_artifact
 from . import __version__
 
 
@@ -87,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "build-bundle", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "adoption-bundle", "evidence-audit", "closeout-drift-audit"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "build-bundle", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "adoption-bundle", "hotfix", "evidence-audit", "closeout-drift-audit"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
@@ -209,6 +211,11 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "adoption-bundle":
             sub.description = "Check or refresh the committed dotfiles adoption bundle."
             sub.add_argument("adoption_bundle_action", choices=("status", "refresh"))
+        if name == "hotfix":
+            sub.description = "Run a bounded emergency hotfix through runner-owned verification evidence."
+            sub.add_argument("--reason", help="Non-secret reason recorded in the hotfix closeout event.")
+            sub.add_argument("--plan", help="Path to a hotfix stub containing a verification_command field.")
+            sub.add_argument("--init-stub", help="Write a minimal hotfix stub and exit without executing.")
         if name == "archive-state":
             sub.add_argument("--reason")
         if name == "reconcile":
@@ -342,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
         return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json, install_hooks=bool(getattr(args, "install_hooks", False)))
     if command == "adoption-bundle":
         return _adoption_bundle_command(repo=repo, action=args.adoption_bundle_action, as_json=as_json)
+    if command == "hotfix":
+        return _hotfix_command(repo=repo, args=args, as_json=as_json)
     if command == "evidence-audit":
         if args.roadmap:
             _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
@@ -792,6 +801,160 @@ def _adoption_bundle_command(*, repo: Path, action: str, as_json: bool) -> int:
         if payload.get("error"):
             print(f"error: {payload['error']}", file=sys.stderr)
     return code
+
+
+def _hotfix_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    init_stub = getattr(args, "init_stub", None)
+    if init_stub:
+        path = _repo_relative_path(repo, init_stub)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "objective: TODO\n"
+            "verification_command: TODO\n",
+            encoding="utf-8",
+        )
+        payload = {"status": "stub_initialized", "plan_stub": str(path), "executed": False}
+        print(json.dumps(payload, indent=2, sort_keys=True) if as_json else f"hotfix stub initialized: {path}")
+        return 0
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not reason:
+        print("phase-loop hotfix: --reason is required unless --init-stub is used", file=sys.stderr)
+        return 2
+    plan_arg = getattr(args, "plan", None)
+    if not plan_arg:
+        print("phase-loop hotfix: --plan is required unless --init-stub is used", file=sys.stderr)
+        return 2
+    plan_stub = _repo_relative_path(repo, plan_arg)
+    if not plan_stub.exists():
+        print(f"phase-loop hotfix: plan stub not found: {plan_stub}", file=sys.stderr)
+        return 2
+    roadmap = select_roadmap(repo, args.roadmap)
+    _warn_roadmap_validation(roadmap)
+    commands = _hotfix_verification_commands(plan_stub)
+    artifacts = hotfix_run_artifacts(repo, reason, plan_stub)
+    manifests = detect_changed_dependency_manifests(repo, "HEAD")
+    install_argv = resolve_install_command(repo, manifests) if manifests else None
+    env_refresh = (
+        {"triggered": True, "manifests": manifests, "install_argv": install_argv or [], "exit_code": 127}
+        if manifests and install_argv is None
+        else ({"triggered": True, "manifests": manifests, "install_argv": install_argv} if manifests else None)
+    )
+    suite_command = resolve_suite_command(repo, roadmap, None)
+    run_verification(
+        repo,
+        artifacts["root"],
+        commands,
+        suite_command,
+        env_refresh,
+        float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
+    )
+    validation = validate_verification_artifact(artifacts["verification_artifact"])
+    validation_json = validation.to_json()
+    status = "complete" if validation.ok else "blocked"
+    verification_status = "passed" if validation.ok else "blocked"
+    blocker = None if validation.ok else {"blocker_class": "verification_evidence_missing", "blocker_summary": f"Hotfix verification failed: {validation.code}"}
+    terminal_summary = build_terminal_summary(
+        terminal_status=status,
+        terminal_blocker=blocker,
+        verification_status=verification_status,
+        next_action="hotfix verification complete" if validation.ok else "repair hotfix verification failure",
+        artifact_paths={
+            "root": str(artifacts["root"]),
+            "verification_artifact_path": str(artifacts["verification_artifact"]),
+            "verification_log_path": str(artifacts["verification_log"]),
+        },
+        work_unit={"work_unit": "hotfix", "plan_stub": str(plan_stub)},
+    )
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase="HOTFIX",
+            action="hotfix.closeout",
+            status=status,
+            model="command",
+            reasoning_effort="manual",
+            source="cli",
+            selected_executor="command",
+            blocker=blocker,
+            metadata={
+                "work_unit": "hotfix",
+                "hotfix_closeout": {
+                    "work_unit": "hotfix",
+                    "reason": _redact_hotfix_reason(reason),
+                    "plan_stub": str(plan_stub),
+                    "verification_artifact_path": str(artifacts["verification_artifact"]),
+                    "verification_log_path": str(artifacts["verification_log"]),
+                    "verification_exit_summary": validation_json.get("exit_summary", {}),
+                    "artifact_validation": validation_json,
+                },
+                "terminal_summary": terminal_summary,
+            },
+            **event_provenance(roadmap, "HOTFIX"),
+        ),
+    )
+    metric = build_work_unit_metric(
+        repo=repo,
+        phase="HOTFIX",
+        action="execute",
+        launch_metadata={
+            "executor": "command",
+            "selected_model": "phase-loop",
+            "execution_policy": {"work_unit_kind": "lane_execute", "effort": "medium", "execution_policy_source": "hotfix cli"},
+        },
+        terminal_summary=terminal_summary,
+        artifact_paths={
+            "verification_artifact_path": str(artifacts["verification_artifact"]),
+            "verification_log_path": str(artifacts["verification_log"]),
+        },
+    )
+    append_work_unit_metric(repo, metric)
+    payload = {
+        "status": status,
+        "verification_status": verification_status,
+        "work_unit": "hotfix",
+        "run_root": str(artifacts["root"]),
+        "plan_stub": str(plan_stub),
+        "verification_artifact_path": str(artifacts["verification_artifact"]),
+        "verification_log_path": str(artifacts["verification_log"]),
+        "artifact_validation": validation_json,
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True) if as_json else f"hotfix {status}: {artifacts['root']}")
+    return 0 if validation.ok else 1
+
+
+def _repo_relative_path(repo: Path, value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else repo / path
+
+
+def _hotfix_verification_commands(plan_stub: Path) -> list[list[str]]:
+    commands: list[list[str]] = []
+    in_list = False
+    for raw in plan_stub.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("verification_command:"):
+            command = stripped.split(":", 1)[1].strip()
+            if command and command != "TODO":
+                commands.append(shlex.split(command))
+            in_list = False
+            continue
+        if stripped.startswith("verification_commands:"):
+            in_list = True
+            continue
+        if in_list and stripped.startswith("- "):
+            command = stripped[2:].strip()
+            if command:
+                commands.append(shlex.split(command))
+    return commands
+
+
+def _redact_hotfix_reason(reason: str) -> str:
+    return " ".join(reason.split())[:200]
 
 
 def _migrate_events_command(*, repo: Path, dry_run: bool, backup_suffix: str) -> int:

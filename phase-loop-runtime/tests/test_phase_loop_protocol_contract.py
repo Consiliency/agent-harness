@@ -168,6 +168,20 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
         ):
             self.assertIn(token, self.protocol_text)
 
+    def test_protocol_documents_hotfix_lane_contract(self):
+        text = self.protocol_text
+        runtime_doc = (ROOT / "docs" / "runtime" / "verification-evidence-contract.md").read_text(encoding="utf-8")
+        for token in (
+            "phase-loop hotfix",
+            "work_unit: hotfix",
+            "--init-stub",
+            "verification_artifact_path",
+            "verification_log_path",
+            "single bounded change",
+        ):
+            self.assertIn(token, text)
+            self.assertIn(token, runtime_doc)
+
     def test_protocol_includes_frozen_literals(self):
         for literal in PHASE_STATUSES:
             self.assertIn(f"`{literal}`", self.protocol_text)

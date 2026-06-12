@@ -32,6 +32,7 @@ from phase_loop_runtime.models import (
     PRODUCT_LOOP_ACTIONS,
     UNSUPPORTED_POLICY_BEHAVIORS,
     WORK_UNIT_KINDS,
+    HOTFIX_WORK_UNITS,
     WORK_UNIT_STATUSES,
     HARNESS_WORK_UNIT_PROMPT_KINDS,
     LANE_IR_DIAGNOSTIC_KINDS,
@@ -113,6 +114,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
             ),
         )
         self.assertEqual(WORK_UNIT_KINDS, ("roadmap_build", "phase_plan", "lane_execute", "lane_review", "phase_reducer", "phase_verify", "repair", "closeout"))
+        self.assertEqual(HOTFIX_WORK_UNITS, ("hotfix",))
         self.assertEqual(WORK_UNIT_STATUSES, ("pending", "running", "complete", "blocked", "skipped", "superseded", "awaiting-closeout"))
         self.assertEqual(
             LANE_IR_DIAGNOSTIC_KINDS,
