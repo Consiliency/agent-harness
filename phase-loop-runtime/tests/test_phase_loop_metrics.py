@@ -143,6 +143,33 @@ class PhaseLoopMetricsTest(unittest.TestCase):
             self.assertEqual(summary["by_terminal_status"]["blocked"], 1)
             self.assertEqual(summary["by_blocker_class"]["repeated_verification_failure"], 1)
 
+    def test_hotfix_metric_is_counted_without_raw_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            metric = build_work_unit_metric(
+                repo=repo,
+                phase="HOTFIX",
+                action="execute",
+                launch_metadata={
+                    "executor": "command",
+                    "selected_model": "phase-loop",
+                    "execution_policy": {"work_unit_kind": "lane_execute", "effort": "medium"},
+                },
+                terminal_summary=build_terminal_summary(
+                    terminal_status="complete",
+                    terminal_blocker=None,
+                    verification_status="passed",
+                    next_action="done",
+                    artifact_paths={"verification_artifact_path": "phase-loop-run:hotfix/verification.json"},
+                ),
+            )
+
+            data = metric.to_json()
+            self.assertEqual(data["work_unit_kind"], "lane_execute")
+            self.assertEqual(data["phase"], "HOTFIX")
+            self.assertEqual(data["verification_status"], "passed")
+            self.assertNotIn("secret", json.dumps(data).lower())
+
     def test_dfparsoak_metric_records_parallel_utilization_and_fallback_metadata(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

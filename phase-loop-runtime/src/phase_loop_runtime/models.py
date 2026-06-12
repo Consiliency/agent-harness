@@ -19,7 +19,7 @@ PHASE_STATUSES = (
 )
 EVENT_STATUSES = PHASE_STATUSES + ("plan_skipped",)
 
-COMMANDS = ("run", "resume", "status", "dry-run", "maintain-skills", "monitor")
+COMMANDS = ("run", "resume", "status", "dry-run", "maintain-skills", "monitor", "hotfix")
 MODEL_PROFILES = ("roadmap", "plan", "execute", "repair", "review", "skill-maintenance")
 EXECUTORS = ("codex", "claude", "gemini", "opencode", "pi", "command", "manual")
 WORK_UNIT_KINDS = (
@@ -32,6 +32,7 @@ WORK_UNIT_KINDS = (
     "repair",
     "closeout",
 )
+HOTFIX_WORK_UNITS = ("hotfix",)
 HARNESS_WORK_UNIT_PROMPT_KINDS = (
     "implementation",
     "review",

@@ -1536,6 +1536,26 @@ Manual/operator events must use the same contract surface as autonomous runs.
 Legacy hashless records may remain visible for audit but must not drive future
 autonomous execution.
 
+## Hotfix Work Unit
+
+`phase-loop hotfix --init-stub <path>` writes a minimal stub with `objective`
+and `verification_command` fields and exits without creating a run directory.
+
+`phase-loop hotfix --reason <text> --plan <stub-path>` is the sanctioned
+emergency path for a single bounded change with no interface freeze. Anything
+that changes interfaces, roadmap scope, or downstream work uses a roadmap
+phase instead.
+
+A hotfix execution creates `.phase-loop/runs/<ts>-hotfix-<slug>/`, records
+launch metadata, runs dependency-manifest env refresh plus the stub command and
+the effective suite command through IF-0-VC-1 verification evidence, validates
+the artifact with the same RG gate semantics used for execute closeout, and
+appends a closeout event containing `work_unit: hotfix`, the redacted reason,
+the plan stub, `verification_artifact_path`, `verification_log_path`, and the
+artifact validation summary. A hotfix closeout cannot report
+`verification_status: passed` unless the validation accepts the evidence
+artifact and sibling log.
+
 ## Closeout Event Emission
 
 After a live child executor emits a valid native closeout, the runner appends an

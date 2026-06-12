@@ -185,6 +185,40 @@ def run_artifacts(repo: Path, phase: str, action: str, index: int, command_or_sp
     }
 
 
+def hotfix_run_artifacts(repo: Path, reason: str, plan_stub: Path) -> dict[str, Path]:
+    ensure_phase_loop_excluded(repo)
+    plan_path = plan_stub if plan_stub.is_absolute() else repo / plan_stub
+    run_id = f"{utc_now().replace(':', '').replace('-', '').replace('Z', 'Z')}-hotfix-{_slug(plan_path.stem)}"
+    root = phase_loop_runs_dir(repo) / run_id
+    root.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "timestamp": utc_now(),
+        "phase": "HOTFIX",
+        "action": "hotfix",
+        "work_unit": "hotfix",
+        "cwd": str(repo),
+        "run_root": str(root),
+        "reason": _redact_hotfix_reason(reason),
+        "plan_stub": str(plan_path),
+        "log_path": str(root / "output.log"),
+        "heartbeat_path": str(root / "heartbeat.json"),
+        "terminal_path": str(root / "terminal-summary.json"),
+        "verification_artifact_path": str(root / "verification.json"),
+        "verification_log_path": str(root / "verification.log"),
+        "stop_file": str(stop_file(repo)),
+    }
+    (root / "launch.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "root": root,
+        "metadata": root / "launch.json",
+        "log": root / "output.log",
+        "heartbeat": root / "heartbeat.json",
+        "terminal": root / "terminal-summary.json",
+        "verification_artifact": root / "verification.json",
+        "verification_log": root / "verification.log",
+    }
+
+
 def build_work_unit_metric(
     *,
     repo: Path,
@@ -1074,3 +1108,7 @@ def _pid_is_live(pid: int | None) -> bool:
 def _slug(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-").lower()
     return slug or "unknown"
+
+
+def _redact_hotfix_reason(reason: str) -> str:
+    return re.sub(r"\s+", " ", reason).strip()[:200]
