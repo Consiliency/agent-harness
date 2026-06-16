@@ -105,6 +105,7 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "contract_bug",
                 "gold_record_amendment",
                 "closeout_evidence_drift",
+                "closeout_scope_violation",
                 "unretryable_external_outage",
                 "stuck_loop",
                 "merge_conflict",
