@@ -139,6 +139,104 @@ def test_closeout_partial_classify_commits_owned_subset_and_blocks_on_unowned_re
     assert "stray_test.py" in _git(repo, "status", "--short").stdout
 
 
+def test_closeout_gate_soft_commits_all_safe_unowned_remainder(tmp_path):
+    # GATE: a verified phase whose only beyond-ownership dirty paths are SAFE
+    # (docs/plans/handoffs/config_nonsource) auto-commits them as a recorded `soft`
+    # CloseoutException — no blocker.
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "PARTIAL", roadmap, body=PARTIAL_PLAN)
+    commit_fixture_paths(repo, "add PARTIAL plan", plan)
+    (repo / "owned_a.py").write_text("a\n", encoding="utf-8")
+    (repo / "notes.md").write_text("a stray doc beyond ownership\n", encoding="utf-8")
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"PARTIAL": "awaiting_phase_closeout"}, current_phase="PARTIAL",
+        phase_owned_dirty=False, phase_owned_dirty_paths=(),
+        dirty_paths=("owned_a.py", "notes.md"),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "PARTIAL", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+    )
+
+    assert status == "complete", f"expected complete, got {status}: {event.blocker!r}"
+    assert event.blocker is None
+    committed = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+    assert "owned_a.py" in committed and "notes.md" in committed
+    exceptions = event.metadata["closeout"]["closeout_exceptions"]
+    assert len(exceptions) == 1
+    assert exceptions[0]["exception_kind"] == "soft"
+    assert exceptions[0]["sensitivity_class"] == "docs"
+    assert "notes.md" in exceptions[0]["paths"]
+    assert event.metadata["closeout"]["verification_status"] == "passed"
+
+
+def test_closeout_gate_blocks_on_unsafe_unowned_remainder(tmp_path):
+    # GATE: any UNSAFE beyond-ownership path still blocks (closeout_scope_violation).
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "PARTIAL", roadmap, body=PARTIAL_PLAN)
+    commit_fixture_paths(repo, "add PARTIAL plan", plan)
+    (repo / "owned_a.py").write_text("a\n", encoding="utf-8")
+    (repo / "rogue.py").write_text("unowned source\n", encoding="utf-8")
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"PARTIAL": "awaiting_phase_closeout"}, current_phase="PARTIAL",
+        phase_owned_dirty=False, phase_owned_dirty_paths=(),
+        dirty_paths=("owned_a.py", "rogue.py"),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "PARTIAL", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+    )
+
+    assert status == "blocked"
+    assert event.blocker["blocker_class"] == "closeout_scope_violation"
+    assert event.blocker["human_required"] is True
+    assert "rogue.py" in event.blocker["blocker_summary"]
+    # owned subset still preserved.
+    assert "owned_a.py" in _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+
+
+def test_closeout_gate_mixed_commits_safe_blocks_only_unsafe(tmp_path):
+    # GATE: mixed remainder — owned + SAFE commit; block only on the UNSAFE subset.
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "PARTIAL", roadmap, body=PARTIAL_PLAN)
+    commit_fixture_paths(repo, "add PARTIAL plan", plan)
+    (repo / "owned_a.py").write_text("a\n", encoding="utf-8")
+    (repo / "notes.md").write_text("safe doc\n", encoding="utf-8")
+    (repo / "rogue.py").write_text("unsafe source\n", encoding="utf-8")
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"PARTIAL": "awaiting_phase_closeout"}, current_phase="PARTIAL",
+        phase_owned_dirty=False, phase_owned_dirty_paths=(),
+        dirty_paths=("owned_a.py", "notes.md", "rogue.py"),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "PARTIAL", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+    )
+
+    committed = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+    assert "owned_a.py" in committed and "notes.md" in committed
+    assert "rogue.py" not in committed
+    assert status == "blocked"
+    assert event.blocker["blocker_class"] == "closeout_scope_violation"
+    assert event.metadata["closeout"]["unowned_dirty_paths"] == ["rogue.py"]
+    # the SAFE path was recorded as a soft exception even though the phase blocked.
+    kinds = {e["exception_kind"] for e in event.metadata["closeout"]["closeout_exceptions"]}
+    assert "soft" in kinds
+    assert "rogue.py" in _git(repo, "status", "--short").stdout
+
+
 def test_closeout_still_blocks_when_dirty_paths_are_not_plan_owned(tmp_path):
     repo = make_repo(tmp_path)
     roadmap = repo / "specs" / "phase-plans-v1.md"

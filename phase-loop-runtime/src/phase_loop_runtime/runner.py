@@ -59,8 +59,11 @@ from .launcher import (
 )
 from .lane_scheduler import select_ready_lane_wave, worktree_assignments_for_wave
 from .maintenance import MaintenanceOptions, active_loop, active_loop_blocker, run_maintenance
+from .closeout_classifier import classify_unowned_path
 from .models import (
+    CLOSEOUT_EXCEPTIONS_METADATA_KEY,
     CLOSEOUT_MODES,
+    CloseoutException,
     CommandAdapterConfig,
     DelegationBudget,
     DelegationDecision,
@@ -6466,6 +6469,7 @@ def _perform_phase_closeout(
     # despite valid dirty_paths. Does NOT bypass the blocker if any dirty
     # path is NOT owned by the plan.
     unowned_remainder: tuple[str, ...] = ()
+    soft_commit_paths: tuple[str, ...] = ()
     if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and snapshot.dirty_paths:
         plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
         if plan_for_fallback is not None:
@@ -6475,27 +6479,33 @@ def _perform_phase_closeout(
                 # all-or-nothing — a SINGLE unowned dirty path (e.g. a test the plan
                 # under-enumerated, as reproduced from the real ai-stack-v2 INVENTORY
                 # run) defeated `all(...)` and blocked every verified-owned path.
-                # Instead, auto-classify the matching subset (so verified owned work
-                # commits without manual intervention) and carry the genuinely-unowned
-                # remainder forward to a loud, human-required scope blocker below.
+                # Auto-classify the matching subset so verified owned work commits.
                 matched = tuple(
                     p for p in snapshot.dirty_paths if ownership_for_fallback.matches_dirty_output(p)
                 )
-                if matched:
-                    matched_set = set(matched)
-                    unowned_remainder = tuple(p for p in snapshot.dirty_paths if p not in matched_set)
-                    reclassified_paths = tuple(
-                        dict.fromkeys((*matched, *snapshot.previous_phase_owned_paths))
-                    )
-                    closeout_dirty_paths = reclassified_paths
+                matched_set = set(matched)
+                remainder = tuple(p for p in snapshot.dirty_paths if p not in matched_set)
+                # GATE: split the beyond-ownership remainder by sensitivity class.
+                # SAFE paths join the commit as a recorded `soft` exception; UNSAFE
+                # paths carry forward to the human-required scope blocker below.
+                safe_unowned = tuple(p for p in remainder if classify_unowned_path(p).safe)
+                safe_set = set(safe_unowned)
+                unsafe_unowned = tuple(p for p in remainder if p not in safe_set)
+                commit_set = tuple(
+                    dict.fromkeys((*matched, *safe_unowned, *snapshot.previous_phase_owned_paths))
+                )
+                if commit_set:
+                    closeout_dirty_paths = commit_set
                     snapshot = replace(
                         snapshot,
                         phase_owned_dirty=True,
-                        phase_owned_dirty_paths=matched,
+                        phase_owned_dirty_paths=tuple((*matched, *safe_unowned)),
                     )
                     metadata["closeout"]["closeout_dirty_paths_autoclassified"] = list(matched)
-                    if unowned_remainder:
-                        metadata["closeout"]["closeout_unowned_remainder"] = list(unowned_remainder)
+                    soft_commit_paths = safe_unowned
+                    unowned_remainder = unsafe_unowned
+                    if unsafe_unowned:
+                        metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
     if not snapshot.phase_owned_dirty or not closeout_dirty_paths:
         status = "blocked"
         # OWNFIX #17: an invalid Lane IR is the real reason classification failed and
@@ -6578,6 +6588,27 @@ def _perform_phase_closeout(
                             "closeout_commit": commit,
                         }
                     )
+                    # GATE: record SAFE beyond-ownership paths that were soft-committed
+                    # as visible `soft` CloseoutExceptions (one per sensitivity class),
+                    # never folded into a clean pass. verification_status stays passed.
+                    if soft_commit_paths:
+                        by_class: dict[str, list[str]] = {}
+                        for path in soft_commit_paths:
+                            by_class.setdefault(classify_unowned_path(path).sensitivity_class, []).append(path)
+                        exceptions = [
+                            CloseoutException(
+                                paths=tuple(paths),
+                                exception_kind="soft",
+                                sensitivity_class=sensitivity_class,
+                                reason=None,
+                                verification_status="passed",
+                            ).to_json()
+                            for sensitivity_class, paths in by_class.items()
+                        ]
+                        metadata["closeout"].setdefault(CLOSEOUT_EXCEPTIONS_METADATA_KEY, []).extend(exceptions)
+                        metadata["closeout"]["closeout_exception_tally"] = {
+                            "soft": sum(len(e["paths"]) for e in metadata["closeout"][CLOSEOUT_EXCEPTIONS_METADATA_KEY]),
+                        }
                     if roadmap_closeout_evidence_audit_enabled(roadmap):
                         try:
                             audit = audit_closeout_evidence(commit, phase, repo)
