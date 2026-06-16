@@ -2350,3 +2350,27 @@ Every exception is recorded in closeout metadata under the
 the event ledger, with its own tally — never silently folded into a clean-pass
 count. `soft` and `break_glass` exceptions share the tally, distinguished by
 `exception_kind`.
+
+### Graduated gate (GATE)
+
+`_perform_phase_closeout` classifies the beyond-ownership dirty remainder via
+`closeout_classifier.classify_unowned_path(repo_relpath) -> SensitivityVerdict`
+(`{sensitivity_class, safe}`) and splits it:
+
+- **all-SAFE remainder** → the SAFE paths join the commit and are recorded as
+  `soft` `CloseoutException`s (one per sensitivity class). No blocker;
+  `verification_status` stays `passed`.
+- **any-UNSAFE remainder** → the UNSAFE subset blocks with `closeout_scope_violation`
+  (human-required); SAFE paths in a mixed remainder still soft-commit.
+
+Classifier precedence is load-bearing: UNSAFE-specific patterns (`secrets`,
+`lockfile`, `ci`) are matched before any broad SAFE rule, then `tests` → `source`
+(UNSAFE), then the narrow SAFE rules, then deny-by-default → `source`.
+`config_nonsource` is a tight filename allowlist (not a `.toml`/`.yaml`/`.json`
+suffix rule), and a bare `.txt` is docs only under `docs/`.
+
+**`tests` are UNSAFE.** The taxonomy has no `tests` class; test paths only earn
+owned status via structural sibling matching upstream (`_runtime_relaxation_evidence`,
+`expanded_dirty_ownership_matches`). A test path reaching the classifier failed that
+matching, so it maps to `source` (UNSAFE) and is never auto-committed — operator
+break-glass (BREAKGLASS), not auto-commit, is the escape.
