@@ -237,6 +237,128 @@ def test_closeout_gate_mixed_commits_safe_blocks_only_unsafe(tmp_path):
     assert "rogue.py" in _git(repo, "status", "--short").stdout
 
 
+def test_closeout_break_glass_commits_unsafe_remainder_with_reason(tmp_path):
+    # BREAKGLASS: a non-empty operator reason folds the source/ci/lockfile UNSAFE
+    # remainder into the closeout commit as a recorded `break_glass` CloseoutException
+    # (reason set, in the shared tally) — no blocker.
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "PARTIAL", roadmap, body=PARTIAL_PLAN)
+    commit_fixture_paths(repo, "add PARTIAL plan", plan)
+    (repo / "owned_a.py").write_text("a\n", encoding="utf-8")
+    (repo / "rogue.py").write_text("unowned source the operator accepts\n", encoding="utf-8")
+    head_before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"PARTIAL": "awaiting_phase_closeout"}, current_phase="PARTIAL",
+        phase_owned_dirty=False, phase_owned_dirty_paths=(),
+        dirty_paths=("owned_a.py", "rogue.py"),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "PARTIAL", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+        allow_unowned_reason="hotfix: vendored upstream patch, owner sign-off in #123",
+    )
+
+    assert status == "complete", f"expected complete, got {status}: {event.blocker!r}"
+    assert event.blocker is None
+    committed = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+    assert "owned_a.py" in committed and "rogue.py" in committed
+    assert head_before != _git(repo, "rev-parse", "HEAD").stdout.strip()
+    # rogue.py recorded as a break_glass exception carrying the reason.
+    exceptions = event.metadata["closeout"]["closeout_exceptions"]
+    bg = [e for e in exceptions if e["exception_kind"] == "break_glass"]
+    assert len(bg) == 1
+    assert "rogue.py" in bg[0]["paths"]
+    assert bg[0]["reason"] and "hotfix" in bg[0]["reason"]
+    assert bg[0]["sensitivity_class"] == "source"
+    # nothing left dirty — the remainder was emptied by the override.
+    assert "rogue.py" not in _git(repo, "status", "--short").stdout
+    assert event.metadata["closeout"]["verification_status"] == "passed"
+
+
+def test_closeout_break_glass_empty_reason_blocks_operator_override_missing_reason(tmp_path):
+    # BREAKGLASS defensive backstop (programmatic run_loop callers; CLI rejects this
+    # pre-run_loop): an override attempt with an empty reason must NOT commit the
+    # unsafe paths and must emit operator_override_missing_reason (not
+    # closeout_scope_violation).
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "PARTIAL", roadmap, body=PARTIAL_PLAN)
+    commit_fixture_paths(repo, "add PARTIAL plan", plan)
+    (repo / "owned_a.py").write_text("a\n", encoding="utf-8")
+    (repo / "rogue.py").write_text("unowned source\n", encoding="utf-8")
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"PARTIAL": "awaiting_phase_closeout"}, current_phase="PARTIAL",
+        phase_owned_dirty=False, phase_owned_dirty_paths=(),
+        dirty_paths=("owned_a.py", "rogue.py"),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "PARTIAL", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+        allow_unowned_reason="   ",
+    )
+
+    assert status == "blocked"
+    assert event.blocker["blocker_class"] == "operator_override_missing_reason"
+    assert "rogue.py" in event.blocker["blocker_summary"]
+    # the unsafe path was NOT committed under a blank reason.
+    assert "rogue.py" not in _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+    assert "rogue.py" in _git(repo, "status", "--short").stdout
+    # owned subset still preserved (the override attempt does not discard verified work).
+    assert "owned_a.py" in _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+
+
+SECRET_REMAINDER_PLAN = PARTIAL_PLAN
+
+
+def test_closeout_break_glass_secrets_never_committed_even_with_reason(tmp_path):
+    # BREAKGLASS hard carve-out: secrets are NEVER break-glassable. With a non-empty
+    # reason and a mixed remainder (source + secret), the source path is force-committed
+    # as break_glass but the secret is held back and still blocks with
+    # closeout_scope_violation — a one-line reason cannot commit a secret to history.
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "PARTIAL", roadmap, body=SECRET_REMAINDER_PLAN)
+    commit_fixture_paths(repo, "add PARTIAL plan", plan)
+    (repo / "owned_a.py").write_text("a\n", encoding="utf-8")
+    (repo / "rogue.py").write_text("unowned source\n", encoding="utf-8")
+    (repo / ".env").write_text("API_TOKEN=supersecret\n", encoding="utf-8")
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"PARTIAL": "awaiting_phase_closeout"}, current_phase="PARTIAL",
+        phase_owned_dirty=False, phase_owned_dirty_paths=(),
+        dirty_paths=("owned_a.py", "rogue.py", ".env"),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "PARTIAL", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+        allow_unowned_reason="operator override for the source patch",
+    )
+
+    committed = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout
+    # source force-committed under the reason; the secret was held back.
+    assert "owned_a.py" in committed and "rogue.py" in committed
+    assert ".env" not in committed
+    # and the closeout still blocks on the secret, regardless of the reason.
+    assert status == "blocked"
+    assert event.blocker["blocker_class"] == "closeout_scope_violation"
+    assert event.blocker["human_required"] is True
+    assert ".env" in event.blocker["blocker_summary"]
+    assert event.metadata["closeout"]["unowned_dirty_paths"] == [".env"]
+    assert ".env" in _git(repo, "status", "--short").stdout
+    # the source path was still recorded as a break_glass exception.
+    kinds = {e["exception_kind"] for e in event.metadata["closeout"]["closeout_exceptions"]}
+    assert "break_glass" in kinds
+
+
 def test_closeout_still_blocks_when_dirty_paths_are_not_plan_owned(tmp_path):
     repo = make_repo(tmp_path)
     roadmap = repo / "specs" / "phase-plans-v1.md"

@@ -766,12 +766,18 @@ def run_loop(
     dispatch_lock_enabled: bool = True,
     parallel_dispatch: bool = False,
     allow_cross_phase_dirty_reason: str | None = None,
+    allow_unowned_reason: str | None = None,
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
     if allow_cross_phase_dirty_reason is not None and not allow_cross_phase_dirty_reason.strip():
         raise ValueError("allow_cross_phase_dirty_reason must not be empty")
     allow_cross_phase_dirty_reason = allow_cross_phase_dirty_reason.strip() if allow_cross_phase_dirty_reason else None
+    # BREAKGLASS: allow_unowned_reason is threaded RAW (None vs "" preserved) so the
+    # closeout backstop can distinguish "no override requested" (None) from "override
+    # requested with an empty reason" ("") and emit operator_override_missing_reason for
+    # the latter. The CLI rejects an empty reason pre-run_loop; this preserves the
+    # distinction for programmatic callers.
     require_literal(lane_scheduler_mode, ("off", "serialized", "concurrent"), "lane scheduler mode")
     try:
         rotation_state = RotationState.from_csv(
@@ -1430,6 +1436,7 @@ def run_loop(
                         selection,
                         action=action,
                         closeout_mode=closeout_mode,
+                        allow_unowned_reason=allow_unowned_reason,
                     )
                     append_event(repo, closeout_event)
                     if phase:
@@ -1463,6 +1470,7 @@ def run_loop(
                             selection,
                             action=action,
                             closeout_mode=closeout_mode,
+                            allow_unowned_reason=allow_unowned_reason,
                         )
                         append_event(repo, closeout_event)
                         if phase:
@@ -3367,6 +3375,7 @@ def run_loop(
                     selection,
                     action=action,
                     closeout_mode=closeout_mode,
+                    allow_unowned_reason=allow_unowned_reason,
                 )
                 append_event(repo, closeout_event)
                 status_after_closeout = classifications[alias]
@@ -6448,6 +6457,7 @@ def _perform_phase_closeout(
     *,
     action: str,
     closeout_mode: str,
+    allow_unowned_reason: str | None = None,
 ) -> tuple[str, LoopEvent]:
     terminal_status = snapshot.closeout_terminal_status or "executed"
     verification_status = "passed" if terminal_status == "complete" else "not_run"
@@ -6470,6 +6480,12 @@ def _perform_phase_closeout(
     # path is NOT owned by the plan.
     unowned_remainder: tuple[str, ...] = ()
     soft_commit_paths: tuple[str, ...] = ()
+    break_glass_commit_paths: tuple[str, ...] = ()
+    # BREAKGLASS: a non-empty operator reason force-commits the source/ci/lockfile UNSAFE
+    # remainder; an explicitly-empty reason ("") is an override attempt with no audit
+    # trail (operator_override_missing_reason); None is "no override requested".
+    break_glass_reason = allow_unowned_reason.strip() if allow_unowned_reason else None
+    override_attempted_empty = allow_unowned_reason is not None and not break_glass_reason
     if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and snapshot.dirty_paths:
         plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
         if plan_for_fallback is not None:
@@ -6491,18 +6507,33 @@ def _perform_phase_closeout(
                 safe_unowned = tuple(p for p in remainder if classify_unowned_path(p).safe)
                 safe_set = set(safe_unowned)
                 unsafe_unowned = tuple(p for p in remainder if p not in safe_set)
+                # BREAKGLASS: with a non-empty operator reason, fold the UNSAFE remainder
+                # into the commit as `break_glass` exceptions — EXCEPT `secrets`-class
+                # paths, which are NEVER break-glassable and stay in the remainder so the
+                # post-commit scope block still fires for them regardless of the reason.
+                break_glass_unowned: tuple[str, ...] = ()
+                if break_glass_reason:
+                    break_glass_unowned = tuple(
+                        p for p in unsafe_unowned
+                        if classify_unowned_path(p).sensitivity_class != "secrets"
+                    )
+                    bg_set = set(break_glass_unowned)
+                    unsafe_unowned = tuple(p for p in unsafe_unowned if p not in bg_set)
                 commit_set = tuple(
-                    dict.fromkeys((*matched, *safe_unowned, *snapshot.previous_phase_owned_paths))
+                    dict.fromkeys(
+                        (*matched, *safe_unowned, *break_glass_unowned, *snapshot.previous_phase_owned_paths)
+                    )
                 )
                 if commit_set:
                     closeout_dirty_paths = commit_set
                     snapshot = replace(
                         snapshot,
                         phase_owned_dirty=True,
-                        phase_owned_dirty_paths=tuple((*matched, *safe_unowned)),
+                        phase_owned_dirty_paths=tuple((*matched, *safe_unowned, *break_glass_unowned)),
                     )
                     metadata["closeout"]["closeout_dirty_paths_autoclassified"] = list(matched)
                     soft_commit_paths = safe_unowned
+                    break_glass_commit_paths = break_glass_unowned
                     unowned_remainder = unsafe_unowned
                     if unsafe_unowned:
                         metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
@@ -6590,25 +6621,46 @@ def _perform_phase_closeout(
                     )
                     # GATE: record SAFE beyond-ownership paths that were soft-committed
                     # as visible `soft` CloseoutExceptions (one per sensitivity class),
-                    # never folded into a clean pass. verification_status stays passed.
-                    if soft_commit_paths:
-                        by_class: dict[str, list[str]] = {}
-                        for path in soft_commit_paths:
-                            by_class.setdefault(classify_unowned_path(path).sensitivity_class, []).append(path)
-                        exceptions = [
-                            CloseoutException(
-                                paths=tuple(paths),
-                                exception_kind="soft",
-                                sensitivity_class=sensitivity_class,
-                                reason=None,
-                                verification_status="passed",
-                            ).to_json()
-                            for sensitivity_class, paths in by_class.items()
-                        ]
-                        metadata["closeout"].setdefault(CLOSEOUT_EXCEPTIONS_METADATA_KEY, []).extend(exceptions)
-                        metadata["closeout"]["closeout_exception_tally"] = {
-                            "soft": sum(len(e["paths"]) for e in metadata["closeout"][CLOSEOUT_EXCEPTIONS_METADATA_KEY]),
-                        }
+                    # never folded into a clean pass. BREAKGLASS: source/ci/lockfile UNSAFE
+                    # paths force-committed under an operator reason are recorded as
+                    # `break_glass` exceptions carrying that reason, sharing the same tally
+                    # (distinguished by exception_kind). verification_status stays passed.
+                    if soft_commit_paths or break_glass_commit_paths:
+                        recorded: list[dict] = []
+                        if soft_commit_paths:
+                            by_class: dict[str, list[str]] = {}
+                            for path in soft_commit_paths:
+                                by_class.setdefault(classify_unowned_path(path).sensitivity_class, []).append(path)
+                            recorded.extend(
+                                CloseoutException(
+                                    paths=tuple(paths),
+                                    exception_kind="soft",
+                                    sensitivity_class=sensitivity_class,
+                                    reason=None,
+                                    verification_status="passed",
+                                ).to_json()
+                                for sensitivity_class, paths in by_class.items()
+                            )
+                        if break_glass_commit_paths:
+                            bg_by_class: dict[str, list[str]] = {}
+                            for path in break_glass_commit_paths:
+                                bg_by_class.setdefault(classify_unowned_path(path).sensitivity_class, []).append(path)
+                            recorded.extend(
+                                CloseoutException(
+                                    paths=tuple(paths),
+                                    exception_kind="break_glass",
+                                    sensitivity_class=sensitivity_class,
+                                    reason=break_glass_reason,
+                                    verification_status="passed",
+                                ).to_json()
+                                for sensitivity_class, paths in bg_by_class.items()
+                            )
+                        metadata["closeout"].setdefault(CLOSEOUT_EXCEPTIONS_METADATA_KEY, []).extend(recorded)
+                        all_exceptions = metadata["closeout"][CLOSEOUT_EXCEPTIONS_METADATA_KEY]
+                        tally: dict[str, int] = {}
+                        for exc in all_exceptions:
+                            tally[exc["exception_kind"]] = tally.get(exc["exception_kind"], 0) + len(exc["paths"])
+                        metadata["closeout"]["closeout_exception_tally"] = tally
                     if roadmap_closeout_evidence_audit_enabled(roadmap):
                         try:
                             audit = audit_closeout_evidence(commit, phase, repo)
@@ -6668,26 +6720,49 @@ def _perform_phase_closeout(
     # Verification genuinely passed; this block is about scope, not verification.
     if unowned_remainder and status in ("complete", "planned"):
         status = "blocked"
-        blocker = {
-            "human_required": True,
-            "blocker_class": "closeout_scope_violation",
-            "blocker_summary": (
-                f"Committed {len(closeout_dirty_paths)} phase-owned path(s); "
-                f"{len(unowned_remainder)} verified dirty path(s) are outside the plan's "
-                f"owned files and need an ownership declaration or break-glass: "
-                f"{', '.join(unowned_remainder)}"
-            ),
-            "required_human_inputs": (
-                "Declare the path(s) in the phase plan's owned files, or rerun closeout with break-glass.",
-            ),
-            "access_attempts": (),
-        }
-        metadata["closeout"].update(
-            {
-                "closeout_refusal_reason": "unowned_dirty_remainder",
-                "unowned_dirty_paths": list(unowned_remainder),
+        if override_attempted_empty:
+            # BREAKGLASS defensive backstop: an override was requested with no reason
+            # (the CLI rejects this pre-run_loop; this catches programmatic callers).
+            # The unsafe paths are NOT force-committed without an audit trail.
+            blocker = {
+                "human_required": True,
+                "blocker_class": "operator_override_missing_reason",
+                "blocker_summary": (
+                    f"Break-glass override requested for {len(unowned_remainder)} unowned "
+                    f"path(s) but no operator reason was supplied: {', '.join(unowned_remainder)}"
+                ),
+                "required_human_inputs": (
+                    "Rerun closeout with a non-empty --closeout-allow-unowned reason.",
+                ),
+                "access_attempts": (),
             }
-        )
+            metadata["closeout"].update(
+                {
+                    "closeout_refusal_reason": "operator_override_missing_reason",
+                    "unowned_dirty_paths": list(unowned_remainder),
+                }
+            )
+        else:
+            blocker = {
+                "human_required": True,
+                "blocker_class": "closeout_scope_violation",
+                "blocker_summary": (
+                    f"Committed {len(closeout_dirty_paths)} phase-owned path(s); "
+                    f"{len(unowned_remainder)} verified dirty path(s) are outside the plan's "
+                    f"owned files and need an ownership declaration or break-glass: "
+                    f"{', '.join(unowned_remainder)}"
+                ),
+                "required_human_inputs": (
+                    "Declare the path(s) in the phase plan's owned files, or rerun closeout with break-glass.",
+                ),
+                "access_attempts": (),
+            }
+            metadata["closeout"].update(
+                {
+                    "closeout_refusal_reason": "unowned_dirty_remainder",
+                    "unowned_dirty_paths": list(unowned_remainder),
+                }
+            )
     event = LoopEvent(
         timestamp=utc_now(),
         repo=str(repo),

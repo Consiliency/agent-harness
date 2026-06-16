@@ -147,6 +147,15 @@ def build_parser() -> argparse.ArgumentParser:
                 "--allow-cross-phase-dirty",
                 help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
             )
+            sub.add_argument(
+                "--closeout-allow-unowned",
+                help=(
+                    "Break-glass: force-commit the verified UNSAFE-unowned closeout remainder "
+                    "(source/ci/lockfile) under the supplied operator reason, recorded as a "
+                    "break_glass exception. secrets are NEVER break-glassable. Requires a "
+                    "non-empty reason; pair with --phase to bound the blast radius."
+                ),
+            )
             if allow_lane_ir_override_enabled():
                 sub.add_argument(
                     "--allow-lane-ir-override",
@@ -326,6 +335,17 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--allow-cross-phase-dirty requires a non-empty reason")
     if command not in {"run", "resume", "dry-run"} and allow_cross_phase_dirty_reason is not None:
         parser.error("--allow-cross-phase-dirty is only valid for run, resume, and dry-run")
+
+    allow_unowned_reason = getattr(args, "closeout_allow_unowned", None)
+    if allow_unowned_reason is not None:
+        allow_unowned_reason = str(allow_unowned_reason).strip()
+        if not allow_unowned_reason:
+            parser.error(
+                "--closeout-allow-unowned requires a non-empty reason "
+                "(blocker_class=operator_override_missing_reason)"
+            )
+    if command not in {"run", "resume", "dry-run"} and allow_unowned_reason is not None:
+        parser.error("--closeout-allow-unowned is only valid for run, resume, and dry-run")
     lane_ir_override_kinds = _parse_lane_ir_override(parser, args, command)
     if command not in {"run", "resume"} and (
         bool(getattr(args, "full_phase", False)) or bool(getattr(args, "no_deprecation_hints", False))
@@ -583,6 +603,17 @@ def main(argv: list[str] | None = None) -> int:
             diagnostic_kinds=lane_ir_override_kinds,
             reason=str(getattr(args, "reason", "")).strip(),
         )
+    if allow_unowned_reason:
+        # Bound the blast radius structurally: break-glass is single-phase only, and the
+        # attestation event reconcile reads is phase-scoped.
+        if not effective_phase:
+            parser.error("--closeout-allow-unowned requires --phase (single-phase break-glass scope)")
+        _append_closeout_allow_unowned_event(
+            repo=repo,
+            roadmap=roadmap,
+            phase=str(effective_phase).upper(),
+            reason=allow_unowned_reason,
+        )
 
     snapshot, results = run_loop(
         repo=repo,
@@ -630,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
         dispatch_lock_enabled=dispatch_lock_enabled() and not bool(getattr(args, "no_dispatch_lock", False)),
         parallel_dispatch=bool(getattr(args, "parallel_dispatch", False)),
         allow_cross_phase_dirty_reason=allow_cross_phase_dirty_reason,
+        allow_unowned_reason=allow_unowned_reason,
         product_action_override=command if command in {"execute", "repair", "review"} else None,
         maintenance_options=MaintenanceOptions(
             min_reflections=getattr(args, "min_reflections", 2) or 2,
@@ -698,6 +730,43 @@ def _append_lane_ir_override_event(
             metadata={
                 "runner.lane_ir_override_invoked": {
                     "diagnostic_kinds_overridden": list(diagnostic_kinds),
+                    "plan_path": str(plan) if plan else None,
+                    "operator_reason": reason,
+                }
+            },
+            **event_provenance(roadmap, phase),
+        ),
+    )
+
+
+def _append_closeout_allow_unowned_event(
+    *,
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    reason: str,
+) -> None:
+    # BREAKGLASS attestation (IF-0-BREAKGLASS-1c): reconcile (SL-2) reads this to lift
+    # the unowned_dirty_paths bail, scoped by roadmap_sha256/phase_sha256 (via
+    # event_provenance) + phase + non-empty operator_reason — exactly like the lane-IR
+    # override. A stale attestation (content drifted) no longer matches and does not
+    # authorize a later closeout.
+    plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action="closeout_allow_unowned",
+            status="planned",
+            model="operator",
+            reasoning_effort="manual",
+            source="cli",
+            override_reason=reason,
+            metadata={
+                "runner.closeout_allow_unowned_invoked": {
                     "plan_path": str(plan) if plan else None,
                     "operator_reason": reason,
                 }
