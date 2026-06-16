@@ -6403,6 +6403,39 @@ def _dirty_outcome(dirty_summary: dict[str, object], *, blocked_summary: str) ->
     )
 
 
+def _closeout_lane_ir_blocker(repo: Path, roadmap: Path, phase: str) -> dict[str, object] | None:
+    """OWNFIX #17: surface unresolved Lane IR diagnostics at closeout as a
+    contract_bug naming the failing lane/diagnostic, instead of the misleading
+    missing_phase_owned_dirty_paths refusal. Reuses the same parse + override path
+    and the same lane_ir_diagnostics shape as the pre-launch reconcile._plan_blocker.
+    """
+    plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    if plan is None:
+        return None
+    from .plan_ir import parse_phase_plan_ir
+    from .reconcile import _lane_ir_override
+
+    lane_ir = parse_phase_plan_ir(plan)
+    if not (lane_ir.lanes and lane_ir.diagnostics):
+        return None
+    override = _lane_ir_override(repo, roadmap, phase, plan)
+    remaining = tuple(diagnostic for diagnostic in lane_ir.diagnostics if diagnostic.kind not in override)
+    if not remaining:
+        return None
+    detail = ", ".join(f"{d.kind}@{d.lane_id or 'plan'}" for d in remaining)
+    return {
+        "human_required": False,
+        "blocker_class": "contract_bug",
+        "blocker_summary": (
+            f"Lane IR diagnostics failed closed for {phase} closeout: {detail}. "
+            "Fix the plan's lane ownership before rerunning closeout."
+        ),
+        "required_human_inputs": (),
+        "access_attempts": (),
+        "lane_ir_diagnostics": tuple(diagnostic.to_json() for diagnostic in remaining),
+    }
+
+
 def _perform_phase_closeout(
     repo: Path,
     roadmap: Path,
@@ -6451,19 +6484,35 @@ def _perform_phase_closeout(
                 metadata["closeout"]["closeout_dirty_paths_autoclassified"] = list(snapshot.dirty_paths)
     if not snapshot.phase_owned_dirty or not closeout_dirty_paths:
         status = "blocked"
-        blocker = {
-            "human_required": False,
-            "blocker_class": "dirty_worktree_conflict",
-            "blocker_summary": "Trusted phase-owned dirty paths are missing for closeout.",
-            "required_human_inputs": ("Inspect dirty path classification before rerunning closeout.",),
-            "access_attempts": (),
-        }
-        metadata["closeout"].update(
-            {
-                "closeout_action": "refused",
-                "closeout_refusal_reason": "missing_phase_owned_dirty_paths",
+        # OWNFIX #17: an invalid Lane IR is the real reason classification failed and
+        # the fallback could not fire — surface that contract_bug (naming the lane /
+        # diagnostic) rather than the misleading missing_phase_owned_dirty_paths.
+        # Ordering invariant: an invalid plan never autoclassifies (the fallback above
+        # requires ownership.valid), so this short-circuits before a clean refusal.
+        lane_ir_blocker = _closeout_lane_ir_blocker(repo, roadmap, phase)
+        if lane_ir_blocker is not None:
+            blocker = lane_ir_blocker
+            metadata["closeout"].update(
+                {
+                    "closeout_action": "refused",
+                    "closeout_refusal_reason": "lane_ir_contract_bug",
+                    "lane_ir_diagnostics": list(lane_ir_blocker["lane_ir_diagnostics"]),
+                }
+            )
+        else:
+            blocker = {
+                "human_required": False,
+                "blocker_class": "dirty_worktree_conflict",
+                "blocker_summary": "Trusted phase-owned dirty paths are missing for closeout.",
+                "required_human_inputs": ("Inspect dirty path classification before rerunning closeout.",),
+                "access_attempts": (),
             }
-        )
+            metadata["closeout"].update(
+                {
+                    "closeout_action": "refused",
+                    "closeout_refusal_reason": "missing_phase_owned_dirty_paths",
+                }
+            )
     else:
         commit_action = _closeout_commit_action(action, terminal_status)
         plan = find_plan_artifact(repo, phase, roadmap=roadmap)
