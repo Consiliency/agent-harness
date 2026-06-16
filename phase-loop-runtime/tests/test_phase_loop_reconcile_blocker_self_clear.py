@@ -413,6 +413,57 @@ class CloseoutAllowUnownedAttestationTest(unittest.TestCase):
                 )
             )
 
+    def _blocked_then_recovery(self, repo, roadmap, phase, *, unowned_dirty_paths):
+        append_event(
+            repo,
+            LoopEvent(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phase=phase,
+                action="execute",
+                status="blocked",
+                model="gpt-5.4",
+                reasoning_effort="medium",
+                source="fixture",
+                blocker={
+                    "human_required": False,
+                    "blocker_class": "dirty_worktree_conflict",
+                    "blocker_summary": "Phase reported verified dirty closeout but left dirty paths.",
+                    "required_human_inputs": (),
+                },
+                **event_provenance(roadmap, phase),
+            ),
+        )
+        append_event(repo, self._recovery_event(repo, roadmap, phase, unowned_dirty_paths=unowned_dirty_paths))
+
+    def test_secrets_attestation_leaves_phase_blocked_end_to_end(self):
+        # Security invariant: an attestation present but recovery correctly refused
+        # (secret in remainder) must NOT leak the phase out of blocked via the main
+        # status loop picking up the status="planned" attestation event.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+            commit_fixture_paths(repo, "add CONTRACT plan", plan)
+            self._blocked_then_recovery(repo, roadmap, "CONTRACT", unowned_dirty_paths=[".env"])
+            append_event(repo, self._attestation_event(repo, roadmap, "CONTRACT"))
+            snapshot = reconcile(repo, roadmap)
+            self.assertEqual(snapshot.phases["CONTRACT"], "blocked")
+
+    def test_stale_attestation_leaves_phase_blocked_end_to_end(self):
+        # Same invariant for a stale (sha-drifted) attestation.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+            commit_fixture_paths(repo, "add CONTRACT plan", plan)
+            self._blocked_then_recovery(repo, roadmap, "CONTRACT", unowned_dirty_paths=["rogue.py"])
+            stale_prov = {**event_provenance(roadmap, "CONTRACT"), "phase_sha256": "stale" + "0" * 60}
+            append_event(repo, self._attestation_event(repo, roadmap, "CONTRACT", provenance=stale_prov))
+            snapshot = reconcile(repo, roadmap)
+            self.assertEqual(snapshot.phases["CONTRACT"], "blocked")
+
     def test_attestation_recovers_end_to_end_via_reconcile(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
