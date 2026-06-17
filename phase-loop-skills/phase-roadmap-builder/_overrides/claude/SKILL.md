@@ -194,33 +194,30 @@ Render as ASCII. Show serial arrows (`P1 → P2A → P2B`) and parallel branches
 
 ### Step 8 — Validate
 
-Run:
+The validator ships in the always-installed phase-loop runtime, so it does not
+depend on the skill bundle's `scripts/` directory being present. Prefer the CLI:
 
 ```bash
-VALIDATOR=""
-for base in \
-  "$(git rev-parse --show-toplevel)/.claude/skills" \
-  "$HOME/.claude/skills" \
-  "${PHASE_LOOP_SKILL_BUNDLE:-}" \
-  "${CLAUDE_SKILL_BUNDLE:-}"
-do
-  [ -n "$base" ] || continue
-  CANDIDATE="$base/<harness>-phase-roadmap-builder/scripts/validate_roadmap.py"
-  if [ -f "$CANDIDATE" ]; then
-    VALIDATOR="$CANDIDATE"
-    break
-  fi
-done
-if [ -z "$VALIDATOR" ]; then
-  echo "blocker: cannot locate <harness>-phase-roadmap-builder/scripts/validate_roadmap.py" >&2
-  exit 1
-fi
-python3 "$VALIDATOR" <output-path>
+phase-loop validate-roadmap <output-path>
+# equivalent, if you only have the runtime importable and not the console script:
+python3 -m phase_loop_runtime.roadmap_lint <output-path>
 ```
 
-Run the validator against the exact artifact path written by this invocation, including custom paths such as `planning/**/phase-roadmap.md`; do not validate a default `specs/phase-plans-v<N>.md` path unless that is the actual output. Fix every reported error before handing off. The validator enforces: required headings, phase-heading aliases, alias uniqueness, DAG acyclicity, IF-gate ID format, Depends-on correctness, and the ≥2-lanes-per-phase rule (with a preamble-phase escape hatch).
+Both wrap `phase_loop_runtime.roadmap_lint` (the single source of truth; the
+bundle's `scripts/validate_roadmap.py` is a thin shim over it). Run against the
+exact artifact path written by this invocation, including custom paths such as
+`planning/**/phase-roadmap.md`; do not validate a default
+`specs/phase-plans-v<N>.md` path unless that is the actual output. Fix every
+reported error before handing off. The validator enforces: required headings,
+phase-heading aliases, alias uniqueness, DAG acyclicity, IF-gate ID format,
+Depends-on correctness, and the ≥2-lanes-per-phase rule (with a preamble-phase
+escape hatch).
 
-If validation cannot be run, stop and report that as a blocker. Do not hand off a roadmap whose phase aliases were checked only by eye.
+If neither the `phase-loop` console script nor the `phase_loop_runtime` package
+is importable (an incomplete install), do not hand off a roadmap checked only by
+eye: install the runtime (`pip install <dotfiles>/vendor/phase-loop-runtime`) or
+report a blocker. The validator itself is always available once the runtime is
+installed — there is no "validator script missing" blocker.
 
 ### Step 8.5 — External CLI review (only if `--review-external`)
 
@@ -239,7 +236,7 @@ Tell the user: "Review written to `<output-path>_reviews.md`. Agreements between
 
 ### Step 9 — Write and exit
 
-Write the roadmap to the resolved output path. Call `ExitPlanMode` — the roadmap is the approval surface. After approval, the hand-off message is: "Run `/<harness>-plan-phase <ALIAS>` for each phase. Phases with no shared DAG ancestor (e.g., `<list them>`) can be planned concurrently."
+Write the roadmap to the resolved output path. If you are in plan mode (a plan-mode system reminder is present), call `ExitPlanMode` — the roadmap is the approval surface. If you are NOT in plan mode (adapter/non-interactive or default invocation), do not call `ExitPlanMode`; the written roadmap file is itself the deliverable — present its path and a one-line summary instead. After approval (or after writing, when not in plan mode), the hand-off message is: "Run `/<harness>-plan-phase <ALIAS>` for each phase. Phases with no shared DAG ancestor (e.g., `<list them>`) can be planned concurrently."
 
 ## Workflow — append mode
 
@@ -288,7 +285,7 @@ After approval, invoke `/<harness>-plan-phase <ALIAS>` per phase. Phases with no
 
 ## Close-out — Stage artifact (preservation guarantee)
 
-After `ExitPlanMode` is approved, before exiting:
+After `ExitPlanMode` is approved (or, when not in plan mode, after the roadmap file is written), before exiting:
 
 1. Run `git status --short -- <output-path>` and include the `_reviews.md` sibling if `--review-external` produced one.
 2. If the roadmap or review artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <output-path>` plus the review sibling if present.
@@ -430,6 +427,6 @@ Roadmap phases must set the expectation that downstream plans include machine-ch
 
 ## Closeout
 
-Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`; keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
+Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.

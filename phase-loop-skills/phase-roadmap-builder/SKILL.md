@@ -58,7 +58,8 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
    - `Phase Dependency DAG`;
    - `Execution Notes` that name which phases can be planned or executed concurrently;
    - end-to-end `Verification` commands.
-6. Validate manually:
+6. Validate mechanically, then by eye:
+   - run `phase-loop validate-roadmap <output-path>` (or `python3 -m phase_loop_runtime.roadmap_lint <output-path>`) — always available wherever the phase-loop runtime is installed; it mechanically checks stable headings, unique aliases, acyclic DAG, IF-gate reconciliation, and the lane-count hint. Fix every reported issue, then confirm by eye:
    - stable headings are present;
    - implementation units use `## Phases` and `### Phase N — <Name> (<ALIAS>)` consistently;
    - implementation-unit headings and suggested next commands do not use `Step`, `Slice`, `Stage`, `Phase Flow`, or other non-phase synonyms unless the user explicitly requested a different taxonomy;
@@ -125,13 +126,13 @@ In Default mode, write the roadmap with `apply_patch`, then run `git status --sh
 
 Before final response and handoff, choose the next phase to plan from the roadmap DAG. If at least one phase is ready, report `Next phase: <alias> - <phase name>` and `Next command: <harness>-plan-phase <artifact> <alias>`. If no phase should be planned next, report `Next phase: none - <reason>` and `Next command: none - <reason>`.
 
-Add a machine-readable automation handoff that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`; keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
+Add a machine-readable automation handoff that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 If no phase should be planned next, set `next_skill: none`, `next_command: none`, `next_model_hint: none`, and keep `automation.status=complete` when the roadmap is complete or `automation.status=blocked` when progress needs a human decision. Blocked access or decision cases must use the frozen blocker taxonomy from `<harness>-config/shared/runtime-state.md`, include redacted `access_attempts` when relevant, and set `required_human_inputs` to non-secret requested inputs only.
 
-Manual TUI runs remain valid without the outer phase loop. When `.phase-loop/` exists, treat it as the authoritative runner state; legacy `.codex/phase-loop/` files are compatibility artifacts only and must not block or supersede canonical `.phase-loop/` state. Only append a legacy `manual` source event to `.codex/phase-loop/events.jsonl` for standalone manual compatibility when no canonical `.phase-loop/` runtime exists, using the same `automation.status`, `next_skill`, `next_command`, `next_model_hint`, `next_effort_hint`, `human_required`, `blocker_class`, `blocker_summary`, `required_human_inputs`, `verification_status`, `artifact`, and `artifact_state` values.
+Manual TUI runs remain valid without the outer phase loop. When `.phase-loop/` exists, treat it as the authoritative runner state; legacy `.codex/phase-loop/` files are compatibility artifacts only and must not block or supersede canonical `.phase-loop/` state. When canonical `.phase-loop/state.json` or `tui-handoff.md` lags behind the newer `.phase-loop/events.jsonl` plus live git topology, reconcile current phase state from the ledger and `git status --short`/HEAD and cite that reconciliation; stale handoff text is not blocking. Only append a legacy `manual` source event to `.codex/phase-loop/events.jsonl` for standalone manual compatibility when no canonical `.phase-loop/` runtime exists, using the same `automation.status`, `next_skill`, `next_command`, `next_model_hint`, `next_effort_hint`, `human_required`, `blocker_class`, `blocker_summary`, `required_human_inputs`, `verification_status`, `artifact`, and `artifact_state` values.
 
 Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
 

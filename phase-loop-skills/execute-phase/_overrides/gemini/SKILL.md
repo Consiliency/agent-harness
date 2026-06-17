@@ -74,7 +74,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
    - read the owned files and related tests;
    - write or update tests first when practical;
    - implement only lane-scoped changes;
-   - run lane verification;
+   - run lane verification (normalize any phase-plan pytest `-k` selector whose prose terms contain spaces — e.g. `remote connect` becomes `'remote and connect'` — or quote it; a bare spaced `-k` term is an executor-side normalization, not a plan blocker);
    - run any phase-level checks that cover touched files.
 3. After each lane:
    - inspect `git diff -- <owned files>`;
@@ -130,9 +130,9 @@ Before reporting a successful closeout, require the runner-owned verification ar
 
 After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available. `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout. Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, active-session file-editing tool language, and dirty-worktree behavior.
 
-Before final closeout, run `git status --short -- <plan_path> <roadmap_path>` for every consumed or updated planning artifact. If any planning artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <path>` for each artifact. Rerun status and report `Artifact state: staged|tracked|modified|unstaged|blocked` for each artifact. Do not commit unless requested.
+Before final closeout, run `git status --short -- <plan_path> <roadmap_path>` for every consumed or updated planning artifact. If any planning artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <path>` for each artifact. Rerun status and report `Artifact state: staged|tracked|modified|unstaged|blocked` for each artifact. Do not commit unless requested. Repo-local handoff files are operational state: do not `git add` an ignored handoff alongside the plan artifact unless the plan's owned-files/allowlist explicitly includes the handoff directory; leave ignored handoffs ignored and exclude them from artifact-state reporting.
 
-Also run a whole-tree `git status --short` closeout audit. Classify every dirty path as phase-owned, planning/control, pre-existing unrelated, or unowned. For ignored phase-owned outputs that must be preserved, verify an explicit plan/source-bundle allowlist or staging policy before using `git add -f`; otherwise report a repairable `dirty_worktree_conflict`. Never report `complete` while unowned generated files, unauthorized ignored outputs, or outputs derived from unauthorized raw/private reads remain in the worktree.
+Also run a whole-tree `git status --short` closeout audit. Classify every dirty path as phase-owned, planning/control, pre-existing unrelated, or unowned. For ignored phase-owned outputs that must be preserved, verify an explicit plan/source-bundle allowlist or staging policy before using `git add -f`; otherwise report a repairable `dirty_worktree_conflict`. Precedence for a verified phase: when required verification passed and the ONLY uncommitted paths are phase-owned outputs this run was not authorized to commit, report `terminal_status=awaiting_phase_closeout` and let the runner's graduated closeout gate commit them — do NOT report `dirty_worktree_conflict`; reserve that conflict for unowned, unauthorized-ignored, or overlapping-unrelated dirty paths. Never report `complete` while unowned generated files, unauthorized ignored outputs, or outputs derived from unauthorized raw/private reads remain in the worktree.
 
 Determine the next step before final response and handoff:
 
@@ -142,7 +142,7 @@ Determine the next step before final response and handoff:
 - If the roadmap needs extension, report `Next phase: none - roadmap extension needed` and `Next command: <harness>-phase-roadmap-builder <roadmap_path>`.
 - If all phases are complete, report `Next phase: none - roadmap complete` and `Next command: none - roadmap complete`.
 
-Add a machine-readable `automation:` handoff with `verification_status` that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`; keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
+Add a machine-readable `automation:` handoff with `verification_status` that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
