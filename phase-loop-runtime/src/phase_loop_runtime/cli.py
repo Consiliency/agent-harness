@@ -524,7 +524,10 @@ def main(argv: list[str] | None = None) -> int:
     if command == "migrate-events":
         return _migrate_events_command(repo=repo, dry_run=bool(args.dry_run), backup_suffix=args.backup_suffix)
     if command == "archive-state":
-        print(render_archive_result(archive_state(repo, reason=getattr(args, "reason", None)), as_json=as_json))
+        print(render_archive_result(
+            archive_state(repo, reason=getattr(args, "reason", None), dry_run=bool(getattr(args, "dry_run", False))),
+            as_json=as_json,
+        ))
         return 0
     try:
         roadmap = select_roadmap(repo, args.roadmap)

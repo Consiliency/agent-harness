@@ -123,9 +123,17 @@ def render_state_inspection(summary: dict[str, object], as_json: bool = False) -
 def render_archive_result(summary: dict[str, object], as_json: bool = False) -> str:
     if as_json:
         return json.dumps(summary, indent=2, sort_keys=True)
+    moved = summary.get("moved", ())
+    if summary.get("dry_run"):
+        if not moved:
+            return "Dry-run: no phase-loop state files to archive (no changes made)."
+        return (
+            f"Dry-run: would archive {len(moved)} phase-loop state file(s) to "
+            f"{summary.get('archive_path')} (no changes made)."
+        )
     if not summary.get("archived"):
         return "No phase-loop state files to archive."
-    return f"Archived {len(summary.get('moved', ())) } phase-loop state file(s) to {summary.get('archive_path')}"
+    return f"Archived {len(moved)} phase-loop state file(s) to {summary.get('archive_path')}"
 
 
 def render_skill_sync_result(summary: dict[str, object], as_json: bool = False) -> str:

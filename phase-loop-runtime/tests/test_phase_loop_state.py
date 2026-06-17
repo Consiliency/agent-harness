@@ -148,6 +148,48 @@ class PhaseLoopStateTest(unittest.TestCase):
             self.assertEqual(status.strip(), "")
             self.assertFalse(handoff.exists())
 
+    def test_archive_state_dry_run_does_not_mutate(self):
+        # #39: `archive-state --dry-run` must be read-only — describe the planned
+        # move set without renaming any .phase-loop file.
+        with tempfile.TemporaryDirectory() as td:
+            from phase_loop_runtime.state_ops import archive_state
+
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_state(repo, provenanced_state(repo, roadmap, {"RUNNER": "planned"}))
+            events = repo / ".phase-loop" / "events.jsonl"
+            events.write_text('{"phase":"RUNNER"}\n', encoding="utf-8")
+            handoff = repo / ".phase-loop" / "tui-handoff.md"
+            handoff.write_text("# handoff\n", encoding="utf-8")
+
+            def snapshot():
+                return sorted(
+                    (p.relative_to(repo).as_posix(), p.read_bytes())
+                    for p in (repo / ".phase-loop").rglob("*") if p.is_file()
+                )
+
+            before = snapshot()
+            result = archive_state(repo, reason="dry", dry_run=True)
+
+            # No filesystem mutation.
+            self.assertEqual(snapshot(), before, "dry-run must not move/rename/create files")
+            self.assertTrue((repo / ".phase-loop" / "state.json").exists())
+            self.assertTrue(events.exists() and handoff.exists())
+            self.assertFalse((repo / ".phase-loop" / "archive").exists())
+            # Result reports it did NOT archive, flags dry-run, and lists the planned moves.
+            self.assertFalse(result.get("archived"))
+            self.assertTrue(result.get("dry_run"))
+            planned = result.get("moved") or []
+            planned_sources = {Path(m["source"]).name for m in planned}
+            self.assertIn("state.json", planned_sources)
+            self.assertIn("events.jsonl", planned_sources)
+            self.assertIn("tui-handoff.md", planned_sources)
+
+            # A real archive (no dry-run) still moves them.
+            real = archive_state(repo, reason="real")
+            self.assertTrue(real.get("archived"))
+            self.assertFalse((repo / ".phase-loop" / "state.json").exists())
+
     def test_state_and_events_capture_git_topology(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

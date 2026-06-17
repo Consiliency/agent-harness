@@ -199,20 +199,24 @@ def _work_unit_status(work_unit: dict[str, object] | None) -> str | None:
     return str(status) if status is not None else None
 
 
-def archive_state(repo: Path, reason: str | None = None) -> dict[str, object]:
+def archive_state(repo: Path, reason: str | None = None, dry_run: bool = False) -> dict[str, object]:
+    # #39: --dry-run must be read-only. Compute the planned move set without
+    # creating the archive dir, renaming any file, or writing the manifest.
     ensure_phase_loop_excluded(repo)
     files = [path for path in state_files(repo) if path.exists()]
     archive_dir = archive_root(repo) / utc_now().replace(":", "").replace("-", "")
     moved: list[dict[str, str]] = []
     if files:
-        archive_dir.mkdir(parents=True, exist_ok=True)
+        if not dry_run:
+            archive_dir.mkdir(parents=True, exist_ok=True)
         for source in files:
             try:
                 destination_name = source.resolve().relative_to(repo.resolve()).as_posix().replace("/", "__")
             except (OSError, ValueError):
                 destination_name = source.name
             destination = archive_dir / destination_name
-            shutil.move(str(source), destination)
+            if not dry_run:
+                shutil.move(str(source), destination)
             moved.append({"source": str(source), "destination": str(destination)})
     manifest = {
         "timestamp": utc_now(),
@@ -220,13 +224,14 @@ def archive_state(repo: Path, reason: str | None = None) -> dict[str, object]:
         "reason": reason or "",
         "moved": moved,
     }
-    if files:
+    if files and not dry_run:
         (archive_dir / "archive.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return {
         "repo": str(repo),
         "archive_path": str(archive_dir) if files else None,
         "moved": moved,
-        "archived": bool(files),
+        "archived": bool(files) and not dry_run,
+        "dry_run": dry_run,
         "reason": reason or "",
     }
 
