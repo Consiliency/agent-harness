@@ -74,6 +74,9 @@ class ParsedResponse:
 
 
 def build_baml_request(function_name: str, payload: dict[str, Any] | None = None) -> BamlRequest:
+    if function_name == "EmitPhaseCloseout":
+        return _build_emit_phase_closeout_request(payload or {})
+
     runtime, ctx_manager = _runtime()
     try:
         request = runtime.build_request_sync(
@@ -86,7 +89,11 @@ def build_baml_request(function_name: str, payload: dict[str, Any] | None = None
             False,
         )
     except Exception as exc:  # pragma: no cover - exact BAML errors vary by version
-        raise BamlValidationError(_sanitize_error(exc)) from exc
+        _raise_baml_validation_error(exc)
+    except BaseException as exc:  # pragma: no cover - depends on PyO3 runtime panics
+        if _is_pyo3_panic(exc):
+            _raise_baml_validation_error(exc)
+        raise
     body = request.body.json()
     return BamlRequest(
         id=getattr(request, "id", None),
@@ -129,7 +136,11 @@ def parse_baml_response(function_name: str, raw_text: str) -> ParsedResponse:
         else:
             typed = PhaseLoopCloseoutV1.model_validate(_find_json_payload(str(raw_text or "")))
     except Exception as exc:
-        raise BamlValidationError(_sanitize_error(exc)) from exc
+        _raise_baml_validation_error(exc)
+    except BaseException as exc:  # pragma: no cover - depends on PyO3 runtime panics
+        if _is_pyo3_panic(exc):
+            _raise_baml_validation_error(exc)
+        raise
     return ParsedResponse(function_name=function_name, payload=typed.model_dump(), value=typed)
 
 
@@ -478,6 +489,99 @@ def _render_schema_description(schema: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _build_emit_phase_closeout_request(payload: dict[str, Any]) -> BamlRequest:
+    prompt = _render_emit_phase_closeout_prompt(payload)
+    return BamlRequest(
+        id=None,
+        url="https://example.invalid/v1/chat/completions",
+        method="POST",
+        headers={"content-type": "application/json"},
+        body={
+            "model": "phase-loop-closeout",
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        prompt=prompt,
+    )
+
+
+def _render_emit_phase_closeout_prompt(payload: dict[str, Any]) -> str:
+    template = _function_prompt_template("EmitPhaseCloseout")
+    rendered = _render_baml_list_loop(template, "plan_produces", payload.get("plan_produces") or [])
+    rendered = _render_baml_list_loop(rendered, "plan_owned_files", payload.get("plan_owned_files") or [])
+    rendered = re.sub(
+        r"\{\{\s*closeout_commit_sha\s*\|\s*default\((['\"])none\1\)\s*\}\}",
+        str(payload.get("closeout_commit_sha") or "none"),
+        rendered,
+    )
+    rendered = re.sub(r"\{\{\s*ctx\.output_format\s*\}\}", _closeout_output_format(), rendered)
+    return render_baml_prompt(
+        rendered,
+        {
+            **_baml_prompt_context_constants(),
+            "phase_alias": str(payload.get("phase_alias") or ""),
+        },
+    ).strip()
+
+
+def _render_baml_list_loop(template: str, list_name: str, items: list[Any]) -> str:
+    pattern = re.compile(
+        r"\{%\s*for\s+(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s+in\s+"
+        + re.escape(list_name)
+        + r"\s*%\}(?P<body>.*?)\{%\s*endfor\s*%\}",
+        re.DOTALL,
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        loop_var = match.group("var")
+        body = match.group("body")
+        rendered_items = []
+        for item in items:
+            rendered_items.append(
+                re.sub(r"\{\{\s*" + re.escape(loop_var) + r"\s*\}\}", str(item), body)
+            )
+        return "".join(rendered_items)
+
+    return pattern.sub(replace, template)
+
+
+def _function_prompt_template(function_name: str) -> str:
+    baml_text = (_baml_src_dir() / "emit_phase_closeout.baml").read_text(encoding="utf-8")
+    match = re.search(
+        rf"\bfunction\s+{re.escape(function_name)}\s*\([^)]*\)\s*->\s*[A-Za-z_][A-Za-z0-9_]*\s*\{{.*?prompt\s+#\"(?P<prompt>.*?)\"#",
+        baml_text,
+        re.DOTALL,
+    )
+    if not match:
+        raise BamlValidationError(f"BAML prompt not found: {function_name}")
+    return match.group("prompt")
+
+
+def _closeout_output_format() -> str:
+    schema = export_function_schema("EmitPhaseCloseout")
+    lines = ["Answer in JSON using this schema:"]
+    for field_name in schema.get("required", ()):
+        field_schema = schema.get("properties", {}).get(field_name, {})
+        line = f"- {field_name}: {_schema_type_label(field_schema)}"
+        if "enum" in field_schema:
+            line += "; enum=" + ", ".join("null" if value is None else str(value) for value in field_schema["enum"])
+        lines.append(line)
+    lines.append("")
+    lines.append(_render_schema_description(schema))
+    return "\n".join(lines)
+
+
+def _schema_type_label(field_schema: dict[str, Any]) -> str:
+    field_type = field_schema.get("type")
+    if isinstance(field_type, list):
+        return " | ".join(str(item) for item in field_type)
+    if field_type == "array":
+        item_type = field_schema.get("items", {}).get("type", "unknown")
+        return f"{item_type}[]"
+    if field_type == "integer":
+        return "int"
+    return str(field_type or "unknown")
+
+
 @lru_cache(maxsize=1)
 def _type_modules() -> tuple[types.ModuleType, types.ModuleType]:
     enum_module = types.ModuleType("phase_loop_runtime.baml_enums")
@@ -526,3 +630,12 @@ def _sanitize_error(exc: BaseException) -> str:
     if len(message) > 500:
         message = message[:497] + "..."
     return message or exc.__class__.__name__
+
+
+def _is_pyo3_panic(exc: BaseException) -> bool:
+    cls = exc.__class__
+    return cls.__module__ == "pyo3_runtime" and cls.__name__ == "PanicException"
+
+
+def _raise_baml_validation_error(exc: BaseException) -> None:
+    raise BamlValidationError(_sanitize_error(exc)) from exc

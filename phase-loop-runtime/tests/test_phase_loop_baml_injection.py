@@ -68,6 +68,20 @@ class PhaseLoopBamlInjectionTest(unittest.TestCase):
         for literal in BLOCKER_CLASSES:
             self.assertIn(literal, prompt)
 
+    def test_prompt_bundle_without_plan_keeps_closeout_instruction_renderable(self):
+        context = build_prompt_bundle(
+            repo=ROOT,
+            harness_target="codex",
+            action="roadmap",
+            roadmap=ROOT / "specs/phase-plans-v42.md",
+            phase="SUBSTRATE",
+            plan=None,
+            body="build roadmap",
+        ).render_context()
+
+        self.assertIn("EmitPhaseCloseout", context)
+        self.assertIn("produced_if_gates", context)
+
     def test_prompt_bundle_lists_only_plan_produced_if_gates(self):
         plan_text = """# COLLABBOOT
 
