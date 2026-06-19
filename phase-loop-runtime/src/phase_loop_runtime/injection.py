@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import re
 import shutil
 
 from .baml_modular import BamlValidationError, build_baml_request
+from .closeout_validation import extract_plan_produces as _extract_plan_produces
 from .models import HarnessLaneAssignment, PromptBundle
 from .runtime_paths import (
     phase_loop_claude_agents_file,
@@ -335,18 +335,6 @@ def _render_baml_closeout_instruction(
     except BamlValidationError as exc:
         prompt = f"Emit one closeout conforming to emit_phase_closeout.baml / EmitPhaseCloseout. BAML prompt render failed: {exc}"
     return "EmitPhaseCloseout (`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`):\n" + prompt
-
-
-def _extract_plan_produces(plan: Path | None) -> tuple[str, ...]:
-    if plan is None or not plan.exists():
-        return ()
-    text = plan.read_text(encoding="utf-8")
-    gates: list[str] = []
-    for match in re.finditer(r"IF-[A-Za-z0-9_.-]+", text):
-        gate = match.group(0)
-        if gate not in gates:
-            gates.append(gate)
-    return tuple(gates)
 
 
 def materialize_claude_plugin_bundle(*, repo: Path, run_root: Path, prompt_bundle: PromptBundle) -> dict[str, object]:

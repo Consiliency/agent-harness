@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -66,6 +67,38 @@ class PhaseLoopBamlInjectionTest(unittest.TestCase):
         self.assertIn("dry_run is an event-level execution mode", prompt)
         for literal in BLOCKER_CLASSES:
             self.assertIn(literal, prompt)
+
+    def test_prompt_bundle_lists_only_plan_produced_if_gates(self):
+        plan_text = """# COLLABBOOT
+
+## Context
+`IF-0-INSTRINV-1` and `IF-0-SPECGATE-1` are available upstream.
+
+## Interface Freeze Gates
+- [ ] IF-0-COLLABBOOT-1 - collaborator boundary
+
+## Lanes
+
+### SL-0 - Docs
+- **Interfaces provided**: `IF-0-COLLABBOOT-1`
+- **Interfaces consumed**: `IF-0-INSTRINV-1`; `IF-0-SPECGATE-1`.
+"""
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "phase-plan-v42-COLLABBOOT.md"
+            plan.write_text(plan_text, encoding="utf-8")
+            context = build_prompt_bundle(
+                repo=ROOT,
+                harness_target="codex",
+                action="execute",
+                roadmap=ROOT / "specs/phase-plans-v42.md",
+                phase="COLLABBOOT",
+                plan=plan,
+                body="execute COLLABBOOT",
+            ).render_context()
+
+        self.assertIn("IF-0-COLLABBOOT-1", context)
+        self.assertNotIn("IF-0-INSTRINV-1", context)
+        self.assertNotIn("IF-0-SPECGATE-1", context)
 
     def test_baml_closeout_rejects_dry_run_terminal_status(self):
         with self.assertRaises(Exception):
