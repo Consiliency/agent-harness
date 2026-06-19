@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from phase_loop_runtime.baml_modular import BamlValidationError, build_baml_request, parse_baml_response
 from phase_loop_runtime.models import PHASE_STATUSES
@@ -70,6 +71,24 @@ class PhaseLoopBamlModularTest(unittest.TestCase):
         with self.assertRaises(BamlValidationError) as ctx:
             parse_baml_response("EmitPhaseCloseout", json.dumps(payload))
         self.assertIn("invalid terminal_status: dry_run", str(ctx.exception))
+
+    def test_build_baml_request_converts_pyo3_panic_to_validation_error(self):
+        class PanicException(BaseException):
+            pass
+
+        PanicException.__module__ = "pyo3_runtime"
+
+        class FakeRuntime:
+            def build_request_sync(self, *_args, **_kwargs):
+                raise PanicException("Attempted to create a NULL object.")
+
+        class FakeContextManager:
+            def clone_context(self):
+                return object()
+
+        with patch("phase_loop_runtime.baml_modular._runtime", return_value=(FakeRuntime(), FakeContextManager())):
+            with self.assertRaisesRegex(BamlValidationError, "Attempted to create a NULL object"):
+                build_baml_request("EvaluateSuspectedFakeEvidence", {})
 
 
 if __name__ == "__main__":
