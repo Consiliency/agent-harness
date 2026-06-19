@@ -502,6 +502,56 @@ class PhaseLoopDocsTest(unittest.TestCase):
         ):
             self.assertNotIn(token, combined)
 
+    def test_instruction_scope_contract_classifies_required_surfaces(self):
+        contract_path = ROOT / "docs" / "phase-loop" / "instruction-scope-contract.md"
+        self.assertTrue(contract_path.exists())
+        text = contract_path.read_text(encoding="utf-8")
+
+        for token in (
+            "owner-fleet",
+            "reusable-harness",
+            "repo-local-collaborator",
+            "claude-config/CLAUDE.md",
+            "claude-config/AGENTS.md",
+            "shared/instructions/core.md",
+            ".agents/skills",
+            "Harness skill roots",
+            "Bootstrap scripts",
+            "Runtime protocol closeout surfaces",
+            "IF-0-INSTRINV-1",
+            "IF-0-SUBSTRATE-1",
+        ):
+            self.assertIn(token, text)
+
+        for token in (
+            "Governed Pipeline",
+            "Portal",
+            "ReGenesis",
+            "External collaborators",
+            "docs/phase-loop/harness-substrate-manifest.md",
+            "docs/phase-loop/collaborator-bootstrap.md",
+            "shared/phase-loop/protocol.md",
+            "vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml",
+        ):
+            self.assertIn(token, text)
+
+    def test_instruction_scope_reusable_docs_reject_owner_global_dependency_language(self):
+        doc_paths = (
+            ROOT / "docs" / "phase-loop" / "instruction-scope-contract.md",
+            ROOT / "docs" / "phase-loop" / "harness-substrate-manifest.md",
+            ROOT / "docs" / "phase-loop" / "runtime-boundary.md",
+            ROOT / "shared" / "phase-loop" / "protocol.md",
+        )
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in doc_paths)
+
+        for phrase in (
+            "requires the full dotfiles",
+            "client dependency on the dotfiles root",
+            "must install owner dotfiles",
+            "must source shell profile",
+        ):
+            self.assertNotIn(phrase, combined)
+
     def test_dfskillgovsoak_docs_define_release_gate_boundary(self):
         runbook_path = ROOT / "docs" / "phase-loop" / "dfskillgovsoak.md"
         bridge_readme_path = FIXTURES / "phase_loop_pipeline_bridge" / "README.md"
