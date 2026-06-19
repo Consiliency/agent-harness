@@ -42,3 +42,29 @@ def test_collaborator_docs_name_personal_surfaces_not_touched():
     ]
     for token in required:
         assert token in docs
+
+
+def test_collaborator_installer_excludes_owner_fleet_setup():
+    script = read("bootstrap-mac-skills.sh")
+
+    for token in [
+        "phase-loop install --harness",
+        "COLLABORATOR_SKILL_ROOT_MODE",
+        "COLLABORATOR_REPO_SKILL_ROOT",
+        "does NOT touch Claude settings",
+        "does NOT rewrite SSH configuration",
+        "does NOT run 1Password SETUP",
+        "does NOT set up scheduler",
+        "does NOT write MCP configuration files",
+        "install MCP gateway files",
+    ]:
+        assert token in script
+
+    forbidden = [
+        "uv tool install pmcp",
+        "pmcp serve",
+        '"mcpServers"',
+        "CLAUDE.md/AGENTS.md loader files remain owned by dotfiles",
+    ]
+    for token in forbidden:
+        assert token not in script

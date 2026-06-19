@@ -49,3 +49,22 @@ def test_collaborator_bootstrap_keeps_downstream_adoption_mediated():
         "legacy `.codex/phase-loop/**`",
     ]:
         assert token in doc
+
+
+def test_collaborator_bootstrap_excludes_owner_runtime_surfaces():
+    doc = read("docs/phase-loop/collaborator-bootstrap.md")
+    for token in [
+        "host bootstrap",
+        "shell profile sourcing",
+        "SSH setup",
+        "MCP gateway setup",
+        "credential setup",
+        "terminal configuration",
+        "Zellij configuration",
+        "cron",
+        "launchd",
+        "generic 1Password setup",
+        "raw source evidence",
+        "sibling repos",
+    ]:
+        assert token in doc
