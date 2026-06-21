@@ -638,6 +638,17 @@ def main(argv: list[str] | None = None) -> int:
             reason=allow_unowned_reason,
         )
 
+    # --parallel-dispatch is the legacy serial coordinator-wave control; it maps
+    # onto --phase-scheduler serialized so the two controls don't overlap.
+    effective_phase_scheduler_mode = getattr(args, "phase_scheduler_mode", "off") or "off"
+    if bool(getattr(args, "parallel_dispatch", False)):
+        print(
+            "warning: --parallel-dispatch is deprecated; use --phase-scheduler serialized.",
+            file=sys.stderr,
+        )
+        if effective_phase_scheduler_mode == "off":
+            effective_phase_scheduler_mode = "serialized"
+
     snapshot, results = run_loop(
         repo=repo,
         roadmap=roadmap,
@@ -683,6 +694,7 @@ def main(argv: list[str] | None = None) -> int:
         force_replan=bool(getattr(args, "force_replan", False)),
         dispatch_lock_enabled=dispatch_lock_enabled() and not bool(getattr(args, "no_dispatch_lock", False)),
         parallel_dispatch=bool(getattr(args, "parallel_dispatch", False)),
+        phase_scheduler_mode=effective_phase_scheduler_mode,
         allow_cross_phase_dirty_reason=allow_cross_phase_dirty_reason,
         allow_unowned_reason=allow_unowned_reason,
         product_action_override=command if command in {"execute", "repair", "review"} else None,

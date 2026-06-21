@@ -6,6 +6,48 @@ import re
 import subprocess
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
+
+
+class _DispatchOutcome(NamedTuple):
+    """Result of dispatching one phase's iteration in ``run_loop``'s main loop.
+
+    ``control`` is the loop control signal the caller re-applies (``"break"`` /
+    ``"continue"`` exit the while loop; ``"fall"`` proceeds to the per-iteration
+    full_phase/phase tail). ``status_after_closeout`` is the reduced terminal
+    status, populated only on the ``"fall"`` path (the only path the tail reads).
+    Mutated loop state (``current``/``snapshot``/``selection`` etc.) propagates
+    through ``nonlocal`` rather than this tuple.
+    """
+
+    control: str
+    status_after_closeout: str | None
+
+
+class _DispatchPrep(NamedTuple):
+    """Per-phase launch state crossing the prepare→launch→finalize seam.
+
+    Carries the prepare-local values that ``_finalize_phase_launch`` reads (loop
+    state like ``current``/``snapshot``/``selection`` crosses via ``nonlocal``
+    instead). Making this an explicit payload is what lets the concurrent
+    scheduler prepare every ready phase, launch them as a wave, then finalize
+    each — the serial path just does it one phase at a time.
+    """
+
+    artifacts: dict
+    dispatch_decision: object
+    execution_policy: object
+    execution_source_bundle_context: object
+    failed_launch_closeout_override: dict | None
+    launch_action: str
+    plan: object
+    pre_launch_dirty_paths: object
+    repair_loop_pivot: object
+    request: object
+    rotation_policy_pin: object
+    rotation_preferred_executor: object
+    selection: object
+    spec: object
 
 from .broker import validate_delegation_request
 from .baml_modular import BamlValidationError, parse_baml_response
@@ -16,10 +58,14 @@ from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
 from .closeout_validation import validate_produced_gates
 from .discovery import (
     PLAN_RE,
+    compute_ready_phases,
     dispatch_hints_for_action,
     execution_policy_dispatch_hints,
     execution_policy_for_action,
     find_plan_artifact,
+    reconcile_against_git_reality,
+    select_ready_phase_wave,
+    validate_concurrent_phase_ownership,
     load_execution_phase_source_bundle,
     load_phase_source_bundle,
     parse_automation_status,
@@ -73,6 +119,7 @@ from .models import (
     EXECUTORS,
     HarnessLaneAssignment,
     LoopEvent,
+    PHASE_SCHEDULER_MODES,
     PHASE_STATUSES,
     ParentChildRunMetadata,
     PRODUCT_LOOP_ACTIONS,
@@ -100,6 +147,13 @@ from .observability import (
     write_terminal_summary,
 )
 from .pipeline_adapter.flag import trust_executor_evidence_enabled
+from .phase_worktree_executor import (
+    create_phase_worktree,
+    current_branch,
+    integrate_phase_worktree,
+    resolve_base_sha,
+    teardown_phase_worktree,
+)
 from .plan_ir import iter_waves
 from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
 from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor
@@ -117,7 +171,13 @@ from .verification_evidence import (
     run_verification,
     validate_verification_artifact,
 )
-from .worker_pool import read_worker_summary, worker_summary_path, write_worker_summary
+from .worker_pool import (
+    PhaseWorkerJob,
+    read_worker_summary,
+    run_phase_worker_pool,
+    worker_summary_path,
+    write_worker_summary,
+)
 
 try:  # Optional in the adapter runtime; tests and normal installs provide it.
     import yaml
@@ -785,11 +845,14 @@ def run_loop(
     force_replan: bool = False,
     dispatch_lock_enabled: bool = True,
     parallel_dispatch: bool = False,
+    phase_scheduler_mode: str = "off",
     allow_cross_phase_dirty_reason: str | None = None,
     allow_unowned_reason: str | None = None,
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
+    if phase_scheduler_mode not in PHASE_SCHEDULER_MODES:
+        raise ValueError(f"invalid phase scheduler mode: {phase_scheduler_mode}")
     if allow_cross_phase_dirty_reason is not None and not allow_cross_phase_dirty_reason.strip():
         raise ValueError("allow_cross_phase_dirty_reason must not be empty")
     allow_cross_phase_dirty_reason = allow_cross_phase_dirty_reason.strip() if allow_cross_phase_dirty_reason else None
@@ -1034,8 +1097,20 @@ def run_loop(
     phase_cycles_completed = 0
     coordinator_waves = tuple(iter_waves(roadmap)) if parallel_dispatch and phase is None else ()
     coordinator_started_waves: set[int] = set()
+    # Set per-phase by the concurrent scheduler so _prepare_phase_launch targets
+    # the phase's isolated worktree; None for the serial/coordinator paths.
+    concurrent_exec_repo: Path | None = None
+    # Initialized before the loop so the concurrent path (which runs before the
+    # loop's own assignment) reads None rather than an unbound name.
+    coordinator_wave: tuple[int, tuple[str, ...]] | None = None
     if coordinator_waves and not max_phases_explicit:
         max_phases = sum(len(wave) for wave in coordinator_waves)
+    elif phase_scheduler_mode == "concurrent" and phase is None and not max_phases_explicit:
+        # Mirror the coordinator auto-size: without it the CLI default
+        # (max_phases=1) would dispatch only the first wave and stop before the
+        # concurrent wave ever fires. Size to the roadmap's total phase count so
+        # the loop can walk every wave.
+        max_phases = max(sum(len(wave) for wave in iter_waves(roadmap)), 1)
     iterations_remaining = max_phases if not full_phase else max(max_phases * 4, max_phases)
     if max_phases_explicit and not full_phase and not no_deprecation_hints and selected is not None:
         append_event(
@@ -1063,35 +1138,8 @@ def run_loop(
             ),
         )
     with dispatch_lock_context, loop_context:
-        while iterations_remaining > 0 and (not full_phase or phase_cycles_completed < max_phases):
-            iterations_remaining -= 1
-            snapshot = reconcile(repo, roadmap)
-            classifications = snapshot.phases
-            alias = (
-                _select_parallel_dispatch_phase(coordinator_waves, classifications)
-                if coordinator_waves
-                else _select_ready_phase(repo, roadmap, classifications, phase)
-            )
-            if alias is None:
-                current = None
-                break
-            coordinator_wave = _coordinator_wave_for_alias(coordinator_waves, alias)
-            if coordinator_wave is not None:
-                wave_index, phase_aliases = coordinator_wave
-                if wave_index not in coordinator_started_waves:
-                    coordinator_started_waves.add(wave_index)
-                    _append_coordinator_event(
-                        repo=repo,
-                        roadmap=roadmap,
-                        phase=alias,
-                        action="coordinator.wave_started",
-                        status=classifications.get(alias, "unknown"),
-                        selection=selection,
-                        metadata={
-                            "wave_index": wave_index,
-                            "phase_aliases": list(phase_aliases),
-                        },
-                    )
+        def _prepare_phase_launch() -> "tuple[_DispatchOutcome | None, _DispatchPrep | None]":
+            nonlocal blocker, current, executor, phase_aliases, selection, snapshot, wave_index
             if stop_requested(repo):
                 current = alias
                 append_event(
@@ -1111,7 +1159,7 @@ def run_loop(
                         **event_provenance(roadmap, alias),
                     ),
                 )
-                break
+                return (_DispatchOutcome("break", None), None)
             # Stuck-loop detection: refuse to dispatch another iteration if
             # this phase has been ping-ponging in `(action=run, status=executing)`
             # past the iteration cap or time ceiling.
@@ -1159,9 +1207,9 @@ def run_loop(
                     ),
                 )
                 current = alias
-                break
+                return (_DispatchOutcome("break", None), None)
             if dry_run and results and alias == current:
-                break
+                return (_DispatchOutcome("break", None), None)
             current = alias
             if coordinator_wave is not None:
                 wave_index, phase_aliases = coordinator_wave
@@ -1205,7 +1253,7 @@ def run_loop(
                         start_gate=start_gate,
                     ),
                 )
-                break
+                return (_DispatchOutcome("break", None), None)
             if start_gate is not None:
                 append_event(
                     repo,
@@ -1275,7 +1323,7 @@ def run_loop(
                             **event_provenance(roadmap, alias),
                         ),
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
             if (status in {"planned", "executed"} or explicit_product_action in {"execute", "review"}) and stale_pipeline_plan is not None:
                 stale_plan, execution_diagnostic = stale_pipeline_plan
                 classifications[alias] = "blocked"
@@ -1314,7 +1362,7 @@ def run_loop(
                         **event_provenance(roadmap, alias),
                     ),
                 )
-                break
+                return (_DispatchOutcome("break", None), None)
             if lane_scheduler_mode != "off" and status in {"planned", "executed"} and plan is not None:
                 decision = _launch_ready_lane_wave(
                     repo=repo,
@@ -1328,7 +1376,7 @@ def run_loop(
                 )
                 classifications[alias] = decision["phase_status"]
                 append_event(repo, decision["event"])
-                break
+                return (_DispatchOutcome("break", None), None)
             if work_unit_mode and status in {"planned", "executed"} and plan is not None:
                 execution_diagnostic = pipeline_execution_plan_diagnostic(repo, plan, phase=alias, roadmap=roadmap)
                 if execution_diagnostic is not None:
@@ -1368,7 +1416,7 @@ def run_loop(
                             **event_provenance(roadmap, alias),
                         ),
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
                 state = select_next_work_unit(repo, plan, alias)
                 if state is None:
                     classifications[alias] = "awaiting_phase_closeout"
@@ -1397,7 +1445,7 @@ def run_loop(
                             **event_provenance(roadmap, alias),
                         ),
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
                 work_unit_selected_executor = None
                 work_unit_policy = {"source": "work_unit_mode", "dry_run": dry_run}
                 if rotation_state is not None and rotation_state.mode == "work_unit":
@@ -1464,7 +1512,7 @@ def run_loop(
                     ),
                 )
                 classifications[alias] = "executing"
-                break
+                return (_DispatchOutcome("break", None), None)
             if status == "awaiting_phase_closeout":
                 if closeout_mode != "manual":
                     classifications[alias], closeout_event = _perform_phase_closeout(
@@ -1479,13 +1527,13 @@ def run_loop(
                     )
                     append_event(repo, closeout_event)
                     if phase:
-                        break
-                    continue
-                break
+                        return (_DispatchOutcome("break", None), None)
+                    return (_DispatchOutcome("continue", None), None)
+                return (_DispatchOutcome("break", None), None)
             launch_action = None
             if explicit_product_action == "repair" or status == "blocked":
                 if snapshot.human_required:
-                    break
+                    return (_DispatchOutcome("break", None), None)
                 recovered = _recover_verified_dirty_closeout(
                     repo,
                     roadmap,
@@ -1513,9 +1561,9 @@ def run_loop(
                         )
                         append_event(repo, closeout_event)
                         if phase:
-                            break
-                        continue
-                    break
+                            return (_DispatchOutcome("break", None), None)
+                        return (_DispatchOutcome("continue", None), None)
+                    return (_DispatchOutcome("break", None), None)
                 repair_precondition = repair_precondition_for_snapshot(repo, roadmap, alias, plan, snapshot)
                 if repair_precondition["status"] == "cleared":
                     status = "planned" if plan is not None else "unplanned"
@@ -1532,7 +1580,7 @@ def run_loop(
                         metadata={"repair_precondition": repair_precondition},
                     )
                 elif repair_precondition["status"] == "sticky":
-                    break
+                    return (_DispatchOutcome("break", None), None)
                 if repair_precondition["status"] != "cleared":
                     repair_context, repair_missing = _build_repair_context(repo, alias, plan, snapshot)
                     if repair_missing:
@@ -1577,7 +1625,7 @@ def run_loop(
                                 **event_provenance(roadmap, alias),
                             ),
                         )
-                        break
+                        return (_DispatchOutcome("break", None), None)
                     launch_action = "repair"
             if launch_action is None:
                 repair_context = None
@@ -1701,7 +1749,7 @@ def run_loop(
                             **event_provenance(roadmap, alias),
                         ),
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
                 planner_source_bundle_context = load_phase_source_bundle(
                     repo,
                     effective_source_bundle_path,
@@ -1759,7 +1807,7 @@ def run_loop(
                             **event_provenance(roadmap, alias),
                         ),
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
                 execution_diagnostic = pipeline_execution_plan_diagnostic(repo, plan, phase=alias, roadmap=roadmap) if plan is not None else None
                 if execution_diagnostic is not None:
                     classifications[alias] = "blocked"
@@ -1798,7 +1846,7 @@ def run_loop(
                             **event_provenance(roadmap, alias),
                         ),
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
                 if effective_source_bundle_path or effective_pipeline_mode:
                     execution_source_bundle_context = load_phase_source_bundle(
                         repo,
@@ -1883,7 +1931,7 @@ def run_loop(
                     ),
                 )
                 current = alias
-                break
+                return (_DispatchOutcome("break", None), None)
             if policy_parse_error is not None:
                 classifications[alias] = "blocked"
                 policy_blocker = {
@@ -1924,7 +1972,7 @@ def run_loop(
                         **event_provenance(roadmap, alias),
                     ),
                 )
-                break
+                return (_DispatchOutcome("break", None), None)
             plan_execution_policy = (
                 execution_policy_for_action(plan_execution_policy_doc, launch_action) if plan_execution_policy_doc is not None else None
             )
@@ -2035,7 +2083,7 @@ def run_loop(
                             **event_provenance(roadmap, alias),
                         ),
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
             if dispatch_decision.blocked:
                 classifications[alias] = "blocked"
                 dispatch_blocker = {
@@ -2095,7 +2143,7 @@ def run_loop(
                         **event_provenance(roadmap, alias),
                     ),
                 )
-                break
+                return (_DispatchOutcome("break", None), None)
             resolved_executor = dispatch_decision.selected_executor or "codex"
             selection = resolve_profile_for_executor(
                 action=launch_action,
@@ -2170,7 +2218,7 @@ def run_loop(
                         **event_provenance(roadmap, alias),
                     ),
                 )
-                break
+                return (_DispatchOutcome("break", None), None)
             if not dry_run and launch_action == "execute":
                 release_blocker = release_dispatch_blocker(repo, plan)
                 if release_blocker:
@@ -2222,7 +2270,7 @@ def run_loop(
                         source_bundle_path=effective_source_bundle_path,
                         pipeline_mode=effective_pipeline_mode,
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
             if not dry_run and launch_action == "execute" and plan is not None:
                 verification_preflight_blocker = _execute_verification_preflight_blocker(repo, roadmap, plan)
                 if verification_preflight_blocker is not None:
@@ -2287,7 +2335,7 @@ def run_loop(
                         source_bundle_path=effective_source_bundle_path,
                         pipeline_mode=effective_pipeline_mode,
                     )
-                    break
+                    return (_DispatchOutcome("break", None), None)
             prompt_bundle = build_prompt(
                 launch_action,
                 roadmap=roadmap,
@@ -2308,13 +2356,26 @@ def run_loop(
                 if resolved_executor == "command" and command_adapter_name and command_template
                 else None
             )
+            # Concurrent scheduling runs the child in a per-phase git worktree.
+            # The child command embeds the repo path AND uses it as cwd, so the
+            # launch request's repo/roadmap/plan must all point at the worktree
+            # (not just repo=); otherwise the child reads the wrong tree. Runner
+            # bookkeeping (events/state/reconcile) stays on the main repo.
+            if concurrent_exec_repo is not None:
+                _exec_repo = concurrent_exec_repo
+                _exec_roadmap = _relocate_under(concurrent_exec_repo, repo, roadmap)
+                _exec_plan = _relocate_under(concurrent_exec_repo, repo, plan) if plan is not None else None
+            else:
+                _exec_repo = repo
+                _exec_roadmap = roadmap
+                _exec_plan = plan
             request = build_launch_request(
                 executor=resolved_executor,
                 action=launch_action,
-                repo=repo,
-                roadmap=roadmap,
+                repo=_exec_repo,
+                roadmap=_exec_roadmap,
                 phase=alias,
-                plan=plan,
+                plan=_exec_plan,
                 model_selection=selection,
                 prompt_bundle=prompt_bundle,
                 command_adapter=command_adapter,
@@ -2376,7 +2437,7 @@ def run_loop(
                         **event_provenance(roadmap, alias),
                     ),
                 )
-                break
+                return (_DispatchOutcome("break", None), None)
             artifacts = run_artifacts(repo, alias, launch_action, len(results) + 1, spec) if observe else {}
             if artifacts:
                 merge_launch_metadata(artifacts.get("metadata"), {"execution_policy": execution_policy.to_json()})
@@ -2451,7 +2512,7 @@ def run_loop(
                         **event_provenance(roadmap, alias),
                     ),
                 )
-                break
+                return (_DispatchOutcome("break", None), None)
             pre_launch_dirty_paths = _dirty_paths(repo) if not dry_run else []
             failed_launch_closeout_override: dict[str, object] | None = None
             if coordinator_wave is not None:
@@ -2470,17 +2531,39 @@ def run_loop(
                         "summary_path": str(worker_summary_path(repo, roadmap, alias)),
                     },
                 )
-            result = launch_with_spec(
-                spec,
-                dry_run=dry_run,
-                log_path=artifacts.get("log"),
-                heartbeat_path=artifacts.get("heartbeat") if heartbeat_enabled else None,
-                stream_output=stream_output,
-                heartbeat_interval_seconds=heartbeat_interval_seconds,
-                quiet_warning_seconds=quiet_warning_seconds,
-                quiet_blocker_seconds=quiet_blocker_seconds,
-            )
-            results.append(result)
+            return (None, _DispatchPrep(
+                artifacts=artifacts,
+                dispatch_decision=dispatch_decision,
+                execution_policy=execution_policy,
+                execution_source_bundle_context=execution_source_bundle_context,
+                failed_launch_closeout_override=failed_launch_closeout_override,
+                launch_action=launch_action,
+                plan=plan,
+                pre_launch_dirty_paths=pre_launch_dirty_paths,
+                repair_loop_pivot=repair_loop_pivot,
+                request=request,
+                rotation_policy_pin=rotation_policy_pin,
+                rotation_preferred_executor=rotation_preferred_executor,
+                selection=selection,
+                spec=spec,
+            ))
+
+        def _finalize_phase_launch(prep: "_DispatchPrep", result) -> "_DispatchOutcome":
+            nonlocal current, phase_aliases, snapshot, wave_index
+            artifacts = prep.artifacts
+            dispatch_decision = prep.dispatch_decision
+            execution_policy = prep.execution_policy
+            execution_source_bundle_context = prep.execution_source_bundle_context
+            failed_launch_closeout_override = prep.failed_launch_closeout_override
+            launch_action = prep.launch_action
+            plan = prep.plan
+            pre_launch_dirty_paths = prep.pre_launch_dirty_paths
+            repair_loop_pivot = prep.repair_loop_pivot
+            request = prep.request
+            rotation_policy_pin = prep.rotation_policy_pin
+            rotation_preferred_executor = prep.rotation_preferred_executor
+            selection = prep.selection
+            spec = prep.spec
             if artifacts:
                 merge_launch_metadata(
                     artifacts.get("metadata"),
@@ -2573,7 +2656,7 @@ def run_loop(
                     pipeline_mode=effective_pipeline_mode,
                 )
                 current = alias
-                break
+                return _DispatchOutcome("break", None)
             if launch_contract_blocker:
                 classifications[alias] = "blocked"
                 failure_metadata = _launch_failure_metadata(result, artifacts, request=request, spec=spec)
@@ -2633,7 +2716,7 @@ def run_loop(
                     pipeline_mode=effective_pipeline_mode,
                 )
                 current = alias
-                break
+                return _DispatchOutcome("break", None)
             if dry_run:
                 terminal_summary = _persist_terminal_summary(
                     artifacts,
@@ -2705,8 +2788,8 @@ def run_loop(
                     ),
                 )
                 if phase:
-                    break
-                break
+                    return _DispatchOutcome("break", None)
+                return _DispatchOutcome("break", None)
             post_snapshot = reconcile(repo, roadmap)
             post_launch = post_snapshot.phases.get(alias)
             status_after_launch = (
@@ -3497,6 +3580,227 @@ def run_loop(
                             "failed_phases": failed_phases,
                         },
                     )
+            return _DispatchOutcome("fall", status_after_closeout)
+
+        def _dispatch_phase() -> "_DispatchOutcome":
+            outcome, prep = _prepare_phase_launch()
+            if outcome is not None:
+                return outcome
+            result = launch_with_spec(
+                prep.spec,
+                dry_run=dry_run,
+                log_path=prep.artifacts.get("log"),
+                heartbeat_path=prep.artifacts.get("heartbeat") if heartbeat_enabled else None,
+                stream_output=stream_output,
+                heartbeat_interval_seconds=heartbeat_interval_seconds,
+                quiet_warning_seconds=quiet_warning_seconds,
+                quiet_blocker_seconds=quiet_blocker_seconds,
+            )
+            results.append(result)
+            return _finalize_phase_launch(prep, result)
+
+        def _dispatch_concurrent_wave() -> str:
+            """Dispatch a full ready wave of cross-phase-independent phases in
+            isolated git worktrees, concurrently (IF-0-SCHED-1).
+
+            Returns one of: ``"empty"`` (no ready phases — stop the loop),
+            ``"serial"`` (0/1 ready or overlapping ownership — caller should fall
+            back to the single-phase serial path this iteration), or
+            ``"dispatched"`` (a wave was launched; caller should re-evaluate next
+            iteration). Phases launch through ``run_phase_worker_pool`` and merge
+            back conflict-free thanks to the ownership-disjointness gate; the
+            per-roadmap DispatchLock still guards separate runner processes.
+            """
+            nonlocal alias, concurrent_exec_repo, phase_cycles_completed
+            # Reality-reconcile (no-op until RECONCILE/#129 lands) before readiness.
+            reconciled = reconcile_against_git_reality(repo, roadmap, dict(classifications))
+            waves = tuple(iter_waves(roadmap))
+            wave = select_ready_phase_wave(waves, reconciled, "concurrent")
+            if not wave:
+                return "empty"
+            if len(wave) == 1:
+                return "serial"
+            diagnostics = validate_concurrent_phase_ownership(repo, roadmap, wave)
+            if diagnostics:
+                # Overlapping owned files: never silently race — serialize this
+                # iteration and record why (typed lane-IR diagnostic).
+                _append_coordinator_event(
+                    repo=repo,
+                    roadmap=roadmap,
+                    phase=wave[0],
+                    action="coordinator.concurrent_overlap_serialized",
+                    status=classifications.get(wave[0], "unknown"),
+                    selection=selection,
+                    metadata={
+                        "wave": list(wave),
+                        "diagnostics": [diagnostic.to_json() for diagnostic in diagnostics],
+                    },
+                )
+                return "serial"
+            base_sha = resolve_base_sha(repo)
+            target_branch = current_branch(repo)
+            _append_coordinator_event(
+                repo=repo,
+                roadmap=roadmap,
+                phase=wave[0],
+                action="coordinator.concurrent_wave_started",
+                status=classifications.get(wave[0], "unknown"),
+                selection=selection,
+                metadata={"wave": list(wave), "base_sha": base_sha, "target_branch": target_branch},
+            )
+            handles: dict[str, object] = {}
+            preps: dict[str, object] = {}
+            jobs: list[PhaseWorkerJob] = []
+            # Temp branches to PRESERVE on teardown (integration conflict) so a
+            # phase's committed work isn't force-deleted with no recovery ref.
+            preserve_branches: set[str] = set()
+            # "halt" propagates an operator stop or human-required gate detected
+            # during prepare/finalize up to the main loop (serial mode honors these
+            # via break; the wave must too, not silently run to completion).
+            halt = False
+            try:
+                for ready_phase in wave:
+                    alias = ready_phase
+                    handle = create_phase_worktree(
+                        repo, phase=ready_phase, target_branch=target_branch, base_sha=base_sha
+                    )
+                    handles[ready_phase] = handle
+                    concurrent_exec_repo = handle.worktree_path
+                    try:
+                        outcome, prep = _prepare_phase_launch()
+                    finally:
+                        concurrent_exec_repo = None
+                    if outcome is not None:
+                        # Terminal during prepare (event already emitted). A break
+                        # control (operator stop / human-required) halts the wave;
+                        # a continue just drops this phase from the pool. Either way
+                        # the worktree is reclaimed by the finally below.
+                        if outcome.control == "break":
+                            halt = True
+                            break
+                        continue
+                    preps[ready_phase] = prep
+                    jobs.append(
+                        PhaseWorkerJob(
+                            phase=ready_phase,
+                            spec=prep.spec,
+                            log_path=prep.artifacts.get("log"),
+                            heartbeat_path=prep.artifacts.get("heartbeat") if heartbeat_enabled else None,
+                            dry_run=dry_run,
+                            stream_output=stream_output,
+                            heartbeat_interval_seconds=heartbeat_interval_seconds,
+                            quiet_warning_seconds=quiet_warning_seconds,
+                            quiet_blocker_seconds=quiet_blocker_seconds,
+                        )
+                    )
+                if not halt and jobs:
+                    pool_results = run_phase_worker_pool(repo, roadmap, jobs)
+                    result_by_phase = {item.phase: item.result for item in pool_results}
+                    for ready_phase in wave:
+                        if ready_phase not in preps:
+                            continue
+                        result = result_by_phase.get(ready_phase)
+                        if result is None:
+                            continue
+                        results.append(result)
+                        # Integrate the child's committed work back onto the pipeline
+                        # branch BEFORE finalize — finalize's closeout/reconcile run
+                        # on the main repo, so the work must be present there first.
+                        integration = integrate_phase_worktree(
+                            repo, handles[ready_phase], message=f"phase-loop sched: integrate {ready_phase}"
+                        )
+                        if integration.conflict:
+                            # The ownership gate should make this impossible; if it
+                            # happens the gate was bypassed, so KEEP the temp branch
+                            # (work preserved for diagnosis) instead of force-deleting.
+                            preserve_branches.add(ready_phase)
+                            _append_coordinator_event(
+                                repo=repo,
+                                roadmap=roadmap,
+                                phase=ready_phase,
+                                action="coordinator.concurrent_integration_conflict",
+                                status=classifications.get(ready_phase, "unknown"),
+                                selection=selection,
+                                metadata={
+                                    "integration": integration.to_json(),
+                                    "preserved_branch": handles[ready_phase].temp_branch,
+                                },
+                            )
+                        alias = ready_phase
+                        wave_outcome = _finalize_phase_launch(preps[ready_phase], result)
+                        # --full-phase counts completed phase cycles. The wave path
+                        # `continue`s past the loop tail that does this in serial
+                        # mode, so account for each terminal phase here instead.
+                        if full_phase and wave_outcome.status_after_closeout in {
+                            "complete",
+                            "blocked",
+                            "awaiting_phase_closeout",
+                            "unknown",
+                        }:
+                            phase_cycles_completed += 1
+                        if wave_outcome.control == "break":
+                            halt = True
+            finally:
+                # Guarantee teardown of every created worktree even if prepare, the
+                # pool, integrate, or finalize raised mid-wave (otherwise worktrees
+                # and temp branches leak on disk). Idempotent + best-effort.
+                for ready_phase, handle in handles.items():
+                    teardown_phase_worktree(
+                        repo, handle, delete_branch=ready_phase not in preserve_branches
+                    )
+            return "halt" if halt else "dispatched"
+
+        while iterations_remaining > 0 and (not full_phase or phase_cycles_completed < max_phases):
+            iterations_remaining -= 1
+            snapshot = reconcile(repo, roadmap)
+            classifications = snapshot.phases
+            if (
+                phase_scheduler_mode == "concurrent"
+                and phase is None
+                and not coordinator_waves
+                and not dry_run
+            ):
+                wave_signal = _dispatch_concurrent_wave()
+                if wave_signal == "empty":
+                    current = None
+                    break
+                if wave_signal == "halt":
+                    # Operator stop or human-required gate hit during the wave —
+                    # honor it like serial mode rather than looping again.
+                    break
+                if wave_signal == "dispatched":
+                    continue
+                # "serial": fall through to single-phase dispatch below.
+            alias = (
+                _select_parallel_dispatch_phase(coordinator_waves, classifications)
+                if coordinator_waves
+                else _select_ready_phase(repo, roadmap, classifications, phase)
+            )
+            if alias is None:
+                current = None
+                break
+            coordinator_wave = _coordinator_wave_for_alias(coordinator_waves, alias)
+            if coordinator_wave is not None:
+                wave_index, phase_aliases = coordinator_wave
+                if wave_index not in coordinator_started_waves:
+                    coordinator_started_waves.add(wave_index)
+                    _append_coordinator_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=alias,
+                        action="coordinator.wave_started",
+                        status=classifications.get(alias, "unknown"),
+                        selection=selection,
+                        metadata={
+                            "wave_index": wave_index,
+                            "phase_aliases": list(phase_aliases),
+                        },
+                    )
+            control, status_after_closeout = _dispatch_phase()
+            if control == "break":
+                break
+            if control == "continue":
+                continue
             if full_phase:
                 if status_after_closeout in {"complete", "blocked", "awaiting_phase_closeout", "unknown"}:
                     phase_cycles_completed += 1
@@ -4601,6 +4905,17 @@ def _select_ready_phase(repo: Path, roadmap: Path, classifications: dict[str, st
     if awaiting_closeout:
         return awaiting_closeout
     return next((p for p in phases if classifications.get(p) != "complete"), None)
+
+
+def _relocate_under(worktree: Path, repo: Path, path: Path) -> Path:
+    """Map a main-repo path to its equivalent inside ``worktree`` for the child's
+    launch request. Falls back to the original path when ``path`` is not under
+    ``repo`` (e.g. a roadmap passed by an absolute path outside the repo root) so
+    concurrent dispatch degrades gracefully instead of raising ``ValueError``."""
+    try:
+        return worktree / path.resolve().relative_to(repo.resolve())
+    except ValueError:
+        return path
 
 
 def _select_parallel_dispatch_phase(waves: tuple[tuple[str, ...], ...], classifications: dict[str, str]) -> str | None:
