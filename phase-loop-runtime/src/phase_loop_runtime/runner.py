@@ -6559,6 +6559,20 @@ def _perform_phase_closeout(
                     unowned_remainder = unsafe_unowned
                     if unsafe_unowned:
                         metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
+                elif ownership_for_fallback.is_control_only and unsafe_unowned:
+                    # CLOSEOUT (#42 / IF-0-CLOSEOUT-1): a verified control/backfill
+                    # phase owns no files, so there is no owned subset to commit
+                    # (commit_set is empty) — yet it produced UNSAFE unowned dirt
+                    # (e.g. source/data evidence). Record the remainder so the refuse
+                    # branch surfaces the SAME typed, break-glassable
+                    # closeout_scope_violation the partial-classify path uses, instead of
+                    # the misleading missing_phase_owned_dirty_paths. By construction this
+                    # branch has no SAFE dirt and no break-glass commit (either would make
+                    # commit_set non-empty and divert to the `if` above); secrets are never
+                    # folded into break_glass_unowned, so a secret stays in unsafe_unowned
+                    # here and keeps blocking regardless of any reason.
+                    unowned_remainder = unsafe_unowned
+                    metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
     if not snapshot.phase_owned_dirty or not closeout_dirty_paths:
         status = "blocked"
         # OWNFIX #17: an invalid Lane IR is the real reason classification failed and
@@ -6576,6 +6590,60 @@ def _perform_phase_closeout(
                     "lane_ir_diagnostics": list(lane_ir_blocker["lane_ir_diagnostics"]),
                 }
             )
+        elif unowned_remainder:
+            # CLOSEOUT (#42 / IF-0-CLOSEOUT-1): a verified control/backfill phase
+            # owns no files and had no owned subset to commit, but produced UNSAFE
+            # unowned dirt. Surface the SAME typed, break-glassable blocker the
+            # partial-classify success path uses (runner ~6790) — not the misleading
+            # missing_phase_owned_dirty_paths. The misconfigured-plan case never
+            # reaches here: _closeout_lane_ir_blocker above already claimed it, and
+            # the fallback that set unowned_remainder requires ownership.is_control_only
+            # (hence ownership.valid).
+            if override_attempted_empty:
+                # BREAKGLASS backstop: override requested with no reason (CLI rejects
+                # this pre-run_loop; this catches programmatic callers). Unsafe paths
+                # are not force-committed without an audit trail.
+                blocker = {
+                    "human_required": True,
+                    "blocker_class": "operator_override_missing_reason",
+                    "blocker_summary": (
+                        f"Break-glass override requested for {len(unowned_remainder)} unowned "
+                        f"path(s) but no operator reason was supplied: {', '.join(unowned_remainder)}"
+                    ),
+                    "required_human_inputs": (
+                        "Rerun closeout with a non-empty --closeout-allow-unowned reason.",
+                    ),
+                    "access_attempts": (),
+                }
+                metadata["closeout"].update(
+                    {
+                        "closeout_action": "refused",
+                        "closeout_refusal_reason": "operator_override_missing_reason",
+                        "unowned_dirty_paths": list(unowned_remainder),
+                    }
+                )
+            else:
+                blocker = {
+                    "human_required": True,
+                    "blocker_class": "closeout_scope_violation",
+                    "blocker_summary": (
+                        f"Verified control/backfill phase owns no files; "
+                        f"{len(unowned_remainder)} verified dirty path(s) are outside the plan's "
+                        f"owned files and need an ownership declaration or break-glass: "
+                        f"{', '.join(unowned_remainder)}"
+                    ),
+                    "required_human_inputs": (
+                        "Declare the path(s) in the phase plan's owned files, or rerun closeout with break-glass.",
+                    ),
+                    "access_attempts": (),
+                }
+                metadata["closeout"].update(
+                    {
+                        "closeout_action": "refused",
+                        "closeout_refusal_reason": "unowned_dirty_remainder",
+                        "unowned_dirty_paths": list(unowned_remainder),
+                    }
+                )
         else:
             blocker = {
                 "human_required": False,

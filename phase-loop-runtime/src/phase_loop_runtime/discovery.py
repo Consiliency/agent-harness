@@ -104,6 +104,18 @@ class PlanOwnership:
     valid: bool
     errors: tuple[str, ...] = ()
 
+    @property
+    def is_control_only(self) -> bool:
+        """A legitimate control/backfill phase: a *valid* plan that owns no
+        files (all lanes read-only or declared ``(none)``). IF-0-FOUND-2.
+
+        Distinct from an *invalid* empty-owned plan (one whose lanes carry
+        ``missing_owned_files``/``malformed_owned_files`` diagnostics), for which
+        ``valid`` is False — those are genuinely misconfigured and must keep
+        refusing closeout.
+        """
+        return self.valid and self.owned_patterns == ()
+
     def matches(self, repo_path: str) -> bool:
         return (
             repo_path in self.control_paths
