@@ -6,6 +6,7 @@ from pathlib import Path
 from .discovery import (
     WORKFLOW_EXECUTE_SKILLS,
     WORKFLOW_PLAN_SKILLS,
+    _phase_complete_in_git_reality,
     find_plan_artifact,
     handoff_matches_roadmap,
     latest_workflow_handoff,
@@ -52,6 +53,14 @@ def classify_phase(repo: Path, roadmap: Path, phase: str) -> str:
 
     plan = find_plan_artifact(repo, phase, roadmap=roadmap)
     if not plan:
+        # IF-0-RECONCILE-1: before declaring a phase unplanned (which would
+        # re-plan it into a divergent filename), consult merged git reality — a
+        # phase completed under an earlier roadmap version that was merely
+        # renamed/advanced, and whose work still exists at HEAD, is complete.
+        # Shared predicate (gated by PHASE_LOOP_RECONCILE_GIT_REALITY, default
+        # off) so this and reconcile_against_git_reality stay in lockstep.
+        if _phase_complete_in_git_reality(repo, roadmap, phase):
+            return "complete"
         return "unplanned"
     automation_status = parse_automation_status(plan.read_text(encoding="utf-8")).get("automation_status")
     if automation_status in PHASE_STATUSES:

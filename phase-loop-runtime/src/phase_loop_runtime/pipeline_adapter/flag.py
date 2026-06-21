@@ -21,3 +21,10 @@ def dispatch_lock_enabled() -> bool:
 
 def parallel_dispatch_enabled() -> bool:
     return os.environ.get("PHASE_LOOP_PARALLEL_DISPATCH") != "false"
+
+
+def reconcile_git_reality_enabled() -> bool:
+    # SAFE CUTOVER: defaults OFF (opt-in), unlike the flags above. The active body
+    # wires into classify_phase — the universal classifier — so on our own runtime
+    # the feature lands inert and is flipped on deliberately after validation.
+    return os.environ.get("PHASE_LOOP_RECONCILE_GIT_REALITY") == "true"

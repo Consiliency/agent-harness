@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -36,7 +37,8 @@ from .models import (
     PRODUCT_LOOP_ACTIONS,
     require_literal,
 )
-from .provenance import roadmap_sha256
+from .pipeline_adapter.flag import reconcile_git_reality_enabled
+from .provenance import phase_sha256, roadmap_sha256
 from .runtime_paths import phase_loop_state_read_file
 
 
@@ -1739,11 +1741,175 @@ def reconcile_against_git_reality(
     roadmap: Path,
     classifications: dict[str, str],
 ) -> dict[str, str]:
-    """IF-0-FOUND-4. Reality-reconcile hook. Ships as an identity/no-op in
-    FOUND; v45 Phase 2C (RECONCILE, IF-0-RECONCILE-1) replaces the body to
-    promote a phase to ``complete`` when a merged plan artifact / closeout
-    commit carrying its plan SHA is present in git history."""
-    return dict(classifications)
+    """IF-0-RECONCILE-1. Promote a phase to ``complete`` when merged git history
+    proves it was completed against a roadmap section byte-identical to the
+    current one (the roadmap was renamed/advanced, not the phase edited) AND the
+    phase's own work still exists at HEAD.
+
+    Conservative by construction (criterion 4 dominates criterion 3): only
+    ``unplanned`` phases are candidates, the function never demotes, and any
+    uncertainty — no completion-trailer commit, an *edited* section, or owned
+    work that was reverted/modified since closeout — leaves the classification
+    untouched so a phase that really needs to run is never falsely marked done.
+
+    Gated behind ``PHASE_LOOP_RECONCILE_GIT_REALITY`` (default off → identity
+    no-op), the safe cutover point for landing on the live runtime."""
+    if not reconcile_git_reality_enabled():
+        return dict(classifications)
+    result = dict(classifications)
+    for alias, status in classifications.items():
+        if status != "unplanned":
+            continue
+        if _phase_complete_in_git_reality(repo, roadmap, alias):
+            result[alias] = "complete"
+    return result
+
+
+def _phase_complete_in_git_reality(repo: Path, roadmap: Path, alias: str) -> bool:
+    """Shared predicate for both ``reconcile_against_git_reality`` and
+    ``classify_phase`` (single source of truth — the two entry points cannot
+    drift into different safety postures).
+
+    True when HEAD-reachable history holds a completion commit for ``alias``
+    whose (1) ``Terminal-Status`` parsed trailer is ``complete`` and ``Plan``
+    trailer resolves to ``alias``, (2) roadmap section is byte-identical
+    (``phase_sha256``) to the current roadmap's (rename, not edit), and (3) every
+    owned file from that plan is unchanged between the completion commit and HEAD
+    (the work still exists — a later revert/modify makes the diff non-empty)."""
+    if not reconcile_git_reality_enabled():
+        return False
+    current_sha = phase_sha256(roadmap, alias)
+    if current_sha is None:
+        return False
+    alias_upper = alias.upper()
+    # Extract the Plan / Terminal-Status values with git's OWN trailer parser
+    # (`%(trailers:key=...,valueonly)`), not a body scan — so a commit whose prose
+    # merely mentions "Terminal-Status: complete" cannot forge a completion (B2).
+    # Records: <sha> US <plan-values> US <status-values> RS; multi-valued trailers
+    # are GS-separated (paths/statuses never contain these control bytes).
+    log = _git(
+        repo,
+        "log",
+        "--format=%H%x1f%(trailers:key=Plan,valueonly,separator=%x1d)"
+        "%x1f%(trailers:key=Terminal-Status,valueonly,separator=%x1d)%x1e",
+    )
+    if not log:
+        return False
+    for record in log.split("\x1e"):
+        parts = record.split("\x1f")
+        if len(parts) != 3:
+            continue
+        commit = parts[0].strip()
+        if not commit:
+            continue
+        statuses = {value.strip() for value in parts[2].split("\x1d") if value.strip()}
+        if "complete" not in statuses:
+            continue
+        plan_rel = next((value.strip() for value in parts[1].split("\x1d") if value.strip()), "")
+        if not plan_rel or not _plan_rel_matches_alias(plan_rel, alias_upper):
+            continue
+        historical_sha = _historical_phase_sha256(repo, commit, plan_rel, alias)
+        if historical_sha is None or historical_sha != current_sha:
+            continue
+        # B1: the work must still exist at HEAD, not merely have existed once.
+        if not _owned_work_persists_to_head(repo, commit, plan_rel, roadmap):
+            continue
+        return True
+    return False
+
+
+def _plan_rel_matches_alias(plan_rel: str, alias_upper: str) -> bool:
+    match = PLAN_RE.search(plan_rel)
+    return bool(match and match.group(2).upper() == alias_upper)
+
+
+def _historical_phase_sha256(repo: Path, commit: str, plan_rel: str, alias: str) -> str | None:
+    """Recompute the phase-section sha256 from the roadmap as it stood at the
+    completion commit, so a rename (new filename, identical section) matches while
+    an edit (changed section) does not."""
+    plan_text = _git_show_blob(repo, commit, plan_rel)
+    if not plan_text:
+        return None
+    roadmap_rel = parse_frontmatter(plan_text).get("roadmap")
+    if not roadmap_rel:
+        return None
+    roadmap_text = _git_show_blob(repo, commit, roadmap_rel)
+    if not roadmap_text:
+        return None
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8")
+    try:
+        tmp.write(roadmap_text)
+        tmp.close()
+        return phase_sha256(Path(tmp.name), alias)
+    finally:
+        os.unlink(tmp.name)
+
+
+def _owned_work_persists_to_head(repo: Path, commit: str, plan_rel: str, roadmap: Path) -> bool:
+    """True when every owned file declared in the plan at ``commit`` is unchanged
+    between ``commit`` and HEAD. A reverted or rewritten owned file yields a
+    non-empty diff → the work no longer matches the closeout → no promotion.
+
+    Scope: the *phase's own* artifacts persisting, not global repo consistency (a
+    reverted dependency owned by another phase is verification's concern). A
+    control-only plan (no owned files) has no artifacts to revert and passes."""
+    plan_text = _git_show_blob(repo, commit, plan_rel)
+    if not plan_text:
+        return False
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8")
+    try:
+        tmp.write(plan_text)
+        tmp.close()
+        ownership = parse_plan_ownership(repo, roadmap, Path(tmp.name))
+    finally:
+        os.unlink(tmp.name)
+    if not ownership.owned_patterns:
+        # A *valid* control-only plan owns no files → nothing to revert → persists.
+        # An *invalid*/unparseable plan (valid=False, empty owned) is genuinely
+        # misconfigured and must NOT promote — is_control_only is False for it.
+        return ownership.is_control_only
+    # Resolve owned patterns to the EXACT files present in the completion commit's
+    # tree using the codebase's OWN ownership matcher (globstar-aware), then diff
+    # those literal paths. We cannot hand the glob patterns to git pathspec: git's
+    # default pathspec mis-handles `**` (e.g. `dir/**/*.ext` matches neither the
+    # file in `ls-tree` nor a deletion in `diff`), which would silently miss a
+    # reverted file. Literal paths diff reliably — a reverted/deleted/modified
+    # owned file yields rc=1 → no promotion.
+    listed = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", commit],
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode != 0:
+        return False
+    exact = [
+        line.strip()
+        for line in listed.stdout.splitlines()
+        if line.strip() and ownership.matches_dirty_output(line.strip())
+    ]
+    if not exact:
+        # The plan declares owned files but none exist in the completion commit's
+        # tree — the completion did not actually produce them → do not promote.
+        return False
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--quiet", commit, "HEAD", "--", *exact],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.returncode == 0
+
+
+def _git_show_blob(repo: Path, ref: str, rel_path: str) -> str | None:
+    """``git show <ref>:<path>`` without ``_git``'s trailing-whitespace strip, so
+    the recomputed ``phase_sha256`` matches the committed bytes exactly."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), "show", f"{ref}:{rel_path}"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
 
 
 def classify_phase_team_eligibility(repo: Path, roadmap: Path, plan: Path | None) -> PhaseTeamEligibility:
