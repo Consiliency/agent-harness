@@ -15,7 +15,7 @@ from phase_loop_runtime.evidence_audit import (
     build_tier3_audit_event_metadata,
     run_tier3_runner_audit,
 )
-from phase_loop_runtime.evidence_audit_config import load_evidence_audit_config
+from phase_loop_runtime.evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
 from phase_loop_runtime.launcher import AuthPreflightResult, LaunchResult
 from phase_loop_runtime.runner import run_loop
 from phase_loop_test_utils import ROOT, make_repo, write_phase_plan
@@ -133,6 +133,15 @@ class EvidenceAuditConfigTest(unittest.TestCase):
 
         for alias in ("T2DETECTORS", "T3SCHEMA", "T3RUNNER", "T3VALIDATE"):
             self.assertTrue(config.tier3_excluded(alias))
+
+    def test_yaml_config_requires_pyyaml_dependency(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _write_config(repo, "tier3_enabled: false\n")
+
+            with patch("phase_loop_runtime.evidence_audit_config.yaml", None):
+                with self.assertRaisesRegex(EvidenceAuditConfigError, "PyYAML is required"):
+                    load_evidence_audit_config(repo)
 
     def test_malformed_config_blocks_runner_closeout_as_contract_bug(self):
         with tempfile.TemporaryDirectory() as td:

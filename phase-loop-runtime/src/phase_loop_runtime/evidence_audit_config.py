@@ -63,8 +63,13 @@ def load_evidence_audit_config(repo: Path, path: Path | None = None) -> Evidence
         raise EvidenceAuditConfigError(f"cannot read evidence audit config: {exc}") from exc
     if not text.strip():
         return EvidenceAuditConfig()
+    if yaml is None:
+        raise EvidenceAuditConfigError(
+            "PyYAML is required to read evidence-audit.yaml; run through scripts/phase-loop-python "
+            "or install phase-loop-runtime dependencies"
+        )
     try:
-        raw = yaml.safe_load(text) if yaml is not None else json.loads(text)
+        raw = yaml.safe_load(text)
     except Exception as exc:
         raise EvidenceAuditConfigError(f"malformed evidence audit config: {exc}") from exc
     if raw is None:

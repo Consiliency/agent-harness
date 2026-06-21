@@ -31,6 +31,7 @@ written from this repository.
 - `dftruthsoak_*`: DFTRUTHSOAK final soak fixtures covering standalone success, pipeline-required success, stale source bundle, mismatched protected-source hash, unauthorized protected-source write, canonical-refresh-recommended advisory, failed verification, human-required blocker, malformed closeout, and redaction violation.
 - `dfadopthints_*`: DFADOPTHINTS metadata-only fixtures covering standalone unmanaged spec hints, pipeline-required adoption roles, managed mirror specs, archive manifests, canonical-refresh-recommended advisory, and redaction violation.
 - `dfadoptbridge_*`: DFADOPTBRIDGE adoption bridge fixtures covering adoption complete, blocked adoption metadata, stale source bundle, stale mirror manifest, unmanaged spec input, archive manifest touched, standalone non-adoption, deprecated root aliases, and redaction violation.
+- `dfchcontract_*`: DFCHCONTRACT Claude route fixtures covering metadata-only route evidence and raw provider-payload rejection.
 
 The `dfbundlecloseout_*` fixtures are dotfiles-owned bridge examples that
 governed-pipeline may mirror or ingest. They are not governed-pipeline state
@@ -63,6 +64,13 @@ plan `sha256`, and evidence-ref `sha256` metadata. Standalone non-adoption
 coverage keeps `source_bundle.pipeline_mode=standalone` and omits Pipeline-only
 bundle identity.
 
+The `dfchcontract_*` fixtures freeze the Claude route result shape for
+governed-pipeline v25 mirroring. The valid fixture keeps
+`{route, session_id, event_id, status, text, artifacts, auth_posture,
+billing_posture, trust_state, permission_state, warnings, evidence_refs}` as
+metadata-only closeout evidence. The malformed fixture proves raw
+provider-payload metadata remains rejected.
+
 ## DFSKILLGOVSOAK Scenario Classification
 
 DFSKILLGOVSOAK treats this directory as metadata-only bridge evidence. The
@@ -72,9 +80,9 @@ from dotfiles fixtures.
 
 | Scenario class | Fixtures | Boundary |
 | --- | --- | --- |
-| governed-pipeline mirrored | `dfbundlecloseout_*`, `dfdriftsignal_*`, `dftruthsoak_*`, `dfadopthints_*`, and valid `dfadoptbridge_*` pipeline-required fixtures | Governed-pipeline may mirror these for closeout ingest and compatibility tests, but mirror writes, closeout ingest, canonical refresh, replan, and preflight block decisions are governed-pipeline-owned. |
+| governed-pipeline mirrored | `dfbundlecloseout_*`, `dfdriftsignal_*`, `dftruthsoak_*`, `dfadopthints_*`, valid `dfadoptbridge_*` pipeline-required fixtures, and `dfchcontract_claude_route_evidence.json` | Governed-pipeline may mirror these for closeout ingest and compatibility tests, but mirror writes, closeout ingest, canonical refresh, replan, and preflight block decisions are governed-pipeline-owned. |
 | dotfiles-only | `complete.json`, `blocked.json`, `stale_input.json`, `failed_verification.json`, `human_required.json`, `dfparsoak_*`, and `dfadoptbridge_standalone_non_adoption.json` | These prove local runner, lane, and standalone behavior; they are not downstream mirror requirements. |
-| malformed rejection | `malformed.json`, `dfbundlecloseout_malformed_*`, `dfdriftsignal_malformed_*`, `dftruthsoak_malformed_*`, `dfadopthints_malformed_*`, and `dfadoptbridge_malformed_*` | These intentionally reject deprecated root-level automation fields, unsafe metadata, or invalid source-bundle shape and must not be presented as governed-pipeline mirrored valid cases. |
+| malformed rejection | `malformed.json`, `dfbundlecloseout_malformed_*`, `dfdriftsignal_malformed_*`, `dftruthsoak_malformed_*`, `dfadopthints_malformed_*`, `dfadoptbridge_malformed_*`, and `dfchcontract_malformed_*` | These intentionally reject deprecated root-level automation fields, unsafe metadata, or invalid source-bundle shape and must not be presented as governed-pipeline mirrored valid cases. |
 | canonical refresh advisory | `dfdriftsignal_canonical_refresh_recommended.json`, `dftruthsoak_canonical_refresh_recommended.json`, `dfadopthints_canonical_refresh_recommended.json`, `dfadoptbridge_archive_manifest_touched.json`, and `dfadoptbridge_stale_mirror_manifest.json` | These are metadata-only advisory inputs. They can recommend canonical refresh or preflight blocking, but governed-pipeline owns the decision and any resulting writes. |
 | temporary legacy alias | `dfbundlecloseout_malformed_deprecated_root.json` and `dfadoptbridge_malformed_deprecated_flat_aliases.json` | Deprecated root-level aliases remain rejection coverage only. Native fixtures must keep nested `automation` fields. |
 | unknown-skill coverage | `dfbundlecloseout_standalone.json` | Unknown changed-path categories remain local metadata-only advisory evidence and do not grant governed-pipeline, Portal, Greenfield, or `.pipeline/**` authority. |

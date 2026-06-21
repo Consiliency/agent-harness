@@ -582,11 +582,16 @@ def verification_commands_from_plan(plan: Path) -> tuple[list[list[str]], list[d
         if not stripped.startswith("- "):
             continue
         raw = stripped[2:].strip()
-        command_text = _strip_markdown_command(raw)
+        parsed = _strip_markdown_command(raw)
+        if parsed is None:
+            continue
+        command_text, trailing_text = parsed
         if not command_text:
             continue
         if re.search(r"\bevidence\s*:\s*operational\b", raw, re.IGNORECASE):
             operational.append({"line": line_number, "command": command_text, "reason": "evidence: operational"})
+            continue
+        if trailing_text.strip():
             continue
         for chunk in _split_shell_and(command_text):
             try:
@@ -638,12 +643,12 @@ def _normalize_suite_command(value: object, *, source: str) -> tuple[list[str] |
     return argv, None
 
 
-def _strip_markdown_command(value: str) -> str:
+def _strip_markdown_command(value: str) -> tuple[str, str] | None:
     text = value.strip()
     if text.startswith("`") and "`" in text[1:]:
         end = text.find("`", 1)
-        return text[1:end].strip()
-    return text
+        return text[1:end].strip(), text[end + 1 :].strip()
+    return None
 
 
 def _split_shell_and(command: str) -> list[str]:

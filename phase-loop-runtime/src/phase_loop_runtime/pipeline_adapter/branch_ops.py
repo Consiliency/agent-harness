@@ -42,7 +42,13 @@ class PipelineDefaultBranchRefusalError(PipelineBranchInvariantError):
         super().__init__(message, blocker_class="branch_sync_conflict")
 
 
-def ensure_pipeline_branch(repo_root: Path, roadmap_version: str, default_branch: str) -> BranchDecision:
+def ensure_pipeline_branch(
+    repo_root: Path,
+    roadmap_version: str,
+    default_branch: str,
+    *,
+    base_ref: str | None = None,
+) -> BranchDecision:
     repo = Path(repo_root)
     pipeline_branch = f"consiliency/pipeline/{roadmap_version}"
     if not _branchgov_active(repo):
@@ -55,8 +61,8 @@ def ensure_pipeline_branch(repo_root: Path, roadmap_version: str, default_branch
             f"Refusing pipeline branch operation from dirty default branch {default_branch}."
         )
 
-    base_ref = f"origin/{default_branch}"
-    _git(repo, "fetch", "origin", default_branch)
+    base_ref = base_ref or f"origin/{default_branch}"
+    _fetch_base_ref(repo, base_ref, default_branch)
     if not _ref_exists(repo, base_ref):
         raise PipelineBranchInvariantError(
             f"Pipeline branch base ref {base_ref} is unavailable.",
@@ -108,6 +114,13 @@ def _warn_branch_divergence(current: str, target: str, roadmap_version: str) -> 
         f"'{current}' (e.g. a roadmap/plan not yet on '{target}') will not be "
         f"visible after the switch.\n"
     )
+
+
+def _fetch_base_ref(repo: Path, base_ref: str, default_branch: str) -> None:
+    if base_ref.startswith("origin/"):
+        _git(repo, "fetch", "origin", base_ref.removeprefix("origin/"))
+    elif base_ref == f"origin/{default_branch}":
+        _git(repo, "fetch", "origin", default_branch)
 
 
 def refuse_default_branch_commit(repo_root: Path, default_branch: str) -> None:

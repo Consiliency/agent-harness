@@ -16,6 +16,8 @@ from queue import Empty, Queue
 from typing import Any
 
 from .capability_registry import capability_registry
+from .claude_agent_view import ClaudeAgentViewAdapter, AgentViewLifecycleResult, workspace_trust_state
+from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult
 from .discovery import classify_phase_team_eligibility
 from .injection import materialize_claude_plugin_bundle
 from .models import (
@@ -54,6 +56,18 @@ OPENCODE_CONTEXT_PLACEHOLDER = "__PHASE_LOOP_CONTEXT_FILE__"
 PI_CONTEXT_PLACEHOLDER = "__PHASE_LOOP_CONTEXT_FILE__"
 COMMAND_CONTEXT_PLACEHOLDER = "__PHASE_LOOP_CONTEXT_FILE__"
 COMMAND_TEMPLATE_ALLOWED_FIELDS = frozenset({"action", "repo", "roadmap", "phase", "plan", "context_file", "model", "effort", "cwd"})
+CLAUDE_ROUTE_ALIASES = {
+    "channel": "claude_channel",
+    "claude_channel": "claude_channel",
+    "agent_view": "claude_agent_view",
+    "claude_agent_view": "claude_agent_view",
+    "print": "claude_print",
+    "claude_print": "claude_print",
+}
+CLAUDE_CHANNEL_SIDECAR_URL_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_URL"
+CLAUDE_CHANNEL_SESSION_ID_ENV = "PHASE_LOOP_CHANNEL_SESSION_ID"
+CLAUDE_CHANNEL_SESSION_ID_ALT_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID"
+CLAUDE_CHANNEL_BEARER_TOKEN_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_BEARER_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -90,6 +104,10 @@ class LaunchSpec:
     claude_execution_mode: str | None = None
     claude_team_policy: ClaudeTeamPolicy | None = None
     phase_team_eligibility: PhaseTeamEligibility | None = None
+    claude_route: str | None = None
+    claude_route_reason: str | None = None
+    claude_sidecar_url: str | None = None
+    claude_channel_session_id: str | None = None
     cleanup_paths: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
@@ -126,6 +144,10 @@ class LaunchSpec:
             "claude_execution_mode": self.claude_execution_mode,
             "claude_team_policy": self.claude_team_policy.to_json() if self.claude_team_policy else None,
             "phase_team_eligibility": self.phase_team_eligibility.to_json() if self.phase_team_eligibility else None,
+            "claude_route": self.claude_route,
+            "claude_route_reason": self.claude_route_reason,
+            "claude_sidecar_url": self.claude_sidecar_url,
+            "claude_channel_session_id": self.claude_channel_session_id,
             "cleanup_paths": list(self.cleanup_paths),
         }
 
@@ -173,6 +195,8 @@ class LaunchResult:
     timed_out: bool = False
     interrupted: bool = False
     stalled: bool = False
+    claude_route: str | None = None
+    claude_route_result: dict[str, Any] | None = None
     cleanup_evidence: dict[str, Any] | None = None
 
     @property
@@ -225,6 +249,10 @@ class LaunchResult:
             data["interrupted"] = self.interrupted
         if self.stalled:
             data["stalled"] = self.stalled
+        if self.claude_route is not None:
+            data["claude_route"] = self.claude_route
+        if self.claude_route_result is not None:
+            data["claude_route_result"] = self.claude_route_result
         if self.cleanup_evidence:
             data["cleanup_evidence"] = self.cleanup_evidence
         return {key: value for key, value in data.items() if value not in (None, [])}
@@ -315,6 +343,36 @@ def build_claude_command(
         command.append("--dangerously-skip-permissions")
     command.append(prompt)
     return command
+
+
+@dataclass(frozen=True)
+class ClaudeRouteSelection:
+    route: str
+    reason: str
+    sidecar_url: str | None = None
+    session_id: str | None = None
+    error: str | None = None
+
+
+def resolve_claude_route(value: str | None = None, *, env: dict[str, str] | None = None) -> ClaudeRouteSelection:
+    environment = env if env is not None else os.environ
+    raw_value = value if value is not None else environment.get("PHASE_LOOP_CLAUDE_ROUTE")
+    if raw_value is None or not str(raw_value).strip():
+        return ClaudeRouteSelection(route="claude_print", reason="default_print_compatibility")
+    normalized = re.sub(r"[-\s]+", "_", str(raw_value).strip().lower())
+    route = CLAUDE_ROUTE_ALIASES.get(normalized)
+    if route is None:
+        return ClaudeRouteSelection(route="claude_print", reason="invalid_route", error=f"unsupported Claude route `{raw_value}`")
+    if route == "claude_channel":
+        return ClaudeRouteSelection(
+            route=route,
+            reason="explicit_channel",
+            sidecar_url=environment.get(CLAUDE_CHANNEL_SIDECAR_URL_ENV, "http://127.0.0.1:8765"),
+            session_id=environment.get(CLAUDE_CHANNEL_SESSION_ID_ENV) or environment.get(CLAUDE_CHANNEL_SESSION_ID_ALT_ENV),
+        )
+    if route == "claude_agent_view":
+        return ClaudeRouteSelection(route=route, reason="explicit_agent_view")
+    return ClaudeRouteSelection(route=route, reason="explicit_print_compatibility")
 
 
 def _write_temp_schema(schema: dict[str, Any]) -> Path:
@@ -589,6 +647,7 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
         )
     if request.executor == "claude":
         delivery_mode = "context_file" if _claude_uses_context_file(prompt_bundle) else injection_metadata.injection_mode
+        route_selection = resolve_claude_route()
         claude_policy = request.claude_team_policy or _claude_policy_for_mode(
             capability,
             request.claude_execution_mode or capability.default_claude_execution_mode or "solo",
@@ -600,6 +659,9 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             policy=claude_policy,
             eligibility=eligibility,
         )
+        route_error = route_selection.error
+        if route_selection.route == "claude_channel" and not route_selection.session_id:
+            route_error = "Claude Channel route requires PHASE_LOOP_CHANNEL_SESSION_ID or PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID."
         if policy_error is not None:
             return LaunchSpec(
                 executor="claude",
@@ -630,6 +692,123 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
                 claude_execution_mode=request.claude_execution_mode or "solo",
                 claude_team_policy=claude_policy,
                 phase_team_eligibility=eligibility,
+                claude_route=route_selection.route,
+                claude_route_reason=route_selection.reason,
+                claude_sidecar_url=route_selection.sidecar_url,
+                claude_channel_session_id=route_selection.session_id,
+            )
+        if route_error is not None:
+            return LaunchSpec(
+                executor="claude",
+                command=_stub_command(request, route_error),
+                prompt_bundle=prompt_bundle,
+                injection_metadata=injection_metadata,
+                delivery_mode=delivery_mode,
+                dispatch_decision=request.dispatch_decision,
+                available=False,
+                harness_lane_assignment=request.harness_lane_assignment,
+                dry_run_only=False,
+                reason=route_error,
+                live_proof_gate=capability.live_proof_gate,
+                promotion_status=capability.promotion_status,
+                promotion_requirements=capability.promotion_requirements,
+                auth_preflight_mode=capability.auth_preflight_mode,
+                auth_preflight_probes=capability.auth_preflight_probes,
+                timeout_posture=capability.timeout_posture,
+                output_capture_format=capability.output_capture_format,
+                terminal_summary_artifact=capability.terminal_summary_artifact,
+                permission_posture=capability.permission_posture,
+                selected_model=request.model_selection.model,
+                selected_effort=request.model_selection.effort,
+                profile_source=request.model_selection.source,
+                override_reason=request.model_selection.override_reason,
+                wrapped_cwd=str(request.repo),
+                launch_timeout_seconds=request.launch_timeout_seconds,
+                claude_execution_mode=request.claude_execution_mode or "solo",
+                claude_team_policy=claude_policy,
+                phase_team_eligibility=eligibility,
+                claude_route=route_selection.route,
+                claude_route_reason=route_selection.reason,
+                claude_sidecar_url=route_selection.sidecar_url,
+                claude_channel_session_id=route_selection.session_id,
+            )
+        if route_selection.route == "claude_channel":
+            return LaunchSpec(
+                executor="claude",
+                command=[
+                    "claude-channel",
+                    "send",
+                    "--sidecar-url",
+                    route_selection.sidecar_url or "http://127.0.0.1:8765",
+                    "--session-id",
+                    route_selection.session_id or "",
+                ],
+                prompt_bundle=prompt_bundle,
+                injection_metadata=injection_metadata,
+                delivery_mode="channel",
+                dispatch_decision=request.dispatch_decision,
+                available=True,
+                harness_lane_assignment=request.harness_lane_assignment,
+                live_proof_gate=capability.live_proof_gate,
+                promotion_status=capability.promotion_status,
+                promotion_requirements=capability.promotion_requirements,
+                auth_preflight_mode=capability.auth_preflight_mode,
+                auth_preflight_probes=capability.auth_preflight_probes,
+                timeout_posture=capability.timeout_posture,
+                output_capture_format=capability.output_capture_format,
+                terminal_summary_artifact=capability.terminal_summary_artifact,
+                permission_posture=capability.permission_posture,
+                selected_model=request.model_selection.model,
+                selected_effort=request.model_selection.effort,
+                profile_source=request.model_selection.source,
+                override_reason=request.model_selection.override_reason,
+                wrapped_cwd=str(request.repo),
+                launch_timeout_seconds=request.launch_timeout_seconds,
+                claude_execution_mode=request.claude_execution_mode or "solo",
+                claude_team_policy=claude_policy,
+                phase_team_eligibility=eligibility,
+                claude_route=route_selection.route,
+                claude_route_reason=route_selection.reason,
+                claude_sidecar_url=route_selection.sidecar_url,
+                claude_channel_session_id=route_selection.session_id,
+            )
+        if route_selection.route == "claude_agent_view":
+            permission_mode = _claude_permission_mode(request.action, request.bypass_approvals)
+            return LaunchSpec(
+                executor="claude",
+                command=ClaudeAgentViewAdapter().launch_command(
+                    CLAUDE_CONTEXT_PLACEHOLDER if delivery_mode == "context_file" else prompt_bundle.render_context(),
+                    cwd=request.repo,
+                    model=request.model_selection.model,
+                    effort=request.model_selection.effort,
+                    permission=permission_mode,
+                ),
+                prompt_bundle=prompt_bundle,
+                injection_metadata=injection_metadata,
+                delivery_mode="agent_view",
+                dispatch_decision=request.dispatch_decision,
+                available=True,
+                harness_lane_assignment=request.harness_lane_assignment,
+                live_proof_gate=capability.live_proof_gate,
+                promotion_status=capability.promotion_status,
+                promotion_requirements=capability.promotion_requirements,
+                auth_preflight_mode=capability.auth_preflight_mode,
+                auth_preflight_probes=capability.auth_preflight_probes,
+                timeout_posture=capability.timeout_posture,
+                output_capture_format=capability.output_capture_format,
+                terminal_summary_artifact=capability.terminal_summary_artifact,
+                permission_posture=capability.permission_posture,
+                selected_model=request.model_selection.model,
+                selected_effort=request.model_selection.effort,
+                profile_source=request.model_selection.source,
+                override_reason=request.model_selection.override_reason,
+                wrapped_cwd=str(request.repo),
+                launch_timeout_seconds=request.launch_timeout_seconds,
+                claude_execution_mode=request.claude_execution_mode or "solo",
+                claude_team_policy=claude_policy,
+                phase_team_eligibility=eligibility,
+                claude_route=route_selection.route,
+                claude_route_reason=route_selection.reason,
             )
         return LaunchSpec(
             executor="claude",
@@ -667,6 +846,10 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             claude_execution_mode=request.claude_execution_mode or "solo",
             claude_team_policy=claude_policy,
             phase_team_eligibility=eligibility,
+            claude_route=route_selection.route,
+            claude_route_reason=route_selection.reason,
+            claude_sidecar_url=route_selection.sidecar_url,
+            claude_channel_session_id=route_selection.session_id,
         )
     if request.executor == "gemini":
         return LaunchSpec(
@@ -1117,6 +1300,10 @@ def launch_with_spec(
 ) -> LaunchResult:
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
+    if spec.executor == "claude" and spec.claude_route == "claude_channel" and not dry_run:
+        return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
+    if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
+        return _result_with_spec(_launch_claude_agent_view(spec, log_path=log_path), spec)
     command = _resolve_command_context(spec, log_path)
     try:
         result = launch(
@@ -1143,6 +1330,124 @@ def launch_with_spec(
             },
         )
     return _result_with_spec(result, spec)
+
+
+def _launch_claude_channel(spec: LaunchSpec, *, log_path: Path | None) -> LaunchResult:
+    started_at = _utc_now()
+    session_id = spec.claude_channel_session_id or "unknown"
+    try:
+        route_result = ChannelSidecarClient(
+            base_url=spec.claude_sidecar_url or "http://127.0.0.1:8765",
+            session_id=session_id,
+            bearer_token=os.environ.get(CLAUDE_CHANNEL_BEARER_TOKEN_ENV),
+            timeout_seconds=float(spec.launch_timeout_seconds or 1800),
+        ).send_and_wait(spec.prompt_bundle.render_context())
+    except (ChannelSidecarClientError, ValueError) as exc:
+        reason = exc.reason if isinstance(exc, ChannelSidecarClientError) else str(exc)
+        route_result = ClaudeRouteResult(
+            route="claude_channel",
+            session_id=session_id,
+            event_id="preflight",
+            status="blocked",
+            text=reason,
+            warnings=(reason,),
+            evidence_refs=({"kind": "claude_channel_preflight", "status": "blocked"},),
+        )
+    payload = route_result.to_json()
+    output = route_result.text
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(output + ("\n" if output else ""), encoding="utf-8")
+    return LaunchResult(
+        command=spec.command,
+        returncode=0 if route_result.status == "done" else 1,
+        output=output,
+        log_path=str(log_path) if log_path else None,
+        terminal_path=str(log_path.parent / "terminal-summary.json") if log_path else None,
+        started_at=started_at,
+        finished_at=_utc_now(),
+        claude_route="claude_channel",
+        claude_route_result=payload,
+    )
+
+
+def _launch_claude_agent_view(spec: LaunchSpec, *, log_path: Path | None) -> LaunchResult:
+    started_at = _utc_now()
+    cwd = Path(spec.wrapped_cwd or os.getcwd())
+    adapter = ClaudeAgentViewAdapter()
+    lifecycle = adapter.launch_background(
+        spec.prompt_bundle.render_context(),
+        cwd=cwd,
+        model=spec.selected_model,
+        effort=spec.selected_effort,
+        permission=_command_option(spec.command, "--permission-mode"),
+    )
+    route_status = _agent_view_route_status(lifecycle.state)
+    route_text = _agent_view_route_text(lifecycle)
+    route_result = ClaudeRouteResult(
+        route="claude_agent_view",
+        session_id=lifecycle.session_id,
+        event_id=f"agent-view:{lifecycle.session_id}",
+        status=route_status,
+        text=route_text,
+        artifacts=({"kind": "claude_agent_view_lifecycle", **lifecycle.to_json()},),
+        auth_posture=lifecycle.auth_posture,
+        billing_posture=lifecycle.billing_posture,
+        trust_state=workspace_trust_state(cwd),
+        permission_state={"pending": 0},
+        warnings=tuple([lifecycle.blocker.summary] if lifecycle.blocker else []),
+        evidence_refs=tuple(_agent_view_evidence_refs(lifecycle)),
+    )
+    output = route_result.text
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(output + ("\n" if output else ""), encoding="utf-8")
+    return LaunchResult(
+        command=spec.command,
+        returncode=0 if route_status in {"working", "done"} else 1,
+        output=output,
+        log_path=str(log_path) if log_path else None,
+        terminal_path=str(log_path.parent / "terminal-summary.json") if log_path else None,
+        started_at=started_at,
+        finished_at=_utc_now(),
+        claude_route="claude_agent_view",
+        claude_route_result=route_result.to_json(),
+    )
+
+
+def _agent_view_route_status(lifecycle_state: str) -> str:
+    if lifecycle_state == "done":
+        return "done"
+    if lifecycle_state == "running":
+        return "working"
+    if lifecycle_state in {"blocked", "stopped"}:
+        return "blocked"
+    return "stale"
+
+
+def _agent_view_route_text(lifecycle: AgentViewLifecycleResult) -> str:
+    if lifecycle.blocker:
+        return lifecycle.blocker.summary
+    return f"agent view session {lifecycle.session_id} is {lifecycle.state}"
+
+
+def _agent_view_evidence_refs(lifecycle: AgentViewLifecycleResult) -> list[dict[str, Any]]:
+    refs = [{"kind": "claude_agent_view_lifecycle", "session_id": lifecycle.session_id}]
+    if lifecycle.logs_ref:
+        refs.append({"kind": "claude_agent_view_logs", "ref": lifecycle.logs_ref})
+        refs.append({"kind": "claude_agent_view_attach", "ref": f"claude attach {lifecycle.session_id}"})
+        refs.append({"kind": "claude_agent_view_stop", "ref": f"claude stop {lifecycle.session_id}"})
+    return refs
+
+
+def _command_option(command: list[str], option: str) -> str | None:
+    try:
+        index = command.index(option)
+    except ValueError:
+        return None
+    if index + 1 >= len(command):
+        return None
+    return command[index + 1]
 
 
 def _cleanup_paths(paths: tuple[str, ...]) -> dict[str, Any] | None:
@@ -2052,6 +2357,8 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         timed_out=result.timed_out,
         interrupted=result.interrupted,
         stalled=result.stalled,
+        claude_route=spec.claude_route,
+        claude_route_result=result.claude_route_result,
         cleanup_evidence=result.cleanup_evidence,
     )
 

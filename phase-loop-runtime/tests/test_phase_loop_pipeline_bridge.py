@@ -59,6 +59,7 @@ GOVERNED_PIPELINE_MIRRORED_FIXTURES = {
     "dfadoptbridge_stale_mirror_manifest.json",
     "dfadoptbridge_unmanaged_spec_input.json",
     "dfadoptbridge_archive_manifest_touched.json",
+    "dfchcontract_claude_route_evidence.json",
 }
 
 DOTFILES_ONLY_FIXTURES = {
@@ -139,6 +140,7 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
         "dfadoptbridge_unmanaged_spec_input.json",
         "dfadoptbridge_archive_manifest_touched.json",
         "dfadoptbridge_standalone_non_adoption.json",
+        "dfchcontract_claude_route_evidence.json",
         "substratesoak_standalone.json",
         "substratesoak_pipeline_optional.json",
         "substratesoak_pipeline_required.json",
@@ -161,6 +163,7 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
         "dfadopthints_malformed_redaction.json",
         "dfadoptbridge_malformed_deprecated_flat_aliases.json",
         "dfadoptbridge_malformed_redaction.json",
+        "dfchcontract_malformed_claude_route_raw_payload.json",
         "substratesoak_malformed_redaction.json",
     ]
 
@@ -242,6 +245,8 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
             "DFADOPTBRIDGE standalone non-adoption": {"dfadoptbridge_standalone_non_adoption.json"},
             "DFADOPTBRIDGE deprecated flat aliases": {"dfadoptbridge_malformed_deprecated_flat_aliases.json"},
             "DFADOPTBRIDGE redaction violation": {"dfadoptbridge_malformed_redaction.json"},
+            "DFCHCONTRACT Claude route evidence": {"dfchcontract_claude_route_evidence.json"},
+            "DFCHCONTRACT Claude route redaction violation": {"dfchcontract_malformed_claude_route_raw_payload.json"},
             "SUBSTRATESOAK standalone": {"substratesoak_standalone.json"},
             "SUBSTRATESOAK pipeline optional": {"substratesoak_pipeline_optional.json"},
             "SUBSTRATESOAK pipeline required": {"substratesoak_pipeline_required.json"},
@@ -309,6 +314,69 @@ class TestPhaseLoopPipelineBridge(unittest.TestCase):
         }
         self.assertIn("unknown", categories)
         self.assertEqual(unknown["source_bundle"], {"pipeline_mode": "standalone"})
+
+    def test_dfchcontract_fixture_freezes_claude_route_and_closeout_field_names(self):
+        data = self._load("dfchcontract_claude_route_evidence.json")
+        diagnostic = phase_loop_closeout_diagnostic(data)
+        self.assertIsNone(diagnostic, f"DFCHCONTRACT fixture failed diagnostic: {diagnostic}")
+        self.assertEqual(data["phase"], "DFCHCONTRACT")
+        self.assertEqual(data["verification"]["status"], "passed")
+        self.assertNotIn("verification_status", data)
+        self.assertEqual(data["source_bundle"]["pipeline_mode"], "pipeline_required")
+        self.assertNotIn("mode", data["source_bundle"])
+
+        route_result = data["artifacts"]["claude_route_result"]
+        self.assertEqual(
+            set(route_result),
+            {
+                "route",
+                "session_id",
+                "event_id",
+                "status",
+                "text",
+                "artifacts",
+                "auth_posture",
+                "billing_posture",
+                "trust_state",
+                "permission_state",
+                "warnings",
+                "evidence_refs",
+            },
+        )
+        self.assertEqual(route_result["route"], "claude_channel")
+        self.assertEqual(route_result["auth_posture"], "subscription_local")
+        self.assertEqual(route_result["billing_posture"], "subscription_included")
+        self.assertEqual(route_result["permission_state"]["pending"], 0)
+        for evidence in route_result["evidence_refs"] + data["artifacts"]["evidence_refs"]:
+            self._assert_repo_relative(evidence["path"], "Claude route fixture evidence must be repo-relative")
+
+        malformed = self._load("dfchcontract_malformed_claude_route_raw_payload.json")
+        malformed_diagnostic = phase_loop_closeout_diagnostic(malformed)
+        self.assertIsNotNone(malformed_diagnostic)
+        assert malformed_diagnostic is not None
+        self.assertEqual(malformed_diagnostic["kind"], "malformed_closeout")
+
+    def test_dfsmoke_claude_route_matrix_covers_governed_route_parity(self):
+        data = self._load("dfchcontract_claude_route_evidence.json")
+        route_matrix = data["artifacts"]["claude_route_matrix"]
+        by_route = {entry["route"]: entry for entry in route_matrix}
+
+        self.assertEqual(set(by_route), {"claude_channel", "claude_agent_view", "claude_print"})
+        self.assertEqual(by_route["claude_channel"]["status"], "done")
+        self.assertEqual(by_route["claude_agent_view"]["status"], "working")
+        self.assertEqual(by_route["claude_print"]["status"], "blocked")
+        self.assertEqual(by_route["claude_channel"]["auth_posture"], "subscription_local")
+        self.assertEqual(by_route["claude_agent_view"]["billing_posture"], "subscription_included")
+        self.assertEqual(by_route["claude_print"]["billing_posture"], "usage_credit")
+        self.assertEqual(by_route["claude_print"]["warning"], "explicit_billing_sensitive_compatibility_only")
+
+        for entry in route_matrix:
+            self.assertIn(entry["status"], {"received", "working", "needs_permission", "needs_input", "blocked", "done", "error", "stale"})
+            self.assertIn(entry["auth_posture"], {"subscription_local", "api_key", "unknown"})
+            self.assertIn(entry["billing_posture"], {"subscription_included", "api_key_billed", "usage_credit", "unknown"})
+            serialized = json.dumps(entry).lower()
+            for token in FORBIDDEN_METADATA_TOKENS:
+                self.assertNotIn(token, serialized, f"{entry['route']} contains {token}")
 
     def test_dfparsoak_fixtures_include_lane_metadata_and_redacted_evidence_refs(self):
         for fixture in [name for name in self.FIXTURES if name.startswith("dfparsoak_")]:

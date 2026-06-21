@@ -4,7 +4,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from .discovery import roadmap_fingerprint, roadmap_repo_relative_path
+from .discovery import manifest_plan_artifact, roadmap_fingerprint, roadmap_repo_relative_path
 from .injection import build_lane_prompt_bundle, build_prompt_bundle
 from .models import DelegationRequest, HarnessLaneAssignment, ParentChildRunMetadata, PhaseSourceBundle, PromptBundle
 
@@ -267,6 +267,14 @@ def _roadmap_repo_root(roadmap: Path) -> Path:
 
 
 def _expected_plan_artifact_path(roadmap: Path, phase: str | None) -> str:
+    if phase:
+        repo = _roadmap_repo_root(roadmap)
+        manifest_plan, conflict = manifest_plan_artifact(repo, phase, roadmap=roadmap)
+        if manifest_plan is not None and conflict is None:
+            try:
+                return manifest_plan.relative_to(repo).as_posix()
+            except ValueError:
+                pass
     version_match = re.search(r"(v[\w.-]+)", roadmap.stem)
     version = version_match.group(1) if version_match else "v1"
     alias = phase or "selected-phase"

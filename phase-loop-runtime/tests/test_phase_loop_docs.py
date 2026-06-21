@@ -638,6 +638,27 @@ class PhaseLoopDocsTest(unittest.TestCase):
             self.assertIn("docs/phase-loop/dfskillgovsoak.md", text)
             self.assertIn("optional live", text)
 
+    def test_dfsmoke_docs_define_claude_route_policy(self):
+        runbook = (ROOT / "docs" / "phase-loop" / "claude-channel-operator-runbook.md").read_text(encoding="utf-8")
+        matrix = (ROOT / "docs" / "phase-loop" / "harness-capability-matrix.md").read_text(encoding="utf-8")
+        live_wrapper = (ROOT / "scripts" / "smoke-phase-loop-live-adapters").read_text(encoding="utf-8")
+
+        for text in (runbook, matrix, live_wrapper):
+            self.assertIn("PHASE_LOOP_CLAUDE_ROUTE=channel", text)
+            self.assertIn("PHASE_LOOP_CLAUDE_ROUTE=agent_view", text)
+            self.assertIn("PHASE_LOOP_CLAUDE_ROUTE=print", text)
+
+        for text in (runbook, matrix):
+            self.assertIn("PHASE_LOOP_CLAUDE_CHANNEL_URL", text)
+            self.assertIn("PHASE_LOOP_CHANNEL_SESSION_ID", text)
+            self.assertIn("PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID", text)
+            self.assertIn("subscription-authenticated local Claude Code sessions", text)
+            self.assertIn("billing-sensitive", text)
+            self.assertIn("never", text)
+            self.assertIn("silent fallback", text)
+            self.assertIn("Emergency PTY/tmux", text)
+            self.assertIn("manual fallback", text)
+
 
 if __name__ == "__main__":
     unittest.main()

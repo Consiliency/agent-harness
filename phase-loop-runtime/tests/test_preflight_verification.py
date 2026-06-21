@@ -131,6 +131,32 @@ class PreflightVerificationTest(unittest.TestCase):
             self.assertEqual(payload["operational_exemptions"][0]["reason"], "evidence: operational")
             self.assertNotIn("definitely-not-executed", (run_dir / "verification.log").read_text(encoding="utf-8"))
 
+    def test_reducer_note_bullets_are_not_verification_commands(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(
+                repo,
+                "RUNNER",
+                roadmap,
+                body=(
+                    "# RUNNER\n\n"
+                    "## Verification\n\n"
+                    "Reducer notes:\n\n"
+                    "- `packages/pipeline-runtime/src/harness/claude-channel.mjs` now provides a helper.\n"
+                    "- Channel preflight failure does not call print mode.\n\n"
+                    "Lane-specific commands:\n\n"
+                    f"- `{sys.executable} -c \"print('verify')\"`\n"
+                    "- `definitely-not-executed-operational-command` evidence: operational\n"
+                ),
+            )
+
+            commands, operational = verification_commands_from_plan(plan)
+
+            self.assertEqual(commands, [[sys.executable, "-c", "print('verify')"]])
+            self.assertEqual(len(operational), 1)
+            self.assertEqual(operational[0]["command"], "definitely-not-executed-operational-command")
+
     def test_execute_launch_writes_runner_verification_metadata_before_reduction(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

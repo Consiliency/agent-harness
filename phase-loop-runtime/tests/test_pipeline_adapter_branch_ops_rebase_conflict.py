@@ -36,6 +36,7 @@ def _make_branch_repo(tmp_path: Path) -> Path:
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "commit.gpgsign", "false")
     (repo / ".pipeline").mkdir()
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     _git(repo, "add", ".")

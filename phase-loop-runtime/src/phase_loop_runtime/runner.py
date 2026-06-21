@@ -254,6 +254,9 @@ def _pipeline_branchgov_active(repo: Path) -> bool:
 
 
 def _roadmap_version(roadmap: Path) -> str:
+    match = re.fullmatch(r"phase-plans-(v\d+(?:[._]\d+)*)(?:[-.].*)?\.md", roadmap.name)
+    if match:
+        return match.group(1)
     match = re.fullmatch(r"phase-plans-(v[\w.-]+)\.md", roadmap.name)
     return match.group(1) if match else roadmap.stem
 
@@ -306,11 +309,25 @@ def _ensure_pipeline_branch_before_dispatch(repo: Path, roadmap: Path):
         return None, None
     from .pipeline_adapter.branch_ops import ensure_pipeline_branch
 
+    roadmap_version = _roadmap_version(roadmap)
     try:
-        decision = ensure_pipeline_branch(repo, _roadmap_version(roadmap), _default_branch(repo))
+        decision = ensure_pipeline_branch(
+            repo,
+            roadmap_version,
+            _default_branch(repo),
+            base_ref=os.environ.get("PHASE_LOOP_BASE_REF") or _current_pipeline_branch_upstream(repo, roadmap_version),
+        )
     except Exception as exc:
         return _pipeline_branch_blocker_from_error(exc), None
     return None, decision
+
+
+def _current_pipeline_branch_upstream(repo: Path, roadmap_version: str) -> str | None:
+    current = _git_output_or_empty(repo, "branch", "--show-current")
+    if current != f"consiliency/pipeline/{roadmap_version}":
+        return None
+    upstream = _git_output_or_empty(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    return upstream or None
 
 
 def _refuse_pipeline_default_branch_commit(repo: Path) -> dict[str, object] | None:

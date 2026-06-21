@@ -30,6 +30,7 @@ from phase_loop_runtime.prompts import build_prompt
 from phase_loop_runtime.provenance import event_provenance
 from phase_loop_runtime.runtime_paths import phase_loop_stop_file
 from phase_loop_runtime.runner import _build_repair_context, _classify_dirty_paths, _detect_dirty_renames, _write_deterministic_closeout, launch_delegated_child, launch_harness_lane_work_unit, run_loop, status_snapshot
+from phase_loop_runtime.runner import _ensure_pipeline_branch_before_dispatch
 from phase_loop_runtime.state import load_work_unit_state, write_state
 from phase_loop_runtime.state_degradation import load_degradation
 from phase_loop_smoke_utils import (
@@ -81,6 +82,95 @@ def _migration_wave_body() -> str:
 
 
 class PhaseLoopRunnerTest(unittest.TestCase):
+    def test_pipeline_branch_governance_uses_explicit_base_ref(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            (repo / ".pipeline").mkdir()
+            roadmap = repo / "specs" / "phase-plans-v44.md"
+            roadmap.parent.mkdir(parents=True, exist_ok=True)
+            roadmap.write_text("# Roadmap\n", encoding="utf-8")
+
+            with (
+                patch.dict(os.environ, {"PHASE_LOOP_BASE_REF": "origin/consiliency/pipeline/v42"}),
+                patch("phase_loop_runtime.pipeline_adapter.branch_ops.ensure_pipeline_branch", return_value="consiliency/pipeline/v44") as fake_ensure,
+            ):
+                blocker, _decision = _ensure_pipeline_branch_before_dispatch(repo, roadmap)
+
+            self.assertIsNone(blocker)
+            fake_ensure.assert_called_once_with(
+                repo,
+                "v44",
+                "main",
+                base_ref="origin/consiliency/pipeline/v42",
+            )
+
+    def test_pipeline_branch_governance_uses_base_version_for_suffix_roadmap(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            (repo / ".pipeline").mkdir()
+            roadmap = repo / "specs" / "phase-plans-v44-claude-primary-harness-integration.md"
+            roadmap.parent.mkdir(parents=True, exist_ok=True)
+            roadmap.write_text("# Roadmap\n", encoding="utf-8")
+
+            with patch(
+                "phase_loop_runtime.pipeline_adapter.branch_ops.ensure_pipeline_branch",
+                return_value="consiliency/pipeline/v44",
+            ) as fake_ensure:
+                blocker, _decision = _ensure_pipeline_branch_before_dispatch(repo, roadmap)
+
+            self.assertIsNone(blocker)
+            fake_ensure.assert_called_once_with(
+                repo,
+                "v44",
+                "main",
+                base_ref=None,
+            )
+
+    def test_pipeline_branch_governance_uses_current_pipeline_upstream_base(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            (repo / ".pipeline").mkdir()
+            roadmap = repo / "specs" / "phase-plans-v44-claude-primary-harness-integration.md"
+            roadmap.parent.mkdir(parents=True, exist_ok=True)
+            roadmap.write_text("# Roadmap\n", encoding="utf-8")
+            subprocess.run(["git", "remote", "add", "origin", str(repo)], cwd=repo, check=True)
+            subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(["git", "checkout", "-b", "consiliency/pipeline/v44"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/consiliency/pipeline/v44", "HEAD"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "branch.consiliency/pipeline/v44.remote", "origin"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "branch.consiliency/pipeline/v44.merge", "refs/heads/consiliency/pipeline/v44"],
+                cwd=repo,
+                check=True,
+            )
+
+            with patch(
+                "phase_loop_runtime.pipeline_adapter.branch_ops.ensure_pipeline_branch",
+                return_value="consiliency/pipeline/v44",
+            ) as fake_ensure:
+                blocker, _decision = _ensure_pipeline_branch_before_dispatch(repo, roadmap)
+
+            self.assertIsNone(blocker)
+            fake_ensure.assert_called_once_with(
+                repo,
+                "v44",
+                "main",
+                base_ref="origin/consiliency/pipeline/v44",
+            )
+
     def test_repair_context_and_prompt_include_previous_phase_owned_paths(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

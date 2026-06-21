@@ -60,6 +60,7 @@ class TestPhaseLoopPipelineCloseout(unittest.TestCase):
         "dfadoptbridge_unmanaged_spec_input.json",
         "dfadoptbridge_archive_manifest_touched.json",
         "dfadoptbridge_standalone_non_adoption.json",
+        "dfchcontract_claude_route_evidence.json",
     ]
 
     def _load_fixture(self, name):
@@ -271,6 +272,64 @@ class TestPhaseLoopPipelineCloseout(unittest.TestCase):
             self.assertIsNotNone(diagnostic)
             assert diagnostic is not None
             self.assertEqual(diagnostic["kind"], "missing_source_bundle_sha256")
+
+    def test_phase_loop_closeout_uses_canonical_verification_and_pipeline_mode_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "DFCHCONTRACT", roadmap)
+            source_bundles = {
+                "standalone": None,
+                "pipeline_optional": PhaseSourceBundle(
+                    path=".pipeline/artifacts/phase-source-bundle.json",
+                    sha256="a" * 64,
+                    phase_id="pipeline.phase.dfchcontract",
+                    phase_alias="DFCHCONTRACT",
+                    phase_plan_path="plans/phase-plan-v44-DFCHCONTRACT.md",
+                    roadmap_path="specs/phase-plans-v44.md",
+                    roadmap_sha256="b" * 64,
+                    protected_sources=(),
+                    pipeline_mode="pipeline_optional",
+                ),
+                "pipeline_required": PhaseSourceBundle(
+                    path=".pipeline/artifacts/phase-source-bundle.json",
+                    sha256="c" * 64,
+                    phase_id="pipeline.phase.dfchcontract",
+                    phase_alias="DFCHCONTRACT",
+                    phase_plan_path="plans/phase-plan-v44-DFCHCONTRACT.md",
+                    roadmap_path="specs/phase-plans-v44.md",
+                    roadmap_sha256="d" * 64,
+                    protected_sources=(),
+                    pipeline_mode="pipeline_required",
+                ),
+            }
+
+            for mode, source_bundle in source_bundles.items():
+                with self.subTest(mode=mode):
+                    closeout = build_phase_loop_closeout(
+                        phase_alias="DFCHCONTRACT",
+                        plan_path=plan,
+                        source_bundle=source_bundle,
+                        terminal_summary={"terminal_status": "complete", "verification_status": "passed"},
+                        automation={"status": "complete", "verification_status": "passed", "human_required": False},
+                        evidence_refs=(
+                            {
+                                "kind": "claude_route_result",
+                                "route": "claude_channel",
+                                "session_id": "session-a",
+                                "event_id": "event-a",
+                                "path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfchcontract_claude_route_evidence.json",
+                                "sha256": "e" * 64,
+                            },
+                        ),
+                    )
+
+                    self.assertIsNone(phase_loop_closeout_diagnostic(closeout))
+                    self.assertEqual(closeout["verification"]["status"], "passed")
+                    self.assertNotIn("verification_status", closeout)
+                    self.assertEqual(closeout["source_bundle"]["pipeline_mode"], mode)
+                    self.assertNotIn("mode", closeout["source_bundle"])
+                    self.assertEqual(closeout["artifacts"]["evidence_refs"][0]["kind"], "claude_route_result")
 
     def test_closeout_echoes_adoption_role_metadata_only(self):
         with tempfile.TemporaryDirectory() as td:

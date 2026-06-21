@@ -140,6 +140,55 @@ class PhaseLoopDiscoveryTest(unittest.TestCase):
             roadmap = select_roadmap(repo, "specs/phase-plans-v1.md")
             self.assertEqual(parse_roadmap_phases(roadmap), ["CONTRACT", "ACCESS", "RUNNER"])
 
+    def test_plan_prompt_prefers_manifest_artifact_for_suffix_roadmap(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v44-claude-primary-harness-integration.md"
+            roadmap.write_text(
+                "# Roadmap\n\n"
+                "### Phase 1 - Claude Contract Alignment (DFCHCONTRACT)\n",
+                encoding="utf-8",
+            )
+            roadmap_hash = roadmap_fingerprint(roadmap)
+            plan = repo / "plans" / "phase-plan-v44-DFCHCONTRACT.md"
+            plan.write_text(
+                "---\n"
+                "phase_loop_plan_version: 1\n"
+                "phase: DFCHCONTRACT\n"
+                "roadmap: specs/phase-plans-v44-claude-primary-harness-integration.md\n"
+                f"roadmap_sha256: {roadmap_hash}\n"
+                "---\n"
+                "# DFCHCONTRACT\n",
+                encoding="utf-8",
+            )
+            append_entry(
+                repo,
+                DotfilesPlanEntry(
+                    slug="v44-DFCHCONTRACT",
+                    file="plans/phase-plan-v44-DFCHCONTRACT.md",
+                    type="phase",
+                    status="imported",
+                    created_at="2026-06-20T00:00:00Z",
+                    updated_at="2026-06-20T00:00:00Z",
+                    owner_skill="codex-plan-phase",
+                    roadmap_ref=DotfilesPlanRef(
+                        slug="phase-plans-v44-claude-primary-harness-integration",
+                        file="specs/phase-plans-v44-claude-primary-harness-integration.md",
+                        type="phase",
+                        status="imported",
+                    ),
+                    phase_alias="DFCHCONTRACT",
+                ),
+            )
+
+            from phase_loop_runtime.prompts import _expected_plan_artifact_path, build_prompt
+
+            prompt_path = _expected_plan_artifact_path(roadmap, "DFCHCONTRACT")
+            prompt = build_prompt("plan", roadmap, phase="DFCHCONTRACT")
+
+            self.assertEqual(prompt_path, "plans/phase-plan-v44-DFCHCONTRACT.md")
+            self.assertIn("Write it exactly to `plans/phase-plan-v44-DFCHCONTRACT.md`", prompt.body)
+
     def test_parse_automation_status_prefers_last_bounded_block(self):
         text = (
             "Earlier file content:\n"

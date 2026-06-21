@@ -1,14 +1,11 @@
 import json
 import subprocess
-import threading
 import unittest
 from pathlib import Path
 
-from phase_loop_runtime.claude_channel_sidecar import ChannelSidecar, build_server
-
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_ROOT = ROOT / "claude-config" / "plugins" / "phase-loop-channel"
-CHANNEL_SCRIPT = PLUGIN_ROOT / "channel" / "phase_loop_channel.py"
+CHANNEL_SCRIPT = PLUGIN_ROOT / "channel" / "phase_loop_channel.ts"
 SMOKE_SCRIPT = ROOT / "scripts" / "smoke-claude-channel-proof"
 
 
@@ -16,88 +13,62 @@ class ClaudeChannelMcpTest(unittest.TestCase):
     def test_plugin_manifest_declares_channel_protocol(self):
         manifest = json.loads((PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
 
+        self.assertTrue(manifest["capabilities"]["permissionRelay"])
         channels = manifest["components"]["channels"]
         self.assertEqual(channels[0]["protocol"], "experimental.claude/channel")
         self.assertEqual(channels[0]["name"], "phase-loop")
+        self.assertEqual(channels[0]["command"], "bun")
+
+    def test_package_uses_mcp_sdk_transport(self):
+        package_json = json.loads((PLUGIN_ROOT / "package.json").read_text(encoding="utf-8"))
+        source = CHANNEL_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("@modelcontextprotocol/sdk", package_json["dependencies"])
+        self.assertIn("StdioServerTransport", source)
+        self.assertIn("new Server(", source)
+        self.assertIn("await mcp.connect(new StdioServerTransport())", source)
 
     def test_reply_and_status_schemas_expose_frozen_fields(self):
-        import importlib.util
+        source = CHANNEL_SCRIPT.read_text(encoding="utf-8")
 
-        spec = importlib.util.spec_from_file_location("phase_loop_channel", CHANNEL_SCRIPT)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        tools = {tool["name"]: tool for tool in module.tool_definitions()}
-        self.assertEqual(set(tools), {"reply", "status"})
-        expected_fields = {"event_id", "status", "text", "artifacts", "error", "final"}
-        for tool in tools.values():
-            self.assertEqual(set(tool["inputSchema"]["properties"]), expected_fields)
-            self.assertEqual(tool["inputSchema"]["properties"]["status"]["enum"], ["received", "working", "blocked", "done", "error"])
-
-    def test_initialize_declares_channel_capability(self):
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("phase_loop_channel", CHANNEL_SCRIPT)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        response = module.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
-        capabilities = response["result"]["capabilities"]
-        self.assertEqual(capabilities["experimental"], {"claude/channel": {}})
+        self.assertIn("tools: ['reply', 'status'].map", source)
+        for field in ("event_id", "status", "text", "artifacts", "error", "final"):
+            self.assertIn(field, source)
+        for status in ("received", "working", "blocked", "done", "error"):
+            self.assertIn(status, source)
 
     def test_channel_notification_includes_event_id_metadata(self):
-        import importlib.util
+        source = CHANNEL_SCRIPT.read_text(encoding="utf-8")
 
-        spec = importlib.util.spec_from_file_location("phase_loop_channel", CHANNEL_SCRIPT)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        self.assertIn("notifications/claude/channel", source)
+        self.assertIn('event_id="${event.event_id}"', source)
+        self.assertIn("mcp__phase-loop-channel__status", source)
+        self.assertIn("function channelMeta", source)
+        self.assertIn("Record<string, string>", source)
 
-        notification = module.channel_notification(
-            {
-                "event_id": "evt-1",
-                "session_id": "session-a",
-                "sender": "phase-loop",
-                "content": "channel-ping",
-                "ack_policy": "tool_ack_required",
-                "created_at": "2026-06-19T00:00:00Z",
-                "attachments": [{"ref": "artifact://summary"}],
-            }
-        )
+    def test_permission_relay_notification_is_metadata_only(self):
+        source = CHANNEL_SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(notification["method"], "notifications/claude/channel")
-        self.assertIn('event_id="evt-1"', notification["params"]["content"])
-        self.assertEqual(notification["params"]["meta"]["event_id"], "evt-1")
-
-    def test_tool_calls_forward_to_sidecar_ack_state(self):
-        import importlib.util
-
-        sidecar = ChannelSidecar()
-        event = sidecar.create_message("session-a", sender="phase-loop", content="channel-ping")
-        server = build_server("127.0.0.1", 0, sidecar)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            spec = importlib.util.spec_from_file_location("phase_loop_channel", CHANNEL_SCRIPT)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-
-            state = module.forward_tool_call(
-                "reply",
-                {"event_id": event.event_id, "status": "done", "text": "pong", "artifacts": [{"ref": "artifact://reply"}], "final": True},
-                endpoint=f"http://127.0.0.1:{server.server_port}",
-                session_id="session-a",
-            )
-            self.assertTrue(state["acknowledged"])
-            self.assertEqual(state["event_id"], event.event_id)
-        finally:
-            server.shutdown()
-            server.server_close()
+        self.assertIn("'claude/channel/permission': {}", source)
+        self.assertNotIn("permissionRelay: true", source)
+        self.assertIn("/permission/requests", source)
+        self.assertIn("function permissionContent", source)
+        self.assertIn("function permissionMeta", source)
+        for field in ("request_id", "tool_name", "description", "input_preview", "risk_class", "requested_at"):
+            self.assertIn(field, source)
+        self.assertNotIn("raw_input", source)
+        self.assertNotIn("tool_payload", source)
 
     def test_smoke_dry_run_rejects_print_bare_command_templates(self):
         text = SMOKE_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("FORBIDDEN_COMMAND_TOKENS", text)
         self.assertNotIn('"claude", "-p"', text)
         self.assertIn("pty.openpty", text)
+        self.assertNotIn("def channel_ack_prompt", text)
+        self.assertNotIn("_submit_claude_prompt", text)
+        self.assertNotIn('"--disallowedTools"', text)
+        self.assertIn("--permission-relay", text)
+        self.assertIn("PHASE_LOOP_CHANNEL_BEARER_TOKEN_FILE", text)
         self.assertNotIn('"--print"', json.dumps(json.loads(subprocess.check_output([str(SMOKE_SCRIPT), "--dry-run"], text=True))["command"]))
         self.assertNotIn('"--bare"', json.dumps(json.loads(subprocess.check_output([str(SMOKE_SCRIPT), "--dry-run"], text=True))["command"]))
 

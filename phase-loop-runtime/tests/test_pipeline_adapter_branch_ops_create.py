@@ -50,12 +50,38 @@ def test_ensure_pipeline_branch_stays_when_already_on_convention(tmp_path, monke
     assert decision.diverged is False
 
 
+def test_ensure_pipeline_branch_creates_from_explicit_base_ref(tmp_path, monkeypatch):
+    repo = _make_branch_repo(tmp_path)
+    monkeypatch.setenv("PHASE_LOOP_BRANCHGOV_ENABLE", "true")
+
+    _git(repo, "checkout", "-b", "stacked-base")
+    (repo / "stacked.txt").write_text("stacked\n", encoding="utf-8")
+    _git(repo, "add", "stacked.txt")
+    _git(repo, "commit", "-m", "stacked base")
+    _git(repo, "update-ref", "refs/remotes/origin/stacked-base", "HEAD")
+    _git(repo, "checkout", "main")
+    (repo / "main.txt").write_text("main\n", encoding="utf-8")
+    _git(repo, "add", "main.txt")
+    _git(repo, "commit", "-m", "main only")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+    decision = ensure_pipeline_branch(repo, "v44", "main", base_ref="origin/stacked-base")
+
+    assert isinstance(decision, BranchDecision)
+    assert decision.target_branch == "consiliency/pipeline/v44"
+    assert _git(repo, "branch", "--show-current").stdout.strip() == decision.target_branch
+    assert _git(repo, "rev-parse", "HEAD").stdout == _git(repo, "rev-parse", "origin/stacked-base").stdout
+    assert (repo / "stacked.txt").is_file()
+    assert not (repo / "main.txt").exists()
+
+
 def _make_branch_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "commit.gpgsign", "false")
     (repo / ".pipeline").mkdir()
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     _git(repo, "add", ".")

@@ -290,6 +290,8 @@ def make_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "tag.gpgsign", "false"], cwd=repo, check=True)
     (repo / "specs").mkdir()
     (repo / "plans").mkdir()
     (repo / "README.md").write_text("fixture\n")
