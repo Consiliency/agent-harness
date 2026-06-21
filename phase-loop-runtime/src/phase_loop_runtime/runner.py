@@ -146,13 +146,17 @@ from .observability import (
     summarize_work_unit_metrics,
     write_terminal_summary,
 )
-from .pipeline_adapter.flag import trust_executor_evidence_enabled
+from .pipeline_adapter.flag import (
+    concurrent_real_exec_integration_enabled,
+    trust_executor_evidence_enabled,
+)
 from .phase_worktree_executor import (
     create_phase_worktree,
     current_branch,
     integrate_phase_worktree,
     resolve_base_sha,
     teardown_phase_worktree,
+    transfer_phase_worktree_dirty,
 )
 from .plan_ir import iter_waves
 from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
@@ -853,6 +857,21 @@ def run_loop(
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
     if phase_scheduler_mode not in PHASE_SCHEDULER_MODES:
         raise ValueError(f"invalid phase scheduler mode: {phase_scheduler_mode}")
+    if (
+        phase_scheduler_mode == "concurrent"
+        and closeout_mode == "manual"
+        and concurrent_real_exec_integration_enabled()
+    ):
+        # Footgun guard (#130): real-exec concurrent transport lands each child's
+        # DIRTY work on main; only a committing closeout (commit/push) commits it
+        # before the next wave. Under manual closeout the work stays dirty on main
+        # and the next wave's cross-phase start gate refuses — an opaque failure.
+        # Fail loudly at startup instead.
+        raise ValueError(
+            "concurrent real-exec integration (PHASE_LOOP_CONCURRENT_REAL_EXEC) "
+            "requires --closeout-mode commit or push; manual closeout would strand "
+            "transported dirty work on the pipeline branch across waves"
+        )
     if allow_cross_phase_dirty_reason is not None and not allow_cross_phase_dirty_reason.strip():
         raise ValueError("allow_cross_phase_dirty_reason must not be empty")
     allow_cross_phase_dirty_reason = allow_cross_phase_dirty_reason.strip() if allow_cross_phase_dirty_reason else None
@@ -3612,6 +3631,10 @@ def run_loop(
             per-roadmap DispatchLock still guards separate runner processes.
             """
             nonlocal alias, concurrent_exec_repo, phase_cycles_completed
+            # SAFE CUTOVER (#130): default-off. When on, a real executor's dirty
+            # worktree work is transported onto main and committed by the parent
+            # closeout; when off, the legacy committed-only merge is used.
+            real_exec_integration = concurrent_real_exec_integration_enabled()
             # Reality-reconcile (no-op until RECONCILE/#129 lands) before readiness.
             reconciled = reconcile_against_git_reality(repo, roadmap, dict(classifications))
             waves = tuple(iter_waves(roadmap))
@@ -3703,29 +3726,60 @@ def run_loop(
                         if result is None:
                             continue
                         results.append(result)
-                        # Integrate the child's committed work back onto the pipeline
-                        # branch BEFORE finalize — finalize's closeout/reconcile run
-                        # on the main repo, so the work must be present there first.
-                        integration = integrate_phase_worktree(
-                            repo, handles[ready_phase], message=f"phase-loop sched: integrate {ready_phase}"
-                        )
-                        if integration.conflict:
-                            # The ownership gate should make this impossible; if it
-                            # happens the gate was bypassed, so KEEP the temp branch
-                            # (work preserved for diagnosis) instead of force-deleting.
-                            preserve_branches.add(ready_phase)
-                            _append_coordinator_event(
-                                repo=repo,
-                                roadmap=roadmap,
-                                phase=ready_phase,
-                                action="coordinator.concurrent_integration_conflict",
-                                status=classifications.get(ready_phase, "unknown"),
-                                selection=selection,
-                                metadata={
-                                    "integration": integration.to_json(),
-                                    "preserved_branch": handles[ready_phase].temp_branch,
-                                },
+                        # Bring the child's work onto the pipeline branch BEFORE
+                        # finalize — finalize's closeout/reconcile run on the main
+                        # repo, so the work must be present there first.
+                        if real_exec_integration:
+                            # Real executors leave verified work DIRTY in the
+                            # worktree and emit awaiting_phase_closeout; the parent
+                            # closeout commits it. Transport the dirty work onto
+                            # main as UNSTAGED changes so finalize's existing,
+                            # ownership-gated closeout commits it — integrate
+                            # (committed-only merge) would be a no-op and lose it.
+                            transfer = transfer_phase_worktree_dirty(
+                                repo,
+                                handles[ready_phase],
+                                commit_message=f"phase-loop sched: transport {ready_phase}",
                             )
+                            if transfer.had_changes and not transfer.applied:
+                                # Apply failed (gate bypassed): KEEP the temp branch
+                                # so the committed work is recoverable, and let
+                                # finalize block on the (work-absent) main tree
+                                # rather than silently report success.
+                                preserve_branches.add(ready_phase)
+                                _append_coordinator_event(
+                                    repo=repo,
+                                    roadmap=roadmap,
+                                    phase=ready_phase,
+                                    action="coordinator.concurrent_transfer_conflict",
+                                    status=classifications.get(ready_phase, "unknown"),
+                                    selection=selection,
+                                    metadata={
+                                        "transfer": transfer.to_json(),
+                                        "preserved_branch": handles[ready_phase].temp_branch,
+                                    },
+                                )
+                        else:
+                            integration = integrate_phase_worktree(
+                                repo, handles[ready_phase], message=f"phase-loop sched: integrate {ready_phase}"
+                            )
+                            if integration.conflict:
+                                # The ownership gate should make this impossible; if it
+                                # happens the gate was bypassed, so KEEP the temp branch
+                                # (work preserved for diagnosis) instead of force-deleting.
+                                preserve_branches.add(ready_phase)
+                                _append_coordinator_event(
+                                    repo=repo,
+                                    roadmap=roadmap,
+                                    phase=ready_phase,
+                                    action="coordinator.concurrent_integration_conflict",
+                                    status=classifications.get(ready_phase, "unknown"),
+                                    selection=selection,
+                                    metadata={
+                                        "integration": integration.to_json(),
+                                        "preserved_branch": handles[ready_phase].temp_branch,
+                                    },
+                                )
                         alias = ready_phase
                         wave_outcome = _finalize_phase_launch(preps[ready_phase], result)
                         # --full-phase counts completed phase cycles. The wave path

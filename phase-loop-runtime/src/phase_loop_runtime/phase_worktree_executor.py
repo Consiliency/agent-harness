@@ -70,6 +70,35 @@ class WorktreeIntegrationResult:
         }
 
 
+@dataclass(frozen=True)
+class WorktreeTransferResult:
+    """Outcome of transporting a phase child's worktree changes onto main.
+
+    ``had_changes`` is True when the child produced any delta since base (dirty
+    and/or committed). ``applied`` is True when main's working tree now carries
+    that delta (or there was nothing to transfer). A failed apply leaves
+    ``applied=False`` with ``conflict=True``; ``git apply`` is atomic, so main is
+    left untouched and the work is preserved on ``temp_branch`` for diagnosis.
+    """
+
+    phase: str
+    temp_branch: str
+    had_changes: bool
+    applied: bool
+    conflict: bool = False
+    reason: str | None = None
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "phase": self.phase,
+            "temp_branch": self.temp_branch,
+            "had_changes": self.had_changes,
+            "applied": self.applied,
+            "conflict": self.conflict,
+            "reason": self.reason,
+        }
+
+
 class PhaseWorktreeError(RuntimeError):
     """Raised when a worktree lifecycle git operation fails unexpectedly."""
 
@@ -84,6 +113,29 @@ def _git(
         check=check,
         capture_output=True,
         text=True,
+    )
+
+
+def _git_bytes(
+    repo: Path,
+    *args: str,
+    input_bytes: bytes | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run git capturing stdout/stderr as raw BYTES (never text-decoded).
+
+    A git patch is a byte stream that must survive verbatim: routing it through
+    ``text=True`` strips ``\\r`` (corrupting CRLF files into spurious apply
+    conflicts or silent LF rewrites) and raises ``UnicodeDecodeError`` on any
+    non-UTF-8 "text" blob git inlines raw (high bytes without a NUL, so git does
+    not base85-encode it). The diff capture and ``git apply`` stdin in
+    :func:`transfer_phase_worktree_dirty` therefore use bytes I/O.
+    """
+
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=False,
+        capture_output=True,
+        input=input_bytes,
     )
 
 
@@ -248,6 +300,118 @@ def integrate_phase_worktree(
         temp_branch=handle.temp_branch,
         integrated=True,
         merged_sha=resolve_base_sha(repo),
+    )
+
+
+def transfer_phase_worktree_dirty(
+    repo: Path,
+    handle: PhaseWorktreeHandle,
+    *,
+    commit_message: str | None = None,
+) -> WorktreeTransferResult:
+    """Transport a phase child's worktree work onto main as UNSTAGED changes.
+
+    Unlike :func:`integrate_phase_worktree` (which merges only *committed* work),
+    a real phase executor leaves its verified work DIRTY in the worktree and
+    emits ``awaiting_phase_closeout`` — the parent runner's closeout is what
+    stages+commits the dirty phase-owned files. So the committed-only merge is a
+    no-op against a real child and the work is lost. This brings the child's full
+    delta (uncommitted + any self-commits) onto the *main* working tree without
+    committing it, so the parent's existing closeout — whose selective
+    ``git add -- <owned>`` is what enforces the ownership gate — commits it on the
+    pipeline branch exactly as in serial mode.
+
+    The work is first committed onto ``temp_branch`` (preserving it on a ref), then
+    transported via ``git diff base..temp | git apply`` rather than a
+    cherry-pick: cherry-pick would pre-stage every changed path into main's index
+    and defeat the closeout's selective, ownership-gated staging. ``git apply`` is
+    atomic, so a failed apply (which the disjointness gate should make impossible)
+    leaves main untouched and the work recoverable on ``temp_branch``.
+    """
+
+    worktree = handle.worktree_path
+    # Stage everything dirty (captures untracked new files too) and commit it onto
+    # the temp branch so the work survives on a ref even if the apply to main fails.
+    _git(worktree, "add", "-A", check=False)
+    has_staged = _git(worktree, "diff", "--cached", "--quiet", check=False).returncode != 0
+    if has_staged:
+        message = commit_message or f"phase-loop sched transport: {handle.phase}"
+        committed = _git(worktree, "commit", "-q", "-m", message, check=False)
+        if committed.returncode != 0:
+            return WorktreeTransferResult(
+                phase=handle.phase,
+                temp_branch=handle.temp_branch,
+                had_changes=True,
+                applied=False,
+                reason=(
+                    "failed to commit worktree changes for transport: "
+                    f"{committed.stderr.strip() or committed.stdout.strip()}"
+                ),
+            )
+
+    revs = _git(worktree, "rev-list", f"{handle.base_sha}..{handle.temp_branch}", check=False)
+    if revs.returncode != 0:
+        # The transport commit above already succeeded (when there was dirt), so
+        # the work is on temp_branch — mark had_changes=True so the caller PRESERVES
+        # the branch (its preserve guard keys on had_changes) instead of deleting it.
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=has_staged,
+            applied=False,
+            conflict=has_staged,
+            reason=f"could not inspect commits: {revs.stderr.strip()}",
+        )
+    if not revs.stdout.strip():
+        # Child produced no work (blocked, plan-only, dry run, or a clean
+        # self-reported terminal). Nothing to transport; main is untouched.
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=False,
+            applied=True,
+            reason="no changes to transfer",
+        )
+
+    # Bytes I/O: the patch must survive verbatim (CRLF, binary, non-UTF-8 blobs).
+    diff = _git_bytes(worktree, "diff", "--binary", handle.base_sha, handle.temp_branch)
+    if diff.returncode != 0:
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=True,
+            applied=False,
+            conflict=True,
+            reason=f"could not compute transfer diff: {diff.stderr.decode('utf-8', 'replace').strip()}",
+        )
+    if not diff.stdout.strip():
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=False,
+            applied=True,
+            reason="empty net diff",
+        )
+
+    applied = _git_bytes(repo, "apply", "--whitespace=nowarn", "-", input_bytes=diff.stdout)
+    if applied.returncode != 0:
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=True,
+            applied=False,
+            conflict=True,
+            reason=(
+                "git apply failed transporting worktree changes onto main — the "
+                "concurrent ownership-disjointness gate should have prevented this: "
+                f"{applied.stderr.decode('utf-8', 'replace').strip() or applied.stdout.decode('utf-8', 'replace').strip()}"
+            ),
+        )
+    return WorktreeTransferResult(
+        phase=handle.phase,
+        temp_branch=handle.temp_branch,
+        had_changes=True,
+        applied=True,
     )
 
 
