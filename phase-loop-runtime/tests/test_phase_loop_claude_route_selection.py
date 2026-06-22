@@ -46,6 +46,35 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertEqual(resolve_claude_route("", env={}).route, "claude_print")
         self.assertEqual(resolve_claude_route("tui").error, "unsupported Claude route `tui`")
 
+    def test_route_default_contract_if_0_dfchdefault_1(self):
+        # IF-0-DFCHDEFAULT-1 — freeze the Claude route-default contract surface.
+        # DFCHDEFAULT documents the target and pins the CURRENT resolver; the
+        # unset->channel FLIP lands later in DFCHROUTE, so unset is pinned to the
+        # pre-flip claude_print baseline here (NOT asserted as channel yet).
+        unset = resolve_claude_route(None, env={})
+        self.assertEqual(unset.route, "claude_print")
+        self.assertEqual(unset.reason, "default_print_compatibility")
+        self.assertIsNone(unset.error)
+        # CI / one-shot scripts must select a route explicitly; an unset route gives
+        # them the same baseline and never silently selects Channel mid-migration.
+        ci_unset = resolve_claude_route(None, env={"CI": "true"})
+        self.assertEqual(ci_unset.route, "claude_print")
+        self.assertEqual(ci_unset.reason, "default_print_compatibility")
+        # Explicit print is a deliberate, billing-sensitive compatibility selection,
+        # never a fallback from a Channel failure (distinct reason from unset).
+        explicit_print = resolve_claude_route("print", env={})
+        self.assertEqual(explicit_print.route, "claude_print")
+        self.assertEqual(explicit_print.reason, "explicit_print_compatibility")
+        self.assertNotEqual(explicit_print.reason, unset.reason)
+        # Invalid routes carry an error and reason `invalid_route` (the launch path
+        # blocks on it) — not a silent successful print.
+        invalid = resolve_claude_route("tui", env={})
+        self.assertIsNotNone(invalid.error)
+        self.assertEqual(invalid.reason, "invalid_route")
+        # Explicit Channel and Agent View resolve to their own routes.
+        self.assertEqual(resolve_claude_route("channel", env={}).route, "claude_channel")
+        self.assertEqual(resolve_claude_route("agent_view", env={}).route, "claude_agent_view")
+
     def test_print_route_keeps_existing_claude_print_command(self):
         with patch.dict(os.environ, {"PHASE_LOOP_CLAUDE_ROUTE": "print"}, clear=False):
             spec = build_launch_spec(self._request(Path("/tmp/repo")))
