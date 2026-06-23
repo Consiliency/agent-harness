@@ -11,6 +11,7 @@ from phase_loop_runtime.claude_agent_view import AgentViewLifecycleResult
 from phase_loop_runtime.launcher import (
     build_launch_request,
     build_launch_spec,
+    command_runs_claude_print,
     launch_with_spec,
     resolve_claude_route,
 )
@@ -162,6 +163,59 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertEqual(spec.claude_channel_session_id, "session-route")
         self.assertEqual(spec.command[:2], ["claude-channel", "send"])
         self.assertNotIn("-p", spec.command)
+
+    def test_command_runs_claude_print_distinguishes_real_print_from_probes(self):
+        # IF-0-DFCHTELEMETRY-1: no-hidden-print detection. Real print invocations
+        # are flagged; probes / Agent View / channel transport / prose are not.
+        for cmd in (
+            ["claude", "-p", "do it"],
+            ["claude", "--print"],
+            ["claude", "--bare"],
+            "claude -p 'x'",
+            'claude "-p" \'do billable thing\'',  # quoted flag (shlex strips quotes)
+            "/usr/bin/claude -p go",  # path-qualified
+            "./claude --print",
+            "npx claude -p go",  # wrapper-prefixed
+            "env FOO=bar claude -p go",  # env assignment + binary
+        ):
+            self.assertTrue(command_runs_claude_print(cmd), cmd)
+        for cmd in (
+            ["claude", "--help"],
+            ["claude", "--version"],
+            ["claude", "--bg"],  # Agent View
+            ["claude", "--bg", "--help"],
+            ["claude-channel", "send", "--session-id", "s1"],  # transport
+            ["node", "--test", "x"],
+            "see `claude -p` in the docs",  # prose, not a command
+            "claude -- -p",  # -p is positional after end-of-options, not a flag
+            "claude 'analyze --print mode'",  # --print inside a quoted positional
+            [],
+        ):
+            self.assertFalse(command_runs_claude_print(cmd), cmd)
+
+    def test_launch_spec_records_route_billing_and_fallback_posture(self):
+        # IF-0-DFCHTELEMETRY-1: launch metadata records billing + fallback posture
+        # for every Claude route.
+        def _spec(env):
+            with patch.dict(os.environ, env, clear=False):
+                return build_launch_spec(self._request(Path("/tmp/repo"))).to_json()
+        channel = _spec({
+            "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+            "PHASE_LOOP_CHANNEL_SESSION_ID": "s1",
+            "PHASE_LOOP_CLAUDE_CHANNEL_URL": "http://127.0.0.1:8765",
+        })
+        self.assertEqual(channel["claude_billing_posture"], "subscription_included")
+        self.assertEqual(channel["claude_fallback_posture"], "none")
+        printed = _spec({"PHASE_LOOP_CLAUDE_ROUTE": "print"})
+        self.assertEqual(printed["claude_billing_posture"], "usage_credit")
+        self.assertEqual(printed["claude_fallback_posture"], "explicit_compatibility")
+        agent_view = _spec({"PHASE_LOOP_CLAUDE_ROUTE": "agent_view"})
+        self.assertEqual(agent_view["claude_billing_posture"], "subscription_included")
+        self.assertEqual(agent_view["claude_fallback_posture"], "none")
+        # A refused/blocked route never executes → no billing posture (not usage_credit).
+        invalid = _spec({"PHASE_LOOP_CLAUDE_ROUTE": "tui"})
+        self.assertEqual(invalid["claude_billing_posture"], "unknown")
+        self.assertEqual(invalid["claude_fallback_posture"], "blocked")
 
     def test_print_spec_records_billing_warning(self):
         # IF-0-DFCHROUTE-1: explicit print must RECORD a billing-sensitive warning

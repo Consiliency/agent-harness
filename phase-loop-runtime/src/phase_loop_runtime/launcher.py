@@ -161,6 +161,10 @@ class LaunchSpec:
             "claude_route": self.claude_route,
             "claude_route_reason": self.claude_route_reason,
             "claude_route_warnings": list(self.claude_route_warnings),
+            # DFCHTELEMETRY: record billing + fallback posture for every Claude route
+            # (derived from route/reason, so no per-branch plumbing).
+            "claude_billing_posture": claude_route_billing_posture(self.claude_route, self.claude_route_reason) if self.claude_route else None,
+            "claude_fallback_posture": claude_route_fallback_posture(self.claude_route, self.claude_route_reason) if self.claude_route else None,
             "claude_sidecar_url": self.claude_sidecar_url,
             "claude_channel_session_id": self.claude_channel_session_id,
             "cleanup_paths": list(self.cleanup_paths),
@@ -379,6 +383,67 @@ CLAUDE_PRINT_BILLING_WARNING = (
     "and spends API/usage credit. It is an explicit operator/CI selection, not a "
     "fallback from Channel or Agent View failure."
 )
+
+# DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): the flags that make `claude` a real print
+# (billing-sensitive) execution, as opposed to Agent View (`--bg`) or a probe.
+_CLAUDE_PRINT_FLAGS = ("-p", "--print", "--bare")
+# Wrapper binaries that may prefix the real `claude` invocation.
+_COMMAND_WRAPPERS = frozenset({"npx", "env", "sudo", "command", "exec", "time", "nohup", "stdbuf", "doas"})
+# Route billing posture (CLAUDE_BILLING_POSTURES vocabulary).
+_CLAUDE_ROUTE_BILLING_POSTURE = {
+    "claude_channel": "subscription_included",
+    "claude_agent_view": "subscription_included",
+    "claude_print": "usage_credit",
+}
+
+
+def command_runs_claude_print(command) -> bool:
+    """True iff `command` is a real `claude` print/bare invocation (`claude -p` /
+    `--print` / `--bare`) — no-hidden-print telemetry (IF-0-DFCHTELEMETRY-1).
+
+    Distinguishes real print execution from benign probe strings (`claude --help`,
+    `claude --version`), Agent View (`claude --bg`), and the `claude-channel`
+    transport. Robust to quoting (shlex), path-qualified / wrapper-prefixed claude
+    (`/usr/bin/claude`, `npx claude`), env-var prefixes, and `--` end-of-options.
+    Accepts a token list or a string. Mirrors schema.commandRunsClaudePrint.
+    """
+    if not command:
+        return False
+    tokens = shlex.split(command) if isinstance(command, str) else [str(token) for token in command]
+    index = 0
+    while index < len(tokens) and (
+        ("=" in tokens[index] and tokens[index].split("=", 1)[0].isidentifier())
+        or os.path.basename(tokens[index]) in _COMMAND_WRAPPERS
+    ):
+        index += 1
+    if index >= len(tokens) or os.path.basename(tokens[index]) != "claude":
+        return False
+    for token in tokens[index + 1:]:
+        if token == "--":
+            break  # end-of-options: subsequent tokens are positional, not flags
+        if token in _CLAUDE_PRINT_FLAGS:
+            return True
+    return False
+
+
+def claude_route_billing_posture(route: str | None, reason: str | None = None) -> str:
+    # A refused/blocked route never executes, so it carries no billing posture — a
+    # blocked claude_print (e.g. invalid_route) must not report usage_credit spend.
+    if reason in {"invalid_route", "ci_requires_explicit_route"}:
+        return "unknown"
+    return _CLAUDE_ROUTE_BILLING_POSTURE.get(route or "", "unknown")
+
+
+def claude_route_fallback_posture(route: str | None, reason: str | None) -> str:
+    """Fallback marker aligned with the validation evidence schema FALLBACK_MARKERS
+    (none / explicit_compatibility / explicit_fallback / blocked). The runtime never
+    auto-falls-back: print is explicit compatibility, primary routes are `none`, and
+    route-resolution errors are `blocked`."""
+    if reason in {"invalid_route", "ci_requires_explicit_route"}:
+        return "blocked"
+    if route == "claude_print":
+        return "explicit_compatibility"
+    return "none"
 
 
 def _claude_route_is_ci(environment) -> bool:
@@ -1385,6 +1450,15 @@ def launch_with_spec(
     if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
         return _result_with_spec(_launch_claude_agent_view(spec, log_path=log_path), spec)
     command = _resolve_command_context(spec, log_path)
+    # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): runtime no-hidden-print guard. A primary
+    # Claude route (Channel / Agent View) must never resolve to a real `claude -p`
+    # invocation; the build path guarantees this structurally, so a violation is a
+    # contract bug, not an operator error — fail loudly rather than silently spend
+    # API/usage credit under a primary route.
+    if spec.executor == "claude" and spec.claude_route in {"claude_channel", "claude_agent_view"} and command_runs_claude_print(command):
+        raise RuntimeError(
+            f"no-hidden-print violation: {spec.claude_route} resolved to a real claude print command"
+        )
     try:
         result = launch(
             command,
