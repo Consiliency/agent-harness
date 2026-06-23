@@ -17,7 +17,7 @@ from typing import Any
 
 from .capability_registry import capability_registry
 from .claude_agent_view import ClaudeAgentViewAdapter, AgentViewLifecycleResult, workspace_trust_state
-from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult
+from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult, is_loopback_http_url
 from .discovery import classify_phase_team_eligibility
 from .injection import materialize_claude_plugin_bundle
 from .models import (
@@ -69,6 +69,9 @@ CLAUDE_ROUTE_ALIASES = {
     "claude_print": "claude_print",
 }
 CLAUDE_CHANNEL_SIDECAR_URL_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_URL"
+# Single source of truth for the default loopback sidecar URL (#66 CR): the
+# build-time preflight gate and the URL actually launched must not drift apart.
+DEFAULT_CLAUDE_CHANNEL_SIDECAR_URL = "http://127.0.0.1:8765"
 CLAUDE_CHANNEL_SESSION_ID_ENV = "PHASE_LOOP_CHANNEL_SESSION_ID"
 CLAUDE_CHANNEL_SESSION_ID_ALT_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID"
 CLAUDE_CHANNEL_BEARER_TOKEN_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_BEARER_TOKEN"
@@ -377,7 +380,7 @@ def resolve_claude_route(value: str | None = None, *, env: dict[str, str] | None
         return ClaudeRouteSelection(
             route=route,
             reason="explicit_channel",
-            sidecar_url=environment.get(CLAUDE_CHANNEL_SIDECAR_URL_ENV, "http://127.0.0.1:8765"),
+            sidecar_url=environment.get(CLAUDE_CHANNEL_SIDECAR_URL_ENV, DEFAULT_CLAUDE_CHANNEL_SIDECAR_URL),
             session_id=environment.get(CLAUDE_CHANNEL_SESSION_ID_ENV) or environment.get(CLAUDE_CHANNEL_SESSION_ID_ALT_ENV),
         )
     if route == "claude_agent_view":
@@ -674,8 +677,22 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             eligibility=eligibility,
         )
         route_error = route_selection.error
-        if route_selection.route == "claude_channel" and not route_selection.session_id:
-            route_error = "Claude Channel route requires PHASE_LOOP_CHANNEL_SESSION_ID or PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID."
+        if route_selection.route == "claude_channel":
+            # DFCHPREFLIGHT (IF-0-DFCHPREFLIGHT-1): a Channel route launch requires
+            # a session id AND a loopback sidecar URL. Missing/blocked prerequisites
+            # reduce to a metadata-only route blocker here (no claude -p built), not
+            # a deferred failure at sidecar-client construction.
+            if not route_selection.session_id:
+                route_error = "Claude Channel route requires PHASE_LOOP_CHANNEL_SESSION_ID or PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID."
+            elif not is_loopback_http_url(route_selection.sidecar_url or ""):
+                # NB: resolve_claude_route already defaults an UNSET URL to the
+                # loopback default, so an empty value here means the operator
+                # explicitly set PHASE_LOOP_CLAUDE_CHANNEL_URL= (blank) — that is a
+                # misconfiguration and must block, not silently use the default.
+                route_error = (
+                    "Claude Channel route requires a loopback sidecar URL "
+                    f"({route_selection.sidecar_url or '<empty>'}); remote/non-loopback transport is blocked."
+                )
         if policy_error is not None:
             return LaunchSpec(
                 executor="claude",
@@ -753,7 +770,7 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
                     "claude-channel",
                     "send",
                     "--sidecar-url",
-                    route_selection.sidecar_url or "http://127.0.0.1:8765",
+                    route_selection.sidecar_url or DEFAULT_CLAUDE_CHANNEL_SIDECAR_URL,
                     "--session-id",
                     route_selection.session_id or "",
                 ],
@@ -1356,7 +1373,7 @@ def _launch_claude_channel(spec: LaunchSpec, *, log_path: Path | None) -> Launch
     session_id = spec.claude_channel_session_id or "unknown"
     try:
         route_result = ChannelSidecarClient(
-            base_url=spec.claude_sidecar_url or "http://127.0.0.1:8765",
+            base_url=spec.claude_sidecar_url or DEFAULT_CLAUDE_CHANNEL_SIDECAR_URL,
             session_id=session_id,
             bearer_token=os.environ.get(CLAUDE_CHANNEL_BEARER_TOKEN_ENV),
             timeout_seconds=float(spec.launch_timeout_seconds or 1800),

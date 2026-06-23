@@ -49,6 +49,39 @@ class ClaudeChannelSessionLaunchTest(unittest.TestCase):
         for forbidden in ("bearer", "token", "api_key", "oauth", "provider_payload", "terminal transcript"):
             self.assertNotIn(forbidden, rendered.lower())
 
+    def test_dry_run_metadata_does_not_leak_auth_payload_secrets(self):
+        # IF-0-DFCHPREFLIGHT-1: the operator-safe dry-run probe records auth posture
+        # as metadata only — a token/bearer present in the raw `claude auth status`
+        # payload must never appear in the dry-run output.
+        secret = "tok-SUPERSECRET-deadbeef"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(launch.shutil, "which", return_value="/usr/bin/claude"), mock.patch.object(
+                launch.subprocess,
+                "run",
+                side_effect=[
+                    mock.Mock(
+                        stdout=json.dumps(
+                            {
+                                "loggedIn": True,
+                                "apiProvider": "claude",
+                                "authMethod": "subscription",
+                                "token": secret,
+                                "bearer": secret,
+                                "oauth": {"access_token": secret},
+                            }
+                        ),
+                        returncode=0,
+                    ),
+                    mock.Mock(stdout="Usage: claude", returncode=0),
+                ],
+            ):
+                metadata = launch.session_metadata(Path(tmpdir))
+
+        rendered = json.dumps(metadata, sort_keys=True)
+        self.assertNotIn(secret, rendered)
+        self.assertEqual(metadata["auth_posture"]["status"], "authenticated")
+        self.assertEqual(metadata["auth_posture"]["method"], "subscription")
+
     def test_preflights_block_missing_auth_channel_and_pmcp_pending_approval(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir)

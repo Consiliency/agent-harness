@@ -15,6 +15,7 @@ from socketserver import TCPServer
 from typing import Any
 from urllib import error, request
 from urllib.parse import urlparse
+import ipaddress
 
 
 ACK_POLICY_TOOL_REQUIRED = "tool_ack_required"
@@ -536,8 +537,7 @@ class ChannelSidecarClient:
         poll_interval_seconds: float = 0.25,
         opener: Any | None = None,
     ) -> None:
-        parsed = urlparse(base_url)
-        if parsed.scheme != "http" or not parsed.hostname or not is_loopback_host(parsed.hostname):
+        if not is_loopback_http_url(base_url):
             raise ValueError("claude channel client requires a loopback http base_url")
         if not session_id:
             raise ValueError("session_id is required")
@@ -662,7 +662,29 @@ class ChannelSidecarClient:
 
 def is_loopback_host(host: str) -> bool:
     normalized = host.strip().lower()
-    return normalized in {"127.0.0.1", "localhost", "::1"}
+    if normalized == "localhost":
+        return True
+    # Accept the full loopback ranges (127.0.0.0/8, ::1), not just 127.0.0.1, so a
+    # sidecar bound to e.g. 127.0.0.2 is correctly classified as loopback. Anything
+    # that is not a parseable loopback IP (or `localhost`) is non-loopback.
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def is_loopback_http_url(url: str) -> bool:
+    """True iff `url` is an http URL bound to a loopback host.
+
+    Single source of truth for the Channel sidecar transport posture: a Channel
+    route must point at a loopback sidecar (no remote/non-loopback transport).
+    Used by both the build-time route preflight (launcher) and the sidecar client.
+    """
+
+    if not url:
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme == "http" and bool(parsed.hostname) and is_loopback_host(parsed.hostname)
 
 
 def make_handler(sidecar: ChannelSidecar) -> type[BaseHTTPRequestHandler]:

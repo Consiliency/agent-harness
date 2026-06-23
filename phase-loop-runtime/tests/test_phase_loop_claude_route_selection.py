@@ -111,6 +111,66 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertEqual(spec.command[:2], ["claude-channel", "send"])
         self.assertNotIn("-p", spec.command)
 
+    def test_channel_preflight_prereqs_block_without_print_command(self):
+        # IF-0-DFCHPREFLIGHT-1: each missing/blocked Channel prerequisite reduces to
+        # a metadata-only route blocker at BUILD time — never a claude -p command.
+        cases = {
+            "missing_session_id": {"PHASE_LOOP_CLAUDE_ROUTE": "channel"},
+            "non_loopback_sidecar": {
+                "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+                "PHASE_LOOP_CHANNEL_SESSION_ID": "s1",
+                "PHASE_LOOP_CLAUDE_CHANNEL_URL": "http://10.0.0.9:8765",
+            },
+            "https_non_loopback_transport": {
+                "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+                "PHASE_LOOP_CHANNEL_SESSION_ID": "s1",
+                "PHASE_LOOP_CLAUDE_CHANNEL_URL": "https://127.0.0.1:8765",  # https is not the loopback-http transport
+            },
+            "explicitly_blank_url": {
+                "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+                "PHASE_LOOP_CHANNEL_SESSION_ID": "s1",
+                "PHASE_LOOP_CLAUDE_CHANNEL_URL": "",  # blank env (operator typo) must block, not silently use the default
+            },
+        }
+        for name, env in cases.items():
+            with self.subTest(case=name):
+                # Clear inherited channel env so each case is isolated.
+                base = {
+                    k: ""
+                    for k in (
+                        "PHASE_LOOP_CHANNEL_SESSION_ID",
+                        "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID",
+                        "PHASE_LOOP_CLAUDE_CHANNEL_URL",
+                    )
+                }
+                with patch.dict(os.environ, {**base, **env}, clear=False):
+                    spec = build_launch_spec(self._request(Path("/tmp/repo")))
+                self.assertFalse(spec.available, name)
+                self.assertEqual(spec.claude_route, "claude_channel", name)
+                self.assertNotIn("-p", spec.command, name)
+                self.assertNotIn("--output-format", spec.command, name)
+                self.assertNotIn("--print", spec.command, name)
+                self.assertIsInstance(spec.reason, str)
+
+    def test_channel_loopback_variants_are_accepted(self):
+        # 127.0.0.0/8 (incl. non-.1) / localhost are accepted — the block targets
+        # non-loopback / non-http transports, not valid loopback sidecars.
+        for url in ("http://127.0.0.1:8765", "http://localhost:8765", "http://127.0.0.2:8765"):
+            with self.subTest(url=url):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+                        "PHASE_LOOP_CHANNEL_SESSION_ID": "s1",
+                        "PHASE_LOOP_CLAUDE_CHANNEL_URL": url,
+                    },
+                    clear=False,
+                ):
+                    spec = build_launch_spec(self._request(Path("/tmp/repo")))
+                self.assertTrue(spec.available, url)
+                self.assertEqual(spec.command[:2], ["claude-channel", "send"])
+                self.assertNotIn("-p", spec.command)
+
     def test_invalid_route_blocks_without_print_fallback(self):
         for route in ("tui",):
             with self.subTest(route=route), patch.dict(os.environ, {"PHASE_LOOP_CLAUDE_ROUTE": route}, clear=False):
