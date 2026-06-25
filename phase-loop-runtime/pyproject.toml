@@ -19,24 +19,30 @@ dependencies = [
 phase-loop = "phase_loop_runtime.cli:main"
 codex-phase-loop = "phase_loop_runtime.cli:main"
 
+# Entry-point plugin seams (DECOUPLE). Optional integrations register under
+# `phase_loop_runtime.profile_commands` to add domain commands and under
+# `phase_loop_runtime.skill_sources` to contribute skill source roots. The generic
+# CLI loads these lazily; with an empty group it exposes no domain command (the
+# seam is proven by the Gate-A clean-room harness, which strips the group from the
+# installed venv). DECOUPLE is an in-place decouple: the in-tree dotfiles profile
+# is registered here so a normal fleet install keeps `adoption-bundle`/`sync-skills`/
+# `build-bundle`/`hotfix` working with no env var. Physically splitting this profile
+# (and its skill roots) into a separate distribution is deferred to EXTRACT.
+[project.entry-points."phase_loop_runtime.profile_commands"]
+dotfiles = "phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands"
+
+[project.entry-points."phase_loop_runtime.skill_sources"]
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# baml_src ships as package-data inside phase_loop_runtime so it travels in the
+# wheel and resolves via importlib.resources regardless of installer (DECOUPLE SL-0).
 [tool.setuptools.package-data]
-phase_loop_runtime = ["py.typed"]
+phase_loop_runtime = ["py.typed", "baml_src/*.baml"]
 
 [tool.setuptools.data-files]
 "share/phase-loop-runtime/protocol" = ["protocol/protocol.md"]
-"share/phase-loop-runtime/baml_src" = [
-    "baml_src/emit_phase_closeout.baml",
-    "baml_src/dotfiles_adoption_manifest.baml",
-    "baml_src/dotfiles_runtime_projection.baml",
-    "baml_src/dotfiles_plan_manifest.baml",
-    "baml_src/dotfiles_c4_document.baml",
-    "baml_src/dotfiles_task_catalog.baml",
-    "baml_src/evaluate_suspected_fake_evidence.baml",
-    "baml_src/verification_evidence.baml",
-]

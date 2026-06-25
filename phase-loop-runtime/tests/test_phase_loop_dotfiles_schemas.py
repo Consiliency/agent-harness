@@ -20,7 +20,7 @@ FIXTURES = {
         "schema_refs": [
             {
                 "class_name": "DotfilesAdoptionManifest",
-                "source_path": "vendor/phase-loop-runtime/baml_src/dotfiles_adoption_manifest.baml",
+                "source_path": "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/dotfiles_adoption_manifest.baml",
                 "digest": "sha256:example",
             }
         ],

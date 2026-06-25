@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import functools
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+_LOGGER = logging.getLogger("phase_loop_runtime.skill_inventory")
 
 
 HARNESS_INSTALL_ROOT_HINTS = {
@@ -23,23 +27,57 @@ HARNESS_SOURCE_ROOTS = {
     "manual": (),
 }
 
-def _runner_repo_root() -> Path:
+def _runner_repo_root() -> Path | None:
     """Resolve the runner's source-of-truth repo (where HARNESS_SOURCE_ROOTS live).
 
-    When the package is editable-installed inside the source tree, parents[4]
-    points at the dotfiles root. When it's pip-installed in user-site,
-    parents[4] is unhelpful (~/.local/ etc.). Operators and tests can override
-    via PHASE_LOOP_RUNNER_REPO_ROOT.
+    DECOUPLE SL-2: the generic runtime no longer walks up the filesystem into the
+    dotfiles tree (the old fleet-relative fallback). Source skill roots are an *optional*
+    integration: operators/tests set ``PHASE_LOOP_RUNNER_REPO_ROOT`` and profiles
+    contribute roots via the ``phase_loop_runtime.skill_sources`` entry-point group
+    (see :func:`iter_skill_source_roots`). With neither configured -- e.g. a clean
+    wheel install -- this returns ``None`` and source-skill resolution yields
+    nothing rather than pointing at an unrelated path.
     """
     import os
     env = os.environ.get("PHASE_LOOP_RUNNER_REPO_ROOT")
     if env:
         return Path(env).expanduser().resolve()
-    return Path(__file__).resolve().parents[4]
+    return None
 
 
-# Back-compat: module-level constant for callers that imported it directly.
-RUNNER_REPO_ROOT = _runner_repo_root()
+@functools.lru_cache(maxsize=1)
+def iter_skill_source_roots() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Yield (harness_target, source_roots) pairs from installed skill-source plugins.
+
+    Profiles register a callable under the ``phase_loop_runtime.skill_sources``
+    entry-point group returning a ``{harness_target: (root, ...)}`` mapping. A
+    clean runtime with no such plugin installed yields nothing -- discovery is
+    entry-point-driven, never a fleet-path walk.
+
+    Cached: the installed entry-point set is process-constant. Tests that monkeypatch
+    ``importlib.metadata.entry_points`` must call ``iter_skill_source_roots.cache_clear()``.
+    """
+    import importlib.metadata
+
+    collected: dict[str, tuple[str, ...]] = {}
+    try:
+        entry_points = importlib.metadata.entry_points(group="phase_loop_runtime.skill_sources")
+    except TypeError:  # pragma: no cover - py<3.10 selectable API
+        entry_points = importlib.metadata.entry_points().get("phase_loop_runtime.skill_sources", [])
+    for entry_point in entry_points:
+        try:
+            provider = entry_point.load()
+            mapping = provider() if callable(provider) else provider
+        except Exception as exc:  # a broken plugin must not crash discovery -- but be loud
+            _LOGGER.warning("failed to load skill-source plugin %r: %s", getattr(entry_point, "name", entry_point), exc)
+            continue
+        if not isinstance(mapping, dict):
+            continue
+        for harness_target, roots in mapping.items():
+            collected[harness_target] = (*collected.get(harness_target, ()), *tuple(roots))
+    return tuple(collected.items())
+
+
 BRIDGE_SKILL_NAMES = {
     "codex": "codex-phase-loop",
     "claude": "claude-phase-loop",
@@ -207,15 +245,19 @@ def discover_installed_skill_roots(harness_target: str) -> tuple[str, ...]:
 
 
 def resolve_source_skill_dir(repo: Path, harness_target: str, skill_name: str) -> Path | None:
-    for root in HARNESS_SOURCE_ROOTS.get(harness_target, ()):
+    plugin_roots = dict(iter_skill_source_roots()).get(harness_target, ())
+    builtin_roots = HARNESS_SOURCE_ROOTS.get(harness_target, ())
+    source_roots = (*builtin_roots, *plugin_roots)
+    for root in source_roots:
         candidate = repo / root / skill_name
         if candidate.is_dir():
             return candidate.resolve()
     runner_root = _runner_repo_root()
-    for root in HARNESS_SOURCE_ROOTS.get(harness_target, ()):
-        candidate = runner_root / root / skill_name
-        if candidate.is_dir():
-            return candidate.resolve()
+    if runner_root is not None:
+        for root in source_roots:
+            candidate = runner_root / root / skill_name
+            if candidate.is_dir():
+                return candidate.resolve()
     return None
 
 

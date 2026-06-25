@@ -102,7 +102,7 @@ Required fields:
 
 The frozen target-surface vocabulary for dotfiles-hosted harness spec work is
 `shared/phase-loop/protocol.md`, `vendor/phase-loop-runtime/protocol/protocol.md`,
-`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`,
+`vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml`,
 `codex-config/skills/**`, `claude-config/claude-skills/**`,
 `gemini-config/skills/**`, `opencode-config/skills/**`,
 `vendor/phase-loop-skills/**`, and `vendor/phase-loop-runtime/tests/**`.
@@ -445,7 +445,7 @@ paraphrased.
 ## Dotfiles Schema Pack
 
 The dotfiles BAML schema pack lives under
-`vendor/phase-loop-runtime/baml_src/` and freezes the direct import contracts
+`vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/` and freezes the direct import contracts
 for downstream consumers. The authority class names are
 `DotfilesAdoptionManifest`, `DotfilesRuntimeProjection`,
 `DotfilesC4Document`, and `DotfilesTaskCatalog`.
@@ -471,7 +471,7 @@ schema authority; the `.baml` files remain the schema source of truth.
 ### Adoption Bundle Lifecycle
 
 The runtime exposes `phase-loop adoption-bundle status --repo <path>` to compare
-current `vendor/phase-loop-runtime/baml_src/*.baml` digests with
+current `vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/*.baml` digests with
 `docs/adoption/dotfiles-adoption-bundle.json`. It exits `0` when fresh, `1`
 when stale, and `2` when the bundle or schema contract cannot be loaded.
 `phase-loop adoption-bundle refresh --repo <path>` regenerates that JSON bundle
@@ -1238,7 +1238,7 @@ automation fields before reducer logic runs.
 
 BAMLBASE moves the closeout-emission boundary to the declarative
 `EmitPhaseCloseout` function in
-`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml`. The BAML source
+`vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml`. The BAML source
 defines `PhaseLoopCloseoutV1` with the same root fields as the NATIVE closeout
 schema: `terminal_status`, `verification_status`, `dirty_paths`,
 `produced_if_gates`, `next_action`, blocker metadata, and
@@ -1318,7 +1318,7 @@ closeout literals into nearby statuses.
 
 ## Schema-Flow Architecture
 
-`vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` is the canonical
+`vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml` is the canonical
 closeout contract. `phase_loop_runtime.baml_modular.export_function_schema(
 "EmitPhaseCloseout")` reads that BAML function, exports the `PhaseLoopCloseoutV1`
 object shape, applies documented Codex/Claude JSON Schema dialect

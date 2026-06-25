@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shlex
 import sys
 import time
 from pathlib import Path
 
-from .adoption_bundle import adoption_bundle_status, refresh_adoption_bundle
-from .build_bundle import DEFAULT_SOURCES, build_bundle
+_LOGGER = logging.getLogger("phase_loop_runtime.cli")
+
 from .closeout import build_phase_loop_closeout
 from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
@@ -17,7 +18,6 @@ from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
 from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, utc_now
-from .maintenance import MaintenanceOptions, SyncSkillsOptions, sync_bridge_skills
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import append_work_unit_metric, build_notification_payload, build_terminal_summary, build_work_unit_metric, hotfix_run_artifacts, run_notification_command
@@ -27,13 +27,142 @@ from .provenance import ValidationFinding, event_provenance, snapshot_provenance
 from .reconcile import reconcile
 from .render import render_archive_result, render_skill_sync_result, render_state_inspection, render_status
 from .runner import run_loop, status_snapshot
-from .runtime_projection import build_runtime_projection
 from .skill_install import actions_to_json, install_skills
+# DECOUPLE SL-1: the dotfiles-domain modules (adoption_bundle, build_bundle,
+# maintenance) and runtime_projection are NOT imported at module level. The
+# generic CLI registers no dotfiles-domain command at import; those commands are
+# registered by the dotfiles-profile plugin (loaded via the
+# phase_loop_runtime.profile_commands entry-point group or the
+# PHASE_LOOP_PROFILE_PLUGINS opt-in), and the handlers that remain in this module
+# import their dotfiles dependencies lazily.
 from .state import write_state
 from .state_degradation import clear as clear_degradation
 from .state_ops import archive_state, inspect_state
 from .verification_evidence import ARTIFACT_NAME, LOG_NAME, detect_changed_dependency_manifests, resolve_install_command, run_verification, validate_verification_artifact
 from . import __version__
+
+
+def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> None:
+    """Add the shared per-subcommand arguments.
+
+    Factored out of build_parser() so the dotfiles-profile plugin (DECOUPLE SL-1)
+    can attach the identical common args to the commands it registers.
+    """
+    if name == "closeout-drift-audit":
+        sub.add_argument("--repo", action="append", help="Repo to audit. Repeat for cross-repo aggregation.")
+    else:
+        sub.add_argument("--repo")
+    sub.add_argument("--roadmap")
+    sub.add_argument("--phase")
+    sub.add_argument(
+        "--max-phases",
+        type=int,
+        help="Maximum dispatched actions by default; combine with --full-phase to count complete phase cycles.",
+    )
+    sub.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES))
+    sub.add_argument("--model")
+    sub.add_argument("--effort")
+    sub.add_argument("--executor", choices=EXECUTORS)
+    sub.add_argument("--command-name")
+    sub.add_argument("--command-template")
+    sub.add_argument("--claude-execution-mode", choices=CLAUDE_EXECUTION_MODES)
+    sub.add_argument("--allow-executor", action="append", default=[])
+    sub.add_argument("--fallback-executor", action="append", default=[])
+    sub.add_argument("--disable-executor", action="append", default=[])
+    sub.add_argument("--require-capability", action="append", default=[])
+    sub.add_argument("--json", action="store_true")
+    sub.add_argument("--dry-run", action="store_true")
+    sub.add_argument("--observe", action="store_true", help="Accepted for compatibility; launch artifacts are written by default.")
+    sub.add_argument("--no-observe", action="store_true", help="Disable launch log and heartbeat artifacts.")
+    sub.add_argument("--stream-output", action="store_true")
+    sub.add_argument("--bypass-approvals", action="store_true")
+    sub.add_argument("--heartbeat-interval-seconds", type=int)
+    sub.add_argument("--quiet-warning-seconds", type=int)
+    sub.add_argument("--quiet-blocker-seconds", type=int)
+    sub.add_argument("--no-heartbeat", action="store_true")
+    sub.add_argument("--work-unit-mode", action="store_true")
+    sub.add_argument("--source-bundle")
+    sub.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default=argparse.SUPPRESS)
+    sub.add_argument(
+        "--lane-scheduler",
+        choices=LANE_SCHEDULER_MODES,
+        dest="lane_scheduler_mode",
+        default=argparse.SUPPRESS,
+    )
+
+
+def _profile_command_registrars():
+    """Yield profile-command registrar callables.
+
+    Sources (DECOUPLE SL-1):
+      1. the ``phase_loop_runtime.profile_commands`` entry-point group (declared by
+         an installed profile distribution); and
+      2. the explicit ``PHASE_LOOP_PROFILE_PLUGINS`` opt-in -- a comma-separated
+         list of ``module:callable`` specs -- used in source-mode runs and tests
+         where no distribution metadata declares the group. (Comma, not the path
+         separator, since ``module:callable`` already contains a colon.)
+
+    With neither configured (e.g. a clean wheel install with no profile plugin),
+    this yields nothing and the generic CLI exposes no dotfiles-domain command.
+    """
+    import importlib
+    import importlib.metadata
+
+    # Dedupe by the loaded callable's identity: the same registrar can be reachable
+    # via BOTH the entry-point group (installed dist-info) and the
+    # PHASE_LOOP_PROFILE_PLUGINS opt-in (e.g. the in-tree dotfiles profile is
+    # registered under the group AND opted in by the test conftest). Without this,
+    # the registrar would run twice and add each subparser twice.
+    registrars: list = []
+    seen: set = set()
+
+    def _add(registrar) -> None:
+        key = id(registrar)
+        if key in seen:
+            return
+        seen.add(key)
+        registrars.append(registrar)
+
+    try:
+        entry_points = importlib.metadata.entry_points(group="phase_loop_runtime.profile_commands")
+    except TypeError:  # pragma: no cover - py<3.10 selectable API
+        entry_points = importlib.metadata.entry_points().get("phase_loop_runtime.profile_commands", [])
+    for entry_point in entry_points:
+        try:
+            _add(entry_point.load())
+        except Exception as exc:  # a broken plugin must not break the CLI -- but be loud
+            _LOGGER.warning("failed to load profile-command plugin %r: %s", getattr(entry_point, "name", entry_point), exc)
+
+    opt_in = os.environ.get("PHASE_LOOP_PROFILE_PLUGINS", "")
+    for spec in opt_in.split(","):
+        spec = spec.strip()
+        if not spec or ":" not in spec:
+            continue
+        module_name, _, attr = spec.partition(":")
+        try:
+            module = importlib.import_module(module_name)
+            _add(getattr(module, attr))
+        except Exception as exc:  # a bad opt-in spec must not break the CLI -- but be loud
+            _LOGGER.warning("failed to load profile-command plugin from opt-in %r: %s", spec, exc)
+    return tuple(registrars)
+
+
+def _register_profile_commands(subparsers) -> None:
+    for registrar in _profile_command_registrars():
+        registrar(subparsers)
+
+
+def build_parser_with_profile(opt_in: str) -> argparse.ArgumentParser:
+    """Build a parser with a specific profile plugin opt-in (test/tooling helper)."""
+    previous = os.environ.get("PHASE_LOOP_PROFILE_PLUGINS")
+    os.environ["PHASE_LOOP_PROFILE_PLUGINS"] = opt_in
+    try:
+        return build_parser()
+    finally:
+        if previous is None:
+            os.environ.pop("PHASE_LOOP_PROFILE_PLUGINS", None)
+        else:
+            os.environ["PHASE_LOOP_PROFILE_PLUGINS"] = previous
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,54 +225,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "sync-skills", "build-bundle", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "adoption-bundle", "hotfix", "evidence-audit", "closeout-drift-audit", "validate-roadmap"):
+    # DECOUPLE SL-1: the dotfiles-domain commands (adoption-bundle, sync-skills,
+    # build-bundle, hotfix) are NOT in this loop. They are registered only by the
+    # dotfiles-profile plugin (see _register_profile_commands below), so the
+    # generic CLI exposes none of them at import.
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "validate-roadmap"):
         sub = subparsers.add_parser(name)
         if name == "execute":
             sub.add_argument("phase_arg", metavar="phase", help="The phase alias to execute.")
             sub.add_argument("--bundle", help="Path to a phase-source-bundle.v1 artifact.")
             sub.add_argument("--output", help="Path where exactly one closeout JSON file must be written.")
             sub.add_argument("--mode", help="The execution mode: execute, repair, or review.")
-        if name == "closeout-drift-audit":
-            sub.add_argument("--repo", action="append", help="Repo to audit. Repeat for cross-repo aggregation.")
-        else:
-            sub.add_argument("--repo")
-        sub.add_argument("--roadmap")
-        sub.add_argument("--phase")
-        sub.add_argument(
-            "--max-phases",
-            type=int,
-            help="Maximum dispatched actions by default; combine with --full-phase to count complete phase cycles.",
-        )
-        sub.add_argument("--model-profile", choices=tuple(DEFAULT_PROFILES))
-        sub.add_argument("--model")
-        sub.add_argument("--effort")
-        sub.add_argument("--executor", choices=EXECUTORS)
-        sub.add_argument("--command-name")
-        sub.add_argument("--command-template")
-        sub.add_argument("--claude-execution-mode", choices=CLAUDE_EXECUTION_MODES)
-        sub.add_argument("--allow-executor", action="append", default=[])
-        sub.add_argument("--fallback-executor", action="append", default=[])
-        sub.add_argument("--disable-executor", action="append", default=[])
-        sub.add_argument("--require-capability", action="append", default=[])
-        sub.add_argument("--json", action="store_true")
-        sub.add_argument("--dry-run", action="store_true")
-        sub.add_argument("--observe", action="store_true", help="Accepted for compatibility; launch artifacts are written by default.")
-        sub.add_argument("--no-observe", action="store_true", help="Disable launch log and heartbeat artifacts.")
-        sub.add_argument("--stream-output", action="store_true")
-        sub.add_argument("--bypass-approvals", action="store_true")
-        sub.add_argument("--heartbeat-interval-seconds", type=int)
-        sub.add_argument("--quiet-warning-seconds", type=int)
-        sub.add_argument("--quiet-blocker-seconds", type=int)
-        sub.add_argument("--no-heartbeat", action="store_true")
-        sub.add_argument("--work-unit-mode", action="store_true")
-        sub.add_argument("--source-bundle")
-        sub.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default=argparse.SUPPRESS)
-        sub.add_argument(
-            "--lane-scheduler",
-            choices=LANE_SCHEDULER_MODES,
-            dest="lane_scheduler_mode",
-            default=argparse.SUPPRESS,
-        )
+        _add_common_subparser_args(sub, name=name)
         if name in {"run", "resume", "dry-run"}:
             sub.add_argument("--closeout-mode", choices=CLOSEOUT_MODES)
             sub.add_argument("--force-replan", action="store_true")
@@ -184,24 +277,6 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--apply-skill-edits", action="store_true")
             sub.add_argument("--allow-skill", action="append", default=())
             sub.add_argument("--improvement-plan")
-        if name == "sync-skills":
-            sub.description = "Audit or repair harness-local phase-loop bridge skills for manual reentry."
-            sub.add_argument("--harness", action="append", default=[], choices=("codex", "claude", "gemini", "opencode"))
-            sub.add_argument("--check", action="store_true")
-            sub.add_argument("--apply", action="store_true")
-        if name == "build-bundle":
-            sub.description = "Regenerate the harness-neutral phase-loop skills bundle from canonical harness roots."
-            sub.add_argument(
-                "--source",
-                action="append",
-                help=(
-                    "Canonical source root. Repeat for claude, codex, gemini, and opencode. "
-                    "Defaults: " + ", ".join(DEFAULT_SOURCES.values())
-                ),
-            )
-            sub.add_argument("--destination", default="vendor/phase-loop-skills")
-            sub.add_argument("--apply", action="store_true", help="Write generated bundle files. Without --apply, this command is read-only.")
-            sub.add_argument("--force", action="store_true", help="Rewrite generated outputs even when content is unchanged.")
         if name == "validate-roadmap":
             sub.description = "Mechanically lint a phase-plan roadmap spec (headings, aliases, IF-gates, DAG, lane hints)."
             sub.add_argument("roadmap_path", nargs="?", help="Path to the roadmap spec. Falls back to --roadmap / auto-detection.")
@@ -227,14 +302,6 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--backup-suffix", default=".bak-before-def4-migrate")
         if name == "init":
             sub.add_argument("--install-hooks", action="store_true", help="Install opt-in local git hooks for this repo.")
-        if name == "adoption-bundle":
-            sub.description = "Check or refresh the committed dotfiles adoption bundle."
-            sub.add_argument("adoption_bundle_action", choices=("status", "refresh"))
-        if name == "hotfix":
-            sub.description = "Run a bounded emergency hotfix through runner-owned verification evidence."
-            sub.add_argument("--reason", help="Non-secret reason recorded in the hotfix closeout event.")
-            sub.add_argument("--plan", help="Path to a hotfix stub containing a verification_command field.")
-            sub.add_argument("--init-stub", help="Write a minimal hotfix stub and exit without executing.")
         if name == "archive-state":
             sub.add_argument("--reason")
         if name == "reconcile":
@@ -331,6 +398,9 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Audit phase-loop closeout literals for drift from runtime allowlists."
             sub.add_argument("--days", type=int, default=7, help="Lookback window in days. Default 7.")
             sub.add_argument("--scope", choices=("closeout", "all-events"), default="closeout", help="Audit closeout payloads by default; use all-events for forensic scans.")
+    # DECOUPLE SL-1: dotfiles-domain commands are added here, only when a profile
+    # plugin is installed/opted-in. A clean wheel registers none.
+    _register_profile_commands(subparsers)
     return parser
 
 
@@ -385,12 +455,14 @@ def main(argv: list[str] | None = None) -> int:
                 _warn_roadmap_validation(select_roadmap(audit_repo, args.roadmap))
         return _closeout_drift_audit_command(args=args, as_json=as_json)
     repo = resolve_repo(args.repo or ".")
+    # DECOUPLE SL-1: profile-plugin commands (adoption-bundle, sync-skills,
+    # build-bundle, hotfix) register a `func` default and are dispatched here,
+    # so this generic dispatcher never names a dotfiles-domain command.
+    profile_func = getattr(args, "func", None)
+    if profile_func is not None:
+        return profile_func(repo=repo, args=args, as_json=as_json)
     if command == "init":
         return _init_command(repo=repo, dry_run=bool(args.dry_run), as_json=as_json, install_hooks=bool(getattr(args, "install_hooks", False)))
-    if command == "adoption-bundle":
-        return _adoption_bundle_command(repo=repo, action=args.adoption_bundle_action, as_json=as_json)
-    if command == "hotfix":
-        return _hotfix_command(repo=repo, args=args, as_json=as_json)
     if command == "evidence-audit":
         if args.roadmap:
             _warn_roadmap_validation(select_roadmap(repo, args.roadmap))
@@ -453,40 +525,6 @@ def main(argv: list[str] | None = None) -> int:
         # Map 'execute' subcommand to the requested mode action
         command = mode
 
-    if command == "sync-skills":
-        harnesses = tuple(args.harness or ("codex", "claude", "gemini", "opencode"))
-        summary = sync_bridge_skills(repo, SyncSkillsOptions(harnesses=harnesses, apply=bool(args.apply)))
-        print(render_skill_sync_result(summary, as_json=as_json))
-        blocker = summary.get("blocker")
-        return 1 if isinstance(blocker, dict) and blocker.get("blocker_class") else 0
-    if command == "build-bundle":
-        sources = list(args.source or DEFAULT_SOURCES.values())
-        resolved_sources = [repo / source if not Path(source).is_absolute() else Path(source) for source in sources]
-        destination = Path(args.destination)
-        if not destination.is_absolute():
-            destination = repo / destination
-        dry_run = bool(args.dry_run or not args.apply)
-        result = build_bundle(
-            resolved_sources,
-            destination,
-            dry_run=dry_run,
-            apply=bool(args.apply),
-            force=bool(args.force),
-        )
-        if as_json or dry_run:
-            print(result.to_json())
-        else:
-            verb = "applied" if result.applied else "planned"
-            print(f"build-bundle {verb}: {len(result.files_written)} file changes")
-            for skill in result.skills_regenerated:
-                print(f"regenerated\t{skill}")
-            for path in result.overrides_written:
-                print(f"override\t{path}")
-            for skipped in result.skills_skipped:
-                print(f"skipped\t{skipped.skill}\tmissing={','.join(skipped.missing_harnesses)}")
-            for warning in result.warnings:
-                print(f"warning\t{warning.skill}\t{warning.message}")
-        return 0
     if command == "install":
         if bool(getattr(args, "status", False)):
             payload = build_install_status(repo, harnesses=(args.harness,) if args.harness else None)
@@ -585,6 +623,10 @@ def main(argv: list[str] | None = None) -> int:
             print(_tier_3_history(repo, as_json=as_json))
             return 0
         if bool(getattr(args, "runtime_projection", False)):
+            # DECOUPLE SL-1: lazy import keeps runtime_projection out of
+            # `import phase_loop_runtime.cli`.
+            from .runtime_projection import build_runtime_projection
+
             projection = build_runtime_projection(
                 repo,
                 roadmap,
@@ -648,6 +690,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if effective_phase_scheduler_mode == "off":
             effective_phase_scheduler_mode = "serialized"
+
+    # DECOUPLE SL-1: lazy import keeps the maintenance module out of
+    # `import phase_loop_runtime.cli` (used here only to carry skill-maintenance
+    # options through to the run loop).
+    from .maintenance import MaintenanceOptions
 
     snapshot, results = run_loop(
         repo=repo,
@@ -882,6 +929,10 @@ def _run_returncode(snapshot: StateSnapshot, results: list) -> int:
 
 
 def _adoption_bundle_command(*, repo: Path, action: str, as_json: bool) -> int:
+    # DECOUPLE SL-1: dotfiles-domain import is lazy so `import phase_loop_runtime.cli`
+    # does not pull in adoption_bundle.
+    from .adoption_bundle import adoption_bundle_status, refresh_adoption_bundle
+
     try:
         if action == "status":
             payload = adoption_bundle_status(repo)
@@ -905,6 +956,50 @@ def _adoption_bundle_command(*, repo: Path, action: str, as_json: bool) -> int:
         if payload.get("error"):
             print(f"error: {payload['error']}", file=sys.stderr)
     return code
+
+
+def _sync_skills_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    # DECOUPLE SL-1: lazy dotfiles-domain import.
+    from .maintenance import SyncSkillsOptions, sync_bridge_skills
+
+    harnesses = tuple(args.harness or ("codex", "claude", "gemini", "opencode"))
+    summary = sync_bridge_skills(repo, SyncSkillsOptions(harnesses=harnesses, apply=bool(args.apply)))
+    print(render_skill_sync_result(summary, as_json=as_json))
+    blocker = summary.get("blocker")
+    return 1 if isinstance(blocker, dict) and blocker.get("blocker_class") else 0
+
+
+def _build_bundle_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:
+    # DECOUPLE SL-1: lazy dotfiles-domain import.
+    from .build_bundle import DEFAULT_SOURCES, build_bundle
+
+    sources = list(args.source or DEFAULT_SOURCES.values())
+    resolved_sources = [repo / source if not Path(source).is_absolute() else Path(source) for source in sources]
+    destination = Path(args.destination)
+    if not destination.is_absolute():
+        destination = repo / destination
+    dry_run = bool(args.dry_run or not args.apply)
+    result = build_bundle(
+        resolved_sources,
+        destination,
+        dry_run=dry_run,
+        apply=bool(args.apply),
+        force=bool(args.force),
+    )
+    if as_json or dry_run:
+        print(result.to_json())
+    else:
+        verb = "applied" if result.applied else "planned"
+        print(f"build-bundle {verb}: {len(result.files_written)} file changes")
+        for skill in result.skills_regenerated:
+            print(f"regenerated\t{skill}")
+        for path in result.overrides_written:
+            print(f"override\t{path}")
+        for skipped in result.skills_skipped:
+            print(f"skipped\t{skipped.skill}\tmissing={','.join(skipped.missing_harnesses)}")
+        for warning in result.warnings:
+            print(f"warning\t{warning.skill}\t{warning.message}")
+    return 0
 
 
 def _hotfix_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> int:

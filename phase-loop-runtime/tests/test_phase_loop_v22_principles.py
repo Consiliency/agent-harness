@@ -14,7 +14,7 @@ from phase_loop_runtime.cli import main
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BAML_SRC = REPO_ROOT / "vendor" / "phase-loop-runtime" / "baml_src"
+BAML_SRC = REPO_ROOT / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src"
 C4_DIR = REPO_ROOT / "docs" / "c4"
 ROADMAP = REPO_ROOT / "specs" / "phase-plans-v22.md"
 FORBIDDEN_SCHEMA_KEYS = {"allOf", "anyOf", "oneOf", "not", "if", "then", "uniqueItems"}

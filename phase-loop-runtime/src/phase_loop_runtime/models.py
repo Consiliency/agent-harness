@@ -250,7 +250,7 @@ SPEC_DELTA_DECISIONS = (
 SPEC_DELTA_TARGET_SURFACES = (
     "shared/phase-loop/protocol.md",
     "vendor/phase-loop-runtime/protocol/protocol.md",
-    "vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml",
+    "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml",
     "codex-config/skills/**",
     "claude-config/claude-skills/**",
     "gemini-config/skills/**",

@@ -26,7 +26,7 @@ class PhaseLoopBamlInjectionTest(unittest.TestCase):
                 )
                 context = bundle.render_context()
                 self.assertIn("EmitPhaseCloseout", context)
-                self.assertIn("vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml", context)
+                self.assertIn("vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml", context)
                 self.assertIn("IF-0-BAMLBASE-1", context)
                 self.assertIn("Phase-loop adapter constraints", context)
 

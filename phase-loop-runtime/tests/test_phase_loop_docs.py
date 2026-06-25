@@ -531,7 +531,7 @@ class PhaseLoopDocsTest(unittest.TestCase):
             "docs/phase-loop/harness-substrate-manifest.md",
             "docs/phase-loop/collaborator-bootstrap.md",
             "shared/phase-loop/protocol.md",
-            "vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml",
+            "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml",
         ):
             self.assertIn(token, text)
 

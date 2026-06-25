@@ -16,7 +16,7 @@ VISIBILITY_CONTRACT = Path("docs/dotfiles-visibility-contract.md")
 C4_DOCUMENT = Path("docs/c4/phase-loop-runtime-c4-document.md")
 TASK_CATALOG = Path("docs/tasks/dotfiles-task-catalog.md")
 RUNTIME_PROJECTION_SURFACE = "phase-loop status --runtime-projection --json"
-BAML_SCHEMA_ROOT = Path("vendor/phase-loop-runtime/baml_src")
+BAML_SCHEMA_ROOT = Path("vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src")
 ADOPTION_BUNDLE_PATH = Path("docs/adoption/dotfiles-adoption-bundle.json")
 
 

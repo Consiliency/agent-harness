@@ -3,8 +3,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-BAML_SOURCE = ROOT / "vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml"
-BAML_SRC_DIR = ROOT / "vendor/phase-loop-runtime/baml_src"
+BAML_SOURCE = ROOT / "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src/emit_phase_closeout.baml"
+BAML_SRC_DIR = ROOT / "vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src"
 
 
 class PhaseLoopBamlSchemaSourceTest(unittest.TestCase):

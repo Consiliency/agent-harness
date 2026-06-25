@@ -46,7 +46,7 @@ class PhaseLoopAdoptionBundleCliTest(unittest.TestCase):
     def test_status_reports_stale_digest_and_exit_one(self):
         with tempfile.TemporaryDirectory() as td:
             repo = self._bundle_repo(Path(td))
-            baml = repo / "vendor" / "phase-loop-runtime" / "baml_src" / "emit_phase_closeout.baml"
+            baml = repo / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src" / "emit_phase_closeout.baml"
             baml.write_text(baml.read_text(encoding="utf-8") + "\n// stale\n", encoding="utf-8")
 
             output = StringIO()
@@ -89,7 +89,7 @@ class PhaseLoopAdoptionBundleCliTest(unittest.TestCase):
             bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
             generated_at = bundle["generated_at"]
             operating_mode = bundle["operating_mode"]
-            baml = repo / "vendor" / "phase-loop-runtime" / "baml_src" / "emit_phase_closeout.baml"
+            baml = repo / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src" / "emit_phase_closeout.baml"
             baml.write_text(baml.read_text(encoding="utf-8") + "\n// refresh\n", encoding="utf-8")
 
             result = refresh_adoption_bundle(repo)
@@ -127,7 +127,7 @@ class PhaseLoopAdoptionBundleCliTest(unittest.TestCase):
             repo = self._hook_repo(Path(td))
             log = repo / "phase-loop.log"
             self._write_fake_phase_loop(repo, log)
-            baml = repo / "vendor" / "phase-loop-runtime" / "baml_src" / "emit_phase_closeout.baml"
+            baml = repo / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src" / "emit_phase_closeout.baml"
             baml.write_text("changed\n", encoding="utf-8")
             subprocess.run(["git", "add", str(baml.relative_to(repo))], cwd=repo, check=True)
 
@@ -146,7 +146,7 @@ class PhaseLoopAdoptionBundleCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = self._hook_repo(Path(td))
             self._write_fake_phase_loop(repo, repo / "phase-loop.log", status_code=2)
-            baml = repo / "vendor" / "phase-loop-runtime" / "baml_src" / "emit_phase_closeout.baml"
+            baml = repo / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src" / "emit_phase_closeout.baml"
             baml.write_text("changed\n", encoding="utf-8")
             subprocess.run(["git", "add", str(baml.relative_to(repo))], cwd=repo, check=True)
             env = os.environ.copy()
@@ -168,8 +168,8 @@ class PhaseLoopAdoptionBundleCliTest(unittest.TestCase):
             destination = repo / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, destination)
-        baml_root = repo / "vendor" / "phase-loop-runtime" / "baml_src"
-        shutil.copytree(ROOT / "vendor" / "phase-loop-runtime" / "baml_src", baml_root)
+        baml_root = repo / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src"
+        shutil.copytree(ROOT / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src", baml_root)
         refresh_adoption_bundle(repo)
         return repo
 
@@ -182,8 +182,8 @@ class PhaseLoopAdoptionBundleCliTest(unittest.TestCase):
         (repo / ".githooks").mkdir()
         shutil.copy2(HOOK, repo / ".githooks" / "pre-commit-adoption-bundle")
         (repo / ".githooks" / "pre-commit-adoption-bundle").chmod(0o755)
-        (repo / "vendor" / "phase-loop-runtime" / "baml_src").mkdir(parents=True)
-        (repo / "vendor" / "phase-loop-runtime" / "baml_src" / "emit_phase_closeout.baml").write_text("initial\n", encoding="utf-8")
+        (repo / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src").mkdir(parents=True)
+        (repo / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src" / "emit_phase_closeout.baml").write_text("initial\n", encoding="utf-8")
         (repo / "docs" / "adoption").mkdir(parents=True)
         (repo / "docs" / "adoption" / "dotfiles-adoption-bundle.json").write_text("{}\n", encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=repo, check=True)

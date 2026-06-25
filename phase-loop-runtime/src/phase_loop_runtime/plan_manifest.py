@@ -11,6 +11,9 @@ from .discovery import PLAN_RE
 
 
 SCHEMA_VERSION = 1
+# Repo-relative default only; resolution always joins this against an explicit
+# repo root supplied by the caller (see _manifest_path) -- never an implicit
+# fleet-absolute hardcode (DECOUPLE SL-2).
 MANIFEST_PATH = PurePosixPath("plans/manifest.json")
 PLAN_TYPES = {"phase", "detailed"}
 PLAN_STATUSES = {"imported", "committed", "executing", "completed", "failed", "orphaned"}

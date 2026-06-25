@@ -115,7 +115,7 @@ def _copy_bundle_inputs(repo: Path) -> None:
         destination = repo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / relative, destination)
-    shutil.copytree(REPO_ROOT / "vendor" / "phase-loop-runtime" / "baml_src", repo / "vendor" / "phase-loop-runtime" / "baml_src")
+    shutil.copytree(REPO_ROOT / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src", repo / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src")
 
 
 class PhaseLoopAdoptionBundleTest(unittest.TestCase):
@@ -148,7 +148,7 @@ class PhaseLoopAdoptionBundleTest(unittest.TestCase):
 
     def test_schema_digests_match_current_baml_bytes(self):
         fixture = _load_fixture()
-        schema_paths = {path.relative_to(REPO_ROOT).as_posix() for path in (REPO_ROOT / "vendor" / "phase-loop-runtime" / "baml_src").glob("*.baml")}
+        schema_paths = {path.relative_to(REPO_ROOT).as_posix() for path in (REPO_ROOT / "vendor" / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "baml_src").glob("*.baml")}
 
         self.assertEqual({ref["source_path"] for ref in fixture["schema_refs"]}, schema_paths)
         for ref in fixture["schema_refs"]:

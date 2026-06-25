@@ -232,8 +232,24 @@ def _is_taxonomy_constant(name: str) -> bool:
 
 
 def _baml_src_dir() -> Path:
+    # Primary: the packaged baml_src shipped as package-data inside
+    # phase_loop_runtime, resolved via importlib.resources so it travels in the
+    # wheel regardless of installer (DECOUPLE SL-0/SL-2). The legacy candidates
+    # are kept as a fallback for editable/source layouts and the old data-files
+    # share/ install, but resolution no longer depends on a repo-relative walk.
+    import importlib.resources
+
+    try:
+        packaged = Path(str(importlib.resources.files("phase_loop_runtime"))) / "baml_src"
+        if (packaged / "emit_phase_closeout.baml").is_file():
+            return packaged
+    except (ModuleNotFoundError, TypeError, FileNotFoundError):
+        pass
     candidates = [
-        Path(__file__).resolve().parents[2] / "baml_src",
+        # In-package source/editable layout (the same dir importlib.resources
+        # resolves once installed). The old repo-root vendor/.../baml_src candidate
+        # was removed in DECOUPLE -- that path no longer exists after the move.
+        Path(__file__).resolve().parent / "baml_src",
         Path(sysconfig.get_paths().get("data", "")) / "share" / "phase-loop-runtime" / "baml_src",
         Path(site.USER_BASE) / "share" / "phase-loop-runtime" / "baml_src",
         Path(__file__).resolve().parents[4] / "share" / "phase-loop-runtime" / "baml_src",

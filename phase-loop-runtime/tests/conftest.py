@@ -5,6 +5,18 @@ import os
 
 import pytest
 
+# DECOUPLE SL-1: the dotfiles-domain CLI commands (adoption-bundle, sync-skills,
+# build-bundle, hotfix) now load only via the dotfiles-profile plugin. The bulk of
+# the suite exercises those commands through build_parser()/main() and expects them
+# present, so opt the dotfiles profile in suite-wide (matching how
+# phase_loop_test_utils pins PHASE_LOOP_RUNNER_REPO_ROOT). Tests that assert the
+# *gating* behavior (test_phase_loop_cli_plugin_load.py) override this explicitly
+# via patch.dict / build_parser_with_profile.
+os.environ.setdefault(
+    "PHASE_LOOP_PROFILE_PLUGINS",
+    "phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands",
+)
+
 
 @pytest.fixture(autouse=True)
 def _pin_claude_print_route_by_default():
