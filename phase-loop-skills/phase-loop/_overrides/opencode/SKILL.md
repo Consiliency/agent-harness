@@ -76,6 +76,17 @@ harness-private state.
 If a downstream roadmap amendment lands, route the next step back through the
 planner and treat older downstream plans as stale.
 
+## Branch-governance preflight
+
+Issue #83: in pipeline-mode with branchgov on (the default), a dispatch switches
+to `consiliency/pipeline/<v>` cut from `origin/main`. If the roadmap is committed
+only on the operator's own branch (unpushed / ahead of `origin/main`), the
+runtime guard refuses cleanly with a `branch_sync_conflict` blocker rather than
+crashing — push the roadmap to the base, or pass `--allow-branchgov` to switch
+anyway (it then still fails cleanly if the roadmap isn't on the base). The
+runtime guard is the authoritative fail-safe; see
+`docs/phase-loop/branchgov-preflight.md`.
+
 
 ## Runner Evidence Contract
 
@@ -84,7 +95,7 @@ Use artifact-backed re-verdicting for blocked gates: a gate changes verdict only
 
 ## Spec Delta Closeout
 
-Phase-loop handoffs and terminal closeouts must preserve one `spec_delta_closeout.v1` decision from the executor: `no_spec_delta`, `roadmap_amendment`, `canonical_spec_update`, `governed_pipeline_refresh`, `mirror_cutover_required`, `dotfiles_skill_source_update`, or `human_source_judgment_required`. Treat missing or malformed spec-closeout evidence as a repairable automation blocker with `blocker_class=contract_bug`, unless the decision is `human_source_judgment_required`. The record is metadata-only with `redaction_posture=metadata_only`: keep target surfaces, evidence paths, decision literals, IF gates, and artifact names, but never raw specification bodies, raw patch bodies, credentials, provider-supplied payloads, local environment values, or ignored/private evidence-source contents.
+Phase-loop handoffs and terminal closeouts must preserve one `spec_delta_closeout.v1` decision from the executor: `no_spec_delta`, `roadmap_amendment`, `canonical_spec_update`, `governed_pipeline_refresh`, `mirror_cutover_required`, `dotfiles_skill_source_update`, or `human_source_judgment_required`. Treat missing or malformed spec-closeout evidence as a repairable automation blocker with `blocker_class=contract_bug`, unless the decision is `human_source_judgment_required`. The record is metadata-only with `redaction_posture=metadata_only`: keep target surfaces, evidence paths, decision literals, IF gates, and artifact names, but never raw specs, raw diffs, credentials, provider payloads, local env values, or ignored/private evidence-source contents.
 
 ## Command Mapping
 

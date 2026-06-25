@@ -42,6 +42,7 @@ Optional flags may be passed through when requested: `--repo`, `--roadmap`, `--p
 2. Confirm `<harness>-phase-loop --help` lists `status`, `resume`, `run`, `dry-run`, and `maintain-skills`.
 3. For commands that need a roadmap, let the CLI discover it unless the user supplied `--roadmap`; do not reimplement roadmap or phase selection in the skill text.
 4. If unrelated dirty work overlaps files the runner would modify, report `human_required=true` with `blocker_class=dirty_worktree_conflict` instead of continuing.
+5. **Branch-governance preflight (issue #83).** In pipeline-mode with branchgov on (the default), a dispatch switches to `consiliency/pipeline/<v>` cut from `origin/main`. If the roadmap is committed only on the operator's own branch (unpushed / ahead of `origin/main`), the runtime guard refuses cleanly with a `branch_sync_conflict` blocker (`human_required=true`) rather than crashing — push the roadmap to the base, or pass `--allow-branchgov` to switch anyway (it then still fails cleanly if the roadmap isn't on the base). The runtime guard is the authoritative fail-safe; see `docs/phase-loop/branchgov-preflight.md`.
 
 
 ## Runner Evidence Contract
