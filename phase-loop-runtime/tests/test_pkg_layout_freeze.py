@@ -55,18 +55,20 @@ class PackageLayoutFreezeTest(unittest.TestCase):
             "pyproject must declare the skill_sources entry-point group",
         )
 
-    def test_dotfiles_plugin_not_self_registered(self):
-        # DECOUPLE acceptance criterion 1: a clean wheel with no plugin must NOT
-        # list dotfiles-domain commands. The in-package plugin is opt-in only, so
-        # the runtime's own pyproject must not register it under the group.
+    def test_in_tree_dotfiles_profile_is_registered(self):
+        # Option A (PR #78 review): DECOUPLE is an *in-place* decouple, so the
+        # in-tree dotfiles profile IS registered under the profile_commands group --
+        # a normal fleet install must keep adoption-bundle/sync-skills/build-bundle/
+        # hotfix working with no env var. (An empty group broke the fleet.) The seam
+        # is proven by Gate-A, which strips the group from the installed dist-info.
         cfg = _config()
         profile_group = cfg.get("project", {}).get("entry-points", {}).get(
             "phase_loop_runtime.profile_commands", {}
         )
         self.assertEqual(
-            profile_group,
-            {},
-            "the runtime must not self-register a profile_commands plugin",
+            profile_group.get("dotfiles"),
+            "phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands",
+            "the in-tree dotfiles profile must be registered under profile_commands (Option A)",
         )
 
     def test_baml_src_lives_inside_the_package(self):
