@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Vendored phase-loop runtime and CLI for dotfiles phase workflows"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Private" }
+license = "Apache-2.0"
 dependencies = [
     "baml-py>=0.222,<0.223",
     "pydantic>=2,<3",
