@@ -866,11 +866,63 @@ def _dirty_evidence_from_metadata(metadata: object) -> dict[str, object] | None:
     return None
 
 
-def _cross_phase_dirty_start_gate(repo: Path, current_phase: str) -> dict[str, object] | None:
+# A phase only loses its cross-phase dirty-path lien when it has been dropped
+# from the active plan: status `unplanned` (the roadmap was edited so the phase
+# no longer exists as a unit) or absent from the roadmap entirely. That stale
+# lien — with no owner left to recover — was the issue #1 dead-end.
+#
+# Every OTHER status keeps its lien (the gate still fires). Do NOT add `unknown`
+# or `complete` here: `reconcile` reclassifies a still-dirty `executing` phase to
+# `unknown` (reconcile.py: `phases[phase] = "unknown" if _dirty(repo) else
+# "executing"`), and the gate only runs on a dirty tree — so `unknown` is exactly
+# the disguise the canonical in-flight hazard wears when the gate fires. A
+# `complete` phase can also legitimately hold preserved-but-uncommitted owned
+# output. Skipping either would neutralize the gate. Firing is no longer a
+# dead-end regardless of status: the refusal message surfaces the
+# `--allow-cross-phase-dirty` bypass, which always dispatches.
+_INACTIVE_DIRTY_OWNER_STATUSES = frozenset({"unplanned"})
+
+
+def _start_gate_recovery_actions(offending_phase: str, offending_status: str) -> list[str]:
+    """Recovery options for a refused start gate, ordered most-reliable first.
+
+    The `--allow-cross-phase-dirty` bypass is the only path *proven* to always
+    dispatch (it skips the gate and records an audited start_gate_bypassed
+    event), so it leads. Committing or stashing the overlapping paths also clears
+    the gate directly. `reconcile --to-status planned` is offered ONLY for a
+    `blocked` offender — the sole status that command accepts — and carries
+    `--allow-dirty`, because the overlapping path is dirty in the tree by
+    definition when the gate fires (otherwise reconcile's dirty-tree guard would
+    reject it too). Recommending a command the downstream guards reject was the
+    issue #1 bug; these actions are all reachable from the refused state.
+    """
+    actions = [
+        'rerun with `phase-loop run --allow-cross-phase-dirty "<reason>"` to '
+        "bypass the gate (records an audited start_gate_bypassed event)",
+        "commit the overlapping path(s), or set them aside with `git stash -u` "
+        "(untracked output is counted as dirty)",
+    ]
+    if offending_status == "blocked":
+        actions.append(
+            f"phase-loop reconcile --phase {offending_phase} "
+            "--to-status planned --allow-dirty --reason <text>"
+        )
+    return actions
+
+
+def _cross_phase_dirty_start_gate(
+    repo: Path,
+    current_phase: str,
+    phase_status: dict[str, str] | None = None,
+) -> dict[str, object] | None:
     current_phase = current_phase.upper()
     current_dirty = set(_dirty_paths(repo))
     if not current_dirty:
         return None
+    status_by_phase = {
+        str(alias).upper(): str(status)
+        for alias, status in (phase_status or {}).items()
+    }
     scanned_events = 0
     phases_seen: set[str] = set()
     for event in list(reversed(read_events(repo)))[:50]:
@@ -884,6 +936,13 @@ def _cross_phase_dirty_start_gate(repo: Path, current_phase: str) -> dict[str, o
         if evidence is None:
             continue
         phases_seen.add(prior_phase)
+        # Only an in-flight phase can hold a dirty-path lien. A phase that is
+        # unplanned/complete/unknown — or no longer in the roadmap at all (status
+        # absent) — has no live claim on the tree, so its stale ownership must not
+        # block dispatch with no recovery path (issue #1).
+        offending_status = status_by_phase.get(prior_phase)
+        if offending_status is None or offending_status in _INACTIVE_DIRTY_OWNER_STATUSES:
+            continue
         candidate_paths = [
             str(path)
             for path in (
@@ -899,15 +958,13 @@ def _cross_phase_dirty_start_gate(repo: Path, current_phase: str) -> dict[str, o
             "status": "refused",
             "current_phase": current_phase,
             "offending_phase": prior_phase,
+            "offending_status": offending_status,
             "last_event_timestamp": event.get("timestamp"),
             "overlapping_dirty_paths": overlapping,
             "scanned_events": scanned_events,
             "dirty_evidence_source": evidence.get("source"),
             "current_dirty_paths": sorted(current_dirty),
-            "next_actions": [
-                "Commit or stash the overlapping dirty paths before rerunning phase-loop.",
-                f"phase-loop reconcile --phase {prior_phase} --to-status planned --reason <text>",
-            ],
+            "next_actions": _start_gate_recovery_actions(prior_phase, offending_status),
         }
     return None
 
@@ -1429,7 +1486,7 @@ def run_loop(
                         "phase_aliases": list(phase_aliases),
                     },
                 )
-            start_gate = _cross_phase_dirty_start_gate(repo, alias)
+            start_gate = _cross_phase_dirty_start_gate(repo, alias, classifications)
             if start_gate is not None and allow_cross_phase_dirty_reason is None:
                 classifications[alias] = "blocked"
                 blocker = {
@@ -1437,9 +1494,11 @@ def run_loop(
                     "blocker_class": "dirty_worktree_conflict",
                     "blocker_summary": (
                         f"Start gate refused {alias}: prior phase {start_gate['offending_phase']} "
-                        f"still owns {len(start_gate['overlapping_dirty_paths'])} dirty path(s). "
-                        "Commit or stash the paths, or recover the prior phase with "
-                        f"`phase-loop reconcile --phase {start_gate['offending_phase']} --to-status planned --reason <text>`."
+                        f"(status {start_gate['offending_status']}) still owns "
+                        f"{len(start_gate['overlapping_dirty_paths'])} dirty path(s). "
+                        "Recover by one of: "
+                        + "; ".join(str(action) for action in start_gate["next_actions"])
+                        + "."
                     ),
                     "required_human_inputs": (),
                     "access_attempts": (),

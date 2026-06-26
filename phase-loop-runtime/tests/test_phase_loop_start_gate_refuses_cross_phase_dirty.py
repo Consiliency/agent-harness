@@ -88,10 +88,19 @@ class PhaseLoopStartGateTest(unittest.TestCase):
             self.assertEqual(gate["status"], "refused")
             self.assertEqual(gate["current_phase"], "BETA")
             self.assertEqual(gate["offending_phase"], "ALPHA")
+            # ALPHA reconciles to awaiting_phase_closeout — an in-flight status
+            # whose dirty output the gate still honors (refusal fires), but which
+            # `reconcile --to-status planned` does NOT accept. The message must
+            # therefore NOT recommend reconcile for it (issue #1), and must lead
+            # with the proven --allow-cross-phase-dirty bypass.
+            self.assertEqual(gate["offending_status"], "awaiting_phase_closeout")
             self.assertEqual(gate["overlapping_dirty_paths"], ["alpha-output.txt"])
             self.assertLessEqual(gate["scanned_events"], 50)
             self.assertTrue(
-                any("phase-loop reconcile --phase ALPHA --to-status planned --reason" in action for action in gate["next_actions"])
+                any("--allow-cross-phase-dirty" in action for action in gate["next_actions"])
+            )
+            self.assertFalse(
+                any("phase-loop reconcile" in action for action in gate["next_actions"])
             )
             self.assertEqual(event["metadata"]["terminal_summary"]["terminal_status"], "blocked")
 
