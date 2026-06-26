@@ -4,6 +4,15 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## v0.1.3
+
+- **Fix:** break the cross-phase dirty start-gate dead-end (#1) — the start-gate's
+  recommended `reconcile` recovery no longer points at a command that only accepts
+  `blocked` phases, so a repo with accumulated `.phase-loop/` state can always recover.
+- **Hygiene:** removed a committed `build/` directory + `egg-info` (a stale build
+  artifact carrying `__version__ = "0.1.0"` that setuptools intermittently reused,
+  making installs report the wrong version) and added a `.gitignore` for build artifacts.
+
 ## v0.1.2
 
 Packaging and documentation polish — no runtime behavior change.
