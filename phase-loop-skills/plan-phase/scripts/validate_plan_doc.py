@@ -745,6 +745,21 @@ def _check_k_acceptance_testable(src: str) -> Findings:
     return out
 
 
+def _check_l_ui_visual_verification(src: str) -> Findings:
+    """rigor-v1 P6: warn when a plan touches UI/visual files but the Verification
+    section names no browser/screenshot step. Autonomy-first WARN."""
+    if not re.search(r"\.(tsx|jsx|vue|svelte|css|scss)\b|/components/", src, re.IGNORECASE):
+        return []
+    verif = _extract_section(src, "Verification") or ""
+    if re.search(r"playwright|screenshot|browser|in-chrome|visual", verif, re.IGNORECASE):
+        return []
+    return [
+        "(L) WARN: plan touches UI/visual surfaces but `## Verification` names no "
+        "browser/screenshot/Playwright step — add a visual check (and a visually "
+        "observable acceptance criterion) for UI changes."
+    ]
+
+
 def main(argv: List[str]) -> int:
     if len(argv) != 2:
         _fail("usage: validate_plan_doc.py <plan-path>")
@@ -801,6 +816,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_i_spec_closeout_plan(src))
     findings.extend(_check_j_docs_lane(src))
     findings.extend(_check_k_acceptance_testable(src))
+    findings.extend(_check_l_ui_visual_verification(src))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]

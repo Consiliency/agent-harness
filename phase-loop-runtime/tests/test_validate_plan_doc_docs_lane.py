@@ -69,5 +69,25 @@ class AcceptanceTestableCheckTest(unittest.TestCase):
         self.assertEqual([f for f in findings if "WARN" not in f], [])
 
 
+class UiVisualVerificationCheckTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load()
+
+    def test_ui_change_without_browser_step_warns(self):
+        src = "### SL-1\nOwned files: `src/components/Button.tsx`\n\n## Verification\n```\npytest tests/\n```\n"
+        findings = self.mod._check_l_ui_visual_verification(src)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("WARN", findings[0])
+
+    def test_ui_change_with_browser_step_is_clean(self):
+        src = "Owned: `app/page.tsx`\n\n## Verification\n```\nplaywright test e2e/\n```\n"
+        self.assertEqual(self.mod._check_l_ui_visual_verification(src), [])
+
+    def test_non_ui_plan_is_clean(self):
+        src = "Owned: `src/runner.py`\n\n## Verification\n```\npytest tests/\n```\n"
+        self.assertEqual(self.mod._check_l_ui_visual_verification(src), [])
+
+
 if __name__ == "__main__":
     unittest.main()

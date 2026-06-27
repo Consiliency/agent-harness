@@ -181,7 +181,10 @@ def load_builtin_closeout_validators() -> None:
         from . import verification_evidence_validator  # noqa: F401  (P5)
     except Exception:
         pass
-    # P6: from . import visual_evidence_validator  # noqa: F401
+    try:
+        from . import visual_evidence_validator  # noqa: F401  (P6)
+    except Exception:
+        pass
     return None
 
 
