@@ -677,6 +677,92 @@ def _fail(msg: str) -> None:
     print(f"validate_plan_doc: {msg}", file=sys.stderr)
 
 
+def _check_j_docs_lane(src: str) -> Findings:
+    """rigor-v1 P2: warn when no terminal docs-sweep lane is present.
+
+    plan-phase requires a no-opt-out docs lane so a public-surface change cannot
+    silently skip its doc footprint. Autonomy-first: this is a WARN (recorded,
+    non-blocking); promote to an error once adopted across the fleet.
+    """
+    for m in re.finditer(r"^###\s+SL-\d+\s*[—-]\s*(.+?)\s*$", src, re.MULTILINE):
+        # Word-bounded so "Docker"/"Docusaurus" don't masquerade as a docs lane.
+        if re.search(r"\bdocs?\b|\bdocumentation\b", m.group(1), re.IGNORECASE):
+            return []
+    if re.search(r"SL-docs|docs[-\s]sweep", src, re.IGNORECASE):
+        return []
+    return [
+        "(J) WARN: no terminal docs-sweep lane found (a `### SL-N — …docs…` lane). "
+        "plan-phase requires a no-opt-out docs lane; add a terminal "
+        "`SL-N — Documentation sweep` lane or promote this check to an error once adopted."
+    ]
+
+
+def _acceptance_bullets(src: str) -> List[str]:
+    body = _extract_section(src, "Acceptance Criteria")
+    if not body:
+        return []
+    bullets: List[str] = []
+    current: List[str] = []
+    for line in body.splitlines():
+        if line.lstrip().startswith("- ["):
+            if current:
+                bullets.append("\n".join(current))
+            current = [line]
+        elif current:
+            if not line.strip():
+                bullets.append("\n".join(current))
+                current = []
+            else:
+                current.append(line)
+    if current:
+        bullets.append("\n".join(current))
+    return bullets
+
+
+def _check_k_acceptance_testable(src: str) -> Findings:
+    """rigor-v1 P5: warn on acceptance criteria that name no proving command.
+
+    A testable bullet cites something checkable — a command/path/symbol in
+    backticks, a path, an HTTP verb+status, or a comparison/return assertion.
+    A prose bullet ("users can log in") is not mechanically checkable.
+    Autonomy-first WARN; promotion to error is opt-in.
+    """
+    out: Findings = []
+    # Case-sensitive on purpose: uppercase HTTP verbs are real assertions, but
+    # lowercase "get"/"post"/"put" are ordinary English. No bare "/\w" (it matched
+    # "and/or", "TCP/IP") and no bare "returns" (matched "user returns home").
+    testable = re.compile(
+        r"`[^`]+`"                                        # backticked command/path/symbol
+        r"|\b(GET|POST|PUT|PATCH|DELETE)\b.*?\b\d{3}\b"   # HTTP verb (uppercase) + status code
+        r"|==|!=|>=|<=|->"                                # comparison / return arrow
+        r"|\bexit code\b|\bstatus code\b"
+        r"|\btests?/|\btest_\w|\bpytest\b"                # cites a test
+    )
+    for bullet in _acceptance_bullets(src):
+        if not testable.search(bullet):
+            first = bullet.strip().splitlines()[0][:90]
+            out.append(
+                f"(K) WARN: acceptance criterion is not mechanically testable — "
+                f"name the proving command/path/assertion: {first!r}"
+            )
+    return out
+
+
+def _check_l_ui_visual_verification(src: str) -> Findings:
+    """rigor-v1 P6: warn when a plan touches UI/visual files but the Verification
+    section names no browser/screenshot step. Autonomy-first WARN."""
+    if not re.search(r"\.(tsx|jsx|vue|svelte|css|scss)\b|/components/", src, re.IGNORECASE):
+        return []
+    verif = _extract_section(src, "Verification") or ""
+    if re.search(r"playwright|screenshot|browser|in-chrome|visual", verif, re.IGNORECASE):
+        return []
+    return [
+        "(L) WARN: plan touches UI/visual surfaces but `## Verification` names no "
+        "browser/screenshot/Playwright step — add a visual check (and a visually "
+        "observable acceptance criterion) for UI changes."
+    ]
+
+
 def main(argv: List[str]) -> int:
     if len(argv) != 2:
         _fail("usage: validate_plan_doc.py <plan-path>")
@@ -731,6 +817,9 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_g_grep_paired_with_tests(src))
     findings.extend(_check_h_eager_reexport(src))
     findings.extend(_check_i_spec_closeout_plan(src))
+    findings.extend(_check_j_docs_lane(src))
+    findings.extend(_check_k_acceptance_testable(src))
+    findings.extend(_check_l_ui_visual_verification(src))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]

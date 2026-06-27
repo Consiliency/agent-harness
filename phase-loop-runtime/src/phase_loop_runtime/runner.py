@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -164,6 +165,7 @@ from .profiles import resolve_execution_policy, resolve_model_selection_from_pol
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
 from .reconcile import reconcile
+from .review_summary import summarize_run_review_findings
 from .release_guard import release_dispatch_blocker
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
@@ -1098,6 +1100,10 @@ def run_loop(
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
     if phase_scheduler_mode not in PHASE_SCHEDULER_MODES:
         raise ValueError(f"invalid phase scheduler mode: {phase_scheduler_mode}")
+    # Baseline ledger length so the run-end review-findings summary reports only
+    # events appended during THIS invocation, not the whole persisted ledger
+    # across bounded `--max-phases` batches.
+    _run_event_baseline = len(read_events(repo))
     if (
         phase_scheduler_mode == "concurrent"
         and closeout_mode == "manual"
@@ -4195,6 +4201,7 @@ def run_loop(
         source_bundle_path=effective_source_bundle_path,
         pipeline_mode=effective_pipeline_mode,
     )
+    _emit_review_findings_summary(repo, since=_run_event_baseline)
     return snapshot, results
 
 
@@ -7718,6 +7725,26 @@ class _null_context:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+def _emit_review_findings_summary(repo: Path, *, since: int = 0) -> None:
+    """Print an aggregated review-findings summary for this run to stderr.
+
+    Autonomy-first gates default to `warn`: findings are recorded per-closeout and
+    the loop continues, so a human bounding the run (`--max-phases`) needs them
+    rolled up. `since` is the ledger length at run start, so only events appended
+    during this invocation are summarized (not the whole persisted ledger).
+    Operator-facing diagnostics go to stderr; never break a run.
+    """
+    try:
+        events = read_events(repo)
+        if since:
+            events = events[since:]
+        summary = summarize_run_review_findings(events)
+        if summary:
+            print(summary, file=sys.stderr)
+    except Exception:
+        pass
 
 
 def _write_state_and_handoff(

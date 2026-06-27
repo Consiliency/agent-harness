@@ -75,6 +75,10 @@ adapter mode overrides the orchestrator-only interactive workflow below.
   blocked`.
 - End stdout with one shared `automation:` closeout. Do not wait for
   interactive approval after verification is complete.
+- Do not emit a `/clear` recommendation or any human-only context-reset
+  instruction. Continuity to the next phase is the run-local handoff plus the
+  runner re-invoking the next phase in a fresh executor process — that fresh
+  process is the context reset. There is no human in this loop to reset it.
 - Before that closeout, run `git status --short` and classify dirty paths
   against the active plan's owned files and control artifacts. If a generated
   path is unowned, ignored without explicit allowlist/staging policy, or
@@ -563,7 +567,8 @@ final verification state.>
 - <forecast of what <harness>-plan-phase / <harness>-phase-roadmap-builder will touch next>
 ```
 
-After both files are written, print to the user:
+After both files are written, **in the interactive TUI path only** (a human is
+driving), print to the user:
 
 > Phase `<alias>` complete. `<N>` lanes merged; final verification `<pass|fail>`.
 > Reflection saved to `<REFLECTION_PATH>`.
@@ -572,7 +577,17 @@ After both files are written, print to the user:
 >
 > Next phase: `<next alias - status|none - reason>`.
 > Next command: `<exact command or none - reason>`.
-> Recommended next step: run `/clear` to reset your context window, then invoke the next command above. The next skill reads the handoff automatically.
+> Recommended next step (interactive only): either run `/clear` to reset your
+> context window and then invoke the next command above, **or** dispatch a fresh
+> subagent (Task/Agent) to carry the next phase in clean context when this loop
+> is skill/tool-driven. The next skill reads the handoff automatically.
+
+`/clear` is a human-operated reset and applies only to the interactive TUI path
+above. **Do not emit it in Phase-Loop Adapter (autonomous) mode** — an
+autonomous loop has no human to run it and cannot clear its own context.
+In autonomous runs, continuity is the written handoff and the runner re-invokes
+the next phase in a fresh executor process; that fresh process *is* the context
+reset. See "Phase-Loop Adapter Mode" above.
 
 ## Lane state machine
 
