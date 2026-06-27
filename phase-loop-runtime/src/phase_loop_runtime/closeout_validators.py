@@ -177,7 +177,10 @@ def load_builtin_closeout_validators() -> None:
         from . import doc_delta_validator  # noqa: F401  (P2)
     except Exception:
         pass
-    # P5: from . import verification_evidence_validator  # noqa: F401
+    try:
+        from . import verification_evidence_validator  # noqa: F401  (P5)
+    except Exception:
+        pass
     # P6: from . import visual_evidence_validator  # noqa: F401
     return None
 

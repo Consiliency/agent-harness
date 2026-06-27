@@ -696,6 +696,55 @@ def _check_j_docs_lane(src: str) -> Findings:
     ]
 
 
+def _acceptance_bullets(src: str) -> List[str]:
+    body = _extract_section(src, "Acceptance Criteria")
+    if not body:
+        return []
+    bullets: List[str] = []
+    current: List[str] = []
+    for line in body.splitlines():
+        if line.lstrip().startswith("- ["):
+            if current:
+                bullets.append("\n".join(current))
+            current = [line]
+        elif current:
+            if not line.strip():
+                bullets.append("\n".join(current))
+                current = []
+            else:
+                current.append(line)
+    if current:
+        bullets.append("\n".join(current))
+    return bullets
+
+
+def _check_k_acceptance_testable(src: str) -> Findings:
+    """rigor-v1 P5: warn on acceptance criteria that name no proving command.
+
+    A testable bullet cites something checkable — a command/path/symbol in
+    backticks, a path, an HTTP verb+status, or a comparison/return assertion.
+    A prose bullet ("users can log in") is not mechanically checkable.
+    Autonomy-first WARN; promotion to error is opt-in.
+    """
+    out: Findings = []
+    testable = re.compile(
+        r"`[^`]+`"                                   # backticked command/path/symbol
+        r"|/\w"                                       # a path segment
+        r"|\b(GET|POST|PUT|PATCH|DELETE)\b.*\b\d{3}\b"  # HTTP verb + status
+        r"|==|!=|>=|<=|->"                            # comparison/return
+        r"|\b(returns?|exit code|status code|tests?/|test_|pytest)\b",
+        re.IGNORECASE,
+    )
+    for bullet in _acceptance_bullets(src):
+        if not testable.search(bullet):
+            first = bullet.strip().splitlines()[0][:90]
+            out.append(
+                f"(K) WARN: acceptance criterion is not mechanically testable — "
+                f"name the proving command/path/assertion: {first!r}"
+            )
+    return out
+
+
 def main(argv: List[str]) -> int:
     if len(argv) != 2:
         _fail("usage: validate_plan_doc.py <plan-path>")
@@ -751,6 +800,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_h_eager_reexport(src))
     findings.extend(_check_i_spec_closeout_plan(src))
     findings.extend(_check_j_docs_lane(src))
+    findings.extend(_check_k_acceptance_testable(src))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]

@@ -43,5 +43,31 @@ class DocsLaneCheckTest(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class AcceptanceTestableCheckTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load()
+
+    def test_prose_criterion_warns(self):
+        src = "## Acceptance Criteria\n\n- [ ] Users can log in successfully\n"
+        findings = self.mod._check_k_acceptance_testable(src)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("WARN", findings[0])
+
+    def test_command_backed_criterion_is_clean(self):
+        src = "## Acceptance Criteria\n\n- [ ] `pytest tests/test_x.py` passes\n"
+        self.assertEqual(self.mod._check_k_acceptance_testable(src), [])
+
+    def test_http_assertion_is_clean(self):
+        src = "## Acceptance Criteria\n\n- [ ] POST /api/auth returns 200 for a registered user\n"
+        self.assertEqual(self.mod._check_k_acceptance_testable(src), [])
+
+    def test_all_findings_are_warnings(self):
+        src = "## Acceptance Criteria\n\n- [ ] It works well\n- [ ] It is robust\n"
+        findings = self.mod._check_k_acceptance_testable(src)
+        self.assertTrue(findings)
+        self.assertEqual([f for f in findings if "WARN" not in f], [])
+
+
 if __name__ == "__main__":
     unittest.main()
