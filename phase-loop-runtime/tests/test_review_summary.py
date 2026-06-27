@@ -102,6 +102,35 @@ class ReviewSummaryTest(unittest.TestCase):
             self.assertIn("Review findings this run: 1", out)
             self.assertIn("doc_delta_undecided", out)
 
+    def test_run_end_helper_scopes_to_since_baseline(self):
+        # Findings from a prior batch (before `since`) must not be re-reported.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = write_named_roadmap(repo, (("ALPHA", "Alpha"), ("BETA", "Beta")))
+
+            def _finding_event(phase, code):
+                return LoopEvent(
+                    timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+                    phase=phase, action="execute", status="complete",
+                    model="fixture", reasoning_effort="medium", source="fixture",
+                    metadata={"closeout": {"verification": {"results": [
+                        {"kind": "review_finding", "code": code, "reason": "r", "severity": "warn"},
+                    ]}}},
+                    **event_provenance(roadmap, phase),
+                )
+
+            append_event(repo, _finding_event("ALPHA", "prior_batch"))
+            from phase_loop_runtime.events import read_events
+            baseline = len(read_events(repo))
+            append_event(repo, _finding_event("BETA", "this_batch"))
+
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                _emit_review_findings_summary(repo, since=baseline)
+            out = err.getvalue()
+            self.assertIn("this_batch", out)
+            self.assertNotIn("prior_batch", out)
+
     def test_run_end_helper_silent_when_no_findings(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))

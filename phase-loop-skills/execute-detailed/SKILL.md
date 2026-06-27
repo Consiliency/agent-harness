@@ -63,6 +63,12 @@ handoff roots, helper roots, and reflection roots.
     `docs_follow_up_filed`, or `no_doc_delta` (state why). This is the input the
     autonomy-first doc-delta review gate checks; it defaults to warn (recorded,
     non-blocking) and is satisfiable by the agent with no human.
+11. When reporting `verification_status=passed`, attach the verification
+    artifact (`artifact_paths.verification` or `verification_artifact_path`); if
+    the change has no executable verification, record a
+    `verification_evidence_opt_out` reason (`no_executable_verification`,
+    `verification_deferred_to_later_phase`, or `operator_attested_manual`). This
+    is the input the verification-evidence review gate checks (warn by default).
 
 ## Failure Diagnostics
 

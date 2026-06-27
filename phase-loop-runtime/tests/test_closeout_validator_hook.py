@@ -93,6 +93,8 @@ class CloseoutValidatorHookTest(unittest.TestCase):
             c = _passing_closeout(self.plan)
         self.assertEqual(c["terminal_status"], "blocked")
         self.assertEqual(c["blocker"]["blocker_class"], "dirty_worktree_conflict")
+        # verification_status must flip to blocked too (no passed-on-blocked record).
+        self.assertEqual(c["verification"]["status"], "blocked")
 
     def test_off_mode_skips_validators(self):
         register_closeout_validator(_block)

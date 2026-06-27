@@ -145,7 +145,9 @@ def apply_review_findings(
         blocker_class = blocking.blocker_class or "review_gate_block"
         summary = f"Review gate blocked closeout: {blocking.code} — {blocking.reason}"
         updated_terminal["terminal_status"] = "blocked"
+        updated_terminal["verification_status"] = "blocked"
         updated_automation["status"] = "blocked"
+        updated_automation["verification_status"] = "blocked"
         updated_automation["blocker_class"] = blocker_class
         updated_automation["blocker_summary"] = summary
         updated_automation["human_required"] = False

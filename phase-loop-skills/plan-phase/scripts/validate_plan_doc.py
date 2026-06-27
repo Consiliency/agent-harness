@@ -685,7 +685,8 @@ def _check_j_docs_lane(src: str) -> Findings:
     non-blocking); promote to an error once adopted across the fleet.
     """
     for m in re.finditer(r"^###\s+SL-\d+\s*[—-]\s*(.+?)\s*$", src, re.MULTILINE):
-        if "doc" in m.group(1).lower():
+        # Word-bounded so "Docker"/"Docusaurus" don't masquerade as a docs lane.
+        if re.search(r"\bdocs?\b|\bdocumentation\b", m.group(1), re.IGNORECASE):
             return []
     if re.search(r"SL-docs|docs[-\s]sweep", src, re.IGNORECASE):
         return []
@@ -727,13 +728,15 @@ def _check_k_acceptance_testable(src: str) -> Findings:
     Autonomy-first WARN; promotion to error is opt-in.
     """
     out: Findings = []
+    # Case-sensitive on purpose: uppercase HTTP verbs are real assertions, but
+    # lowercase "get"/"post"/"put" are ordinary English. No bare "/\w" (it matched
+    # "and/or", "TCP/IP") and no bare "returns" (matched "user returns home").
     testable = re.compile(
-        r"`[^`]+`"                                   # backticked command/path/symbol
-        r"|/\w"                                       # a path segment
-        r"|\b(GET|POST|PUT|PATCH|DELETE)\b.*\b\d{3}\b"  # HTTP verb + status
-        r"|==|!=|>=|<=|->"                            # comparison/return
-        r"|\b(returns?|exit code|status code|tests?/|test_|pytest)\b",
-        re.IGNORECASE,
+        r"`[^`]+`"                                        # backticked command/path/symbol
+        r"|\b(GET|POST|PUT|PATCH|DELETE)\b.*?\b\d{3}\b"   # HTTP verb (uppercase) + status code
+        r"|==|!=|>=|<=|->"                                # comparison / return arrow
+        r"|\bexit code\b|\bstatus code\b"
+        r"|\btests?/|\btest_\w|\bpytest\b"                # cites a test
     )
     for bullet in _acceptance_bullets(src):
         if not testable.search(bullet):

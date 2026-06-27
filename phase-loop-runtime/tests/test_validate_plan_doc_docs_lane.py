@@ -32,6 +32,11 @@ class DocsLaneCheckTest(unittest.TestCase):
         src = "## Lanes\n\n### SL-1 — Core logic\n\n### SL-7 — Documentation sweep\n"
         self.assertEqual(self.mod._check_j_docs_lane(src), [])
 
+    def test_docker_lane_is_not_a_docs_lane(self):
+        # "Docker" contains "doc" but is not a docs lane (review fix).
+        src = "## Lanes\n\n### SL-1 — Docker image build\n\n### SL-2 — Wiring\n"
+        self.assertEqual(len(self.mod._check_j_docs_lane(src)), 1)
+
     def test_clean_with_sl_docs_marker(self):
         src = "## Lanes\n\nThe terminal SL-docs lane depends on all others.\n"
         self.assertEqual(self.mod._check_j_docs_lane(src), [])
@@ -61,6 +66,15 @@ class AcceptanceTestableCheckTest(unittest.TestCase):
     def test_http_assertion_is_clean(self):
         src = "## Acceptance Criteria\n\n- [ ] POST /api/auth returns 200 for a registered user\n"
         self.assertEqual(self.mod._check_k_acceptance_testable(src), [])
+
+    def test_english_get_with_number_still_warns(self):
+        # Lowercase "get" + a number is prose, not an HTTP assertion (review fix).
+        src = "## Acceptance Criteria\n\n- [ ] User can get back to the dashboard within 200 ms\n"
+        self.assertEqual(len(self.mod._check_k_acceptance_testable(src)), 1)
+
+    def test_and_or_slash_prose_still_warns(self):
+        src = "## Acceptance Criteria\n\n- [ ] Login and/or signup works\n"
+        self.assertEqual(len(self.mod._check_k_acceptance_testable(src)), 1)
 
     def test_all_findings_are_warnings(self):
         src = "## Acceptance Criteria\n\n- [ ] It works well\n- [ ] It is robust\n"

@@ -133,6 +133,7 @@ def build_phase_loop_closeout(
                 changed_paths
                 or terminal.get("dirty_paths")
                 or terminal.get("phase_owned_dirty_paths")
+                or terminal.get("previous_phase_owned_paths")
                 or ()
             ),
         )

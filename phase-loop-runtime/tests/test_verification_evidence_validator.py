@@ -49,6 +49,13 @@ class VerificationEvidenceValidatorTest(unittest.TestCase):
         ctx = _ctx(self.plan, terminal={"verification_status": "passed", "verification_artifact_path": "x.json"})
         self.assertEqual(verification_evidence_validator(ctx), [])
 
+    def test_nested_artifact_paths_is_clean(self):
+        # The runner stores the artifact under artifact_paths.verification, not the
+        # top-level key — the validator must read both (review fix).
+        ctx = _ctx(self.plan, terminal={"verification_status": "passed",
+                                        "artifact_paths": {"verification": "runs/x/verification.json"}})
+        self.assertEqual(verification_evidence_validator(ctx), [])
+
     def test_typed_opt_out_is_clean(self):
         ctx = _ctx(self.plan, terminal={"verification_status": "passed",
                                         "verification_evidence_opt_out": "no_executable_verification"})

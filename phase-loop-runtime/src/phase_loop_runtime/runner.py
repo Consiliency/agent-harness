@@ -1100,6 +1100,10 @@ def run_loop(
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
     if phase_scheduler_mode not in PHASE_SCHEDULER_MODES:
         raise ValueError(f"invalid phase scheduler mode: {phase_scheduler_mode}")
+    # Baseline ledger length so the run-end review-findings summary reports only
+    # events appended during THIS invocation, not the whole persisted ledger
+    # across bounded `--max-phases` batches.
+    _run_event_baseline = len(read_events(repo))
     if (
         phase_scheduler_mode == "concurrent"
         and closeout_mode == "manual"
@@ -4197,7 +4201,7 @@ def run_loop(
         source_bundle_path=effective_source_bundle_path,
         pipeline_mode=effective_pipeline_mode,
     )
-    _emit_review_findings_summary(repo)
+    _emit_review_findings_summary(repo, since=_run_event_baseline)
     return snapshot, results
 
 
@@ -7723,15 +7727,20 @@ class _null_context:
         return False
 
 
-def _emit_review_findings_summary(repo: Path) -> None:
+def _emit_review_findings_summary(repo: Path, *, since: int = 0) -> None:
     """Print an aggregated review-findings summary for this run to stderr.
 
     Autonomy-first gates default to `warn`: findings are recorded per-closeout and
     the loop continues, so a human bounding the run (`--max-phases`) needs them
-    rolled up. Operator-facing diagnostics go to stderr; never break a run.
+    rolled up. `since` is the ledger length at run start, so only events appended
+    during this invocation are summarized (not the whole persisted ledger).
+    Operator-facing diagnostics go to stderr; never break a run.
     """
     try:
-        summary = summarize_run_review_findings(read_events(repo))
+        events = read_events(repo)
+        if since:
+            events = events[since:]
+        summary = summarize_run_review_findings(events)
         if summary:
             print(summary, file=sys.stderr)
     except Exception:

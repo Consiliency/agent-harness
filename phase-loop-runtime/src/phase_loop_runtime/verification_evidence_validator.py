@@ -13,9 +13,27 @@ reason (``verification_evidence_opt_out``) — no human required.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Mapping
 
 from .closeout_validators import CloseoutContext, ReviewFinding, register_closeout_validator
 from .models import VERIFICATION_EVIDENCE_OPT_OUT_REASONS
+
+
+def _has_verification_artifact(terminal: Mapping) -> bool:
+    """Detect a verification artifact in the same places the upstream gate reads
+    (`closeout._verification_artifact_path`): the nested `artifact_paths` map, or
+    the top-level convenience key the skills tell executors to write."""
+    if terminal.get("verification_artifact_path"):
+        return True
+    artifact_paths = terminal.get("artifact_paths")
+    if isinstance(artifact_paths, Mapping):
+        return bool(
+            artifact_paths.get("verification")
+            or artifact_paths.get("verification_artifact")
+            or artifact_paths.get("verification_log")
+            or artifact_paths.get("root")
+        )
+    return False
 
 
 def _legacy_evidence_gate_owns(phase_alias: str, plan_path: str) -> bool:
@@ -38,7 +56,7 @@ def verification_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding]
         return []
     if _legacy_evidence_gate_owns(ctx.phase_alias, ctx.plan_path):
         return []  # owned by the upstream evidence gate
-    if ctx.terminal.get("verification_artifact_path"):
+    if _has_verification_artifact(ctx.terminal):
         return []  # evidence attached
     opt_out = str(ctx.terminal.get("verification_evidence_opt_out") or "").strip()
     if opt_out in VERIFICATION_EVIDENCE_OPT_OUT_REASONS:
