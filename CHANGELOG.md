@@ -4,7 +4,7 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
-## Unreleased — planning & execution rigor (rigor-v1)
+## v0.1.4 — planning & execution rigor (rigor-v1)
 
 Adds autonomy-first review gates and planner guidance. **Default behavior is
 unchanged**: every new gate runs at `warn` severity (records a finding to the
@@ -36,6 +36,7 @@ stalls.
   aggregated, de-duplicated summary of the review findings to stderr, so a human
   reviewing between `--max-phases` batches sees them without the loop ever
   stalling.
+- **Hygiene**: untracked committed `__pycache__/*.pyc` bytecode caches.
 
 ## v0.1.3
 
