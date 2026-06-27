@@ -148,6 +148,8 @@ Before reporting a successful closeout, require the runner-owned verification ar
 
 ## Spec Delta Closeout
 
+Before final closeout, when the diff touches a user-visible public surface (CLI flags, exported symbols, config/openapi schema, contract docs, `README.md`, or `CHANGELOG.md`), record a `doc_delta_decision`: `docs_updated` (you updated the matching doc surface in this phase), `docs_follow_up_filed` (tracked for a later phase), or `no_doc_delta` (the change needs no doc update — state why). This is the input the autonomy-first doc-delta review gate checks; the gate defaults to `PHASE_LOOP_REVIEW=warn` (records the finding and the loop continues), so recording the decision keeps the closeout clean and is satisfiable by the agent with no human. Prefer updating the doc surface within the phase's docs lane over deferring.
+
 Before final closeout, choose exactly one `spec_delta_closeout.v1` decision: `no_spec_delta`, `roadmap_amendment`, `canonical_spec_update`, `governed_pipeline_refresh`, `mirror_cutover_required`, `dotfiles_skill_source_update`, or `human_source_judgment_required`. Cite metadata-only evidence paths such as the active plan, lane closeouts, targeted pytest output, and `git diff --check` output. Preserve the phase plan's target surfaces and `redaction_posture=metadata_only`; do not include raw specification bodies, raw patch bodies, credentials, provider-supplied payloads, local environment values, or evidence-source contents. Missing or malformed spec-closeout evidence is a repairable automation blocker with `blocker_class=contract_bug` unless the decision is `human_source_judgment_required`.
 
 ## Closeout

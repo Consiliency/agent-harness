@@ -57,6 +57,12 @@ handoff roots, helper roots, and reflection roots.
    report satisfied or unmet status.
 9. Run `git status --short --untracked-files=all` and classify every dirty path
    as plan-owned, pre-existing unrelated, or non-plan output.
+10. If the diff touches a user-visible public surface (CLI flags, exported
+    symbols, config/openapi schema, contract docs, `README.md`, `CHANGELOG.md`),
+    record a `doc_delta_decision` in the closeout: `docs_updated`,
+    `docs_follow_up_filed`, or `no_doc_delta` (state why). This is the input the
+    autonomy-first doc-delta review gate checks; it defaults to warn (recorded,
+    non-blocking) and is satisfiable by the agent with no human.
 
 ## Failure Diagnostics
 

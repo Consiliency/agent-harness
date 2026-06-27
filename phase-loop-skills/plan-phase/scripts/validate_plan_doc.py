@@ -677,6 +677,25 @@ def _fail(msg: str) -> None:
     print(f"validate_plan_doc: {msg}", file=sys.stderr)
 
 
+def _check_j_docs_lane(src: str) -> Findings:
+    """rigor-v1 P2: warn when no terminal docs-sweep lane is present.
+
+    plan-phase requires a no-opt-out docs lane so a public-surface change cannot
+    silently skip its doc footprint. Autonomy-first: this is a WARN (recorded,
+    non-blocking); promote to an error once adopted across the fleet.
+    """
+    for m in re.finditer(r"^###\s+SL-\d+\s*[—-]\s*(.+?)\s*$", src, re.MULTILINE):
+        if "doc" in m.group(1).lower():
+            return []
+    if re.search(r"SL-docs|docs[-\s]sweep", src, re.IGNORECASE):
+        return []
+    return [
+        "(J) WARN: no terminal docs-sweep lane found (a `### SL-N — …docs…` lane). "
+        "plan-phase requires a no-opt-out docs lane; add a terminal "
+        "`SL-N — Documentation sweep` lane or promote this check to an error once adopted."
+    ]
+
+
 def main(argv: List[str]) -> int:
     if len(argv) != 2:
         _fail("usage: validate_plan_doc.py <plan-path>")
@@ -731,6 +750,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_g_grep_paired_with_tests(src))
     findings.extend(_check_h_eager_reexport(src))
     findings.extend(_check_i_spec_closeout_plan(src))
+    findings.extend(_check_j_docs_lane(src))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]

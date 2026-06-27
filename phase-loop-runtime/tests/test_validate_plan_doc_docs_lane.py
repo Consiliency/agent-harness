@@ -1,0 +1,47 @@
+"""rigor-v1 P2 — validate_plan_doc.py terminal docs-lane WARN check."""
+import importlib.util
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "phase-loop-skills" / "plan-phase" / "scripts" / "validate_plan_doc.py"
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("validate_plan_doc_under_test", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # dataclasses resolve annotations via sys.modules
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class DocsLaneCheckTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load()
+
+    def test_warns_when_no_docs_lane(self):
+        src = "## Lanes\n\n### SL-1 — Core logic\n\n### SL-2 — Wiring\n"
+        findings = self.mod._check_j_docs_lane(src)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("WARN", findings[0])
+        self.assertIn("docs", findings[0].lower())
+
+    def test_clean_with_named_docs_lane(self):
+        src = "## Lanes\n\n### SL-1 — Core logic\n\n### SL-7 — Documentation sweep\n"
+        self.assertEqual(self.mod._check_j_docs_lane(src), [])
+
+    def test_clean_with_sl_docs_marker(self):
+        src = "## Lanes\n\nThe terminal SL-docs lane depends on all others.\n"
+        self.assertEqual(self.mod._check_j_docs_lane(src), [])
+
+    def test_warn_does_not_set_error_exit(self):
+        # A WARN finding must not be classified as an error (autonomy-first).
+        findings = self.mod._check_j_docs_lane("### SL-1 — Core\n")
+        errors = [f for f in findings if "WARN" not in f]
+        self.assertEqual(errors, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

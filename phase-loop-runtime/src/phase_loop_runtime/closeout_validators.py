@@ -173,7 +173,10 @@ def load_builtin_closeout_validators() -> None:
     guarded so an incremental checkout missing a module never breaks closeout.
     P1 ships no built-in validators — the registry is empty by default.
     """
-    # P2: from . import doc_delta_validator  # noqa: F401
+    try:
+        from . import doc_delta_validator  # noqa: F401  (P2)
+    except Exception:
+        pass
     # P5: from . import verification_evidence_validator  # noqa: F401
     # P6: from . import visual_evidence_validator  # noqa: F401
     return None
