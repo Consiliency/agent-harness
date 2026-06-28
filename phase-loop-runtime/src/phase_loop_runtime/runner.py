@@ -6912,9 +6912,7 @@ def _dirty_paths(repo: Path) -> list[str]:
         path = path.strip().strip('"')
         if path:
             paths.append(path)
-    paths = sorted(dict.fromkeys(paths))
-    ignored = _gitignored_paths(repo, paths)
-    return [path for path in paths if path not in ignored]
+    return sorted(dict.fromkeys(paths))
 
 
 def _detect_dirty_renames(repo: Path) -> dict[str, str]:
@@ -7045,10 +7043,21 @@ def _classify_dirty_paths(
         and path not in previous_phase_owned_set
         and not (allow_pre_existing_phase_owned and path in phase_owned_set)
     ]
+    # Issue #5: a path matching a gitignore pattern is the client repo's declared-disposable
+    # output (a codegen/build artifact the verification step regenerates). It must not count as
+    # un-owned spillover -> dirty_worktree_conflict, which the next repair turn would re-trigger
+    # by re-running the build (an infinite loop). It is NOT dropped from the dirty set: a
+    # gitignored path the plan OWNS still classifies as phase-owned and commits normally below,
+    # so no legitimately-owned work is lost. (`--no-index` so even *tracked*-then-ignored
+    # regenerated files are matched.)
+    gitignored = _gitignored_paths(repo, post_launch_dirty_paths)
     unowned = [
         path
         for path in post_launch_dirty_paths
-        if path not in phase_owned_set and path not in previous_phase_owned_set and path not in expected_sibling_set
+        if path not in phase_owned_set
+        and path not in previous_phase_owned_set
+        and path not in expected_sibling_set
+        and path not in gitignored
     ]
     runtime_relaxation = _runtime_relaxation_evidence(
         ownership.owned_patterns,
@@ -7082,6 +7091,7 @@ def _classify_dirty_paths(
         "expected_sibling_dirty_paths": expected_sibling_dirty,
         "expected_sibling_dirty": bool(expected_sibling_dirty),
         "unowned_dirty_paths": unowned,
+        "gitignored_dirty_paths": sorted(p for p in post_launch_dirty_paths if p in gitignored),
         "pre_existing_dirty_paths": pre_existing,
         "phase_owned_dirty": (ownership.valid or control_only_dirty) and closeout_safe_dirty,
         "ownership_errors": [] if control_only_dirty else list(ownership.errors),
@@ -7425,6 +7435,26 @@ def _perform_phase_closeout(
                 returncode=add_result.returncode,
                 stderr=add_result.stderr or add_result.stdout,
             )
+        elif terminal_status == "complete" and _closeout_nothing_staged(repo):
+            # Issue #6: the phase's verified work is already on the base branch (committed
+            # out-of-band, e.g. via a merged PR), so nothing is staged. `git commit` would
+            # exit non-zero and be mistaken for a commit failure, leaving the phase
+            # un-finalized and re-dispatched forever. Finalize as a no-op — the verified work
+            # is present; advance the phase, pinning closeout_summary to THIS phase via HEAD.
+            # Checked BEFORE the default-branch guard: a no-op commits nothing, so that guard
+            # (which only refuses real commits to the pipeline default branch) does not apply.
+            # Gated strictly on terminal_status == "complete" (== verification_status "passed"
+            # per the derivation at the top of this function) so a blocked / failed / not-yet-
+            # verified phase is never silently finalized as complete.
+            commit = _git_output(repo, "rev-parse", "HEAD")
+            status = "complete"
+            metadata["closeout"]["verification_status"] = "passed"
+            metadata["closeout"].update(
+                {
+                    "closeout_action": "noop_already_committed",
+                    "closeout_commit": commit,
+                }
+            )
         else:
             guard_blocker = _refuse_pipeline_default_branch_commit(repo)
             if guard_blocker is not None:
@@ -7435,22 +7465,6 @@ def _perform_phase_closeout(
                         "closeout_action": "commit_refused",
                         "verification_status": "blocked",
                         "closeout_refusal_reason": "pipeline_default_branch_commit",
-                    }
-                )
-            elif terminal_status != "planned" and _closeout_nothing_staged(repo):
-                # Issue #6: the phase's verified work is already on the base branch
-                # (committed out-of-band, e.g. via a merged PR), so nothing is staged.
-                # `git commit` would exit non-zero and be mistaken for a commit failure,
-                # leaving the phase un-finalized and re-dispatched forever. Finalize as a
-                # no-op instead — the verified work is present; advance the phase, and pin
-                # the closeout_summary to THIS phase via the current HEAD.
-                commit = _git_output(repo, "rev-parse", "HEAD")
-                status = "complete"
-                metadata["closeout"]["verification_status"] = "passed"
-                metadata["closeout"].update(
-                    {
-                        "closeout_action": "noop_already_committed",
-                        "closeout_commit": commit,
                     }
                 )
             else:
