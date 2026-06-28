@@ -161,11 +161,17 @@ from .phase_worktree_executor import (
 )
 from .plan_ir import iter_waves
 from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
-from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor
+from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor, shipped_model_policy_rule
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
+from .governed_review import RUN_MODES
+from .governed_premerge import (
+    DEFAULT_MAX_REVIEW_ROUNDS,
+    run_governed_premerge_loop,
+)
 from .reconcile import reconcile
-from .review_summary import summarize_run_review_findings
+from .review_summary import summarize_run
+from .route_log import build_route_log, with_route_log
 from .release_guard import release_dispatch_blocker
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
@@ -1045,6 +1051,23 @@ def _start_gate_bypassed_event(
     )
 
 
+def _governed_not_live_warning(run_mode: str) -> str | None:
+    """Operator warning when governed mode is requested but not yet live.
+
+    The governed pre-merge/panel loop is built and unit-tested but NOT yet
+    threaded into the live executor cycle (model-routing-v2). Return a loud,
+    non-fatal warning so an operator is never misled into believing review
+    enforcement is active; return None for autonomous. Never adds human_required.
+    """
+    if run_mode == "governed":
+        return (
+            "phase-loop: WARNING — run_mode=governed is not yet live in the executor "
+            "cycle; this run proceeds AUTONOMOUSLY (no panel review, no gating). "
+            "Track model-routing-v2 for live governed mode."
+        )
+    return None
+
+
 def run_loop(
     repo: Path,
     roadmap: Path,
@@ -1095,11 +1118,18 @@ def run_loop(
     phase_scheduler_mode: str = "off",
     allow_cross_phase_dirty_reason: str | None = None,
     allow_unowned_reason: str | None = None,
+    run_mode: str = "autonomous",
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     if closeout_mode not in CLOSEOUT_MODES:
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
     if phase_scheduler_mode not in PHASE_SCHEDULER_MODES:
         raise ValueError(f"invalid phase scheduler mode: {phase_scheduler_mode}")
+    if run_mode not in RUN_MODES:
+        raise ValueError(f"invalid run mode: {run_mode}")
+    _governed_warning = _governed_not_live_warning(run_mode)
+    if _governed_warning:
+        # Fail loud, not silent (see docs/research/model-routing-v2-integration.md).
+        print(_governed_warning, file=sys.stderr)
     # Baseline ledger length so the run-end review-findings summary reports only
     # events appended during THIS invocation, not the whole persisted ledger
     # across bounded `--max-phases` batches.
@@ -2473,6 +2503,7 @@ def run_loop(
                     operator_effort=effort,
                     plan_policy=plan_execution_policy,
                     roadmap_policy=roadmap_execution_policy,
+                    model_policy_rule=shipped_model_policy_rule(launch_action),
                 )
                 selection = resolve_model_selection_from_policy(
                     profile=selection.profile,
@@ -5348,7 +5379,16 @@ def _append_coordinator_event(
             reasoning_effort=selection.effort,
             source=selection.source,
             override_reason=selection.override_reason,
-            metadata={"coordinator": metadata},
+            # model-routing-v1 P4: attach the metadata-only route record only once
+            # the selection is post-resolution (model_class set). Pre-resolution
+            # coordinator events would otherwise carry a null model_class — the
+            # headline field — exactly where the route record is meant to annotate
+            # the routed tier (code-review finding, verified).
+            metadata=(
+                with_route_log({"coordinator": metadata}, selection)
+                if getattr(selection, "model_class", None) is not None
+                else {"coordinator": metadata}
+            ),
             **provenance,
         ),
     )
@@ -7802,6 +7842,39 @@ class _null_context:
         return False
 
 
+def governed_premerge_for_run(
+    *,
+    artifact: str,
+    author_executor: str,
+    run_mode: str,
+    apply_fix=None,
+    available_legs=None,
+    invoke=None,
+    max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
+):
+    """Runner-level entry to the governed pre-merge loop (model-routing-v1 P3).
+
+    Autonomous-safe: when `run_mode != "governed"` this is a literal no-op
+    (`run_governed_premerge_loop` returns `mergeable=True, ran=False` without
+    spawning a panel). Governed runs get the bounded review→fix→re-review loop
+    with a non-human terminal. Kept out of the dense dispatch loop (the
+    cross-phase dirty start-gate is live); callers invoke it at a pre-merge
+    boundary. The full executor-driven `apply_fix` threading is the remaining
+    integration; the loop/ladder behaviors are unit-tested in isolation.
+    """
+    kwargs = dict(
+        artifact=artifact,
+        author_executor=author_executor,
+        run_mode=run_mode,
+        apply_fix=apply_fix,
+        available_legs=available_legs,
+        max_rounds=max_rounds,
+    )
+    if invoke is not None:
+        kwargs["invoke"] = invoke
+    return run_governed_premerge_loop(**kwargs)
+
+
 def _emit_review_findings_summary(repo: Path, *, since: int = 0) -> None:
     """Print an aggregated review-findings summary for this run to stderr.
 
@@ -7815,7 +7888,7 @@ def _emit_review_findings_summary(repo: Path, *, since: int = 0) -> None:
         events = read_events(repo)
         if since:
             events = events[since:]
-        summary = summarize_run_review_findings(events)
+        summary = summarize_run(events)  # review findings + governed panel verdicts
         if summary:
             print(summary, file=sys.stderr)
     except Exception:
