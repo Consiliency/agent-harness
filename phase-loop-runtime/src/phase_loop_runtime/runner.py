@@ -165,6 +165,11 @@ from .profiles import resolve_execution_policy, resolve_model_selection_from_pol
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
 from .governed_review import RUN_MODES
+from .governed_premerge import (
+    DEFAULT_MAX_REVIEW_ROUNDS,
+    next_escalation,
+    run_governed_premerge_loop,
+)
 from .reconcile import reconcile
 from .review_summary import summarize_run_review_findings
 from .release_guard import release_dispatch_blocker
@@ -7730,6 +7735,39 @@ class _null_context:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+def governed_premerge_for_run(
+    *,
+    artifact: str,
+    author_executor: str,
+    run_mode: str,
+    apply_fix=None,
+    available_legs=None,
+    invoke=None,
+    max_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS,
+):
+    """Runner-level entry to the governed pre-merge loop (model-routing-v1 P3).
+
+    Autonomous-safe: when `run_mode != "governed"` this is a literal no-op
+    (`run_governed_premerge_loop` returns `mergeable=True, ran=False` without
+    spawning a panel). Governed runs get the bounded review→fix→re-review loop
+    with a non-human terminal. Kept out of the dense dispatch loop (the
+    cross-phase dirty start-gate is live); callers invoke it at a pre-merge
+    boundary. The full executor-driven `apply_fix` threading is the remaining
+    integration; the loop/ladder behaviors are unit-tested in isolation.
+    """
+    kwargs = dict(
+        artifact=artifact,
+        author_executor=author_executor,
+        run_mode=run_mode,
+        apply_fix=apply_fix,
+        available_legs=available_legs,
+        max_rounds=max_rounds,
+    )
+    if invoke is not None:
+        kwargs["invoke"] = invoke
+    return run_governed_premerge_loop(**kwargs)
 
 
 def _emit_review_findings_summary(repo: Path, *, since: int = 0) -> None:
