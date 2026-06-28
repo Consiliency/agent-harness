@@ -161,7 +161,7 @@ from .phase_worktree_executor import (
 )
 from .plan_ir import iter_waves
 from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
-from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor
+from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor, shipped_model_policy_rule
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
 from .reconcile import reconcile
@@ -2473,6 +2473,7 @@ def run_loop(
                     operator_effort=effort,
                     plan_policy=plan_execution_policy,
                     roadmap_policy=roadmap_execution_policy,
+                    model_policy_rule=shipped_model_policy_rule(launch_action),
                 )
                 selection = resolve_model_selection_from_policy(
                     profile=selection.profile,

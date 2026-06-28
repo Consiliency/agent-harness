@@ -23,6 +23,9 @@ EVENT_STATUSES = PHASE_STATUSES + ("plan_skipped",)
 COMMANDS = ("run", "resume", "status", "dry-run", "maintain-skills", "monitor", "hotfix")
 MODEL_PROFILES = ("roadmap", "plan", "execute", "repair", "review", "skill-maintenance")
 EXECUTORS = ("codex", "claude", "gemini", "opencode", "pi", "command", "manual")
+# Vendor-agnostic model roles (model-routing-v1). "class" not "tier" — tier
+# already denotes evidence-audit budgets (--tier-2/--tier-3).
+MODEL_CLASSES = ("planner", "implementer", "worker")
 WORK_UNIT_KINDS = (
     "roadmap_build",
     "phase_plan",
@@ -579,6 +582,7 @@ class ExecutionPolicyRule:
     lane: str | None = None
     executor: str | None = None
     model: str | None = None
+    model_class: str | None = None
     effort: str | None = None
     work_unit_kind: str | None = None
     unsupported_policy_behavior: str = "block"
@@ -592,6 +596,8 @@ class ExecutionPolicyRule:
             require_literal(self.action, PRODUCT_LOOP_ACTIONS, "execution policy action")
         if self.executor is not None:
             require_literal(self.executor, EXECUTORS, "execution policy executor")
+        if self.model_class is not None:
+            require_literal(self.model_class, MODEL_CLASSES, "execution policy model class")
         if self.effort is not None:
             require_literal(self.effort, NORMALIZED_EFFORT_LEVELS, "execution policy effort")
         if self.work_unit_kind is not None:

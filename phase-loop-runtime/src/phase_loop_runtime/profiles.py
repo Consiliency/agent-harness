@@ -80,6 +80,86 @@ EXECUTOR_EFFORT_OVERRIDES = {
     },
 }
 
+# --- model-routing-v1: vendor-agnostic model_class -> concrete model ----------
+# Where a provider exposes no separate implementer/worker tier, all classes map
+# to its single model (pi). Non-`phase-loop-` model strings pass through
+# `_resolve_policy_model` unchanged for every executor (claude/codex have no
+# model_aliases; gemini/pi pass through non-alias strings), so these resolve.
+CLAUDE_IMPLEMENTER_MODEL = "claude-sonnet-4-6"
+CLAUDE_WORKER_MODEL = "claude-haiku-4-5"
+OPENAI_IMPLEMENTER_MODEL = "gpt-5.4"
+OPENAI_WORKER_MODEL = "gpt-5.4-mini"
+OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.4"
+OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.4-mini"
+GEMINI_IMPLEMENTER_MODEL = "flash"
+GEMINI_WORKER_MODEL = "flash-lite"
+
+CLASS_MODEL_OVERRIDES = {
+    "claude": {
+        "planner": CLAUDE_HEAVY_MODEL,
+        "implementer": CLAUDE_IMPLEMENTER_MODEL,
+        "worker": CLAUDE_WORKER_MODEL,
+    },
+    "codex": {
+        "planner": OPENAI_HEAVY_MODEL,
+        "implementer": OPENAI_IMPLEMENTER_MODEL,
+        "worker": OPENAI_WORKER_MODEL,
+    },
+    "opencode": {
+        "planner": OPENCODE_OPENAI_HEAVY_MODEL,
+        "implementer": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
+        "worker": OPENCODE_OPENAI_WORKER_MODEL,
+    },
+    "gemini": {
+        "planner": GEMINI_PRO_ROUTED_MODEL,
+        "implementer": GEMINI_IMPLEMENTER_MODEL,
+        "worker": GEMINI_WORKER_MODEL,
+    },
+    "pi": {
+        "planner": PI_AUTO_ROUTED_MODEL,
+        "implementer": PI_AUTO_ROUTED_MODEL,
+        "worker": PI_AUTO_ROUTED_MODEL,
+    },
+}
+
+
+def resolve_model_class(executor: str, model_class: str) -> str | None:
+    """Map (model_class, executor) -> concrete model, or None if unmapped."""
+    return CLASS_MODEL_OVERRIDES.get(executor, {}).get(model_class)
+
+
+# The repo's SHIPPED model_policy. THIS repo's default: planning at max,
+# implementation at the implementer model. `clamp=True` resolves a sub-max
+# provider's `max` request to its ceiling via the provider effort_map fallback
+# (otherwise normalize_provider_effort RAISES). A downstream repo that ships no
+# policy keeps the registry defaults — that empty-policy path is the back-compat
+# contract (callers pass model_policy_rule=None to get it).
+SHIPPED_MODEL_POLICY = {
+    "roadmap": {"model_class": "planner", "effort": "max", "clamp": True},
+    "plan": {"model_class": "planner", "effort": "max", "clamp": True},
+    "execute": {"model_class": "implementer", "effort": "medium"},
+    "repair": {"model_class": "implementer", "effort": "medium"},
+    "review": {"model_class": "planner", "effort": "high", "clamp": True},
+}
+
+
+def shipped_model_policy_rule(action: str) -> ExecutionPolicyRule | None:
+    """The shipped model_policy rule for an action, or None if unmapped."""
+    spec = SHIPPED_MODEL_POLICY.get(action)
+    if spec is None:
+        return None
+    clamp = bool(spec.get("clamp", False))
+    return ExecutionPolicyRule(
+        selector=action,
+        action=action,
+        model_class=spec.get("model_class"),
+        effort=spec.get("effort"),
+        unsupported_policy_behavior="fallback" if clamp else "block",
+        fallback="high" if clamp else None,
+        source="model_policy",
+        override_reason="shipped model_policy (model-routing-v1)",
+    )
+
 
 def normalize_provider_effort(
     *,
@@ -161,10 +241,11 @@ def resolve_execution_policy(
     operator_effort: str | None = None,
     plan_policy: ExecutionPolicyRule | None = None,
     roadmap_policy: ExecutionPolicyRule | None = None,
+    model_policy_rule: ExecutionPolicyRule | None = None,
     lane: str | None = None,
 ) -> ResolvedExecutionPolicy:
     require_literal(action, tuple(ACTION_WORK_UNITS.keys()), "execution policy action")
-    policy, source = _first_policy(plan_policy, roadmap_policy)
+    policy, source = _first_policy(plan_policy, roadmap_policy, model_policy_rule)
     if _claude_model_needs_claude_executor(executor, model_selection.model, policy):
         executor = "claude"
     work_unit_kind = (
@@ -189,6 +270,14 @@ def resolve_execution_policy(
         if policy.model is not None:
             policy_model = policy.model
             model_source = source or policy.source
+        elif policy.model_class is not None:
+            # model_class -> concrete model for the resolved executor. An
+            # explicit `model` always wins; a class only fills in when no model
+            # is given (model-routing-v1).
+            class_model = resolve_model_class(policy_executor, policy.model_class)
+            if class_model is not None:
+                policy_model = class_model
+                model_source = source or policy.source
         if policy.effort is not None:
             policy_effort = policy.effort
             effort_source = source or policy.source
@@ -264,11 +353,17 @@ def resolve_model_selection_from_policy(
 def _first_policy(
     plan_policy: ExecutionPolicyRule | None,
     roadmap_policy: ExecutionPolicyRule | None,
+    model_policy_rule: ExecutionPolicyRule | None = None,
 ) -> tuple[ExecutionPolicyRule | None, str | None]:
+    # Precedence: plan > roadmap > model_policy > registry defaults. The shipped
+    # model_policy is the lowest-precedence policy; an explicit plan/roadmap
+    # Execution Policy section overrides it (model-routing-v1).
     if plan_policy is not None:
         return plan_policy, "phase-plan policy"
     if roadmap_policy is not None:
         return roadmap_policy, "roadmap policy"
+    if model_policy_rule is not None:
+        return model_policy_rule, "model_policy"
     return None, None
 
 
