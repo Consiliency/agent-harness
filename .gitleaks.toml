@@ -1,0 +1,21 @@
+# gitleaks config for the public agent-harness repo.
+#
+# The repo was extracted from a private dotfiles fleet repo and passed a Gate-B
+# scrub (gitleaks-clean: fleet-host / username / path / IP / secret / 1password /
+# provenance all 0). This config keeps it that way in CI.
+#
+# The default ruleset already reports ZERO findings on the current tree (verified
+# locally with gitleaks v8), including the synthetic redaction-test fixtures under
+# phase-loop-runtime/src/phase_loop_runtime/_test_fixtures/ — so NO path allowlist
+# is added (an over-broad allowlist would weaken the gate). If a future synthetic
+# fixture legitimately trips a rule, add a narrow path entry to [allowlist] below,
+# scoped to the exact file, rather than disabling rules.
+
+title = "agent-harness gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "No allowlist entries — the default ruleset is clean against this tree. Add narrow per-file paths here only for confirmed synthetic-fixture false positives."
+paths = []

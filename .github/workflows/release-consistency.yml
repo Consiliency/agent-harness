@@ -1,0 +1,69 @@
+name: release-consistency
+
+# Guards against tag↔version drift: the two static version sources
+# (phase-loop-runtime/pyproject.toml [project].version and
+# src/phase_loop_runtime/__init__.py __version__) must agree, and on a release
+# tag the tag (minus a leading "v") must equal that version. This is exactly the
+# class of bug where v0.1.1 was tagged without bumping __version__ (it still
+# reported 0.1.0); this check would have failed that tag.
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: pyproject version == __init__ __version__ (and == tag on tag push)
+        # GITHUB_REF_NAME reaches the script via env (never interpolated into the
+        # shell body) so a crafted ref cannot inject commands.
+        env:
+          IS_TAG: ${{ github.ref_type == 'tag' }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, sys, re, pathlib
+          try:
+              import tomllib
+          except ModuleNotFoundError:
+              import tomli as tomllib  # py<3.11 fallback (3.12 runner has tomllib)
+
+          root = pathlib.Path("phase-loop-runtime")
+          pyproject_v = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+          init_text = (root / "src" / "phase_loop_runtime" / "__init__.py").read_text()
+          m = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
+          init_v = m.group(1) if m else None
+
+          errors = []
+          if init_v is None:
+              errors.append("could not find __version__ in __init__.py")
+          elif pyproject_v != init_v:
+              errors.append(f"pyproject version {pyproject_v!r} != __init__ __version__ {init_v!r}")
+
+          if os.environ.get("IS_TAG") == "true":
+              tag = os.environ.get("TAG_NAME", "")
+              tag_v = tag[1:] if tag.startswith("v") else tag
+              if tag_v != pyproject_v:
+                  errors.append(f"git tag {tag!r} (-> {tag_v!r}) != package version {pyproject_v!r}")
+
+          if errors:
+              print("release-consistency FAILED:")
+              for e in errors:
+                  print(f"  - {e}")
+              sys.exit(1)
+          print(f"release-consistency OK: pyproject == __init__ == {pyproject_v}"
+                + (f" == tag {os.environ.get('TAG_NAME')}" if os.environ.get('IS_TAG') == 'true' else ""))
+          PY

@@ -1,0 +1,30 @@
+name: scrub
+
+# Keep the public repo scrub-clean: re-run the gitleaks secret scan on every
+# push/PR so a future commit cannot reintroduce fleet-private content (secrets,
+# fleet hostnames/usernames, private paths, 1password refs). Uses the pinned
+# gitleaks docker image + the repo's .gitleaks.toml (default ruleset; no
+# allowlist — the tree is clean today).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # scan full history, not just the tip
+
+      - name: gitleaks (history + working tree)
+        run: |
+          docker run --rm -v "${GITHUB_WORKSPACE}:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            git /repo --config /repo/.gitleaks.toml --no-banner --redact --exit-code 1
