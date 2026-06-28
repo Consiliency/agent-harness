@@ -4,7 +4,7 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
-## Unreleased
+## v0.1.5
 
 Closeout convergence fixes — both resolve infinite re-dispatch loops at the source.
 
