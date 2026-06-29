@@ -6,7 +6,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **docs-freshness enforcement (#18) — a pipeline-independent, fail-loud docs audit.**
+  Release/multi-phase builds could complete green while public docs (README / package
+  READMEs / CHANGELOG / operations) went stale — because the doc-freshness control lived
+  *inside* the plan/execute skills and was defeated by under-scoping its lane, bypassing the
+  pipeline, or the runtime helper simply being absent. The fix is a control that can't be
+  skipped: **`phase-loop docs-audit --base <ref>`** runs on the branch diff alone (no
+  `.phase-loop/` state), classifies changed paths against the unified surface taxonomy
+  (`docs_surfaces` — the single canonical source `models.PUBLIC_SURFACE_GLOBS` and
+  `release_guard.RELEASE_AFFECTING_PATTERNS` now re-export from), enforces a **per-surface,
+  relevance-bound decision contract** (a release-class surface needs its *required* doc to
+  actually change — a token or unrelated edit does not satisfy; every general surface needs at
+  least a recorded decision), runs the shared stale-text scanner (`docs_stale_scan` —
+  placeholders like `recovery commit pending`, stale counts, unlabeled-historical versions),
+  and emits `docs_freshness: passed|skipped|blocked`, **failing closed** on an un-evaluable
+  base. Wired into CI on `pull_request` (blocks the merge) and `push:main` (post-hoc
+  red-mark) — the autonomous loop pushes directly to main, so this is detect-and-alert there
+  by design (no forced PRs). The in-pipeline `closeout_validators` doc-delta gate is now
+  release-aware too (advisory early feedback — `block` severity but `warn`-effective in-loop,
+  never `human_required`; the non-bypassable control is the CI audit), the closeout report
+  carries `docs_freshness`, and `validate_plan_doc` gains a release under-scope WARN (carrying
+  a drift-guarded vendored copy of the taxonomy, since the bundled script can't import the
+  runtime). Hardened by a 3-model advisor panel before execution.
 - **model-routing-v2 — governed mode goes live (serial path).** The v1 governed-review
+  machinery (a tested island where `run_mode` reached `run_loop` but was never used) is now
   machinery (a tested island where `run_mode` reached `run_loop` but was never used) is now
   wired into the live runner: `--governed` / `PHASE_LOOP_RUN_MODE=governed` surfaces the mode;
   a plan-stage gate reviews first-attempt plans; a pre-merge gate runs before the closeout

@@ -145,6 +145,26 @@ repo-relative `plan_artifact`, and `forced_replan: false`.
 to `PHASE_STATUSES`, `automation.status`, closeout `terminal_status`, or
 reducer phase-state outputs.
 
+## Docs Freshness (#18)
+
+Every closeout payload carries a `docs_freshness` record:
+
+- `status`: `passed | skipped | blocked` — `skipped` when no public surface
+  changed; `blocked` when a release-class surface changed without its required
+  doc, or a general surface changed with no recorded decision; `passed` otherwise.
+- `changed_public_surfaces`: the changed paths classified as public.
+- `findings`: the doc-delta finding codes that fired (`release_doc_missing`,
+  `doc_delta_undecided`).
+
+This in-loop record is **advisory** — the doc-delta validator emits a `block`
+*severity* finding that stays `warn`-*effective* under the default
+`PHASE_LOOP_REVIEW=warn` and never sets `human_required`. The **non-bypassable**
+enforcement is the pipeline-independent `phase-loop docs-audit` CLI (a CI check on
+`pull_request` + `push:main`), which runs on the branch diff regardless of how the
+work was produced and exits non-zero on an unsatisfied release surface. The two
+share one canonical surface taxonomy (`docs_surfaces`); the bundled
+stdlib-only `validate_plan_doc.py` carries a drift-guarded vendored copy.
+
 ## Run Loop Mode
 
 `phase-loop run` and `phase-loop resume` count `--max-phases N` as dispatched actions by default.

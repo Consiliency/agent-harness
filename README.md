@@ -50,6 +50,28 @@ For periodic human review, bound the run (`--max-phases N`) and read the finding
 summary between runs rather than blocking mid-loop. See `CHANGELOG.md` (rigor-v1)
 for the full list of gates.
 
+## Docs-freshness audit (#18)
+
+The in-loop gates above are *advisory* — they can be under-scoped or skipped. The
+**non-bypassable** docs-freshness control is a separate, diff-driven CLI:
+
+```bash
+phase-loop docs-audit --base <ref>   # exits non-zero on stale/undocumented release surfaces
+```
+
+It runs on the branch diff alone (no `.phase-loop/` state), classifies changed
+paths against the unified surface taxonomy, and enforces a **relevance-bound
+decision contract**: a release-class change (version/manifest/install-posture)
+must update its required doc (CHANGELOG / package README / release docs) — a token
+or unrelated edit does not satisfy it; every general public surface needs at least
+a recorded decision (in `.doc-decisions.json`). It also runs a stale-text scan
+(placeholders like `recovery commit pending`, stale counts) and emits
+`docs_freshness: passed|skipped|blocked`, **failing closed** if it cannot evaluate.
+
+Wire it into CI on `pull_request` (blocks the merge) and `push:main` (post-hoc
+red-mark). Because the autonomous loop pushes directly to `main`, the main-push
+coverage is **detect-and-alert** — autonomy is preserved (no forced PRs).
+
 ## Model routing (two axes)
 
 Model selection has two independent axes:

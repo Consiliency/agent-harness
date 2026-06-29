@@ -4,12 +4,13 @@ import fnmatch
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .discovery import plan_metadata
 # Canonical release-surface taxonomy lives in docs_surfaces (IF-0-P1-1); re-exported
 # here so there is exactly one source of truth (no parallel copy).
 from .docs_surfaces import RELEASE_AFFECTING_PATTERNS
+from .docs_stale_scan import scan_doc_paths
 
 
 RELEASE_DISPATCH_MUTATION = "release_dispatch"
@@ -108,6 +109,47 @@ def release_dispatch_blocker(repo: Path, plan: Path | None) -> ReleaseDispatchBl
             },
         )
     return None
+
+
+def release_evidence_residuals(repo: Path, doc_paths: Sequence[str]):
+    """Post-dispatch evidence-repair detector (docs-freshness v4 P4).
+
+    After a release tag / workflow result exists, revisit the named release evidence
+    docs for residual placeholders (`recovery commit pending`, `TBD`, …) that could not
+    be resolved before the tag was created. Returns ``{path: [StaleFinding, …]}`` for
+    docs with residuals (the operator repairs them — no auto-write). Reuses the P2
+    stale scanner; the publish-before-tag enforcement is the Layer A `docs-audit` CI
+    gate's `push:tags` trigger, so this only repairs residual evidence after the fact.
+    """
+    return scan_doc_paths(repo, list(doc_paths))
+
+
+def release_dispatch_evidence_blocker(repo: Path, doc_paths: Sequence[str]) -> ReleaseDispatchBlocker | None:
+    """A post-dispatch blocker when release evidence docs still carry placeholders.
+
+    Distinct from the autonomous run-loop (this is the operator-driven release-dispatch
+    flow, which already uses ``human_required`` blockers) — never affects autonomous mode.
+    """
+    residuals = release_evidence_residuals(repo, doc_paths)
+    if not residuals:
+        return None
+    flat = {p: [f.to_json() for f in hits] for p, hits in residuals.items()}
+    return ReleaseDispatchBlocker(
+        blocker_class="release_evidence_residual",
+        blocker_summary=(
+            "Release evidence docs still contain unresolved placeholders after the release "
+            "dispatch completed; the tag/workflow result is now known and must be filled in."
+        ),
+        required_human_inputs=(
+            "Replace residual placeholders (e.g. `recovery commit pending`) in the release "
+            "evidence docs with the now-known commit SHA / workflow result, then re-verify.",
+        ),
+        metadata={
+            "guard": "release_dispatch",
+            "reason": "evidence_residual_placeholders",
+            "residuals": flat,
+        },
+    )
 
 
 def _release_base_ref(metadata: dict[str, str]) -> tuple[str, bool]:
