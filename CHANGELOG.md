@@ -6,6 +6,32 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Fix (#18):** A phase-loop release recovery could close **green** (clean tree, pushed
+  `main`, release workflow passed) while its public docs stayed stale or absent — the
+  existing doc-delta gate is diff-keyed, so files that *should* have changed but didn't
+  were invisible, and under the default `PHASE_LOOP_REVIEW=warn` no finding ever blocks.
+  Three load-bearing fixes:
+  - **F1 — docs-freshness closeout gate** (`docs_freshness.py`): a *path-keyed*
+    pre-scan (runner-side; validators stay pure) enumerates public-doc surfaces from the
+    filesystem and `.claude/docs-catalog.json` (**not** from `changed_paths`) and scans
+    their contents for stale placeholders (`recovery commit pending`, `TBD`, …). For
+    **release/package phases only** it blocks `complete` as a hard gate — modeled on the
+    verification-evidence gate, governed by its own `PHASE_LOOP_DOCS_FRESHNESS`
+    (`hard` default | `warn` | `off`), independent of `PHASE_LOOP_REVIEW`. Ordinary
+    phases are unaffected (status `skipped`). The closeout now always carries
+    `docs_freshness: passed|skipped|blocked` + a `docs_freshness_detail` evidence record,
+    so a clean worktree alone cannot imply docs are current. Fuzzy signals (stale
+    package-count claims, "skeleton") are warn-tier; an inline `<!-- freshness-ok -->`
+    marker suppresses a false positive.
+  - **F2 — release docs-lane ownership** (`validate_plan_doc.py`): release/package phases
+    must have a docs lane that **owns** `README`/`CHANGELOG`/release-notes (or records an
+    explicit no-doc-change decision), and the docs reducer must **depend on every producer
+    lane**. ERROR for release phases, WARN for ordinary phases (autonomy-first preserved).
+  - **F3 — widened `PUBLIC_SURFACE_GLOBS`** to cover package-level `**/README.md`,
+    `CHANGELOG*`, and release-notes surfaces.
+  - Deferred as follow-ups: F4 (post-dispatch evidence reducer that back-fills the
+    commit SHA/workflow result not knowable before tag creation) and F5 (evidence-backed
+    freshness decision literal).
 - **Fix (#14):** `phase-loop sync-skills --apply` silently no-oped — when a bridge skill's
   source did not resolve it skipped the record, producing output identical to `--check`
   with exit 0. It now reports the unrepaired skills and **exits non-zero** with actionable

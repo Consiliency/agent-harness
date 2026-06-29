@@ -115,5 +115,99 @@ class UiVisualVerificationCheckTest(unittest.TestCase):
         self.assertEqual(self.mod._check_l_ui_visual_verification(src), [])
 
 
+class ReleaseDocsCoverageCheckTest(unittest.TestCase):
+    """issue #18 (F2) — release/package phases must own public-doc surfaces and
+    the docs reducer must depend on every producer lane."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load()
+
+    def _lanes(self, depends_on_for_docs):
+        Lane = self.mod.Lane
+        return [
+            Lane(sl_id="SL-1", name="Release manifests"),
+            Lane(sl_id="SL-2", name="Documentation sweep", depends_on=depends_on_for_docs),
+        ]
+
+    def _release_frontmatter_src(self):
+        return "---\nphase: REL\nphase_loop_mutation: release_dispatch\n---\n# plan\n"
+
+    def test_release_phase_docs_not_owning_readme_is_error(self):
+        src = self._release_frontmatter_src()
+        lanes = self._lanes(["SL-1"])
+        parsed = {
+            "SL-1": {"owned_globs": ["package.json", "CHANGELOG.md"]},
+            "SL-2": {"owned_globs": ["plans/RECOVERY.md"]},  # owns no public-doc surface
+        }
+        findings = self.mod._check_m_release_docs_coverage(src, lanes, parsed)
+        errors = [f for f in findings if "WARN" not in f]
+        self.assertTrue(errors, "release phase docs-coverage gap must be an ERROR")
+        self.assertTrue(any("README" in f for f in errors))
+
+    def test_release_phase_owning_readme_and_full_deps_is_clean(self):
+        src = self._release_frontmatter_src()
+        lanes = self._lanes(["SL-1"])
+        parsed = {
+            "SL-1": {"owned_globs": ["package.json"]},
+            "SL-2": {"owned_globs": ["README.md", "CHANGELOG.md"]},
+        }
+        self.assertEqual(self.mod._check_m_release_docs_coverage(src, lanes, parsed), [])
+
+    def test_release_reducer_missing_producer_dep_is_error(self):
+        src = self._release_frontmatter_src()
+        lanes = self._lanes([])  # docs reducer depends on nothing
+        parsed = {
+            "SL-1": {"owned_globs": ["package.json"]},
+            "SL-2": {"owned_globs": ["README.md"]},
+        }
+        findings = self.mod._check_m_release_docs_coverage(src, lanes, parsed)
+        errors = [f for f in findings if "WARN" not in f]
+        self.assertTrue(any("SL-1" in f and "Depends on" in f for f in errors))
+
+    def test_ordinary_phase_same_gap_is_warn_not_error(self):
+        # No release frontmatter, no release-artifact owned globs.
+        src = "---\nphase: INT\n---\n# plan\n"
+        lanes = self._lanes([])
+        parsed = {
+            "SL-1": {"owned_globs": ["src/core.py"]},
+            "SL-2": {"owned_globs": ["plans/notes.md"]},
+        }
+        findings = self.mod._check_m_release_docs_coverage(src, lanes, parsed)
+        self.assertTrue(findings)
+        self.assertEqual([f for f in findings if "WARN" not in f], [])
+
+    def test_release_detected_via_owned_artifact_glob(self):
+        # No explicit frontmatter, but a lane owns package.json -> release.
+        src = "---\nphase: REL\n---\n# plan\n"
+        lanes = self._lanes(["SL-1"])
+        parsed = {
+            "SL-1": {"owned_globs": ["packages/x/package.json"]},
+            "SL-2": {"owned_globs": ["plans/notes.md"]},  # no public doc
+        }
+        findings = self.mod._check_m_release_docs_coverage(src, lanes, parsed)
+        self.assertTrue([f for f in findings if "WARN" not in f])
+
+    def test_release_no_docs_lane_is_error(self):
+        src = self._release_frontmatter_src()
+        Lane = self.mod.Lane
+        lanes = [Lane(sl_id="SL-1", name="Release manifests")]
+        parsed = {"SL-1": {"owned_globs": ["package.json"]}}
+        findings = self.mod._check_m_release_docs_coverage(src, lanes, parsed)
+        self.assertTrue([f for f in findings if "WARN" not in f])
+
+    def test_no_doc_change_decision_satisfies_ownership(self):
+        src = self._release_frontmatter_src() + "\nThe docs lane records no_doc_delta: each surface is current.\n"
+        lanes = self._lanes(["SL-1"])
+        parsed = {
+            "SL-1": {"owned_globs": ["package.json"]},
+            "SL-2": {"owned_globs": ["plans/notes.md"]},
+        }
+        findings = self.mod._check_m_release_docs_coverage(src, lanes, parsed)
+        # ownership requirement satisfied by the explicit decision; only the
+        # dependency check (if any) remains — here deps are complete.
+        self.assertFalse(any("do not own" in f for f in findings))
+
+
 if __name__ == "__main__":
     unittest.main()

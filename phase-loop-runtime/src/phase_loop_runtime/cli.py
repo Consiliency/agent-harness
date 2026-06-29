@@ -12,6 +12,7 @@ from pathlib import Path
 _LOGGER = logging.getLogger("phase_loop_runtime.cli")
 
 from .closeout import build_phase_loop_closeout
+from .docs_freshness import scan_docs_freshness
 from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
 from .git_topology import collect_git_topology
@@ -1799,6 +1800,7 @@ def _direct_invocation_blocker(
     closeout = build_phase_loop_closeout(
         phase_alias=phase,
         plan_path=plan or "",
+        docs_freshness=scan_docs_freshness(repo, plan_path=plan),
         plan_metadata=PipelinePlanMetadata(
             source_bundle=str(args.bundle or args.source_bundle or "none"),
             source_bundle_sha256="0" * 64,

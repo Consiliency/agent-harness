@@ -763,6 +763,133 @@ def _check_l_ui_visual_verification(src: str) -> Findings:
     ]
 
 
+# Release/package signal (issue #18). Either the explicit release-dispatch
+# mutation in frontmatter, OR a lane owning a release artifact (manifest /
+# version file / changelog / release workflow).
+_RELEASE_ARTIFACT_RE = re.compile(
+    r"package\.json|Cargo\.toml|pyproject\.toml|setup\.cfg|"
+    r"(?:^|/)VERSION$|version\.txt|__version__\.py|CHANGELOG|"
+    r"\.github/workflows/(?:release|publish)",
+    re.IGNORECASE,
+)
+# Public-doc surfaces a release/package phase's docs lane must own (or record a
+# no-doc-change decision for).
+_RELEASE_DOC_SURFACE_RE = re.compile(r"README\.md|CHANGELOG|RELEASE", re.IGNORECASE)
+
+
+def _is_release_plan(src: str, lane_sections_parsed: Dict[str, dict]) -> bool:
+    fm = _parse_frontmatter_block(src)
+    if str(fm.get("phase_loop_mutation", "")).strip().lower() == "release_dispatch":
+        return True
+    if str(fm.get("phase_type", "")).strip().lower() in (
+        "release",
+        "package",
+        "roadmap_completion",
+        "roadmap-completion",
+    ):
+        return True
+    for parsed in lane_sections_parsed.values():
+        for glob in parsed.get("owned_globs", []):
+            if _RELEASE_ARTIFACT_RE.search(glob):
+                return True
+    return False
+
+
+def _parse_frontmatter_block(src: str) -> Dict[str, str]:
+    if not src.startswith("---\n"):
+        return {}
+    end = src.find("\n---", 4)
+    if end == -1:
+        return {}
+    data: Dict[str, str] = {}
+    for line in src[4:end].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        data[key.strip()] = value.strip().strip("'\"")
+    return data
+
+
+def _docs_lane_ids(lanes: List[Lane], lane_sections_parsed: Dict[str, dict]) -> List[str]:
+    ids: List[str] = []
+    for lane in lanes:
+        if re.search(r"\bdocs?\b|\bdocumentation\b", lane.name, re.IGNORECASE):
+            ids.append(lane.sl_id)
+    return ids
+
+
+def _check_m_release_docs_coverage(
+    src: str,
+    lanes: List[Lane],
+    lane_sections_parsed: Dict[str, dict],
+) -> Findings:
+    """issue #18: release/package phases must own public-doc surfaces and the
+    docs reducer must depend on every producer lane.
+
+    For release/package phases this is an ERROR (the issue asks for a blocker);
+    for ordinary phases the same coverage gap is recorded as a WARN to preserve
+    autonomy-first. Skips entirely when the phase is neither (no docs lane is a
+    separate concern handled by check (J)).
+    """
+    release = _is_release_plan(src, lane_sections_parsed)
+    docs_ids = _docs_lane_ids(lanes, lane_sections_parsed)
+    if not docs_ids:
+        # check (J) already covers a wholly-missing docs lane; for release phases
+        # restate it as an error here.
+        if release:
+            return [
+                "(M) release/package phase has no docs lane that owns README/"
+                "CHANGELOG/release-notes — add a terminal docs lane owning the "
+                "public-doc surfaces or record a per-surface no-doc-change decision."
+            ]
+        return []
+
+    tag = "" if release else "WARN: "
+    out: Findings = []
+
+    # 1) The docs lane(s) must own at least one public-doc surface, OR the plan
+    #    records an explicit no-doc-change decision (`no_doc_delta` /
+    #    `freshness-ok` / "no doc change").
+    owns_doc_surface = False
+    for sl_id in docs_ids:
+        for glob in lane_sections_parsed.get(sl_id, {}).get("owned_globs", []):
+            if _RELEASE_DOC_SURFACE_RE.search(glob):
+                owns_doc_surface = True
+                break
+    records_no_doc_decision = bool(
+        re.search(r"no_doc_delta|no doc change|no-doc-change|freshness-ok", src, re.IGNORECASE)
+    )
+    if not owns_doc_surface and not records_no_doc_decision:
+        out.append(
+            f"(M) {tag}docs lane(s) {', '.join(docs_ids)} do not own README/"
+            "CHANGELOG/release-notes and the plan records no explicit "
+            "no-doc-change decision; a release/package phase must own its public-"
+            "doc surfaces or justify why each is already current."
+        )
+
+    # 2) The docs reducer must depend on every producer lane (the SKILL.md:523
+    #    rule). Producers = every non-docs lane.
+    producers = {lane.sl_id for lane in lanes if lane.sl_id not in docs_ids}
+    by_id = {lane.sl_id: lane for lane in lanes}
+    for sl_id in docs_ids:
+        lane = by_id.get(sl_id)
+        if lane is None:
+            continue
+        missing = sorted(producers - set(lane.depends_on), key=_sl_sort_key)
+        if missing:
+            out.append(
+                f"(M) {tag}docs reducer {sl_id} does not depend on every producer "
+                f"lane; missing `Depends on`: {', '.join(missing)} — a synthesized "
+                "docs/release summary must list every producer lane it summarizes."
+            )
+    return out
+
+
+def _sl_sort_key(sl_id: str) -> tuple:
+    m = re.match(r"SL-(\d+)", sl_id)
+    return (int(m.group(1)),) if m else (10**9, sl_id)
+
+
 def main(argv: List[str]) -> int:
     if len(argv) != 2:
         _fail("usage: validate_plan_doc.py <plan-path>")
@@ -820,6 +947,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_j_docs_lane(src))
     findings.extend(_check_k_acceptance_testable(src))
     findings.extend(_check_l_ui_visual_verification(src))
+    findings.extend(_check_m_release_docs_coverage(src, lanes, lane_sections_parsed))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]

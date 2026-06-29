@@ -1871,6 +1871,21 @@ The blocker taxonomy is frozen to these literals:
 - `operator_override_missing_reason`
 - `concurrent_dispatch`
 - `review_gate_block`
+- `docs_freshness_stale`
+
+`docs_freshness_stale` is the non-human blocker raised by the docs-freshness
+closeout gate (issue #18) when a **release/package phase** closes `complete`
+while a public-doc surface (top-level/package `README.md`, `CHANGELOG`,
+release-notes) still carries an unambiguous stale placeholder
+(`recovery commit pending`, `TBD`, …). Unlike the `PHASE_LOOP_REVIEW` review
+gates, it is a hard gate governed by its own `PHASE_LOOP_DOCS_FRESHNESS` control
+(`hard` default | `warn` | `off`) and so blocks independent of
+`PHASE_LOOP_REVIEW`; it is **inert for non-release phases** (status `skipped`).
+The closeout payload always carries `docs_freshness: passed|skipped|blocked`
+plus a `docs_freshness_detail` evidence record, so a clean worktree alone cannot
+imply public docs are current. It never sets `human_required` — the fix is to
+refresh the named doc surface (or add a `<!-- freshness-ok -->` marker for a
+legitimate use of an otherwise-suspicious token).
 
 `review_gate_block` is the non-human blocker raised by a pluggable closeout
 review validator (doc-delta, verification-evidence, visual-evidence, …) when

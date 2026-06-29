@@ -130,6 +130,7 @@ BLOCKER_CLASSES = (
     "concurrent_dispatch",
     "verification_evidence_missing",
     "review_gate_block",
+    "docs_freshness_stale",
 )
 
 LANE_IR_DIAGNOSTIC_KINDS = (
@@ -286,7 +287,12 @@ PUBLIC_SURFACE_GLOBS = (
     "**/*.openapi.*",
     "**/schema*.json",
     "README.md",
+    "**/README.md",
     "CHANGELOG.md",
+    "CHANGELOG*",
+    "**/CHANGELOG.md",
+    "RELEASE_NOTES*",
+    "RELEASES*",
     "**/_contract_docs/**",
 )
 
