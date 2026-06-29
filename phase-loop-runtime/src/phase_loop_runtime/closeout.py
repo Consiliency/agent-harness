@@ -99,6 +99,7 @@ def build_phase_loop_closeout(
     work_unit_closeout: WorkUnitCloseout | Mapping[str, Any] | None = None,
     spec_delta_closeout: Mapping[str, Any] | SpecDeltaCloseout | None = None,
     run_mode: str = "autonomous",
+    docs_freshness: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     terminal = dict(terminal_summary or {})
     normalized_automation = _automation_fields(dict(automation or {}))
@@ -119,6 +120,23 @@ def build_phase_loop_closeout(
         normalized_automation = evidence_update["automation"]
         blocker_data = evidence_update["blocker"]
         verification_results = evidence_update["results"]
+
+    # Docs-freshness gate (issue #18). A HARD, non-registry gate — like the
+    # verification-evidence gate above — so a release/package phase cannot close
+    # `complete` while its public docs carry stale placeholders, independent of
+    # the warn-forcing `PHASE_LOOP_REVIEW` default. Inert for non-release phases
+    # and when no pre-scan was threaded in (status `skipped`).
+    docs_freshness_result = _apply_docs_freshness_gate(
+        docs_freshness=docs_freshness,
+        terminal=terminal,
+        automation=normalized_automation,
+        blocker=blocker_data,
+    )
+    if docs_freshness_result:
+        terminal = docs_freshness_result["terminal"]
+        normalized_automation = docs_freshness_result["automation"]
+        blocker_data = docs_freshness_result["blocker"]
+        verification_results = list(verification_results) + docs_freshness_result["results"]
 
     # Pluggable review gates (rigor-v1 P1). With zero validators registered this
     # is a no-op; gates default to `warn` (record + continue) and never set
@@ -241,6 +259,13 @@ def build_phase_loop_closeout(
     )
 
     payload = closeout.to_json()
+
+    # issue #18 behavior #5: surface docs_freshness so a clean worktree alone
+    # cannot imply public docs are current.
+    if docs_freshness is not None:
+        status = str(dict(docs_freshness).get("status") or "skipped")
+        payload["docs_freshness"] = status
+        payload["docs_freshness_detail"] = dict(docs_freshness)
 
     if source_bundle is not None:
         payload["source_bundle"]["artifact_target_root"] = source_bundle.artifact_target_root
@@ -370,6 +395,65 @@ def _verification_evidence_block_or_warn(
         "automation": updated_automation,
         "blocker": updated_blocker,
         "results": [validation_payload],
+    }
+
+
+def _apply_docs_freshness_gate(
+    *,
+    docs_freshness: Mapping[str, Any] | None,
+    terminal: dict[str, Any],
+    automation: dict[str, Any],
+    blocker: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Fold a runner-side docs-freshness pre-scan into the closeout.
+
+    Hard gate (issue #18), modeled on ``_apply_verification_evidence_gate``: a
+    ``blocked`` scan result turns the closeout into a non-human ``blocked``
+    outcome independent of ``PHASE_LOOP_REVIEW``. ``skipped``/``passed`` results
+    are recorded as evidence but never change the outcome. Returns ``None`` when
+    there is nothing to record (no pre-scan threaded in).
+    """
+    if not docs_freshness:
+        return None
+    result = dict(docs_freshness)
+    status = str(result.get("status") or "skipped")
+    updated_terminal = dict(terminal)
+    updated_automation = dict(automation)
+    updated_blocker = dict(blocker)
+    record = {"kind": "docs_freshness", **result}
+    if status != "blocked":
+        return {
+            "terminal": updated_terminal,
+            "automation": updated_automation,
+            "blocker": updated_blocker,
+            "results": [record],
+        }
+    blocking = result.get("blocking_hits") or []
+    paths = sorted({str(h.get("path")) for h in blocking if isinstance(h, Mapping)})
+    summary = (
+        "Public docs stale: placeholder/stale tokens in release docs "
+        f"({', '.join(paths) if paths else 'see docs_freshness_detail'})"
+    )
+    updated_terminal["terminal_status"] = "blocked"
+    updated_terminal["verification_status"] = "blocked"
+    updated_automation["status"] = "blocked"
+    updated_automation["verification_status"] = "blocked"
+    updated_automation["blocker_class"] = "docs_freshness_stale"
+    updated_automation["blocker_summary"] = summary
+    updated_automation["human_required"] = False
+    updated_blocker.update(
+        {
+            "human_required": False,
+            "blocker_class": "docs_freshness_stale",
+            "blocker_summary": summary,
+            "required_human_inputs": (),
+        }
+    )
+    return {
+        "terminal": updated_terminal,
+        "automation": updated_automation,
+        "blocker": updated_blocker,
+        "results": [record],
     }
 
 

@@ -56,6 +56,7 @@ from .capability_registry import default_executor_for_work_unit, describe_dispat
 from .classifier import classify_all
 from .closeout_evidence_audit import audit_closeout_evidence
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
+from .docs_freshness import scan_docs_freshness
 from .closeout_validation import validate_produced_gates
 from .discovery import (
     PLAN_RE,
@@ -6349,6 +6350,7 @@ def _attach_phase_loop_closeout(
     if metadata.empty and pipeline_diagnostic is None and not force_closeout and not changed_paths:
         return terminal_summary
     bundle = None if pipeline_diagnostic is not None else load_execution_phase_source_bundle(repo, plan, phase=phase, roadmap=roadmap)
+    docs_freshness = scan_docs_freshness(repo, plan_path=plan, changed_paths=changed_paths)
     closeout = build_phase_loop_closeout(
         phase_alias=phase,
         plan_path=plan,
@@ -6363,6 +6365,7 @@ def _attach_phase_loop_closeout(
         artifact_paths=terminal_summary.get("artifact_paths") if isinstance(terminal_summary.get("artifact_paths"), dict) else {},
         evidence_refs=terminal_summary.get("evidence_refs") if isinstance(terminal_summary.get("evidence_refs"), list) else (),
         work_unit_closeout=work_unit_closeout,
+        docs_freshness=docs_freshness,
     )
     if phase_loop_closeout_diagnostic(closeout) is not None:
         return terminal_summary
@@ -8261,6 +8264,7 @@ def _write_deterministic_closeout(
             )
         )
 
+    docs_freshness = scan_docs_freshness(repo, plan_path=plan, changed_paths=changed_paths)
     closeout = build_phase_loop_closeout(
         phase_alias=phase or "UNKNOWN",
         plan_path=plan or "",
@@ -8270,6 +8274,7 @@ def _write_deterministic_closeout(
         terminal_summary=terminal_summary,
         blocker=blocker or {},
         changed_paths=changed_paths,
+        docs_freshness=docs_freshness,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(closeout, indent=2, sort_keys=True), encoding="utf-8")
