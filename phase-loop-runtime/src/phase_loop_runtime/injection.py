@@ -72,7 +72,9 @@ def _resolve_pack_skill_dirs(
             "`scripts/sync_skills_bundle.py` and reinstall). For a dotfiles dev checkout, "
             "re-run bootstrap so the `phase_loop_runtime.skill_sources` overlay is live. To "
             "point at a custom source, set PHASE_LOOP_SKILL_SOURCE_PLUGINS to a provider "
-            "returning **absolute** roots (cwd-relative roots do not resolve outside their repo)."
+            "returning **absolute** roots, or set PHASE_LOOP_RUNNER_REPO_ROOT to anchor the "
+            "built-in provider's cwd-relative roots (PHASE_LOOP_SKILL_SOURCE_PLUGINS alone is "
+            "insufficient when its roots are relative)."
         )
     return resolved
 
