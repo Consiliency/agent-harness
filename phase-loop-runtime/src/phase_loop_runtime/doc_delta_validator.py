@@ -62,6 +62,9 @@ def _corroborate_no_doc_delta(ctx: CloseoutContext, decision: str) -> list[Revie
     * Non-release phases are untouched: an ordinary phase legitimately records
       ``no_doc_delta`` for an internal change, and the freshness scan reports
       ``skipped`` there anyway.
+    * Freshness gate ``off`` (``PHASE_LOOP_DOCS_FRESHNESS=off``) means "assert
+      nothing about docs": no corroboration is performed (return ``[]``), so
+      disabling the gate never *adds* a finding.
     * The downgrade is **warn**, never block — the existing block path is the
       *undecided* case, which this branch never reaches.
     """
@@ -71,6 +74,8 @@ def _corroborate_no_doc_delta(ctx: CloseoutContext, decision: str) -> list[Revie
     if not detail:
         return []  # unwired scan — no corroboration available, satisfied
     detail = dict(detail)
+    if str(detail.get("mode") or "") == "off":
+        return []  # gate disabled — assert nothing, never add a finding
     if not detail.get("is_release_phase"):
         return []  # ordinary phase — self-attested no_doc_delta is fine
     if docs_freshness_evidence_backed(detail):

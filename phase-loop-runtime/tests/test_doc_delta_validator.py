@@ -174,6 +174,17 @@ class DocDeltaCorroborationF5Test(unittest.TestCase):
         codes = [r.get("code") for r in c["verification"]["results"]]
         self.assertNotIn("doc_delta_uncorroborated", codes)
 
+    def test_off_mode_scan_adds_no_corroboration_finding(self):
+        # PHASE_LOOP_DOCS_FRESHNESS=off means "assert nothing about docs":
+        # disabling the gate must not NEWLY add the corroboration warn, even on a
+        # release phase with an empty (unverifiable) scan detail.
+        scan = self._scan("skipped", is_release=True, surfaces=[])
+        scan["mode"] = "off"
+        c = self._closeout_with_scan(["README.md"], "no_doc_delta", scan)
+        self.assertEqual(c["terminal_status"], "complete")
+        codes = [r.get("code") for r in c["verification"]["results"]]
+        self.assertNotIn("doc_delta_uncorroborated", codes)
+
 
 if __name__ == "__main__":
     unittest.main()

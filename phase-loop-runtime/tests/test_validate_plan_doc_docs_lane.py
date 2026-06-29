@@ -315,15 +315,30 @@ class PostDispatchReducerCheckF4Test(unittest.TestCase):
             [f for f in findings if "WARN" not in f], [], "must be WARN-tier, not ERROR"
         )
 
-    def test_explicit_dispatch_error_survives_full_validation(self):
-        # End-to-end through main()'s check ordering: an explicit release-dispatch
-        # plan with no reducer lane must surface the (N) ERROR.
-        src = self._dispatch_src()
-        lanes = self._lanes(["Dispatch the release"])
-        findings = self.mod._check_n_post_dispatch_reducer(
-            src, lanes, self._raw(lanes), self._parsed(lanes)
+    def test_explicit_dispatch_error_through_main(self):
+        # End-to-end through main(): proves the check is wired into the script's
+        # findings/partition path (arg order, error classification, exit code) —
+        # not just callable in isolation. main() runs every check, so the plan
+        # trips other findings too; we assert exit 1 AND the (N) error in stderr.
+        import io
+        import tempfile
+        from contextlib import redirect_stderr
+
+        with tempfile.TemporaryDirectory() as td:
+            plan = Path(td) / "phase-plan-v1-REL.md"
+            plan.write_text(self._dispatch_src(), encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stderr(buf):
+                rc = self.mod.main(["validate_plan_doc.py", str(plan)])
+        stderr = buf.getvalue()
+        self.assertEqual(rc, 1)
+        self.assertTrue(
+            any(
+                line.startswith("(N)") and "WARN" not in line
+                for line in stderr.splitlines()
+            ),
+            f"(N) post-dispatch ERROR not surfaced through main(); stderr:\n{stderr}",
         )
-        self.assertTrue(any(f.startswith("(N)") and "WARN" not in f for f in findings))
 
 
 if __name__ == "__main__":
