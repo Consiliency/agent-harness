@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import docs_surfaces as ds
+from . import docs_stale_scan, docs_surfaces as ds
 
 #: Decisions an operator/executor can record per surface. Release-class is held to
 #: the relevance binding regardless (a token never substitutes for the real doc).
@@ -185,6 +186,49 @@ def evaluate(changed: list[str], decisions: dict[str, dict[str, Any]]) -> AuditR
     return AuditReport("passed", findings, surfaces)
 
 
+_PYPROJECT_VERSION_RE = re.compile(r'(?m)^\s*version\s*=\s*["\']([^"\']+)["\']')
+
+
+def _current_version(repo: Path) -> str | None:
+    """Best-effort current package version from a root manifest (enables the
+    old-unlabeled-version stale check). Absent/unparseable → None (check skipped)."""
+    for rel in ("pyproject.toml", "phase-loop-runtime/pyproject.toml", "VERSION"):
+        fp = repo / rel
+        try:
+            body = fp.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            continue
+        if rel == "VERSION":
+            v = body.strip().splitlines()[0].strip() if body.strip() else ""
+            if v:
+                return v
+            continue
+        m = _PYPROJECT_VERSION_RE.search(body)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _scan_release_docs_stale(repo: Path, changed_docs: list[str]) -> list[dict[str, Any]]:
+    """P2: when a release is in flight, the changed durable docs must not carry stale
+    text (placeholders / stale counts / unlabeled old versions). A hit → fail-loud."""
+    current = _current_version(repo)
+    hits = docs_stale_scan.scan_doc_paths(repo, changed_docs, current_version=current)
+    findings: list[dict[str, Any]] = []
+    for path, doc_findings in hits.items():
+        for f in doc_findings:
+            findings.append({
+                "surface": path,
+                "klass": "release",
+                "code": f"stale_{f.code}",
+                "reason": (
+                    f"release-changed doc `{path}` line {f.line} carries stale text "
+                    f"({f.code}: {f.text!r}) — {f.detail or 'must be resolved before a release'}"
+                ),
+            })
+    return findings
+
+
 def run_audit(repo: Path, base: str | None = None, decisions_path: str | None = None) -> AuditReport:
     """Orchestrate the diff-driven audit. Un-evaluable input → `blocked` (never silent pass)."""
     resolved, context = resolve_base(repo, base)
@@ -204,6 +248,14 @@ def run_audit(repo: Path, base: str | None = None, decisions_path: str | None = 
         )
     changed = changed_paths(repo, resolved)
     report = evaluate(changed, load_decisions(repo, decisions_path))
+    # P2 (anti-gaming): on a release-in-flight, scan the changed durable docs for stale
+    # text. A stale hit is fail-loud even if the surface/decision contract (P1) passed.
+    if report.surfaces.get("release"):
+        stale = _scan_release_docs_stale(repo, report.surfaces.get("docs", []))
+        if stale:
+            report.findings.extend(stale)
+            if report.docs_freshness in {"passed", "skipped"}:
+                report.docs_freshness = "blocked"
     report.evidence = {"base": resolved, "context": context, "changed_count": len(changed)}
     return report
 
