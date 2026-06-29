@@ -164,9 +164,10 @@ from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
 from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor, shipped_model_policy_rule
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
-from .governed_review import RUN_MODES
+from .governed_review import RUN_MODES, governed_planning_gate
 from .governed_premerge import (
     DEFAULT_MAX_REVIEW_ROUNDS,
+    next_escalation,
     run_governed_premerge_loop,
 )
 from .governed_bundle import render_governed_bundle
@@ -1992,6 +1993,17 @@ def run_loop(
                     latest_phase_status = _latest_phase_event_status(repo, alias)
                     if latest_phase_status != "planned":
                         launch_action = "execute"
+                        # model-routing-v2 P3: governed plan-stage gate, first
+                        # attempt only. Outer run_mode guard keeps the autonomous
+                        # default byte-identical (no panel probe, zero cost).
+                        if run_mode == "governed" and not _phase_already_dispatched(repo, alias):
+                            _pgate = _governed_planning_gate(
+                                repo, roadmap, alias, plan, snapshot, selection, action
+                            )
+                            if _pgate is not None:
+                                classifications[alias], _pgate_event = _pgate
+                                append_event(repo, _pgate_event)
+                                return (_DispatchOutcome("break", None), None)
                     elif not force_replan and is_plan_doc_current(repo, alias, plan, roadmap):
                         append_event(
                             repo,
@@ -2387,6 +2399,27 @@ def run_loop(
                     "blocker_class": snapshot.blocker_class,
                     "blocker_summary": snapshot.blocker_summary,
                 }
+                # model-routing-v2 P3: bind the model_class ladder ATOP the
+                # executor pivot. In governed mode a repeated repair failure
+                # consults next_escalation (implementer→planner; a failing planner
+                # routes to panel/terminal). Recorded on the pivot metadata so the
+                # decision is live and observable; the full model_class re-selection
+                # application is the documented remaining thread (next_escalation is
+                # a pure, unit-tested function). Uses its own failure count — the
+                # governed pre-merge loop's round bound is separate.
+                if run_mode == "governed":
+                    _esc = next_escalation(
+                        model_class=str(getattr(selection, "model_class", "") or "implementer"),
+                        patch_retries=_recent_repeated_repair_failures(
+                            repo, alias, dispatch_decision.selected_executor, snapshot
+                        ),
+                        run_mode="governed",
+                    )
+                    repair_loop_pivot["model_class_escalation"] = {
+                        "action": _esc.action,
+                        "model_class": _esc.model_class,
+                        "reason": _esc.reason,
+                    }
                 if pivot_executor:
                     operator_dispatch_hints = DispatchHints(
                         preferred_executors=(pivot_executor,),
@@ -7878,6 +7911,65 @@ def _make_governed_apply_fix(repo: Path, phase_alias: str, plan, snapshot):
         )
         return bundle
     return apply_fix
+
+
+def _phase_already_dispatched(repo, alias) -> bool:
+    """True if this phase has a prior execute/repair dispatch event — i.e. this is
+    a repair re-plan, not a first-attempt plan. The governed planning gate (P3)
+    reviews first-attempt plans only, to avoid re-reviewing on repair cycles."""
+    target = str(alias).upper()
+    for event in reversed(read_events(repo)):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("phase", "")).upper() != target:
+            continue
+        if str(event.get("action", "")) in ("execute", "repair"):
+            return True
+    return False
+
+
+def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, action):
+    """Governed plan-stage gate (model-routing-v2 P3). Reviews the plan doc before
+    the first execute dispatch in governed mode. Returns ``None`` to proceed to
+    execute, or ``(status, LoopEvent)`` with a non-human ``review_gate_block``
+    when the plan is held (unresolved block). A `degraded` (advisory) result
+    promotes — autonomy-first, never a self-review pass that blocks."""
+    try:
+        artifact = Path(plan).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    result = governed_planning_gate(
+        artifact=artifact,
+        author_executor=str(getattr(selection, "executor", "") or ""),
+        run_mode="governed",
+        available_legs=available_panel_legs(),
+    )
+    if result.promoted:
+        return None
+    blocker = {
+        "human_required": False,
+        "blocker_class": "review_gate_block",
+        "blocker_summary": f"Governed planning gate held {alias}: {result.reason or 'unresolved block'}",
+        "required_human_inputs": (),
+        "access_attempts": (),
+    }
+    event = LoopEvent(
+        timestamp=utc_now(),
+        repo=str(repo),
+        roadmap=str(roadmap),
+        phase=alias,
+        action=action,
+        status="blocked",
+        model=selection.model,
+        reasoning_effort=selection.effort,
+        source=selection.source,
+        override_reason=selection.override_reason,
+        blocker=blocker,
+        metadata={"governed_planning": {"reason": result.reason, "degraded": result.degraded,
+                                        "findings": [f.to_json() for f in result.findings]}},
+        **event_provenance(roadmap, alias),
+    )
+    return ("blocked", event)
 
 
 def _governed_premerge_gate(repo, roadmap, alias, plan, snapshot, selection, action):
