@@ -710,9 +710,13 @@ never silently advisory-passes. Verdicts use a strict terminal-line contract (th
 last line begins with `AGREE` / `PARTIALLY AGREE` / `DISAGREE`). The panel spawns
 the codex + gemini subscription CLI legs (the claude leg is `unavailable` pending
 a native-Agent path). The autonomous default is byte-identical — the gate is a
-no-op off the governed path. Out of scope / remaining threads: concurrent-wave
-dispatch is **not** governed yet; a held phase is not auto-repaired (the
-findings-driven executor re-dispatch is the remaining thread); and the
+no-op off the governed path. Governed mode is **EXPERIMENTAL and fail-safe** — it
+may over-block, but never silently passes unreviewed or self-reviewed code. With
+only the codex + gemini legs live, a **multi-vendor** phase (authored by one vendor
+and repaired by the other) has no disjoint reviewer and is HELD with an explicit
+reason until the deferred claude leg lands. Out of scope / remaining threads:
+concurrent-wave dispatch is **not** governed yet; a held phase is not auto-repaired
+(the findings-driven executor re-dispatch is the remaining thread); and the
 `model_class` escalation decision is recorded on the dispatch metadata but not
 yet re-routed into live model selection.
 

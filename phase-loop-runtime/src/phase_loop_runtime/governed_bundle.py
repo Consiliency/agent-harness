@@ -121,7 +121,7 @@ def render_governed_bundle(
             "",
             "## Change (staged diff — exactly what will be committed)",
             "```diff",
-            diff_text or "(empty staged diff)",
+            diff_text,  # producer (staged_index_diff) owns the empty/unavailable sentinel
             "```",
             "",
             "## Acceptance Criteria (the spec to judge against)",

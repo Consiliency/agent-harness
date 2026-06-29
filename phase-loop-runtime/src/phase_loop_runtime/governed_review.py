@@ -121,11 +121,28 @@ def _findings_from_panel(panel: PanelResult) -> tuple[ReviewFinding, ...]:
     findings: list[ReviewFinding] = []
     for leg in panel.legs:
         if not leg.usable:
-            findings.append(ReviewFinding(
-                code="panel_leg_degraded",
-                reason=f"panel leg {leg.leg} unusable ({leg.status})",
-                severity="warn",
-            ))
+            # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
+            # review that violated the contract — we cannot confirm it approved, so
+            # fail closed (BLOCK), never downgrade a possible objection to a
+            # non-gating warn (CR finding). A leg with no usable text
+            # (empty / timeout / unavailable / auth error) is "no review happened"
+            # → a recorded warn (reduced confidence), not a block.
+            if leg.text.strip():
+                findings.append(ReviewFinding(
+                    code="panel_nonconforming",
+                    reason=(
+                        f"panel leg {leg.leg} produced a review with no conforming "
+                        f"terminal verdict ({leg.status}); holding fail-closed"
+                    ),
+                    severity="block",
+                    blocker_class="review_gate_block",
+                ))
+            else:
+                findings.append(ReviewFinding(
+                    code="panel_leg_degraded",
+                    reason=f"panel leg {leg.leg} unusable ({leg.status})",
+                    severity="warn",
+                ))
             continue
         if _leg_blocks(leg.text):
             findings.append(ReviewFinding(
@@ -190,6 +207,17 @@ def governed_planning_gate(
         authors = frozenset(v for v in author_vendors if v)
     else:
         authors = frozenset({author_vendor_for_executor(author_executor or "")} - {""})
+    if not authors:
+        # Unknown author → CANNOT establish reviewer≠author. Fail closed (CR
+        # finding): an empty author set otherwise excluded nothing and ran the
+        # FULL panel including the author's own vendor (a silent self-review).
+        return _block_result(
+            "unknown_author",
+            "governed_unknown_author",
+            "governed mode could not determine the authoring vendor(s) for "
+            "reviewer≠author exclusion; holding (non-human) rather than risk a "
+            "self-review",
+        )
     legs = tuple(available_legs) if available_legs is not None else available_panel_legs()
     pool, degraded_reason = select_reviewer_pool(authors, legs)
     if not pool:
@@ -198,8 +226,10 @@ def governed_planning_gate(
             "governed_no_disjoint_reviewer",
             (
                 f"governed mode requires a reviewer disjoint from author vendor(s) "
-                f"{sorted(authors) or '[unknown]'} but none is available "
-                f"({degraded_reason}); holding (non-human)"
+                f"{sorted(authors)} but none is available ({degraded_reason}); "
+                f"holding (non-human). Multi-vendor phases (authored/repaired across "
+                f"more than one vendor) need the claude panel leg, which is currently "
+                f"deferred — see CHANGELOG (governed-mode limitation)."
             ),
         )
 

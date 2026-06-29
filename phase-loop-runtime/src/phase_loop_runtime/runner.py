@@ -3901,6 +3901,7 @@ def run_loop(
                     action=action,
                     closeout_mode=closeout_mode,
                     allow_unowned_reason=allow_unowned_reason,
+                    run_mode=run_mode,
                 )
                 append_event(repo, closeout_event)
                 status_after_closeout = classifications[alias]
@@ -7349,6 +7350,28 @@ def _perform_phase_closeout(
     }
     blocker = None
     status = terminal_status
+
+    def _closeout_event() -> LoopEvent:
+        """The single canonical closeout LoopEvent builder, read at call time so
+        every terminal (commit, no-op, guard-refused, governed-block, unowned
+        remainder) emits the identical event shape — no duplicated constructor to
+        drift when the schema changes (CR finding)."""
+        return LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action=action,
+            status=status,
+            model=selection.model,
+            reasoning_effort=selection.effort,
+            source=selection.source,
+            override_reason=selection.override_reason,
+            blocker=blocker,
+            metadata=metadata,
+            **event_provenance(roadmap, phase),
+        )
+
     closeout_dirty_paths = tuple(
         dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths))
     )
@@ -7585,22 +7608,15 @@ def _perform_phase_closeout(
                     status = "blocked"
                     blocker, _gov_meta = _governed
                     metadata["closeout"].update(_gov_meta)
-                    event = LoopEvent(
-                        timestamp=utc_now(),
-                        repo=str(repo),
-                        roadmap=str(roadmap),
-                        phase=phase,
-                        action=action,
-                        status=status,
-                        model=selection.model,
-                        reasoning_effort=selection.effort,
-                        source=selection.source,
-                        override_reason=selection.override_reason,
-                        blocker=blocker,
-                        metadata=metadata,
-                        **event_provenance(roadmap, phase),
-                    )
-                    return status, event
+                    # CR #3: the owned paths were `git add`-staged before this gate;
+                    # on a governed block, UNSTAGE them so a later out-of-loop / manual
+                    # `git commit` (no pathspec) can't land the panel-rejected changes.
+                    # The worktree files are untouched — only the index is reset to HEAD.
+                    _run_git_closeout(repo, "reset", "--quiet", "HEAD", "--", *closeout_dirty_paths)
+                    # CR #9: emit via the single shared builder (no duplicated event
+                    # constructor). The early return SKIPS the commit — a block must
+                    # not commit — but reuses the canonical event shape.
+                    return status, _closeout_event()
                 commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
                 if commit_result.returncode != 0:
                     status, blocker = _commit_failure_closeout(
@@ -7763,22 +7779,7 @@ def _perform_phase_closeout(
                     "unowned_dirty_paths": list(unowned_remainder),
                 }
             )
-    event = LoopEvent(
-        timestamp=utc_now(),
-        repo=str(repo),
-        roadmap=str(roadmap),
-        phase=phase,
-        action=action,
-        status=status,
-        model=selection.model,
-        reasoning_effort=selection.effort,
-        source=selection.source,
-        override_reason=selection.override_reason,
-        blocker=blocker,
-        metadata=metadata,
-        **event_provenance(roadmap, phase),
-    )
-    return status, event
+    return status, _closeout_event()
 
 
 def _closeout_commit_action(action: str, terminal_status: str) -> str:

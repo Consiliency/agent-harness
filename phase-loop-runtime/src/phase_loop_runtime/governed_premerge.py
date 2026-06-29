@@ -133,10 +133,19 @@ def run_governed_premerge_loop(
     if run_mode != "governed":
         return LoopResult(mergeable=True, ran=False, reason="autonomous")
 
+    # Reasons that mean "the gate could not run a real review" (no disjoint
+    # reviewer / unknown author / no usable verdict) — surfaced verbatim in the
+    # terminal so the operator sees the ACCURATE cause, not a generic
+    # "non_convergence" (CR finding).
+    _STRUCTURAL_HOLD = frozenset({
+        "unknown_author", "no_disjoint_reviewer", "author_vendor_only",
+        "no_reviewers", "no_usable_review",
+    })
     seen_block = False
     current = artifact
     collected: list[ReviewFinding] = []
     rnd = 0
+    last_reason: str | None = None
     for rnd in range(1, max_rounds + 1):
         gate = invoke(
             artifact=current,
@@ -147,6 +156,7 @@ def run_governed_premerge_loop(
             spawn=spawn,
         )
         collected.extend(gate.findings)
+        last_reason = gate.reason
 
         if gate.degraded:
             # FAIL-CLOSED (advisor-panel reconciliation): in governed mode, "no
@@ -177,13 +187,24 @@ def run_governed_premerge_loop(
             break
         current = apply_fix(rnd, current, gate.findings)
 
-    # Fell out of the loop with unresolved block findings → non-convergence.
+    # Fell out of the loop while held. Distinguish a fail-closed STRUCTURAL hold
+    # (no disjoint reviewer / unknown author / no usable verdict — the review never
+    # really ran) from genuine NON-CONVERGENCE (real block findings unresolved), so
+    # the terminal carries the accurate cause instead of always "non_convergence".
+    if last_reason in _STRUCTURAL_HOLD:
+        summary = (
+            f"governed pre-merge review held ({last_reason}) — no real review could "
+            f"run after {rnd} round(s); halting (non-human, surfaced in run-end summary)"
+        )
+        reason = last_reason
+    else:
+        summary = (
+            f"governed pre-merge review did not converge to zero block findings "
+            f"after {rnd} round(s); halting (non-human, surfaced in run-end summary)"
+        )
+        reason = "non_convergence"
     return LoopResult(
         mergeable=False, ran=True, rounds=rnd, findings=tuple(collected),
-        terminal_blocker=_non_human_blocker(
-            "review_gate_block",
-            f"governed pre-merge review did not converge to zero block findings "
-            f"after {rnd} round(s); halting (non-human, surfaced in run-end summary)",
-        ),
-        reason="non_convergence",
+        terminal_blocker=_non_human_blocker("review_gate_block", summary),
+        reason=reason,
     )

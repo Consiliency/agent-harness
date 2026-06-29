@@ -86,21 +86,28 @@ _LEG_TIMEOUT_S = 600
 # skips auth" conforms, while "I cannot AGREE or DISAGREE without context" (starts
 # with "I") and "no blockers" do not. Most-specific alternative first.
 _VERDICT_RE = re.compile(r"^(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE)
+# Leading markdown decoration to strip before matching the verdict token, so a
+# genuinely-conforming verdict formatted as a bullet / blockquote / numbered item
+# / bold still parses ("- AGREE", "> AGREE", "1. AGREE", "**AGREE**"). Format
+# tolerance here prevents over-blocking a real approval on cosmetics (CR finding).
+_LEADING_MARKUP_RE = re.compile(r"^(?:[-*>\s`#]+|\d+[.)]\s*)+")
 
 
 def terminal_verdict(text: str) -> str | None:
     """Return the leg's structured verdict iff its LAST non-empty line BEGINS with
     one of {AGREE, PARTIALLY AGREE, DISAGREE} (tolerating a leading ``VERDICT:``,
-    surrounding markup, and a trailing ``— reason``); else ``None`` (non-conforming
-    → the caller fails closed). The panel brief instructs each leg to end with the
-    verdict, so the terminal line is the contract — not a substring anywhere."""
+    list/blockquote/numbered/bold markup, and a trailing ``— reason``); else
+    ``None`` (non-conforming → the caller fails closed). The panel brief instructs
+    each leg to end with the verdict, so the terminal line is the contract — not a
+    substring anywhere."""
     for raw in reversed((text or "").splitlines()):
         s = raw.strip()
         if not s:
             continue
-        s = s.strip("*`# ").strip()
+        s = _LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
         if s.upper().startswith("VERDICT:"):
             s = s[len("VERDICT:"):].strip().strip("*`").strip()
+        s = _LEADING_MARKUP_RE.sub("", s).strip()
         m = _VERDICT_RE.match(s)
         return re.sub(r"\s+", " ", m.group(1).upper()) if m else None
     return None

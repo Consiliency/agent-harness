@@ -255,3 +255,31 @@ def test_governed_autonomous_default_commits_byte_identical(tmp_path):
     gov.assert_not_called()                       # zero panel cost on the default path
     assert status == "complete", status
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() != head_before
+
+
+def test_governed_block_unstages_rejected_changes(tmp_path):
+    # CR fix #3: `git add` stages the owned paths BEFORE the gate; on a governed
+    # block the index must be reset so a later out-of-loop/manual `git commit`
+    # (no pathspec) cannot land the panel-rejected change. Worktree is untouched.
+    from unittest.mock import patch
+    from phase_loop_runtime import runner
+    from phase_loop_runtime.governed_premerge import LoopResult
+
+    repo, roadmap, snapshot = _governed_closeout_repo(tmp_path)
+    blocked = LoopResult(
+        mergeable=False, ran=True, rounds=3,
+        terminal_blocker={"human_required": False, "blocker_class": "review_gate_block"},
+        reason="non_convergence",
+    )
+    with patch.object(runner, "governed_premerge_for_run", return_value=blocked), \
+         patch.object(runner, "available_panel_legs", return_value=("codex", "gemini")):
+        status, _ = _perform_phase_closeout(
+            repo, roadmap, "GEN", snapshot,
+            resolve_profile("execute"), action="execute", closeout_mode="commit",
+            run_mode="governed",
+        )
+    assert status == "blocked", status
+    # Nothing staged (index == HEAD): a stray `git commit` would commit nothing.
+    assert _git(repo, "diff", "--cached", "--name-only").stdout.strip() == ""
+    # The worktree change is preserved (not discarded), still uncommitted.
+    assert "GOVERNED_CHANGE" in (repo / "src" / "owned.py").read_text()

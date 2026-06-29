@@ -34,10 +34,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     excluding EVERY vendor that authored the phase (rotation/repair can have several); an
     unknown author set fails closed.
   - **Fail-closed verdicts** — a strict terminal-line contract (last line begins with
-    `AGREE`/`PARTIALLY AGREE`/`DISAGREE`); a non-conforming/empty/degraded leg, or no usable
-    disjoint reviewer, HOLDS the merge (`review_gate_block`) instead of silently passing — the
-    prior advisory-pass-on-degraded fail-open is gone. The autonomous default stays
-    byte-identical (the gate is a no-op off the governed path).
+    `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, tolerant of markdown bullet/blockquote/numbered
+    formatting); a *substantive* review with no conforming verdict is treated as a BLOCK (not
+    a non-gating warn), and no usable disjoint reviewer HOLDS the merge (`review_gate_block`)
+    instead of silently passing — the prior advisory-pass-on-degraded fail-open is gone. On a
+    block the staged index is reset, so a stray `git commit` can't land the rejected change.
+    The autonomous default stays byte-identical (the gate is a no-op off the governed path).
+  - **Governed mode is EXPERIMENTAL — known limitations (documented, fail-safe).** It may
+    over-block, but never silently passes unreviewed or self-reviewed code. With only the
+    **codex + gemini** legs live (the claude leg is deferred), a **multi-vendor** phase —
+    authored by codex *and* repaired by gemini — has no disjoint reviewer, so it is HELD with
+    an explicit reason (it cannot be independently reviewed until the claude leg lands), rather
+    than promoted. The `model_class` escalation decision is still recorded-not-yet-routed, and
+    the executor-driven `apply_fix` re-dispatch remains a thread; a governed block halts the
+    bounded run for the operator.
 - **Fix (#14):** `phase-loop sync-skills --apply` silently no-oped — when a bridge skill's
   source did not resolve it skipped the record, producing output identical to `--check`
   with exit 0. It now reports the unrepaired skills and **exits non-zero** with actionable
