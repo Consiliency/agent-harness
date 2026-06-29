@@ -78,28 +78,29 @@ class FirstAttemptGuardTest(unittest.TestCase):
             self.assertFalse(runner._phase_already_dispatched(Path("/x"), "P1"))
 
 
-class PhaseAuthorVendorTest(unittest.TestCase):
-    """Reviewer≠author depends on the gate knowing the REAL author vendor.
-    `ModelSelection` has no `executor`, so the old `getattr(selection,"executor")`
-    was always '' → vendor '' → no leg ever excluded → implementing model could
-    self-review (code-review finding #4). These pin the corrected derivation."""
+class PhaseAuthorVendorsTest(unittest.TestCase):
+    """Reviewer≠author derives from the UNION of the dispatch events'
+    `selected_executor` across ALL the phase's events. The old single-vendor
+    version filtered on `action in (execute/repair/plan)`, but dispatch events log
+    `action='run'`, so the filter never matched and it fell back to the configured
+    model — defeating reviewer≠author (advisor-panel reconciliation). The filter is
+    gone and multiple authors (rotation/repair) are ALL excluded."""
 
-    def test_prefers_recorded_execute_executor(self):
-        events = [{"phase": "P1", "action": "execute", "selected_executor": "codex"}]
+    def test_union_across_events_with_action_run(self):
+        events = [
+            {"phase": "P1", "action": "run", "selected_executor": "codex"},
+            {"phase": "P1", "action": "run", "selected_executor": "claude"},
+            {"phase": "P2", "action": "run", "selected_executor": "gemini"},  # other phase
+        ]
         with patch.object(runner, "read_events", return_value=events):
-            v = runner._phase_author_vendor(Path("/x"), "P1", _sel())
-        self.assertEqual(v, "codex")  # the openai-family executor's vendor
+            v = runner._phase_author_vendors(Path("/x"), "P1")
+        self.assertEqual(v, frozenset({"codex", "claude"}))
 
-    def test_falls_back_to_selection_model_vendor(self):
+    def test_empty_set_when_no_recorded_executor(self):
+        # Unknown author → empty set → the gate fails closed upstream (no silent
+        # fallback to the configured model's vendor).
         with patch.object(runner, "read_events", return_value=[]):
-            v = runner._phase_author_vendor(Path("/x"), "P1", _sel())
-        self.assertEqual(v, "claude")  # claude-opus-4-8 → claude (no events recorded)
-
-    def test_never_empty_for_a_known_model(self):
-        # The masked bug produced '' here; '' disjoint from every leg = no exclusion.
-        with patch.object(runner, "read_events", return_value=[]):
-            v = runner._phase_author_vendor(Path("/x"), "P1", _sel())
-        self.assertTrue(v)
+            self.assertEqual(runner._phase_author_vendors(Path("/x"), "P1"), frozenset())
 
 
 class EscalationLadderBindingTest(unittest.TestCase):

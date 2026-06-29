@@ -167,7 +167,6 @@ from .provenance import event_provenance, snapshot_provenance
 from .governed_review import (
     RUN_MODES,
     author_vendor_for_executor,
-    author_vendor_for_model,
     governed_planning_gate,
 )
 from .governed_premerge import (
@@ -175,7 +174,7 @@ from .governed_premerge import (
     next_escalation,
     run_governed_premerge_loop,
 )
-from .governed_bundle import render_governed_bundle
+from .governed_bundle import render_governed_bundle, staged_index_diff
 from .panel_invoker import available_panel_legs
 from .reconcile import reconcile
 from .review_summary import summarize_run
@@ -1062,28 +1061,25 @@ def _start_gate_bypassed_event(
 def _governed_not_live_warning(run_mode: str) -> str | None:
     """Operator notice describing exactly how much governed enforcement is active.
 
-    As of model-routing-v2 P2/P3 the planning gate and the pre-merge gate BOTH
-    run live: they spawn the real subscription panel (codex + gemini legs; the
-    claude leg is deferred → `unavailable`) and a genuine `block` finding holds
-    promotion as a non-human `review_gate_block`, surfaced in the run-end summary.
-    Two honest caveats remain, hence this loud, non-fatal notice (never adds
-    human_required; None for autonomous):
-      • If no reviewer is disjoint from the author's vendor (or none are authed)
-        the gate degrades to an advisory autonomous-warn rather than blocking —
-        autonomy-first, recorded but non-gating.
-      • A real block terminates the phase; the executor-driven auto-fix
-        re-dispatch (fold findings into a repair, then re-review) is not yet
-        wired, so the runner does not self-repair a held phase.
+    The planning gate and the pre-merge gate BOTH run live. The pre-merge gate
+    runs INSIDE the closeout — after `git add`, before the commit — and reviews
+    the EXACT staged index (`git diff --cached`), so the panel reviews precisely
+    what will be committed. It is FAIL-CLOSED (governed is the opt-in enforcement
+    mode): a genuine `block`, an unparseable verdict, or no reviewer disjoint from
+    the author's vendor(s) HOLDS the merge as a non-human `review_gate_block`
+    (never `human_required`; None for autonomous). One honest caveat remains: a
+    held phase is not auto-repaired — the findings-driven executor re-dispatch is
+    the documented remaining thread.
     """
     if run_mode == "governed":
         return (
             "phase-loop: NOTE — run_mode=governed: the planning and pre-merge gates are "
-            "LIVE — they spawn the real subscription panel (codex+gemini; claude leg "
-            "deferred) and a genuine block holds the merge as a non-human review_gate_block. "
-            "Caveats: with no reviewer disjoint from the author's vendor the gate degrades "
-            "to an advisory autonomous-warn (non-gating); and a held phase is not "
-            "auto-repaired (the findings-driven re-dispatch is the remaining thread). "
-            "Track model-routing-v2."
+            "LIVE and FAIL-CLOSED. The pre-merge gate reviews the exact staged index "
+            "(git diff --cached) inside the closeout, before the commit, via the real "
+            "subscription panel (codex+gemini; claude leg deferred). A block, an "
+            "unparseable verdict, or no disjoint reviewer HOLDS the merge as a non-human "
+            "review_gate_block. Caveat: a held phase is not auto-repaired (the "
+            "findings-driven re-dispatch is the remaining thread). Track model-routing-v2."
         )
     return None
 
@@ -1877,17 +1873,11 @@ def run_loop(
                 return (_DispatchOutcome("break", None), None)
             if status == "awaiting_phase_closeout":
                 if closeout_mode != "manual":
-                    # model-routing-v2 P1: governed pre-merge gate, before the
-                    # commit. Outer run_mode guard keeps the autonomous default
-                    # byte-identical — no bundle, no panel probe, zero cost.
-                    if run_mode == "governed":
-                        _gate = _governed_premerge_gate(
-                            repo, roadmap, alias, plan, snapshot, selection, action
-                        )
-                        if _gate is not None:
-                            classifications[alias], _gate_event = _gate
-                            append_event(repo, _gate_event)
-                            return (_DispatchOutcome("break", None), None)
+                    # model-routing-v2: the governed pre-merge gate now lives INSIDE
+                    # _perform_phase_closeout (after `git add`, before the commit), so it
+                    # reviews the exact staged index. Autonomous stays byte-identical via
+                    # the run_mode guard inside the gate. (Relocated from here, where the
+                    # commit set did not yet exist — advisor-panel reconciliation.)
                     classifications[alias], closeout_event = _perform_phase_closeout(
                         repo,
                         roadmap,
@@ -1897,6 +1887,7 @@ def run_loop(
                         action=action,
                         closeout_mode=closeout_mode,
                         allow_unowned_reason=allow_unowned_reason,
+                        run_mode=run_mode,
                     )
                     append_event(repo, closeout_event)
                     if phase:
@@ -1931,6 +1922,7 @@ def run_loop(
                             action=action,
                             closeout_mode=closeout_mode,
                             allow_unowned_reason=allow_unowned_reason,
+                            run_mode=run_mode,
                         )
                         append_event(repo, closeout_event)
                         if phase:
@@ -7345,6 +7337,7 @@ def _perform_phase_closeout(
     action: str,
     closeout_mode: str,
     allow_unowned_reason: str | None = None,
+    run_mode: str = "autonomous",
 ) -> tuple[str, LoopEvent]:
     terminal_status = snapshot.closeout_terminal_status or "executed"
     verification_status = "passed" if terminal_status == "complete" else "not_run"
@@ -7576,6 +7569,38 @@ def _perform_phase_closeout(
                     }
                 )
             else:
+                # model-routing-v2: governed pre-merge gate — relocated HERE, after
+                # `git add` staged the owned paths and BEFORE the commit, so the panel
+                # reviews the EXACT staged index (`git diff --cached`) that is about to
+                # be committed (advisor-panel reconciliation: "reviewed == committed"
+                # by construction). Autonomous is a literal no-op (run_mode guard); a
+                # block returns a non-human review_gate_block and does NOT commit. The
+                # nothing-staged no-op finalize (issue #6) is handled above and never
+                # reaches here, so the gate never blocks a legitimate empty commit.
+                _governed = _governed_premerge_review(
+                    repo, roadmap, phase, plan, terminal_status,
+                    closeout_dirty_paths, snapshot.terminal_summary, run_mode,
+                )
+                if _governed is not None:
+                    status = "blocked"
+                    blocker, _gov_meta = _governed
+                    metadata["closeout"].update(_gov_meta)
+                    event = LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase=phase,
+                        action=action,
+                        status=status,
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        blocker=blocker,
+                        metadata=metadata,
+                        **event_provenance(roadmap, phase),
+                    )
+                    return status, event
                 commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
                 if commit_result.returncode != 0:
                     status, blocker = _commit_failure_closeout(
@@ -7937,22 +7962,31 @@ def _phase_already_dispatched(repo, alias) -> bool:
     return False
 
 
-def _phase_author_vendor(repo, alias, selection) -> str:
-    """The review vendor of the model that AUTHORED this phase's work — excluded
-    from the reviewer pool (reviewer≠author). Primary signal: the latest
-    execute/repair/plan event's recorded `selected_executor`; fallback: the
-    vendor of `selection.model` (ModelSelection has no `executor` field, so
-    deriving the author off `selection` directly would always be empty — the bug
-    this fixes)."""
+def _phase_author_vendors(repo, alias) -> frozenset[str]:
+    """The review vendors of EVERY model that authored this phase's work — all
+    excluded from the reviewer pool (reviewer≠author).
+
+    Derived from the dispatch events' top-level ``selected_executor`` (the
+    post-rotation/fallback/pinning resolved executor), NOT a reverse-engineered
+    guess off the configured model. The prior single-vendor version filtered on
+    ``action in (execute/repair/plan)`` — but dispatch events log ``action='run'``
+    (the verb lives in ``metadata.dispatch_decision.launch_action``), so the
+    filter never matched and it fell through to the configured model, defeating
+    reviewer≠author. We drop the filter and take the UNION across all the phase's
+    dispatch events: under rotation/repair more than one vendor can author a phase
+    (codex executes, claude repairs) and EVERY author must be excluded. An empty
+    set means the author is unknown → the gate fails closed (advisor-panel
+    reconciliation, verified).
+    """
     target = str(alias).upper()
-    for event in reversed(read_events(repo)):
+    vendors: set[str] = set()
+    for event in read_events(repo):
         if not isinstance(event, dict) or str(event.get("phase", "")).upper() != target:
             continue
-        if str(event.get("action", "")) in ("execute", "repair", "plan"):
-            ex = event.get("selected_executor")
-            if ex:
-                return author_vendor_for_executor(str(ex))
-    return author_vendor_for_model(str(getattr(selection, "model", "") or ""))
+        ex = event.get("selected_executor")
+        if ex:
+            vendors.add(author_vendor_for_executor(str(ex)))
+    return frozenset(v for v in vendors if v)
 
 
 def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, action):
@@ -7967,7 +8001,7 @@ def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, act
         return None
     result = governed_planning_gate(
         artifact=artifact,
-        author_executor=_phase_author_vendor(repo, alias, selection),
+        author_vendors=_phase_author_vendors(repo, alias),
         run_mode="governed",
         available_legs=available_panel_legs(),
     )
@@ -7999,30 +8033,36 @@ def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, act
     return ("blocked", event)
 
 
-def _governed_premerge_gate(repo, roadmap, alias, plan, snapshot, selection, action):
-    """Run the governed pre-merge review for an implementation closeout.
+def _governed_premerge_review(
+    repo, roadmap, alias, plan, terminal_status, closeout_dirty_paths, terminal_summary, run_mode
+):
+    """Governed pre-merge review, run INSIDE ``_perform_phase_closeout`` — AFTER
+    ``git add`` stages the owned paths and BEFORE the commit is finalized.
 
-    Returns ``None`` when the phase may merge (the caller falls through to the
-    commit), or ``(status, LoopEvent)`` carrying a non-human ``review_gate_block``
-    when the review did not converge. Gates IMPLEMENTATION closeouts only — a
-    plan-doc closeout (`closeout_terminal_status == "planned"`) is the planning
-    gate's job (P3), so it is skipped here.
+    Reviews the EXACT staged index (``git diff --cached`` over the paths being
+    committed), so "what the panel reviews" == "what gets committed" by
+    construction. Returns ``None`` to proceed to the commit, or a
+    ``(blocker, metadata)`` tuple carrying a non-human ``review_gate_block`` when
+    the review did not converge (the caller blocks instead of committing).
+
+    Autonomous is a literal no-op (outer ``run_mode`` guard). Implementation
+    closeouts only — a plan-doc closeout is the planning gate's job (P3).
     """
-    if (snapshot.closeout_terminal_status or "") == "planned":
+    if run_mode != "governed" or terminal_status == "planned" or not closeout_dirty_paths:
         return None
-    review_dir = repo / ".phase-loop" / "governed" / str(alias)
-    bundle, _staged = render_governed_bundle(
-        repo=repo,
+    diff_text = staged_index_diff(repo, closeout_dirty_paths)
+    bundle = render_governed_bundle(
         phase_alias=alias,
-        terminal=dict(snapshot.terminal_summary or {}),
+        terminal=dict(terminal_summary or {}),
         plan_path=plan,
-        review_dir=review_dir,
+        diff_text=diff_text,
     )
     result = governed_premerge_for_run(
         artifact=bundle,
-        author_executor=_phase_author_vendor(repo, alias, selection),
+        author_executor="",  # unused: author_vendors carries the real authorship set
+        author_vendors=_phase_author_vendors(repo, alias),
         run_mode="governed",
-        apply_fix=None,  # review+block; no no-op re-render loop (see note above)
+        apply_fix=None,  # review+block; the executor-driven re-dispatch is a documented thread
         available_legs=available_panel_legs(),
     )
     if result.mergeable:
@@ -8030,32 +8070,22 @@ def _governed_premerge_gate(repo, roadmap, alias, plan, snapshot, selection, act
     blocker = dict(result.terminal_blocker or {})
     blocker.setdefault("human_required", False)
     blocker.setdefault("blocker_class", "review_gate_block")
+    blocker.setdefault("blocker_summary", f"Governed pre-merge review held {alias}: {result.reason or 'unresolved block'}")
     blocker.setdefault("required_human_inputs", ())
     blocker.setdefault("access_attempts", ())
-    event = LoopEvent(
-        timestamp=utc_now(),
-        repo=str(repo),
-        roadmap=str(roadmap),
-        phase=alias,
-        action=action,
-        status="blocked",
-        model=selection.model,
-        reasoning_effort=selection.effort,
-        source=selection.source,
-        override_reason=selection.override_reason,
-        blocker=blocker,
-        metadata={"governed_premerge": {
+    metadata = {
+        "closeout_action": "review_gate_block",
+        "verification_status": "blocked",
+        "governed_premerge": {
             "rounds": result.rounds,
             "reason": result.reason,
             "degraded": result.degraded,
-            # Surface the panel findings on the terminal event so the run-end
-            # summary names WHY the merge was held — without this the operator saw
-            # only "blocked" with no review detail (code-review finding, verified).
+            # Surface the panel findings so the run-end summary names WHY the merge
+            # was held — the operator otherwise saw only "blocked" with no detail.
             "findings": [f.to_json() for f in result.findings],
-        }},
-        **event_provenance(roadmap, alias),
-    )
-    return ("blocked", event)
+        },
+    }
+    return blocker, metadata
 
 
 def governed_premerge_for_run(
@@ -8063,6 +8093,7 @@ def governed_premerge_for_run(
     artifact: str,
     author_executor: str,
     run_mode: str,
+    author_vendors=None,
     apply_fix=None,
     available_legs=None,
     invoke=None,
@@ -8082,6 +8113,7 @@ def governed_premerge_for_run(
         artifact=artifact,
         author_executor=author_executor,
         run_mode=run_mode,
+        author_vendors=author_vendors,
         apply_fix=apply_fix,
         available_legs=available_legs,
         max_rounds=max_rounds,

@@ -71,12 +71,39 @@ SpawnFn = Callable[[str, str], "tuple[str, str]"]
 # login for codex, Google token for agy) — NEVER API keys. codex/gemini are live;
 # the claude leg's native-Agent/Agent-View path is deferred (returns `unavailable`).
 _LEG_TIMEOUT_S = 600
-_EMPTY_THRESHOLD = 200  # bytes — matches the advisor-panel script's EMPTY heuristic
-# A leg that ends with the required structured verdict produced a REAL review even
-# if terse (a one-line "DISAGREE — endpoint skips auth" is ~40 bytes). Such a
-# review must classify `ok`, not `empty`, or a genuine block silently downgrades
-# to a non-gating warn (code-review finding, verified).
-_VERDICT_TOKEN = re.compile(r"\b(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE)
+
+# STRICT TERMINAL-LINE VERDICT CONTRACT (advisor-panel reconciliation, verified).
+# The panel brief requires each leg to END with exactly one of AGREE / PARTIALLY
+# AGREE / DISAGREE. We classify on the LAST NON-EMPTY LINE being exactly that token
+# (modulo a `VERDICT:` prefix / surrounding markup / trailing punctuation), NOT a
+# substring search anywhere in the prose. A substring search fails BOTH ways: it
+# read "I cannot AGREE or DISAGREE without more context" as a real review, and it
+# read approvals containing "no blockers"/"non-blocking" as blocks. A leg whose
+# last line is not a conforming verdict is NON-CONFORMING → fail-closed (degraded),
+# never a silent pass. A terse but conforming "DISAGREE" (~8 bytes) is a REAL block.
+# The LAST non-empty line must BEGIN with one of these tokens (word-boundary),
+# optionally followed by an em-dash/colon/reason — so a real "DISAGREE — endpoint
+# skips auth" conforms, while "I cannot AGREE or DISAGREE without context" (starts
+# with "I") and "no blockers" do not. Most-specific alternative first.
+_VERDICT_RE = re.compile(r"^(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE)
+
+
+def terminal_verdict(text: str) -> str | None:
+    """Return the leg's structured verdict iff its LAST non-empty line BEGINS with
+    one of {AGREE, PARTIALLY AGREE, DISAGREE} (tolerating a leading ``VERDICT:``,
+    surrounding markup, and a trailing ``— reason``); else ``None`` (non-conforming
+    → the caller fails closed). The panel brief instructs each leg to end with the
+    verdict, so the terminal line is the contract — not a substring anywhere."""
+    for raw in reversed((text or "").splitlines()):
+        s = raw.strip()
+        if not s:
+            continue
+        s = s.strip("*`# ").strip()
+        if s.upper().startswith("VERDICT:"):
+            s = s[len("VERDICT:"):].strip().strip("*`").strip()
+        m = _VERDICT_RE.match(s)
+        return re.sub(r"\s+", " ", m.group(1).upper()) if m else None
+    return None
 # Auth/error stderr signatures → `degraded` so a verbose auth error is never read
 # as a real review (mirrors run_cli_panels.sh).
 _AUTH_SIGNATURE = re.compile(
@@ -113,18 +140,24 @@ def _subscription_env() -> dict[str, str]:
 
 
 def _classify_leg(rc: int, review_text: str, log_text: str) -> str:
-    """Map a leg's exit code + outputs to a fail-closed status."""
+    """Map a leg's exit code + outputs to a fail-closed status.
+
+    Only a leg that ENDS with a conforming structured verdict (see
+    ``terminal_verdict``) is a real review (`ok`) — a terse "DISAGREE" counts; a
+    long review missing the terminal verdict, or junk that merely mentions the
+    words, is NON-CONFORMING and fails closed (`degraded`), never a silent pass.
+    """
     if rc == 124:  # `timeout` binary / our own timeout maps here
         return "timeout"
     if _AUTH_SIGNATURE.search(log_text or ""):
         return "degraded"
     body = (review_text or "").strip()
-    # A structured verdict means a real (if terse) review — never downgrade to empty.
-    if _VERDICT_TOKEN.search(body):
-        return "ok"
-    if len(body) <= _EMPTY_THRESHOLD:
+    if not body:
         return "empty"
-    return "ok"
+    if terminal_verdict(body) is not None:
+        return "ok"
+    # Substantial text but no conforming terminal verdict → fail-closed, not a pass.
+    return "degraded"
 
 
 def _exec_leg(leg: str, review_dir: Path, out_dir: Path) -> tuple[int, str, str]:

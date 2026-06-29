@@ -69,13 +69,17 @@ class RoutingInvariantsTest(unittest.TestCase):
         self.assertIsNotNone(blocked.terminal_blocker)
         self.assertFalse(blocked.terminal_blocker["human_required"])
 
-    def test_governed_degrades_to_advisory_not_self_review(self):
+    def test_governed_no_disjoint_reviewer_blocks_not_self_review(self):
+        # FAIL-CLOSED (advisor-panel reconciliation): when only the author's own
+        # vendor is authed, governed mode HOLDS (block) rather than advisory-passing
+        # — and never spawns a same-vendor self-review.
         invoke = Mock()
         g = governed_planning_gate(
             artifact="A", author_executor="claude", run_mode="governed",
             available_legs=("claude",), invoke=invoke,  # only the author's vendor authed
         )
-        self.assertTrue(g.degraded and g.promoted)   # advisory pass, marked NOT a real review
+        self.assertFalse(g.promoted)                  # held, not advisory-passed
+        self.assertTrue(any(f.severity == "block" for f in g.findings))
         invoke.assert_not_called()                    # never a same-vendor self-review spawn
 
     # 4 — the reviewer pool is vendor-disjoint from the author.

@@ -148,8 +148,11 @@ class GovernedNotLiveWarningTest(unittest.TestCase):
         msg = _governed_not_live_warning("governed")
         self.assertIsNotNone(msg)
         self.assertIn("LIVE", msg)
-        self.assertIn("block holds the merge", msg)
-        self.assertNotIn("degrade to an advisory pass", msg)  # the old false claim is gone
+        self.assertIn("FAIL-CLOSED", msg)
+        self.assertIn("HOLDS the merge", msg)
+        self.assertIn("git diff --cached", msg)               # reviews the staged index
+        self.assertNotIn("advisory autonomous-warn", msg)     # the old false claim is gone
+        self.assertNotIn("degrade to an advisory pass", msg)
 
     def test_autonomous_is_silent(self):
         self.assertIsNone(_governed_not_live_warning("autonomous"))

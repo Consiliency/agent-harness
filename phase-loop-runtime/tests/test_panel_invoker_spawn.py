@@ -28,7 +28,17 @@ class StatusMappingTest(unittest.TestCase):
         self.assertIn("AGREE", text)
 
     def test_empty(self):
-        self.assertEqual(self._spawn_with(0, "tiny", "")[0], "empty")  # <=200 bytes, no verdict
+        self.assertEqual(self._spawn_with(0, "", "")[0], "empty")      # truly empty body
+
+    def test_nonconforming_is_degraded(self):
+        # Substantial text WITHOUT a terminal verdict is non-conforming → fail-closed
+        # (degraded), never a silent pass (advisor-panel reconciliation). The old
+        # <=200-byte "empty" heuristic let such a non-review slip through.
+        self.assertEqual(self._spawn_with(0, "tiny", "")[0], "degraded")
+        self.assertEqual(
+            self._spawn_with(0, "I cannot AGREE or DISAGREE without more context", "")[0],
+            "degraded",
+        )
 
     def test_terse_verdict_is_ok_not_empty(self):
         # A real but terse block (~35 bytes) carries the structured verdict and must
