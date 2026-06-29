@@ -30,8 +30,11 @@ from phase_loop_runtime.panel_invoker import (
 # --- #1: run_mode threaded to EVERY _perform_phase_closeout call -------------
 
 def test_all_perform_phase_closeout_calls_thread_run_mode():
-    src = (Path(__file__).resolve().parents[1]
-           / "src" / "phase_loop_runtime" / "runner.py").read_text(encoding="utf-8")
+    # Resolve runner.py from the IMPORTED module so this source-structure guard works
+    # in both the src checkout and a from-wheel/site-packages install (Gate A clean room),
+    # not only at the ../src/ path.
+    from phase_loop_runtime import runner as _runner_mod
+    src = Path(_runner_mod.__file__).read_text(encoding="utf-8")
     # Each call to _perform_phase_closeout( ... ) must pass run_mode=. (The def
     # itself defaults it, but a CALLER that omits it silently runs autonomous.)
     calls = list(re.finditer(r"_perform_phase_closeout\(", src))
