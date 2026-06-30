@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from phase_loop_runtime.claude_agent_view import ClaudeAgentViewAdapter
-from phase_loop_runtime.launcher import _agent_view_route_status
+from phase_loop_runtime.claude_agent_view import AgentViewLifecycleResult, BlockerSummary, ClaudeAgentViewAdapter
+from phase_loop_runtime.launcher import LaunchSpec, _agent_view_route_status, _launch_claude_agent_view
 
 
 class ClaudeAgentViewLifecycleTest(unittest.TestCase):
@@ -127,6 +127,50 @@ class ClaudeAgentViewLifecycleTest(unittest.TestCase):
         self.assertNotIn("sensitive stderr", rendered)
         self.assertNotIn("agent_view_failed", rendered)
 
+    def test_failed_agent_view_launch_returns_blocked_result(self):
+        class FakeAgentViewAdapter:
+            def launch_background(self, prompt, *, cwd, **kwargs):
+                return AgentViewLifecycleResult(
+                    session_id="agent-1",
+                    state="failed",
+                    cwd=str(cwd),
+                    logs_ref="claude logs agent-1",
+                    started_at="2026-06-19T12:00:00Z",
+                    completed_at="2026-06-19T12:05:00Z",
+                    stop_result=None,
+                    auth_posture="subscription_local",
+                    billing_posture="subscription_included",
+                    blocker=BlockerSummary("agent_view_failed", "Claude Agent View reported a terminal failed state."),
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec = LaunchSpec(
+                executor="claude",
+                command=["claude", "--bg", "--permission-mode", "plan"],
+                prompt_bundle=_PromptBundle(),
+                injection_metadata=None,
+                delivery_mode="agent_view",
+                dispatch_decision=None,
+                available=True,
+                selected_model="opus",
+                selected_effort="max",
+                wrapped_cwd=tmpdir,
+                claude_route="claude_agent_view",
+            )
+            with mock.patch("phase_loop_runtime.launcher.ClaudeAgentViewAdapter", return_value=FakeAgentViewAdapter()):
+                result = _launch_claude_agent_view(spec, log_path=None)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.claude_route, "claude_agent_view")
+        self.assertEqual(result.claude_route_result["status"], "blocked")
+        self.assertEqual(result.claude_route_result["text"], "Claude Agent View reported a terminal failed state.")
+        self.assertEqual(result.claude_route_result["warnings"], ["Claude Agent View reported a terminal failed state."])
+        self.assertEqual(result.claude_route_result["artifacts"][0]["state"], "failed")
+        self.assertEqual(result.claude_route_result["artifacts"][0]["logs_ref"], "claude logs agent-1")
+        rendered = json.dumps(result.event_metadata(), sort_keys=True)
+        self.assertNotIn("raw transcript", rendered)
+        self.assertNotIn("Bearer", rendered)
+
     def test_failure_aliases_reduce_to_failed(self):
         adapter = ClaudeAgentViewAdapter(
             runner=_runner(
@@ -217,6 +261,11 @@ def _runner(*, stdout, returncode=0):
         return subprocess.CompletedProcess(command, returncode, stdout=stdout)
 
     return run
+
+
+class _PromptBundle:
+    def render_context(self):
+        return "do work"
 
 
 if __name__ == "__main__":
