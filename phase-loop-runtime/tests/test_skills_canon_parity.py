@@ -113,6 +113,116 @@ class SkillsCanonParityTest(unittest.TestCase):
             "committed phase-loop-skills/ is stale vs skills-src/ — run the regenerate",
         )
 
+    def test_installed_bundle_preserves_concrete_harness_literals(self):
+        """CR blind-spot gate: parity (committed == build) does NOT catch a
+        neutralizer that corrupts concrete harness literals — both sides agree on
+        the *corrupt* token. This asserts the INSTALLED body instead.
+
+        ``_neutralize_skill`` collapses harness-VARIANT tokens (skill names,
+        config dirs) to ``<harness>-`` and there is NO install-time body
+        re-expansion (``skill_install._rewrite_skill_name`` only touches the
+        ``name:`` frontmatter). So a concrete Claude identifier that leaked into
+        the neutralizer would install literally as ``<harness>-opus-4-8`` /
+        ``<harness>-in-chrome`` — which denote nothing — a content regression in
+        released fleet skills. Assert the real literals survive, and that no
+        ``<harness>-``-corrupted form of a preserved literal remains.
+
+        NB: skill-name refs such as ``<harness>-execute-phase`` in the installed
+        body are BY DESIGN (the shared base is harness-neutral); this gate must
+        NOT assert anything about those.
+        """
+        self._require_sources()
+        import tempfile
+
+        from phase_loop_runtime.build_bundle import PRESERVE_LITERALS
+        from phase_loop_runtime.skill_install import install_skills
+
+        # claude carries every preserved literal (model ids + claude-in-chrome).
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td)
+            install_skills(
+                harness="claude",
+                source=COMMITTED_BUNDLE,
+                destination=dest,
+                mode="copy",
+                apply=True,
+            )
+            installed = "\n".join(
+                p.read_text(encoding="utf-8") for p in sorted(dest.rglob("SKILL.md"))
+            )
+        for literal in PRESERVE_LITERALS:
+            with self.subTest(literal=literal):
+                self.assertIn(
+                    literal,
+                    installed,
+                    f"installed claude bundle lost concrete literal {literal!r} "
+                    "(neutralizer corrupted it to a <harness>- form)",
+                )
+                corrupted = literal.replace("claude-", "<harness>-", 1)
+                self.assertNotIn(
+                    corrupted,
+                    installed,
+                    f"installed claude bundle contains corrupted {corrupted!r}; "
+                    f"the literal {literal!r} must survive neutralization verbatim",
+                )
+
+    def test_neutralize_preserves_concrete_literals_but_collapses_variant_tokens(self):
+        """Unit contract on ``_neutralize_skill``: concrete Claude identifiers
+        survive verbatim; harness-VARIANT tokens (skill names, config dirs, brand)
+        still collapse to ``<harness>``. Locks the preserve-vs-collapse boundary
+        directly, independent of the full bundle round-trip."""
+        from phase_loop_runtime.build_bundle import _neutralize_skill
+
+        sample = (
+            "Run `claude-execute-phase`; route via `claude-config/claude-skills`. "
+            "Models: claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5. "
+            "Screenshot with claude-in-chrome. Claude Code drives it."
+        )
+        out = _neutralize_skill(sample, harness="claude", skill="execute-phase")
+        # Concrete literals preserved verbatim.
+        for literal in ("claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-in-chrome"):
+            self.assertIn(literal, out, f"{literal} must survive neutralization")
+        # Harness-variant tokens collapsed.
+        self.assertIn("<harness>-execute-phase", out)
+        self.assertIn("<harness>-config", out)
+        self.assertNotIn("claude-execute-phase", out)
+        self.assertNotIn("claude-config", out)
+        # Brand prose collapsed; but never a corrupted model/tool form.
+        self.assertNotIn("<harness>-opus-4-8", out)
+        self.assertNotIn("<harness>-in-chrome", out)
+
+    def test_other_harnesses_do_not_leak_claude_only_skillname_refs(self):
+        """Guard the converse: the claude-specific *tool* literal (claude-in-chrome,
+        a real cross-harness tool name with no per-harness variant) legitimately
+        appears in every harness's shared base, but a claude *skill-name* ref must
+        never leak un-neutralized into another harness's installed body."""
+        self._require_sources()
+        import tempfile
+
+        for harness in ("codex", "gemini", "opencode"):
+            with tempfile.TemporaryDirectory() as td:
+                dest = Path(td)
+                install_skills_other = __import__(
+                    "phase_loop_runtime.skill_install", fromlist=["install_skills"]
+                ).install_skills
+                install_skills_other(
+                    harness=harness,
+                    source=COMMITTED_BUNDLE,
+                    destination=dest,
+                    mode="copy",
+                    apply=True,
+                )
+                installed = "\n".join(
+                    p.read_text(encoding="utf-8") for p in sorted(dest.rglob("SKILL.md"))
+                )
+            with self.subTest(harness=harness):
+                # No leaked claude skill-name prefix (a real cross-harness bug if present).
+                self.assertNotIn(
+                    "claude-execute-phase",
+                    installed,
+                    f"{harness} installed body leaked claude skill-name ref",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
