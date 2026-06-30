@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from phase_loop_runtime.claude_agent_view import ClaudeAgentViewAdapter
+from phase_loop_runtime.launcher import _agent_view_route_status
 
 
 class ClaudeAgentViewLifecycleTest(unittest.TestCase):
@@ -75,7 +76,7 @@ class ClaudeAgentViewLifecycleTest(unittest.TestCase):
         self.assertEqual(result.blocker.reason, "trust_preflight_blocked")
         runner.assert_not_called()
 
-    def test_lifecycle_states_include_running_done_blocked_and_stopped(self):
+    def test_lifecycle_states_include_running_done_blocked_stopped_and_failed(self):
         adapter = ClaudeAgentViewAdapter(
             runner=_runner(
                 stdout=json.dumps(
@@ -84,6 +85,7 @@ class ClaudeAgentViewLifecycleTest(unittest.TestCase):
                         {"id": "done-1", "state": "done", "status": "completed"},
                         {"id": "blocked-1", "state": "blocked", "status": "needs_input"},
                         {"id": "stopped-1", "state": "stopped"},
+                        {"id": "failed-1", "state": "failed"},
                         {"id": "partial-1"},
                     ]
                 )
@@ -92,7 +94,58 @@ class ClaudeAgentViewLifecycleTest(unittest.TestCase):
 
         states = [session.state for session in adapter.list_sessions().sessions]
 
-        self.assertEqual(states, ["running", "done", "blocked", "stopped", "unknown"])
+        self.assertEqual(states, ["running", "done", "blocked", "stopped", "failed", "unknown"])
+
+    def test_failed_session_inspection_is_terminal_metadata_only(self):
+        adapter = ClaudeAgentViewAdapter(
+            runner=_runner(
+                stdout=json.dumps(
+                    [
+                        {
+                            "id": "agent-1",
+                            "session_id": "session-1",
+                            "cwd": "/repo",
+                            "state": "failed",
+                            "logs": "raw transcript",
+                            "stderr": "sensitive stderr",
+                        }
+                    ]
+                )
+            )
+        )
+
+        lifecycle = adapter.inspect("agent-1", cwd="/repo")
+
+        self.assertEqual(lifecycle.state, "failed")
+        self.assertIsNotNone(lifecycle.completed_at)
+        self.assertEqual(lifecycle.logs_ref, "claude logs session-1")
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_failed")
+        self.assertEqual(_agent_view_route_status(lifecycle.state), "blocked")
+        self.assertEqual(_agent_view_route_status("unknown"), "stale")
+        rendered = json.dumps(lifecycle.to_json(), sort_keys=True)
+        self.assertNotIn("raw transcript", rendered)
+        self.assertNotIn("sensitive stderr", rendered)
+        self.assertNotIn("agent_view_failed", rendered)
+
+    def test_failure_aliases_reduce_to_failed(self):
+        adapter = ClaudeAgentViewAdapter(
+            runner=_runner(
+                stdout=json.dumps(
+                    [
+                        {"id": "failed-1", "state": "failed"},
+                        {"id": "error-1", "state": "error"},
+                        {"id": "errored-1", "state": "errored"},
+                        {"id": "crashed-1", "state": "crashed"},
+                        {"id": "failure-1", "state": "failure"},
+                        {"id": "unknown-1", "state": "future_state"},
+                    ]
+                )
+            )
+        )
+
+        states = [session.state for session in adapter.list_sessions().sessions]
+
+        self.assertEqual(states, ["failed", "failed", "failed", "failed", "failed", "unknown"])
 
     def test_unsupported_launch_surface_is_structured_blocker(self):
         with tempfile.TemporaryDirectory() as tmpdir:
