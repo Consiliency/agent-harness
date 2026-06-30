@@ -88,8 +88,16 @@ class SkillsCanonParityTest(unittest.TestCase):
                     )
 
     def test_regenerate_script_is_a_noop_on_committed_tree(self):
-        """The documented one-command regenerate must produce zero changes on a
-        clean tree (parity is reachable, not just asserted)."""
+        """The documented one-command regenerate must rewrite no SKILL.md / override
+        on a parity-clean tree (the script is wired correctly and reaches parity).
+
+        NB: ``BuildResult.files_written`` is NOT a clean would-change signal for the
+        aux subdirs (``scripts/``/``references/``/``assets/``) — ``build_bundle``
+        appends those paths unconditionally whether or not their content changed. The
+        sound no-op signals are ``skills_regenerated`` (base ``SKILL.md`` rewrites) and
+        ``overrides_written`` (per-harness override rewrites); aux-content drift is
+        covered byte-for-byte by ``test_committed_bundle_is_byte_identical_to_canonical_build``.
+        """
         self._require_sources()
         import importlib.util
 
@@ -98,13 +106,11 @@ class SkillsCanonParityTest(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         result = mod.regenerate(dry_run=True)
-        # dry_run reports would-change files; on a parity-clean tree this is empty.
-        changed = [p for p in result.files_written]
         self.assertEqual(
-            changed,
-            [],
-            "regenerate_skills_bundle.py --dry-run reports pending changes; "
-            "committed phase-loop-skills/ is stale vs skills-src/",
+            (result.skills_regenerated, result.overrides_written),
+            ([], []),
+            "regenerate_skills_bundle.py --dry-run would rewrite a SKILL.md/override; "
+            "committed phase-loop-skills/ is stale vs skills-src/ — run the regenerate",
         )
 
 

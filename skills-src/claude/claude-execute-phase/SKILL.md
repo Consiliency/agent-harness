@@ -75,6 +75,10 @@ adapter mode overrides the orchestrator-only interactive workflow below.
   blocked`.
 - End stdout with one shared `automation:` closeout. Do not wait for
   interactive approval after verification is complete.
+- Do not emit a `/clear` recommendation or any human-only context-reset
+  instruction. Continuity to the next phase is the run-local handoff plus the
+  runner re-invoking the next phase in a fresh executor process — that fresh
+  process is the context reset. There is no human in this loop to reset it.
 - Before that closeout, run `git status --short` and classify dirty paths
   against the active plan's owned files and control artifacts. If a generated
   path is unowned, ignored without explicit allowlist/staging policy, or
@@ -108,6 +112,22 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 | frontier  | claude-opus-4-8    | retry escalation ceiling, highest-stakes lanes                |
 | strong    | claude-sonnet-4-6  | contract-authoring (IF-freeze), schema/migration, algorithmic |
 | fast      | claude-haiku-4-5   | mechanical wiring, small components against frozen types      |
+
+These map to the runtime `model_class` axis: planner = frontier, implementer =
+strong, worker = fast. The shipped `model_policy` dispatches **implementation at
+the implementer class**; on repeated failure the escalation ladder steps the
+class up (implementer → planner) before, in **governed** `run_mode` only,
+invoking the advisor panel. The default `run_mode` is `autonomous` — no panel,
+no `human_required`; every governed escalation terminal is a non-human
+`review_gate_block` surfaced in the run-end summary, never a synchronous human
+wait.
+
+Governed mode is **live on the serial path** (`--governed` / `PHASE_LOOP_RUN_MODE=governed`,
+model-routing-v2): a pre-merge panel gate (codex + gemini) reviews the
+implementation diff *before* the closeout commit and runs a bounded
+review→fix→re-review loop; a `block` finding holds the merge until fixed or the
+bounded loop terminates non-human. Autonomous runs spawn no panel. Concurrent-wave
+dispatch is not governed yet.
 
 ## Inputs
 
@@ -563,7 +583,8 @@ final verification state.>
 - <forecast of what claude-plan-phase / claude-phase-roadmap-builder will touch next>
 ```
 
-After both files are written, print to the user:
+After both files are written, **in the interactive TUI path only** (a human is
+driving), print to the user:
 
 > Phase `<alias>` complete. `<N>` lanes merged; final verification `<pass|fail>`.
 > Reflection saved to `<REFLECTION_PATH>`.
@@ -572,7 +593,17 @@ After both files are written, print to the user:
 >
 > Next phase: `<next alias - status|none - reason>`.
 > Next command: `<exact command or none - reason>`.
-> Recommended next step: run `/clear` to reset your context window, then invoke the next command above. The next skill reads the handoff automatically.
+> Recommended next step (interactive only): either run `/clear` to reset your
+> context window and then invoke the next command above, **or** dispatch a fresh
+> subagent (Task/Agent) to carry the next phase in clean context when this loop
+> is skill/tool-driven. The next skill reads the handoff automatically.
+
+`/clear` is a human-operated reset and applies only to the interactive TUI path
+above. **Do not emit it in Phase-Loop Adapter (autonomous) mode** — an
+autonomous loop has no human to run it and cannot clear its own context.
+In autonomous runs, continuity is the written handoff and the runner re-invokes
+the next phase in a fresh executor process; that fresh process *is* the context
+reset. See "Phase-Loop Adapter Mode" above.
 
 ## Lane state machine
 
@@ -668,7 +699,7 @@ Before reporting a successful closeout, require the runner-owned verification ar
 
 ## Spec Delta Closeout
 
-Before final closeout, choose exactly one `spec_delta_closeout.v1` decision: `no_spec_delta`, `roadmap_amendment`, `canonical_spec_update`, `governed_pipeline_refresh`, `mirror_cutover_required`, `dotfiles_skill_source_update`, or `human_source_judgment_required`. Cite metadata-only evidence paths such as the active plan, lane closeouts, targeted pytest output, and `git diff --check` output. Preserve the phase plan's target surfaces and `redaction_posture=metadata_only`; do not include raw specs, raw diffs, credentials, provider payloads, local env values, or evidence-source contents. Missing or malformed spec-closeout evidence is a repairable automation blocker with `blocker_class=contract_bug` unless the decision is `human_source_judgment_required`.
+Before final closeout, choose exactly one `spec_delta_closeout.v1` decision: `no_spec_delta`, `roadmap_amendment`, `canonical_spec_update`, `governed_pipeline_refresh`, `mirror_cutover_required`, `dotfiles_skill_source_update`, or `human_source_judgment_required`. Cite metadata-only evidence paths such as the active plan, lane closeouts, targeted pytest output, and `git diff --check` output. Preserve the phase plan's target surfaces and `redaction_posture=metadata_only`; do not include raw specification bodies, raw patch bodies, credentials, provider-supplied payloads, local environment values, or evidence-source contents. Missing or malformed spec-closeout evidence is a repairable automation blocker with `blocker_class=contract_bug` unless the decision is `human_source_judgment_required`.
 
 ## Closeout
 

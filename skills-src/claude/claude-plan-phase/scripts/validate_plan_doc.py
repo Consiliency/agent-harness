@@ -677,6 +677,335 @@ def _fail(msg: str) -> None:
     print(f"validate_plan_doc: {msg}", file=sys.stderr)
 
 
+def _check_j_docs_lane(src: str) -> Findings:
+    """rigor-v1 P2: warn when no terminal docs-sweep lane is present.
+
+    plan-phase requires a no-opt-out docs lane so a public-surface change cannot
+    silently skip its doc footprint. Autonomy-first: this is a WARN (recorded,
+    non-blocking); promote to an error once adopted across the fleet.
+    """
+    for m in re.finditer(r"^###\s+SL-\d+\s*[—-]\s*(.+?)\s*$", src, re.MULTILINE):
+        # Word-bounded so "Docker"/"Docusaurus" don't masquerade as a docs lane.
+        if re.search(r"\bdocs?\b|\bdocumentation\b", m.group(1), re.IGNORECASE):
+            return []
+    if re.search(r"SL-docs|docs[-\s]sweep", src, re.IGNORECASE):
+        return []
+    return [
+        "(J) WARN: no terminal docs-sweep lane found (a `### SL-N — …docs…` lane). "
+        "plan-phase requires a no-opt-out docs lane; add a terminal "
+        "`SL-N — Documentation sweep` lane or promote this check to an error once adopted."
+    ]
+
+
+def _acceptance_bullets(src: str) -> List[str]:
+    body = _extract_section(src, "Acceptance Criteria")
+    if not body:
+        return []
+    bullets: List[str] = []
+    current: List[str] = []
+    for line in body.splitlines():
+        if line.lstrip().startswith("- ["):
+            if current:
+                bullets.append("\n".join(current))
+            current = [line]
+        elif current:
+            if not line.strip():
+                bullets.append("\n".join(current))
+                current = []
+            else:
+                current.append(line)
+    if current:
+        bullets.append("\n".join(current))
+    return bullets
+
+
+def _check_k_acceptance_testable(src: str) -> Findings:
+    """rigor-v1 P5: warn on acceptance criteria that name no proving command.
+
+    A testable bullet cites something checkable — a command/path/symbol in
+    backticks, a path, an HTTP verb+status, or a comparison/return assertion.
+    A prose bullet ("users can log in") is not mechanically checkable.
+    Autonomy-first WARN; promotion to error is opt-in.
+    """
+    out: Findings = []
+    # Case-sensitive on purpose: uppercase HTTP verbs are real assertions, but
+    # lowercase "get"/"post"/"put" are ordinary English. No bare "/\w" (it matched
+    # "and/or", "TCP/IP") and no bare "returns" (matched "user returns home").
+    testable = re.compile(
+        r"`[^`]+`"                                        # backticked command/path/symbol
+        r"|\b(GET|POST|PUT|PATCH|DELETE)\b.*?\b\d{3}\b"   # HTTP verb (uppercase) + status code
+        r"|==|!=|>=|<=|->"                                # comparison / return arrow
+        r"|\bexit code\b|\bstatus code\b"
+        r"|\btests?/|\btest_\w|\bpytest\b"                # cites a test
+    )
+    for bullet in _acceptance_bullets(src):
+        if not testable.search(bullet):
+            first = bullet.strip().splitlines()[0][:90]
+            out.append(
+                f"(K) WARN: acceptance criterion is not mechanically testable — "
+                f"name the proving command/path/assertion: {first!r}"
+            )
+    return out
+
+
+def _check_l_ui_visual_verification(src: str) -> Findings:
+    """rigor-v1 P6: warn when a plan touches UI/visual files but the Verification
+    section names no browser/screenshot step. Autonomy-first WARN."""
+    if not re.search(r"\.(tsx|jsx|vue|svelte|css|scss)\b|/components/", src, re.IGNORECASE):
+        return []
+    verif = _extract_section(src, "Verification") or ""
+    if re.search(r"playwright|screenshot|browser|in-chrome|visual", verif, re.IGNORECASE):
+        return []
+    return [
+        "(L) WARN: plan touches UI/visual surfaces but `## Verification` names no "
+        "browser/screenshot/Playwright step — add a visual check (and a visually "
+        "observable acceptance criterion) for UI changes."
+    ]
+
+
+# Release/package signal (issue #18). Either the explicit release-dispatch
+# mutation in frontmatter, OR a lane owning a release artifact (manifest /
+# version file / changelog / release workflow).
+_RELEASE_ARTIFACT_RE = re.compile(
+    r"package\.json|Cargo\.toml|pyproject\.toml|setup\.cfg|"
+    r"(?:^|/)VERSION$|version\.txt|__version__\.py|CHANGELOG|"
+    r"\.github/workflows/(?:release|publish)",
+    re.IGNORECASE,
+)
+# Public-doc surfaces a release/package phase's docs lane must own (or record a
+# no-doc-change decision for).
+_RELEASE_DOC_SURFACE_RE = re.compile(r"README\.md|CHANGELOG|RELEASE", re.IGNORECASE)
+
+
+def _is_explicit_release_plan(src: str) -> bool:
+    """True only when the plan frontmatter *explicitly* declares a release.
+
+    This is the authoritative marker and the ONLY signal that escalates the
+    docs-coverage gap to an ERROR. The artifact-glob heuristic deliberately does
+    not satisfy it (an ordinary changelog/dep bump must not become an ERROR).
+    """
+    fm = _parse_frontmatter_block(src)
+    if str(fm.get("phase_loop_mutation", "")).strip().lower() == "release_dispatch":
+        return True
+    return str(fm.get("phase_type", "")).strip().lower() in (
+        "release",
+        "package",
+        "roadmap_completion",
+        "roadmap-completion",
+    )
+
+
+def _is_release_plan(src: str, lane_sections_parsed: Dict[str, dict]) -> bool:
+    """Release/package *shape* — explicit frontmatter OR a lane owning a release
+    artifact. Governs whether the docs-coverage check fires at all; the
+    explicit-vs-heuristic distinction (ERROR vs WARN) is made by callers via
+    :func:`_is_explicit_release_plan`."""
+    if _is_explicit_release_plan(src):
+        return True
+    for parsed in lane_sections_parsed.values():
+        for glob in parsed.get("owned_globs", []):
+            if _RELEASE_ARTIFACT_RE.search(glob):
+                return True
+    return False
+
+
+def _parse_frontmatter_block(src: str) -> Dict[str, str]:
+    if not src.startswith("---\n"):
+        return {}
+    end = src.find("\n---", 4)
+    if end == -1:
+        return {}
+    data: Dict[str, str] = {}
+    for line in src[4:end].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        data[key.strip()] = value.strip().strip("'\"")
+    return data
+
+
+def _docs_lane_ids(lanes: List[Lane], lane_sections_parsed: Dict[str, dict]) -> List[str]:
+    ids: List[str] = []
+    for lane in lanes:
+        if re.search(r"\bdocs?\b|\bdocumentation\b", lane.name, re.IGNORECASE):
+            ids.append(lane.sl_id)
+    return ids
+
+
+def _check_m_release_docs_coverage(
+    src: str,
+    lanes: List[Lane],
+    lane_sections_parsed: Dict[str, dict],
+) -> Findings:
+    """issue #18: release/package phases must own public-doc surfaces and the
+    docs reducer must depend on every producer lane.
+
+    For phases that **explicitly** declare a release (frontmatter
+    ``phase_loop_mutation: release_dispatch`` / a release ``phase_type``) this is
+    an ERROR (the issue asks for a blocker). For a heuristic-only release shape
+    (a lane owns a release artifact but the plan carries no explicit release
+    frontmatter) — and for ordinary phases — the same coverage gap is recorded
+    as a WARN to preserve autonomy-first: an ordinary changelog/dep bump must
+    not be escalated to a blocking ERROR. Skips entirely when the phase is
+    neither (no docs lane is a separate concern handled by check (J)).
+    """
+    release = _is_release_plan(src, lane_sections_parsed)
+    explicit = _is_explicit_release_plan(src)
+    docs_ids = _docs_lane_ids(lanes, lane_sections_parsed)
+    if not docs_ids:
+        # check (J) already covers a wholly-missing docs lane; for explicit
+        # release phases restate it as an error here. A heuristic-only release
+        # shape stays inert here (its gap is WARN-tier, handled below only when a
+        # docs lane exists).
+        if explicit:
+            return [
+                "(M) release/package phase has no docs lane that owns README/"
+                "CHANGELOG/release-notes — add a terminal docs lane owning the "
+                "public-doc surfaces or record a per-surface no-doc-change decision."
+            ]
+        return []
+
+    tag = "" if explicit else "WARN: "
+    out: Findings = []
+
+    # 1) The docs lane(s) must own at least one public-doc surface, OR the plan
+    #    records an explicit no-doc-change decision (`no_doc_delta` /
+    #    `freshness-ok` / "no doc change").
+    owns_doc_surface = False
+    for sl_id in docs_ids:
+        for glob in lane_sections_parsed.get(sl_id, {}).get("owned_globs", []):
+            if _RELEASE_DOC_SURFACE_RE.search(glob):
+                owns_doc_surface = True
+                break
+    records_no_doc_decision = bool(
+        re.search(r"no_doc_delta|no doc change|no-doc-change|freshness-ok", src, re.IGNORECASE)
+    )
+    if not owns_doc_surface and not records_no_doc_decision:
+        out.append(
+            f"(M) {tag}docs lane(s) {', '.join(docs_ids)} do not own README/"
+            "CHANGELOG/release-notes and the plan records no explicit "
+            "no-doc-change decision; a release/package phase must own its public-"
+            "doc surfaces or justify why each is already current."
+        )
+
+    # 2) The docs reducer must depend on every producer lane (the SKILL.md:523
+    #    rule). Producers = every non-docs lane.
+    producers = {lane.sl_id for lane in lanes if lane.sl_id not in docs_ids}
+    by_id = {lane.sl_id: lane for lane in lanes}
+    for sl_id in docs_ids:
+        lane = by_id.get(sl_id)
+        if lane is None:
+            continue
+        missing = sorted(producers - set(lane.depends_on), key=_sl_sort_key)
+        if missing:
+            out.append(
+                f"(M) {tag}docs reducer {sl_id} does not depend on every producer "
+                f"lane; missing `Depends on`: {', '.join(missing)} — a synthesized "
+                "docs/release summary must list every producer lane it summarizes."
+            )
+    return out
+
+
+def _sl_sort_key(sl_id: str) -> tuple:
+    m = re.match(r"SL-(\d+)", sl_id)
+    return (int(m.group(1)),) if m else (10**9, sl_id)
+
+
+# issue #18 F4 — post-dispatch evidence-reducer lane.
+#
+# A release-DISPATCH phase cuts a tag / runs an external release workflow whose
+# commit SHA and workflow result are NOT KNOWABLE until *after* dispatch. Any
+# evidence doc a pre-dispatch reducer writes therefore carries a placeholder
+# (e.g. `recovery commit pending`). F1's docs-freshness scan BLOCKS a release
+# closeout if those placeholders survive — that is the backstop. F4 makes the
+# back-fill an explicit, *required* planning step: a release-dispatch plan must
+# include a post-dispatch lane that re-opens the pre-dispatch evidence docs and
+# back-fills the now-known SHA / workflow result, so the placeholder is resolved
+# by design rather than tripping the closeout gate.
+#
+# Tokens that mark a lane as the post-dispatch reducer. Word/phrase signals the
+# planner is told to emit (see plan-phase SKILL.md). Matched against the lane
+# NAME and its section body.
+_POST_DISPATCH_LANE_RE = re.compile(
+    r"post[-\s]?dispatch|back[-\s]?fill|backfill|"
+    r"reconcile.*(?:sha|commit|workflow|release)|"
+    r"(?:sha|commit|workflow|tag).*back[-\s]?fill",
+    re.IGNORECASE,
+)
+
+
+def _is_release_dispatch_plan(src: str) -> bool:
+    """True only for an explicit ``phase_loop_mutation: release_dispatch`` plan.
+
+    F4 is scoped to the *dispatch* case specifically (not every explicit
+    release ``phase_type``): only a dispatch cuts a tag / runs a workflow whose
+    SHA + result are unknowable pre-dispatch, which is what creates the
+    placeholder a post-dispatch reducer must back-fill.
+    """
+    fm = _parse_frontmatter_block(src)
+    return str(fm.get("phase_loop_mutation", "")).strip().lower() == "release_dispatch"
+
+
+def _has_post_dispatch_reducer_lane(
+    lanes: List[Lane],
+    lane_sections_raw: Dict[str, str],
+) -> bool:
+    """True if some lane is shaped as a post-dispatch evidence-reducer lane.
+
+    Detection is signal-based (mirrors how check (J)/(M) detect a docs lane):
+    a lane whose name or body names the post-dispatch back-fill of the
+    now-known SHA / workflow result.
+    """
+    for lane in lanes:
+        if _POST_DISPATCH_LANE_RE.search(lane.name):
+            return True
+    for body in lane_sections_raw.values():
+        if _POST_DISPATCH_LANE_RE.search(body):
+            return True
+    return False
+
+
+def _check_n_post_dispatch_reducer(
+    src: str,
+    lanes: List[Lane],
+    lane_sections_raw: Dict[str, str],
+    lane_sections_parsed: Dict[str, dict],
+) -> Findings:
+    """issue #18 F4: a release-dispatch phase must include a post-dispatch
+    evidence-reducer lane.
+
+    A release-dispatch phase writes evidence docs that reference a commit SHA /
+    workflow result unknowable before the tag is cut; a pre-dispatch reducer
+    necessarily leaves a placeholder. The plan must therefore carry a
+    post-dispatch lane that re-opens those evidence docs and back-fills the
+    now-known values (otherwise F1's placeholder scan blocks the closeout).
+
+    ERROR for explicit ``release_dispatch`` phases missing the lane (mirrors the
+    F2 explicit-release ERROR posture). WARN otherwise — for a non-dispatch
+    release shape we record the advisory but never escalate, preserving
+    autonomy-first. A non-release plan is inert (no finding)."""
+    if _has_post_dispatch_reducer_lane(lanes, lane_sections_raw):
+        return []
+    if _is_release_dispatch_plan(src):
+        return [
+            "(N) release-dispatch phase has no post-dispatch evidence-reducer "
+            "lane; a dispatch references a commit SHA / workflow result that is "
+            "unknowable before the tag is cut, so the plan must include a "
+            "terminal lane that re-opens the pre-dispatch evidence docs and "
+            "back-fills the now-known SHA / workflow result (otherwise the "
+            "docs-freshness placeholder scan blocks the closeout)."
+        ]
+    # A non-dispatch release *shape* gets a WARN; ordinary phases stay inert.
+    if _is_release_plan(src, lane_sections_parsed):
+        return [
+            "(N) WARN: release-shaped plan has no post-dispatch evidence-reducer "
+            "lane; if this phase dispatches an external release (tag/workflow), "
+            "add a lane that back-fills the now-known SHA / workflow result into "
+            "the pre-dispatch evidence docs."
+        ]
+    return []
+
+
 def main(argv: List[str]) -> int:
     if len(argv) != 2:
         _fail("usage: validate_plan_doc.py <plan-path>")
@@ -731,6 +1060,11 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_g_grep_paired_with_tests(src))
     findings.extend(_check_h_eager_reexport(src))
     findings.extend(_check_i_spec_closeout_plan(src))
+    findings.extend(_check_j_docs_lane(src))
+    findings.extend(_check_k_acceptance_testable(src))
+    findings.extend(_check_l_ui_visual_verification(src))
+    findings.extend(_check_m_release_docs_coverage(src, lanes, lane_sections_parsed))
+    findings.extend(_check_n_post_dispatch_reducer(src, lanes, lane_sections_raw, lane_sections_parsed))
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]

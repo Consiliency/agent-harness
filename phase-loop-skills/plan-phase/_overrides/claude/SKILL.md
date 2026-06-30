@@ -68,7 +68,7 @@ is recorded.
 ## Model & Effort Tiering (right-size per lane, don't default to the ceiling)
 
 The runtime resolves one heavy model per executor (`codex` → `gpt-5.5`,
-`claude` → `claude-opus-4-8`), so **reasoning effort is the primary cost dial.**
+`claude` → `<harness>-opus-4-8`), so **reasoning effort is the primary cost dial.**
 The normalized effort ladder, cheapest first, is:
 
 `minimal` < `low` < `medium` < `high` < `xhigh` < `max`
@@ -575,7 +575,7 @@ Before writing the plan doc, verify:
 - [ ] **Every acceptance criterion is a testable assertion**, not prose. "Users can log in" is not testable; "`POST /api/auth` returns 200 with a valid session cookie for a registered user" is. `validate_plan_doc.py` WARNs (check K) on a criterion that names no command/path/assertion.
 - [ ] **Each acceptance criterion names the command that proves it.** The definition of done (canonical term: `acceptance_criteria`) and the `## Verification` commands are one contract, not two parallel lists — cite the proving command (or test file) in or beside each `- [ ]` item so done is mechanically checkable.
 - [ ] **Grep assertions are paired with tests.** Any acceptance criterion using `rg` or `grep` as its sole check must also cite a test file — grep alone is defeated by renaming a symbol to pass the regex.
-- [ ] **UI changes get a visual check.** When any lane owns UI/visual files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`, `*.css`/`*.scss`, `components/**`), `## Verification` must include a browser/screenshot step (Playwright-via-PMCP or claude-in-chrome) and at least one acceptance criterion phrased as a visually observable outcome. `validate_plan_doc.py` WARNs (check L) when UI files change but Verification names no browser step.
+- [ ] **UI changes get a visual check.** When any lane owns UI/visual files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`, `*.css`/`*.scss`, `components/**`), `## Verification` must include a browser/screenshot step (Playwright-via-PMCP or <harness>-in-chrome) and at least one acceptance criterion phrased as a visually observable outcome. `validate_plan_doc.py` WARNs (check L) when UI files change but Verification names no browser step.
 - [ ] **Interface freeze gates are concrete** — name the symbol/endpoint/migration, not a vibe.
 - [ ] **Stale-base resilience** — for each lane that isn't a DAG root, list every upstream symbol, migration number, or file path it reads under `Interfaces consumed`. This gives `<harness>-execute-phase` evidence to verify the base wasn't stale and narrows the blast radius of a mis-based commit. Execution Notes must call out "if lane teammate finds its worktree base is pre-<upstream-SL>, stop and report — do not rebase silently."
 - [ ] **Synthesis lanes are explicit reducers** — any lane that writes a docs summary, truth table, readiness matrix, release summary, or other synthesized artifact lists every producer lane under `Depends on` and every consumed finding under `Interfaces consumed`. Mark these lanes `Parallel-safe: no`.
