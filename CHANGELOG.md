@@ -4,7 +4,7 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
-## Unreleased
+## v0.1.10
 
 - **#28 — execute skills default to a published review surface.** `execute-detailed`
   and `execute-phase` no longer leave a verified implementation as dirty changes in the
@@ -19,6 +19,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   gated by explicit instruction. Source-edited in the `skills-src/` canon (harness-neutral;
   collapses to the build base) + regenerated bundle; parity/drift gates green.
   Decision-panel-reconciled. Cross-repo publication is a separate follow-up (#29).
+- **Skills-cutover cleanup (#26 → #30).** Repointed the dead `vendor/phase-loop-runtime/baml_src/emit_phase_closeout.baml` reference to the package-relative `phase_loop_runtime/baml_src/...` (resolvable wherever the runtime installs); preserved the `Claude Opus 4.8` co-author trailer through the harness brand-substitution (added to `PRESERVE_LITERALS`); added a backstop lint flagging any unguarded `claude-*` literal in `skills-src/`; bumped the installer pin. Item 2 (install-time body skill-name re-expansion) remains a deferred follow-up.
+
+## v0.1.9
+
+- **Canonical in-repo skill sources + hard parity gate (#25 → #27).** `skills-src/<harness>/` is now the authored canonical source; `build_bundle.DEFAULT_SOURCES` points at it, so the bundle builds entirely from the agent-harness tree with **no dotfiles checkout**. Added `scripts/regenerate_skills_bundle.py` (the one-command regenerate) and a hard parity gate (`tests/test_skills_canon_parity.py` + `.github/workflows/skills-parity.yml`) asserting the committed `phase-loop-skills/` equals `build_bundle(skills-src/)`. The fleet `bootstrap.sh --source <dotfiles-root>` path is unchanged.
+
+## v0.1.8
 
 - **Fix (#18 follow-up) — F5: evidence-backed docs-freshness decision.** A
   `docs_freshness: passed` claim is now *provable* from the scan evidence rather than a
