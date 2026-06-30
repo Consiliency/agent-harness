@@ -55,6 +55,7 @@ NOTIFICATION_PAYLOAD_FIELDS = (
 
 NOT_RUN_ALERT_THRESHOLD = 0.2
 NOT_RUN_ALERT_SAMPLE_SIZE = 50
+CPU_ACTIVE_THRESHOLD_PERCENT = 1.0
 
 
 def stop_file(repo: Path) -> Path:
@@ -935,6 +936,8 @@ def run_heartbeat_summary(
     seconds_since_log_update = int(max(0, now - log_mtime)) if log_mtime else None
     quiet_level = _quiet_level(seconds_since_log_update, quiet_warning_seconds, quiet_blocker_seconds)
     process_alive = _pid_is_live(pid) if pid else False
+    cpu_percent = _process_cpu_percent(pid) if process_alive else None
+    liveness_class = _liveness_class(quiet_level, process_alive, returncode, pid, cpu_percent)
     elapsed_seconds = int(time.monotonic() - started_monotonic) if started_monotonic is not None else None
     last_log_excerpt = _last_log_excerpt(log)
     heartbeat_status = _heartbeat_status(quiet_level, process_alive, returncode, pid)
@@ -956,6 +959,9 @@ def run_heartbeat_summary(
         "quiet_warning_seconds": quiet_warning_seconds,
         "quiet_blocker_seconds": quiet_blocker_seconds,
         "quiet_level": quiet_level,
+        "cpu_percent": cpu_percent,
+        "liveness_class": liveness_class,
+        "stalled_suspect": liveness_class == "suspect_stalled",
         "recommended_action": _recommended_action(quiet_level, process_alive),
         "nudge_prompt": _nudge_prompt(log, seconds_since_log_update, elapsed_seconds),
         "last_log_excerpt": last_log_excerpt,
@@ -1073,6 +1079,28 @@ def _heartbeat_status(quiet_level: str, process_alive: bool, returncode: int | N
     return quiet_level
 
 
+def _liveness_class(
+    quiet_level: str,
+    process_alive: bool,
+    returncode: int | None,
+    pid: int | None,
+    cpu_percent: float | None,
+) -> str:
+    if returncode is not None:
+        return "exited"
+    if pid and not process_alive:
+        return "exited"
+    if quiet_level == "active":
+        return "active_output"
+    if cpu_percent is not None and cpu_percent > CPU_ACTIVE_THRESHOLD_PERCENT:
+        return "cpu_active_quiet"
+    if quiet_level == "stale" and cpu_percent is not None:
+        return "suspect_stalled"
+    if quiet_level == "stale":
+        return "quiet_unknown"
+    return "quiet_unknown"
+
+
 def _nudge_prompt(log: Path | None, quiet_seconds: int | None, elapsed_seconds: int | None) -> str:
     prompt = (
         "Status check: the supervisor has not observed child log output"
@@ -1115,6 +1143,9 @@ def _compact_heartbeat(heartbeat: dict[str, Any]) -> dict[str, Any]:
         "elapsed_seconds",
         "seconds_since_log_update",
         "quiet_level",
+        "cpu_percent",
+        "liveness_class",
+        "stalled_suspect",
         "recommended_action",
         "log_path",
         "heartbeat_path",
@@ -1139,6 +1170,30 @@ def _pid_is_live(pid: int | None) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _process_cpu_percent(pid: int | None) -> float | None:
+    if not pid or pid <= 0:
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "%cpu=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    first = (result.stdout or "").strip().splitlines()
+    if not first:
+        return None
+    try:
+        return float(first[0].strip())
+    except ValueError:
+        return None
 
 
 def _slug(value: str) -> str:

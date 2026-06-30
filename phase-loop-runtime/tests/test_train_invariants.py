@@ -855,8 +855,9 @@ class TestInvariant6LiveReverifyRunsVerification:
             "awaiting_phase_closeout — fail-closed contract violated"
         )
 
-    def test_no_verification_commands_returns_true(self, tmp_path: Path):
-        """Plan with no ## Verification section → True (plan author chose none)."""
+    def test_no_verification_commands_returns_true_by_default(self, tmp_path: Path, monkeypatch):
+        """Plan with no verification commands → True when hard enforcement is off."""
+        monkeypatch.delenv("PHASE_LOOP_VERIFY_ENFORCE", raising=False)
         repo, roadmap = self._make_reverify_repo(
             tmp_path,
             verify_lines="",  # empty → verification_commands_from_plan returns []
@@ -865,6 +866,19 @@ class TestInvariant6LiveReverifyRunsVerification:
         assert result is True, (
             "INV-6 VIOLATED: _live_reverify returned False when the plan declares "
             "no verification commands — empty is not a failure"
+        )
+
+    def test_no_verification_commands_returns_false_in_hard_mode(self, tmp_path: Path, monkeypatch):
+        """Plan with no verification commands → False when hard enforcement is on."""
+        monkeypatch.setenv("PHASE_LOOP_VERIFY_ENFORCE", "hard")
+        repo, roadmap = self._make_reverify_repo(
+            tmp_path,
+            verify_lines="",  # empty → verification_commands_from_plan returns []
+        )
+        result = _live_reverify(repo, roadmap, "governed")
+        assert result is False, (
+            "INV-6 VIOLATED: _live_reverify returned True without verification "
+            "evidence while PHASE_LOOP_VERIFY_ENFORCE=hard"
         )
 
     def test_exception_returns_false(self, tmp_path: Path):

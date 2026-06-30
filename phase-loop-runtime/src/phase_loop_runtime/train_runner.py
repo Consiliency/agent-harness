@@ -274,6 +274,13 @@ def _live_merge_pr(workspace: Path, branch: str) -> str:
     return sha
 
 
+def _train_reverify_enforcement_mode() -> str:
+    import os
+
+    value = os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "warn").strip().lower()
+    return "hard" if value == "hard" else "warn"
+
+
 def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
     """Re-verify a downstream node against the injected upstream merged pin.
 
@@ -332,10 +339,11 @@ def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
             # Malformed suite command — fail closed.
             return False
 
-        # 4. If the plan declares no verification at all, treat as trivial pass
-        #    (the plan author deliberately chose not to add verification).
+        # 4. If the plan declares no verification at all, preserve the legacy
+        #    warn/default behavior but fail closed when verification evidence is
+        #    explicitly enforced.
         if not commands and suite_command is None:
-            return True
+            return _train_reverify_enforcement_mode() != "hard"
 
         # 5. Run verification against the workspace.  set_upstream_ref has
         #    already written the merged-pin file, so commands that read the

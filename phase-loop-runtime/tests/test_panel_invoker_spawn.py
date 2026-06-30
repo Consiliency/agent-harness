@@ -4,17 +4,126 @@ No live frontier CLI is ever called: the single subprocess boundary
 `panel_invoker._exec_leg` is stubbed. We assert the status mapping, the
 claude-leg deferral, bundle staging, subscription-only env, and reviewer≠author.
 """
+import json
 import os
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.governed_review import select_reviewer_pool
 
 
-class ClaudeLegDeferredTest(unittest.TestCase):
-    def test_claude_leg_unavailable(self):
-        self.assertEqual(pi._default_spawn("claude", "bundle"), ("unavailable", ""))
+class ClaudeAgentViewLegTest(unittest.TestCase):
+    def test_claude_leg_uses_agent_view_sonnet5_and_inline_prompt(self):
+        captured = {"commands": [], "envs": []}
+
+        def fake_run(cmd, **kwargs):
+            captured["commands"].append(cmd)
+            captured["envs"].append(kwargs.get("env"))
+            if cmd == ["claude", "--version"]:
+                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
+            if cmd[:2] == ["claude", "--bg"]:
+                self.assertIn("--model", cmd)
+                self.assertEqual(cmd[cmd.index("--model") + 1], "claude-sonnet-5")
+                self.assertIn("--permission-mode", cmd)
+                self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "plan")
+                self.assertNotIn("-p", cmd)
+                self.assertIn("SENTINEL-CLAUDE-ARTIFACT", cmd[-1])
+                self.assertIn("repo-grounded, whole-feature integration", cmd[-1])
+                self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+                return _completed(cmd, stdout=json.dumps({"id": "agent-1"}))
+            if cmd == ["claude", "logs", "agent-1"]:
+                self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+                return _completed(cmd, stdout="Repo-grounded review.\nAGREE")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}):
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "SENTINEL-CLAUDE-ARTIFACT")
+
+        self.assertEqual(status, "OK")
+        self.assertIn("AGREE", text)
+        self.assertTrue(any(cmd[:2] == ["claude", "--bg"] for cmd in captured["commands"]))
+        for env in captured["envs"]:
+            if env is not None:
+                self.assertNotIn("ANTHROPIC_API_KEY", env)
+
+    def test_claude_below_minimum_version_is_unavailable_without_launch(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return _completed(cmd, stdout="2.1.196 (Claude Code)\n")
+
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "bundle")
+
+        self.assertEqual(status, "UNAVAILABLE")
+        self.assertIn("below_minimum", text)
+        self.assertEqual(calls, [["claude", "--version"]])
+
+    def test_claude_failed_agent_state_degrades(self):
+        def fake_run(cmd, **kwargs):
+            if cmd == ["claude", "--version"]:
+                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
+            if cmd[:2] == ["claude", "--bg"]:
+                return _completed(cmd, stdout="agent: agent-1")
+            if cmd == ["claude", "logs", "agent-1"]:
+                return _completed(cmd, stdout="No terminal verdict yet.")
+            if cmd == ["claude", "agents", "--json", "--all"]:
+                return _completed(cmd, stdout=json.dumps([{"id": "agent-1", "state": "failed"}]))
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "bundle")
+
+        self.assertEqual(status, "DEGRADED")
+        self.assertIn("failed", text)
+
+    def test_claude_launch_timeout_omits_artifact_payload(self):
+        def fake_run(cmd, **kwargs):
+            if cmd == ["claude", "--version"]:
+                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
+            if cmd[:2] == ["claude", "--bg"]:
+                raise subprocess.TimeoutExpired(cmd, timeout=777)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 777, "SECRET-SENTINEL")
+
+        self.assertEqual(status, "TIMEOUT")
+        self.assertIn("777s", text)
+        self.assertNotIn("SECRET-SENTINEL", text)
+
+    def test_default_spawn_claude_is_not_hard_coded_unavailable(self):
+        with patch.object(pi, "_exec_claude_agent_view_leg", return_value=("OK", "Looks good.\nAGREE")) as exec_claude:
+            status, text = pi._default_spawn("claude", "bundle")
+
+        self.assertEqual(status, "OK")
+        self.assertIn("AGREE", text)
+        exec_claude.assert_called_once()
 
 
 class StatusMappingTest(unittest.TestCase):
@@ -24,20 +133,20 @@ class StatusMappingTest(unittest.TestCase):
 
     def test_ok(self):
         status, text = self._spawn_with(0, "A real review. " * 30 + "\nAGREE", "")
-        self.assertEqual(status, "ok")
+        self.assertEqual(status, "OK")
         self.assertIn("AGREE", text)
 
     def test_empty(self):
-        self.assertEqual(self._spawn_with(0, "", "")[0], "empty")      # truly empty body
+        self.assertEqual(self._spawn_with(0, "", "")[0], "EMPTY")      # truly empty body
 
     def test_nonconforming_is_degraded(self):
         # Substantial text WITHOUT a terminal verdict is non-conforming → fail-closed
         # (degraded), never a silent pass (advisor-panel reconciliation). The old
         # <=200-byte "empty" heuristic let such a non-review slip through.
-        self.assertEqual(self._spawn_with(0, "tiny", "")[0], "degraded")
+        self.assertEqual(self._spawn_with(0, "tiny", "")[0], "DEGRADED")
         self.assertEqual(
             self._spawn_with(0, "I cannot AGREE or DISAGREE without more context", "")[0],
-            "degraded",
+            "DEGRADED",
         )
 
     def test_terse_verdict_is_ok_not_empty(self):
@@ -45,36 +154,128 @@ class StatusMappingTest(unittest.TestCase):
         # classify `ok`, not `empty` — else a genuine DISAGREE silently downgrades to
         # a non-gating warn (code-review finding #2, verified).
         status, text = self._spawn_with(0, "DISAGREE — the endpoint skips auth", "")
-        self.assertEqual(status, "ok")
+        self.assertEqual(status, "OK")
         self.assertIn("DISAGREE", text)
 
     def test_degraded_on_auth_signature(self):
-        self.assertEqual(self._spawn_with(0, "x" * 300, "error: not logged in; please run codex login")[0], "degraded")
+        self.assertEqual(self._spawn_with(0, "x" * 300, "error: not logged in; please run codex login")[0], "DEGRADED")
 
     def test_timeout_rc124(self):
-        self.assertEqual(self._spawn_with(124, "", "")[0], "timeout")
+        self.assertEqual(self._spawn_with(124, "", "")[0], "TIMEOUT")
+
+    def test_nonzero_non_auth_error(self):
+        self.assertEqual(self._spawn_with(2, "A real review. " * 30 + "\nAGREE", "tool failed")[0], "ERROR")
 
     def test_exec_exception_degrades(self):
         with patch.object(pi, "_exec_leg", side_effect=RuntimeError("boom")):
-            self.assertEqual(pi._default_spawn("gemini", "bundle")[0], "degraded")
+            self.assertEqual(pi._default_spawn("gemini", "bundle")[0], "DEGRADED")
 
 
 class BundleStagingTest(unittest.TestCase):
     def test_bundle_and_instructions_staged_readonly_dir(self):
         captured = {}
 
-        def fake_exec(leg, review_dir, out_dir):
+        def fake_exec(leg, review_dir, out_dir, timeout_s, artifact):
             captured["bundle"] = (review_dir / "review-bundle.md").read_text(encoding="utf-8")
             captured["instructions_exists"] = (review_dir / "review-instructions.md").exists()
             captured["out_separate"] = out_dir != review_dir
+            captured["timeout_s"] = timeout_s
+            captured["artifact"] = artifact
             return 0, "x" * 300 + "\nAGREE", ""
 
         with patch.object(pi, "_exec_leg", side_effect=fake_exec):
             status, _ = pi._default_spawn("gemini", "BUNDLE-CONTENT")
-        self.assertEqual(status, "ok")
+        self.assertEqual(status, "OK")
         self.assertEqual(captured["bundle"], "BUNDLE-CONTENT")
         self.assertTrue(captured["instructions_exists"])
         self.assertTrue(captured["out_separate"])
+        self.assertEqual(captured["timeout_s"], pi.panel_leg_timeout_seconds("gemini", "BUNDLE-CONTENT"))
+        self.assertEqual(captured["artifact"], "BUNDLE-CONTENT")
+
+    def test_timeout_policy_scales_and_caps(self):
+        self.assertEqual(pi.panel_leg_timeout_seconds("codex", "small"), 600)
+        self.assertEqual(pi.panel_leg_timeout_seconds("codex", "x" * 1_000_000), 1800)
+
+    def test_codex_command_prompt_contains_inline_artifact_and_closes_stdin(self):
+        captured = {}
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            out_file = Path(cmd[cmd.index("--output-last-message") + 1])
+            out_file.write_text("Looks good.\nAGREE", encoding="utf-8")
+            return Completed()
+
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+                rc, review_text, _ = pi._exec_leg("codex", review_dir, out_dir, 600, "SENTINEL-CODEX-ARTIFACT")
+
+        self.assertEqual(rc, 0)
+        self.assertIn("AGREE", review_text)
+        self.assertIn("SENTINEL-CODEX-ARTIFACT", captured["cmd"][-1])
+        self.assertEqual(captured["kwargs"]["stdin"], subprocess.DEVNULL)
+
+    def test_gemini_command_prompt_contains_inline_artifact_without_add_dir_and_closes_stdin(self):
+        captured = {}
+
+        class Completed:
+            returncode = 0
+            stdout = "Looks good.\nAGREE"
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return Completed()
+
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
+                rc, review_text, _ = pi._exec_leg("gemini", review_dir, out_dir, 600, "SENTINEL-GEMINI-ARTIFACT")
+
+        self.assertEqual(rc, 0)
+        self.assertIn("AGREE", review_text)
+        self.assertNotIn("--add-dir", captured["cmd"])
+        self.assertIn("SENTINEL-GEMINI-ARTIFACT", captured["cmd"][-1])
+        self.assertEqual(captured["kwargs"]["stdin"], subprocess.DEVNULL)
+
+    def test_timeout_log_mentions_timeout_without_artifact_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with patch(
+                "phase_loop_runtime.panel_invoker.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(["codex"], timeout=777),
+            ):
+                rc, _, log_text = pi._exec_leg("codex", review_dir, out_dir, 777, "SECRET-SENTINEL")
+
+        self.assertEqual(rc, 124)
+        self.assertIn("777s", log_text)
+        self.assertNotIn("SECRET-SENTINEL", log_text)
+
+    def test_large_artifact_prompt_is_thresholded_with_digest_metadata(self):
+        artifact = "HEAD-SENTINEL\n" + ("x" * 200_000) + "\nTAIL-SENTINEL"
+        prompt = pi._render_leg_prompt(artifact)
+
+        self.assertIn("inline_mode: thresholded_head_tail", prompt)
+        self.assertIn("sha256:", prompt)
+        self.assertIn("HEAD-SENTINEL", prompt)
+        self.assertIn("TAIL-SENTINEL", prompt)
+        self.assertLess(len(prompt), len(artifact))
 
 
 class SubscriptionAuthTest(unittest.TestCase):
@@ -110,6 +311,10 @@ class ReviewerNeqAuthorTest(unittest.TestCase):
         pool, _ = select_reviewer_pool("codex", ("codex", "gemini", "claude"))
         self.assertNotIn("codex", pool)
         self.assertIn("gemini", pool)  # a usable disjoint vendor even with claude deferred
+
+
+def _completed(command, *, stdout="", stderr="", returncode=0):
+    return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr=stderr)
 
 
 if __name__ == "__main__":
