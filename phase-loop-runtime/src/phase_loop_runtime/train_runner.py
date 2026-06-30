@@ -1031,20 +1031,46 @@ def run_train(
             # draft SHA from P3).  This is the call the test asserts on:
             # set_upstream_ref must be called with the merged SHA and must
             # appear in the call log BEFORE the re-verify call.
-            for _edge_m in _upstream_edges_m:
-                _upstream_merged_sha = merged_shas.get(_edge_m.upstream.node_id)
-                if _upstream_merged_sha is None:
-                    # Defensive: topo-order ensures upstream is processed first.
-                    raise RuntimeError(
-                        f"upstream '{_edge_m.upstream.node_id}' is not yet merged "
-                        f"— cannot re-verify downstream '{_nid_m}'; "
-                        f"check topo order and that the upstream merge succeeded"
-                    )
-                set_upstream_ref_fn(_ws_m, _edge_m.channel, _upstream_merged_sha)
+            #
+            # Wrap inject + reverify: either can raise (e.g. fs error from
+            # set_upstream_ref_fn, or unexpected exception from reverify_fn).
+            # An unguarded exception here would escape run_train as a traceback
+            # instead of returning merge_halted, leaving already-merged upstreams
+            # with no record.  Mirror the same try/except pattern used for the
+            # merge call below (forward-only: already-merged upstreams stay merged).
+            try:
+                for _edge_m in _upstream_edges_m:
+                    _upstream_merged_sha = merged_shas.get(_edge_m.upstream.node_id)
+                    if _upstream_merged_sha is None:
+                        # Defensive: topo-order ensures upstream is processed first.
+                        raise RuntimeError(
+                            f"upstream '{_edge_m.upstream.node_id}' is not yet merged "
+                            f"— cannot re-verify downstream '{_nid_m}'; "
+                            f"check topo order and that the upstream merge succeeded"
+                        )
+                    set_upstream_ref_fn(_ws_m, _edge_m.channel, _upstream_merged_sha)
 
-            # Re-verify the downstream against the merged upstream contracts.
-            # Failure means the downstream was only green against the draft ref.
-            _reverify_ok = reverify_fn(_ws_m, _ws_m / _node_m.roadmap, run_mode)
+                # Re-verify the downstream against the merged upstream contracts.
+                # Failure means the downstream was only green against the draft ref.
+                _reverify_ok = reverify_fn(_ws_m, _ws_m / _node_m.roadmap, run_mode)
+            except Exception as _inject_exc_m:
+                # Inject or reverify raised — record blocked + return merge_halted
+                # so the status-dict contract is preserved and no traceback escapes.
+                append_record(
+                    ledger_path,
+                    LedgerRecord(
+                        node_id=_nid_m,
+                        status="blocked",
+                        branch=completed_nodes.get(_nid_m, {}).get("branch"),
+                    ),
+                )
+                return {
+                    "status": "merge_halted",
+                    "node_id": _nid_m,
+                    "reason": "reverify_failed",
+                    "detail": str(_inject_exc_m),
+                }
+
             if not _reverify_ok:
                 append_record(
                     ledger_path,

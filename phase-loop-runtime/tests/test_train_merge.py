@@ -33,6 +33,10 @@ Coverage:
          RECOVERED (not rebuilt); a closed-unmerged node still drops.
   P4-CR-3. Uncaught merge failure → merge_halted + blocked ledger record;
          already-merged upstreams stay merged (forward-only).
+  P4-CR-4. Uncaught inject/reverify exception → merge_halted + blocked ledger
+         record; already-merged upstreams stay merged (forward-only).  Guards
+         the re-resolve + re-verify step (OUTSIDE the prior try/except scope)
+         from escaping run_train as a bare traceback.
 """
 from __future__ import annotations
 
@@ -1371,3 +1375,131 @@ class TestMergeFailureHalted:
         assert state["repo-b/specs/plan-b.md"].status == "blocked", (
             "repo-b must be blocked in ledger when its merge raises"
         )
+
+
+# ---------------------------------------------------------------------------
+# P4-CR-4: Uncaught inject/reverify exception → merge_halted, not bare traceback
+
+class TestInjectReverifyExceptionHalted:
+    """set_upstream_ref_fn or _reverify_fn raises mid-loop → merge_halted, not traceback.
+
+    P4-CR-4 (plans/pr35-cr-reconciliation.md addendum): the inject + reverify
+    step was outside the try/except that guards the merge call.  An exception
+    from set_upstream_ref_fn or _reverify_fn would escape run_train as a bare
+    traceback — violating the status-dict contract and leaving already-merged
+    upstreams without a resume record.
+
+    Forward-only: a repo-a already merged before the exception must stay merged
+    in the ledger; repo-b (the failing downstream) must be recorded as blocked.
+    """
+
+    def test_set_upstream_ref_raises_returns_merge_halted(self, tmp_path: Path):
+        """set_upstream_ref_fn raises on downstream → merge_halted, not traceback."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        merge_calls: List[str] = []
+
+        def _merge_pr(workspace: Path, branch: str) -> str:
+            merge_calls.append(workspace.name)
+            return f"sha-merged-{workspace.name}"
+
+        def _inject_raises(workspace, channel, ref, **_kw):
+            if workspace.name == "repo-b":
+                raise RuntimeError("fs error writing pin file: permission denied")
+            return []
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=_inject_raises,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_merge_pr,
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "merge_halted", (
+            f"set_upstream_ref_fn exception must produce merge_halted status-dict; "
+            f"got {result['status']!r} — pre-fix: bare traceback escaped run_train"
+        )
+        assert result.get("node_id") == "repo-b/specs/plan-b.md", (
+            f"merge_halted node must be repo-b; got {result.get('node_id')!r}"
+        )
+        assert result.get("reason") == "reverify_failed", (
+            f"reason must be 'reverify_failed'; got {result.get('reason')!r}"
+        )
+        assert "permission denied" in result.get("detail", ""), (
+            f"detail must include the exception message; got {result.get('detail')!r}"
+        )
+
+        state = read_ledger(ledger)
+        # repo-a merged before the inject raised — must stay merged (forward-only).
+        assert state["repo-a/specs/plan-a.md"].status == "merged", (
+            "repo-a must remain merged after downstream inject raised (forward-only)"
+        )
+        # repo-b blocked in ledger (not missing/unrecorded).
+        assert state["repo-b/specs/plan-b.md"].status == "blocked", (
+            "repo-b must be recorded as blocked when inject raises; "
+            "pre-fix: ledger had no record at all (traceback escaped)"
+        )
+
+    def test_reverify_fn_raises_returns_merge_halted(self, tmp_path: Path):
+        """_reverify_fn raises on downstream → merge_halted + blocked, not traceback.
+
+        Upstream (repo-a) is already merged when reverify_fn raises for repo-b.
+        """
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        merge_calls: List[str] = []
+
+        def _merge_pr(workspace: Path, branch: str) -> str:
+            merge_calls.append(workspace.name)
+            return f"sha-merged-{workspace.name}"
+
+        def _reverify_raises(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
+            raise RuntimeError("verification subprocess crashed: SIGSEGV")
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_merge_pr,
+            _reverify_fn=_reverify_raises,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "merge_halted", (
+            f"_reverify_fn exception must produce merge_halted status-dict; "
+            f"got {result['status']!r} — pre-fix: bare traceback escaped run_train"
+        )
+        assert result.get("node_id") == "repo-b/specs/plan-b.md"
+        assert "SIGSEGV" in result.get("detail", ""), (
+            f"detail must carry the exception message; got {result.get('detail')!r}"
+        )
+
+        state = read_ledger(ledger)
+        assert state["repo-a/specs/plan-a.md"].status == "merged", (
+            "repo-a must remain merged after downstream reverify raised (forward-only)"
+        )
+        assert state["repo-b/specs/plan-b.md"].status == "blocked"
