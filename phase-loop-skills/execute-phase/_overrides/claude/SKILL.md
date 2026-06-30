@@ -109,9 +109,9 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 
 | Tier      | Model              | Use for                                                       |
 |-----------|--------------------|---------------------------------------------------------------|
-| frontier  | <harness>-opus-4-8    | retry escalation ceiling, highest-stakes lanes                |
-| strong    | <harness>-sonnet-4-6  | contract-authoring (IF-freeze), schema/migration, algorithmic |
-| fast      | <harness>-haiku-4-5   | mechanical wiring, small components against frozen types      |
+| frontier  | claude-opus-4-8    | retry escalation ceiling, highest-stakes lanes                |
+| strong    | claude-sonnet-4-6  | contract-authoring (IF-freeze), schema/migration, algorithmic |
+| fast      | claude-haiku-4-5   | mechanical wiring, small components against frozen types      |
 
 These map to the runtime `model_class` axis: planner = frontier, implementer =
 strong, worker = fast. The shipped `model_policy` dispatches **implementation at
@@ -684,7 +684,7 @@ When a plan's `## Verification` section includes Playwright/e2e commands or lane
 
 - **Playwright via PMCP** — `pmcp_invoke(tool_id="playwright::browser_navigate", ...)` and related `playwright::*` tools. Default.
 - **Chrome DevTools Protocol (CDP)** — low-level debugging (performance traces, CPU profiling).
-- **`<harness>-in-chrome`** — extension-context automation only.
+- **`claude-in-chrome`** — extension-context automation only.
 
 The PMCP Playwright server provisions on demand. If the repo lacks a Playwright config, add one in the lane rather than deferring the test.
 

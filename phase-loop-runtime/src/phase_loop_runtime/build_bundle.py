@@ -17,13 +17,42 @@ ACTIVE_HARNESSES: tuple[str, ...] = ("claude", "codex", "gemini", "opencode")
 # to every harness root. Without this, the SKILL Step 8 helper
 # `scripts/validate_roadmap.py` never leaves the canonical source tree.
 AUX_SUBDIRS: tuple[str, ...] = ("scripts", "references", "assets")
+# IF-0-CANON-1: the canonical phase-loop skill sources now live IN this repo
+# under `skills-src/<harness>/` (one tree per active harness, each holding
+# `<harness>-<skill>/` dirs). `build_bundle` consumes these to produce the
+# committed `phase-loop-skills/` bundle with NO dotfiles checkout required.
+# The fleet's `bootstrap.sh` may still override these with an explicit
+# `--source <dotfiles-root>` during the cutover; that path keeps working.
 DEFAULT_SOURCES: dict[str, str] = {
-    "claude": "claude-config/claude-skills",
-    "codex": "codex-config/skills",
-    "gemini": "gemini-config/skills",
-    "opencode": "opencode-config/skills",
+    "claude": "skills-src/claude",
+    "codex": "skills-src/codex",
+    "gemini": "skills-src/gemini",
+    "opencode": "skills-src/opencode",
 }
 OVERRIDE_README = "Harness-specific overlay files for this workflow skill.\n"
+
+# Concrete, harness-SPECIFIC literals that must survive neutralization verbatim.
+# `_neutralize_skill` collapses every `<harness>-`/`<harness> `/`<harness>_`/
+# `<harness>.`/`Harness` token so the shared base + per-harness overrides read
+# the same across harnesses. That is correct for harness-VARIANT tokens (skill
+# names like `claude-execute-phase`, config dirs like `claude-config`, install
+# paths) — they genuinely change per harness. It is WRONG for concrete Claude
+# identifiers that name one real thing and have no per-harness variant: an Opus
+# model id is `claude-opus-4-8` for every harness, and `<harness>-in-chrome`
+# denotes nothing (the tool is `claude-in-chrome`; no `codex-in-chrome` exists).
+# Membership test: "if this skill installed for codex, would the token need to
+# become `codex-X`?" Yes -> collapse (NOT here). No, it's Claude-specific by
+# nature -> preserve (here). These are masked to a sentinel before the collapse
+# regexes run and restored after, so the literal ships intact into the installed
+# bundle. (Applied uniformly to base + override; model ids never appear in the
+# codex base, so masking is a no-op there and the dedup comparison is unaffected.)
+PRESERVE_LITERALS: tuple[str, ...] = (
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-in-chrome",
+)
+_PRESERVE_SENTINEL = "\x00PRESERVE{index}\x00"
 
 
 @dataclass(frozen=True)
@@ -210,6 +239,11 @@ def _infer_harness(path: Path) -> str:
 
 def _neutralize_skill(text: str, *, harness: str, skill: str) -> str:
     output = text
+    # Mask concrete harness-specific literals so the collapse regexes below cannot
+    # corrupt them (e.g. `claude-opus-4-8` -> `<harness>-opus-4-8`). Restored verbatim
+    # at the end. See PRESERVE_LITERALS.
+    for index, literal in enumerate(PRESERVE_LITERALS):
+        output = output.replace(literal, _PRESERVE_SENTINEL.format(index=index))
     output = re.sub(
         rf"(?m)^name:\s+{re.escape(harness)}-{re.escape(skill)}\s*$",
         f"name: {skill}",
@@ -236,6 +270,9 @@ def _neutralize_skill(text: str, *, harness: str, skill: str) -> str:
         "- Optionally read `.dev-skills/handoffs/<harness>-plan-detailed/latest.md`\n"
         "  when no explicit plan path is supplied, and only trust it if `from:` is",
     )
+    # Restore the masked harness-specific literals verbatim.
+    for index, literal in enumerate(PRESERVE_LITERALS):
+        output = output.replace(_PRESERVE_SENTINEL.format(index=index), literal)
     return output
 
 

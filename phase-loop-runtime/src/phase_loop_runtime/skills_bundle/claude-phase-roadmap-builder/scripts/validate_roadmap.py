@@ -21,7 +21,7 @@ def _main() -> int:
     except ModuleNotFoundError:
         sys.stderr.write(
             "validate_roadmap: phase_loop_runtime is not importable. Install the "
-            "vendored runtime (`pip install <dotfiles>/vendor/phase-loop-runtime`) "
+            "runtime from the public agent-harness (`scripts/install-agent-harness.sh`) "
             "or run `phase-loop validate-roadmap <path>`.\n"
         )
         return 2
