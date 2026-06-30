@@ -814,12 +814,25 @@ def run_train(
             _node_snapshot = result_tuple[0] if isinstance(result_tuple, tuple) else None
             _node_phases = getattr(_node_snapshot, "phases", None)
             if _node_phases is not None:
-                _unstarted = [ph for ph, st in _node_phases.items() if st == "planned"]
-                if _unstarted:
+                # A node may publish a draft PR only when EVERY phase reached a
+                # clean green terminal — "complete" or "awaiting_phase_closeout"
+                # (the post-run_loop success state under manual closeout).  ANY
+                # other state (planned/blocked/failed_verification/executing/
+                # human_required/unknown) means the node is incomplete or broken.
+                # Blocking only "planned" (the prior narrow guard) let a
+                # *failed*-phase node publish a draft that could later trivial-pass
+                # P4 re-verify on a no-verification plan — a combined false-green.
+                # Block loudly on any non-green phase instead.
+                _GREEN_PHASE_STATES = {"complete", "awaiting_phase_closeout"}
+                _not_green = sorted(
+                    ph for ph, st in _node_phases.items() if st not in _GREEN_PHASE_STATES
+                )
+                if _not_green:
                     raise RuntimeError(
-                        f"node '{nid}' roadmap has phases not yet executed after run_loop "
-                        f"({', '.join(sorted(_unstarted))}); refusing to publish a partial "
-                        f"draft PR — run to completion before publishing"
+                        f"node '{nid}' has phases not in a green state after run_loop "
+                        f"({', '.join(_not_green)}); refusing to publish a partial or "
+                        f"failed draft PR — every phase must reach complete/"
+                        f"awaiting_phase_closeout before publishing"
                     )
 
             # (iii) Determine owned paths (Finding #1).

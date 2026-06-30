@@ -2526,3 +2526,76 @@ class TestMultiPhaseNodeGuard:
         assert publish_calls == ["repo-a"], (
             f"Expected publish called for repo-a; got {publish_calls!r}"
         )
+
+    def test_non_green_phase_in_snapshot_blocks_node(self, tmp_path: Path):
+        """run_loop snapshot with a 'blocked' (non-green) phase → node blocked,
+        publish NOT called.
+
+        Closes the gemini #3/#4 combined false-green: the prior guard blocked
+        only 'planned' phases, so a *failed*-phase node could publish a draft
+        that later trivial-passed P4 re-verify on a no-`## Verification` plan.
+        The widened guard blocks any phase not in {complete, awaiting_phase_closeout}.
+        """
+        from phase_loop_runtime.train_roadmap import parse_train_roadmap
+        from phase_loop_runtime.train_ledger import read_ledger
+        from phase_loop_runtime.models import StateSnapshot, utc_now
+
+        roadmap_md = """\
+# Release Train: non-green-guard
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+"""
+        roadmap = parse_train_roadmap(roadmap_md)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        publish_calls: list = []
+
+        def _publish(workspace, owned_paths, *, draft, **kw):
+            publish_calls.append(workspace.name)
+            return {"status": "published", "branch": "feat/x", "head_sha": "sha-x", "pr_url": "https://gh/1"}
+
+        # Single-phase node whose only phase ended 'blocked' (a real run_loop
+        # failure state) — NOT 'planned'.  The prior guard would have let this
+        # publish; the widened guard must block it.
+        blocked_snapshot = StateSnapshot(
+            timestamp=utc_now(),
+            repo="fake-repo",
+            roadmap="specs/plan.md",
+            phases={"P1": "blocked"},
+            current_phase="P1",
+        )
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (blocked_snapshot, []),
+            _publish=_publish,
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=lambda *a, **kw: [],
+            _pr_is_open=lambda *a, **kw: False,
+            _live_pr_head_sha_fn=lambda *a, **kw: None,
+        )
+
+        assert result["status"] == "blocked", (
+            f"Combined false-green guard violated: a 'blocked'-phase node must not "
+            f"publish; got {result['status']!r}"
+        )
+        assert publish_calls == [], (
+            f"Combined false-green guard violated: publish called for a non-green node "
+            f"({publish_calls!r})"
+        )
+        records = read_ledger(ledger)
+        assert any(r.status == "blocked" for r in records.values()), (
+            "blocked record must appear in ledger for a non-green node"
+        )
+        assert "green" in result["detail"]["reason"].lower(), (
+            f"blocked reason should mention the non-green phase state; "
+            f"got {result['detail'].get('reason')!r}"
+        )
