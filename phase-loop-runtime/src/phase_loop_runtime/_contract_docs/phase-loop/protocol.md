@@ -2665,6 +2665,20 @@ live-default `_live_reverify` returns False on `closeout_terminal_status` in
 `closeout_terminal_status=None` is NOT a failure (verify mode may leave this
 field absent on a clean run).
 
+**INV-6a — `run_loop` failure-signal contract (load-bearing for the false-green
+killer).** Because INV-6 treats `closeout_terminal_status=None` +
+`human_required=False` + `blocker_class=None` as a *pass*, the false-green killer
+is only sound if `run_loop` **always** surfaces a real verification failure
+through at least one of those three signals — i.e. it must NEVER return a
+"silent-failure" snapshot (all three clear) for a genuine failure. The runtime
+upholds this today: failure paths set `blocker_class` (defaulting to
+`contract_bug`), a non-`complete` `closeout_terminal_status`
+(`failed_verification`/`blocked`/`stale_input`), or `human_required=True`. Any
+future change to `run_loop` that can return a clean-looking snapshot on a real
+failure would silently defeat the downstream re-verify gate and MUST instead
+raise or set a failure signal. (INV-6's consumer-side tests pin `_live_reverify`;
+this producer-side contract is the assumption they rest on.)
+
 **Forward-only guard.** A downstream re-verify failure halts the merge train
 at that node (`status="merge_halted"`); already-merged upstream nodes stay
 merged and are never reverted. The remaining nodes are blocked. Resuming with
