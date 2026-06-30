@@ -50,7 +50,7 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Literal, Optional
+from typing import Callable, Dict, List, Literal, Optional
 
 # ---------------------------------------------------------------------------
 # Channel descriptor — IF-0-P2-2
@@ -144,9 +144,27 @@ def _validate_params(kind: ChannelKind, params: Dict[str, str], raw: str) -> Non
 
 # The git/fs boundary is injectable for tests (stub it; never call real git in
 # unit tests).  The protocol is a callable:
-#   executor(workspace: Path, kind: ChannelKind, params: dict, ref: str) -> None
+#   executor(workspace: Path, kind: ChannelKind, params: dict, ref: str) -> List[str]
+# The return value is the list of workspace-relative paths modified (for the
+# coordinator to union into the downstream's published owned_paths).
 
-ChannelExecutor = Callable[[Path, str, Dict[str, str], str], None]
+ChannelExecutor = Callable[[Path, str, Dict[str, str], str], List[str]]
+
+
+def _assert_within_workspace(resolved: Path, workspace_resolved: Path, param: str) -> None:
+    """Fail loud if ``resolved`` escapes ``workspace_resolved``.
+
+    Raises :exc:`ValueError` if the resolved path is not strictly within the
+    workspace root (``../`` traversal or absolute path that escapes the tree).
+    """
+    try:
+        resolved.relative_to(workspace_resolved)
+    except ValueError:
+        raise ValueError(
+            f"channel param {param!r} resolves to {str(resolved)!r}, which is "
+            f"outside the workspace {str(workspace_resolved)!r}; "
+            f"refusing to read/write outside the workspace (path containment violation)"
+        )
 
 
 class UnsupportedChannelKind(ValueError):
@@ -164,7 +182,7 @@ def _default_executor(
     kind: str,
     params: Dict[str, str],
     ref: str,
-) -> None:
+) -> List[str]:
     """Default live executor — runs real git/fs operations.
 
     Channel support:
@@ -179,11 +197,26 @@ def _default_executor(
           :exc:`UnsupportedChannelKind`.  Workspace edges are rejected at train
           validation (T-E) before any executor is reached.
 
+    Returns the workspace-relative paths modified (for the coordinator to union
+    into the downstream's published owned_paths so pin/submodule changes always
+    ship in the PR even if run_loop's snapshot excludes them).
+
+    Hardening:
+      - Path containment: rejects ``file``/``path`` params that escape the
+        workspace root via ``../`` traversal or absolute paths.
+      - JSON key safety: rejects empty or malformed ``key`` params; raises when
+        a non-dict intermediate value would be silently overwritten.
+
     Stubbing the executor (``_executor=stub``) is the correct approach for
     tests that exercise workspace channel kinds (which remain unimplemented).
     """
+    workspace_resolved = workspace.resolve()
+
     if kind == "submodule":
         submodule_path = params["path"]
+        # Path containment: reject ../- or absolute-escaping params.
+        resolved = (workspace / submodule_path).resolve()
+        _assert_within_workspace(resolved, workspace_resolved, submodule_path)
         # Dereference the submodule to the given ref so the downstream build
         # actually runs against the injected upstream content.
         subprocess.run(
@@ -196,24 +229,43 @@ def _default_executor(
             cwd=workspace / submodule_path,
             check=True,
         )
+        return [submodule_path]
     elif kind == "pin":
-        file_path = workspace / params["file"]
+        file_param = params["file"]
+        file_path = workspace / file_param
+        # Path containment: reject ../- or absolute-escaping params.
+        resolved = file_path.resolve()
+        _assert_within_workspace(resolved, workspace_resolved, file_param)
         key = params.get("key")
-        if key:
+        if key is not None:
+            # Validate the key: reject empty or malformed dotted paths.
+            if not key or not all(part for part in key.split(".")):
+                raise ValueError(
+                    f"pin 'key' param is empty or malformed: {key!r}; "
+                    f"expected a non-empty dotted path like 'deps.schema'"
+                )
             # JSON manifest: load existing file (or start with empty dict), set
             # the nested dotted key to ref, write back with consistent indent.
             data: Dict = json.loads(file_path.read_text(encoding="utf-8")) if file_path.exists() else {}
             keys = key.split(".")
             node: Dict = data
             for k in keys[:-1]:
-                if k not in node or not isinstance(node[k], dict):
+                if k not in node:
                     node[k] = {}
+                elif not isinstance(node[k], dict):
+                    # Safety: raise rather than silently clobber a non-dict value.
+                    raise ValueError(
+                        f"cannot set dotted key {key!r}: intermediate key {k!r} "
+                        f"exists but is not a dict (got {type(node[k]).__name__!r}); "
+                        f"refusing to silently overwrite"
+                    )
                 node = node[k]
             node[keys[-1]] = ref
             file_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         else:
             # Plain version/ref file: write ref as the sole content.
             file_path.write_text(ref + "\n", encoding="utf-8")
+        return [file_param]
     elif kind == "workspace":
         raise UnsupportedChannelKind(
             f"'workspace' channel injection is not implemented for real consumption "
@@ -231,7 +283,7 @@ def set_upstream_ref(
     ref: str,
     *,
     _executor: Optional[ChannelExecutor] = None,
-) -> None:
+) -> List[str]:
     """Re-resolve the downstream workspace's dependency channel to ``ref``.
 
     This is the **load-bearing injection primitive** (IF-0-P2-2): the
@@ -239,6 +291,12 @@ def set_upstream_ref(
     ``run_loop`` to point the downstream's consumption channel at a specific
     upstream ref — the draft branch ``head_sha`` in P3 and the upstream
     **merge SHA** in P4.
+
+    Returns the workspace-relative paths modified by the injection (e.g.
+    ``["manifest.json"]`` for a pin, ``["vendor/repo-a"]`` for a submodule).
+    The coordinator unions these into the downstream node's ``owned_paths``
+    before publishing so the pin/submodule change always ships in the PR even
+    if ``run_loop``'s snapshot excludes the injected file.
 
     Args:
         workspace: Absolute path to the downstream repo's worktree.
@@ -257,4 +315,4 @@ def set_upstream_ref(
             "upstream dependency to resolve"
         )
     executor = _executor if _executor is not None else _default_executor
-    executor(workspace, channel.kind, dict(channel.params), ref)
+    return executor(workspace, channel.kind, dict(channel.params), ref) or []

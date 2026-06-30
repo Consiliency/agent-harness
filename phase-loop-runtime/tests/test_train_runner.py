@@ -1647,20 +1647,42 @@ class TestResumeUsesLiveHeadSha:
 
 
 class TestDownstreamRebuildsWhenUpstreamRebuilt:
-    """Downstream node rebuilds when its upstream was rebuilt this run (Finding #4)."""
+    """Upstream changed + downstream PR open → downstream blocked (deferred rebuild).
+
+    REWRITTEN from the original Finding #4 test to match the deferred-rebuild
+    behavior:
+
+    Previous behavior (removed): when an upstream was rebuilt this run, the
+    downstream was also rebuilt automatically.  This was non-functional because
+    ``publish_from_worktree`` has no update-existing-PR path — re-publishing a
+    rebuilt downstream whose draft PR is open causes ``gh pr create`` to fail.
+
+    Current behavior: if an upstream changed (rebuilt this run OR out-of-band
+    SHA advance) AND the downstream's PR is open, the downstream is blocked with
+    reason ``"upstream_changed_downstream_pr_open"`` so the user can close the
+    stale PR and re-run.  Automatic downstream rebuild is deferred to a future
+    release that adds an update-existing-PR primitive.
+    """
 
     def test_downstream_rebuilt_when_upstream_pr_closed_and_rebuilt(self, tmp_path: Path):
-        """Upstream PR was closed → upstream rebuilt → downstream also rebuilt.
+        """Upstream PR closed → upstream rebuilt this run → downstream PR open → BLOCKED.
+
+        REWRITTEN: the old test asserted downstream was also rebuilt (completed).
+        Under the deferred-rebuild policy, an upstream rebuilt this run with the
+        downstream's PR still open → downstream is blocked with a clear reason,
+        NOT silently re-published.
 
         Scenario:
           - Ledger: repo-a=pr_open (sha-a1), repo-b=pr_open (sha-b1).
-          - Second run: repo-a's PR is no longer open (_pr_is_open returns False
-            for its branch) → repo-a is excluded from completed_nodes at resume.
-          - Loop: repo-a is rebuilt (run_loop called). Because repo-a is in
-            rebuilt_this_run, repo-b must also be rebuilt (not skipped).
+          - Second run: repo-a's PR is closed (_pr_is_open returns False for its
+            branch) → repo-a excluded from completed_nodes → repo-a rebuilt.
+          - repo-b is in completed_nodes (its PR is still open).
+          - repo-a in rebuilt_this_run + repo-b PR open → BLOCKED, not rebuilt.
 
-        Pre-fix: repo-b would be skipped (in completed_nodes from ledger).
-        Post-fix: repo-a in rebuilt_this_run → repo-b also rebuilt.
+        Pre-deferred behavior: repo-b would also be rebuilt (broken — no
+        update-existing-PR path).
+        Post-deferred behavior: repo-b is blocked with reason
+        ``"upstream_changed_downstream_pr_open"``.
         """
         from phase_loop_runtime.train_ledger import LedgerRecord, append_record
 
@@ -1720,16 +1742,29 @@ class TestDownstreamRebuildsWhenUpstreamRebuilt:
             _live_pr_head_sha_fn=lambda ws, br: None,
         )
 
-        assert result["status"] == "completed"
-
-        # CRITICAL: repo-a was rebuilt; repo-b must ALSO be rebuilt (not skipped)
+        # CRITICAL (deferred-rebuild behavior):
+        # repo-a was rebuilt (its PR was closed, so it goes through full build).
         assert "repo-a" in run_loop_calls, "repo-a must be rebuilt (its PR is closed)"
-        assert "repo-b" in run_loop_calls, (
-            "repo-b must be rebuilt because its upstream (repo-a) was rebuilt this run; "
-            f"pre-fix: repo-b would be skipped (in completed_nodes). "
-            f"run_loop_calls={run_loop_calls}"
+
+        # repo-b's PR is still open but its upstream (repo-a) was rebuilt →
+        # BLOCKED, not silently re-published (no update-existing-PR path exists).
+        assert result["status"] == "blocked", (
+            f"Expected blocked (deferred-rebuild policy); got {result['status']!r}. "
+            f"Pre-deferred behavior would return 'completed' after re-publishing "
+            f"repo-b, which is non-functional (gh pr create fails on open PR)."
         )
-        assert "repo-b" in publish_calls, "repo-b must publish a new PR"
+        assert result["node_id"] == "repo-b/specs/plan-b.md", (
+            f"Expected repo-b to be the blocked node; got {result.get('node_id')!r}"
+        )
+        assert result["detail"]["reason"] == "upstream_changed_downstream_pr_open", (
+            f"Expected reason 'upstream_changed_downstream_pr_open'; "
+            f"got {result['detail'].get('reason')!r}"
+        )
+        # repo-b must NOT have been re-published (no update-existing-PR path)
+        assert "repo-b" not in publish_calls, (
+            "repo-b must NOT be published when its upstream changed and its PR is open "
+            "(deferred-rebuild policy)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1887,4 +1922,466 @@ class TestPinChannelRealSeam:
         assert "manifest.json" in repo_b_paths, (
             f"Expected 'manifest.json' in repo-b's published paths (snapshot invariant); "
             f"got {repo_b_paths!r}. The snapshot path is not being forwarded to publish."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 17. Finding #6 (re-CR): union injected channel paths into published owned_paths
+#
+# Pre-fix: set_upstream_ref returned None (ignored); the coordinator-injected
+# manifest could be DROPPED from the PR if run_loop's snapshot excluded it.
+# The existing pin test (16) passed only because the snapshot listed manifest.json.
+# Post-fix: set_upstream_ref returns the modified paths; the coordinator unions
+# them into owned_paths so the pin/submodule change always ships.
+#
+# Real-seam requirement: the run_loop snapshot MUST NOT include manifest.json;
+# the published paths MUST still contain it (proving the union, not a rigged
+# snapshot).  This test FAILS against the pre-fix code.
+
+
+class TestUnionInjectedChannelPaths:
+    """Coordinator unions injected channel paths into PR owned_paths (Finding #6 re-CR)."""
+
+    def test_pin_manifest_in_published_paths_even_when_snapshot_excludes_it(
+        self, tmp_path: Path
+    ):
+        """Real-seam union test: snapshot WITHOUT manifest → published paths WITH manifest.
+
+        The run_loop stub returns a snapshot whose phase_owned_dirty_paths does NOT
+        include manifest.json.  The _set_upstream_ref_fn stub returns ["manifest.json"]
+        (simulating the real pin executor).  The published owned_paths must still
+        contain manifest.json — proving the coordinator unions the injected paths,
+        NOT that the snapshot happened to include them.
+
+        This test FAILS against the pre-fix code (set_upstream_ref return was ignored).
+        """
+        from types import SimpleNamespace
+
+        roadmap = parse_train_roadmap(TRAIN_PIN_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        # run_loop for repo-b returns a snapshot that DELIBERATELY excludes
+        # manifest.json — only implementation files are listed.
+        def _run_loop(workspace, roadmap_path, *, run_mode="autonomous", **kwargs):
+            if workspace.name == "repo-b":
+                return (
+                    SimpleNamespace(
+                        # manifest.json intentionally ABSENT from snapshot paths
+                        phase_owned_dirty_paths=("src/consumer.py",),
+                        dirty_paths=("src/consumer.py",),
+                    ),
+                    [],
+                )
+            return (None, [])
+
+        # set_upstream_ref stub returns the injected path (simulates real executor)
+        def _set_upstream_ref_returns_path(workspace, channel, ref):
+            if workspace.name == "repo-b" and channel.kind == "pin":
+                return [channel.params["file"]]  # e.g. ["manifest.json"]
+            return []
+
+        published_paths: dict = {}
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            assert draft is True
+            published_paths[workspace.name] = list(owned_paths)
+            return {
+                "status": "published",
+                "branch": f"feat/{workspace.name}",
+                "head_sha": f"sha-{workspace.name}",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=_run_loop,
+            _publish=_publish,
+            _set_upstream_ref_fn=_set_upstream_ref_returns_path,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "completed", f"Expected completed; got {result}"
+
+        repo_b_paths = published_paths.get("repo-b", [])
+
+        # THE CRITICAL ASSERTION: manifest.json must be in owned_paths even though
+        # the snapshot excluded it.  Proving the union, not a rigged snapshot.
+        assert "manifest.json" in repo_b_paths, (
+            f"Expected 'manifest.json' in repo-b's published paths (union of injected "
+            f"channel paths); got {repo_b_paths!r}. "
+            f"Pre-fix bug: set_upstream_ref return was ignored → pin manifest could be "
+            f"dropped from the published PR."
+        )
+        # Implementation file from snapshot is also present
+        assert "src/consumer.py" in repo_b_paths, (
+            f"Expected 'src/consumer.py' (from snapshot) in repo-b's paths; "
+            f"got {repo_b_paths!r}"
+        )
+
+    def test_union_deduplicates_when_snapshot_already_includes_injected_path(
+        self, tmp_path: Path
+    ):
+        """If the snapshot already includes the injected path, no duplicate is added."""
+        from types import SimpleNamespace
+
+        roadmap = parse_train_roadmap(TRAIN_PIN_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        def _run_loop(workspace, roadmap_path, *, run_mode="autonomous", **kwargs):
+            if workspace.name == "repo-b":
+                return (
+                    SimpleNamespace(
+                        # manifest.json IS in snapshot (snapshot owns it)
+                        phase_owned_dirty_paths=("manifest.json", "src/consumer.py"),
+                        dirty_paths=("manifest.json", "src/consumer.py"),
+                    ),
+                    [],
+                )
+            return (None, [])
+
+        def _set_upstream_ref_returns_path(workspace, channel, ref):
+            if workspace.name == "repo-b" and channel.kind == "pin":
+                return ["manifest.json"]
+            return []
+
+        published_paths: dict = {}
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            assert draft is True
+            published_paths[workspace.name] = list(owned_paths)
+            return {
+                "status": "published",
+                "branch": f"feat/{workspace.name}",
+                "head_sha": f"sha-{workspace.name}",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=_run_loop,
+            _publish=_publish,
+            _set_upstream_ref_fn=_set_upstream_ref_returns_path,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "completed"
+
+        repo_b_paths = published_paths.get("repo-b", [])
+        assert "manifest.json" in repo_b_paths
+        # No duplicate: manifest.json appears exactly once
+        assert repo_b_paths.count("manifest.json") == 1, (
+            f"manifest.json must appear exactly once (no duplicate from union); "
+            f"got {repo_b_paths!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 18. Hardening: channel executor path containment and JSON safety
+#
+# These tests exercise _default_executor directly (not through run_train) to
+# verify the hardening added in Finding #8 (re-CR):
+#   (a) Path containment: file/path params that escape the workspace → ValueError
+#   (b) JSON key safety: dotted key over a non-dict intermediate → ValueError
+#   (c) JSON key safety: empty or malformed key → ValueError
+
+
+class TestChannelExecutorHardening:
+    """_default_executor rejects path escapes and malformed JSON keys."""
+
+    def test_pin_file_path_traversal_fails_loud(self, tmp_path: Path):
+        """A '../'-escaping file param → ValueError, no write outside workspace.
+
+        The executor must resolve workspace / params["file"] and assert the result
+        is strictly within workspace.resolve().  An absolute or traversal path that
+        escapes the workspace must raise ValueError, never write outside it.
+        """
+        from phase_loop_runtime.cross_repo_channel import _default_executor
+
+        workspace = tmp_path / "repo-b"
+        workspace.mkdir()
+        # A benign target outside the workspace that must NOT be written
+        outside = tmp_path / "etc" / "evil.txt"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+
+        # ../etc/evil.txt escapes the workspace via .. traversal
+        with pytest.raises(ValueError, match="outside the workspace"):
+            _default_executor(workspace, "pin", {"file": "../etc/evil.txt"}, "sha-x")
+
+        assert not outside.exists(), (
+            "Executor must not write outside the workspace on a path traversal attempt"
+        )
+
+    def test_pin_absolute_file_param_fails_loud(self, tmp_path: Path):
+        """An absolute path in file= → ValueError (containment violation)."""
+        from phase_loop_runtime.cross_repo_channel import _default_executor
+
+        workspace = tmp_path / "repo-b"
+        workspace.mkdir()
+        outside_abs = str(tmp_path / "etc" / "evil.txt")
+
+        with pytest.raises(ValueError, match="outside the workspace"):
+            _default_executor(workspace, "pin", {"file": outside_abs}, "sha-x")
+
+    def test_pin_json_key_over_non_dict_raises(self, tmp_path: Path):
+        """Setting a dotted key when an intermediate is not a dict → ValueError.
+
+        Pre-fix: the executor silently replaced the non-dict value with {}.
+        Post-fix: raises ValueError to prevent silent data loss.
+        """
+        import json as _json
+        from phase_loop_runtime.cross_repo_channel import _default_executor
+
+        workspace = tmp_path / "repo-b"
+        workspace.mkdir()
+        # manifest.json has "deps" as a string, not a dict
+        manifest = workspace / "manifest.json"
+        manifest.write_text(
+            _json.dumps({"deps": "not-a-dict", "version": "1.0"}),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="not a dict"):
+            _default_executor(
+                workspace, "pin",
+                {"file": "manifest.json", "key": "deps.repo-a"},
+                "sha-x",
+            )
+
+        # The manifest must NOT be silently overwritten
+        data = _json.loads(manifest.read_text(encoding="utf-8"))
+        assert data["deps"] == "not-a-dict", (
+            "manifest.json must not be modified when a non-dict intermediate is detected"
+        )
+
+    def test_pin_empty_key_raises(self, tmp_path: Path):
+        """An empty key= param → ValueError (malformed key rejected)."""
+        from phase_loop_runtime.cross_repo_channel import _default_executor
+        import json as _json
+
+        workspace = tmp_path / "repo-b"
+        workspace.mkdir()
+        manifest = workspace / "manifest.json"
+        manifest.write_text(_json.dumps({}), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="malformed"):
+            _default_executor(
+                workspace, "pin",
+                {"file": "manifest.json", "key": ""},
+                "sha-x",
+            )
+
+    def test_pin_returns_modified_path(self, tmp_path: Path):
+        """_default_executor for pin returns the list containing the file param."""
+        from phase_loop_runtime.cross_repo_channel import _default_executor
+
+        workspace = tmp_path / "repo-b"
+        workspace.mkdir()
+        # Plain version file (no key)
+        result = _default_executor(
+            workspace, "pin", {"file": "version.txt"}, "sha-abc"
+        )
+        assert result == ["version.txt"], (
+            f"Expected ['version.txt'] from pin executor; got {result!r}"
+        )
+        assert (workspace / "version.txt").read_text(encoding="utf-8") == "sha-abc\n"
+
+
+# ---------------------------------------------------------------------------
+# 19. Deferred rebuild — out-of-band upstream SHA change → downstream blocked
+#
+# When a confirmed-open upstream PR's live head SHA differs from the ledger
+# (out-of-band push), and the downstream's PR is also open, the downstream
+# must be blocked with reason "upstream_changed_downstream_pr_open".
+# Do NOT silently skip and do NOT attempt a re-publish.
+
+
+class TestOutOfBandUpstreamBlocksDownstream:
+    """Out-of-band upstream push + open downstream PR → downstream blocked."""
+
+    def test_oob_upstream_sha_with_open_downstream_blocks(self, tmp_path: Path):
+        """Upstream's live SHA ≠ ledger SHA (OOB push) → downstream blocked.
+
+        Scenario:
+          - Ledger: repo-a=pr_open (sha-v1), repo-b=pr_open (sha-b1).
+          - Both PRs are still open (pr_is_open returns True for both).
+          - Live SHA for repo-a is sha-v2 (different from ledger sha-v1) →
+            detected as out-of-band push.
+          - Live SHA for repo-b is sha-b1 (same as ledger, no OOB).
+          - In the loop: repo-a is skipped (confirmed open, no changed upstreams).
+          - repo-b is in completed_nodes but its upstream (repo-a) is in
+            out_of_band_upstreams → BLOCKED with reason
+            "upstream_changed_downstream_pr_open".
+
+        Pre-fix: no OOB detection → repo-b silently skipped (stale injection risk).
+        Post-fix: OOB detected → repo-b blocked with clear reason.
+        """
+        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md",
+            status="pr_open",
+            branch="feat/train-a",
+            pr_url="https://gh.com/repo-a/1",
+            head_sha="sha-v1",  # stale — will be force-pushed OOB
+            merge_order=0,
+        ))
+        append_record(ledger, LedgerRecord(
+            node_id="repo-b/specs/plan-b.md",
+            status="pr_open",
+            branch="feat/train-b",
+            pr_url="https://gh.com/repo-b/1",
+            head_sha="sha-b1",
+            merge_order=1,
+        ))
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        publish_mock = MagicMock()
+        run_loop_mock = MagicMock()
+
+        def _live_sha(workspace, branch):
+            if branch == "feat/train-a":
+                return "sha-v2"  # OOB push: differs from ledger sha-v1
+            if branch == "feat/train-b":
+                return "sha-b1"  # same as ledger
+            return None
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=run_loop_mock,
+            _publish=publish_mock,
+            _set_upstream_ref_fn=lambda *a, **kw: None,
+            _preflight_fn=_preflight_pass,
+            # both PRs still open
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=_live_sha,
+        )
+
+        assert result["status"] == "blocked", (
+            f"Expected blocked (OOB detection); got {result['status']!r}"
+        )
+        assert result["node_id"] == "repo-b/specs/plan-b.md", (
+            f"Expected repo-b to be blocked; got {result.get('node_id')!r}"
+        )
+        assert result["detail"]["reason"] == "upstream_changed_downstream_pr_open", (
+            f"Expected reason 'upstream_changed_downstream_pr_open'; "
+            f"got {result['detail'].get('reason')!r}"
+        )
+        # "out-of-band push" must appear in the message
+        assert "out-of-band" in result["detail"]["message"].lower(), (
+            f"Expected 'out-of-band' in detail message; got {result['detail'].get('message')!r}"
+        )
+        # Neither repo ran (both were in completed_nodes; repo-a skipped, repo-b blocked)
+        assert run_loop_mock.call_count == 0, (
+            "run_loop must not be called when all nodes are in completed_nodes "
+            f"(repo-a skipped, repo-b blocked before run_loop)"
+        )
+        assert publish_mock.call_count == 0, (
+            "publish must not be called on a blocked node"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 20. Hardening: missing resume SHA → block (no moving-branch-name fallback)
+#
+# Pre-fix: if live_sha and ledger head_sha were both None, the coordinator fell
+# back to injecting the upstream branch name (a moving target) — building the
+# downstream against a branch tip rather than a pinnable SHA.
+# Post-fix: block with a "no resolvable SHA" error rather than injecting a
+# moving branch name.
+
+
+class TestMissingResumeShaBlocks:
+    """Resume with no resolvable upstream SHA → downstream blocked (no branch fallback)."""
+
+    def test_missing_head_sha_blocks_downstream_not_branch_fallback(self, tmp_path: Path):
+        """No live SHA + no ledger head_sha → downstream blocked, not injected with branch name.
+
+        Scenario:
+          - Ledger: repo-a=pr_open, head_sha=None (never stored or lost).
+          - Live SHA query for repo-a returns None.
+          - completed_nodes["repo-a"]["head_sha"] is therefore None.
+          - Downstream repo-b tries to inject: ref = head_sha → None.
+          - Pre-fix: falls back to branch name → injects a moving target.
+          - Post-fix: raises "no resolvable SHA" → downstream blocked.
+        """
+        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        # repo-a is pr_open but head_sha was never recorded
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md",
+            status="pr_open",
+            branch="feat/train-a",
+            pr_url="https://gh.com/repo-a/1",
+            head_sha=None,  # missing — never stored
+            merge_order=0,
+        ))
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        inject_log: list = []
+
+        def _set_upstream_ref_recording(workspace, channel, ref):
+            inject_log.append({"workspace": workspace.name, "ref": ref})
+            return []
+
+        publish_mock = MagicMock()
+        run_loop_mock = MagicMock()
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=run_loop_mock,
+            _publish=publish_mock,
+            _set_upstream_ref_fn=_set_upstream_ref_recording,
+            _preflight_fn=_preflight_pass,
+            # repo-a's PR is open (so it ends up in completed_nodes)
+            _pr_is_open=_pr_is_open_true,
+            # live query also returns None
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        # repo-b must be blocked (missing SHA)
+        assert result["status"] == "blocked", (
+            f"Expected blocked (missing SHA); got {result['status']!r}"
+        )
+        assert result["node_id"] == "repo-b/specs/plan-b.md", (
+            f"Expected repo-b to be the blocked node; got {result.get('node_id')!r}"
+        )
+        # The block reason must mention the missing SHA, not inject a branch name
+        assert "no resolvable SHA" in result["detail"]["reason"], (
+            f"Expected 'no resolvable SHA' in blocked reason; "
+            f"got {result['detail'].get('reason')!r}"
+        )
+        # The branch name "feat/train-a" must NOT have been passed to set_upstream_ref
+        for entry in inject_log:
+            assert entry["ref"] != "feat/train-a", (
+                f"Branch name 'feat/train-a' was injected as a moving-target ref "
+                f"(pre-fix bug: head_sha fallback to branch name); entry={entry!r}"
+            )
+        assert publish_mock.call_count == 0, (
+            "publish must not be called when the downstream injection is blocked"
         )

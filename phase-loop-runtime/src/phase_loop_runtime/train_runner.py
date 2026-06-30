@@ -16,10 +16,16 @@ Safety invariants (enforced structurally, asserted in tests):
   3. **Train state off .phase-loop/**: ledger_path is caller-supplied and must
      pass ``_assert_not_phase_loop``; the coordinator never touches any repo's
      ``.phase-loop/`` directory.
-  4. **Resumable**: a partial run leaves prior nodes' draft PRs open and the
-     failed node ``blocked`` in the ledger.  Re-running re-reads both the
-     ledger and live PR state; completed nodes are skipped unless an upstream
-     was (re)built during this run (in which case the downstream also rebuilds).
+  4. **Resumable with upstream-change detection**: a partial run leaves prior
+     nodes' draft PRs open and the failed node ``blocked`` in the ledger.
+     Re-running re-reads both the ledger and live PR state; confirmed-open
+     nodes are skipped unless an upstream changed (rebuilt this run, or its live
+     head SHA diverged from the ledger — out-of-band push).  When an upstream
+     changed and the downstream's PR is already open, the downstream is
+     **blocked with a clear reason** (``upstream_changed_downstream_pr_open``)
+     so the user can close the stale PR and re-run.
+     NOTE: automatic downstream rebuild when an upstream changes requires an
+     update-existing-PR primitive and is deferred to a future release.
   5. **Exception safety**: if inject or run_loop raises, the node is marked
      ``blocked`` in the ledger (never left stuck at ``running``).
 
@@ -339,6 +345,9 @@ def run_train(
     # These are the upstream refs the coordinator can inject into downstream
     # nodes via set_upstream_ref (IF-0-P2-2).
     completed_nodes: Dict[str, Dict] = {}
+    # out_of_band_upstreams: nodes whose live PR head SHA differs from the
+    # ledger-recorded head_sha — an out-of-band push since the last run.
+    out_of_band_upstreams: Set[str] = set()
 
     for node in topo_order:
         nid = node.node_id
@@ -350,6 +359,9 @@ def run_train(
                 # since the last run); fall back to the ledger-recorded head_sha.
                 live_sha = live_pr_head_sha_fn(workspace, rec.branch)
                 head_sha = live_sha or rec.head_sha
+                # Detect out-of-band push: live SHA exists and differs from ledger.
+                if live_sha and rec.head_sha and live_sha != rec.head_sha:
+                    out_of_band_upstreams.add(nid)
                 completed_nodes[nid] = {
                     "branch": rec.branch,
                     "head_sha": head_sha,
@@ -358,27 +370,63 @@ def run_train(
 
     # --- Step 4: Execute in topo order ------------------------------------
     # rebuilt_this_run tracks nodes where run_loop was actually invoked during
-    # this execution.  A downstream node skips only if none of its upstreams
-    # were (re)built in this run (Finding #4).
+    # this execution.  Used to detect when a downstream's confirmed-open PR
+    # is stale because its upstream was rebuilt (Finding #4).
     rebuilt_this_run: Set[str] = set()
 
     for i, node in enumerate(topo_order):
         nid = node.node_id
 
-        # Resume: skip nodes already completed (pr_open + live PR confirmed),
-        # UNLESS an upstream was (re)built during this run — in that case the
-        # downstream must also rebuild against the new upstream ref.
+        # Resume: skip nodes already confirmed pr_open (live PR check passed).
+        # BUT: if an upstream changed — either rebuilt this run OR an out-of-band
+        # push advanced its SHA since the last run — and this node's PR is open,
+        # we cannot silently skip (stale) or re-publish (no update-existing-PR
+        # primitive exists).  Block with a clear reason so the user can close the
+        # stale downstream PR and re-run.
+        #
+        # NOTE: automatic downstream rebuild when an upstream changes requires an
+        # update-existing-PR primitive and is deferred to a future release.
         if nid in completed_nodes:
             upstream_edges = roadmap.edges_for_downstream(node)
-            any_upstream_rebuilt = any(
-                edge.upstream.node_id in rebuilt_this_run
-                for edge in upstream_edges
-            )
-            if not any_upstream_rebuilt:
+            changed_upstreams = [
+                edge for edge in upstream_edges
+                if edge.upstream.node_id in rebuilt_this_run
+                or edge.upstream.node_id in out_of_band_upstreams
+            ]
+            if not changed_upstreams:
                 continue
-            # An upstream was rebuilt this run: remove from completed so we
-            # fall through to the full build path below.
-            del completed_nodes[nid]
+            # An upstream changed and this node's draft PR is still open.
+            # Block so the user can close the stale PR and re-run.
+            change_reasons: List[str] = []
+            for edge in changed_upstreams:
+                uid = edge.upstream.node_id
+                if uid in rebuilt_this_run:
+                    change_reasons.append(f"upstream {uid!r} was rebuilt this run")
+                else:
+                    new_sha = completed_nodes.get(uid, {}).get("head_sha", "<unknown>")
+                    change_reasons.append(
+                        f"upstream {uid!r} advanced to {new_sha!r} (out-of-band push)"
+                    )
+            detail_msg = (
+                "; ".join(change_reasons)
+                + f"; close/supersede the stale downstream PR and re-run"
+            )
+            append_record(
+                ledger_path,
+                LedgerRecord(
+                    node_id=nid,
+                    status="blocked",
+                    branch=completed_nodes[nid].get("branch"),
+                ),
+            )
+            return {
+                "status": "blocked",
+                "node_id": nid,
+                "detail": {
+                    "reason": "upstream_changed_downstream_pr_open",
+                    "message": detail_msg,
+                },
+            }
 
         workspace = resolve_workspace(node)
         upstream_edges = roadmap.edges_for_downstream(node)
@@ -388,17 +436,15 @@ def run_train(
 
         try:
             # (i) Inject upstream draft refs (IF-0-P2-2) BEFORE run_loop.
+            #     Collect injected paths to union into owned_paths after run_loop.
             #
-            # The two guards below are defensive invariants.  They should be
-            # unreachable in a well-formed train:
-            #   • validate_train_loud (T-B) ensures every upstream is a declared
-            #     node, and topo-sort guarantees we processed it before this
-            #     node.  If the upstream failed/was blocked, run_train returns
-            #     immediately and never reaches this downstream.
-            #   • `branch` is always populated in completed_nodes entries (it is
-            #     set by the publish step), so `ref` is always truthy.
-            # They exist to make the "no silent skip" contract explicit and to
-            # catch future refactors that break the invariant.
+            # The guard below is a defensive invariant.  It should be unreachable
+            # in a well-formed train: validate_train_loud (T-B) ensures every
+            # upstream is a declared node, and topo-sort guarantees we processed
+            # it before this node.  If the upstream failed/was blocked, run_train
+            # returns immediately and never reaches this downstream.  Kept here to
+            # make the "no silent skip" contract explicit and catch future refactors.
+            injected_channel_paths: List[str] = []
             for edge in upstream_edges:
                 upstream_result = completed_nodes.get(edge.upstream.node_id)
                 if upstream_result is None:
@@ -409,9 +455,21 @@ def run_train(
                         f"(not in completed_nodes) — cannot inject into "
                         f"'{nid}'; the upstream must be built and published first"
                     )
-                ref = upstream_result.get("head_sha") or upstream_result.get("branch")
-                if ref:
-                    set_upstream_ref_fn(workspace, edge.channel, ref)
+                ref = upstream_result.get("head_sha")
+                if not ref:
+                    # Block: do NOT fall back to injecting a moving branch name.
+                    # A missing SHA means neither the live query nor the ledger
+                    # have a pinnable ref — injecting a branch name would build
+                    # the downstream against a moving target.
+                    raise RuntimeError(
+                        f"no resolvable SHA for upstream '{edge.upstream.node_id}' "
+                        f"(live head SHA query returned None and ledger head_sha is "
+                        f"None); cannot inject a moving branch name for channel "
+                        f"{edge.channel.kind!r} — resolve the upstream SHA and re-run"
+                    )
+                injected = set_upstream_ref_fn(workspace, edge.channel, ref)
+                if injected:
+                    injected_channel_paths.extend(injected)
 
             # (ii) Invoke the unchanged per-repo run_loop.
             #      The real run_loop returns (StateSnapshot, list[LaunchResult]).
@@ -437,6 +495,17 @@ def run_train(
                     owned_paths = list(produced)
                 else:
                     owned_paths = []
+
+            # Union the coordinator-injected channel paths into owned_paths so
+            # the pin/submodule change always ships in the PR even if run_loop's
+            # snapshot doesn't include the injected file (Finding #6 / union fix).
+            # de-duplicate while preserving order (snapshot paths first).
+            if injected_channel_paths:
+                seen = set(owned_paths)
+                for p in injected_channel_paths:
+                    if p not in seen:
+                        owned_paths.append(p)
+                        seen.add(p)
 
             # (iv) Publish as draft PR via the P1 runtime primitive.
             #      draft=True is structural — P3 never merges.
