@@ -137,7 +137,7 @@ Applied N of M recommendations from <plan-path>. See the plan file for
 per-skill details. Reflections consumed this run moved to each skill's
 reflections/<repo_hash>/<branch_slug>/archive/ subdirectory.
 
-Co-Authored-By: Harness Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 Team repo (if edits landed there):
