@@ -136,16 +136,39 @@ def _validate_params(kind: ChannelKind, params: Dict[str, str], raw: str) -> Non
 ChannelExecutor = Callable[[Path, str, Dict[str, str], str], None]
 
 
+class UnsupportedChannelKind(ValueError):
+    """Raised by the live executor when a channel kind is valid in the schema but
+    not yet implemented for real consumption in this MVP.
+
+    Using a hollow sentinel file (written but never read by the downstream
+    build) would silently build the downstream against the absent upstream,
+    corrupting the whole train.  We fail loud instead.
+    """
+
+
 def _default_executor(
     workspace: Path,
     kind: str,
     params: Dict[str, str],
     ref: str,
 ) -> None:
-    """Default live executor — runs real git/fs operations."""
+    """Default live executor — runs real git/fs operations.
+
+    Channel support:
+      ``submodule`` — git fetch + checkout; the downstream build ACTUALLY
+          consumes the injected ref (submodule HEAD is updated).
+      ``pin``       — NOT YET IMPLEMENTED for real consumption.  Writing a
+          sentinel file that nothing reads would silently build against the
+          absent upstream; raises :exc:`UnsupportedChannelKind` instead.
+      ``workspace`` — NOT YET IMPLEMENTED for real consumption.  Same reason.
+
+    Stubbing the executor (``_executor=stub``) is the correct approach for
+    tests that exercise non-submodule channel kinds.
+    """
     if kind == "submodule":
         submodule_path = params["path"]
-        # Dereference the submodule to the given ref.
+        # Dereference the submodule to the given ref so the downstream build
+        # actually runs against the injected upstream content.
         subprocess.run(
             ["git", "fetch", "origin"],
             cwd=workspace / submodule_path,
@@ -157,21 +180,21 @@ def _default_executor(
             check=True,
         )
     elif kind == "pin":
-        # Re-resolve a VCS/package pin.  For VCS installs (pip editable /
-        # git+https) the version field carries the ref.  The coordinator is
-        # responsible for invoking the package manager after set_upstream_ref.
-        # Here we write the new version into a sentinel file that the package
-        # manager reads, OR rely on the coordinator's post-injection install
-        # step.  For MVP: write the ref to .phase-loop-upstream-pin/<name>
-        # for the executor skill to pick up.
-        pin_dir = workspace / ".phase-loop-upstream-pin"
-        pin_dir.mkdir(parents=True, exist_ok=True)
-        (pin_dir / params["name"]).write_text(ref, encoding="utf-8")
+        raise UnsupportedChannelKind(
+            f"'pin' channel injection is not yet implemented for real consumption "
+            f"(package={params.get('name')!r}): writing a sentinel file that nothing "
+            f"reads would silently build the downstream against the absent upstream. "
+            f"Implement a real package-manager manifest rewrite before using pin channels "
+            f"with the live executor, or provide a custom _executor."
+        )
     elif kind == "workspace":
-        # Write the resolved ref to a workspace-override sentinel file.
-        override_dir = workspace / ".phase-loop-workspace-ref"
-        override_dir.mkdir(parents=True, exist_ok=True)
-        (override_dir / "ref").write_text(ref, encoding="utf-8")
+        raise UnsupportedChannelKind(
+            f"'workspace' channel injection is not yet implemented for real consumption "
+            f"(path={params.get('path')!r}): writing a sentinel file that nothing reads "
+            f"would silently build the downstream against the absent upstream. "
+            f"Implement a real workspace-manifest rewrite before using workspace channels "
+            f"with the live executor, or provide a custom _executor."
+        )
     else:
         raise ValueError(f"unknown channel kind for executor: {kind!r}")
 

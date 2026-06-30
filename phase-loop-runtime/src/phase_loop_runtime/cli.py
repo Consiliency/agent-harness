@@ -1887,6 +1887,20 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
         print(f"run-train: failed to parse train roadmap: {exc}", file=sys.stderr)
         return 1
 
+    # Validate train schema (T-A/B/C/D) before touching any repo.
+    # A malformed train (e.g. a none-channel dependency edge) must open zero
+    # PRs.  run_train also validates internally, but running it here gives a
+    # cleaner CLI error message.
+    from .train_roadmap import validate_train_loud
+    try:
+        validate_train_loud(roadmap)
+    except ValueError as exc:
+        print(
+            f"run-train: train validation failed — zero PRs will be opened:\n{exc}",
+            file=sys.stderr,
+        )
+        return 1
+
     # run_mode mirrors how 'run' handles --governed (cli.py:796)
     run_mode = "governed" if bool(getattr(args, "governed", False)) else "autonomous"
 

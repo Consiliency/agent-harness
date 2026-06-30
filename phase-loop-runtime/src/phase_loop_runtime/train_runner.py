@@ -8,6 +8,9 @@ Safety invariants (enforced structurally, asserted in tests):
   1. **Zero-PRs-on-preflight-failure**: preflight runs on ALL repos before the
      per-node loop is entered.  If any check fails, ``run_train`` returns
      immediately with ``status="preflight_failed"`` and zero publish calls.
+     Train-schema validation (T-A/B/C/D via ``validate_train_loud``) runs as
+     part of this gate — a malformed train (e.g. a ``none``-channel dependency
+     edge) opens zero PRs.
   2. **Draft-only**: every ``publish_from_worktree`` call uses ``draft=True``.
      P3 never merges.  The merge seam (P4) is absent here.
   3. **Train state off .phase-loop/**: ledger_path is caller-supplied and must
@@ -15,7 +18,10 @@ Safety invariants (enforced structurally, asserted in tests):
      ``.phase-loop/`` directory.
   4. **Resumable**: a partial run leaves prior nodes' draft PRs open and the
      failed node ``blocked`` in the ledger.  Re-running re-reads both the
-     ledger and live PR state; completed nodes are skipped.
+     ledger and live PR state; completed nodes are skipped unless an upstream
+     was (re)built during this run (in which case the downstream also rebuilds).
+  5. **Exception safety**: if inject or run_loop raises, the node is marked
+     ``blocked`` in the ledger (never left stuck at ``running``).
 
 All git/gh/run_loop/publish boundaries are injectable seams so the module is
 fully testable without live network access.
@@ -24,7 +30,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Set
 
 from .cross_repo_channel import ChannelDescriptor, set_upstream_ref
 from .train_ledger import LedgerRecord, append_record, read_ledger
@@ -142,7 +148,7 @@ def _default_preflight(
 
 
 # ---------------------------------------------------------------------------
-# Live PR state seam
+# Live PR state seams
 
 
 def _live_pr_is_open(workspace: Path, branch: str) -> bool:
@@ -155,6 +161,30 @@ def _live_pr_is_open(workspace: Path, branch: str) -> bool:
 
     meta = _gh_pr_metadata(workspace, branch)
     return bool(meta.get("pr_url"))
+
+
+def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
+    """Return the live PR head commit SHA for ``branch``, or None if unavailable.
+
+    Queries ``gh pr view`` for the ``headRefOid`` field (the commit SHA at the
+    PR's head, which may differ from what the ledger recorded if the branch was
+    force-pushed since the last run).
+
+    Stubbable seam: inject ``_live_pr_head_sha_fn`` into :func:`run_train`.
+    """
+    try:
+        completed = subprocess.run(
+            ["gh", "pr", "view", "--head", branch, "--json", "headRefOid",
+             "--jq", ".headRefOid"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=str(workspace),
+        )
+        sha = completed.stdout.strip() if completed.returncode == 0 else ""
+        return sha or None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +239,7 @@ def run_train(
     _publish: Optional[Callable] = None,
     _set_upstream_ref_fn: Optional[Callable] = None,
     _pr_is_open: Optional[Callable] = None,
+    _live_pr_head_sha_fn: Optional[Callable] = None,
     _preflight_fn: Optional[Callable] = None,
 ) -> Dict:
     """Coordinate a cross-repo release train: preflight, topo-sort, draft-PR open.
@@ -227,9 +258,13 @@ def run_train(
         Maps a ``TrainNode`` to its workspace ``Path`` on disk.
     resolve_owned_paths:
         Maps a ``TrainNode`` to the list of paths the publish primitive
-        should stage.  Defaults to ``[node.roadmap]`` (the roadmap file).
-        Override for real workspaces where the AI agent changed more files.
-    _run_loop, _publish, _set_upstream_ref_fn, _pr_is_open, _preflight_fn:
+        should stage.  When ``None`` (the default for real end-to-end runs),
+        the coordinator uses the paths produced by ``run_loop`` itself:
+        ``StateSnapshot.phase_owned_dirty_paths`` (or ``dirty_paths`` as
+        fallback).  Callers may pass an explicit resolver to override this
+        (e.g. tests, or callers that know the paths ahead of time).
+    _run_loop, _publish, _set_upstream_ref_fn, _pr_is_open,
+    _live_pr_head_sha_fn, _preflight_fn:
         Injectable seams for testing.  Each defaults to the corresponding
         live implementation.
 
@@ -241,7 +276,7 @@ def run_train(
         ``{"status": "blocked", "node_id": ..., "detail": ...}`` if a node
         fails (prior nodes' draft PRs remain open; train is resumable);
         ``{"status": "preflight_failed", "errors": [...]}`` if any preflight
-        check fails (zero PRs opened).
+        check or train-validation fails (zero PRs opened).
     """
     # Resolve seams
     from .publishing import publish_from_worktree as _default_publish
@@ -253,16 +288,32 @@ def run_train(
         _set_upstream_ref_fn if _set_upstream_ref_fn is not None else set_upstream_ref
     )
     pr_is_open_fn = _pr_is_open if _pr_is_open is not None else _live_pr_is_open
+    live_pr_head_sha_fn = (
+        _live_pr_head_sha_fn if _live_pr_head_sha_fn is not None else _live_pr_head_sha
+    )
     preflight_fn = _preflight_fn if _preflight_fn is not None else _default_preflight
 
-    if resolve_owned_paths is None:
-        # Default: stage only the roadmap file; callers override for real use
-        resolve_owned_paths = lambda n: [n.roadmap]
+    # Track whether caller supplied an explicit owned-paths resolver so we know
+    # whether to fall back to the run_loop-produced snapshot paths (Finding #1).
+    _explicit_owned_paths = resolve_owned_paths is not None
 
-    # --- Step 1: Topo-sort (raises ValueError on cycle) -------------------
+    # --- Step 0: Train-schema validation (T-A/B/C/D) — BEFORE any PR ------
+    # A malformed train (e.g. a none-channel dependency edge) must open ZERO
+    # PRs.  validate_train_loud raises ValueError on any violation.
+    from .train_roadmap import validate_train_loud
+
+    try:
+        validate_train_loud(roadmap)
+    except ValueError as exc:
+        return {
+            "status": "preflight_failed",
+            "errors": [f"train validation failed: {exc}"],
+        }
+
+    # --- Step 1: Topo-sort (raises ValueError on cycle) --------------------
     topo_order = roadmap.topo_order()
 
-    # --- Step 2: Train-level preflight — ALL repos, BEFORE any PR ---------
+    # --- Step 2: Train-level preflight — ALL repos, BEFORE any PR ----------
     # This is the structural guarantee that preflight failure → zero PRs:
     # we return immediately here, before the per-node loop is entered.
     preflight_errors = preflight_fn(topo_order, resolve_workspace)
@@ -272,7 +323,7 @@ def run_train(
             "errors": preflight_errors,
         }
 
-    # --- Step 3: Re-read ledger + live PR state (resume support) ----------
+    # --- Step 3: Re-read ledger + live PR state (resume support) -----------
     ledger_state = read_ledger(ledger_path)
     # completed_nodes: node_id → {branch, head_sha, pr_url}
     # These are the upstream refs the coordinator can inject into downstream
@@ -285,57 +336,118 @@ def run_train(
         if rec and rec.status == "pr_open" and rec.branch and rec.pr_url:
             workspace = resolve_workspace(node)
             if pr_is_open_fn(workspace, rec.branch):
-                # Re-read the live head_sha stored as upstream_merge_sha in the
-                # ledger (P3 reuses this field for the draft branch head SHA).
+                # Prefer the live PR head SHA (the branch may have been updated
+                # since the last run); fall back to the ledger-recorded head_sha.
+                live_sha = live_pr_head_sha_fn(workspace, rec.branch)
+                head_sha = live_sha or rec.head_sha
                 completed_nodes[nid] = {
                     "branch": rec.branch,
-                    "head_sha": rec.upstream_merge_sha,
+                    "head_sha": head_sha,
                     "pr_url": rec.pr_url,
                 }
 
     # --- Step 4: Execute in topo order ------------------------------------
+    # rebuilt_this_run tracks nodes where run_loop was actually invoked during
+    # this execution.  A downstream node skips only if none of its upstreams
+    # were (re)built in this run (Finding #4).
+    rebuilt_this_run: Set[str] = set()
+
     for i, node in enumerate(topo_order):
         nid = node.node_id
 
-        # Resume: skip nodes already completed (pr_open + live PR confirmed)
+        # Resume: skip nodes already completed (pr_open + live PR confirmed),
+        # UNLESS an upstream was (re)built during this run — in that case the
+        # downstream must also rebuild against the new upstream ref.
         if nid in completed_nodes:
-            continue
+            upstream_edges = roadmap.edges_for_downstream(node)
+            any_upstream_rebuilt = any(
+                edge.upstream.node_id in rebuilt_this_run
+                for edge in upstream_edges
+            )
+            if not any_upstream_rebuilt:
+                continue
+            # An upstream was rebuilt this run: remove from completed so we
+            # fall through to the full build path below.
+            del completed_nodes[nid]
 
         workspace = resolve_workspace(node)
         upstream_edges = roadmap.edges_for_downstream(node)
 
-        # (i) Inject upstream draft refs via set_upstream_ref (IF-0-P2-2)
-        #     This is how the unchanged run_loop can see the upstream change-
-        #     in-flight.  Must happen BEFORE run_loop is called.
-        for edge in upstream_edges:
-            upstream_result = completed_nodes.get(edge.upstream.node_id)
-            if upstream_result:
-                # Use head_sha (precise content pin) if available, else branch
+        # Mark as running (durable breadcrumb for diagnostics)
+        append_record(ledger_path, LedgerRecord(node_id=nid, status="running"))
+
+        try:
+            # (i) Inject upstream draft refs (IF-0-P2-2) BEFORE run_loop.
+            #     Fail-loud if any upstream ref is unresolvable — do NOT invoke
+            #     run_loop against an absent upstream (Finding #2b).
+            for edge in upstream_edges:
+                upstream_result = completed_nodes.get(edge.upstream.node_id)
+                if upstream_result is None:
+                    raise RuntimeError(
+                        f"upstream ref for '{edge.upstream.node_id}' is not resolved "
+                        f"(not in completed_nodes) — cannot inject into "
+                        f"'{nid}'; the upstream must be built and published first"
+                    )
                 ref = upstream_result.get("head_sha") or upstream_result.get("branch")
                 if ref:
                     set_upstream_ref_fn(workspace, edge.channel, ref)
 
-        # Mark as running in ledger (durable breadcrumb for diagnostics)
-        append_record(ledger_path, LedgerRecord(node_id=nid, status="running"))
+            # (ii) Invoke the unchanged per-repo run_loop.
+            #      The real run_loop returns (StateSnapshot, list[LaunchResult]).
+            result_tuple = run_loop_fn(
+                workspace, workspace / node.roadmap, run_mode=run_mode
+            )
 
-        # (ii) Invoke the unchanged per-repo run_loop
-        run_loop_fn(workspace, workspace / node.roadmap, run_mode=run_mode)
+            # (iii) Determine owned paths (Finding #1).
+            #       If the caller supplied an explicit resolver, honour it.
+            #       Otherwise use the snapshot's produced/owned paths so the
+            #       published PR contains the actual implementation, not just
+            #       the roadmap file.
+            if _explicit_owned_paths:
+                owned_paths = list(resolve_owned_paths(node))  # type: ignore[arg-type]
+            else:
+                snapshot = result_tuple[0] if isinstance(result_tuple, tuple) else None
+                if snapshot is not None:
+                    produced = (
+                        getattr(snapshot, "phase_owned_dirty_paths", None)
+                        or getattr(snapshot, "dirty_paths", None)
+                        or ()
+                    )
+                    owned_paths = list(produced)
+                else:
+                    owned_paths = []
 
-        # (iii) Publish as draft PR via the P1 runtime primitive.
-        #       draft=True is structural — P3 never merges.
-        owned_paths = list(resolve_owned_paths(node))
-        pr_body = _build_pr_body(node, topo_order, completed_nodes, upstream_edges)
-        publish_result = publish_fn(
-            workspace,
-            owned_paths,
-            draft=True,  # P3 invariant: draft-only, never merge
-            pr_body=pr_body,
-        )
+            # (iv) Publish as draft PR via the P1 runtime primitive.
+            #      draft=True is structural — P3 never merges.
+            pr_body = _build_pr_body(node, topo_order, completed_nodes, upstream_edges)
+            publish_result = publish_fn(
+                workspace,
+                owned_paths,
+                draft=True,  # P3 invariant: draft-only, never merge
+                pr_body=pr_body,
+            )
+
+        except Exception as exc:
+            # Inject or run_loop or publish raised — mark blocked so the node
+            # is never left stuck at "running" (Finding #3 / exception safety).
+            append_record(
+                ledger_path,
+                LedgerRecord(
+                    node_id=nid,
+                    status="blocked",
+                    branch=None,
+                ),
+            )
+            return {
+                "status": "blocked",
+                "node_id": nid,
+                "detail": {"reason": str(exc)},
+            }
 
         if publish_result.get("status") != "published":
-            # Node blocked — record in ledger, halt loop.
-            # Prior nodes' draft PRs remain open.  The train is resumable:
-            # re-running will skip completed_nodes and retry from here.
+            # Node blocked by the publish primitive (e.g. push rejected, dirty
+            # worktree, publication_blocked).  Record in ledger and halt.
+            # Prior nodes' draft PRs remain open; the train is resumable.
             append_record(
                 ledger_path,
                 LedgerRecord(
@@ -350,7 +462,8 @@ def run_train(
                 "detail": publish_result,
             }
 
-        # Record success
+        # Record success — store draft head in ``head_sha``; leave
+        # ``upstream_merge_sha`` for P4's merged-SHA (Finding #5).
         branch = publish_result["branch"]
         head_sha = publish_result["head_sha"]
         pr_url = publish_result["pr_url"]
@@ -360,6 +473,7 @@ def run_train(
             "head_sha": head_sha,
             "pr_url": pr_url,
         }
+        rebuilt_this_run.add(nid)
 
         append_record(
             ledger_path,
@@ -368,10 +482,8 @@ def run_train(
                 status="pr_open",
                 branch=branch,
                 pr_url=pr_url,
-                # Store the draft branch head_sha here so downstream nodes
-                # (in this run or a resumed run) can inject it via
-                # set_upstream_ref (IF-0-P2-2).
-                upstream_merge_sha=head_sha,
+                head_sha=head_sha,       # draft branch HEAD SHA
+                upstream_merge_sha=None,  # reserved for P4 (merge SHA only)
                 merge_order=i,
             ),
         )

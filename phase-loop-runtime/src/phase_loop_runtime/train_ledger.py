@@ -23,13 +23,18 @@ Record shape (one JSON object per line)::
         "status":            "pending|running|pr_open|approved|merged|blocked",
         "branch":            "<branch-name or null>",
         "pr_url":            "<PR URL or null>",
-        "upstream_merge_sha": "<SHA or null>",
+        "head_sha":          "<draft branch HEAD SHA or null>",
+        "upstream_merge_sha": "<merged SHA or null — P4 only>",
         "merge_order":       <int or null>,
         "ts":                "<ISO-8601 UTC timestamp>"
     }
 
 Current state = last-record-wins per ``node_id`` (fold over append log).
-``merged`` records carry the actual merge SHA as ``upstream_merge_sha``.
+``pr_open`` records store the draft branch HEAD SHA in ``head_sha`` (set by P3).
+``merged`` records carry the actual merge-commit SHA in ``upstream_merge_sha``
+(set by P4 after the merge lands).  Do NOT put a draft head in
+``upstream_merge_sha`` — that field is reserved for the real merged SHA so P4
+can gate-on-merge without ambiguity.
 
 Zero external deps (stdlib only).
 """
@@ -63,7 +68,8 @@ class LedgerRecord:
     status: str
     branch: Optional[str] = None
     pr_url: Optional[str] = None
-    upstream_merge_sha: Optional[str] = None
+    head_sha: Optional[str] = None           # draft branch HEAD SHA (P3, pr_open records)
+    upstream_merge_sha: Optional[str] = None  # merged-commit SHA (P4 only)
     merge_order: Optional[int] = None
     ts: str = ""  # ISO-8601 UTC; auto-set on append if blank
 
@@ -108,6 +114,7 @@ def append_record(path: Path, record: LedgerRecord) -> None:
             status=record.status,
             branch=record.branch,
             pr_url=record.pr_url,
+            head_sha=record.head_sha,
             upstream_merge_sha=record.upstream_merge_sha,
             merge_order=record.merge_order,
             ts=_utc_now(),
@@ -185,6 +192,7 @@ def _dict_to_record(obj: dict) -> LedgerRecord:
         status=obj["status"],
         branch=obj.get("branch"),
         pr_url=obj.get("pr_url"),
+        head_sha=obj.get("head_sha"),
         upstream_merge_sha=obj.get("upstream_merge_sha"),
         merge_order=obj.get("merge_order"),
         ts=obj.get("ts", ""),

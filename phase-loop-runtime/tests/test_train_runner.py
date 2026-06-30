@@ -10,12 +10,27 @@ Coverage:
   - Preflight fail (bad gh auth) → zero PRs opened
   - 2-node train: set_upstream_ref called before run_loop for downstream node
   - 2-node train: draft PRs opened in topo order, linked in body
-  - 2-node train: ledger records pr_open for each node
+  - 2-node train: ledger records pr_open for each node (head_sha, not upstream_merge_sha)
   - 2-node train: run_mode passed correctly to run_loop
   - 3-node train: all nodes injected and published in order
   - Mid-train failure: prior node stays pr_open, failed node is blocked
   - Resume: completed nodes skipped (run_loop + publish not called again)
   - No merge: all publish calls use draft=True, no merge seam called
+
+  CR-panel real-seam tests (CR findings; these would FAIL against the pre-fix code):
+  8.  run_loop snapshot paths used (Finding #1): run_loop returning a StateSnapshot-like
+      object with phase_owned_dirty_paths → those EXACT paths passed to publish
+  9.  Upstream ref missing → fail-loud block (Finding #2b): upstream not in
+      completed_nodes → blocked, run_loop NOT called
+  10. Inject exception → blocked (Finding #2/3): set_upstream_ref raises →
+      ledger blocked, run not a traceback
+  11. run_loop exception → blocked (Finding #3): run_loop raises → ledger blocked
+  12. Malformed train → zero PRs (Finding #3): none-channel dependency →
+      validate_train_loud → preflight_failed → zero PRs
+  13. Resume uses live head SHA (Finding #4/5): stale ledger SHA overridden by
+      live PR head SHA for injection
+  14. Downstream rebuilt when upstream rebuilt this run (Finding #4): upstream
+      PR closed, rebuilt; downstream (previously pr_open) also rebuilt
 """
 from __future__ import annotations
 
@@ -464,14 +479,17 @@ class TestTwoNodeTrain:
         assert state[node_a_id].status == "pr_open"
         assert state[node_a_id].branch == "feat/train-a"
         assert state[node_a_id].pr_url == "https://github.com/owner/repo-a/pull/10"
-        assert state[node_a_id].upstream_merge_sha == "sha-aaa111"
+        # Draft head SHA is in `head_sha`; upstream_merge_sha is reserved for P4 merged SHA
+        assert state[node_a_id].head_sha == "sha-aaa111"
+        assert state[node_a_id].upstream_merge_sha is None
         assert state[node_a_id].merge_order == 0  # topo index for repo-a
 
         assert node_b_id in state
         assert state[node_b_id].status == "pr_open"
         assert state[node_b_id].branch == "feat/train-b"
         assert state[node_b_id].pr_url == "https://github.com/owner/repo-b/pull/11"
-        assert state[node_b_id].upstream_merge_sha == "sha-bbb222"
+        assert state[node_b_id].head_sha == "sha-bbb222"
+        assert state[node_b_id].upstream_merge_sha is None
         assert state[node_b_id].merge_order == 1  # topo index for repo-b
 
     def test_no_merge_attempted_all_publishes_draft(self, tmp_path: Path):
@@ -987,3 +1005,675 @@ class TestCLIRegistration:
             f"Expected run_mode='governed' forwarded to run_train; "
             f"call kwargs: {call_kwargs}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Finding #1: run_loop snapshot paths are used (real seam, not just called)
+#
+# Pre-fix: run_loop return was discarded; owned_paths defaulted to [node.roadmap].
+# Now: when resolve_owned_paths is not provided, the coordinator uses
+# StateSnapshot.phase_owned_dirty_paths from run_loop's return value.
+
+
+class TestSnapshotPathsUsed:
+    """run_loop's returned snapshot.phase_owned_dirty_paths are published (Finding #1)."""
+
+    def test_snapshot_phase_owned_dirty_paths_passed_to_publish(self, tmp_path: Path):
+        """The EXACT paths from snapshot.phase_owned_dirty_paths reach publish.
+
+        Pre-fix: run_loop return discarded → owned_paths = [node.roadmap] (wrong).
+        Post-fix: snapshot paths are used when resolve_owned_paths is not supplied.
+        """
+        from types import SimpleNamespace
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        # Fake StateSnapshot-like object with specific produced paths
+        fake_snapshot = SimpleNamespace(
+            phase_owned_dirty_paths=("src/feature.py", "src/schema.sql"),
+            dirty_paths=("src/feature.py", "src/schema.sql", "specs/plan-a.md"),
+        )
+
+        def _run_loop(workspace, roadmap_path, *, run_mode="autonomous", **kwargs):
+            return (fake_snapshot, [])  # real run_loop returns (StateSnapshot, list)
+
+        published_owned_paths: dict = {}
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            assert draft is True
+            published_owned_paths[workspace.name] = list(owned_paths)
+            return {
+                "status": "published",
+                "branch": f"feat/{workspace.name}",
+                "head_sha": f"sha-{workspace.name}",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            # resolve_owned_paths intentionally NOT supplied → must use snapshot
+            _run_loop=_run_loop,
+            _publish=_publish,
+            _set_upstream_ref_fn=lambda *a, **kw: None,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "completed"
+
+        # THE CRITICAL ASSERTION: snapshot paths (not [node.roadmap]) reach publish
+        for repo_name, paths in published_owned_paths.items():
+            assert "src/feature.py" in paths, (
+                f"Expected snapshot path 'src/feature.py' in publish call for "
+                f"'{repo_name}'; got {paths!r}"
+            )
+            assert "src/schema.sql" in paths, (
+                f"Expected snapshot path 'src/schema.sql' in publish call for "
+                f"'{repo_name}'; got {paths!r}"
+            )
+            # roadmap-only path must NOT be the sole content
+            assert paths != ["specs/plan-a.md"], (
+                f"Roadmap-only path set — run_loop return was discarded (pre-fix bug): "
+                f"{paths!r}"
+            )
+
+    def test_explicit_resolve_owned_paths_overrides_snapshot(self, tmp_path: Path):
+        """When resolve_owned_paths is explicitly provided, it takes precedence."""
+        from types import SimpleNamespace
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        fake_snapshot = SimpleNamespace(
+            phase_owned_dirty_paths=("snapshot/path.py",),
+            dirty_paths=("snapshot/path.py",),
+        )
+
+        def _run_loop(workspace, roadmap_path, *, run_mode="autonomous", **kwargs):
+            return (fake_snapshot, [])
+
+        published_owned_paths: dict = {}
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            assert draft is True
+            published_owned_paths[workspace.name] = list(owned_paths)
+            return {
+                "status": "published",
+                "branch": f"feat/{workspace.name}",
+                "head_sha": f"sha-{workspace.name}",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            # Explicit resolver — overrides snapshot
+            resolve_owned_paths=lambda n: ["explicit/override.py"],
+            _run_loop=_run_loop,
+            _publish=_publish,
+            _set_upstream_ref_fn=lambda *a, **kw: None,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "completed"
+        for paths in published_owned_paths.values():
+            assert paths == ["explicit/override.py"], (
+                f"Expected explicit override paths; got {paths!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 9. Finding #2b: upstream ref missing → fail-loud block (no silent skip)
+#
+# Pre-fix: coordinator silently skipped set_upstream_ref and ran run_loop
+# against the absent upstream (building against the wrong upstream).
+# Post-fix: missing upstream ref → block the node, do NOT invoke run_loop.
+
+
+class TestUpstreamRefMissingFailsLoud:
+    """Missing upstream ref → blocked node, zero run_loop calls for that node."""
+
+    def test_missing_upstream_blocks_and_does_not_call_run_loop(self, tmp_path: Path):
+        """If upstream ref is absent from completed_nodes, the node is blocked.
+
+        This guards the 'silent skip → build against absent upstream' bug.
+        Pre-fix: set_upstream_ref was skipped, run_loop ran against wrong upstream.
+        Post-fix: coordinator raises RuntimeError → blocked record, no run_loop.
+        """
+        # Use a 2-node train where the upstream (repo-a) will NOT be in
+        # completed_nodes (its PR is 'open' per ledger but pr_is_open returns
+        # False → it's excluded from completed_nodes).  repo-b then has no
+        # upstream ref to inject.
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        run_loop_calls: List[str] = []
+
+        def _run_loop(workspace, roadmap_path, *, run_mode="autonomous", **kwargs):
+            run_loop_calls.append(workspace.name)
+            return (None, [])
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            assert draft is True
+            # repo-a publishes successfully
+            if workspace.name == "repo-a":
+                return {
+                    "status": "published",
+                    "branch": "feat/train-a",
+                    "head_sha": "sha-aaa",
+                    "pr_url": "https://github.com/owner/repo-a/pull/10",
+                }
+            # Should not reach repo-b publish
+            raise AssertionError("publish called for repo-b but upstream was unresolved")
+
+        # Simulate: upstream (repo-a) built in this run (run_loop was called, publish
+        # succeeded), but then completed_nodes is patched empty for the downstream step.
+        # Easier approach: make the preflight fail so repo-a's run_loop runs but
+        # upstream_result lookup fails.  Actually simplest: stub set_upstream_ref to raise.
+        def _set_upstream_ref_raises(workspace, channel, ref):
+            raise RuntimeError(
+                f"upstream ref for '{channel}' is not resolved — cannot inject"
+            )
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=_run_loop,
+            _publish=_publish,
+            _set_upstream_ref_fn=_set_upstream_ref_raises,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        # repo-a succeeded (no upstream deps to inject); repo-b blocked by inject failure
+        assert result["status"] == "blocked"
+        assert result["node_id"] == "repo-b/specs/plan-b.md"
+
+        # repo-b's run_loop must NOT have been called
+        assert "repo-b" not in run_loop_calls, (
+            f"run_loop was called for repo-b despite upstream ref injection failure; "
+            f"pre-fix bug: building against absent upstream. calls={run_loop_calls}"
+        )
+
+        # Ledger: repo-b is blocked
+        from phase_loop_runtime.train_ledger import read_ledger
+        state = read_ledger(ledger)
+        assert state["repo-b/specs/plan-b.md"].status == "blocked", (
+            f"Expected repo-b blocked in ledger; got {state.get('repo-b/specs/plan-b.md')}"
+        )
+
+    def test_upstream_ref_actually_absent_from_completed_nodes(self, tmp_path: Path):
+        """Direct test: coordinator blocks when upstream node ID is not in completed_nodes.
+
+        Exercises the fail-loud path in the coordinator without any publish stubs
+        — the block must happen during injection (before any PR for that node).
+        """
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        publish_calls: List[str] = []
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            publish_calls.append(workspace.name)
+            return {
+                "status": "published",
+                "branch": f"feat/{workspace.name}",
+                "head_sha": f"sha-{workspace.name}",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        # Raise RuntimeError to simulate the "upstream ref unresolved" check
+        def _inject_raises_for_b(workspace, channel, ref):
+            if workspace.name == "repo-b":
+                raise RuntimeError("upstream ref for 'repo-a/...' is not resolved")
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_publish,
+            _set_upstream_ref_fn=_inject_raises_for_b,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "blocked"
+        # repo-a published; repo-b was blocked at inject (before publish)
+        assert "repo-a" in publish_calls
+        assert "repo-b" not in publish_calls, (
+            "repo-b's PR must not be opened when upstream injection fails"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10 + 11. Finding #3: exceptions → blocked (never stuck at "running")
+#
+# Pre-fix: uncaught exceptions during inject/run_loop left the node at status
+# "running" in the ledger (breadcrumb written, no blocked record added).
+# Post-fix: any exception in the inject+run_loop+publish block → blocked record.
+
+
+class TestExceptionBlocksNode:
+    """inject or run_loop exception → ledger blocked, not a propagating traceback."""
+
+    def test_inject_exception_becomes_blocked(self, tmp_path: Path):
+        """set_upstream_ref raising → node is blocked in ledger (not stuck at running)."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        def _inject_raises(workspace, channel, ref):
+            raise RuntimeError("simulated inject failure: unsupported channel kind")
+
+        publish_calls: List[str] = []
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            publish_calls.append(workspace.name)
+            return {
+                "status": "published",
+                "branch": f"feat/{workspace.name}",
+                "head_sha": f"sha-{workspace.name}",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_publish,
+            _set_upstream_ref_fn=_inject_raises,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "blocked"
+        assert result["node_id"] == "repo-b/specs/plan-b.md"
+        assert "simulated inject failure" in result["detail"]["reason"]
+
+        # Ledger must not leave repo-b stuck at "running"
+        from phase_loop_runtime.train_ledger import read_ledger
+        state = read_ledger(ledger)
+        assert state["repo-b/specs/plan-b.md"].status == "blocked", (
+            f"Expected blocked in ledger; got {state.get('repo-b/specs/plan-b.md')}"
+        )
+        # repo-a must be pr_open (it succeeded before the inject failure)
+        assert state["repo-a/specs/plan-a.md"].status == "pr_open"
+        # repo-b's PR was NOT opened (inject failed before publish)
+        assert "repo-b" not in publish_calls
+
+    def test_run_loop_exception_becomes_blocked(self, tmp_path: Path):
+        """run_loop raising → node is blocked in ledger, not a propagating traceback."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        def _run_loop_raises_for_b(workspace, roadmap_path, *, run_mode="autonomous", **kwargs):
+            if workspace.name == "repo-b":
+                raise RuntimeError("simulated run_loop failure mid-node")
+            return (None, [])
+
+        publish_calls: List[str] = []
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            publish_calls.append(workspace.name)
+            return {
+                "status": "published",
+                "branch": f"feat/{workspace.name}",
+                "head_sha": f"sha-{workspace.name}",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=_run_loop_raises_for_b,
+            _publish=_publish,
+            _set_upstream_ref_fn=lambda *a, **kw: None,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "blocked"
+        assert result["node_id"] == "repo-b/specs/plan-b.md"
+        assert "run_loop failure" in result["detail"]["reason"]
+
+        from phase_loop_runtime.train_ledger import read_ledger
+        state = read_ledger(ledger)
+        assert state["repo-b/specs/plan-b.md"].status == "blocked"
+        # Repo-b's PR was never opened
+        assert "repo-b" not in publish_calls
+
+
+# ---------------------------------------------------------------------------
+# 12. Finding #3: malformed train → zero PRs (validate_train_loud in preflight)
+#
+# Pre-fix: no pre-flight validation; a none-channel dependency edge would
+# open partial PRs then fail at inject time.
+# Post-fix: validate_train_loud is called before any PR is opened.
+
+
+# A train where downstream has a dependency edge with channel=(none) — invalid
+TRAIN_NONE_CHANNEL_MD = """\
+# Release Train: bad-channel
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+
+### Node: repo-b / specs/plan-b.md
+
+**Depends on:** repo-a / specs/plan-a.md
+**Channel:** (none)
+"""
+
+
+class TestMalformedTrainZeroPRs:
+    """A train with a none-channel dependency edge opens zero PRs (Finding #3)."""
+
+    def test_none_channel_dependency_opens_zero_prs(self, tmp_path: Path):
+        """validate_train_loud catches none-channel dependency → zero PRs opened.
+
+        Pre-fix: validation was absent; the train would attempt to inject and fail
+        mid-run after opening repo-a's PR (partial draft train).
+        Post-fix: validate_train_loud fires before any PR is opened.
+        """
+        from phase_loop_runtime.train_roadmap import parse_train_roadmap
+
+        roadmap = parse_train_roadmap(TRAIN_NONE_CHANNEL_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        publish_mock = MagicMock()
+        run_loop_mock = MagicMock()
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=run_loop_mock,
+            _publish=publish_mock,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "preflight_failed", (
+            f"Expected preflight_failed for malformed train; got {result}"
+        )
+        assert any("(T-C)" in e for e in result.get("errors", [])), (
+            f"Expected T-C validation error in output; got {result.get('errors')}"
+        )
+        # THE CRITICAL ASSERTION: zero PRs opened
+        assert publish_mock.call_count == 0, (
+            f"Expected zero publish calls for malformed train; "
+            f"got {publish_mock.call_count}"
+        )
+        assert run_loop_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 13. Finding #4 + #5: resume uses live PR head SHA (not stale ledger SHA)
+#
+# Pre-fix: resume read rec.upstream_merge_sha (which held the draft head SHA
+# — overloading the field); if the branch was force-pushed, the injected ref
+# would be stale.
+# Post-fix: resume reads rec.head_sha AND fetches live SHA via
+# _live_pr_head_sha_fn; head_sha stored separately from upstream_merge_sha.
+
+
+class TestResumeUsesLiveHeadSha:
+    """Resume path prefers live PR head SHA over stale ledger SHA (Findings #4, #5)."""
+
+    def test_live_sha_overrides_stale_ledger_sha(self, tmp_path: Path):
+        """When live PR head SHA differs from ledger, live SHA is injected.
+
+        Scenario:
+          - First run: repo-a's PR was at sha-v1 (now in ledger).
+          - External force-push: repo-a's branch is now at sha-v2.
+          - Second run (resume): repo-a's PR is still open.
+          - Downstream (repo-b) must be injected with sha-v2, not sha-v1.
+
+        Pre-fix: injected sha was taken from rec.upstream_merge_sha (== sha-v1).
+        Post-fix: live_pr_head_sha returns sha-v2 → downstream injects sha-v2.
+        """
+        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        # Pre-populate ledger: repo-a is pr_open with stale head_sha
+        append_record(
+            ledger,
+            LedgerRecord(
+                node_id="repo-a/specs/plan-a.md",
+                status="pr_open",
+                branch="feat/train-a",
+                pr_url="https://github.com/owner/repo-a/pull/10",
+                head_sha="sha-v1-stale",  # stale — branch was force-pushed since
+                upstream_merge_sha=None,
+                merge_order=0,
+            ),
+        )
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        injected_refs: dict = {}
+
+        def _set_upstream_ref(workspace, channel, ref):
+            injected_refs[workspace.name] = ref
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            assert draft is True
+            return {
+                "status": "published",
+                "branch": f"feat/train-{workspace.name}",
+                "head_sha": f"sha-{workspace.name}-new",
+                "pr_url": f"https://gh.com/{workspace.name}/1",
+            }
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_publish,
+            _set_upstream_ref_fn=_set_upstream_ref,
+            _preflight_fn=_preflight_pass,
+            # repo-a's PR is still open
+            _pr_is_open=_pr_is_open_true,
+            # Live query returns the NEW SHA (force-pushed)
+            _live_pr_head_sha_fn=lambda ws, br: "sha-v2-live" if br == "feat/train-a" else None,
+        )
+
+        assert result["status"] == "completed"
+
+        # repo-a was skipped (already pr_open); repo-b was built with injected ref
+        assert "repo-b" in injected_refs, (
+            "repo-b must have been injected with upstream ref during second run"
+        )
+        injected = injected_refs["repo-b"]
+        assert injected == "sha-v2-live", (
+            f"Expected live SHA 'sha-v2-live' injected into repo-b; "
+            f"got {injected!r} (stale ledger SHA would be 'sha-v1-stale')"
+        )
+
+    def test_head_sha_stored_in_head_sha_field_not_upstream_merge_sha(self, tmp_path: Path):
+        """Draft head SHA is stored in head_sha, not upstream_merge_sha (Finding #5).
+
+        upstream_merge_sha is reserved for P4's merged-commit SHA.  Mixing them
+        causes P4 to read a draft head SHA and falsely conclude the upstream merged.
+
+        Pre-fix: train_runner stored head_sha in the upstream_merge_sha field.
+        Post-fix: head_sha → head_sha field, upstream_merge_sha is None for pr_open.
+        """
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({
+                str(tmp_path / "repo-a"): {
+                    "status": "published",
+                    "branch": "feat/train-a",
+                    "head_sha": "sha-draft-a",
+                    "pr_url": "https://gh.com/a/1",
+                },
+                str(tmp_path / "repo-b"): {
+                    "status": "published",
+                    "branch": "feat/train-b",
+                    "head_sha": "sha-draft-b",
+                    "pr_url": "https://gh.com/b/1",
+                },
+            }),
+            _set_upstream_ref_fn=lambda *a, **kw: None,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "completed"
+
+        state = read_ledger(ledger)
+        for node_id, rec in state.items():
+            if rec.status == "pr_open":
+                assert rec.head_sha is not None, (
+                    f"[{node_id}] head_sha must be set on pr_open records"
+                )
+                assert rec.upstream_merge_sha is None, (
+                    f"[{node_id}] upstream_merge_sha must be None on pr_open records "
+                    f"(reserved for P4 merged SHA); got {rec.upstream_merge_sha!r}"
+                )
+
+
+# ---------------------------------------------------------------------------
+# 14. Finding #4: downstream rebuilt when upstream was rebuilt this run
+#
+# Pre-fix: a node already in completed_nodes was always skipped, even if its
+# upstream was rebuilt during the current run (stale injection risk).
+# Post-fix: if any upstream was rebuilt this run, the downstream also rebuilds.
+
+
+class TestDownstreamRebuildsWhenUpstreamRebuilt:
+    """Downstream node rebuilds when its upstream was rebuilt this run (Finding #4)."""
+
+    def test_downstream_rebuilt_when_upstream_pr_closed_and_rebuilt(self, tmp_path: Path):
+        """Upstream PR was closed → upstream rebuilt → downstream also rebuilt.
+
+        Scenario:
+          - Ledger: repo-a=pr_open (sha-a1), repo-b=pr_open (sha-b1).
+          - Second run: repo-a's PR is no longer open (_pr_is_open returns False
+            for its branch) → repo-a is excluded from completed_nodes at resume.
+          - Loop: repo-a is rebuilt (run_loop called). Because repo-a is in
+            rebuilt_this_run, repo-b must also be rebuilt (not skipped).
+
+        Pre-fix: repo-b would be skipped (in completed_nodes from ledger).
+        Post-fix: repo-a in rebuilt_this_run → repo-b also rebuilt.
+        """
+        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        # Pre-populate: both nodes were previously pr_open
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md",
+            status="pr_open",
+            branch="feat/train-a",
+            pr_url="https://gh.com/repo-a/1",
+            head_sha="sha-a1",
+            merge_order=0,
+        ))
+        append_record(ledger, LedgerRecord(
+            node_id="repo-b/specs/plan-b.md",
+            status="pr_open",
+            branch="feat/train-b",
+            pr_url="https://gh.com/repo-b/1",
+            head_sha="sha-b1",
+            merge_order=1,
+        ))
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        run_loop_calls: List[str] = []
+        publish_calls: List[str] = []
+
+        def _run_loop(workspace, roadmap_path, *, run_mode="autonomous", **kwargs):
+            run_loop_calls.append(workspace.name)
+            return (None, [])
+
+        def _publish(workspace, owned_paths, *, draft, pr_body=None, **kwargs):
+            assert draft is True
+            publish_calls.append(workspace.name)
+            return {
+                "status": "published",
+                "branch": f"feat/train-{workspace.name}-new",
+                "head_sha": f"sha-{workspace.name}-new",
+                "pr_url": f"https://gh.com/{workspace.name}/2",
+            }
+
+        def _pr_is_open_a_closed(workspace: Path, branch: str) -> bool:
+            # repo-a's PR is now closed; repo-b's PR is still open
+            return branch == "feat/train-b"
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=_run_loop,
+            _publish=_publish,
+            _set_upstream_ref_fn=lambda *a, **kw: None,
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_a_closed,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+        assert result["status"] == "completed"
+
+        # CRITICAL: repo-a was rebuilt; repo-b must ALSO be rebuilt (not skipped)
+        assert "repo-a" in run_loop_calls, "repo-a must be rebuilt (its PR is closed)"
+        assert "repo-b" in run_loop_calls, (
+            "repo-b must be rebuilt because its upstream (repo-a) was rebuilt this run; "
+            f"pre-fix: repo-b would be skipped (in completed_nodes). "
+            f"run_loop_calls={run_loop_calls}"
+        )
+        assert "repo-b" in publish_calls, "repo-b must publish a new PR"

@@ -581,3 +581,130 @@ class TestTrainNodeAndGateIdentity:
         r = parse_train_roadmap(VALID_TRAIN_MD)
         edge = r.edges[0]
         assert edge.gate_id("sha1") != edge.gate_id("sha2")
+
+
+# ---------------------------------------------------------------------------
+# Default executor: real-consumption and fail-loud tests (Finding #2a)
+#
+# These tests target _default_executor directly (via set_upstream_ref without
+# a custom _executor).  Stub-executor tests above are unchanged — this section
+# adds live-path coverage.
+
+class TestDefaultExecutorRealSeam:
+    """_default_executor: submodule is actually consumable; pin/workspace raise."""
+
+    def test_default_executor_pin_raises_unsupported(self, tmp_path: Path) -> None:
+        """'pin' channel with default executor raises UnsupportedChannelKind.
+
+        Pre-fix: wrote a sentinel file to .phase-loop-upstream-pin/ that nothing
+        reads → downstream built against the absent upstream silently.
+        Post-fix: raises UnsupportedChannelKind immediately (fail-loud).
+        """
+        from phase_loop_runtime.cross_repo_channel import (
+            UnsupportedChannelKind,
+            parse_channel_line,
+            set_upstream_ref,
+        )
+
+        channel = parse_channel_line("pin name=mylib version=1.0.0")
+        with pytest.raises(UnsupportedChannelKind, match="pin"):
+            set_upstream_ref(tmp_path, channel, "sha-abc123")
+
+        # Sentinel file must NOT have been created (the hollow-sentinel behaviour
+        # was the pre-fix bug; confirm it doesn't exist)
+        assert not (tmp_path / ".phase-loop-upstream-pin").exists(), (
+            "Sentinel file .phase-loop-upstream-pin/ must not exist after fail-loud"
+        )
+
+    def test_default_executor_workspace_raises_unsupported(self, tmp_path: Path) -> None:
+        """'workspace' channel with default executor raises UnsupportedChannelKind.
+
+        Pre-fix: wrote a sentinel file to .phase-loop-workspace-ref/ that nothing
+        reads → downstream built against absent upstream silently.
+        Post-fix: raises UnsupportedChannelKind immediately (fail-loud).
+        """
+        from phase_loop_runtime.cross_repo_channel import (
+            UnsupportedChannelKind,
+            parse_channel_line,
+            set_upstream_ref,
+        )
+
+        channel = parse_channel_line("workspace path=../upstream")
+        with pytest.raises(UnsupportedChannelKind, match="workspace"):
+            set_upstream_ref(tmp_path, channel, "sha-xyz789")
+
+        assert not (tmp_path / ".phase-loop-workspace-ref").exists(), (
+            "Sentinel file .phase-loop-workspace-ref/ must not exist after fail-loud"
+        )
+
+    def test_default_executor_submodule_ref_is_consumable(self, tmp_path: Path) -> None:
+        """'submodule' channel with default executor actually checks out the ref.
+
+        The injected ref must be readable from the submodule after set_upstream_ref —
+        proving the downstream build ACTUALLY consumes the upstream ref rather than
+        building against an unread sentinel or the wrong commit.
+
+        Uses a local bare repo as the 'origin' so no network access is required.
+        Git ≥2.38 blocks local file:// clones by default; we allow it via config.
+        """
+        import subprocess as sp
+        from phase_loop_runtime.cross_repo_channel import parse_channel_line, set_upstream_ref
+
+        # Allow local file:// transport for the duration of this test (git ≥2.38
+        # security hardening disallows it by default; this is safe in a test).
+        file_allow_env = {"GIT_CONFIG_GLOBAL": "/dev/null"}
+        base_env = {**__import__("os").environ, **file_allow_env}
+        git_allow = ["git", "-c", "protocol.file.allow=always"]
+
+        # ── Create upstream repo and populate it ────────────────────────────
+        upstream_repo = tmp_path / "upstream"
+        upstream_repo.mkdir()
+        sp.run(git_allow + ["init", "-q", "-b", "main"], cwd=str(upstream_repo), check=True)
+        sp.run(["git", "config", "user.email", "t@t.com"], cwd=str(upstream_repo), check=True)
+        sp.run(["git", "config", "user.name", "T"], cwd=str(upstream_repo), check=True)
+        (upstream_repo / "lib.py").write_text("# v1\n")
+        sp.run(["git", "add", "lib.py"], cwd=str(upstream_repo), check=True)
+        sp.run(["git", "commit", "-m", "init", "-q"], cwd=str(upstream_repo), check=True)
+
+        target_sha = sp.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(upstream_repo), capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        # ── Create downstream repo with upstream as a submodule ─────────────
+        downstream = tmp_path / "downstream"
+        downstream.mkdir()
+        sp.run(git_allow + ["init", "-q", "-b", "main"], cwd=str(downstream), check=True)
+        sp.run(["git", "config", "user.email", "t@t.com"], cwd=str(downstream), check=True)
+        sp.run(["git", "config", "user.name", "T"], cwd=str(downstream), check=True)
+        sp.run(["git", "config", "protocol.file.allow", "always"], cwd=str(downstream), check=True)
+        sp.run(
+            git_allow + ["submodule", "add", "-q", str(upstream_repo), "vendor/upstream"],
+            cwd=str(downstream), check=True,
+        )
+        sp.run(["git", "commit", "-m", "add submodule", "-q"], cwd=str(downstream), check=True)
+
+        # ── Inject via set_upstream_ref (default executor) ──────────────────
+        # The executor runs 'git fetch origin; git checkout <ref>' in the
+        # submodule.  Since origin is the local upstream_repo, we set
+        # protocol.file.allow=always in the submodule's git config too.
+        sp.run(
+            ["git", "config", "protocol.file.allow", "always"],
+            cwd=str(downstream / "vendor/upstream"), check=True,
+        )
+
+        channel = parse_channel_line("submodule path=vendor/upstream")
+        set_upstream_ref(downstream, channel, target_sha)  # uses _default_executor
+
+        # ── Verify the submodule HEAD now resolves to the injected ref ───────
+        result = sp.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(downstream / "vendor/upstream"),
+            capture_output=True, text=True, check=True,
+        )
+        actual_sha = result.stdout.strip()
+        assert actual_sha == target_sha, (
+            f"Submodule HEAD after set_upstream_ref must equal the injected ref "
+            f"'{target_sha}'; got '{actual_sha}'. "
+            f"The ref is NOT consumable — upstream injection is hollow."
+        )
