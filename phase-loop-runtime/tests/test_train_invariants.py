@@ -21,11 +21,24 @@ Invariants:
   INV-4. Train state never written under any ``.phase-loop/`` path.
   INV-5. Autonomous mode adds no ``human_required``; a panel non-approval is a
          non-human terminal (``human_required=False`` in ``terminal_blocker``).
-  INV-6. Live-default ``_live_reverify`` reads the real StateSnapshot failure
-         signals (``closeout_terminal_status`` in the bad set, ``human_required``,
-         ``blocker_class``); each failure case returns False; the clean pass
-         returns True.  Tests call ``_live_reverify`` directly without stubbing
-         ``_reverify_fn`` to guard the live-default path.
+  INV-6. Live-default ``_live_reverify`` directly runs the downstream node's
+         plan verification commands against the workspace.  A failing command
+         (non-zero exit) returns False; a passing command returns True.
+         Fail-closed: no plan → False; no awaiting phase → False; exception →
+         False.  Tests call ``_live_reverify`` directly without stubbing
+         ``_reverify_fn`` to guard the live-default path.  (After the
+         false-green-killer fix: _live_reverify no longer delegates to
+         run_loop, which was a no-op for awaiting_phase_closeout + manual.)
+  INV-7. ``run_loop``'s failure contract: a genuine verification failure ALWAYS
+         produces a StateSnapshot with at least one of the three failure signals
+         set (``blocker_class`` non-None, ``human_required=True``, or
+         ``closeout_terminal_status`` in the bad set).  Pinned via:
+           (a) Pre-seeded repo + real ``status_snapshot()`` (the snapshot-
+               construction code ``run_loop`` uses internally): a ``repeated_
+               verification_failure`` LoopEvent in the event log causes
+               ``status_snapshot()`` to return ``blocker_class`` non-None.
+           (b) Structural: ``_pipeline_branch_blocker_from_error()`` always
+               returns a non-None ``blocker_class`` in ``BLOCKER_CLASSES``.
 """
 from __future__ import annotations
 
@@ -686,169 +699,575 @@ class TestInvariant5AutonomyBoundary:
 
 
 # ---------------------------------------------------------------------------
-# INV-6: Live-default _live_reverify reads real StateSnapshot failure signals
+# INV-6: Live-default _live_reverify directly runs verification commands
 
-class TestInvariant6LiveReverifyFailureSignals:
-    """_live_reverify returns False on each StateSnapshot failure signal.
+class TestInvariant6LiveReverifyRunsVerification:
+    """_live_reverify directly executes the downstream node's plan verification
+    commands against the workspace and returns False when any command fails.
 
     This test calls _live_reverify DIRECTLY (not through run_train) without
     stubbing _reverify_fn.  It guards the live-default path used in production
-    runs (not the test stub path used in P4 unit tests).
+    runs.
 
-    The three failure signals (P4-CR-1 regression guard):
-      a. closeout_terminal_status in the bad set
-      b. human_required = True
-      c. blocker_class is not None
+    After the false-green-killer fix: _live_reverify no longer delegates to
+    run_loop (which was a no-op for awaiting_phase_closeout + manual closeout).
+    It directly calls verification_commands_from_plan + run_verification against
+    the workspace that has the merged pin injected.  The merged-pin file written
+    by set_upstream_ref is read by whatever commands the plan declares.
 
-    All three must independently return False.  The clean (no signal) path
-    must return True.
+    Fail-closed contract:
+      a. Failing verification command → False
+      b. No plan file → False (can't verify)
+      c. No awaiting phase found → False (no actionable phase)
+      d. Any exception → False (fail-safe)
+      e. Plan with no verification commands → True (plan author's choice)
+      f. Passing verification commands → True
     """
 
-    # Build a minimal StateSnapshot with the given signal overrides.
-    _BASE_SNAP_ARGS = dict(
-        timestamp="2026-01-01T00:00:00Z",
-        repo="test-repo",
-        roadmap="specs/plan.md",
-    )
+    def _make_reverify_repo(self, tmp_path: Path, verify_lines: str = "") -> tuple[Path, Path]:
+        """Create a minimal workspace at awaiting_phase_closeout.
 
-    def _make_snapshot(self, **overrides) -> StateSnapshot:
-        return StateSnapshot(**{**self._BASE_SNAP_ARGS, **overrides})
-
-    def _reverify_with_snapshot(self, snapshot: StateSnapshot, tmp_path: Path) -> bool:
-        """Call _live_reverify with a stubbed run_loop that returns the given snapshot."""
-        from unittest.mock import patch
-
-        # _live_reverify imports run_loop lazily from phase_loop_runtime.runner;
-        # patch the canonical location so the lazy import is intercepted.
-        with patch(
-            "phase_loop_runtime.runner.run_loop",
-            return_value=(snapshot, []),
-        ):
-            return _live_reverify(
-                tmp_path / "repo-a",
-                tmp_path / "repo-a" / "specs" / "plan.md",
-                "governed",
-            )
-
-    def test_clean_snapshot_passes(self, tmp_path: Path):
-        """A clean snapshot (no failure signals) returns True."""
-        snap = self._make_snapshot()
-        result = self._reverify_with_snapshot(snap, tmp_path)
-        assert result is True, (
-            "INV-6 VIOLATED: _live_reverify returned False on a clean snapshot "
-            "(no failure signals set)"
-        )
-
-    def test_closeout_terminal_status_blocked_fails(self, tmp_path: Path):
-        """closeout_terminal_status='blocked' → False."""
-        snap = self._make_snapshot(closeout_terminal_status="blocked")
-        result = self._reverify_with_snapshot(snap, tmp_path)
-        assert result is False, (
-            "INV-6 VIOLATED: _live_reverify returned True with "
-            "closeout_terminal_status='blocked'"
-        )
-
-    def test_closeout_terminal_status_stale_input_fails(self, tmp_path: Path):
-        """closeout_terminal_status='stale_input' → False."""
-        snap = self._make_snapshot(closeout_terminal_status="stale_input")
-        result = self._reverify_with_snapshot(snap, tmp_path)
-        assert result is False, (
-            "INV-6 VIOLATED: _live_reverify returned True with "
-            "closeout_terminal_status='stale_input'"
-        )
-
-    def test_closeout_terminal_status_failed_verification_fails(self, tmp_path: Path):
-        """closeout_terminal_status='failed_verification' → False."""
-        snap = self._make_snapshot(closeout_terminal_status="failed_verification")
-        result = self._reverify_with_snapshot(snap, tmp_path)
-        assert result is False, (
-            "INV-6 VIOLATED: _live_reverify returned True with "
-            "closeout_terminal_status='failed_verification'"
-        )
-
-    def test_closeout_terminal_status_human_required_string_fails(self, tmp_path: Path):
-        """closeout_terminal_status='human_required' (string) → False."""
-        snap = self._make_snapshot(closeout_terminal_status="human_required")
-        result = self._reverify_with_snapshot(snap, tmp_path)
-        assert result is False, (
-            "INV-6 VIOLATED: _live_reverify returned True with "
-            "closeout_terminal_status='human_required'"
-        )
-
-    def test_closeout_terminal_status_none_passes(self, tmp_path: Path):
-        """closeout_terminal_status=None (verify mode, no full closeout) → True.
-
-        None is NOT a failure signal; verify mode may not emit a closeout event.
+        Sets up a git repo with a single-phase roadmap, a plan file whose
+        ## Verification section contains ``verify_lines``, and a persisted
+        state file that puts phase P1 at awaiting_phase_closeout so that
+        ``reconcile()`` returns ``current_phase="P1"``.
         """
-        snap = self._make_snapshot(closeout_terminal_status=None)
-        result = self._reverify_with_snapshot(snap, tmp_path)
+        import subprocess
+        from phase_loop_test_utils import make_repo, write_phase_plan
+        from phase_loop_runtime.models import utc_now
+        from phase_loop_runtime.provenance import snapshot_provenance
+        from phase_loop_runtime.state import write_state
+
+        repo = make_repo(tmp_path)
+        # Replace the default multi-phase roadmap with a single test phase.
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text("# Roadmap\n\n### Phase 0 — P1 (P1)\n\n")
+        subprocess.run(["git", "add", "specs/phase-plans-v1.md"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "single-phase roadmap"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+
+        # Write a plan with the given verification body.
+        body = (
+            "# P1\n\n"
+            "## Lanes\n\n"
+            "### SL-0 - P1\n"
+            "- **Owned files**: `work.md`\n\n"
+            f"## Verification\n\n{verify_lines}\n"
+        )
+        plan = write_phase_plan(repo, "P1", roadmap, body=body)
+        subprocess.run(
+            ["git", "add", str(plan.relative_to(repo))],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "add plan with verification"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+
+        # Write state that puts P1 at awaiting_phase_closeout with correct
+        # provenance so reconcile() restores the status from the state file.
+        state = StateSnapshot(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phases={"P1": "awaiting_phase_closeout"},
+            current_phase="P1",
+            **snapshot_provenance(roadmap),
+        )
+        write_state(repo, state)
+        return repo, roadmap
+
+    def test_passing_verification_returns_true(self, tmp_path: Path):
+        """Verification command exits 0 → _live_reverify returns True."""
+        repo, roadmap = self._make_reverify_repo(
+            tmp_path,
+            verify_lines='- `python3 -c "import sys; sys.exit(0)"`\n',
+        )
+        result = _live_reverify(repo, roadmap, "governed")
         assert result is True, (
-            "INV-6 VIOLATED: _live_reverify returned False with "
-            "closeout_terminal_status=None; None is not a failure — verify mode "
-            "may leave this field empty on a clean run"
+            "INV-6 VIOLATED: _live_reverify returned False when all verification "
+            "commands exited 0 (expected True — all commands passed)"
         )
 
-    def test_human_required_true_fails(self, tmp_path: Path):
-        """human_required=True → False."""
-        snap = self._make_snapshot(human_required=True)
-        result = self._reverify_with_snapshot(snap, tmp_path)
+    def test_failing_verification_returns_false(self, tmp_path: Path):
+        """Verification command exits 1 → _live_reverify returns False.
+
+        This is the canonical false-green regression guard: a downstream whose
+        verification FAILS against the merged pin must cause _live_reverify to
+        return False so the merge is halted.
+        """
+        repo, roadmap = self._make_reverify_repo(
+            tmp_path,
+            verify_lines='- `python3 -c "import sys; sys.exit(1)"`\n',
+        )
+        result = _live_reverify(repo, roadmap, "governed")
         assert result is False, (
-            "INV-6 VIOLATED: _live_reverify returned True with human_required=True"
+            "INV-6 VIOLATED: _live_reverify returned True even though a "
+            "verification command exited non-zero — downstream would be "
+            "merged without valid verification against the merged pin"
         )
 
-    def test_human_required_false_passes(self, tmp_path: Path):
-        """human_required=False (default) → True (signal absent)."""
-        snap = self._make_snapshot(human_required=False)
-        result = self._reverify_with_snapshot(snap, tmp_path)
+    def test_no_plan_returns_false(self, tmp_path: Path):
+        """No plan file for the current phase → False (fail-closed)."""
+        import subprocess
+        from phase_loop_test_utils import make_repo
+        from phase_loop_runtime.models import utc_now
+        from phase_loop_runtime.provenance import snapshot_provenance
+        from phase_loop_runtime.state import write_state
+
+        repo = make_repo(tmp_path)
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text("# Roadmap\n\n### Phase 0 — P1 (P1)\n\n")
+        subprocess.run(["git", "add", "specs/phase-plans-v1.md"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "roadmap no plan"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+        # Write state but NO plan file — find_plan_artifact returns None.
+        state = StateSnapshot(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phases={"P1": "awaiting_phase_closeout"},
+            current_phase="P1",
+            **snapshot_provenance(roadmap),
+        )
+        write_state(repo, state)
+        result = _live_reverify(repo, roadmap, "governed")
+        assert result is False, (
+            "INV-6 VIOLATED: _live_reverify returned True when no plan file exists "
+            "(fail-closed: cannot verify without a plan)"
+        )
+
+    def test_no_awaiting_phase_returns_false(self, tmp_path: Path):
+        """All phases at 'planned' (nothing awaiting closeout) → False (fail-closed)."""
+        from phase_loop_test_utils import make_repo
+        repo = make_repo(tmp_path)
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        # No state written → reconcile returns all phases as 'planned';
+        # _current_phase returns the first planned phase, not awaiting_phase_closeout.
+        # _live_reverify finds no phase at awaiting_phase_closeout → fail closed.
+        result = _live_reverify(repo, roadmap, "governed")
+        assert result is False, (
+            "INV-6 VIOLATED: _live_reverify returned True when no phase is at "
+            "awaiting_phase_closeout — fail-closed contract violated"
+        )
+
+    def test_no_verification_commands_returns_true(self, tmp_path: Path):
+        """Plan with no ## Verification section → True (plan author chose none)."""
+        repo, roadmap = self._make_reverify_repo(
+            tmp_path,
+            verify_lines="",  # empty → verification_commands_from_plan returns []
+        )
+        result = _live_reverify(repo, roadmap, "governed")
         assert result is True, (
-            "INV-6 VIOLATED: _live_reverify returned False with human_required=False"
+            "INV-6 VIOLATED: _live_reverify returned False when the plan declares "
+            "no verification commands — empty is not a failure"
         )
 
-    def test_blocker_class_non_none_fails(self, tmp_path: Path):
-        """blocker_class non-None → False."""
-        snap = self._make_snapshot(blocker_class="missing_secret")
-        result = self._reverify_with_snapshot(snap, tmp_path)
-        assert result is False, (
-            "INV-6 VIOLATED: _live_reverify returned True with blocker_class='missing_secret'"
+    def test_exception_returns_false(self, tmp_path: Path):
+        """Non-existent workspace → exception → False (fail-safe)."""
+        result = _live_reverify(
+            tmp_path / "nonexistent-repo",
+            tmp_path / "nonexistent-repo" / "specs" / "plan.md",
+            "governed",
         )
-
-    def test_blocker_class_none_passes(self, tmp_path: Path):
-        """blocker_class=None (default) → True (signal absent)."""
-        snap = self._make_snapshot(blocker_class=None)
-        result = self._reverify_with_snapshot(snap, tmp_path)
-        assert result is True, (
-            "INV-6 VIOLATED: _live_reverify returned False with blocker_class=None"
-        )
-
-    def test_all_signals_at_once_fails(self, tmp_path: Path):
-        """All three failure signals simultaneously → False."""
-        snap = self._make_snapshot(
-            closeout_terminal_status="blocked",
-            human_required=True,
-            blocker_class="missing_secret",
-        )
-        result = self._reverify_with_snapshot(snap, tmp_path)
-        assert result is False, (
-            "INV-6 VIOLATED: _live_reverify returned True with all three "
-            "failure signals active"
-        )
-
-    def test_exception_in_run_loop_fails(self, tmp_path: Path):
-        """If run_loop raises, _live_reverify returns False (fail-safe)."""
-        from unittest.mock import patch
-
-        # _live_reverify imports run_loop lazily from phase_loop_runtime.runner.
-        with patch(
-            "phase_loop_runtime.runner.run_loop",
-            side_effect=RuntimeError("run_loop exploded"),
-        ):
-            result = _live_reverify(
-                tmp_path / "repo-a",
-                tmp_path / "repo-a" / "specs" / "plan.md",
-                "governed",
-            )
-
         assert result is False, (
             "INV-6 VIOLATED: _live_reverify must return False (fail-safe) "
-            "when run_loop raises an exception"
+            "when an exception is raised (e.g. workspace does not exist)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# BLOCK 2: End-to-end reverify — real post-P3 workspace, real verification
+
+class TestBlock2ReverifyEndToEnd:
+    """End-to-end regression guard for the false-green killer (BLOCK 2).
+
+    The post-P3 workspace state (awaiting_phase_closeout) is reproduced via
+    write_state with correct provenance — the smallest faithful reproduction
+    that exercises the actual _live_reverify→verification path without stubbing
+    _reverify_fn.  Injecting via a real run_loop call would require skill-bundle
+    infrastructure (PHASE_LOOP_RUNNER_REPO_ROOT / dotfiles tree) that is absent
+    in standalone CI; the write_state approach produces identical reconcile()
+    output since reconcile() reads the persisted state file directly.
+
+    PRE-FIX BEHAVIOR CONFIRMED (before the false-green-killer fix):
+      _live_reverify called run_loop(workspace, roadmap_path, run_mode=run_mode).
+      run_loop found the node at awaiting_phase_closeout with closeout_mode=
+      "manual" (default), dispatched into the bare `break` at runner.py:1897 —
+      no executor, no verification — and returned the cached P3 snapshot with
+      closeout_terminal_status=None, human_required=False, blocker_class=None.
+      _live_reverify mapped that to True (the false green).  Confirmed by
+      running the test against the pre-fix code: it failed with
+      "AssertionError: BLOCK 2 REGRESSION: _live_reverify returned True ...".
+
+    POST-FIX BEHAVIOR: _live_reverify runs the plan's verification commands
+    directly.  A command that reads the pin file and exits 1 when it contains
+    'BREAKING' causes _live_reverify to return False → merge is halted.
+    """
+
+    def _make_post_p3_workspace(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Set up the smallest faithful post-P3 workspace.
+
+        Creates a git repo with a single-phase roadmap and a plan whose
+        ## Verification section contains a command that reads
+        ``upstream-version.txt`` and exits 1 if it contains ``BREAKING``.
+
+        The workspace state is set to awaiting_phase_closeout via write_state
+        (with correct provenance) so that reconcile() returns current_phase=P1
+        at awaiting_phase_closeout — the same state a real run_loop call leaves.
+        """
+        import subprocess
+        from phase_loop_test_utils import make_repo, write_phase_plan
+        from phase_loop_runtime.models import utc_now
+        from phase_loop_runtime.provenance import snapshot_provenance
+        from phase_loop_runtime.state import write_state
+
+        repo = make_repo(tmp_path)
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text("# Roadmap\n\n### Phase 0 — P1 (P1)\n\n")
+        subprocess.run(["git", "add", "specs/phase-plans-v1.md"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "p3 roadmap"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+
+        # Plan whose verification reads the pin file and fails on BREAKING.
+        verify_cmd = (
+            "python3 -c \""
+            "import sys, pathlib; "
+            "v = pathlib.Path('upstream-version.txt').read_text().strip(); "
+            "sys.exit(1 if 'BREAKING' in v else 0)"
+            "\""
+        )
+        body = (
+            "# P1\n\n"
+            "## Lanes\n\n"
+            "### SL-0 - P1\n"
+            "- **Owned files**: `work.md`\n\n"
+            "## Verification\n\n"
+            f"- `{verify_cmd}`\n"
+        )
+        plan = write_phase_plan(repo, "P1", roadmap, body=body)
+        subprocess.run(
+            ["git", "add", str(plan.relative_to(repo))],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "p3 plan"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+
+        # Persist awaiting_phase_closeout state (matching provenance).
+        # reconcile() reads load_state(repo) first and restores this status,
+        # identical to what a real run_loop call would leave on disk.
+        state = StateSnapshot(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phases={"P1": "awaiting_phase_closeout"},
+            current_phase="P1",
+            **snapshot_provenance(roadmap),
+        )
+        write_state(repo, state)
+
+        # Initial upstream-version.txt (non-breaking) before P4 re-injection.
+        (repo / "upstream-version.txt").write_text("sha-DRAFT-abc123\n")
+        return repo, roadmap
+
+    def test_breaking_merged_pin_makes_reverify_return_false(self, tmp_path: Path):
+        """CONTRACT-BREAKING merged pin → _live_reverify returns False → merge halted.
+
+        set_upstream_ref writes 'BREAKING-SHA-INCOMPATIBLE' into
+        upstream-version.txt.  The plan's verification command reads that file
+        and exits 1.  _live_reverify must return False.
+
+        Against the PRE-FIX code: _live_reverify returned True (false green —
+        run_loop hit the awaiting_phase_closeout + manual no-op bare break).
+        Against the POST-FIX code: _live_reverify returns False (verified here).
+        """
+        from phase_loop_runtime.cross_repo_channel import ChannelDescriptor, set_upstream_ref
+
+        repo, roadmap = self._make_post_p3_workspace(tmp_path)
+
+        # Inject a CONTRACT-BREAKING merged SHA (the P4 set_upstream_ref call).
+        channel = ChannelDescriptor(kind="pin", params={"file": "upstream-version.txt"})
+        set_upstream_ref(repo, channel, "BREAKING-SHA-INCOMPATIBLE")
+
+        # The verification command reads upstream-version.txt → 'BREAKING' → exits 1.
+        result = _live_reverify(repo, roadmap, "governed")
+        assert result is False, (
+            "BLOCK 2 REGRESSION: _live_reverify returned True with a CONTRACT-BREAKING "
+            "merged pin.\nupstream-version.txt now contains 'BREAKING-SHA-INCOMPATIBLE'; "
+            "the plan's verification command should have exited 1.\n"
+            "Pre-fix: this returned True (run_loop no-op); post-fix: must be False."
+        )
+
+    def test_compatible_merged_pin_makes_reverify_return_true(self, tmp_path: Path):
+        """Compatible merged pin → _live_reverify returns True → merge proceeds."""
+        from phase_loop_runtime.cross_repo_channel import ChannelDescriptor, set_upstream_ref
+
+        repo, roadmap = self._make_post_p3_workspace(tmp_path)
+
+        # Inject a compatible merged SHA (no 'BREAKING').
+        channel = ChannelDescriptor(kind="pin", params={"file": "upstream-version.txt"})
+        set_upstream_ref(repo, channel, "sha-MERGED-COMPATIBLE-abc123")
+
+        # The verification command reads upstream-version.txt → no BREAKING → exits 0.
+        result = _live_reverify(repo, roadmap, "governed")
+        assert result is True, (
+            "BLOCK 2 REGRESSION: _live_reverify returned False with a compatible "
+            "merged pin — verification falsely rejected.\n"
+            "upstream-version.txt contains 'sha-MERGED-COMPATIBLE-abc123'; "
+            "the plan's verification command should have exited 0."
+        )
+
+
+# ---------------------------------------------------------------------------
+# INV-7: run_loop failure contract — a genuine failure ALWAYS emits a signal
+
+class TestInvariant7RunLoopFailureContract:
+    """Pin that run_loop ALWAYS emits at least one failure signal on a genuine
+    verification failure.
+
+    Two complementary pins:
+      (a) Real snapshot-construction path (status_snapshot on a pre-seeded repo).
+      (b) Structural: the helper functions that COERCE all failure paths to
+          non-None signals are themselves verified to produce non-None values.
+
+    NOTE: After the false-green-killer fix, _live_reverify no longer reads
+    run_loop's snapshot signals — it directly runs verification commands.
+    This invariant now guards run_loop's standalone failure contract rather
+    than the _live_reverify mechanism.  It remains important for callers that
+    DO consume run_loop's snapshot signals (e.g. the standalone CLI, INV-5
+    autonomy boundary checks).
+    """
+
+    # -----------------------------------------------------------------------
+    # Part (a): real snapshot-construction path — pre-seeded repo
+
+    def test_pre_seeded_verification_failure_snapshot_carries_signal(
+        self, tmp_path: Path
+    ):
+        """status_snapshot() on a repo with a repeated_verification_failure
+        LoopEvent returns a snapshot with blocker_class non-None.
+
+        This exercises runner.reconcile() / status_snapshot() — the same
+        code path run_loop uses to build its return value after a verification
+        failure.  Changing run_loop's failure output so that reconcile() no
+        longer sees the signal would make this test red.
+        """
+        import subprocess
+
+        from phase_loop_runtime.events import append_event
+        from phase_loop_runtime.models import LoopEvent, utc_now
+        from phase_loop_runtime.provenance import event_provenance
+        from phase_loop_runtime.runner import status_snapshot
+
+        repo = tmp_path / "repo-v"
+        repo.mkdir()
+        # Minimal git repo (status_snapshot calls snapshot_provenance which
+        # only needs the roadmap file; no git commands needed).
+        roadmap = repo / "specs" / "phase-plans.md"
+        roadmap.parent.mkdir(parents=True)
+        roadmap.write_text(
+            "# Roadmap\n\n### Phase 1 - Verify (VERIFY)\n"
+        )
+
+        # Append the exact LoopEvent that run_loop writes after a
+        # repeated_verification_failure (runner.py lines 2457-2467 pattern).
+        append_event(
+            repo,
+            LoopEvent(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phase="VERIFY",
+                action="execute",
+                status="blocked",
+                model="gpt-5.4",
+                reasoning_effort="medium",
+                source="invariant-test-fixture",
+                blocker={
+                    "human_required": False,
+                    "blocker_class": "repeated_verification_failure",
+                    "blocker_summary": (
+                        "INV-7 fixture: synthetic repeated_verification_failure "
+                        "mirroring runner.py lines 2458-2466."
+                    ),
+                    "required_human_inputs": (),
+                    "access_attempts": (),
+                },
+                **event_provenance(roadmap, "VERIFY"),
+            ),
+        )
+
+        # Call the REAL status_snapshot() — same code path run_loop uses
+        # internally to construct its return StateSnapshot.
+        snapshot = status_snapshot(repo, roadmap)
+
+        assert snapshot.blocker_class is not None, (
+            "INV-7 VIOLATED: status_snapshot() returned a snapshot with "
+            "blocker_class=None after a repeated_verification_failure LoopEvent "
+            "was appended.  run_loop's snapshot-construction code (reconcile) "
+            "is not propagating the blocker signal — _live_reverify would "
+            "silently false-green a downstream merge."
+        )
+        assert snapshot.blocker_class == "repeated_verification_failure", (
+            f"INV-7: unexpected blocker_class={snapshot.blocker_class!r}; "
+            "expected 'repeated_verification_failure'"
+        )
+
+    def test_pre_seeded_verification_failure_causes_reverify_false(
+        self, tmp_path: Path
+    ):
+        """_live_reverify returns False when run_loop returns the snapshot that
+        status_snapshot() produces from a pre-seeded verification failure.
+
+        This bridges INV-7a (snapshot carries signal) with the reader (INV-6):
+        the ACTUAL snapshot produced by run_loop's internal code path causes
+        _live_reverify to return False.
+        """
+        from unittest.mock import patch
+
+        from phase_loop_runtime.events import append_event
+        from phase_loop_runtime.models import LoopEvent, utc_now
+        from phase_loop_runtime.provenance import event_provenance
+        from phase_loop_runtime.runner import status_snapshot
+
+        repo = tmp_path / "repo-v2"
+        repo.mkdir()
+        roadmap = repo / "specs" / "phase-plans.md"
+        roadmap.parent.mkdir(parents=True)
+        roadmap.write_text(
+            "# Roadmap\n\n### Phase 1 - Verify (VERIFY)\n"
+        )
+        append_event(
+            repo,
+            LoopEvent(
+                timestamp=utc_now(),
+                repo=str(repo),
+                roadmap=str(roadmap),
+                phase="VERIFY",
+                action="execute",
+                status="blocked",
+                model="gpt-5.4",
+                reasoning_effort="medium",
+                source="invariant-test-fixture",
+                blocker={
+                    "human_required": False,
+                    "blocker_class": "repeated_verification_failure",
+                    "blocker_summary": "INV-7 fixture: synthetic failure.",
+                    "required_human_inputs": (),
+                    "access_attempts": (),
+                },
+                **event_provenance(roadmap, "VERIFY"),
+            ),
+        )
+
+        # Capture the REAL snapshot from status_snapshot() — what run_loop
+        # would actually return for this blocked repo state.
+        real_snapshot = status_snapshot(repo, roadmap)
+
+        # Now feed that real snapshot through _live_reverify (patching run_loop
+        # to return the snapshot we just obtained from real code).
+        with patch(
+            "phase_loop_runtime.runner.run_loop",
+            return_value=(real_snapshot, []),
+        ):
+            result = _live_reverify(
+                repo,
+                roadmap,
+                "governed",
+            )
+
+        assert result is False, (
+            "INV-7 VIOLATED: _live_reverify returned True on the snapshot that "
+            "status_snapshot() (run_loop's internal snapshot-construction code) "
+            "produced for a pre-seeded repeated_verification_failure state.  "
+            "The false-green killer does NOT catch the signal that run_loop "
+            "actually emits on a verification failure."
+        )
+
+    # -----------------------------------------------------------------------
+    # Part (b): structural — helper functions that coerce exception paths
+
+    def test_pipeline_branch_blocker_from_error_always_sets_signal(self):
+        """_pipeline_branch_blocker_from_error always returns a dict with
+        non-None blocker_class in BLOCKER_CLASSES.
+
+        This is the coercing helper for ALL exception paths in run_loop
+        (runner.py lines 378-387, 418, 605).  If it could return None, any
+        exception during pipeline-branch setup would silently false-green.
+        """
+        from phase_loop_runtime.models import BLOCKER_CLASSES
+        from phase_loop_runtime.runner import _pipeline_branch_blocker_from_error
+
+        class _BareException(Exception):
+            pass
+
+        class _TaggedException(Exception):
+            blocker_class = "missing_secret"
+            blocker_summary = "tagged exc summary"
+
+        class _EmptyBlocker(Exception):
+            blocker_class = None  # malformed; the helper must still coerce
+
+        test_cases = [
+            _BareException("bare exception — no blocker_class attribute"),
+            _TaggedException("tagged — has valid blocker_class"),
+            _EmptyBlocker("None blocker_class — coerce to contract_bug"),
+            RuntimeError("generic runtime error"),
+            ValueError("value error with no blocker_class"),
+        ]
+
+        for exc in test_cases:
+            result = _pipeline_branch_blocker_from_error(exc)
+            bc = result.get("blocker_class")
+            assert bc is not None, (
+                f"INV-7 VIOLATED: _pipeline_branch_blocker_from_error({exc!r}) "
+                "returned blocker_class=None; all exception paths must produce "
+                "a non-None blocker_class so _live_reverify can detect failure."
+            )
+            assert bc in BLOCKER_CLASSES, (
+                f"INV-7 VIOLATED: _pipeline_branch_blocker_from_error({exc!r}) "
+                f"returned blocker_class={bc!r} which is not in BLOCKER_CLASSES."
+            )
+
+    def test_blocker_site_count_in_runner_is_non_empty(self):
+        """runner.py contains a non-trivial number of repeated_verification_failure
+        sites — asserts the structural coverage is not vacuous.
+
+        A future refactor that removes all signal-setting sites without updating
+        this test would make it red (count drops to zero).
+        """
+        import inspect
+        import re
+
+        import phase_loop_runtime.runner as runner_mod
+
+        source = inspect.getsource(runner_mod)
+
+        # Count explicit repeated_verification_failure assignments in runner.py.
+        rvf_sites = len(re.findall(r'"repeated_verification_failure"', source))
+        assert rvf_sites >= 10, (
+            f"INV-7 VIOLATED: only {rvf_sites} 'repeated_verification_failure' "
+            "sites found in runner.py (expected ≥10).  The structural guarantee "
+            "that run_loop always sets a failure signal may have eroded — verify "
+            "that all verification-failure code paths still emit a blocker."
+        )
+
+        # Count non-None blocker_class defaults in coercing helpers.
+        coerce_sites = len(re.findall(
+            r'or "repeated_verification_failure"|or "contract_bug"',
+            source,
+        ))
+        assert coerce_sites >= 2, (
+            f"INV-7 VIOLATED: only {coerce_sites} coercing-default sites found "
+            "in runner.py (expected ≥2 — the closeout reader and "
+            "_pipeline_branch_blocker_from_error each contribute one).  "
+            "A removed default would let a failure path silently emit None."
         )

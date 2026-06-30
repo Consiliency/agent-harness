@@ -275,42 +275,107 @@ def _live_merge_pr(workspace: Path, branch: str) -> str:
 
 
 def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
-    """Re-verify a node by re-running the per-repo run_loop; return True on pass.
+    """Re-verify a downstream node against the injected upstream merged pin.
+
+    Called after ``set_upstream_ref`` writes the merged SHA into the downstream
+    workspace.  Runs the downstream's verification commands (from its plan file)
+    directly against that workspace and returns True only when they all pass.
 
     This is the live default for ``_reverify_fn``.  Tests stub this seam.
 
-    NOTE: This calls ``run_loop`` in verify mode.  It does NOT re-publish or
-    open a new PR — the existing draft PR from P3 remains open.  The downstream
-    draft PR retains the P3-time draft pin; only the *local workspace file* is
-    re-resolved to the upstream merged SHA for this verification pass.  The
-    merged PR will therefore carry the draft-time pin, not the merged-SHA pin.
-    Use expand/contract (backward-compatible) upstream contracts so this is safe.
+    NOTE: Does NOT re-publish or open a new PR — only re-verifies.  The
+    existing draft PR from P3 remains open.  The merged-pin file that
+    ``set_upstream_ref`` wrote is read by whatever commands the plan declares
+    in its ``## Verification`` section.
+
+    Fail-closed: if the plan cannot be located or verification cannot be run
+    (for any reason), returns False — never silently green.
     """
-    from .runner import run_loop
+    import os
+
+    from .discovery import find_plan_artifact, resolve_suite_command_doc, verification_commands_from_plan
+    from .reconcile import reconcile
+    from .verification_evidence import (
+        ARTIFACT_NAME,
+        detect_changed_dependency_manifests,
+        resolve_install_command,
+        run_verification,
+        validate_verification_artifact,
+    )
 
     try:
-        result = run_loop(workspace, roadmap_path, run_mode=run_mode)
-        snapshot = result[0] if isinstance(result, tuple) else None
-        if snapshot is None:
-            return True  # no snapshot produced; assume pass
-        # StateSnapshot has no `terminal_status` field.  The real failure
-        # signals (models.py) are:
-        #   closeout_terminal_status: str|None — None or "complete" on clean
-        #     pass; any explicit failure value means the run did not succeed.
-        #     NOTE: None is NOT a failure — verify mode may not emit a full
-        #     closeout event, leaving None on a successful run.  Only the
-        #     known-bad literals trigger failure.
-        #   human_required: bool — True when a human is needed.
-        #   blocker_class: str|None — non-None means a blocker was raised.
-        if snapshot.closeout_terminal_status in {
-            "blocked", "stale_input", "failed_verification", "human_required"
-        }:
+        # 1. Find the current phase from the workspace state.  The node was
+        #    left at awaiting_phase_closeout by the P3 run_loop call; reconcile
+        #    reads the persisted state and event log to reconstruct that status.
+        snapshot = reconcile(workspace, roadmap_path)
+        phase = snapshot.current_phase
+        if phase is None:
+            # Fallback: scan for any phase still at awaiting_phase_closeout.
+            for ph, status in snapshot.phases.items():
+                if status == "awaiting_phase_closeout":
+                    phase = ph
+                    break
+        if phase is None:
+            # Cannot determine which phase to verify — fail closed.
             return False
-        if snapshot.human_required:
+
+        # 2. Locate the plan file (same resolver the closeout path uses).
+        plan = find_plan_artifact(workspace, phase, roadmap=roadmap_path)
+        if plan is None:
+            # No plan = cannot verify → fail closed.
             return False
-        if snapshot.blocker_class is not None:
+
+        # 3. Extract verification commands from the plan.
+        commands, operational_exemptions = verification_commands_from_plan(plan)
+        suite_command, suite_findings = resolve_suite_command_doc(workspace, roadmap_path, plan)
+        if suite_findings:
+            # Malformed suite command — fail closed.
             return False
-        return True
+
+        # 4. If the plan declares no verification at all, treat as trivial pass
+        #    (the plan author deliberately chose not to add verification).
+        if not commands and suite_command is None:
+            return True
+
+        # 5. Run verification against the workspace.  set_upstream_ref has
+        #    already written the merged-pin file, so commands that read the
+        #    pin file will see the merged SHA.
+        manifests = detect_changed_dependency_manifests(workspace, "HEAD")
+        install_argv = resolve_install_command(workspace, manifests) if manifests else None
+        env_refresh = (
+            {
+                "triggered": True,
+                "manifests": manifests,
+                "install_argv": install_argv or [],
+                "exit_code": 127,
+            }
+            if manifests and install_argv is None
+            else (
+                {"triggered": True, "manifests": manifests, "install_argv": install_argv}
+                if manifests
+                else None
+            )
+        )
+        timeout_s = float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200"))
+        # run_verification requires run_dir inside the workspace (the same
+        # constraint run_artifacts enforces).  Use a timestamped subdirectory
+        # under .phase-loop/runs/ so the artifact is discoverable.
+        from .models import utc_now
+        run_id = f"{utc_now().replace(':', '').replace('-', '').replace('Z', 'Z')}-reverify"
+        run_dir = workspace / ".phase-loop" / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_verification(
+            workspace,
+            run_dir,
+            commands,
+            suite_command,
+            env_refresh,
+            timeout_s,
+            operational_exemptions=operational_exemptions,
+        )
+        artifact_path = run_dir / ARTIFACT_NAME
+        validation = validate_verification_artifact(artifact_path)
+        return validation.ok
     except Exception:
         return False
 
@@ -736,6 +801,26 @@ def run_train(
             result_tuple = run_loop_fn(
                 workspace, workspace / node.roadmap, run_mode=run_mode
             )
+
+            # SHOULD-FIX 3: Guard against partial multi-phase nodes.
+            #
+            # run_loop defaults to max_phases=1, so a node with a >1-phase
+            # roadmap stops after the first phase.  If any phase is still
+            # "planned" the node is incomplete — publishing it ships a partial
+            # draft PR.  Block loudly instead.
+            #
+            # Use getattr so we're forward-compatible with test fixtures that
+            # return lightweight SimpleNamespace objects lacking a phases field.
+            _node_snapshot = result_tuple[0] if isinstance(result_tuple, tuple) else None
+            _node_phases = getattr(_node_snapshot, "phases", None)
+            if _node_phases is not None:
+                _unstarted = [ph for ph, st in _node_phases.items() if st == "planned"]
+                if _unstarted:
+                    raise RuntimeError(
+                        f"node '{nid}' roadmap has phases not yet executed after run_loop "
+                        f"({', '.join(sorted(_unstarted))}); refusing to publish a partial "
+                        f"draft PR — run to completion before publishing"
+                    )
 
             # (iii) Determine owned paths (Finding #1).
             #       If the caller supplied an explicit resolver, honour it.

@@ -2385,3 +2385,144 @@ class TestMissingResumeShaBlocks:
         assert publish_mock.call_count == 0, (
             "publish must not be called when the downstream injection is blocked"
         )
+
+
+# ---------------------------------------------------------------------------
+# SHOULD-FIX 3: multi-phase nodes must not publish partial draft PRs
+
+class TestMultiPhaseNodeGuard:
+    """A node whose run_loop leaves any phase at 'planned' must not publish a
+    partial draft PR.
+
+    SHOULD-FIX 3 (plans/pr35-cr-reconciliation.md): run_train calls run_loop
+    once with default max_phases=1.  A >1-phase roadmap stops after the first
+    phase; remaining phases stay at 'planned'.  Publishing at this point ships
+    a half-built PR.  The guard raises from within the try/except around
+    run_loop, so the node is recorded as blocked in the ledger and publish is
+    never called.
+    """
+
+    def _make_snapshot_with_planned(self, planned_phases: list) -> "StateSnapshot":
+        """Build a fake StateSnapshot that has some phases still at 'planned'."""
+        from phase_loop_runtime.models import StateSnapshot, utc_now
+        phases = {"P1": "awaiting_phase_closeout"}
+        for ph in planned_phases:
+            phases[ph] = "planned"
+        return StateSnapshot(
+            timestamp=utc_now(),
+            repo="fake-repo",
+            roadmap="specs/plan.md",
+            phases=phases,
+            current_phase="P1",
+        )
+
+    def _make_complete_snapshot(self) -> "StateSnapshot":
+        """Build a fake StateSnapshot where all phases are complete/awaiting."""
+        from phase_loop_runtime.models import StateSnapshot, utc_now
+        return StateSnapshot(
+            timestamp=utc_now(),
+            repo="fake-repo",
+            roadmap="specs/plan.md",
+            phases={"P1": "awaiting_phase_closeout"},
+            current_phase="P1",
+        )
+
+    def test_planned_phase_in_snapshot_blocks_node(self, tmp_path: Path):
+        """run_loop snapshot with a 'planned' phase → node blocked, publish not called."""
+        from phase_loop_runtime.train_roadmap import parse_train_roadmap
+        from phase_loop_runtime.train_ledger import append_record, LedgerRecord, read_ledger
+
+        roadmap_md = """\
+# Release Train: multi-phase-guard
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+"""
+        roadmap = parse_train_roadmap(roadmap_md)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        publish_calls: list = []
+
+        def _publish(workspace, owned_paths, *, draft, **kw):
+            publish_calls.append(workspace.name)
+            return {"status": "published", "branch": "feat/x", "head_sha": "sha-x", "pr_url": "https://gh/1"}
+
+        # run_loop returns a snapshot with P2 still at 'planned'.
+        snapshot_with_planned = self._make_snapshot_with_planned(["P2"])
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (snapshot_with_planned, []),
+            _publish=_publish,
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=lambda *a, **kw: [],
+            _pr_is_open=lambda *a, **kw: False,
+            _live_pr_head_sha_fn=lambda *a, **kw: None,
+        )
+
+        assert result["status"] == "blocked", (
+            f"SHOULD-FIX 3 violated: expected blocked (partial node), got {result['status']!r}"
+        )
+        assert publish_calls == [], (
+            f"SHOULD-FIX 3 violated: publish called for a partial node ({publish_calls!r})"
+        )
+        # Ledger must record blocked so the train is resumable.
+        records = read_ledger(ledger)
+        blocked = [r for r in records.values() if r.status == "blocked"]
+        assert blocked, "blocked record must appear in ledger for a partial node"
+        assert "partial" in result["detail"]["reason"].lower() or "planned" in result["detail"]["reason"].lower(), (
+            f"blocked reason should mention partial/planned phases; got {result['detail'].get('reason')!r}"
+        )
+
+    def test_all_complete_phases_allows_publish(self, tmp_path: Path):
+        """run_loop snapshot with no 'planned' phases → publish proceeds normally."""
+        from phase_loop_runtime.train_roadmap import parse_train_roadmap
+
+        roadmap_md = """\
+# Release Train: complete-node
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+"""
+        roadmap = parse_train_roadmap(roadmap_md)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        publish_calls: list = []
+
+        def _publish(workspace, owned_paths, *, draft, **kw):
+            publish_calls.append(workspace.name)
+            return {"status": "published", "branch": "feat/x", "head_sha": "sha-x", "pr_url": "https://gh/1"}
+
+        # Snapshot with no 'planned' phases.
+        complete_snapshot = self._make_complete_snapshot()
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (complete_snapshot, []),
+            _publish=_publish,
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=lambda *a, **kw: [],
+            _pr_is_open=lambda *a, **kw: False,
+            _live_pr_head_sha_fn=lambda *a, **kw: None,
+        )
+
+        assert result["status"] == "completed", (
+            f"Expected completed for a fully-run node; got {result['status']!r}"
+        )
+        assert publish_calls == ["repo-a"], (
+            f"Expected publish called for repo-a; got {publish_calls!r}"
+        )

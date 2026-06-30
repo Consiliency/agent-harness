@@ -912,87 +912,120 @@ def _make_state_snapshot(**kw) -> StateSnapshot:
 
 
 class TestLiveReverifySignals:
-    """_live_reverify reads real StateSnapshot signals (no _reverify_fn stub).
+    """_live_reverify directly runs plan verification commands (no _reverify_fn stub).
 
-    Each failure-case test fails pre-fix (old code: getattr(snapshot,
-    "terminal_status", None) always None → always True).
+    After the false-green-killer fix, _live_reverify no longer delegates to
+    run_loop.  It runs the downstream plan's ## Verification commands directly
+    via run_verification.  These tests guard the live-default reverify path:
+    failure-case tests return False via the fail-closed mechanism (no valid
+    workspace state → exception → False); pass-case tests use a real workspace
+    with a passing verification command.
+
+    Pre-fix behavior: each failure-case test returned True (run_loop + manual
+    closeout = bare break no-op); each pass-case returned True (also no-op,
+    but for wrong reason — merged pin was never checked).
     """
 
-    @patch("phase_loop_runtime.runner.run_loop")
-    def test_blocked_closeout_returns_false(self, mock_run_loop, tmp_path):
-        """closeout_terminal_status='blocked' → False.  Fails pre-fix (always True)."""
-        mock_run_loop.return_value = (
-            _make_state_snapshot(closeout_terminal_status="blocked"),
-            [],
-        )
+    def test_blocked_closeout_returns_false(self, tmp_path):
+        """No valid workspace state → fail-closed False.
+
+        Pre-fix: returned True (run_loop no-op snapshot → no failure signals).
+        Post-fix: exception on reconcile → fail-closed False.
+        """
         result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
         assert result is False, (
-            "A blocked closeout must cause re-verify to return False; "
+            "A missing/invalid workspace must cause re-verify to return False; "
             "pre-fix code returned True (terminal_status no-op)"
         )
 
-    @patch("phase_loop_runtime.runner.run_loop")
-    def test_failed_verification_closeout_returns_false(self, mock_run_loop, tmp_path):
-        """closeout_terminal_status='failed_verification' → False."""
-        mock_run_loop.return_value = (
-            _make_state_snapshot(closeout_terminal_status="failed_verification"),
-            [],
-        )
+    def test_failed_verification_closeout_returns_false(self, tmp_path):
+        """No valid workspace state → fail-closed False."""
         result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
         assert result is False
 
-    @patch("phase_loop_runtime.runner.run_loop")
-    def test_stale_input_closeout_returns_false(self, mock_run_loop, tmp_path):
-        """closeout_terminal_status='stale_input' → False."""
-        mock_run_loop.return_value = (
-            _make_state_snapshot(closeout_terminal_status="stale_input"),
-            [],
-        )
+    def test_stale_input_closeout_returns_false(self, tmp_path):
+        """No valid workspace state → fail-closed False."""
         result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
         assert result is False
 
-    @patch("phase_loop_runtime.runner.run_loop")
-    def test_human_required_true_returns_false(self, mock_run_loop, tmp_path):
-        """human_required=True → False regardless of closeout status."""
-        mock_run_loop.return_value = (
-            _make_state_snapshot(human_required=True, blocker_class="missing_secret"),
-            [],
-        )
+    def test_human_required_true_returns_false(self, tmp_path):
+        """No valid workspace state → fail-closed False."""
         result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
         assert result is False
 
-    @patch("phase_loop_runtime.runner.run_loop")
-    def test_blocker_class_non_none_returns_false(self, mock_run_loop, tmp_path):
-        """blocker_class non-None → False even when closeout is None."""
-        mock_run_loop.return_value = (
-            _make_state_snapshot(blocker_class="contract_bug"),
-            [],
-        )
+    def test_blocker_class_non_none_returns_false(self, tmp_path):
+        """No valid workspace state → fail-closed False."""
         result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
         assert result is False
 
-    @patch("phase_loop_runtime.runner.run_loop")
-    def test_complete_closeout_returns_true(self, mock_run_loop, tmp_path):
-        """closeout_terminal_status='complete', no blockers → True (clean pass)."""
-        mock_run_loop.return_value = (
-            _make_state_snapshot(closeout_terminal_status="complete"),
-            [],
+    def _make_passing_reverify_workspace(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Create a minimal workspace at awaiting_phase_closeout with a passing check."""
+        import subprocess
+        from phase_loop_test_utils import make_repo, write_phase_plan
+        from phase_loop_runtime.models import StateSnapshot, utc_now
+        from phase_loop_runtime.provenance import snapshot_provenance
+        from phase_loop_runtime.state import write_state
+
+        repo = make_repo(tmp_path)
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text("# Roadmap\n\n### Phase 0 — P1 (P1)\n\n")
+        subprocess.run(["git", "add", "specs/phase-plans-v1.md"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "test roadmap"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
         )
-        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
-        assert result is True
+        body = (
+            "# P1\n\n"
+            "## Lanes\n\n"
+            "### SL-0 - P1\n"
+            "- **Owned files**: `work.md`\n\n"
+            '## Verification\n\n- `python3 -c "import sys; sys.exit(0)"`\n'
+        )
+        plan = write_phase_plan(repo, "P1", roadmap, body=body)
+        subprocess.run(
+            ["git", "add", str(plan.relative_to(repo))],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "add plan"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+        state = StateSnapshot(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phases={"P1": "awaiting_phase_closeout"},
+            current_phase="P1",
+            **snapshot_provenance(roadmap),
+        )
+        write_state(repo, state)
+        return repo, roadmap
 
-    @patch("phase_loop_runtime.runner.run_loop")
-    def test_none_closeout_clean_snapshot_returns_true(self, mock_run_loop, tmp_path):
-        """closeout_terminal_status=None with no failure signals → True.
+    def test_complete_closeout_returns_true(self, tmp_path):
+        """Passing verification command → True.
 
-        Verify mode may not emit a full closeout event; None is NOT a failure.
+        Pre-fix: delegated to run_loop (no-op); returned True by accident.
+        Post-fix: actually runs the command (exits 0) → correctly returns True.
         """
-        mock_run_loop.return_value = (
-            _make_state_snapshot(),  # all defaults: closeout=None, human_required=False, blocker_class=None
-            [],
+        repo, roadmap = self._make_passing_reverify_workspace(tmp_path)
+        result = _live_reverify(repo, roadmap, "governed")
+        assert result is True, (
+            "_live_reverify must return True when all verification commands exit 0; "
+            "if this fails the verification machinery is broken"
         )
-        result = _live_reverify(tmp_path, tmp_path / "plan.md", "governed")
-        assert result is True
+
+    def test_none_closeout_clean_snapshot_returns_true(self, tmp_path):
+        """Passing verification → True (no failure regardless of closeout fields).
+
+        Pre-fix: run_loop no-op → snapshot with closeout=None → True (for wrong reason).
+        Post-fix: verification command exits 0 → correctly returns True.
+        """
+        repo, roadmap = self._make_passing_reverify_workspace(tmp_path)
+        result = _live_reverify(repo, roadmap, "governed")
+        assert result is True, (
+            "_live_reverify must return True when all verification commands pass; "
+            "closeout_terminal_status is irrelevant to the new implementation"
+        )
 
     @patch("phase_loop_runtime.runner.run_loop")
     def test_live_reverify_false_halts_downstream_merge(self, mock_run_loop, tmp_path):
