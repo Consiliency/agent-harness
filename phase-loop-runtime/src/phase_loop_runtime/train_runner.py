@@ -166,16 +166,26 @@ def _live_pr_is_open(workspace: Path, branch: str) -> bool:
 def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
     """Return the live PR head commit SHA for ``branch``, or None if unavailable.
 
-    Queries ``gh pr view`` for the ``headRefOid`` field (the commit SHA at the
-    PR's head, which may differ from what the ledger recorded if the branch was
-    force-pushed since the last run).
+    Queries ``gh pr list`` (the same endpoint as ``_gh_pr_metadata``, which uses
+    the proven ``--head <branch>`` flag) and extracts ``headRefOid`` — the commit
+    SHA at the PR's head, which may differ from the ledger-recorded value if the
+    branch was force-pushed since the last run.
+
+    Uses ``gh pr list --head <branch>`` (not ``gh pr view``, which takes a PR
+    number, not a branch ref).
 
     Stubbable seam: inject ``_live_pr_head_sha_fn`` into :func:`run_train`.
     """
     try:
         completed = subprocess.run(
-            ["gh", "pr", "view", "--head", branch, "--json", "headRefOid",
-             "--jq", ".headRefOid"],
+            [
+                "gh", "pr", "list",
+                "--head", branch,
+                "--state", "open",
+                "--limit", "1",
+                "--json", "headRefOid",
+                "--jq", ".[0].headRefOid",
+            ],
             capture_output=True,
             text=True,
             timeout=15,
@@ -378,11 +388,22 @@ def run_train(
 
         try:
             # (i) Inject upstream draft refs (IF-0-P2-2) BEFORE run_loop.
-            #     Fail-loud if any upstream ref is unresolvable — do NOT invoke
-            #     run_loop against an absent upstream (Finding #2b).
+            #
+            # The two guards below are defensive invariants.  They should be
+            # unreachable in a well-formed train:
+            #   • validate_train_loud (T-B) ensures every upstream is a declared
+            #     node, and topo-sort guarantees we processed it before this
+            #     node.  If the upstream failed/was blocked, run_train returns
+            #     immediately and never reaches this downstream.
+            #   • `branch` is always populated in completed_nodes entries (it is
+            #     set by the publish step), so `ref` is always truthy.
+            # They exist to make the "no silent skip" contract explicit and to
+            # catch future refactors that break the invariant.
             for edge in upstream_edges:
                 upstream_result = completed_nodes.get(edge.upstream.node_id)
                 if upstream_result is None:
+                    # Defensive: topo-order + T-B validation make this
+                    # unreachable; kept as an explicit fail-loud guard.
                     raise RuntimeError(
                         f"upstream ref for '{edge.upstream.node_id}' is not resolved "
                         f"(not in completed_nodes) — cannot inject into "

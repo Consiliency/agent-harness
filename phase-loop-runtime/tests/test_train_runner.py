@@ -1140,18 +1140,34 @@ class TestSnapshotPathsUsed:
 #
 # Pre-fix: coordinator silently skipped set_upstream_ref and ran run_loop
 # against the absent upstream (building against the wrong upstream).
-# Post-fix: missing upstream ref → block the node, do NOT invoke run_loop.
+# Post-fix (Finding #3): when set_upstream_ref_fn raises (for ANY reason —
+# including the real executor raising UnsupportedChannelKind or the defensive
+# upstream_result guard), the exception is caught → blocked record, no run_loop.
+#
+# Note: the `upstream_result is None` structural guard in train_runner.py is a
+# defensive invariant that is structurally unreachable in a well-formed train
+# (topo-sort + T-B validation guarantee the upstream is in completed_nodes by
+# the time we process the downstream).  The tests below exercise the exception-
+# safety path (Finding #3) by making set_upstream_ref_fn raise directly — they
+# are NOT tests of the `upstream_result is None` branch itself.
 
 
-class TestUpstreamRefMissingFailsLoud:
-    """Missing upstream ref → blocked node, zero run_loop calls for that node."""
+class TestUpstreamInjectExceptionBlocksNode:
+    """When set_upstream_ref_fn raises, the downstream node is blocked (Finding #3).
 
-    def test_missing_upstream_blocks_and_does_not_call_run_loop(self, tmp_path: Path):
-        """If upstream ref is absent from completed_nodes, the node is blocked.
+    These tests exercise the exception-safety path: any error during injection
+    produces a blocked ledger record and suppresses run_loop for that node.
+    """
 
-        This guards the 'silent skip → build against absent upstream' bug.
-        Pre-fix: set_upstream_ref was skipped, run_loop ran against wrong upstream.
-        Post-fix: coordinator raises RuntimeError → blocked record, no run_loop.
+    def test_inject_exception_blocks_node_and_suppresses_run_loop(self, tmp_path: Path):
+        """set_upstream_ref raising → downstream is blocked, run_loop not called.
+
+        Pre-fix (Finding #3): uncaught exceptions left node stuck at 'running'.
+        Post-fix: exception → blocked record, run_loop never called for that node.
+
+        Note: the mechanism exercised here is the try/except around inject+run_loop,
+        not the structural `upstream_result is None` guard (which is unreachable in
+        normal flow — see class docstring).
         """
         # Use a 2-node train where the upstream (repo-a) will NOT be in
         # completed_nodes (its PR is 'open' per ledger but pr_is_open returns
@@ -1219,11 +1235,14 @@ class TestUpstreamRefMissingFailsLoud:
             f"Expected repo-b blocked in ledger; got {state.get('repo-b/specs/plan-b.md')}"
         )
 
-    def test_upstream_ref_actually_absent_from_completed_nodes(self, tmp_path: Path):
-        """Direct test: coordinator blocks when upstream node ID is not in completed_nodes.
+    def test_inject_exception_blocks_before_pr_open(self, tmp_path: Path):
+        """Injection exception → downstream PR never opened, node blocked.
 
-        Exercises the fail-loud path in the coordinator without any publish stubs
-        — the block must happen during injection (before any PR for that node).
+        Variant that confirms repo-a's PR is opened but repo-b's is not —
+        the block happens before publish for repo-b.
+
+        Pre-fix (Finding #3): exception during inject could leak a half-open PR.
+        Post-fix: exception → blocked record appended before publish is attempted.
         """
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
