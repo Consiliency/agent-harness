@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **#52 — Actionable lane-IR closeout refusals.** When closeout/status fails closed on an
+  unresolved Lane IR diagnostic, the `blocker_summary` now names the concrete diagnostic
+  (`kind@lane` + message) and the phase-plan file location, instead of the opaque "Lane IR
+  diagnostics failed closed for the current phase plan". The operator can repair the exact
+  lane/contract (e.g. `missing_producer_dependency@SL-4: SL-4 consumes … without depending on
+  it`) without guessing. The fail-closed contract is unchanged — diagnostics still block; they
+  are just legible now.
 - **#49 — Codex effort `max` → CLI `xhigh`.** The internal `max` effort tier (codex's top
   tier, used by the max-effort planner of record) is now translated to `xhigh` at the codex CLI
   boundary (`build_codex_command`). Previously `model_reasoning_effort="max"` was emitted verbatim

@@ -7317,13 +7317,24 @@ def _closeout_lane_ir_blocker(repo: Path, roadmap: Path, phase: str) -> dict[str
     remaining = tuple(diagnostic for diagnostic in lane_ir.diagnostics if diagnostic.kind not in override)
     if not remaining:
         return None
-    detail = ", ".join(f"{d.kind}@{d.lane_id or 'plan'}" for d in remaining)
+    # #52: name each concrete diagnostic (kind@lane + message) and the plan file.
+    # The tripping diagnostic is not always ownership (e.g. missing_producer_dependency,
+    # malformed_dependencies), so avoid the misleading "lane ownership" wording.
+    try:
+        plan_rel: object = plan.relative_to(repo)
+    except ValueError:
+        plan_rel = plan
+    detail = "; ".join(
+        f"{d.kind}@{d.lane_id or 'plan'}"
+        + (f" ({d.message})" if getattr(d, "message", None) else "")
+        for d in remaining
+    )
     return {
         "human_required": False,
         "blocker_class": "contract_bug",
         "blocker_summary": (
-            f"Lane IR diagnostics failed closed for {phase} closeout: {detail}. "
-            "Fix the plan's lane ownership before rerunning closeout."
+            f"Lane IR diagnostics failed closed for phase '{phase}' closeout ({plan_rel}): "
+            f"{detail}. Fix the named lane(s) in the phase plan, then re-run closeout."
         ),
         "required_human_inputs": (),
         "access_attempts": (),
