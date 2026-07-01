@@ -48,7 +48,7 @@ SL-1 — Cutover docs and smoke reducer
 - **Parallel-safe**: no
 - **Tasks**:
   - impl: Update dotfiles documentation to say advisor-panel source lives in agent-harness and dotfiles retains only compatibility/install glue.
-  - impl: Add metadata-only cutover evidence citing agent-harness inline artifact feeding tests and dotfiles redaction checks.
+  - impl: Add metadata-only cutover evidence citing agent-harness staged-artifact prompt tests and dotfiles redaction checks.
   - verify: `rg -n "run_cli_panels|run_claude_leg" shared/skills/advisor-panel` returns no matches.
   - verify: `PYTHONPATH=/mnt/workspace/worktrees/agent-harness-open-issues-planning-20260630/phase-loop-runtime/src python -m pytest /mnt/workspace/worktrees/agent-harness-open-issues-planning-20260630/phase-loop-runtime/tests/test_panel_invoker_spawn.py -q`
 
@@ -91,5 +91,5 @@ PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-road
 - [ ] Dotfiles no longer owns a standalone advisor-panel implementation under `shared/skills/advisor-panel/scripts` or `shared/skills/advisor-panel/references`.
 - [ ] Dotfiles bootstrap/install docs expose advisor-panel from the `agent-harness` source of truth or a thin compatibility shim.
 - [ ] `/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630/shared/skills/advisor-panel/SKILL.md` is compatibility guidance only and names the harness-prefixed agent-harness skill source.
-- [ ] `/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630/docs/phase-loop/advisor-panel-cutover.md` records metadata-only smoke evidence proving Gemini and Codex receive the inline artifact from the agent-harness runtime tests.
+- [ ] `/mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630/docs/phase-loop/advisor-panel-cutover.md` records metadata-only smoke evidence proving Gemini and Codex receive compact prompts that point to staged review files.
 - [ ] `git diff --check` and the redaction evidence doc contain no secrets or local auth payloads.

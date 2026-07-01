@@ -1839,7 +1839,7 @@ def launch(
                             flush=True,
                         )
                     last_heartbeat = now
-                    if heartbeat.get("liveness_class") == "suspect_stalled" and process.poll() is None:
+                    if heartbeat.get("stalled_suspect") and process.poll() is None:
                         stalled = True
                         salvage = _salvage_snapshot(
                             command=command,

@@ -939,6 +939,19 @@ def run_heartbeat_summary(
     process_alive = _pid_is_live(pid) if pid else False
     cpu_percent = _process_tree_cpu_percent(pid, process_group_id) if process_alive else None
     liveness_class = _liveness_class(quiet_level, process_alive, returncode, pid, cpu_percent)
+    quiet_unknown_grace_seconds = _quiet_unknown_stale_grace_seconds(
+        quiet_level,
+        cpu_percent,
+        heartbeat_interval_seconds,
+        quiet_blocker_seconds,
+    )
+    stalled_suspect = _stalled_suspect(
+        liveness_class,
+        quiet_level,
+        seconds_since_log_update,
+        quiet_blocker_seconds,
+        quiet_unknown_grace_seconds,
+    )
     elapsed_seconds = int(time.monotonic() - started_monotonic) if started_monotonic is not None else None
     last_log_excerpt = _last_log_excerpt(log)
     heartbeat_status = _heartbeat_status(quiet_level, process_alive, returncode, pid)
@@ -963,7 +976,8 @@ def run_heartbeat_summary(
         "quiet_level": quiet_level,
         "cpu_percent": cpu_percent,
         "liveness_class": liveness_class,
-        "stalled_suspect": liveness_class == "suspect_stalled",
+        "quiet_unknown_grace_seconds": quiet_unknown_grace_seconds,
+        "stalled_suspect": stalled_suspect,
         "recommended_action": _recommended_action(quiet_level, process_alive),
         "nudge_prompt": _nudge_prompt(log, seconds_since_log_update, elapsed_seconds),
         "last_log_excerpt": last_log_excerpt,
@@ -1101,6 +1115,33 @@ def _liveness_class(
     if quiet_level == "stale":
         return "quiet_unknown"
     return "quiet_unknown"
+
+
+def _quiet_unknown_stale_grace_seconds(
+    quiet_level: str,
+    cpu_percent: float | None,
+    heartbeat_interval_seconds: int,
+    quiet_blocker_seconds: int,
+) -> int | None:
+    if quiet_level != "stale" or cpu_percent is not None:
+        return None
+    return max(heartbeat_interval_seconds, min(quiet_blocker_seconds, 300))
+
+
+def _stalled_suspect(
+    liveness_class: str,
+    quiet_level: str,
+    seconds_since_log_update: int | None,
+    quiet_blocker_seconds: int,
+    quiet_unknown_grace_seconds: int | None,
+) -> bool:
+    if liveness_class == "suspect_stalled":
+        return True
+    if quiet_level != "stale" or quiet_unknown_grace_seconds is None:
+        return False
+    if seconds_since_log_update is None:
+        return False
+    return seconds_since_log_update >= quiet_blocker_seconds + quiet_unknown_grace_seconds
 
 
 def _nudge_prompt(log: Path | None, quiet_seconds: int | None, elapsed_seconds: int | None) -> str:

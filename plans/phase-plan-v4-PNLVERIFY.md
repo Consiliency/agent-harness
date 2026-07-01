@@ -12,7 +12,7 @@ roadmap_sha256: 906d5d558f4b713abeda01b9c1e443ab09bf9d7203cee49777d7a92fde2f4261
 Phase `PNLVERIFY` follows the completed runtime, skill-source, and dotfiles-redaction phases. It introduces no new runtime behavior. Its job is to prove the advisor-panel roadmap is release-ready with focused tests, the full runtime suite, dotfiles cutover checks, and a metadata-only evidence document suitable for issue closeout.
 
 ## Interface Freeze Gates
-- [ ] IF-0-PNLVERIFY-6 — Release verification matrix: focused panel/launcher/routing/skill checks, full runtime suite, inline-artifact smoke evidence, dotfiles redaction evidence, and issue-closeout-ready summary all pass or are explicitly classified.
+- [ ] IF-0-PNLVERIFY-6 — Release verification matrix: focused panel/launcher/routing/skill checks, full runtime suite, staged-artifact smoke evidence, dotfiles redaction evidence, and issue-closeout-ready summary all pass or are explicitly classified.
 
 ## Lane Index & Dependencies
 
@@ -73,6 +73,6 @@ cd /mnt/workspace/worktrees/dotfiles-advisor-panel-redact-20260630 && bash -n bo
 ## Acceptance Criteria
 - [ ] The focused pytest command in `## Verification` passes for panel, launcher, routing, and skill parity tests.
 - [ ] `cd phase-loop-runtime && PYTHONPATH=src python -m pytest -q` passes.
-- [ ] `docs/research/advisor-panel-roadmap-v4-verification.md` cites `test_panel_invoker_spawn.py` inline-artifact command-input evidence for Codex and Gemini.
+- [ ] `docs/research/advisor-panel-roadmap-v4-verification.md` cites `test_panel_invoker_spawn.py` staged-artifact prompt evidence for Codex and Gemini.
 - [ ] `docs/research/advisor-panel-roadmap-v4-verification.md` cites dotfiles redaction checks proving no divergent advisor-panel implementation remains under `shared/skills/advisor-panel/scripts`.
 - [ ] `docs/research/advisor-panel-roadmap-v4-verification.md` contains issue-closeout-ready notes for issues #36 and #135.

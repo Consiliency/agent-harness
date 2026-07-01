@@ -186,7 +186,33 @@ class ObservabilityAlertingTest(unittest.TestCase):
 
             self.assertEqual(summary["quiet_level"], "stale")
             self.assertEqual(summary["liveness_class"], "quiet_unknown")
+            self.assertEqual(summary["quiet_unknown_grace_seconds"], 30)
             self.assertFalse(summary["stalled_suspect"])
+
+    def test_heartbeat_summary_marks_long_stale_cpu_unknown_as_stalled_suspect(self):
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "output.log"
+            log_path.write_text("unknown long stale\n", encoding="utf-8")
+            old = time.time() - 60
+            import os
+
+            os.utime(log_path, (old, old))
+
+            with (
+                patch("phase_loop_runtime.observability._pid_is_live", return_value=True),
+                patch("phase_loop_runtime.observability._process_cpu_percent", return_value=None),
+            ):
+                summary = run_heartbeat_summary(
+                    log_path=log_path,
+                    pid=12345,
+                    quiet_warning_seconds=0,
+                    quiet_blocker_seconds=0,
+                )
+
+            self.assertEqual(summary["quiet_level"], "stale")
+            self.assertEqual(summary["liveness_class"], "quiet_unknown")
+            self.assertEqual(summary["quiet_unknown_grace_seconds"], 30)
+            self.assertTrue(summary["stalled_suspect"])
 
 
 if __name__ == "__main__":

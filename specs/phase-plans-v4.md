@@ -8,7 +8,7 @@
 
 This roadmap covers the combined work from `agent-harness` #36, `dotfiles` #135, and the model-routing-v3 follow-up. The goal is to make `agent-harness` the source of truth for the advisor-panel runtime primitive and skill surface, while dotfiles keeps only redacted install/bootstrap glue.
 
-Current implementation research found that `phase_loop_runtime.panel_invoker` exists, but its real panel path still has the failure modes called out by the issues: static 600 second timeouts, Gemini relying on `--add-dir` instead of inline artifact feeding, a hard-coded unavailable Claude leg, and no `agent-harness`-owned `advisor-panel` skill in the canonical skill source tree.
+Initial implementation research found that `phase_loop_runtime.panel_invoker` existed, but its real panel path still had the failure modes called out by the issues: static 600 second timeouts, Gemini relying on `--add-dir` instead of an explicit staged-file prompt, a hard-coded unavailable Claude leg, and no `agent-harness`-owned `advisor-panel` skill in the canonical skill source tree.
 
 Current external model source note: Anthropic's model documentation lists Claude Sonnet 5 with Claude API ID `claude-sonnet-5`, and Claude Code model configuration documentation says Sonnet 5 requires Claude Code `v2.1.197` or later. This roadmap treats Sonnet-family Claude panel execution as Sonnet 5 unless a compatibility phase explicitly records a temporary downgrade.
 
@@ -18,7 +18,7 @@ The work is roadmap-sized because it spans runtime interfaces, CLI feeding seman
 
 1. **IF-0-PNLFOUND-1** - Panel request/result contract: review artifact shape, per-leg status vocabulary, timeout metadata, redacted evidence, and degraded result handling.
 2. **IF-0-PNLFOUND-2** - Model-routing-v3 policy: Claude Sonnet 5 as the Sonnet model, Gemini 3.5 Flash eligibility, and max-effort planner-of-record restrictions.
-3. **IF-0-PNLFEED-3** - CLI prompt feeding contract: every CLI leg receives review material inline or through explicit stdin; no leg relies on implicit directory reading.
+3. **IF-0-PNLFEED-3** - CLI prompt feeding contract: every CLI leg receives an explicit compact prompt that points to staged review material; no leg relies on implicit directory reading or embeds the artifact body in the prompt.
 4. **IF-0-PNLSKILL-4** - Canonical advisor-panel skill source layout under `agent-harness`.
 5. **IF-0-PNLREDACT-5** - Dotfiles cutover contract showing dotfiles no longer owns or installs an independent advisor-panel implementation.
 6. **IF-0-PNLVERIFY-6** - Release verification matrix covering runtime, skill bundle parity, dotfiles cutover, and live panel smoke tests.
@@ -83,16 +83,16 @@ No real CLI prompt-feeding change in this phase; no dotfiles edits; no native Cl
 - IF-0-PNLFOUND-1
 - IF-0-PNLFOUND-2
 
-### Phase 2 — Inline Artifact Feeding And CLI Leg Execution (PNLFEED)
+### Phase 2 — Staged Artifact Prompting And CLI Leg Execution (PNLFEED)
 
 **Objective**
-Fix the panel leg failure mode by ensuring Codex and Gemini receive the actual review artifact content, not just a directory hint.
+Fix the panel leg failure mode by ensuring Codex and Gemini receive explicit prompts that point to staged review artifact files, not oversized embedded artifact bodies or implicit directory hints.
 
 **Exit criteria**
-- [ ] Codex panel tests prove staged review artifact text is present in the command input path.
-- [ ] Gemini panel tests prove staged review artifact text is present in the command input path.
+- [ ] Codex panel tests prove command input references staged review files and does not embed the artifact body.
+- [ ] Gemini panel tests prove command input references staged review files and does not embed the artifact body.
 - [ ] Gemini no longer depends on `--add-dir` as the only way to see review material.
-- [ ] All CLI subprocess paths set stdin intentionally, including `DEVNULL` when no input is intended.
+- [ ] All CLI subprocess paths set prompt input intentionally and close stdin when no input is intended.
 - [ ] Empty CLI output is classified as `EMPTY` or `DEGRADED`; it is never treated as a successful review.
 - [ ] Timeout statuses include elapsed time and configured timeout without leaking secrets.
 
@@ -123,6 +123,7 @@ Add a real Claude review leg that verifies repository state and reviews the whol
 - [ ] Claude leg routes Sonnet-family requests to Claude Sonnet 5.
 - [ ] Claude Code version below `v2.1.197` records `UNAVAILABLE` or `DEGRADED`, not a silent fallback to older Sonnet behavior.
 - [ ] Claude leg is no longer hard-coded unavailable when the supported native path is available.
+- [ ] Claude writes its review to a deterministic scratch output file for durable ingestion.
 - [ ] Tests prove author/reviewer boundary remains visible and the panel can degrade when Claude is unavailable.
 - [ ] Review prompts request repo-grounded, whole-feature, integration-oriented findings.
 - [ ] No implementation requires API-key auth or unsupported headless `claude -p` behavior.
@@ -187,7 +188,7 @@ Remove dotfiles as an independent advisor-panel implementation while preserving 
 - [ ] Dotfiles no longer owns a standalone advisor-panel implementation.
 - [ ] Dotfiles bootstrap installs or exposes advisor-panel from the `agent-harness` source of truth.
 - [ ] Existing skill roots avoid double-installing conflicting advisor-panel copies.
-- [ ] Dotfiles #135 has a reproducer or smoke test proving Gemini and Codex receive the inline artifact.
+- [ ] Dotfiles #135 has a reproducer or smoke test proving Gemini and Codex receive compact prompts that point to staged review files.
 - [ ] No secrets or local auth payloads are added to either repository.
 
 **Scope notes**
@@ -216,7 +217,7 @@ Prove the owned advisor-panel flow works end to end and close the roadmap with r
 **Exit criteria**
 - [ ] Focused panel, launcher, routing, and skill parity tests pass.
 - [ ] Full runtime suite passes.
-- [ ] A real smoke panel proves the sentinel review artifact is visible to Codex and Gemini outputs or structured status evidence.
+- [ ] A real smoke panel proves staged review files are visible to Codex and Gemini through outputs or structured status evidence.
 - [ ] Dotfiles cutover evidence proves no divergent advisor-panel implementation remains installed from dotfiles.
 - [ ] Issues #36 and #135 can be updated with concrete verification evidence.
 
@@ -244,12 +245,12 @@ No new feature work; no new model routing decision beyond validating the gates p
 - Plan each phase with the phase-loop command using the alias: `PNLFOUND`, `PNLFEED`, `PNLCLAUDE`, `PNLSKILL`, `PNLREDACT`, then `PNLVERIFY`.
 - Keep the phase order serial. `PNLFEED` depends on the interface shape from `PNLFOUND`; `PNLCLAUDE` depends on stable leg feeding/status behavior; `PNLSKILL` depends on the runtime primitive; `PNLREDACT` depends on packaged skill source; `PNLVERIFY` depends on both repositories being updated.
 - Treat `panel_invoker.py`, model-routing policy files, and skill bundle generation as single-writer regions within their owning phases.
-- Do not close dotfiles #135 until the agent-harness-owned panel path has live or smoke evidence that Codex and Gemini receive the review artifact content.
+- Do not close dotfiles #135 until the agent-harness-owned panel path has live or smoke evidence that Codex and Gemini can inspect the staged review artifact files.
 
 ## Acceptance Criteria
 
 - [ ] `agent-harness` owns the runtime panel primitive and advisor-panel skill source.
-- [ ] Codex and Gemini panel legs receive review artifacts inline or through explicit stdin, not implicit directory reads.
+- [ ] Codex and Gemini panel legs receive compact prompts that point to staged review artifacts, not implicit directory reads or embedded artifact bodies.
 - [ ] Claude Sonnet-family panel execution uses Claude Sonnet 5 with a visible Claude Code version gate.
 - [ ] Dotfiles no longer installs a divergent advisor-panel implementation.
 - [ ] Empty, unavailable, timeout, degraded, and successful leg results remain distinct in structured evidence.
@@ -268,4 +269,3 @@ PYTHONPATH=src python -m pytest tests/test_panel_invoker_spawn.py tests/test_pha
 # Full runtime suite after implementation
 PYTHONPATH=src python -m pytest -q
 ```
-

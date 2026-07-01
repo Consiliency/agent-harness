@@ -97,6 +97,33 @@ class LauncherLivenessTest(unittest.TestCase):
                 "suspect_stalled",
             )
 
+    def test_stale_cpu_unknown_child_is_torn_down_after_grace(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log_path = root / "output.log"
+            heartbeat_path = root / "heartbeat.json"
+
+            with (
+                patch("phase_loop_runtime.observability._process_cpu_percent", return_value=None),
+                patch("phase_loop_runtime.observability._process_group_cpu_percent", return_value=None),
+            ):
+                result = launch(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    log_path=log_path,
+                    heartbeat_path=heartbeat_path,
+                    heartbeat_interval_seconds=0,
+                    quiet_warning_seconds=0,
+                    quiet_blocker_seconds=0,
+                )
+
+            self.assertTrue(result.stalled)
+            self.assertFalse(result.timed_out)
+            self.assertIsNotNone(result.cleanup_evidence)
+            self.assertEqual(result.cleanup_evidence["reason"], "stalled")
+            heartbeat = result.cleanup_evidence["salvage_snapshot"]["heartbeat"]
+            self.assertEqual(heartbeat["liveness_class"], "quiet_unknown")
+            self.assertTrue(heartbeat["stalled_suspect"])
+
     def test_cpu_active_quiet_child_is_not_torn_down_for_stale_output_only(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

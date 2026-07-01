@@ -271,7 +271,7 @@
       "roadmap_ref": "specs/phase-plans-v4.md",
       "slug": "v4-PNLCLAUDE",
       "status": "completed",
-      "task_summary": "Phase plan for repo-grounded Claude Agent View advisor-panel leg.",
+      "task_summary": "Phase plan for repo-grounded Claude TUI advisor-panel leg.",
       "type": "phase",
       "updated_at": "2026-06-30T22:18:00Z"
     },

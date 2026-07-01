@@ -2,7 +2,7 @@
 
 No live frontier CLI is ever called: the single subprocess boundary
 `panel_invoker._exec_leg` is stubbed. We assert the status mapping, the
-claude-leg deferral, bundle staging, subscription-only env, and reviewer≠author.
+Claude TUI leg, bundle staging, subscription-only env, and reviewer≠author.
 """
 import json
 import os
@@ -16,53 +16,69 @@ from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.governed_review import select_reviewer_pool
 
 
-class ClaudeAgentViewLegTest(unittest.TestCase):
-    def test_claude_leg_uses_agent_view_sonnet5_and_stdin_prompt(self):
-        captured = {"commands": [], "envs": []}
+class ClaudeTuiLegTest(unittest.TestCase):
+    def test_claude_leg_uses_tui_sonnet5_max_effort_and_canonical_output_file(self):
+        captured = {}
 
-        def fake_run(cmd, **kwargs):
-            captured["commands"].append(cmd)
-            captured["envs"].append(kwargs.get("env"))
-            if cmd == ["claude", "--version"]:
-                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
-            if cmd[:2] == ["claude", "--bg"]:
-                self.assertIn("--model", cmd)
-                self.assertEqual(cmd[cmd.index("--model") + 1], "claude-sonnet-5")
-                self.assertIn("--permission-mode", cmd)
-                self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "plan")
-                self.assertNotIn("--cwd", cmd)
-                self.assertNotIn("-p", cmd)
-                self.assertIn("--safe-mode", cmd)
-                self.assertIn("--strict-mcp-config", cmd)
-                self.assertEqual(cmd[cmd.index("--mcp-config") + 1], '{"mcpServers": {}}')
-                self.assertEqual(cmd[cmd.index("--tools") + 1], "")
-                self.assertNotIn("SENTINEL-CLAUDE-ARTIFACT", cmd)
-                self.assertIn("SENTINEL-CLAUDE-ARTIFACT", kwargs["input"])
-                self.assertIn("repo-grounded, whole-feature integration", kwargs["input"])
-                self.assertNotIn("stdin", kwargs)
-                return _completed(cmd, stdout="backgrounded · agent-1 · advisor-panel-claude\n")
-            raise AssertionError(f"unexpected command: {cmd}")
+        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env):
+            captured["command"] = command
+            captured["cwd"] = cwd
+            captured["prompt"] = prompt
+            captured["output_file"] = output_file
+            captured["timeout_s"] = timeout_s
+            captured["env"] = env
+            return 0, "Repo-grounded review.\nAGREE", "claude_tui_file_output"
 
         with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}):
             review_dir = Path(td) / "review"
             out_dir = Path(td) / "out"
+            repo_dir = Path(td) / "repo"
             review_dir.mkdir()
             out_dir.mkdir()
+            repo_dir.mkdir()
             with (
-                patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run),
-                patch(
-                    "phase_loop_runtime.panel_invoker._claude_agent_transcript_text",
-                    return_value="Repo-grounded review.\nAGREE",
-                ),
+                patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
-                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "SENTINEL-CLAUDE-ARTIFACT")
+                status, text = pi._exec_claude_tui_leg(
+                    review_dir,
+                    out_dir,
+                    600,
+                    "SENTINEL-CLAUDE-ARTIFACT",
+                    repo_dir=repo_dir,
+                )
 
+        command = captured["command"]
         self.assertEqual(status, "OK")
         self.assertIn("AGREE", text)
-        self.assertTrue(any(cmd[:2] == ["claude", "--bg"] for cmd in captured["commands"]))
-        for env in captured["envs"]:
-            if env is not None:
-                self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertEqual(captured["cwd"], out_dir)
+        self.assertEqual(captured["output_file"], out_dir / "panel-claude.txt")
+        self.assertEqual(captured["timeout_s"], 600)
+        self.assertNotIn("ANTHROPIC_API_KEY", captured["env"])
+        self.assertEqual(command[0], "claude")
+        self.assertIn("--ax-screen-reader", command)
+        self.assertIn("--safe-mode", command)
+        self.assertNotIn("--bg", command)
+        self.assertNotIn("-p", command)
+        self.assertIn("--model", command)
+        self.assertEqual(command[command.index("--model") + 1], "claude-sonnet-5")
+        self.assertIn("--effort", command)
+        self.assertEqual(command[command.index("--effort") + 1], "max")
+        self.assertIn("--permission-mode", command)
+        self.assertEqual(command[command.index("--permission-mode") + 1], "default")
+        add_dirs = [command[index + 1] for index, value in enumerate(command) if value == "--add-dir"]
+        self.assertIn(str(review_dir), add_dirs)
+        self.assertIn(str(repo_dir), add_dirs)
+        self.assertNotIn(str(Path.cwd()), add_dirs)
+        self.assertEqual(command[command.index("--tools") + 1], "Read,Write")
+        self.assertEqual(command[command.index("--allowedTools") + 1], "Read,Write")
+        self.assertNotIn("SENTINEL-CLAUDE-ARTIFACT", captured["prompt"])
+        self.assertIn("review-instructions.md", captured["prompt"])
+        self.assertIn("review-bundle.md", captured["prompt"])
+        self.assertIn(str(review_dir / "review-instructions.md"), captured["prompt"])
+        self.assertIn(str(review_dir / "review-bundle.md"), captured["prompt"])
+        self.assertIn("panel-claude.txt", captured["prompt"])
+        self.assertIn(str(out_dir / "panel-claude.txt"), captured["prompt"])
 
     def test_claude_launch_id_parser_accepts_agent_view_background_output(self):
         self.assertEqual(
@@ -92,63 +108,27 @@ class ClaudeAgentViewLegTest(unittest.TestCase):
             self.assertEqual(pi._assistant_text_from_jsonl(path), "AGREE")
 
     def test_claude_below_minimum_version_is_unavailable_without_launch(self):
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return _completed(cmd, stdout="2.1.196 (Claude Code)\n")
-
         with tempfile.TemporaryDirectory() as td:
             review_dir = Path(td) / "review"
             out_dir = Path(td) / "out"
             review_dir.mkdir()
             out_dir.mkdir()
             with (
-                patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run),
-                patch("phase_loop_runtime.panel_invoker._claude_agent_transcript_text", return_value=""),
+                patch(
+                    "phase_loop_runtime.panel_invoker._claude_code_support_status",
+                    return_value=(False, "claude_code_version_below_minimum:2.1.196"),
+                ),
+                patch("phase_loop_runtime.panel_invoker._run_claude_tui_session") as run_tui,
             ):
-                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "bundle")
+                status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle")
 
         self.assertEqual(status, "UNAVAILABLE")
         self.assertIn("below_minimum", text)
-        self.assertEqual(calls, [["claude", "--version"]])
+        run_tui.assert_not_called()
 
-    def test_claude_failed_agent_state_degrades(self):
-        def fake_run(cmd, **kwargs):
-            if cmd == ["claude", "--version"]:
-                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
-            if cmd[:2] == ["claude", "--bg"]:
-                return _completed(cmd, stdout="backgrounded · agent-1 · advisor-panel-claude")
-            if cmd == ["claude", "logs", "agent-1"]:
-                return _completed(cmd, stdout="No terminal verdict yet.")
-            if cmd == ["claude", "agents", "--json", "--all"]:
-                return _completed(cmd, stdout=json.dumps([{"id": "agent-1", "state": "failed"}]))
-            raise AssertionError(f"unexpected command: {cmd}")
-
-        with tempfile.TemporaryDirectory() as td:
-            review_dir = Path(td) / "review"
-            out_dir = Path(td) / "out"
-            review_dir.mkdir()
-            out_dir.mkdir()
-            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
-                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "bundle")
-
-        self.assertEqual(status, "DEGRADED")
-        self.assertIn("failed", text)
-
-    def test_claude_blocked_agent_is_stopped_before_degrading(self):
-        def fake_run(cmd, **kwargs):
-            if cmd == ["claude", "--version"]:
-                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
-            if cmd[:2] == ["claude", "--bg"]:
-                return _completed(cmd, stdout="backgrounded · agent-1 · advisor-panel-claude")
-            if cmd == ["claude", "logs", "agent-1"]:
-                return _completed(cmd, stdout="No terminal verdict yet.")
-            if cmd == ["claude", "agents", "--json", "--all"]:
-                return _completed(cmd, stdout=json.dumps([{"id": "agent-1", "state": "blocked"}]))
-            if cmd == ["claude", "stop", "agent-1"]:
-                return _completed(cmd, stdout="stopped agent-1")
-            raise AssertionError(f"unexpected command: {cmd}")
+    def test_claude_tui_timeout_omits_artifact_payload(self):
+        def fake_tui(**kwargs):
+            return 124, "", "timeout after 777s"
 
         with tempfile.TemporaryDirectory() as td:
             review_dir = Path(td) / "review"
@@ -156,65 +136,35 @@ class ClaudeAgentViewLegTest(unittest.TestCase):
             review_dir.mkdir()
             out_dir.mkdir()
             with (
-                patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run),
-                patch("phase_loop_runtime.panel_invoker._claude_agent_transcript_text", return_value=""),
+                patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
-                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 600, "bundle")
-
-        self.assertEqual(status, "DEGRADED")
-        self.assertIn("blocked", text)
-        self.assertIn("stop=stopped", text)
-
-    def test_claude_post_launch_timeout_stops_agent(self):
-        def fake_run(cmd, **kwargs):
-            if cmd == ["claude", "--version"]:
-                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
-            if cmd[:2] == ["claude", "--bg"]:
-                return _completed(cmd, stdout="backgrounded · agent-1 · advisor-panel-claude")
-            if cmd == ["claude", "logs", "agent-1"]:
-                return _completed(cmd, stdout="No terminal verdict yet.")
-            if cmd == ["claude", "agents", "--json", "--all"]:
-                return _completed(cmd, stdout=json.dumps([{"id": "agent-1", "state": "running"}]))
-            if cmd == ["claude", "stop", "agent-1"]:
-                return _completed(cmd, stdout="stopped agent-1")
-            raise AssertionError(f"unexpected command: {cmd}")
-
-        with tempfile.TemporaryDirectory() as td:
-            review_dir = Path(td) / "review"
-            out_dir = Path(td) / "out"
-            review_dir.mkdir()
-            out_dir.mkdir()
-            with (
-                patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run),
-                patch("phase_loop_runtime.panel_invoker._claude_agent_transcript_text", return_value=""),
-            ):
-                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 0, "bundle")
-
-        self.assertEqual(status, "TIMEOUT")
-        self.assertIn("stop=stopped", text)
-
-    def test_claude_launch_timeout_omits_artifact_payload(self):
-        def fake_run(cmd, **kwargs):
-            if cmd == ["claude", "--version"]:
-                return _completed(cmd, stdout="2.1.197 (Claude Code)\n")
-            if cmd[:2] == ["claude", "--bg"]:
-                raise subprocess.TimeoutExpired(cmd, timeout=777)
-            raise AssertionError(f"unexpected command: {cmd}")
-
-        with tempfile.TemporaryDirectory() as td:
-            review_dir = Path(td) / "review"
-            out_dir = Path(td) / "out"
-            review_dir.mkdir()
-            out_dir.mkdir()
-            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_run):
-                status, text = pi._exec_claude_agent_view_leg(review_dir, out_dir, 777, "SECRET-SENTINEL")
+                status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 777, "SECRET-SENTINEL")
 
         self.assertEqual(status, "TIMEOUT")
         self.assertIn("777s", text)
         self.assertNotIn("SECRET-SENTINEL", text)
 
+    def test_claude_tui_missing_canonical_file_is_not_success(self):
+        def fake_tui(**kwargs):
+            return 1, "Salvaged transcript review.\nAGREE", "claude_tui_missing_canonical_output"
+
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with (
+                patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
+            ):
+                status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle")
+
+        self.assertEqual(status, "ERROR")
+        self.assertIn("AGREE", text)
+
     def test_default_spawn_claude_is_not_hard_coded_unavailable(self):
-        with patch.object(pi, "_exec_claude_agent_view_leg", return_value=("OK", "Looks good.\nAGREE")) as exec_claude:
+        with patch.object(pi, "_exec_claude_tui_leg", return_value=("OK", "Looks good.\nAGREE")) as exec_claude:
             status, text = pi._default_spawn("claude", "bundle")
 
         self.assertEqual(status, "OK")
@@ -292,7 +242,7 @@ class BundleStagingTest(unittest.TestCase):
         self.assertEqual(pi.panel_leg_timeout_seconds("codex", "small"), 600)
         self.assertEqual(pi.panel_leg_timeout_seconds("codex", "x" * 1_000_000), 1800)
 
-    def test_codex_command_prompt_contains_full_artifact_on_stdin(self):
+    def test_codex_command_prompt_references_staged_artifact_file(self):
         captured = {}
 
         class Completed:
@@ -318,10 +268,14 @@ class BundleStagingTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("AGREE", review_text)
         self.assertEqual(captured["cmd"][-1], "-")
-        self.assertIn("SENTINEL-CODEX-ARTIFACT", captured["kwargs"]["input"])
+        self.assertNotIn("SENTINEL-CODEX-ARTIFACT", captured["kwargs"]["input"])
+        self.assertIn("review-instructions.md", captured["kwargs"]["input"])
+        self.assertIn("review-bundle.md", captured["kwargs"]["input"])
+        self.assertIn(str(review_dir / "review-instructions.md"), captured["kwargs"]["input"])
+        self.assertIn(str(review_dir / "review-bundle.md"), captured["kwargs"]["input"])
         self.assertNotIn("stdin", captured["kwargs"])
 
-    def test_gemini_command_prompt_contains_full_artifact_on_stdin_without_add_dir(self):
+    def test_gemini_command_prompt_references_staged_artifact_file_without_add_dir(self):
         captured = {}
 
         class Completed:
@@ -346,7 +300,11 @@ class BundleStagingTest(unittest.TestCase):
         self.assertIn("AGREE", review_text)
         self.assertNotIn("--add-dir", captured["cmd"])
         self.assertEqual(captured["cmd"][-1], "-")
-        self.assertIn("SENTINEL-GEMINI-ARTIFACT", captured["kwargs"]["input"])
+        self.assertNotIn("SENTINEL-GEMINI-ARTIFACT", captured["kwargs"]["input"])
+        self.assertIn("review-instructions.md", captured["kwargs"]["input"])
+        self.assertIn("review-bundle.md", captured["kwargs"]["input"])
+        self.assertIn(str(review_dir / "review-instructions.md"), captured["kwargs"]["input"])
+        self.assertIn(str(review_dir / "review-bundle.md"), captured["kwargs"]["input"])
         self.assertNotIn("stdin", captured["kwargs"])
 
     def test_timeout_log_mentions_timeout_without_artifact_payload(self):
@@ -365,16 +323,20 @@ class BundleStagingTest(unittest.TestCase):
         self.assertIn("777s", log_text)
         self.assertNotIn("SECRET-SENTINEL", log_text)
 
-    def test_large_artifact_prompt_is_full_with_digest_metadata(self):
+    def test_large_artifact_prompt_is_file_reference_with_digest_metadata(self):
         artifact = "HEAD-SENTINEL\n" + ("x" * 200_000) + "\nMIDDLE-SENTINEL\n" + ("y" * 200_000) + "\nTAIL-SENTINEL"
-        prompt = pi._render_leg_prompt(artifact)
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            prompt = pi._render_leg_prompt(artifact, review_dir)
 
-        self.assertIn("inline_mode: full_stdin", prompt)
         self.assertIn("sha256:", prompt)
-        self.assertIn("HEAD-SENTINEL", prompt)
-        self.assertIn("MIDDLE-SENTINEL", prompt)
-        self.assertIn("TAIL-SENTINEL", prompt)
-        self.assertGreater(len(prompt), len(artifact))
+        self.assertIn("bytes:", prompt)
+        self.assertIn("review-bundle.md", prompt)
+        self.assertIn(str(review_dir / "review-bundle.md"), prompt)
+        self.assertNotIn("HEAD-SENTINEL", prompt)
+        self.assertNotIn("MIDDLE-SENTINEL", prompt)
+        self.assertNotIn("TAIL-SENTINEL", prompt)
+        self.assertLess(len(prompt), 2000)
 
 
 class SubscriptionAuthTest(unittest.TestCase):
@@ -399,6 +361,16 @@ class InvokePanelFailClosedTest(unittest.TestCase):
         usable = {leg.leg for leg in panel.usable_legs}
         self.assertEqual(usable, {"codex"})  # only the ok leg with text is usable
 
+    def test_real_spawn_receives_repo_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = Path(td) / "repo"
+            repo_dir.mkdir()
+            with patch.object(pi, "_default_spawn", return_value=("OK", "Looks good.\nAGREE")) as spawn:
+                panel = pi.invoke_panel("b", ("claude",), repo_dir=repo_dir)
+
+        self.assertEqual(panel.legs[0].status, "OK")
+        spawn.assert_called_once_with("claude", "b", repo_dir=repo_dir)
+
 
 class ReviewerNeqAuthorTest(unittest.TestCase):
     def test_claude_author_reviewed_by_codex_gemini(self):
@@ -409,7 +381,7 @@ class ReviewerNeqAuthorTest(unittest.TestCase):
     def test_codex_author_has_disjoint_reviewer(self):
         pool, _ = select_reviewer_pool("codex", ("codex", "gemini", "claude"))
         self.assertNotIn("codex", pool)
-        self.assertIn("gemini", pool)  # a usable disjoint vendor even with claude deferred
+        self.assertIn("gemini", pool)  # a usable disjoint vendor even if claude degrades
 
 
 def _completed(command, *, stdout="", stderr="", returncode=0):

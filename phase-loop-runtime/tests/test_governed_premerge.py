@@ -121,6 +121,24 @@ class PremergeLoopTest(unittest.TestCase):
         self.assertEqual(r.terminal_blocker["blocker_class"], "review_gate_block")
         self.assertFalse(r.terminal_blocker["human_required"])
 
+    def test_repo_dir_is_forwarded_to_each_review_round(self):
+        captured = []
+
+        def invoke(**kwargs):
+            captured.append(kwargs)
+            return _gate(promoted=True)
+
+        r = run_governed_premerge_loop(
+            artifact="A",
+            author_executor="claude",
+            run_mode="governed",
+            invoke=invoke,
+            repo_dir="/tmp/repo-under-review",
+        )
+
+        self.assertTrue(r.mergeable)
+        self.assertEqual(captured[0]["repo_dir"], "/tmp/repo-under-review")
+
 
 class RunnerWiringTest(unittest.TestCase):
     def test_governed_premerge_for_run_autonomous_is_noop(self):
