@@ -670,10 +670,26 @@ def _plan_blocker(repo: Path, roadmap: Path, phase: str) -> dict:
         remaining = tuple(diagnostic for diagnostic in lane_ir.diagnostics if diagnostic.kind not in override)
         if not remaining:
             return {}
+        # #52: name the concrete failing diagnostic(s) and the plan file so the
+        # repo-local repair can fix the plan instead of guessing. Previously the
+        # summary was a generic "failed closed" string with no lane/kind/location,
+        # forcing the operator to guess which lane tripped which contract rule.
+        try:
+            plan_rel: object = plan.relative_to(repo)
+        except ValueError:
+            plan_rel = plan
+        detail = "; ".join(
+            f"{d.kind}@{d.lane_id or 'plan'}"
+            + (f" ({d.message})" if getattr(d, "message", None) else "")
+            for d in remaining
+        )
         return {
             "human_required": False,
             "blocker_class": "contract_bug",
-            "blocker_summary": "Lane IR diagnostics failed closed for the current phase plan.",
+            "blocker_summary": (
+                f"Lane IR diagnostics failed closed for phase '{phase}' ({plan_rel}): "
+                f"{detail}. Fix the named lane(s) in the phase plan, then re-run."
+            ),
             "required_human_inputs": (),
             "lane_ir_diagnostics": tuple(diagnostic.to_json() for diagnostic in remaining),
         }
