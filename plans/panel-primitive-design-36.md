@@ -57,3 +57,36 @@ for much of the #29 work — see the lessons below).
    and degraded-leg reporting — is that sufficient, or is a gated live smoke needed?
 5. Scope discipline: MVP = the dispatch primitive + profile + degraded reporting + the thin skill +
    redaction. Defer: auto-reconciliation, a 4th panelist, live-smoke CI. Right cut?
+
+---
+
+## PANEL RECONCILIATION + CORRECTED SCOPE (post-review)
+
+The 3-agent design panel (native Claude repo-verified; gemini inline PARTIALLY AGREE; codex empty) —
+**verdict: PARTIALLY AGREE, redirect not reject.** The repo-grounded leg caught that this brief was
+GREENFIELD-WRONG: the primitive already exists.
+
+**Verified findings (confirmed by direct code read):**
+- `panel_invoker.py` already IS `run_panel`: `invoke_panel(...) -> PanelResult`, per-leg statuses,
+  `terminal_verdict` fail-closed classifier, `_subscription_env` (strips API keys), codex read-only +
+  `--output-last-message` profile, the injectable `_exec_leg`/`spawn` test seam. **LIVE** in the
+  governed gate (`governed_review.py:26/188/221`, `governed_premerge.py`, `runner.py:8010/8070`).
+- The claude leg is the deferred piece (`_exec_leg`/`_default_spawn` return `"unavailable"`).
+- Reusing `build_codex_command`/`build_gemini_command` would be a REGRESSION — they emit
+  `--sandbox danger-full-access` (launcher.py:309/311) + an executor-shaped closeout prompt. The right
+  reuse is `profiles.py` review-aware model/effort (`"review": (gpt-5.5, "high")`, :29).
+- **Gemini `--add-dir` WORKS** (live smoke confirmed): the "inline not --add-dir" claim in this brief
+  was an over-generalization of a #29 *timeout* on a large diff. The real bug was the fixed
+  `_LEG_TIMEOUT_S = 600` (< codex-xhigh ~900s) → the panel silently degraded. KEEP `--add-dir`.
+
+**Corrected scope (extend, don't build):**
+1. [DONE, this PR] Input-scaled leg timeout (`_leg_timeout_for`) + argv-assertion tests — the real
+   silent-degradation bug. `--add-dir`/`--output-last-message` profile unchanged.
+2. Parameterize `_LEG_PROMPT` / single-`artifact` → `run_panel(artifact_paths, brief)` for arbitrary
+   review use; keep `_exec_leg`/`spawn` seam + `terminal_verdict`; governed consumers must keep passing.
+3. Fill the claude leg: native `Agent` (repo-access verify arm) via the thin skill; `claude --bg` in
+   `_exec_leg` WITH the dotfiles `run_claude_leg.sh` MCP-trust scratch-dir fix (fresh mktemp outside any
+   project trust scope + `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`; never cwd=review_dir).
+4. Reuse `profiles.py` review model/effort (drop the hardcoded gpt-5.5/xhigh).
+5. Thin `advisor-panel` skill via the phase-loop-skills pipeline; a gated gemini live smoke.
+6. Dotfiles redaction LAST: port claude leg → ship skill → re-pin bootstrap → verify install → redact.
