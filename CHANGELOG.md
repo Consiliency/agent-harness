@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **#48 — Advisor-panel Claude TUI leg no longer hangs on child exit.** The TUI read loop now
+  treats PTY EOF (`os.read` → empty) as terminal: when the child CLI and its descendants close
+  the pty, the leg returns a structured result (verdict if one landed, else an `ERROR`-classified
+  `claude_tui_pty_eof_no_output`) instead of busy-spinning to the input-scaled (up to 30-min)
+  deadline. Previously a lingering wrapper parent kept `proc.poll()` from firing while the EOF fd
+  stayed "readable", hanging the panel indefinitely.
 - **#52 — Actionable lane-IR closeout refusals.** When closeout/status fails closed on an
   unresolved Lane IR diagnostic, the `blocker_summary` now names the concrete diagnostic
   (`kind@lane` + message) and the phase-plan file location, instead of the opaque "Lane IR

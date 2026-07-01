@@ -604,6 +604,29 @@ def _run_claude_tui_session(
                         chunk = b""
                     if chunk:
                         terminal_bytes.extend(chunk)
+                    else:
+                        # #48: PTY EOF — the child CLI and ALL its descendants closed
+                        # the slave side, so no further output can arrive. Without this
+                        # branch the loop busy-spins to the (input-scaled, up to 30-min)
+                        # deadline: an EOF fd is always "readable", os.read keeps
+                        # returning b"", and proc.poll() never fires when the launched
+                        # process is a wrapper whose parent lingers after the CLI exits.
+                        # Return a structured result now (verdict if one landed, else a
+                        # DEGRADED-classified status), never an indefinite hang.
+                        review_text = _read_review_output(output_file)
+                        if terminal_verdict(review_text) is not None:
+                            return 0, review_text, "claude_tui_file_output"
+                        transcript_text = transcript_salvage or _latest_claude_transcript_text(
+                            str(cwd), since=start_wall
+                        )
+                        if terminal_verdict(transcript_text) is not None:
+                            return 0, transcript_text, "claude_tui_transcript_output"
+                        rc = proc.poll()
+                        return (
+                            rc if rc is not None else 1,
+                            review_text or transcript_text,
+                            "claude_tui_pty_eof_no_output",
+                        )
             now = time.monotonic()
             if not prompt_sent and now - start_monotonic >= _CLAUDE_TUI_SUBMIT_DELAY_S:
                 try:
