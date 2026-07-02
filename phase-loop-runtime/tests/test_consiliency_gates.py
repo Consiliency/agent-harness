@@ -99,16 +99,19 @@ class ConsiliencyGatesScanTest(unittest.TestCase):
             self.assertEqual(skew["maturity"], "realized-edge-observed")
 
     def test_version_skew_gate_never_blocks_even_in_hard_mode(self):
-        with tempfile.TemporaryDirectory() as td:
-            repo = self._scaffolded_repo(td)
-            manifest_file = repo / ".consiliency" / "manifest.json"
-            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-            manifest["contract_version"] = "0.1.0"  # schema pins the literal; skew is exercised via the gate directly
-            manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
-            result = scan_consiliency_gates(repo, env={"PHASE_LOOP_CONSILIENCY_GATES": "hard"})
-            # Even under opt-in hard mode, version-skew is normatively warn-only
-            # at Phase 0 (version-skew-protocol.schema `phase0_severity` const).
-            self.assertNotEqual(result["gates"]["version_skew"]["status"], "blocked")
+        # The manifest schema pins `contract_version` to the literal "0.1.0", so
+        # a schema-valid manifest can never actually exercise a skew finding --
+        # call the gate function directly with a deliberately mismatched version
+        # to prove the capped-warn behavior (not just that a compatible manifest
+        # trivially passes).
+        from phase_loop_runtime.consiliency_gates import _gate_version_skew
+
+        skewed = _gate_version_skew({"contract_version": "0.2.0"}, mode="hard")
+        self.assertEqual(skewed["compatibility"], "incompatible")
+        self.assertTrue(skewed["findings"])
+        # Even under opt-in hard mode, version-skew is normatively warn-only
+        # at Phase 0 (version-skew-protocol.schema `phase0_severity` const).
+        self.assertEqual(skewed["status"], "warn")
 
     def test_local_integrity_is_a_no_op_when_nothing_is_hash_checked(self):
         with tempfile.TemporaryDirectory() as td:
