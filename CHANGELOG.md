@@ -5,6 +5,31 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+
+## v0.1.13
+
+- **CS-0.10a — `phase-loop worktree-index` freshness pointer.** New read-only,
+  purely git-derived command that answers "where is the freshest working copy
+  of a path, and who's touching it": enumerates active worktrees (`git
+  worktree list --porcelain`), diffs each worktree's branch against
+  `origin/<default-branch>` (falling back to `origin/main`), and reports the
+  holders (worktree path, branch, last commit) for a queried path — or every
+  touched path when none is given — plus whether `origin/main` is behind on
+  it. No new persistent state; a repo with no divergent worktrees answers
+  `origin/main`. `phase_loop_runtime.worktree_index` is the module; never
+  writes repo state.
+- **CS-0.7 — realized-edge / fleet-map v0 extractor.** Between the core
+  Consiliency-standardization repos there are ~zero package-level deps, so a
+  package-lockfile scan renders the real cross-repo interface graph
+  invisible; the actual edges are git+ref pins, copied-literal (vendored)
+  contract/schema drift, and hard-coded host-path refs in source. New
+  `phase-loop fleet-map --repo <path> [--repo <path> ...] [--json]` (module
+  `phase_loop_runtime.fleet_map`) statically extracts those three edge kinds
+  across a set of repo paths and emits an interface-graph artifact — each
+  edge `{from_repo, to_repo, kind, evidence, maturity_label}` — alongside a
+  package-lockfile-only baseline for comparison (typically empty even over
+  repos with ordinary, unrelated third-party manifest deps). v0: no network
+  calls or git remote resolution, static file inspection only.
 - **CS-0.10c — local-file `LeaseStore` + soft leases.** New
   `phase_loop_runtime.lease_store`: a local-file backend for the CS-0.10b
   `LeaseStore` contract (`consiliency_contract`'s `lease.schema.json` /
@@ -77,28 +102,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.12
 
-- **CS-0.10a — `phase-loop worktree-index` freshness pointer.** New read-only,
-  purely git-derived command that answers "where is the freshest working copy
-  of a path, and who's touching it": enumerates active worktrees (`git
-  worktree list --porcelain`), diffs each worktree's branch against
-  `origin/<default-branch>` (falling back to `origin/main`), and reports the
-  holders (worktree path, branch, last commit) for a queried path — or every
-  touched path when none is given — plus whether `origin/main` is behind on
-  it. No new persistent state; a repo with no divergent worktrees answers
-  `origin/main`. `phase_loop_runtime.worktree_index` is the module; never
-  writes repo state.
-- **CS-0.7 — realized-edge / fleet-map v0 extractor.** Between the core
-  Consiliency-standardization repos there are ~zero package-level deps, so a
-  package-lockfile scan renders the real cross-repo interface graph
-  invisible; the actual edges are git+ref pins, copied-literal (vendored)
-  contract/schema drift, and hard-coded host-path refs in source. New
-  `phase-loop fleet-map --repo <path> [--repo <path> ...] [--json]` (module
-  `phase_loop_runtime.fleet_map`) statically extracts those three edge kinds
-  across a set of repo paths and emits an interface-graph artifact — each
-  edge `{from_repo, to_repo, kind, evidence, maturity_label}` — alongside a
-  package-lockfile-only baseline for comparison (typically empty even over
-  repos with ordinary, unrelated third-party manifest deps). v0: no network
-  calls or git remote resolution, static file inspection only.
 - **CS-0.4 release floor.** Bumped `phase-loop-runtime` to `0.1.12` for the
   Consiliency standardization release floor. No bridge-contract or behavior
   changes; `phaseLoopBridgeContract.v1` remains unchanged.
