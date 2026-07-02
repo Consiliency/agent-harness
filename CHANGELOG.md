@@ -131,6 +131,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## v0.1.11
 
+- **Harness-neutral repo-validation contract.** `phase-loop repo-validate
+  <target>` resolves and runs a repo's *explicit* local-first validation contract
+  (`fast`/`gate`/`full`/`fix`/`affected`/`doctor`) so coding agents run the same
+  checks locally, in worktrees, and in CI before opening PRs — GitHub stays the
+  authoritative merge gate. Discovery is `just agent::<t>` (via `mod agent` +
+  `agent.just`) then `package.json` `agent:<t>`; unmigrated repos **fail closed**
+  (exit 20) rather than guessing `npm test`/`pytest`/`make test`. Frozen exit
+  codes: 0 ok · 2 usage · 10 not-a-worktree · 20 no-contract · 21 runner-missing ·
+  30 command-failed. The resolver (`phase_loop_runtime.repo_validation`) is
+  stdlib-only with a pure `resolve()` split from `run_plan()`; Dagger is an
+  optional, repo-owned posture (open-source Engine, no Dagger Cloud). Contract
+  spec: `docs/repo-validation-contract.md`. Scope is the contract + neutral
+  resolver + tests; per-repo checks and Dagger modules belong to consuming repos.
 - **#66 — advisor-panel per-leg model override.** Each leg's model was hardcoded (`CLAUDE_IMPLEMENTER_MODEL`, `gpt-5.5`, `Gemini 3.1 Pro (High)`), so running e.g. the Claude leg on
   `claude-fable-5` required monkeypatching a module constant. `invoke_panel(..., models={"claude":
   "claude-fable-5"})` now overrides any subset per leg; unset legs use `DEFAULT_LEG_MODELS`.
