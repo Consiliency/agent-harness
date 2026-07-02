@@ -31,7 +31,11 @@ class ConsiliencyGatesConsentTest(unittest.TestCase):
 class ConsiliencyGatesScanTest(unittest.TestCase):
     def _scaffolded_repo(self, td: str) -> Path:
         repo = make_repo(Path(td))
-        scaffold(repo, mode="archetyped", archetypes=("service",))
+        # consiliency-contract 0.3.0 rebalanced the required-documents baseline:
+        # `license` moved off the `service` archetype onto the `public` modifier,
+        # so the `public` modifier is needed here to keep exercising a real
+        # l0_stub_allowed:false gap (LICENSE) the way these tests always have.
+        scaffold(repo, mode="archetyped", archetypes=("service",), modifiers=("public",))
         return repo
 
     def test_missing_required_doc_warns_by_default_never_blocks(self):
@@ -59,19 +63,7 @@ class ConsiliencyGatesScanTest(unittest.TestCase):
             repo = self._scaffolded_repo(td)
             (repo / "LICENSE").write_text("MIT\n", encoding="utf-8")
             result = scan_consiliency_gates(repo)
-            # NOTE (CS-0.11 contract bump to consiliency-contract 0.2.0): the
-            # published contract-version-status.schema.json still pins
-            # package.version/repo_contract_version to the literal
-            # "^0\.1\.0$" -- manifest.schema.json's contract_version pattern
-            # and the version-skew-protocol compatible_ranges were both
-            # bumped to the 0.2.x range for 0.2.0, but this one schema was
-            # not. A freshly scaffolded status.json declaring contract
-            # version "0.2.0" is therefore always schema-invalid under the
-            # vendored 0.2.0 contract, which surfaces as a soft
-            # layout_validity warn (never a block). What this test actually
-            # exercises -- the presence gate -- still passes cleanly.
             self.assertEqual(result["gates"]["presence"]["status"], "passed")
-            # consiliency-contract 0.2.1 fixed the version-status pin -> now a clean pass
             self.assertEqual(result["status"], "passed")
 
     def test_gates_mode_off_skips_entirely_even_with_a_manifest(self):

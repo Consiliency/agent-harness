@@ -6,6 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- Bumped the vendored `consiliency-contract` pin from `>=0.2.1,<0.3.0` to
+  `>=0.3.0,<0.4.0`. 0.3.0 rebalances the required-documents registry: the
+  baseline shrinks from ~13 governed docs down to 6 universal ones (`readme`,
+  `doc-contract-index`, `contract-version-status`, `glossary`,
+  `interface-declaration`, `codeowners`); `service-catalog-ownership`, `sbom`,
+  `adr-index`, `dev-setup`, and `changelog` move onto the code archetypes
+  (`product`/`service`/`library`/`infra`/`tooling-meta`) that actually need
+  them; and `contributing`/`license` move onto the (opt-in) `public` modifier.
+  No `phase_loop_runtime` code changes — the scaffolder/gates/ingest modules
+  already compose the required-document set purely from the vendored
+  registry at runtime — but the consiliency test suite's fixtures/assertions
+  are updated to the new baseline: scaffolding a bare archetype (no `public`
+  modifier) no longer has a LICENSE gap to exercise, so
+  `test_consiliency_gates.py`'s `_scaffolded_repo` and
+  `test_consiliency_scaffold.py`'s fabrication test now request the `public`
+  modifier explicitly to keep covering a real `l0_stub_allowed: false` gap,
+  and `test_consiliency_ingest.py`'s second-verify-pass test now asserts a
+  genuinely clean (`passed`) gate scan instead of the LICENSE-driven `warn`
+  it exercised under the old, larger baseline.
+
 ## v0.1.13
 
 - **CS-0.10a — `phase-loop worktree-index` freshness pointer.** New read-only,

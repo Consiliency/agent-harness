@@ -72,7 +72,10 @@ class ConsiliencyScaffoldTest(unittest.TestCase):
             repo = make_repo(Path(td))
             # make_repo already writes README.md -- remove it so absence is real.
             (repo / "README.md").unlink()
-            result = scaffold(repo, mode="baseline-only")
+            # consiliency-contract 0.3.0 moved `license` off the baseline
+            # (and off every archetype) onto the `public` modifier -- request
+            # it explicitly so this test still exercises a real LICENSE gap.
+            result = scaffold(repo, mode="archetyped", archetypes=("library",), modifiers=("public",))
             self.assertIn("README.md", result.declared_missing_paths)
             self.assertIn("LICENSE", result.declared_missing_paths)
             self.assertFalse((repo / "README.md").exists())
