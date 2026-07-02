@@ -174,28 +174,19 @@ class ConsiliencyIngestVerifyTest(unittest.TestCase):
             self.assertIsNotNone(second.gate_scan)
             governed = [label for label in second.document_labels if label["governed"]]
             self.assertTrue(governed, "declared documents should verify as governed")
-            # NOT a fully clean verify, and this asserts that honestly rather
-            # than implying otherwise: the vendored consiliency-contract
-            # 0.2.0 package ships contract-version-status.schema.json with
-            # package.version/repo_contract_version still pinned to the
-            # literal "^0\.1\.0$" (manifest.schema.json's contract_version
-            # pattern and the version-skew-protocol compatible_ranges were
-            # both bumped to 0.2.x, this one schema was not -- see the same
-            # note in test_consiliency_gates.py). A freshly scaffolded
-            # status.json declaring contract_version "0.2.0" is therefore
-            # always schema-invalid under the installed 0.2.0 contract,
-            # which this module's own present-nonconforming check (reusing
-            # that same vendored schema, honestly) surfaces as a standing
-            # soft warn on every verify pass -- not something CS-0.11
-            # fabricates or should paper over.
-            # consiliency-contract 0.2.1 fixed contract-version-status's version pin
-            # (^0.1.0 -> ^0.2.\\d+), so version-status now CONFORMS: no more
-            # governance.present_nonconforming finding, no contract-version-status label.
-            # The scan still soft-warns, but now only from a separate legitimate source:
-            # the "library" fixture ships no LICENSE, so the presence gate warns
-            # missing_file(license) (nested in gates.presence, not a top-level finding).
-            self.assertEqual(second.gate_scan["status"], "warn")
-            self.assertEqual(second.gate_scan["gates"]["presence"]["status"], "warn")
+            # Genuinely a clean verify now. Two historical soft-warn sources
+            # are both gone: consiliency-contract 0.2.1 fixed
+            # contract-version-status.schema.json's version pin
+            # (^0.1.0 -> ^0.2.\\d+), so version-status conforms -- no more
+            # governance.present_nonconforming finding, no
+            # contract-version-status label. Then 0.3.0 rebalanced the
+            # required-documents registry: `license` moved off the
+            # `library` archetype onto the (unrequested) `public` modifier,
+            # so the "library" fixture's missing LICENSE is no longer a
+            # required-doc gap at all -- the presence gate has nothing left
+            # to warn about.
+            self.assertEqual(second.gate_scan["status"], "passed")
+            self.assertEqual(second.gate_scan["gates"]["presence"]["status"], "passed")
             self.assertEqual({f["code"] for f in second.findings}, set())
             nonconforming = [label["doc_id"] for label in second.document_labels if label.get("labels")]
             self.assertEqual(nonconforming, [])

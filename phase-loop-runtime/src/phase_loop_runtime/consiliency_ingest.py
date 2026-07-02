@@ -94,21 +94,6 @@ _SCHEMA_CHECKED_DOC_IDS: dict[str, Any] = {
     "interface-declaration": interface_declaration_schema,
 }
 
-#: KNOWN UPSTREAM ISSUE (tracked, not a bug in this module): the vendored
-#: consiliency-contract 0.2.0 package's contract-version-status.schema.json
-#: still pins `package.version`/`repo_contract_version` to the literal
-#: pattern `^0\.1\.0$` -- manifest.schema.json's `contract_version` pattern
-#: and the version-skew-protocol's `compatible_ranges` were both bumped to
-#: the 0.2.x range for 0.2.0, but this one schema was not. A freshly
-#: scaffolded `status.json` truthfully declaring contract_version "0.2.0" is
-#: therefore always schema-invalid under the installed 0.2.0 contract, which
-#: surfaces here as a standing `present-nonconforming` label on
-#: `contract-version-status` -- honestly, since this module reuses the same
-#: vendored schema CS-0.6's layout-validity gate does rather than inventing
-#: its own. See tests/test_consiliency_gates.py and
-#: tests/test_consiliency_ingest.py for the same note against the two call
-#: sites this surfaces at.
-
 _MESSAGES: dict[str, str] = {
     "governance.not_adopted": "Repo has no adoption profile; the document is ungoverned.",
     "governance.adoption_declined": "Adoption is explicitly declined (adopted:false); the document is ungoverned.",
