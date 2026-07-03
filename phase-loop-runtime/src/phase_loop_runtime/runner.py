@@ -1164,6 +1164,26 @@ def run_loop(
             "set PHASE_LOOP_CONSILIENCY_GATES=off to silence)",
             file=sys.stderr,
         )
+    # Slice G: bounded top-of-loop git-discipline self-heal. Detection is always
+    # safe (pure reporting of the pipeline-owned vs human ref partition +
+    # naming-drift advisories, human_required=False); the only auto-fix is the
+    # inherently-idempotent `git worktree prune`. Deletion of the deletable set
+    # is NOT performed here -- it is left to the opt-in `apply_self_heal_deletions`
+    # which re-asserts the NEVER-DELETE-HUMAN-REFS partition at the mutation
+    # boundary. try/except-guarded so a bug here can never take down run_loop.
+    try:
+        from .git_discipline import reconcile_git_discipline
+
+        _git_discipline_self_heal = reconcile_git_discipline(Path(repo), execute_prune=True)
+    except Exception:
+        _git_discipline_self_heal = None
+    if _git_discipline_self_heal and _git_discipline_self_heal.get("findings"):
+        print(
+            "phase-loop: git-discipline self-heal findings "
+            f"({len(_git_discipline_self_heal['findings'])} advisory; non-blocking; "
+            "human refs never touched)",
+            file=sys.stderr,
+        )
     # Baseline ledger length so the run-end review-findings summary reports only
     # events appended during THIS invocation, not the whole persisted ledger
     # across bounded `--max-phases` batches.
