@@ -22,7 +22,12 @@ dependencies = [
     "baml-py>=0.222,<0.223",
     "pydantic>=2,<3",
     "PyYAML>=6,<7",
-    "consiliency-contract>=0.3.0,<0.4.0",
+    # Widened ceiling (Slice G): the git-discipline guardrail CONSUMES the
+    # contract's `pipeline_ref_classes` registry + `git_discipline_protocol`
+    # schema, first published in 0.4.x. Floor stays at 0.3.0 so CI still resolves
+    # against the currently-published 0.3.0 (the guardrail then degrades to a
+    # neutral no-op); it auto-adopts the git-discipline contract once 0.4.x ships.
+    "consiliency-contract>=0.3.0,<0.5.0",
     "jsonschema>=4,<5",
 ]
 
