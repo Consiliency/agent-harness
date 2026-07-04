@@ -166,5 +166,36 @@ class FleetMetricsDerivationTest(unittest.TestCase):
         self.assertEqual(series["burn_down"]["points"][0]["remaining"], 2)
 
 
+class RunnerHookLagTest(unittest.TestCase):
+    """The runner hook fires mid-closeout; a fresh reconcile may lag by one.
+
+    Proves _record_fleet_metrics_best_effort counts the just-completed phase even
+    when reconcile has not yet folded its completion event — so burn_down reaches
+    remaining=0 on the final phase instead of stalling at 1.
+    """
+
+    def test_completed_count_includes_the_just_completed_phase_despite_reconcile_lag(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from phase_loop_runtime.runner import _record_fleet_metrics_best_effort
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            roadmap = repo / "roadmap.md"
+            roadmap.write_text("# roadmap\n")
+            # Reconcile still reports P1/P2 complete but NOT P3 (the completing one).
+            lagging = SimpleNamespace(phases={"P1": "complete", "P2": "complete", "P3": "executed"})
+            with patch("phase_loop_runtime.runner.reconcile", return_value=lagging), patch(
+                "phase_loop_runtime.runner.parse_roadmap_phases", return_value=["P1", "P2", "P3"]
+            ):
+                _record_fleet_metrics_best_effort(
+                    repo, roadmap, phase="P3", completed=True,
+                    missing_gates=(), produced_gates=(),
+                )
+            burn = next(r for r in read_fleet_metrics(repo) if r["metric_kind"] == "burn_down")
+            self.assertEqual(burn["payload"], {"total_scope": 3, "completed": 3, "remaining": 0})
+
+
 if __name__ == "__main__":
     unittest.main()

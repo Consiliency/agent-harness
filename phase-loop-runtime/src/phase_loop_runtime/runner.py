@@ -6984,9 +6984,19 @@ def _record_fleet_metrics_best_effort(
     try:
         snapshot = reconcile(repo, roadmap)
         total_scope = len(parse_roadmap_phases(roadmap))
-        completed_count = sum(
-            1 for status in snapshot.phases.values() if status == "complete"
-        )
+        # The hook fires mid-closeout — a fresh reconcile may not yet reflect this
+        # phase's completion event. Union the just-completed phase into the set so
+        # completed_count includes it regardless of append ordering (idempotent:
+        # a no-op if reconcile already counted it). Without this, burn_down's
+        # `remaining` would never reach 0 and velocity would always lag by one.
+        completed_phases = {
+            str(name).upper()
+            for name, status in snapshot.phases.items()
+            if status == "complete"
+        }
+        if completed:
+            completed_phases.add(str(phase).upper())
+        completed_count = len(completed_phases)
         record_phase_fleet_metrics(
             repo,
             phase=phase,
