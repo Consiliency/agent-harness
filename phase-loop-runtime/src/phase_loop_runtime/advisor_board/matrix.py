@@ -19,9 +19,10 @@ that also keeps the governed reviewer≠author disjointness intact). That makes
 ``claude`` — exactly ``fixtures.CANONICAL_VALID_PAIRS`` /
 ``CANONICAL_INVALID_PAIRS``.
 
-``validate_seat`` / ``validate_board`` are the CONFIG-TIME gate: they resolve a
-seat's lane (``harness or default_lane(model)``), reject an invalid pairing or an
-over-ceiling effort with an actionable message, and are what the config loader
+The CONFIG-TIME gate (``validate_seat`` / ``validate_board``) lives in
+``validation.py`` — the single canonical seat-validation API. It resolves a
+seat's lane (``harness or default_lane(model)``), rejects an invalid pairing or an
+over-ceiling effort with an actionable message, and is what the config loader
 (``config.py``) runs on every board — presets included.
 """
 from __future__ import annotations
@@ -35,7 +36,6 @@ from .registries import (
     DEFAULT_HARNESS_REGISTRY,
     DEFAULT_MODEL_REGISTRY,
     AuthAvailability,
-    CompatibilityMatrix,
     HarnessRegistry,
     MatrixVerdict,
     ModelRegistry,
@@ -45,18 +45,9 @@ from .registries import (
 from .schema import (
     AUTH_API_KEY,
     AUTH_SUBSCRIPTION,
-    EFFORT_LEVELS,
-    Board,
-    Seat,
     vendor_family,
     vendor_of_harness,
 )
-
-
-class SeatValidationError(ValueError):
-    """A seat cannot be expressed against the registries/matrix (invalid
-    ``(model, harness)`` pairing, unknown model, or effort above the model's
-    ceiling). Raised at CONFIG TIME with an actionable message."""
 
 
 @dataclass
@@ -140,75 +131,16 @@ def default_matrix(
     return DefaultCompatibilityMatrix(harnesses=harnesses, models=DEFAULT_MODEL_REGISTRY, env=env)
 
 
-# --- config-time seat/board validation --------------------------------------
-
-
-def resolved_lane(seat: Seat, matrix: CompatibilityMatrix) -> str:
-    """The lane a seat runs on: its explicit ``harness`` or, for a bare seat,
-    ``default_lane(model)``. Raises ``UnknownModelError`` (via ``default_lane``)
-    for an unregistered bare-seat model."""
-    return seat.harness or matrix.default_lane(seat.model)
-
-
-def validate_seat(
-    seat: Seat,
-    *,
-    matrix: CompatibilityMatrix | None = None,
-    models: ModelRegistry | None = None,
-) -> AuthAvailability:
-    """Reject an inexpressible seat at CONFIG TIME with an actionable message.
-
-    Checks, in order: (1) model is registered and its lane resolves (unknown
-    model -> clear error); (2) the ``(model, lane)`` pairing is valid on the
-    matrix (invalid pairing such as ``gpt-5.5`` on ``claude`` -> clear error
-    naming the valid lanes); (3) the seat's effort does not exceed the model's
-    effort ceiling. Returns the pair's ``AuthAvailability`` (a valid but unauthed
-    seat is NOT rejected here — it degrades to skip-with-warning at launch).
-    """
-    matrix = matrix or default_matrix()
-    models = models or DEFAULT_MODEL_REGISTRY
-    try:
-        lane = resolved_lane(seat, matrix)
-    except UnknownModelError as exc:
-        raise SeatValidationError(str(exc)) from exc
-    ok, avail = matrix.is_valid(seat.model, lane)
-    if not ok:
-        raise SeatValidationError(avail.detail or f"invalid seat {seat.seat_key}")
-    ceiling = models.get(seat.model).effort_ceiling
-    if EFFORT_LEVELS.index(seat.effort) > EFFORT_LEVELS.index(ceiling):
-        raise SeatValidationError(
-            f"seat effort {seat.effort!r} exceeds the {seat.model!r} effort ceiling "
-            f"{ceiling!r} (ladder {EFFORT_LEVELS}); lower the seat's effort"
-        )
-    return avail
-
-
-def validate_board(
-    board: Board,
-    *,
-    matrix: CompatibilityMatrix | None = None,
-    models: ModelRegistry | None = None,
-) -> None:
-    """Validate every seat of a board; raise on the first inexpressible seat with
-    the board name prefixed for a locatable diagnostic. This is what the config
-    loader runs on every board (presets included), so an invalid preset or an
-    invalid user board fails at load time rather than silently."""
-    matrix = matrix or default_matrix()
-    models = models or DEFAULT_MODEL_REGISTRY
-    for index, seat in enumerate(board.seats):
-        try:
-            validate_seat(seat, matrix=matrix, models=models)
-        except SeatValidationError as exc:
-            raise SeatValidationError(
-                f"board {board.name!r} seat #{index} ({seat.seat_key}): {exc}"
-            ) from exc
+# Config-time seat/board validation lives in ``validation.py`` (the single
+# canonical API — ``validate_seat`` / ``validate_board`` / ``SeatValidationError``
+# / ``SeatVerdict``). This module owns only the matrix itself: ``is_valid`` and
+# ``default_lane`` (the frozen ``CompatibilityMatrix`` interface) plus the
+# populated ``DefaultCompatibilityMatrix`` / ``default_matrix`` factory. The
+# effort-ceiling check that used to live here is folded into that canonical
+# ``validate_seat`` (which reads the ceiling off this matrix's ``.models``).
 
 
 __all__ = [
     "DefaultCompatibilityMatrix",
     "default_matrix",
-    "SeatValidationError",
-    "resolved_lane",
-    "validate_seat",
-    "validate_board",
 ]

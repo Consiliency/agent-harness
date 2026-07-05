@@ -70,11 +70,7 @@ from .registries import (
 )
 from .matrix import (
     DefaultCompatibilityMatrix,
-    SeatValidationError,
     default_matrix,
-    resolved_lane,
-    validate_board,
-    validate_seat,
 )
 from .presets import (
     DEFAULT_BOARD_NAME,
@@ -177,13 +173,9 @@ __all__ = [
     "DEFAULT_MODEL_REGISTRY",
     "UnknownHarnessError",
     "UnknownModelError",
-    # matrix + validation (ABDREG)
+    # matrix (ABDREG) — seat/board validation is exported from validation below
     "DefaultCompatibilityMatrix",
     "default_matrix",
-    "SeatValidationError",
-    "resolved_lane",
-    "validate_seat",
-    "validate_board",
     # presets + config loader (ABDREG)
     "PRESETS",
     "PRESET_NAMES",

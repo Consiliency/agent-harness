@@ -17,8 +17,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .registries import AuthAvailability, CompatibilityMatrix, ModelRegistry
-from .schema import Board, Seat
+from .registries import (
+    AuthAvailability,
+    CompatibilityMatrix,
+    ModelRegistry,
+    UnknownModelError,
+)
+from .schema import EFFORT_LEVELS, Board, Seat
 
 
 class SeatValidationError(ValueError):
@@ -55,6 +60,23 @@ def _did_you_mean(model: str, models: ModelRegistry | None) -> str:
     return f"; {model} runs on: {lanes}" if lanes else ""
 
 
+def _effort_ceiling(
+    seat: Seat, matrix: CompatibilityMatrix, models: ModelRegistry | None
+) -> str | None:
+    """The model's effort ceiling, from ``models`` if given, else from the matrix's
+    own model registry (``DefaultCompatibilityMatrix`` carries ``.models``). Returns
+    ``None`` when no registry is reachable (e.g. the fixture ``Standin`` matrix) or
+    the model is unregistered — the ceiling gate then no-ops and the pairing gate
+    still holds."""
+    registry = models if models is not None else getattr(matrix, "models", None)
+    if registry is None:
+        return None
+    try:
+        return registry.get(seat.model).effort_ceiling
+    except UnknownModelError:
+        return None
+
+
 def validate_seat(
     seat: Seat,
     matrix: CompatibilityMatrix,
@@ -62,13 +84,37 @@ def validate_seat(
     models: ModelRegistry | None = None,
 ) -> SeatVerdict:
     """Validate one seat against the matrix; raise ``SeatValidationError`` (with an
-    actionable message) on an invalid pairing, else return its ``SeatVerdict``."""
-    lane = _resolved_lane(seat, matrix)
+    actionable message) on an invalid pairing OR an over-ceiling effort, else return
+    its ``SeatVerdict``.
+
+    The effort-ceiling gate is folded in from the (now-removed) ``matrix.validate_seat``
+    so there is a single canonical seat-validation API. It is enforced whenever a
+    model registry is reachable (config-time uses ``DefaultCompatibilityMatrix``,
+    which carries ``.models``); today every registered model ceilings at ``max`` so
+    the gate is not yet load-bearing, but it is preserved so a future sub-max ceiling
+    rejects at config time rather than spawning.
+    """
+    try:
+        lane = _resolved_lane(seat, matrix)
+    except UnknownModelError as exc:
+        # A bare seat (no explicit harness) with an unregistered model raises from
+        # default_lane; surface it as SeatValidationError so the config loader and
+        # the ad-hoc seam catch a single exception type (no raw leak before spawn).
+        message = f"invalid seat {seat.seat_key!r}: {exc}"
+        raise SeatValidationError(message, seat_errors=(message,)) from exc
     ok, auth = matrix.is_valid(seat.model, lane)
     if not ok:
         detail = auth.detail or f"{seat.model} is not compatible with the {lane} lane"
         message = (
             f"invalid seat {seat.seat_key!r}: {detail}{_did_you_mean(seat.model, models)}"
+        )
+        raise SeatValidationError(message, seat_errors=(message,))
+    ceiling = _effort_ceiling(seat, matrix, models)
+    if ceiling is not None and EFFORT_LEVELS.index(seat.effort) > EFFORT_LEVELS.index(ceiling):
+        message = (
+            f"invalid seat {seat.seat_key!r}: effort {seat.effort!r} exceeds the "
+            f"{seat.model!r} effort ceiling {ceiling!r} (ladder {EFFORT_LEVELS}); "
+            "lower the seat's effort"
         )
         raise SeatValidationError(message, seat_errors=(message,))
     return SeatVerdict(seat=seat, harness=lane, auth=auth)

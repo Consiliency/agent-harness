@@ -162,6 +162,37 @@ class SeatValidationTests(unittest.TestCase):
         verdicts = validate_board(DEFAULT_BOARD, MATRIX)
         self.assertEqual(len(verdicts), 3)
 
+    def test_effort_ceiling_gate_rejects_over_ceiling_seat(self) -> None:
+        # The effort-ceiling gate folded in from matrix.validate_seat: a seat above
+        # its model's ceiling is rejected. Every *real* model ceilings at "max"
+        # (the ladder top), so the gate is exercised here with a stand-in registry
+        # that caps gpt-5.5 at "high" — proving the fold enforces, not just parses.
+        from phase_loop_runtime.advisor_board.registries import ModelSpec
+
+        class _CappedModels:
+            def get(self, model: str) -> ModelSpec:
+                return ModelSpec(
+                    model=model,
+                    vendor_family="openai",
+                    default_lane="codex",
+                    runnable_by=("codex", "opencode"),
+                    effort_ceiling="high",
+                )
+
+            def default_lane(self, model: str) -> str:
+                return "codex"
+
+        capped = _CappedModels()
+        # at-ceiling passes …
+        ok = validate_seat(Seat(model="gpt-5.5", effort="high", harness="codex"), MATRIX, models=capped)
+        self.assertEqual(ok.harness, "codex")
+        # … over-ceiling rejects with an actionable message.
+        with self.assertRaises(SeatValidationError) as ctx:
+            validate_seat(Seat(model="gpt-5.5", effort="max", harness="codex"), MATRIX, models=capped)
+        msg = str(ctx.exception)
+        self.assertIn("exceeds", msg)
+        self.assertIn("high", msg)
+
 
 # --- Lane 4: leg->seat re-key + back-compat proof ---------------------------
 
