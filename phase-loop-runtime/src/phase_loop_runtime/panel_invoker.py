@@ -33,6 +33,7 @@ from .agent_runtime_provider import (
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
+from .advisor_board.harness_mapping import render_seat_invocation
 
 # Panel legs are vendor identities (one model class per vendor for the panel).
 PANEL_LEGS: tuple[str, ...] = ("codex", "gemini", "claude")
@@ -320,18 +321,27 @@ def _render_claude_tui_prompt(
     )
 
 
-def _claude_tui_command(review_dir: Path, repo_dir: Path, model: str | None = None) -> list[str]:
+def _claude_tui_command(
+    review_dir: Path, repo_dir: Path, model: str | None = None, effort: str | None = None
+) -> list[str]:
     add_dirs = [review_dir]
     if repo_dir.resolve() != review_dir.resolve():
         add_dirs.append(repo_dir)
+    # ABDHOME: effort is plumbed per-seat. ``effort is None`` (legacy/default path)
+    # keeps today's hard-coded ``--effort max`` byte-for-byte; a board seat renders
+    # its canonical effort through the frozen ``render_seat_invocation`` mapping.
+    effort_args = (
+        ("--effort", "max")
+        if effort is None
+        else render_seat_invocation("claude", model or CLAUDE_IMPLEMENTER_MODEL, effort).effort_args
+    )
     command = [
         "claude",
         "--ax-screen-reader",
         "--safe-mode",
         "--model",
         model or CLAUDE_IMPLEMENTER_MODEL,
-        "--effort",
-        "max",
+        *effort_args,
         "--permission-mode",
         "default",
         "--strict-mcp-config",
@@ -819,6 +829,8 @@ def _exec_claude_tui_leg(
     repo_dir: Path | None = None,
     mode: str = "review",
     model: str | None = None,
+    effort: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -826,16 +838,22 @@ def _exec_claude_tui_leg(
     View. Agent View is subscription-safe but currently prone to background PTY
     reaping on this host; the TUI route preserves Claude Max subscription billing
     and lets Claude write a deterministic scratch output file.
+
+    ABDHOME: ``effort`` / ``env`` default to today's behavior — ``effort is None``
+    keeps ``--effort max`` and ``env is None`` keeps ``_subscription_env()`` (scrub
+    every vendor key). A board seat passes its canonical effort + its
+    ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
+    real launch.
     """
     supported, support_detail = _claude_code_support_status()
     if not supported:
         return "UNAVAILABLE", support_detail
 
-    env = _subscription_env()
+    env = _subscription_env() if env is None else dict(env)
     output_file = out_dir / "panel-claude.txt"
     prompt = _render_claude_tui_prompt(artifact, review_dir, output_file, mode)
     rc, review_text, log_text = _run_claude_tui_session(
-        command=_claude_tui_command(review_dir, repo_dir or Path.cwd(), model),
+        command=_claude_tui_command(review_dir, repo_dir or Path.cwd(), model, effort),
         cwd=out_dir,
         prompt=prompt,
         output_file=output_file,
@@ -853,12 +871,13 @@ def _exec_claude_agent_view_attempt(
     timeout_s: int,
     prompt: str,
     env: Mapping[str, str],
+    effort: str = "max",
 ) -> tuple[str, str]:
     command = adapter.launch_command(
         None,
         name=_CLAUDE_AGENT_NAME,
         model=CLAUDE_IMPLEMENTER_MODEL,
-        effort="max",
+        effort=effort,
         # Plan mode can block review-sized prompts; Read-only access lets Claude inspect the staged Markdown file.
         permission="default",
         safe_mode=True,
@@ -975,14 +994,22 @@ def _exec_leg(
     artifact: str | None = None,
     mode: str = "review",
     model: str | None = None,
+    effort: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
     The single real-subprocess boundary — tests monkeypatch THIS, never spawn a
     frontier CLI. codex's clean review is its `--output-last-message` file (its
     stdout is a noisy transcript); agy's `-p` stdout is the clean response.
+
+    ABDHOME: ``effort`` / ``env`` default to today's behavior. ``effort is None``
+    keeps codex's hard-coded ``model_reasoning_effort=xhigh`` and agy's
+    effort-in-the-model-name default byte-for-byte; a board seat's canonical effort
+    renders through ``render_seat_invocation`` (incl. the agy leg, where effort is
+    baked into the model string). ``env is None`` keeps ``_subscription_env()``.
     """
-    env = _subscription_env()
+    env = _subscription_env() if env is None else dict(env)
     # #64: auth preflight BEFORE the expensive leg. A logged-out CLI otherwise
     # fails obliquely (empty-turn, then rate-limit errors) and the panel silently
     # degrades. Fail fast + fail-closed as DEGRADED (the detail carries an auth
@@ -995,10 +1022,17 @@ def _exec_leg(
     prompt = _render_leg_prompt(artifact, review_dir, mode)
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
+        # ABDHOME: effort-absent keeps ``-c model_reasoning_effort=xhigh`` verbatim;
+        # a seat renders its canonical effort (``max`` -> ``xhigh``) through the map.
+        codex_effort_args = (
+            ("-c", "model_reasoning_effort=xhigh")
+            if effort is None
+            else render_seat_invocation("codex", model or "gpt-5.5", effort).effort_args
+        )
         cmd = [
             "codex", "exec", "--cd", str(review_dir), "--skip-git-repo-check",
             "--sandbox", "read-only", "--model", model or "gpt-5.5",
-            "-c", "model_reasoning_effort=xhigh",
+            *codex_effort_args,
             "--output-last-message", str(out_file), "-",
         ]
         # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
@@ -1021,8 +1055,17 @@ def _exec_leg(
         return rc, review_text, log_text
     if leg == "gemini":
         out_file = out_dir / "panel-gemini.txt"
+        # ABDHOME: the agy leg bakes effort INTO the model name. effort-absent keeps
+        # today's ``model or "Gemini 3.1 Pro (High)"`` verbatim; a seat renders
+        # ``(base, effort)`` -> ``"<base> (Word)"`` (idempotent on an already-baked
+        # string), so a ``"Gemini 3.1 Pro"`` + ``high`` seat yields the same literal.
+        gemini_model = (
+            model or "Gemini 3.1 Pro (High)"
+            if effort is None
+            else render_seat_invocation("gemini", model or "Gemini 3.1 Pro", effort).model
+        )
         cmd = [
-            "agy", "--model", model or "Gemini 3.1 Pro (High)", "--add-dir", str(review_dir),
+            "agy", "--model", gemini_model, "--add-dir", str(review_dir),
             "--print-timeout", f"{timeout_s}s", "-p", "-",
         ]
         try:
@@ -1046,12 +1089,18 @@ def _default_spawn(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     model: str | None = None,
+    effort: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
     Each leg stages `artifact` (the IF-0-P1-1 review bundle) as a read-only file
     in a temp review dir. The CLI prompt points to the staged files, outputs land
     in a separate dir, and failures degrade rather than raising into the gate.
+
+    ABDHOME: ``effort`` / ``env`` default to None (today's behavior, byte-for-byte);
+    the ``invoke_board`` seam passes a seat's canonical effort + ``resolve_seat_env``
+    result so per-seat effort + active env scrubbing reach the real launch.
     """
     base = Path(tempfile.mkdtemp(prefix="pl-panel-"))
     resolved_repo_dir = Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
@@ -1062,6 +1111,14 @@ def _default_spawn(
     try:
         (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
         (review_dir / "review-instructions.md").write_text(_mode_instructions(mode), encoding="utf-8")
+        # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
+        # path calls the leg execs with their exact prior signatures — existing
+        # tests monkeypatch ``_exec_leg`` with a fixed arg list and must keep passing.
+        extra: dict[str, object] = {}
+        if effort is not None:
+            extra["effort"] = effort
+        if env is not None:
+            extra["env"] = env
         if leg == "claude":
             return _exec_claude_tui_leg(
                 review_dir,
@@ -1071,9 +1128,10 @@ def _default_spawn(
                 repo_dir=resolved_repo_dir,
                 mode=mode,
                 model=model,
+                **extra,
             )
         rc, review_text, log_text = _exec_leg(
-            leg, review_dir, out_dir, _leg_timeout_for(review_dir), artifact, mode, model
+            leg, review_dir, out_dir, _leg_timeout_for(review_dir), artifact, mode, model, **extra
         )
         return _classify_leg(rc, review_text, log_text, mode), review_text
     except Exception as exc:  # fail-closed
@@ -1098,10 +1156,20 @@ def _default_spawn_via_provider(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     model: str | None = None,
+    effort: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
+    # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
+    # path calls ``_default_spawn`` with its exact frozen signature
+    # (leg, artifact, repo_dir, mode, model) — the CS-0.8 same-signature guard.
+    extra: dict[str, object] = {}
+    if effort is not None:
+        extra["effort"] = effort
+    if env is not None:
+        extra["env"] = env
     provider = HomebrewAgentRuntimeProvider(
         spawn=lambda request, register_process=None: _default_spawn(
-            leg, artifact, repo_dir=repo_dir, mode=mode, model=model
+            leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
         )
     )
     session = provider.create_session(
