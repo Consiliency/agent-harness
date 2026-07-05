@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Sequence
 
+from .advisor_board.schema import vendor_family, vendor_of_harness
 from .closeout_validators import ReviewFinding
 from .panel_invoker import PanelResult, available_panel_legs, invoke_panel, terminal_verdict
 
@@ -42,37 +43,29 @@ def _leg_blocks(text: str) -> bool:
     """
     return terminal_verdict(text) == "DISAGREE"
 
-# Executor → review "vendor" (for reviewer≠author disjointness). The panel legs
-# are themselves vendor-named (codex/gemini/claude).
-_EXECUTOR_VENDOR: dict[str, str] = {
-    "codex": "codex",
-    "opencode": "codex",   # openai-family models
-    "claude": "claude",
-    "gemini": "gemini",
-    "pi": "pi",            # distinct → all panel legs are disjoint from a pi author
-}
+# Reviewer≠author disjointness is keyed on VENDOR FAMILY, and the ONE canonical
+# model-first projection lives in ``advisor_board.schema`` (ABDFREEZE IF-0-1). These
+# are thin wrappers onto it — NOT a parallel copy — so a custom/model-first board
+# can never drift the executor→vendor and model→vendor mappings out of sync with the
+# seat projection (the drift this fix exists to kill). ``vendor_of_harness`` mirrors
+# the old ``_EXECUTOR_VENDOR`` table exactly; ``vendor_family`` reproduces the old
+# ``author_vendor_for_model`` (family, or the bare lowercased model when
+# inconclusive). See tests/test_advisor_board_schema.py for the byte-consistency.
 
 
 def author_vendor_for_executor(executor: str) -> str:
-    return _EXECUTOR_VENDOR.get((executor or "").lower(), (executor or "").lower())
+    return vendor_of_harness(executor)
 
 
 def author_vendor_for_model(model_id: str) -> str:
-    """Map a concrete model id to its panel-leg vendor (codex/gemini/claude/...).
+    """Map a concrete model id to its panel-leg vendor family (codex/gemini/claude/…).
 
     Fallback author signal for reviewer≠author when no recorded executor is
     available: the implementing model's vendor must be excluded from the pool.
+    Delegates to the frozen ``vendor_family`` projection (model-first, harness
+    unknown here), which returns the family or the bare lowercased model.
     """
-    m = (model_id or "").lower()
-    if not m:
-        return ""
-    if "claude" in m or "opus" in m or "sonnet" in m or "haiku" in m:
-        return "claude"
-    if "gemini" in m or m in {"pro", "flash", "flash-lite", "auto"}:
-        return "gemini"
-    if m.startswith("gpt") or m.startswith("o1") or m.startswith("o3") or m.startswith("openai/"):
-        return "codex"  # the codex panel leg runs the openai-family model
-    return m
+    return vendor_family(model_id)
 
 
 def resolve_run_mode(env: Mapping[str, str] | None = None, explicit: str | None = None) -> str:
@@ -94,10 +87,18 @@ def select_reviewer_pool(
     executes, claude repairs), and ALL of them must be excluded so no author
     reviews its own work (advisor-panel reconciliation, verified).
     ``degraded_reason`` is set when no disjoint reviewer is available.
+
+    ABDHOME (model-first fix): the disjointness compares VENDOR FAMILY to VENDOR
+    FAMILY, not leg-name to family. Each available leg is projected through the
+    frozen ``vendor_of_harness`` before exclusion, so a same-vendor breadth lane
+    (e.g. an ``opencode`` reviewer over a ``codex``-authored artifact — both the
+    ``codex`` family) is correctly excluded. For the built-3 / default panel the
+    leg name IS its family, so this is byte-neutral. The returned pool keeps the
+    original leg NAMES (``invoke_panel`` dispatches on those).
     """
     authors = {author_vendor} if isinstance(author_vendor, str) else set(author_vendor)
     authors = {a for a in authors if a}
-    pool = tuple(leg for leg in available_legs if leg not in authors)
+    pool = tuple(leg for leg in available_legs if vendor_of_harness(leg) not in authors)
     if pool:
         return pool, None
     return (), ("no_reviewers" if not available_legs else "author_vendor_only")
