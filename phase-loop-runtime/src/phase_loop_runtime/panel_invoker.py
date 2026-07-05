@@ -33,7 +33,16 @@ from .agent_runtime_provider import (
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
-from .advisor_board.harness_mapping import render_seat_invocation
+from .advisor_board.backing import resolve_seat_env, select_backing
+from .advisor_board.harness_mapping import EffortMappingError, render_seat_invocation
+from .advisor_board.schema import (
+    BACKING_HOMEBREW,
+    BACKING_OMNIGENT,
+    Board,
+    HostContext,
+    Seat,
+    identify_host_leg,
+)
 
 # Panel legs are vendor identities (one model class per vendor for the panel).
 PANEL_LEGS: tuple[str, ...] = ("codex", "gemini", "claude")
@@ -1266,3 +1275,129 @@ def invoke_panel_request(
         mode=mode,
         models=models,
     )
+
+
+# --- ABDHOME: the board seam (seats through the provider backing) ------------
+
+# The lanes the built-3 homebrew backing spawns natively. A homebrew seat on any
+# OTHER lane (breadth: opencode / pi / cursor / amp) has NO hand-written adapter
+# here — hand-writing breadth defeats the Omnigent maintenance-offload — so it is
+# Omnigent-or-skip (ABDOMNI) and degrades skip-with-warning in ABDHOME.
+_HOMEBREW_BUILT3: frozenset[str] = frozenset({"codex", "gemini", "claude"})
+
+
+def enforce_native_host_leg(board: Board, host: HostContext | None) -> Seat | None:
+    """Return the native in-process host-leg seat (or ``None``), raising if that
+    seat would be routed off-host through a gateway.
+
+    When a board runs INSIDE a harness (``host.host_harness`` set), the co-resident
+    seat is the native host leg — it runs in-process and MUST NEVER be routed
+    through the Omnigent gateway (you cannot gateway the process you are running
+    inside). A host-leg seat carrying ``backing=omnigent`` is therefore a contract
+    violation → fail closed, loud. This is DISTINCT from an ordinary
+    omnigent-without-gateway seat (which merely skips-with-warning): the host leg is
+    a hard invariant, not a degradable lane. The standalone runner
+    (``host_harness is None``) has no host leg → ``None``, every leg a subprocess,
+    exactly as today.
+    """
+    host_seat = identify_host_leg(board, host)
+    if host_seat is not None and host_seat.backing == BACKING_OMNIGENT:
+        raise ValueError(
+            f"native host leg {host_seat.seat_key!r} may not be routed through a "
+            "gateway (backing=omnigent): the host leg runs in-process and is never "
+            "gatewayed (ABDHOME native-host-leg invariant)"
+        )
+    return host_seat
+
+
+def invoke_board(
+    board: Board,
+    artifact: str,
+    *,
+    host: HostContext | None = None,
+    gateway_available: bool = False,
+    spawn: SpawnFn | None = None,
+    repo_dir: Path | str | None = None,
+    mode: str = "review",
+    base_env: Mapping[str, str] | None = None,
+) -> PanelResult:
+    """Run an Advisor Board's seats through the provider seam, fail-closed.
+
+    Each seat is routed per its ``backing`` (``select_backing``), rendered through
+    the frozen per-harness effort mapping (``render_seat_invocation`` — so
+    ``seat.effort`` reaches each CLI, incl. the agy leg's effort-in-the-model-name),
+    and launched with an ACTIVELY scrubbed subprocess env (``resolve_seat_env`` —
+    a subscription seat scrubs every vendor key; an api-key seat, only behind the
+    board opt-in, injects ONLY its own vendor's key). Results are returned in seat
+    ORDER; the leg label is the seat's lane (ABDRESOLVE re-keys by seat position).
+
+    Fail-closed boundaries (never a silent homebrew breadth fallback, ABDHOME
+    non-goal):
+
+    * an ``omnigent`` seat with no gateway → skip-with-warning (``select_backing``);
+    * a homebrew seat on a breadth lane with no hand-written adapter →
+      skip-with-warning (Omnigent-or-skip, routed by ABDOMNI);
+    * an api-key seat without the board opt-in → DEGRADED (never-silent-key);
+    * the native host leg is never routed through a gateway
+      (``enforce_native_host_leg`` raises on a host-leg omnigent seat).
+
+    The ``default`` board reproduces today's 3-leg panel byte-for-byte: each
+    subscription/homebrew built-3 seat renders to today's exact model + effort
+    literals and scrubs to exactly ``_subscription_env()``.
+    """
+    if mode not in PANEL_MODES:
+        raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    enforce_native_host_leg(board, host)
+    env_source: Mapping[str, str] = os.environ if base_env is None else base_env
+
+    def _skip(leg: str, detail: str) -> PanelLegResult:
+        return PanelLegResult(leg=leg, status="UNAVAILABLE", text="", detail=detail)
+
+    results: list[PanelLegResult] = []
+    for seat in board.seats:
+        leg = (seat.harness or "").lower()
+        decision = select_backing(seat, gateway_available=gateway_available)
+        if decision.skip:
+            results.append(_skip(leg, f"skip: {decision.reason}"))
+            continue
+        if decision.backing != BACKING_HOMEBREW:
+            # An omnigent seat that did NOT skip is ABDOMNI's transport, not ABDHOME's.
+            results.append(_skip(leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
+            continue
+        if leg not in _HOMEBREW_BUILT3:
+            results.append(_skip(leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)"))
+            continue
+        # Render effort (proves the mapping is frozen for this lane) + resolve the
+        # actively-scrubbed env BEFORE spawning. A breadth lane raises
+        # EffortMappingError → skip; a never-silent-key violation raises ValueError
+        # → DEGRADED (fail closed, never silently unauthenticated).
+        try:
+            render_seat_invocation(leg, seat.model, seat.effort)
+            seat_env = resolve_seat_env(
+                seat, env_source, allow_api_key_fallback=board.allow_api_key_fallback
+            )
+        except EffortMappingError as exc:
+            results.append(_skip(leg, f"skip: {exc}"))
+            continue
+        except ValueError as exc:  # never-silent-key
+            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]))
+            continue
+        try:
+            if spawn is not None:
+                status, text = spawn(leg, artifact)
+            else:
+                status, text = _default_spawn_via_provider(
+                    leg, artifact, repo_dir=repo_dir, mode=mode,
+                    model=seat.model, effort=seat.effort, env=seat_env,
+                )
+        except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
+            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]))
+            continue
+        try:
+            status = normalize_leg_status(status)
+        except ValueError:
+            status = "DEGRADED"
+        if status == "OK" and not str(text).strip():
+            status = "EMPTY"
+        results.append(PanelLegResult(leg=leg, status=status, text=str(text)))
+    return PanelResult(legs=tuple(results))
