@@ -8,7 +8,9 @@
 
 This roadmap evolves the fixed 3-vendor `advisor-panel` (v4: *Cross-Vendor Advisor Panel Ownership And Routing*) into the **Advisor Board** — a customizable, **model-first** review board with named purpose presets, a swappable provider backing, a six-harness compatibility matrix, and observability decoupled from launching.
 
-Design source: `DESIGN-advisor-board.md`. The panel is already a single runtime-owned primitive (`phase_loop_runtime.panel_invoker`); the standalone `advisor-panel` skill and the embedded governed gates in `execute-phase`/`plan-phase` both call it, so this refactor has one implementation surface, not two. The runtime already supports overridable legs + per-leg model + per-leg effort, and the CS-0.8 provider seam (`agent_runtime_provider.py`) already mirrors omniagent-plus's `core-contracts/src/provider.ts` — so the provider-backing work activates an existing seam rather than inventing one.
+Design source: `DESIGN-advisor-board.md`. The panel is already a single runtime-owned primitive (`phase_loop_runtime.panel_invoker`); the standalone `advisor-panel` skill and the embedded governed gates in `execute-phase`/`plan-phase` both call it, so this refactor has one implementation surface, not two. The runtime already supports overridable legs + per-leg model (`invoke_panel(models={…})`, panel_invoker.py:49-53,1114-1121), and the CS-0.8 provider seam (`agent_runtime_provider.py`) already mirrors omniagent-plus's `core-contracts/src/provider.ts` and is LIVE (the default path routes every leg through `HomebrewAgentRuntimeProvider`) — so the provider-backing work activates an existing seam rather than inventing one.
+
+**Panel-verified corrections (v5, three-agent panel incl. Fable code-verification):** (a) per-leg **effort is NOT supported today** — it is hard-coded per leg (claude `--effort max` :324, codex `xhigh` :992) and for the agy/gemini leg **effort is baked into the model-name string** (`"Gemini 3.1 Pro (High)"` :51/:1016), so the model-first `{model, effort}` split needs a per-harness model/effort mapping that is NEW work scheduled here. (b) The governed gates key reviewer≠author disjointness on **vendor-leg identity** (`governed_review.py:45-52,88-103`; `governed_premerge.py`); model-first breaks the `leg==vendor` assumption, so a seat→vendor-family projection is frozen and those call sites are updated, or custom boards silently corrupt reviewer-disjointness. (c) omniagent-plus integrates **opencode/pi/codex/claude-code/gemini-antigravity only** (`core-contracts/src/types.ts:10-17`) — **cursor and amp are NOT present**; breadth via Omnigent is scoped to opencode/pi, with a named contract-extension work item for cursor/amp.
 
 The work is roadmap-sized (not a single detailed plan) because it spans schema, registries, a compatibility matrix, board resolution, a rename, two provider backings, and an observability plane — with a natural interface-freeze boundary up front that lets almost everything else fan out in parallel, and a gated tail that rides the in-flight omniagent-plus Omnigent v0.4.0 adaptation.
 
@@ -39,11 +41,11 @@ A board **seat is a cognition** (`{model, effort, harness?, lens?, auth?}`), mod
 
 ## Top Interface-Freeze Gates
 
-1. **IF-0-ABDFREEZE-1** — Seat + Board schema (model-first): the `{model, effort, harness?, lens?, auth?}` seat shape, the board shape (name, purpose, open-ended seats, `allow_api_key_fallback`), and the config format + location (`~/.config/agent-harness/advisor-boards.toml`).
-2. **IF-0-ABDFREEZE-2** — Registry interfaces: harness registry, model registry, and the `(model × harness)` compatibility + per-lane auth-availability matrix API (`is_valid(model, harness) -> (bool, auth_availability)`, `default_lane(model)`).
-3. **IF-0-ABDFREEZE-3** — Provider-backing selector contract: per-seat `homebrew | omnigent`, fail-closed fallback semantics, and auth resolution (subscription-default, api-key by override/opt-in, never silent).
-4. **IF-0-ABDFREEZE-4** — Back-compat contract: `default` board reproduces the current 3-leg panel behavior; `advisor-panel` remains a working alias of `advisor-board`.
-5. **IF-0-ABDFREEZE-5** — Observability contract: forwarded-event shape for an observed-not-relaunched native leg, and the launcher-not-equal-observability-plane boundary.
+1. **IF-0-ABDFREEZE-1** — Seat + Board schema (model-first): the `{model, effort, harness?, lens?, auth?}` seat shape, the board shape (name, purpose, open-ended seats, `allow_api_key_fallback`), the config format + location (`~/.config/agent-harness/advisor-boards.toml`), a **per-harness model/effort mapping** (incl. the agy leg where effort is embedded in the model name), the **host-leg seat identity** (which seat is the native host leg when the board runs inside Claude Code), and a **seat→vendor-family projection** (so the governed reviewer≠author disjointness survives model-first).
+2. **IF-0-ABDFREEZE-2** — Registry interfaces + shared canonical fixtures: harness registry, model registry, the `(model × harness)` compatibility + per-lane auth-availability matrix API (`is_valid(model, harness) -> (bool, auth_availability)`, `default_lane(model)`), and a single canonical fixture set that ABDREG populates and ABDRESOLVE/ABDHOME test against (kills mock-vs-real divergence).
+3. **IF-0-ABDFREEZE-3** — Provider-backing selector + auth-enforcement contract: per-seat `homebrew | omnigent`, fail-closed fallback semantics, and auth resolution enforced by **active environment scrubbing** (subscription-default scrubs vendor API-key vars from the subprocess env / gateway payload per the existing `_subscription_env` strip pattern; a fallback injects ONLY the seat's vendor key; never silent).
+4. **IF-0-ABDFREEZE-4** — Back-compat contract: `default` board reproduces the current 3-leg panel behavior under **golden tests** (launch order, prompt/input payloads, env/auth, timeout/retry, result keys, output formatting, failure semantics, `invoke_panel()` API), not just seat count; `advisor-panel` remains a working alias of `advisor-board`.
+5. **IF-0-ABDFREEZE-5** — Observability contract: an **internal advisor-board event envelope** (owned by us, not a guessed Omnigent schema), the launcher-not-equal-observability-plane boundary, and the rule that forwarding is **async/best-effort and can never delay or fail the native leg**. The mapping from the internal envelope to a concrete sink is deferred to ABDOBS.
 
 ## Phases
 
@@ -124,8 +126,9 @@ Implement board resolution (name to seats, settable default, ad-hoc seats), fail
 - [ ] Board resolver turns a board name into seats, honors a settable default board, and parses ad-hoc `--seats model:effort[:harness]`.
 - [ ] Seat validation runs against the matrix and fails fast with actionable diagnostics on an invalid seat.
 - [ ] The skill is renamed `advisor-board` across all harness prefixes; `advisor-panel` resolves as an alias; the stray codex `codex-advisor-panel` duplicate is removed.
-- [ ] An automated proof shows the `default` board reproduces today's 3-leg behavior.
+- [ ] An automated proof shows the `default` board reproduces today's 3-leg behavior (resolution-level; the full golden proof lives in ABDFREEZE-4 / ABDVERIFY).
 - [ ] `advisor-board --board code-review <artifact>` and bare `advisor-board` (default) both resolve.
+- [ ] Result identity is re-keyed leg→seat so a board with two same-vendor seats is expressible (`PanelLegResult.leg` today assumes one model per vendor); `PanelRequest` (documented as an entry point in the skill but not accepted by `invoke_panel`) is reconciled or retired.
 
 **Scope notes**
 Decompose into four lanes: resolver lane, validation-wiring lane, rename+alias+dedup lane, and back-compat-proof lane. The resolver/validation lanes code against frozen interfaces with fixture registries and integrate with ABDREG at verify.
@@ -149,25 +152,29 @@ No provider backing change, no observability work.
 ### Phase 4 — Homebrew Backing (ABDHOME)
 
 **Objective**
-Route board seats through the provider seam with the `homebrew` backing, preserve the built-3 and the native host leg, and provide homebrew one-shot legs as the fail-closed fallback for breadth harnesses.
+Route board seats through the provider seam with the `homebrew` backing; preserve the built-3 and the native host leg (byte-for-byte for the default board); plumb per-seat effort into every spawned CLI; enforce no-silent-key by active env scrubbing; and preserve the governed reviewer≠author disjointness under model-first. Breadth harnesses are NOT hand-written here — they are Omnigent-or-skip (ABDOMNI).
 
 **Exit criteria**
 - [ ] Board seats run through the provider seam with per-seat `homebrew` backing selection.
-- [ ] The built-3 (claude native host leg / Agent-View TUI off-host, codex, gemini) behave unchanged behind the seam.
+- [ ] The built-3 (claude native host leg / Agent-View TUI off-host, codex, gemini) behave unchanged behind the seam, proven by the IF-0-ABDFREEZE-4 golden tests (not just seat count).
 - [ ] The native-host-leg-stays-native invariant is enforced and tested (the host leg is never routed through the gateway).
-- [ ] An opencode/pi/cursor seat runs as a homebrew one-shot leg where a local subscription CLI exists.
-- [ ] An unavailable lane degrades the seat gracefully (skip/fallback) without blocking the board.
+- [ ] `seat.effort` reaches each spawned CLI via the frozen per-harness model/effort mapping (incl. the agy leg where effort is embedded in the model name).
+- [ ] No-silent-key is enforced by ACTIVE env scrubbing: a subscription/default seat scrubs vendor API-key vars from the subprocess env (per `_subscription_env`, panel_invoker.py:227-230,348-353); a fallback injects ONLY the seat's vendor key; negative tests cover every launcher/fallback path.
+- [ ] The governed reviewer≠author disjointness holds for custom boards: `governed_review.py`/`governed_premerge.py` consume the frozen seat→vendor-family projection; a two-same-vendor-seat board is tested for correct disjointness.
+- [ ] An unavailable lane degrades the seat gracefully (skip-with-warning) without blocking the board.
 
 **Scope notes**
-Decompose into three lanes: seam-wiring lane, built-3-preservation lane (incl. the native-host-leg invariant), and homebrew-breadth+fallback lane. Buildable now with no gateway dependency.
+Decompose into three lanes: seam-wiring + effort-plumbing + env-scrubbing lane, built-3-preservation + native-host-leg-invariant lane, and governed-gate-disjointness lane. Buildable now with no gateway dependency. NOTE: breadth harnesses (opencode/pi/cursor) are deliberately NOT given homebrew adapters here — hand-writing them defeats the Omnigent maintenance-offload; unavailable breadth = skip-with-warning (fail-closed), routed by ABDOMNI.
 
 **Non-goals**
-No Omnigent backing, no observability forwarding.
+No Omnigent backing, no observability forwarding, no hand-written breadth adapters.
 
 **Key files**
 - phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py
 - phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
 - phase-loop-runtime/src/phase_loop_runtime/claude_agent_view.py
+- phase-loop-runtime/src/phase_loop_runtime/governed_review.py
+- phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py
 - phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py
 
 **Depends on**
@@ -179,16 +186,17 @@ No Omnigent backing, no observability forwarding.
 ### Phase 5 — Omnigent Backing (ABDOMNI)
 
 **Objective**
-Add the `omnigent` provider backing so breadth harnesses (opencode/pi/cursor/amp) route through omniagent-plus to Omnigent v0.4.0, opt-in and fail-closed, coordinating with the in-flight v0.4.0 adaptation rather than forking the transport. Gated on Omnigent v0.4.0.
+Add the `omnigent` provider backing so breadth harnesses route through omniagent-plus to Omnigent v0.4.0, opt-in and fail-closed, coordinating with the in-flight v0.4.0 adaptation rather than forking the transport. Scoped to the harnesses omniagent-plus actually integrates today (**opencode/pi**); cursor/amp require a named contract-extension work item first. Gated on Omnigent v0.4.0.
 
 **Exit criteria**
 - [ ] The `omnigent` backing is implemented against the shared seam, targeting Omnigent v0.4.0 via omniagent-plus's provider.
-- [ ] Opt-in opencode/pi/cursor/amp seats route through Omnigent as the primary lane; homebrew (ABDHOME) is the fallback.
-- [ ] Gateway auth resolution maps subscription-default/api-key-opt-in/never-silent to the gateway-bearer lane.
-- [ ] A gateway-down condition degrades an omnigent seat to homebrew or skip; native and built-3 seats are unaffected.
+- [ ] Opt-in **opencode/pi** seats route through Omnigent as the primary lane; unavailable = skip-with-warning (no hand-written homebrew breadth fallback).
+- [ ] **cursor/amp** are tracked as an explicit omniagent-plus contract-extension work item (they are absent from `core-contracts/src/types.ts:10-17`); no cursor/amp omnigent routing is claimed until that lands or the v0.4.0 dynamic harness catalog (`GET /v1/harnesses`) is verified to expose them.
+- [ ] Gateway auth resolution maps subscription-default/api-key-opt-in/never-silent to the gateway-bearer lane, and the gateway reports which auth lane a session actually used (so no-silent-key is testable for omnigent seats, not just asserted).
+- [ ] A gateway-down condition degrades an omnigent seat to skip-with-warning; native and built-3 seats are unaffected.
 
 **Scope notes**
-Decompose into three lanes: omnigent-provider-adapter lane, breadth-routing lane, and gateway-auth-resolution lane. Gated on the Omnigent v0.4.0 adaptation landing; coordinate, do not fork.
+Decompose into three lanes: omnigent-provider-adapter lane, breadth-routing (opencode/pi) lane, and gateway-auth-resolution lane. Gated on the Omnigent v0.4.0 adaptation landing; coordinate, do not fork. cursor/amp are out of this phase's routing scope pending the contract extension.
 
 **Non-goals**
 No native-host-leg routing through the gateway; no observability work (that is ABDOBS).
@@ -208,15 +216,16 @@ No native-host-leg routing through the gateway; no observability work (that is A
 ### Phase 6 — Observability Forwarding (ABDOBS)
 
 **Objective**
-Forward a natively-launched leg's runtime events into Omnigent's observability plane (observed, not relaunched), and document/enforce the per-workload boundary. Gated on Omnigent v0.4.0.
+Emit a natively-launched leg's runtime events as the frozen internal advisor-board envelope, then MAP that envelope to a verified sink (observed, not relaunched); document/enforce the per-workload boundary. Gated on a VERIFIED ingestion surface.
 
 **Exit criteria**
-- [ ] A natively-launched leg emits its runtime events into the observability plane per the frozen forwarded-event shape (IF-0-ABDFREEZE-5).
-- [ ] A natively-launched Claude host leg appears in the observability plane without being routed through the gateway.
+- [ ] A natively-launched leg emits its runtime events as the internal advisor-board event envelope (IF-0-ABDFREEZE-5), async/best-effort, never delaying or failing the native leg.
+- [ ] The envelope maps to a VERIFIED sink: either a confirmed Omnigent v0.4.0 ingestion endpoint for externally-launched sessions (the frozen contract `omnigent-contract.md:52-62` has NONE — verify one exists in v0.4.0 first), OR omniagent-plus's own `ui-read-model`/`state-ledger` (which we control) as the retarget.
+- [ ] A natively-launched Claude host leg appears in the chosen plane without being routed through the gateway.
 - [ ] The per-workload boundary is documented and enforced: Board = native + optional forward; phase-execution = Omnigent-as-launcher.
 
 **Scope notes**
-Decompose into two lanes: event-forwarding lane and per-workload-boundary lane. Gated on the Omnigent v0.4.0 observability plane being available.
+Decompose into two lanes: envelope-emit (async/best-effort) lane and envelope→verified-sink mapping lane. Gated on a VERIFIED ingestion surface (Omnigent v0.4.0 endpoint confirmed, or retarget at omniagent-plus ui-read-model/state-ledger) — do NOT freeze against a guessed upstream schema.
 
 **Non-goals**
 No relaunching of the native host leg for observability; no phase-execution agent-spawning (CS-2.2).
@@ -284,27 +293,34 @@ No new feature scope; verification and documentation only.
 ## Phase Dependency DAG
 
 ```
-ABDFREEZE  (serial freeze)
+ABDFREEZE  (serial freeze — all contracts + shared canonical fixtures)
    |
-   +-----------------+-----------------+-----------------+---------------------+
-   |                 |                 |                 |                     |
-   v                 v                 v                 v                     v
-ABDREG           ABDRESOLVE         ABDHOME           ABDOMNI*              ABDOBS*
-(registries)     (resolve+rename)   (homebrew)        (gated v0.4.0)        (gated v0.4.0)
-   |                 |                 |                 |                     |
-   +-----------------+--------+--------+-----------------+---------------------+
+   +-----------------+-----------------+        <-- buildable-now 3-way fan-out
+   |                 |                 |
+   v                 v                 v
+ABDREG           ABDRESOLVE         ABDHOME
+(registries)     (resolve+rename)   (homebrew)
+   |                 |                 |
+   |                 |                 +-----------+----------------+   <-- gated 2-way second wave
+   |                 |                 |           |                |
+   |                 |                 v           v                |
+   |                 |             ABDOMNI*     ABDOBS*             |
+   |                 |             (gated)      (gated)             |
+   +-----------------+--------+------+-----------+----------------+-+
                               |
                               v
                         ABDVERIFY  (serial integrate+verify)
 
-* ABDOMNI, ABDOBS ride the in-flight Omnigent v0.4.0 adaptation; they join ABDVERIFY when ungated.
-  ABDREG, ABDRESOLVE, ABDHOME are buildable now (pure agent-harness, back-compat) and run fully in parallel.
+* ABDOMNI, ABDOBS DEPEND ON ABDHOME (the seam) and are gated on Omnigent v0.4.0
+  (ABDOBS additionally on a verified ingestion surface). They join ABDVERIFY when ungated.
+  ABDREG/ABDRESOLVE/ABDHOME are buildable now and run in parallel; ABDFREEZE ships the
+  shared canonical fixtures so ABDRESOLVE/ABDHOME don't diverge from ABDREG (no big-bang).
 ```
 
 ## Parallelism summary
 
-- **1 front serial gate** (ABDFREEZE) unblocks a **5-way parallel fan-out**.
-- **3 of the 5 fan-out phases (ABDREG, ABDRESOLVE, ABDHOME) are buildable now and independent** — run concurrently, each with 2-4 internal lanes (about ten lanes live at once).
-- **2 fan-out phases (ABDOMNI, ABDOBS) are gated** on Omnigent v0.4.0 and run in parallel with each other when unblocked.
+- **1 front serial gate** (ABDFREEZE) unblocks a **3-way buildable-now fan-out** (ABDREG, ABDRESOLVE, ABDHOME) — independent file footprints, each with 2-3 internal lanes (~8 lanes live at once), all coding against ABDFREEZE's shared canonical fixtures.
+- **A gated 2-way second wave** (ABDOMNI, ABDOBS) that **depends on ABDHOME** (the seam) and rides Omnigent v0.4.0; the two run in parallel with each other once unblocked.
 - **1 back serial gate** (ABDVERIFY) integrates.
-- Critical path with v0.4.0 ready: ABDFREEZE → (max of the 5) → ABDVERIFY = **3 phases deep**. Buildable-now critical path: ABDFREEZE → (max of ABDREG/ABDRESOLVE/ABDHOME) → ABDVERIFY.
+- **Buildable-now critical path**: ABDFREEZE → max(ABDREG, ABDRESOLVE, ABDHOME) → ABDVERIFY = **3 phases deep**.
+- **Full critical path with v0.4.0 ready**: ABDFREEZE → ABDHOME → max(ABDOMNI, ABDOBS) → ABDVERIFY = **4 phases deep** (the second wave is not a flat fan-out — corrected from an earlier overstatement).
