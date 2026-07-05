@@ -9,7 +9,7 @@ from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS, current_harness, resolve_s
 
 
 REQUIRED_SKILLS: tuple[str, ...] = (
-    "advisor-panel",
+    "advisor-board",
     "execute-detailed",
     "execute-phase",
     "plan-phase",
@@ -21,6 +21,32 @@ REQUIRED_SKILLS: tuple[str, ...] = (
     "skill-improvement-planner",
     "task-contextualizer",
 )
+
+# Prior skill names kept resolvable as ALIASES so existing agent instructions do
+# not break across a rename (ABDRESOLVE: advisor-panel -> advisor-board). The
+# canonical installed skill is ``<harness>-<canonical>``; the alias installs the
+# SAME skill under the historical prefixed name ``<harness>-<alias>`` so a
+# maintainer's ``/<harness>-advisor-panel`` invocation resolves to the CURRENT
+# canonical skill. The alias is installed FROM the canonical source on every run,
+# so a reinstall refreshes it (and overwrites a stale pre-rename dir) rather than
+# leaving it dangling. ``canonical_skill_name`` maps a typed alias back to the
+# canonical name for callers that resolve by string.
+SKILL_ALIASES: dict[str, str] = {
+    "advisor-panel": "advisor-board",
+}
+
+
+def canonical_skill_name(name: str) -> str:
+    """Map a (possibly aliased, possibly harness-prefixed) skill name to its
+    canonical unprefixed skill name. ``advisor-panel`` and any
+    ``<harness>-advisor-panel`` resolve to ``advisor-board``."""
+    raw = (name or "").strip()
+    for harness in ("claude", "codex", "gemini", "opencode"):
+        prefix = f"{harness}-"
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):]
+            break
+    return SKILL_ALIASES.get(raw, raw)
 
 
 @dataclass(frozen=True)
@@ -53,9 +79,9 @@ def install_skills(
     _validate_bundle(source_root)
 
     actions: list[InstallAction] = []
-    for skill_name in REQUIRED_SKILLS:
-        source_dir = source_root / skill_name
-        installed_name = f"{normalized}-{skill_name}"
+
+    def _install_one(skill_name: str, source_skill: str, installed_name: str) -> None:
+        source_dir = source_root / source_skill
         destination_dir = destination_root / installed_name
         overlay_dir = source_dir / "_overrides" / normalized
         overlay = str(overlay_dir) if overlay_dir.exists() else None
@@ -73,6 +99,17 @@ def install_skills(
         actions.append(record)
         if apply:
             _apply_action(source_dir, destination_dir, mode, installed_name, normalized, overlay_dir if overlay else None, expand_body=expand_body)
+
+    for skill_name in REQUIRED_SKILLS:
+        _install_one(skill_name, skill_name, f"{normalized}-{skill_name}")
+
+    # Historical-name aliases: install the canonical skill a second time under the
+    # prefixed alias name so ``/<harness>-advisor-panel`` resolves to today's
+    # advisor-board. Installed FROM the canonical source, so each run refreshes the
+    # alias (a stale pre-rename dir is overwritten, not orphaned).
+    for alias, canonical in SKILL_ALIASES.items():
+        _install_one(alias, canonical, f"{normalized}-{alias}")
+
     return actions
 
 

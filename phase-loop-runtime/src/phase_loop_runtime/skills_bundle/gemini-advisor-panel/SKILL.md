@@ -1,18 +1,19 @@
 ---
 name: gemini-advisor-panel
-description: Run a cross-vendor advisor panel through the agent-harness runtime primitive when a high-stakes change needs independent review evidence.
+description: Run a customizable cross-vendor advisor board (formerly advisor-panel; that name remains a working alias) through the agent-harness runtime primitive when a high-stakes change needs independent review evidence.
 ---
 
-# Advisor Panel
+# Advisor Board
 
-Use this skill when a plan, implementation diff, release closeout, or other high-stakes artifact needs an independent cross-vendor review panel.
+Use this skill when a plan, implementation diff, release closeout, or other high-stakes artifact needs an independent cross-vendor review board. This skill was formerly named `advisor-panel`; that name still resolves as an alias, so existing instructions that say "advisor-panel" keep working.
 
 ## Source Of Truth
 
-The advisor-panel implementation is owned by `agent-harness`:
+The advisor-board (formerly advisor-panel) implementation is owned by `agent-harness`:
 
 - Runtime primitive: `phase_loop_runtime.panel_invoker`
-- Entry points: `PanelRequest`, `available_panel_legs`, and `invoke_panel`
+- Board model: `phase_loop_runtime.advisor_board` (seats, boards, resolver, validation)
+- Entry points: `available_panel_legs`, `invoke_panel`, and `invoke_panel_request` (from a `PanelRequest`)
 - Governed workflow integration: phase-loop governed review/pre-merge paths
 
 Do not call dotfiles advisor-panel scripts, copy provider-specific shell scripts, or introduce a separate implementation in the skill body. The skill is a thin operator guide over the runtime primitive.

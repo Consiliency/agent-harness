@@ -70,11 +70,7 @@ from .registries import (
 )
 from .matrix import (
     DefaultCompatibilityMatrix,
-    SeatValidationError,
     default_matrix,
-    resolved_lane,
-    validate_board,
-    validate_seat,
 )
 from .presets import (
     DEFAULT_BOARD_NAME,
@@ -111,6 +107,24 @@ from .fixtures import (
     DEFAULT_SEAT_RENDERED_MODEL,
     DEFAULT_SEATS,
     TWO_SAME_VENDOR_BOARD,
+)
+from .resolver import (
+    BOARD_ALIASES,
+    STANDIN_BOARDS,
+    BoardResolutionError,
+    BoardResolver,
+    SeatSpecError,
+    key_results_by_seat,
+    parse_seat_spec,
+    parse_seats,
+    resolve_board,
+    seat_result_key,
+)
+from .validation import (
+    SeatValidationError,
+    SeatVerdict,
+    validate_board,
+    validate_seat,
 )
 
 __all__ = [
@@ -159,13 +173,9 @@ __all__ = [
     "DEFAULT_MODEL_REGISTRY",
     "UnknownHarnessError",
     "UnknownModelError",
-    # matrix + validation (ABDREG)
+    # matrix (ABDREG) — seat/board validation is exported from validation below
     "DefaultCompatibilityMatrix",
     "default_matrix",
-    "SeatValidationError",
-    "resolved_lane",
-    "validate_seat",
-    "validate_board",
     # presets + config loader (ABDREG)
     "PRESETS",
     "PRESET_NAMES",
@@ -196,4 +206,20 @@ __all__ = [
     "CANONICAL_VALID_PAIRS",
     "CANONICAL_INVALID_PAIRS",
     "TWO_SAME_VENDOR_BOARD",
+    # resolver (ABDRESOLVE)
+    "BoardResolver",
+    "resolve_board",
+    "parse_seat_spec",
+    "parse_seats",
+    "SeatSpecError",
+    "BoardResolutionError",
+    "BOARD_ALIASES",
+    "STANDIN_BOARDS",
+    "seat_result_key",
+    "key_results_by_seat",
+    # validation (ABDRESOLVE)
+    "validate_seat",
+    "validate_board",
+    "SeatValidationError",
+    "SeatVerdict",
 ]

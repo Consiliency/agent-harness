@@ -25,6 +25,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   seat keys are a hard error (never a silent drop), and every board (presets
   included) is matrix-validated at load. New dep: `tomli` on Python 3.10 (stdlib
   `tomllib` on 3.11+). See `specs/phase-plans-v5.md` (Phase 2 ABDREG).
+- **Advisor Board resolution + rename (Phase 3 ABDRESOLVE).** Board resolution,
+  seat validation, and the `advisor-panel` → `advisor-board` skill rename, coded
+  against the frozen ABDFREEZE interfaces + shared canonical fixtures.
+  `advisor_board/resolver.py`: `BoardResolver` turns a board name into seats,
+  honors a settable default board, and parses ad-hoc `--seats model:effort[:harness]`;
+  `advisor-panel` resolves as a board-name alias of the default board.
+  `advisor_board/validation.py`: `validate_seat`/`validate_board` fail fast against
+  the frozen `CompatibilityMatrix.is_valid` with actionable "did-you-mean"
+  diagnostics. `advisor_board/standin.py`: fixture-backed stand-in registries/matrix
+  (until ABDREG's real data). The `advisor-panel` skill is renamed `advisor-board`
+  across all harness prefixes (`skills-src/`, `phase-loop-skills/`, packaged
+  `skills_bundle/`, `REQUIRED_SKILLS`, `CANONICAL_WORKFLOW_SKILLS`, the SKILLPACK
+  matrix); `advisor-panel` stays a working alias (`SKILL_ALIASES` +
+  `canonical_skill_name`), and the stray prefixed `<harness>-advisor-panel` install
+  is no longer produced. Result identity is re-keyed leg→seat: `PanelLegResult`
+  gains an additive `seat_key` (defaults to `leg`, so the default board is
+  byte-equivalent) so a board with two same-vendor seats is expressible, and the
+  skill-documented `PanelRequest` is reconciled as a real entry point via
+  `invoke_panel_request` (`invoke_panel`'s signature is unchanged — the ABDFREEZE-4
+  back-compat anchor). See `specs/phase-plans-v5.md`.
 - **Advisor Board contract freeze (Phase 1 ABDFREEZE).** New additive,
   behavior-neutral `phase_loop_runtime.advisor_board` package freezing the
   model-first Advisor Board interfaces the parallel fan-out (ABDREG / ABDRESOLVE

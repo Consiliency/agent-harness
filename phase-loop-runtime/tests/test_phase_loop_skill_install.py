@@ -7,7 +7,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from phase_loop_runtime.cli import build_parser, main
-from phase_loop_runtime.skill_install import REQUIRED_SKILLS, install_skills
+from phase_loop_runtime.skill_install import (
+    REQUIRED_SKILLS,
+    SKILL_ALIASES,
+    install_skills,
+)
 from phase_loop_runtime.skill_paths import (
     current_harness,
     resolve_handoff_root,
@@ -56,7 +60,9 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "codex-skills"
             actions = install_skills(harness="codex", source=BUNDLE, destination=dest, mode="symlink", apply=False)
-            self.assertEqual(len(actions), len(REQUIRED_SKILLS))
+            # required skills PLUS the historical-name aliases (each installed as a
+            # prefixed redirect to its canonical skill).
+            self.assertEqual(len(actions), len(REQUIRED_SKILLS) + len(SKILL_ALIASES))
             self.assertFalse(dest.exists())
             first = actions[0]
             self.assertEqual(first.harness, "codex")
@@ -73,7 +79,8 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
                 actions = install_skills(harness=harness, source=BUNDLE, destination=dest, apply=False)
                 self.assertEqual(
                     tuple(action.installed_name for action in actions),
-                    tuple(f"{harness}-{skill}" for skill in REQUIRED_SKILLS),
+                    tuple(f"{harness}-{skill}" for skill in REQUIRED_SKILLS)
+                    + tuple(f"{harness}-{alias}" for alias in SKILL_ALIASES),
                 )
                 self.assertFalse(dest.exists())
 
@@ -84,7 +91,8 @@ class PhaseLoopSkillInstallTest(unittest.TestCase):
                 dest = root / f"{harness}-skills"
                 first = install_skills(harness=harness, source=BUNDLE, destination=dest, mode="symlink", apply=True)
                 second = install_skills(harness=harness, source=BUNDLE, destination=dest, mode="symlink", apply=True)
-                self.assertEqual(len(first), len(REQUIRED_SKILLS))
+                self.assertEqual(len(first), len(REQUIRED_SKILLS) + len(SKILL_ALIASES))
+                self.assertTrue((dest / f"{harness}-advisor-panel").exists())  # alias resolves
                 self.assertTrue((dest / f"{harness}-execute-detailed").exists())
                 self.assertIn(
                     f"name: {harness}-execute-detailed",

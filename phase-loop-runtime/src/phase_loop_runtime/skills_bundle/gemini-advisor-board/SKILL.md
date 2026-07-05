@@ -1,5 +1,5 @@
 ---
-name: opencode-advisor-panel
+name: gemini-advisor-board
 description: Run a customizable cross-vendor advisor board (formerly advisor-panel; that name remains a working alias) through the agent-harness runtime primitive when a high-stakes change needs independent review evidence.
 ---
 

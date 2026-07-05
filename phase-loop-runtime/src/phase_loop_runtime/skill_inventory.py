@@ -181,7 +181,7 @@ BRIDGE_SKILL_NAMES = {
 }
 CANONICAL_WORKFLOW_SKILLS = {
     "codex": (
-        "codex-advisor-panel",
+        "codex-advisor-board",
         "codex-phase-roadmap-builder",
         "codex-plan-phase",
         "codex-execute-phase",
@@ -194,7 +194,7 @@ CANONICAL_WORKFLOW_SKILLS = {
         "codex-skill-editor",
     ),
     "claude": (
-        "claude-advisor-panel",
+        "claude-advisor-board",
         "claude-phase-roadmap-builder",
         "claude-plan-phase",
         "claude-execute-phase",
@@ -207,7 +207,7 @@ CANONICAL_WORKFLOW_SKILLS = {
         "claude-skill-editor",
     ),
     "gemini": (
-        "gemini-advisor-panel",
+        "gemini-advisor-board",
         "gemini-phase-roadmap-builder",
         "gemini-plan-phase",
         "gemini-execute-phase",
@@ -220,7 +220,7 @@ CANONICAL_WORKFLOW_SKILLS = {
         "gemini-skill-editor",
     ),
     "opencode": (
-        "opencode-advisor-panel",
+        "opencode-advisor-board",
         "opencode-phase-roadmap-builder",
         "opencode-plan-phase",
         "opencode-execute-phase",

@@ -15,7 +15,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from phase_loop_runtime.skill_install import REQUIRED_SKILLS, install_skills
+from phase_loop_runtime.skill_install import (
+    REQUIRED_SKILLS,
+    SKILL_ALIASES,
+    install_skills,
+)
 
 
 def _make_bundle(root: Path) -> Path:
@@ -61,3 +65,45 @@ def test_install_expands_harness_placeholder_for_non_claude_harness():
         assert "<harness>-" not in body
         assert "codex-execute-phase" in body
         assert "name: codex-execute-phase" in body
+
+
+def test_alias_is_installed_as_prefixed_redirect_to_canonical_skill():
+    # ABDRESOLVE CR: `/<harness>-advisor-panel` must resolve after reinstall. The
+    # alias is installed FROM the canonical `advisor-board` source under the
+    # prefixed alias name, so the maintainer's historical slash command runs
+    # today's advisor-board skill (name frontmatter carries the alias name).
+    assert SKILL_ALIASES.get("advisor-panel") == "advisor-board"
+    with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dest:
+        _make_bundle(Path(src))
+        actions = install_skills(
+            harness="claude", source=Path(src), destination=Path(dest), mode="copy", apply=True
+        )
+        alias_dir = Path(dest) / "claude-advisor-panel"
+        canonical_dir = Path(dest) / "claude-advisor-board"
+        # both the canonical skill and its prefixed alias are installed
+        assert canonical_dir.is_dir(), "canonical advisor-board not installed"
+        assert alias_dir.is_dir(), "prefixed advisor-panel alias not installed"
+        alias_body = (alias_dir / "SKILL.md").read_text(encoding="utf-8")
+        assert "name: claude-advisor-panel" in alias_body
+        assert "<harness>-" not in alias_body  # body still re-expanded
+        # the alias is recorded as an install action sourced from the canonical skill
+        alias_action = next(a for a in actions if a.installed_name == "claude-advisor-panel")
+        assert alias_action.source.endswith("advisor-board")
+
+
+def test_alias_install_is_idempotent_and_refreshes_stale_dir():
+    # A stale pre-rename dir must be overwritten by a reinstall, not orphaned.
+    with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dest:
+        _make_bundle(Path(src))
+        alias_dir = Path(dest) / "claude-advisor-panel"
+        alias_dir.mkdir(parents=True)
+        (alias_dir / "SKILL.md").write_text(
+            "---\nname: claude-advisor-panel\ndescription: STALE old body\n---\nSTALE\n",
+            encoding="utf-8",
+        )
+        install_skills(
+            harness="claude", source=Path(src), destination=Path(dest), mode="copy", apply=True
+        )
+        refreshed = (alias_dir / "SKILL.md").read_text(encoding="utf-8")
+        assert "STALE" not in refreshed, "stale alias dir was not refreshed on reinstall"
+        assert "synthetic test skill" in refreshed  # now carries canonical content

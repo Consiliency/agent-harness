@@ -14,7 +14,7 @@ built-in ``presets``. Contract:
 * Every board (presets AND user boards) is validated through the compatibility
   matrix at load time, so an invalid ``(model, harness)`` pairing (e.g.
   ``claude:gpt-5.5``) or an over-ceiling effort is rejected at CONFIG TIME with an
-  actionable message (``matrix.validate_board``).
+  actionable message (``validation.validate_board``).
 
 A missing config file is not an error: the built-in presets load on their own.
 """
@@ -30,7 +30,7 @@ try:  # Python 3.11+
 except ModuleNotFoundError:  # Python 3.10 — the requires-python floor
     import tomli as tomllib  # type: ignore[no-redef]
 
-from .matrix import SeatValidationError, validate_board
+from .validation import SeatValidationError, validate_board
 from .presets import DEFAULT_BOARD_NAME, PRESETS
 from .schema import (
     AUTH_LANES,

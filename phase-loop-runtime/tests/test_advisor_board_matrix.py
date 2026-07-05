@@ -80,10 +80,14 @@ class AuthAvailabilityTests(unittest.TestCase):
 
 
 class ConfigTimeSeatValidationTests(unittest.TestCase):
+    # Config-time seat validation is the single canonical ``validation.validate_seat``
+    # (matrix.validate_seat was folded into it). It returns a ``SeatVerdict`` whose
+    # ``.auth`` is the pair's ``AuthAvailability`` — a valid-but-unauthed seat is a
+    # verdict, not a rejection.
     def test_invalid_pairing_rejected_at_config_time(self) -> None:
         m = default_matrix(probe=_ALL_PRESENT, env={})
         with self.assertRaises(SeatValidationError) as ctx:
-            validate_seat(Seat(model="gpt-5.5", effort="max", harness="claude"), matrix=m)
+            validate_seat(Seat(model="gpt-5.5", effort="max", harness="claude"), m)
         msg = str(ctx.exception)
         self.assertIn("gpt-5.5", msg)
         self.assertIn("claude", msg)
@@ -92,19 +96,21 @@ class ConfigTimeSeatValidationTests(unittest.TestCase):
     def test_bare_seat_resolves_default_lane_and_validates(self) -> None:
         m = default_matrix(probe=_ALL_PRESENT, env={})
         # harness omitted -> default_lane(gpt-5.5) == codex -> valid
-        avail = validate_seat(Seat(model="gpt-5.5", effort="max"), matrix=m)
-        self.assertTrue(avail.subscription)
+        verdict = validate_seat(Seat(model="gpt-5.5", effort="max"), m)
+        self.assertEqual(verdict.harness, "codex")
+        self.assertTrue(verdict.auth.subscription)
 
     def test_unknown_model_seat_rejected(self) -> None:
+        m = default_matrix(probe=_ALL_PRESENT, env={})
         with self.assertRaises(SeatValidationError):
-            validate_seat(Seat(model="ghost-model", effort="max", harness="codex"))
+            validate_seat(Seat(model="ghost-model", effort="max", harness="codex"), m)
 
     def test_valid_but_unauthed_seat_is_not_rejected(self) -> None:
         # A valid pairing with no usable lane degrades at launch (skip-with-
         # warning), it is NOT a config-time rejection.
         m = default_matrix(probe=_NONE_PRESENT, env={})
-        avail = validate_seat(Seat(model="gpt-5.5", effort="max", harness="codex"), matrix=m)
-        self.assertFalse(avail.any_available)
+        verdict = validate_seat(Seat(model="gpt-5.5", effort="max", harness="codex"), m)
+        self.assertFalse(verdict.auth.any_available)
 
 
 if __name__ == "__main__":
