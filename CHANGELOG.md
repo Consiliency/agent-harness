@@ -45,6 +45,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   skill-documented `PanelRequest` is reconciled as a real entry point via
   `invoke_panel_request` (`invoke_panel`'s signature is unchanged — the ABDFREEZE-4
   back-compat anchor). See `specs/phase-plans-v5.md`.
+- **Advisor Board homebrew backing through the seam (Phase 4 ABDHOME).** Board
+  seats now run through the provider seam with per-seat `homebrew` backing:
+  `panel_invoker.invoke_board(board, artifact, …)` routes each seat via
+  `select_backing`, renders `seat.effort` to each built-3 CLI through the frozen
+  `render_seat_invocation` mapping (incl. the agy leg, where effort is baked into
+  the model-name string — previously hard-coded), and launches with an ACTIVELY
+  scrubbed subprocess env via `resolve_seat_env` (a subscription/default seat
+  scrubs every vendor API-key var; an api-key seat injects ONLY its own vendor's
+  key, and only behind the board opt-in — never silent). The built-3 (claude
+  native-host / Agent-View TUI off-host, codex, gemini) are behavior-neutral
+  behind the seam: the `default` board renders each leg to today's exact argv +
+  env. `enforce_native_host_leg` encodes the native-host-leg invariant — the host
+  leg is never routed through a gateway (a host-leg `omnigent` seat is a hard
+  raise, distinct from the ordinary omnigent/breadth skip-with-warning). Breadth
+  harnesses (opencode/pi/cursor) get NO hand-written homebrew adapters — they are
+  Omnigent-or-skip (ABDOMNI); an unavailable lane degrades skip-with-warning
+  without blocking the board. The governed reviewer≠author disjointness is rewired
+  onto the ONE frozen `advisor_board.schema` vendor projection (not a copy):
+  `governed_review.select_reviewer_pool` now projects each available leg through
+  `vendor_of_harness` before exclusion, so a same-vendor breadth lane (e.g. an
+  `opencode` reviewer over a `codex`-authored artifact) is correctly excluded for
+  custom/model-first boards while the built-3 panel stays byte-neutral. Effort/env
+  default to today's behavior on the legacy `invoke_panel` path (its frozen
+  signature is unchanged). See `specs/phase-plans-v5.md` (ABDHOME).
 - **Advisor Board contract freeze (Phase 1 ABDFREEZE).** New additive,
   behavior-neutral `phase_loop_runtime.advisor_board` package freezing the
   model-first Advisor Board interfaces the parallel fan-out (ABDREG / ABDRESOLVE

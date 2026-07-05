@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import time
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -33,6 +33,19 @@ from .agent_runtime_provider import (
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
+from .advisor_board.backing import resolve_seat_env, select_backing
+from .advisor_board.harness_mapping import EffortMappingError, render_seat_invocation
+from .advisor_board.matrix import default_matrix
+from .advisor_board.registries import CompatibilityMatrix
+from .advisor_board.schema import (
+    BACKING_HOMEBREW,
+    BACKING_OMNIGENT,
+    Board,
+    HostContext,
+    Seat,
+    identify_host_leg,
+)
+from .advisor_board.validation import validate_seat
 
 # Panel legs are vendor identities (one model class per vendor for the panel).
 PANEL_LEGS: tuple[str, ...] = ("codex", "gemini", "claude")
@@ -320,18 +333,27 @@ def _render_claude_tui_prompt(
     )
 
 
-def _claude_tui_command(review_dir: Path, repo_dir: Path, model: str | None = None) -> list[str]:
+def _claude_tui_command(
+    review_dir: Path, repo_dir: Path, model: str | None = None, effort: str | None = None
+) -> list[str]:
     add_dirs = [review_dir]
     if repo_dir.resolve() != review_dir.resolve():
         add_dirs.append(repo_dir)
+    # ABDHOME: effort is plumbed per-seat. ``effort is None`` (legacy/default path)
+    # keeps today's hard-coded ``--effort max`` byte-for-byte; a board seat renders
+    # its canonical effort through the frozen ``render_seat_invocation`` mapping.
+    effort_args = (
+        ("--effort", "max")
+        if effort is None
+        else render_seat_invocation("claude", model or CLAUDE_IMPLEMENTER_MODEL, effort).effort_args
+    )
     command = [
         "claude",
         "--ax-screen-reader",
         "--safe-mode",
         "--model",
         model or CLAUDE_IMPLEMENTER_MODEL,
-        "--effort",
-        "max",
+        *effort_args,
         "--permission-mode",
         "default",
         "--strict-mcp-config",
@@ -819,6 +841,8 @@ def _exec_claude_tui_leg(
     repo_dir: Path | None = None,
     mode: str = "review",
     model: str | None = None,
+    effort: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -826,16 +850,22 @@ def _exec_claude_tui_leg(
     View. Agent View is subscription-safe but currently prone to background PTY
     reaping on this host; the TUI route preserves Claude Max subscription billing
     and lets Claude write a deterministic scratch output file.
+
+    ABDHOME: ``effort`` / ``env`` default to today's behavior — ``effort is None``
+    keeps ``--effort max`` and ``env is None`` keeps ``_subscription_env()`` (scrub
+    every vendor key). A board seat passes its canonical effort + its
+    ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
+    real launch.
     """
     supported, support_detail = _claude_code_support_status()
     if not supported:
         return "UNAVAILABLE", support_detail
 
-    env = _subscription_env()
+    env = _subscription_env() if env is None else dict(env)
     output_file = out_dir / "panel-claude.txt"
     prompt = _render_claude_tui_prompt(artifact, review_dir, output_file, mode)
     rc, review_text, log_text = _run_claude_tui_session(
-        command=_claude_tui_command(review_dir, repo_dir or Path.cwd(), model),
+        command=_claude_tui_command(review_dir, repo_dir or Path.cwd(), model, effort),
         cwd=out_dir,
         prompt=prompt,
         output_file=output_file,
@@ -853,12 +883,13 @@ def _exec_claude_agent_view_attempt(
     timeout_s: int,
     prompt: str,
     env: Mapping[str, str],
+    effort: str = "max",
 ) -> tuple[str, str]:
     command = adapter.launch_command(
         None,
         name=_CLAUDE_AGENT_NAME,
         model=CLAUDE_IMPLEMENTER_MODEL,
-        effort="max",
+        effort=effort,
         # Plan mode can block review-sized prompts; Read-only access lets Claude inspect the staged Markdown file.
         permission="default",
         safe_mode=True,
@@ -975,14 +1006,22 @@ def _exec_leg(
     artifact: str | None = None,
     mode: str = "review",
     model: str | None = None,
+    effort: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
     The single real-subprocess boundary — tests monkeypatch THIS, never spawn a
     frontier CLI. codex's clean review is its `--output-last-message` file (its
     stdout is a noisy transcript); agy's `-p` stdout is the clean response.
+
+    ABDHOME: ``effort`` / ``env`` default to today's behavior. ``effort is None``
+    keeps codex's hard-coded ``model_reasoning_effort=xhigh`` and agy's
+    effort-in-the-model-name default byte-for-byte; a board seat's canonical effort
+    renders through ``render_seat_invocation`` (incl. the agy leg, where effort is
+    baked into the model string). ``env is None`` keeps ``_subscription_env()``.
     """
-    env = _subscription_env()
+    env = _subscription_env() if env is None else dict(env)
     # #64: auth preflight BEFORE the expensive leg. A logged-out CLI otherwise
     # fails obliquely (empty-turn, then rate-limit errors) and the panel silently
     # degrades. Fail fast + fail-closed as DEGRADED (the detail carries an auth
@@ -995,10 +1034,17 @@ def _exec_leg(
     prompt = _render_leg_prompt(artifact, review_dir, mode)
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
+        # ABDHOME: effort-absent keeps ``-c model_reasoning_effort=xhigh`` verbatim;
+        # a seat renders its canonical effort (``max`` -> ``xhigh``) through the map.
+        codex_effort_args = (
+            ("-c", "model_reasoning_effort=xhigh")
+            if effort is None
+            else render_seat_invocation("codex", model or "gpt-5.5", effort).effort_args
+        )
         cmd = [
             "codex", "exec", "--cd", str(review_dir), "--skip-git-repo-check",
             "--sandbox", "read-only", "--model", model or "gpt-5.5",
-            "-c", "model_reasoning_effort=xhigh",
+            *codex_effort_args,
             "--output-last-message", str(out_file), "-",
         ]
         # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
@@ -1021,8 +1067,17 @@ def _exec_leg(
         return rc, review_text, log_text
     if leg == "gemini":
         out_file = out_dir / "panel-gemini.txt"
+        # ABDHOME: the agy leg bakes effort INTO the model name. effort-absent keeps
+        # today's ``model or "Gemini 3.1 Pro (High)"`` verbatim; a seat renders
+        # ``(base, effort)`` -> ``"<base> (Word)"`` (idempotent on an already-baked
+        # string), so a ``"Gemini 3.1 Pro"`` + ``high`` seat yields the same literal.
+        gemini_model = (
+            model or "Gemini 3.1 Pro (High)"
+            if effort is None
+            else render_seat_invocation("gemini", model or "Gemini 3.1 Pro", effort).model
+        )
         cmd = [
-            "agy", "--model", model or "Gemini 3.1 Pro (High)", "--add-dir", str(review_dir),
+            "agy", "--model", gemini_model, "--add-dir", str(review_dir),
             "--print-timeout", f"{timeout_s}s", "-p", "-",
         ]
         try:
@@ -1046,12 +1101,18 @@ def _default_spawn(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     model: str | None = None,
+    effort: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
     Each leg stages `artifact` (the IF-0-P1-1 review bundle) as a read-only file
     in a temp review dir. The CLI prompt points to the staged files, outputs land
     in a separate dir, and failures degrade rather than raising into the gate.
+
+    ABDHOME: ``effort`` / ``env`` default to None (today's behavior, byte-for-byte);
+    the ``invoke_board`` seam passes a seat's canonical effort + ``resolve_seat_env``
+    result so per-seat effort + active env scrubbing reach the real launch.
     """
     base = Path(tempfile.mkdtemp(prefix="pl-panel-"))
     resolved_repo_dir = Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
@@ -1062,6 +1123,14 @@ def _default_spawn(
     try:
         (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
         (review_dir / "review-instructions.md").write_text(_mode_instructions(mode), encoding="utf-8")
+        # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
+        # path calls the leg execs with their exact prior signatures — existing
+        # tests monkeypatch ``_exec_leg`` with a fixed arg list and must keep passing.
+        extra: dict[str, object] = {}
+        if effort is not None:
+            extra["effort"] = effort
+        if env is not None:
+            extra["env"] = env
         if leg == "claude":
             return _exec_claude_tui_leg(
                 review_dir,
@@ -1071,9 +1140,10 @@ def _default_spawn(
                 repo_dir=resolved_repo_dir,
                 mode=mode,
                 model=model,
+                **extra,
             )
         rc, review_text, log_text = _exec_leg(
-            leg, review_dir, out_dir, _leg_timeout_for(review_dir), artifact, mode, model
+            leg, review_dir, out_dir, _leg_timeout_for(review_dir), artifact, mode, model, **extra
         )
         return _classify_leg(rc, review_text, log_text, mode), review_text
     except Exception as exc:  # fail-closed
@@ -1098,10 +1168,20 @@ def _default_spawn_via_provider(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     model: str | None = None,
+    effort: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
+    # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
+    # path calls ``_default_spawn`` with its exact frozen signature
+    # (leg, artifact, repo_dir, mode, model) — the CS-0.8 same-signature guard.
+    extra: dict[str, object] = {}
+    if effort is not None:
+        extra["effort"] = effort
+    if env is not None:
+        extra["env"] = env
     provider = HomebrewAgentRuntimeProvider(
         spawn=lambda request, register_process=None: _default_spawn(
-            leg, artifact, repo_dir=repo_dir, mode=mode, model=model
+            leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
         )
     )
     session = provider.create_session(
@@ -1198,3 +1278,165 @@ def invoke_panel_request(
         mode=mode,
         models=models,
     )
+
+
+# --- ABDHOME: the board seam (seats through the provider backing) ------------
+
+# The lanes the built-3 homebrew backing spawns natively. A homebrew seat on any
+# OTHER lane (breadth: opencode / pi / cursor / amp) has NO hand-written adapter
+# here — hand-writing breadth defeats the Omnigent maintenance-offload — so it is
+# Omnigent-or-skip (ABDOMNI) and degrades skip-with-warning in ABDHOME.
+_HOMEBREW_BUILT3: frozenset[str] = frozenset({"codex", "gemini", "claude"})
+
+
+def enforce_native_host_leg(board: Board, host: HostContext | None) -> Seat | None:
+    """Return the native in-process host-leg seat (or ``None``), raising if that
+    seat would be routed off-host through a gateway.
+
+    When a board runs INSIDE a harness (``host.host_harness`` set), the co-resident
+    seat is the native host leg — it runs in-process and MUST NEVER be routed
+    through the Omnigent gateway (you cannot gateway the process you are running
+    inside). A host-leg seat carrying ``backing=omnigent`` is therefore a contract
+    violation → fail closed, loud. This is DISTINCT from an ordinary
+    omnigent-without-gateway seat (which merely skips-with-warning): the host leg is
+    a hard invariant, not a degradable lane. The standalone runner
+    (``host_harness is None``) has no host leg → ``None``, every leg a subprocess,
+    exactly as today.
+    """
+    host_seat = identify_host_leg(board, host)
+    if host_seat is not None and host_seat.backing == BACKING_OMNIGENT:
+        raise ValueError(
+            f"native host leg {host_seat.seat_key!r} may not be routed through a "
+            "gateway (backing=omnigent): the host leg runs in-process and is never "
+            "gatewayed (ABDHOME native-host-leg invariant)"
+        )
+    return host_seat
+
+
+def _resolve_and_validate_board(board: Board, matrix: CompatibilityMatrix) -> Board:
+    """Resolve each seat's lane and validate it against the matrix BEFORE any spawn.
+
+    This extends the config-time "reject an inexpressible seat" invariant to the
+    ad-hoc / seam path (a hand-built board or ``resolve_board(seats=...)`` never
+    passes through ``config.load_boards``). For every seat it runs the canonical
+    ``validate_seat``, which:
+
+    * resolves a BARE seat's lane via ``matrix.default_lane(model)`` (so a bare
+      ``claude-sonnet-5`` seat runs on ``claude`` instead of skipping on lane
+      ``''``), returned as ``verdict.harness``;
+    * REJECTS an inexpressible seat — unknown model, cross-vendor pairing (e.g.
+      ``gpt-5.5`` on ``claude``), or an over-ceiling effort — by raising
+      ``SeatValidationError`` before a single subprocess is spawned (so
+      ``resolve_board(seats="gpt-5.5:max:claude")`` can never launch
+      ``claude --model gpt-5.5``).
+
+    Returns a board whose seats all carry a concrete harness lane. The ``default``
+    board (every seat already lane-concrete and valid) is returned byte-equivalent.
+    """
+    resolved: list[Seat] = []
+    for seat in board.seats:
+        verdict = validate_seat(seat, matrix)
+        resolved.append(seat if seat.harness else replace(seat, harness=verdict.harness))
+    return replace(board, seats=tuple(resolved))
+
+
+def invoke_board(
+    board: Board,
+    artifact: str,
+    *,
+    host: HostContext | None = None,
+    gateway_available: bool = False,
+    spawn: SpawnFn | None = None,
+    repo_dir: Path | str | None = None,
+    mode: str = "review",
+    base_env: Mapping[str, str] | None = None,
+    matrix: CompatibilityMatrix | None = None,
+) -> PanelResult:
+    """Run an Advisor Board's seats through the provider seam, fail-closed.
+
+    Each seat is routed per its ``backing`` (``select_backing``), rendered through
+    the frozen per-harness effort mapping (``render_seat_invocation`` — so
+    ``seat.effort`` reaches each CLI, incl. the agy leg's effort-in-the-model-name),
+    and launched with an ACTIVELY scrubbed subprocess env (``resolve_seat_env`` —
+    a subscription seat scrubs every vendor key; an api-key seat, only behind the
+    board opt-in, injects ONLY its own vendor's key). Results are returned in seat
+    ORDER; the leg label is the seat's lane (ABDRESOLVE re-keys by seat position).
+
+    Fail-closed boundaries (never a silent homebrew breadth fallback, ABDHOME
+    non-goal):
+
+    * an ``omnigent`` seat with no gateway → skip-with-warning (``select_backing``);
+    * a homebrew seat on a breadth lane with no hand-written adapter →
+      skip-with-warning (Omnigent-or-skip, routed by ABDOMNI);
+    * an api-key seat without the board opt-in → DEGRADED (never-silent-key);
+    * the native host leg is never routed through a gateway
+      (``enforce_native_host_leg`` raises on a host-leg omnigent seat).
+
+    The ``default`` board reproduces today's 3-leg panel byte-for-byte: each
+    subscription/homebrew built-3 seat renders to today's exact model + effort
+    literals and scrubs to exactly ``_subscription_env()``.
+    """
+    if mode not in PANEL_MODES:
+        raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    # Reject an inexpressible seat (unknown model / cross-vendor pairing / over-
+    # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
+    # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
+    board = _resolve_and_validate_board(board, matrix or default_matrix(env=base_env))
+    enforce_native_host_leg(board, host)
+    env_source: Mapping[str, str] = os.environ if base_env is None else base_env
+
+    def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
+        return PanelLegResult(
+            leg=leg, status="UNAVAILABLE", text="", detail=detail, seat_key=seat.seat_key
+        )
+
+    results: list[PanelLegResult] = []
+    for seat in board.seats:
+        # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
+        # runs on its default lane instead of skipping on an empty ('') lane.
+        leg = (seat.harness or "").lower()
+        decision = select_backing(seat, gateway_available=gateway_available)
+        if decision.skip:
+            results.append(_skip(seat, leg, f"skip: {decision.reason}"))
+            continue
+        if decision.backing != BACKING_HOMEBREW:
+            # An omnigent seat that did NOT skip is ABDOMNI's transport, not ABDHOME's.
+            results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
+            continue
+        if leg not in _HOMEBREW_BUILT3:
+            results.append(_skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)"))
+            continue
+        # Render effort (proves the mapping is frozen for this lane) + resolve the
+        # actively-scrubbed env BEFORE spawning. A breadth lane raises
+        # EffortMappingError → skip; a never-silent-key violation raises ValueError
+        # → DEGRADED (fail closed, never silently unauthenticated).
+        try:
+            render_seat_invocation(leg, seat.model, seat.effort)
+            seat_env = resolve_seat_env(
+                seat, env_source, allow_api_key_fallback=board.allow_api_key_fallback
+            )
+        except EffortMappingError as exc:
+            results.append(_skip(seat, leg, f"skip: {exc}"))
+            continue
+        except ValueError as exc:  # never-silent-key
+            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key))
+            continue
+        try:
+            if spawn is not None:
+                status, text = spawn(leg, artifact)
+            else:
+                status, text = _default_spawn_via_provider(
+                    leg, artifact, repo_dir=repo_dir, mode=mode,
+                    model=seat.model, effort=seat.effort, env=seat_env,
+                )
+        except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
+            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key))
+            continue
+        try:
+            status = normalize_leg_status(status)
+        except ValueError:
+            status = "DEGRADED"
+        if status == "OK" and not str(text).strip():
+            status = "EMPTY"
+        results.append(PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key))
+    return PanelResult(legs=tuple(results))
