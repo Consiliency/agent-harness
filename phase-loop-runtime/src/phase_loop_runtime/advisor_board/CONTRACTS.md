@@ -30,6 +30,11 @@ equivalence is proven by a test (not asserted in prose).
   breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
   Round-trip (proven): claude→`--effort max` (:324), codex→
   `-c model_reasoning_effort=xhigh` (:992), gemini→`"Gemini 3.1 Pro (High)"` (:1016).
+- **Seat identity for result re-keying** — `Seat.seat_key` is a stable LABEL over
+  every distinguishing field (lane, model, effort, lens), so lens-only-different
+  seats get distinct keys. It is not a guaranteed-unique id — a board may hold two
+  byte-identical seats — so ABDRESOLVE keys results by **seat position** and uses
+  `seat_key` only as the label.
 - **Host-leg identity** — `Seat.host_leg` marker + `identify_host_leg(board,
   HostContext)`. A seat is the native in-process host leg only when the board runs
   *inside* that harness (`HostContext.host_harness`). The standalone runner

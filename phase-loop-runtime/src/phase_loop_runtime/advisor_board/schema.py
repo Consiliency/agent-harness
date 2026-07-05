@@ -33,7 +33,7 @@ behavior exactly (proven by ``tests/test_advisor_board_schema.py`` and
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -175,11 +175,20 @@ class Seat:
 
     @property
     def seat_key(self) -> str:
-        """Stable per-seat identity for result re-keying (ABDRESOLVE re-keys
+        """Stable per-seat LABEL for result re-keying (ABDRESOLVE re-keys
         ``PanelLegResult.leg`` -> seat so two same-vendor seats are expressible).
-        Distinct on (harness-lane, model, effort)."""
+
+        Incorporates every user-distinguishing field — (harness-lane, model,
+        effort, lens) — so seats that differ only by ``lens`` (a natural
+        brainstorm board: same model, adversarial vs supportive) get distinct
+        keys. This is a LABEL, not a guaranteed-unique id: a board may still hold
+        two byte-identical seats, so ABDRESOLVE MUST key results by **seat
+        position** and use ``seat_key`` only as the human-readable label. Frozen
+        this way so the fan-out builds on a stable, collision-aware contract.
+        """
         lane = self.harness or f"@{vendor_family(self.model)}"
-        return f"{lane}:{self.model}:{self.effort}"
+        base = f"{lane}:{self.model}:{self.effort}"
+        return f"{base}:{self.lens}" if self.lens else base
 
 
 @dataclass(frozen=True)

@@ -65,6 +65,15 @@ class SeatBoardValidationTests(unittest.TestCase):
         b = Seat(model="gpt-5.5", effort="high", harness="opencode")
         self.assertNotEqual(a.seat_key, b.seat_key)
 
+    def test_seat_key_distinguishes_lens_only_difference(self) -> None:
+        # a natural brainstorm board: same model/harness/effort, different lens
+        adv = Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="adversarial")
+        sup = Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="supportive")
+        self.assertNotEqual(adv.seat_key, sup.seat_key)
+        # a lens-less seat has no trailing lens segment
+        plain = Seat(model="claude-sonnet-5", effort="max", harness="claude")
+        self.assertFalse(plain.seat_key.endswith(":None"))
+
 
 class VendorProjectionByteConsistencyTests(unittest.TestCase):
     """The projection MUST reproduce the existing governed-gate vendor logic."""
