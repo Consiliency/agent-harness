@@ -113,15 +113,15 @@ class SkillsCanonParityTest(unittest.TestCase):
             "committed phase-loop-skills/ is stale vs skills-src/ — run the regenerate",
         )
 
-    def test_advisor_panel_is_required_and_packaged_from_canonical_source(self):
+    def test_advisor_board_is_required_and_packaged_from_canonical_source(self):
         self._require_sources()
         from phase_loop_runtime.skill_install import REQUIRED_SKILLS
 
-        self.assertIn("advisor-panel", REQUIRED_SKILLS)
+        self.assertIn("advisor-board", REQUIRED_SKILLS)
         for harness, root in SKILLS_SRC.items():
             with self.subTest(source_harness=harness):
-                self.assertTrue((root / f"{harness}-advisor-panel" / "SKILL.md").is_file())
-        committed = COMMITTED_BUNDLE / "advisor-panel" / "SKILL.md"
+                self.assertTrue((root / f"{harness}-advisor-board" / "SKILL.md").is_file())
+        committed = COMMITTED_BUNDLE / "advisor-board" / "SKILL.md"
         self.assertTrue(committed.is_file())
         committed_text = committed.read_text(encoding="utf-8")
         self.assertIn("phase_loop_runtime.panel_invoker", committed_text)
@@ -129,7 +129,7 @@ class SkillsCanonParityTest(unittest.TestCase):
         packaged_root = PKG / "src" / "phase_loop_runtime" / "skills_bundle"
         for harness in SKILLS_SRC:
             with self.subTest(packaged_harness=harness):
-                packaged = packaged_root / f"{harness}-advisor-panel" / "SKILL.md"
+                packaged = packaged_root / f"{harness}-advisor-board" / "SKILL.md"
                 self.assertTrue(packaged.is_file())
                 text = packaged.read_text(encoding="utf-8")
                 self.assertIn("phase_loop_runtime.panel_invoker", text)

@@ -9,7 +9,7 @@ from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS, current_harness, resolve_s
 
 
 REQUIRED_SKILLS: tuple[str, ...] = (
-    "advisor-panel",
+    "advisor-board",
     "execute-detailed",
     "execute-phase",
     "plan-phase",
@@ -21,6 +21,31 @@ REQUIRED_SKILLS: tuple[str, ...] = (
     "skill-improvement-planner",
     "task-contextualizer",
 )
+
+# Prior skill names kept resolvable as ALIASES so existing agent instructions do
+# not break across a rename (ABDRESOLVE: advisor-panel -> advisor-board). The
+# canonical installed skill is ``<harness>-<canonical>``; the alias is the
+# unprefixed historical name (matching the single unprefixed compatibility shim
+# each harness already carries). This is a documented record consumed by
+# ``canonical_skill_name``; it deliberately does NOT re-introduce a prefixed
+# ``<harness>-advisor-panel`` install (that stray prefixed duplicate is what the
+# rename removes).
+SKILL_ALIASES: dict[str, str] = {
+    "advisor-panel": "advisor-board",
+}
+
+
+def canonical_skill_name(name: str) -> str:
+    """Map a (possibly aliased, possibly harness-prefixed) skill name to its
+    canonical unprefixed skill name. ``advisor-panel`` and any
+    ``<harness>-advisor-panel`` resolve to ``advisor-board``."""
+    raw = (name or "").strip()
+    for harness in ("claude", "codex", "gemini", "opencode"):
+        prefix = f"{harness}-"
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):]
+            break
+    return SKILL_ALIASES.get(raw, raw)
 
 
 @dataclass(frozen=True)
