@@ -34,6 +34,10 @@ from .agent_runtime_provider import (
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
 from .advisor_board.backing import resolve_seat_env, select_backing
+from .advisor_board.backing_omnigent import (
+    OmnigentBacking,
+    OmnigentGatewayUnavailable,
+)
 from .advisor_board.harness_mapping import EffortMappingError, render_seat_invocation
 from .advisor_board.events import EventSink
 from .advisor_board.matrix import default_matrix
@@ -1342,18 +1346,61 @@ def _resolve_and_validate_board(board: Board, matrix: CompatibilityMatrix) -> Bo
     return replace(board, seats=tuple(resolved))
 
 
+def _route_omnigent_seat(
+    omnigent: OmnigentBacking,
+    seat: Seat,
+    leg: str,
+    artifact: str,
+    base_env: Mapping[str, str],
+    board: Board,
+    skip: "Callable[[Seat, str, str], PanelLegResult]",
+) -> PanelLegResult:
+    """Route one omnigent seat through Omnigent v0.4.0, fail-closed.
+
+    Order of the fail-closed gates (each a DISTINCT, testable reason):
+
+    1. live-catalog gate — the seat's harness must appear in ``GET /v1/harnesses``
+       (the dynamic cursor/amp gate). A catalog fetch that cannot reach the gateway
+       degrades skip-with-warning (gateway down); a reachable catalog that omits the
+       harness degrades skip-with-warning (not-in-catalog) — a SEPARATE reason.
+    2. never-silent-key — an api-key seat without the board opt-in raises inside
+       ``run_seat`` (``resolve_seat_env``) → DEGRADED, exactly like the homebrew leg.
+    3. gateway drops mid-run → skip-with-warning (gateway down).
+    """
+    try:
+        catalog = omnigent.catalog_harnesses()
+    except OmnigentGatewayUnavailable:
+        return skip(seat, leg, "skip: omnigent gateway unavailable")
+    if leg not in catalog:
+        return skip(seat, leg, f"skip: harness {leg!r} not in live Omnigent catalog")
+    try:
+        outcome = omnigent.run_seat(
+            seat, artifact, base_env=base_env,
+            allow_api_key_fallback=board.allow_api_key_fallback,
+        )
+    except OmnigentGatewayUnavailable:
+        return skip(seat, leg, "skip: omnigent gateway unavailable")
+    except ValueError as exc:  # never-silent-key
+        return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
+    return PanelLegResult(
+        leg=leg, status=outcome.status, text=outcome.text,
+        detail=outcome.detail or None, seat_key=seat.seat_key,
+    )
+
+
 def invoke_board(
     board: Board,
     artifact: str,
     *,
     host: HostContext | None = None,
-    gateway_available: bool = False,
+    gateway_available: bool | None = None,
     spawn: SpawnFn | None = None,
     repo_dir: Path | str | None = None,
     mode: str = "review",
     base_env: Mapping[str, str] | None = None,
     matrix: CompatibilityMatrix | None = None,
     sink: EventSink | None = None,
+    omnigent: OmnigentBacking | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -1365,12 +1412,27 @@ def invoke_board(
     board opt-in, injects ONLY its own vendor's key). Results are returned in seat
     ORDER; the leg label is the seat's lane (ABDRESOLVE re-keys by seat position).
 
+    An ``omnigent`` seat routes through Omnigent v0.4.0 iff an ``omnigent``
+    backing is supplied (ABDOMNI) AND the live ``GET /v1/harnesses`` catalog
+    reports its harness; otherwise it degrades skip-with-warning. When no
+    ``omnigent`` backing is supplied the omnigent seat skips "not served by
+    homebrew (ABDOMNI)" — the ABDHOME no-provider contract, unchanged.
+
+    ``gateway_available`` is a tri-state: ``None`` (default) means "probe the
+    supplied ``omnigent`` backing" (or ``False`` when none is supplied, keeping the
+    default board byte-neutral); an explicit ``True``/``False`` overrides the probe.
+
     Fail-closed boundaries (never a silent homebrew breadth fallback, ABDHOME
     non-goal):
 
-    * an ``omnigent`` seat with no gateway → skip-with-warning (``select_backing``);
+    * an ``omnigent`` seat with no reachable gateway → skip-with-warning
+      (``select_backing`` on ``gateway_available=False``);
+    * an ``omnigent`` seat whose harness the live catalog does NOT report →
+      skip-with-warning (the DISTINCT dynamic cursor/amp catalog gate);
+    * an ``omnigent`` seat with no ``omnigent`` backing wired →
+      skip-with-warning (Omnigent-or-skip, ABDHOME no-provider contract);
     * a homebrew seat on a breadth lane with no hand-written adapter →
-      skip-with-warning (Omnigent-or-skip, routed by ABDOMNI);
+      skip-with-warning (Omnigent-or-skip);
     * an api-key seat without the board opt-in → DEGRADED (never-silent-key);
     * the native host leg is never routed through a gateway
       (``enforce_native_host_leg`` raises on a host-leg omnigent seat).
@@ -1391,6 +1453,11 @@ def invoke_board(
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
     observer = BoardObserver(sink, board_name=board.name) if sink is not None else None
+    # Tri-state gateway availability: an explicit bool wins; otherwise probe the
+    # supplied omnigent backing (a gateway-down probe → False → select_backing
+    # degrades omnigent seats skip-with-warning), or False when none is wired.
+    if gateway_available is None:
+        gateway_available = omnigent.gateway_available() if omnigent is not None else False
     # Reject an inexpressible seat (unknown model / cross-vendor pairing / over-
     # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
     # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
@@ -1414,9 +1481,18 @@ def invoke_board(
         if decision.skip:
             results.append(_skip(seat, leg, f"skip: {decision.reason}"))
             continue
+        if decision.backing == BACKING_OMNIGENT:
+            # ABDOMNI transport. With no omnigent backing wired this stays the
+            # ABDHOME no-provider skip ("not served by homebrew"); with a backing,
+            # the seat routes through Omnigent v0.4.0 iff the LIVE catalog reports
+            # its harness (the DISTINCT dynamic cursor/amp gate).
+            if omnigent is None:
+                results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
+                continue
+            results.append(_route_omnigent_seat(omnigent, seat, leg, artifact, env_source, board, _skip))
+            continue
         if decision.backing != BACKING_HOMEBREW:
-            # An omnigent seat that did NOT skip is ABDOMNI's transport, not ABDHOME's.
-            results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
+            results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew"))
             continue
         if leg not in _HOMEBREW_BUILT3:
             results.append(_skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)"))
