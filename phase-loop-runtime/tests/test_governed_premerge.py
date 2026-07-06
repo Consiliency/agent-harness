@@ -3,12 +3,13 @@ import unittest
 from unittest.mock import Mock
 
 from phase_loop_runtime.closeout_validators import ReviewFinding
-from phase_loop_runtime.governed_review import GateResult
+from phase_loop_runtime.governed_review import GateResult, governed_planning_gate
 from phase_loop_runtime.governed_premerge import (
     DEFAULT_MAX_REVIEW_ROUNDS,
     next_escalation,
     run_governed_premerge_loop,
 )
+from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 from phase_loop_runtime.profiles import resolve_model_class, shipped_model_policy_rule
 from phase_loop_runtime.runner import governed_premerge_for_run
 
@@ -139,6 +140,35 @@ class PremergeLoopTest(unittest.TestCase):
         self.assertTrue(r.mergeable)
         self.assertEqual(captured[0]["repo_dir"], "/tmp/repo-under-review")
 
+    def test_max_concurrency_is_forwarded_from_the_loop_to_the_gate(self):
+        # A governed caller can request sequential review: max_concurrency threads
+        # through run_governed_premerge_loop into the gate invocation.
+        captured = []
+
+        def invoke(**kwargs):
+            captured.append(kwargs)
+            return _gate(promoted=True)
+
+        run_governed_premerge_loop(
+            artifact="A", author_executor="claude", run_mode="governed",
+            invoke=invoke, max_concurrency=1,
+        )
+        self.assertEqual(captured[0]["max_concurrency"], 1)
+
+    def test_max_concurrency_default_is_not_forwarded_byte_neutral(self):
+        # Default (None) is NOT injected into the invoke kwargs, so the default
+        # governed path and a strict-signature custom invoke stay byte-neutral.
+        captured = []
+
+        def invoke(**kwargs):
+            captured.append(kwargs)
+            return _gate(promoted=True)
+
+        run_governed_premerge_loop(
+            artifact="A", author_executor="claude", run_mode="governed", invoke=invoke,
+        )
+        self.assertNotIn("max_concurrency", captured[0])
+
 
 class RunnerWiringTest(unittest.TestCase):
     def test_governed_premerge_for_run_autonomous_is_noop(self):
@@ -148,6 +178,49 @@ class RunnerWiringTest(unittest.TestCase):
         self.assertTrue(r.mergeable)
         self.assertFalse(r.ran)
         invoke.assert_not_called()   # zero panel calls on the default path
+
+
+class GovernedGatePassesMaxConcurrencyToPanelTest(unittest.TestCase):
+    """The full chain: a governed caller requesting sequential review reaches the
+    panel. governed_planning_gate must forward max_concurrency to its ``invoke``
+    (the real invoke_panel) so the panel legs run sequentially when asked."""
+
+    def test_gate_forwards_max_concurrency_to_the_panel(self):
+        captured = {}
+
+        def fake_invoke(artifact, legs, **kwargs):
+            captured.update(kwargs)
+            return PanelResult(legs=tuple(
+                PanelLegResult(leg=leg, status="OK", text="AGREE") for leg in legs
+            ))
+
+        governed_planning_gate(
+            artifact="bundle",
+            author_vendors=frozenset({"claude"}),   # author excluded → codex/gemini review
+            run_mode="governed",
+            available_legs=("codex", "gemini", "claude"),
+            invoke=fake_invoke,
+            max_concurrency=1,                        # request sequential
+        )
+        self.assertEqual(captured.get("max_concurrency"), 1)
+
+    def test_gate_default_does_not_forward_max_concurrency(self):
+        captured = {}
+
+        def fake_invoke(artifact, legs, **kwargs):
+            captured.update(kwargs)
+            return PanelResult(legs=tuple(
+                PanelLegResult(leg=leg, status="OK", text="AGREE") for leg in legs
+            ))
+
+        governed_planning_gate(
+            artifact="bundle",
+            author_vendors=frozenset({"claude"}),
+            run_mode="governed",
+            available_legs=("codex", "gemini", "claude"),
+            invoke=fake_invoke,
+        )
+        self.assertNotIn("max_concurrency", captured)  # default parallel, byte-neutral
 
 
 if __name__ == "__main__":

@@ -109,6 +109,15 @@ class InvokePanelApiStabilityTests(unittest.TestCase):
             self.assertEqual(sig.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
             self.assertIsNot(sig.parameters[name].default, inspect.Parameter.empty)
 
+    def test_invoke_board_exposes_max_concurrency_keyword(self) -> None:
+        # The parallel-by-default knob is a keyword-only, default-None param on
+        # invoke_board too (parallel is the out-of-box default; 1 → sequential).
+        sig = inspect.signature(pi.invoke_board)
+        self.assertIn("max_concurrency", sig.parameters)
+        param = sig.parameters["max_concurrency"]
+        self.assertEqual(param.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIsNone(param.default)  # None ⇒ parallel by default
+
 
 class DeferredGoldenDimensionsScaffold(unittest.TestCase):
     """The golden dimensions this scaffold deferred are now PROVEN in ABDVERIFY —
