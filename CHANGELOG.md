@@ -5,6 +5,54 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
 ## Unreleased
+
+## [0.2.0] — 2026-07-06
+
+_First public PyPI release of `phase-loop-runtime`. Headline: the complete
+model-first **Advisor Board** — customizable, multi-harness review boards that run
+**parallel by default** with frontier models (Fable, not the implementer, on the
+review path) — plus everything merged on `main` since v0.1.13. The package installs
+standalone from public PyPI (all dependencies, incl. `consiliency-contract`, are
+public); the Consiliency governance layer is opt-in._
+
+- **Advisor Board default board library — Fable review path, parallel-by-default
+  panels, legal + general/solo boards (#103).** The review-class presets (`default`,
+  `code-review`) now seat **Fable** (`claude-fable-5`), never the mid-tier
+  implementer, and `panel_invoker.DEFAULT_LEG_MODELS["claude"]` is the single source
+  of truth so the **live governed gates** (`governed_review` / `governed_premerge`)
+  also review on Fable — `CLAUDE_IMPLEMENTER_MODEL` is left untouched (the implementer
+  stays Sonnet; the review model is decoupled from it). `invoke_board` / `invoke_panel`
+  now run their legs **CONCURRENTLY by default** through a bounded `ThreadPoolExecutor`
+  (wall-clock ≈ slowest leg, not the sum); `max_concurrency` is the knob — `None`
+  (default) = parallel, `1` = sequential opt-in, `N` = cap under a hard 8-worker
+  ceiling — threaded through the governed gates so a governed caller can request
+  sequential. Result order is preserved regardless of finish order, and the golden
+  proof still holds (default board byte-identical to `invoke_panel`, now on the Fable
+  panel). Adds three **legal** boards (`legal-review`, `legal-strategy-review`,
+  `legal-brainstorm`) and two domain-agnostic **catch-alls** (`general` — a top-tier
+  cross-vendor panel for any task; `solo` — one top-end member), for **9 built-in
+  presets** total. `brainstorm` / `doc-edit` deliberately keep Sonnet, where a diverse
+  / low-stakes voice is the right tool.
+- **Advisor Board end-to-end verification + capabilities card (Phase 7 ABDVERIFY).**
+  The back-compat GOLDEN proof (the `default` board reproduces today's `invoke_panel`
+  byte-for-byte — the release keystone protecting every existing caller), an
+  end-to-end integration matrix (registries × resolver × backing; the fail-closed
+  matrix; presets smoke), the per-harness **capabilities card**
+  (`docs/advisor-board-capabilities-card.md`, model×harness matrix + presets + how to
+  add a board), and an install-time verification that the `/<harness>-advisor-panel`
+  alias resolves to the renamed `advisor-board` skill (and prunes a stale drifted
+  install). See `specs/phase-plans-v5.md` (Phase 7 ABDVERIFY).
+- **Advisor Board observability forwarding (Phase 6 ABDOBS).** A natively-launched
+  board can, opt-in, **emit** its runtime events as the frozen `AdvisorBoardEvent`
+  envelope (`advisor_board/events.py`) to a `sink` — **async / best-effort**, so a
+  forwarding failure can never delay or fail a leg (the emit is a separate pass over
+  results, off the spawn path). The envelope maps to omniagent-plus's own
+  append-only **state-ledger** via a `LedgerWriter` seam (a clean cross-language
+  integration point, since the ledger is TS and the emit is Python); no ledger
+  internals are reimplemented. Per-workload boundary documented + enforced: the board
+  is native + optional forward, and the native host leg is **observed, never
+  relaunched** through a gateway. `sink=None` (default) builds no envelope, so the
+  default board stays byte-neutral. See `specs/phase-plans-v5.md` (Phase 6 ABDOBS).
 - **Advisor Board Omnigent backing (Phase 5 ABDOMNI).** Adds the `omnigent`
   provider transport so opt-in breadth seats route through omniagent-plus →
   Omnigent **v0.4.0** over the frozen HTTP surface, opt-in and fail-closed — the
