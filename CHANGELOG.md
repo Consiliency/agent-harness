@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Advisor Board purpose-derived default mode + advisory prompt hygiene.** A
+  board's `purpose` now selects its default panel **mode** automatically, so a
+  domain board — especially the legal boards (`legal-review`,
+  `legal-strategy-review`, `legal-brainstorm`) — runs `advisory` **analysis**
+  instead of being hard code-review-gated (which rejected a legal artifact for
+  lacking an AGREE/DISAGREE verdict — correct behavior for the wrong mode).
+  `invoke_board(mode=…)` now defaults to `None` and derives
+  `_mode_for_purpose(board.purpose)`: code-review-class purposes
+  (`code-review` / `premerge-review`) → `review` (strict pre-merge gate,
+  verdict required); the known domain purposes → `advisory`; an **unknown**
+  purpose → `review` (back-compat safe default). A caller-passed `mode` still
+  overrides, and `invoke_panel` keeps its legacy `mode="review"` default. The
+  advisory leg prompt also drops the code-review-gate framing (no "authoritative",
+  no "untrusted material under review", no accept/reject) while keeping the
+  injection-safe instructions/material separation. `DEFAULT_BOARD.purpose` is
+  `premerge-review` → derives `review`, so the review path — mode derivation AND
+  prompt — is **byte-for-byte unchanged** and the golden byte-identity proof still
+  holds.
 - **Advisor Board "reference, don't inline" ingestion (`artifact_ref` / `brief_ref`).**
   `invoke_panel` / `invoke_board` / `invoke_panel_request` now accept an
   `artifact_ref` (a path or list of paths) and a `brief_ref` (a path): the runtime
