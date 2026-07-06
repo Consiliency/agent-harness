@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import time
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
@@ -78,6 +79,11 @@ DEFAULT_LEG_MODELS: dict[str, str] = {
     "gemini": "Gemini 3.1 Pro (High)",
     "claude": "claude-fable-5",
 }
+# Legs are blocking subprocess I/O (the CLI wait releases the GIL), so the panel /
+# board fans them out across threads for REAL parallelism — a 3-frontier max-effort
+# board should take ~max(leg) wall-clock, not sum(leg). Bounded: boards are 2-4 seats,
+# but cap the pool so a large custom board can't spawn an unbounded thread count.
+_PANEL_MAX_WORKERS = 8
 _LEG_TIMEOUT_BASE_S = 600
 _LEG_TIMEOUT_MAX_S = 1800
 _LEG_TIMEOUT_PER_KB_S = 12
@@ -1214,6 +1220,32 @@ def _default_spawn_via_provider(
     return status, text
 
 
+def _run_legs_ordered(
+    items: "Sequence[object]", run_one: "Callable[[object], PanelLegResult]"
+) -> list[PanelLegResult]:
+    """Run ``run_one`` for every item CONCURRENTLY, returning results in ITEM ORDER.
+
+    The panel/board legs are blocking subprocess I/O, so they fan out across a
+    bounded thread pool for real parallelism (wall-clock ≈ max(leg), not sum). Two
+    invariants the callers rely on:
+
+    * **Order preserved** — ``result[i]`` corresponds to ``items[i]`` regardless of
+      which leg finishes first (futures are submitted in order and read back by
+      index). The resolver re-keys results by position and the golden proof asserts
+      order + content, so this is load-bearing.
+    * **Fail-closed per item** — ``run_one`` is itself required to be fail-closed
+      (turn any exception into a DEGRADED ``PanelLegResult``), so a future's
+      ``.result()`` never raises and one broken leg can never crash the pool or the
+      board. Concurrency changes *timing only*, never a leg's outcome.
+    """
+    seq = list(items)
+    if not seq:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(seq), _PANEL_MAX_WORKERS)) as pool:
+        futures = [pool.submit(run_one, item) for item in seq]
+        return [future.result() for future in futures]
+
+
 def invoke_panel(
     artifact: str,
     legs: Sequence[str],
@@ -1250,20 +1282,24 @@ def invoke_panel(
             )
     else:
         runner = spawn
-    results: list[PanelLegResult] = []
-    for leg in legs:
+
+    def _run_leg(leg: str) -> PanelLegResult:
+        # Fail-closed: a broken leg degrades, never crashes the gate (so the pool's
+        # future.result() never raises). This is the exact per-leg body as before —
+        # only the surrounding loop is now a concurrent, order-preserving fan-out.
         try:
             status, text = runner(leg, artifact)
-        except Exception as exc:  # fail-closed: a broken leg degrades, never crashes the gate
-            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]))
-            continue
+        except Exception as exc:
+            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200])
         try:
             status = normalize_leg_status(status)
         except ValueError:
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
-        results.append(PanelLegResult(leg=leg, status=status, text=str(text)))
+        return PanelLegResult(leg=leg, status=status, text=str(text))
+
+    results = _run_legs_ordered(list(legs), _run_leg)
     return PanelResult(legs=tuple(results))
 
 
@@ -1489,32 +1525,36 @@ def invoke_board(
 
     if observer is not None:
         observer.board_started()
-    results: list[PanelLegResult] = []
-    for seat in board.seats:
+
+    def _run_seat(seat: Seat) -> PanelLegResult:
+        # The full per-seat body — backing decision → skip / omnigent / homebrew →
+        # render + resolve_seat_env → spawn → normalize — runs INSIDE the pool task,
+        # so both the skip decisions and the spawn happen concurrently per seat. It
+        # is fail-closed (every path returns a PanelLegResult, never raises), so the
+        # future's .result() never raises and one broken seat can't crash the board.
+        # The shared reads it closes over — gateway_available, omnigent_catalog,
+        # env_source, board, matrix (already resolved) — are read-only; the single
+        # gateway-catalog fetch already happened ABOVE, once, before the pool.
+        #
         # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
         # runs on its default lane instead of skipping on an empty ('') lane.
         leg = (seat.harness or "").lower()
         decision = select_backing(seat, gateway_available=gateway_available)
         if decision.skip:
-            results.append(_skip(seat, leg, f"skip: {decision.reason}"))
-            continue
+            return _skip(seat, leg, f"skip: {decision.reason}")
         if decision.backing == BACKING_OMNIGENT:
             # ABDOMNI transport. With no omnigent backing wired this stays the
             # ABDHOME no-provider skip ("not served by homebrew"); with a backing,
             # the seat routes through Omnigent v0.4.0 iff the LIVE catalog reports
             # its harness (the DISTINCT dynamic cursor/amp gate).
             if omnigent is None:
-                results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"))
-                continue
-            results.append(_route_omnigent_seat(
-                omnigent, omnigent_catalog or frozenset(), seat, leg, artifact, env_source, board, _skip))
-            continue
+                return _skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)")
+            return _route_omnigent_seat(
+                omnigent, omnigent_catalog or frozenset(), seat, leg, artifact, env_source, board, _skip)
         if decision.backing != BACKING_HOMEBREW:
-            results.append(_skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew"))
-            continue
+            return _skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew")
         if leg not in _HOMEBREW_BUILT3:
-            results.append(_skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)"))
-            continue
+            return _skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)")
         # Render effort (proves the mapping is frozen for this lane) + resolve the
         # actively-scrubbed env BEFORE spawning. A breadth lane raises
         # EffortMappingError → skip; a never-silent-key violation raises ValueError
@@ -1525,11 +1565,9 @@ def invoke_board(
                 seat, env_source, allow_api_key_fallback=board.allow_api_key_fallback
             )
         except EffortMappingError as exc:
-            results.append(_skip(seat, leg, f"skip: {exc}"))
-            continue
+            return _skip(seat, leg, f"skip: {exc}")
         except ValueError as exc:  # never-silent-key
-            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key))
-            continue
+            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
         try:
             if spawn is not None:
                 status, text = spawn(leg, artifact)
@@ -1539,15 +1577,18 @@ def invoke_board(
                     model=seat.model, effort=seat.effort, env=seat_env,
                 )
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
-            results.append(PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key))
-            continue
+            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
         try:
             status = normalize_leg_status(status)
         except ValueError:
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
-        results.append(PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key))
+        return PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key)
+
+    # Fan the seats out concurrently; results come back in SEAT ORDER (positional
+    # re-key + golden order/content assertions depend on it).
+    results = _run_legs_ordered(list(board.seats), _run_seat)
     # Observability emit is a SEPARATE pass over the (unchanged) run results, in
     # seat order — 1 result per seat — so the run control-flow above is untouched
     # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.

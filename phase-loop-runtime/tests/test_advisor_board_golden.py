@@ -45,6 +45,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -154,14 +155,21 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
 
 
 class _RecordingSpawn:
-    """A spawn shared by both paths; both call ``spawn(leg, artifact)`` identically."""
+    """A spawn shared by both paths; both call ``spawn(leg, artifact)`` identically.
+
+    Thread-safe: the panel/board now fan legs out concurrently, so ``calls`` is
+    appended from multiple worker threads. The lock keeps the record consistent;
+    the *order* of ``calls`` is wall-clock scheduling order (non-deterministic under
+    concurrency) — assertions read it as a SET, never a sequence."""
 
     def __init__(self, reply):
         self._reply = reply
+        self._lock = threading.Lock()
         self.calls: list[tuple[str, str]] = []
 
     def __call__(self, leg: str, artifact: str):
-        self.calls.append((leg, artifact))
+        with self._lock:
+            self.calls.append((leg, artifact))
         return self._reply(leg, artifact)
 
 
@@ -186,12 +194,21 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         self.assertEqual([r.text for r in panel.legs], [r.text for r in board.legs])
         self.assertEqual([r.detail for r in panel.legs], [r.detail for r in board.legs])
 
-    def test_launch_order_is_codex_gemini_claude_both_paths(self) -> None:
+    def test_every_leg_launched_once_and_results_in_order_both_paths(self) -> None:
+        # Legs now fan out CONCURRENTLY, so wall-clock launch order is no longer a
+        # deterministic sequence — the meaningful invariants are (a) every leg is
+        # launched exactly once, (b) each is fed the same artifact, and (c) RESULTS
+        # come back in canonical PANEL_LEGS / seat order (positional re-key + the
+        # order/content assertions below depend on this, NOT on scheduling order).
         panel, board, ps, bs = self._run_both(lambda leg, art: ("OK", f"{leg}\nAGREE"))
-        self.assertEqual([leg for leg, _ in ps.calls], list(pi.PANEL_LEGS))
-        self.assertEqual([leg for leg, _ in bs.calls], list(pi.PANEL_LEGS))
-        # both fed the same artifact to every leg.
-        self.assertTrue(all(art == self.ARTIFACT for _, art in bs.calls))
+        for spawn in (ps, bs):
+            self.assertEqual(
+                sorted(leg for leg, _ in spawn.calls), sorted(pi.PANEL_LEGS)
+            )  # each leg launched exactly once (set + count)
+            self.assertTrue(all(art == self.ARTIFACT for _, art in spawn.calls))
+        # RESULT order is the load-bearing invariant and is preserved deterministically.
+        self.assertEqual([r.leg for r in panel.legs], list(pi.PANEL_LEGS))
+        self.assertEqual([r.leg for r in board.legs], list(pi.PANEL_LEGS))
         self._assert_leg_status_text_parity(panel, board)
 
     def test_ok_results_are_byte_identical_except_seat_key(self) -> None:
@@ -257,6 +274,53 @@ class GoldenApiStabilityTests(unittest.TestCase):
         panel = pi.invoke_panel("x", pi.PANEL_LEGS, spawn=lambda leg, art: reply(leg, art))
         board = pi.invoke_board(DEFAULT_BOARD, "x", spawn=lambda leg, art: reply(leg, art))
         self.assertEqual([r.usable for r in panel.legs], [r.usable for r in board.legs])
+
+
+class ConcurrencyProofTests(unittest.TestCase):
+    """The legs run CONCURRENTLY, not serially — proven with a ``threading.Barrier``
+    that only releases when all N legs are in-flight at the SAME time, so no real
+    sleeps and no wall-clock assertions.
+
+    If execution were serial, the first leg's ``barrier.wait()`` would block for the
+    others (which never start until it returns) until the barrier times out →
+    ``BrokenBarrierError`` → the fail-closed spawn wrapper records that leg DEGRADED →
+    the ``all OK`` assertion fails. So an all-OK result is only reachable when every
+    leg is genuinely in-flight simultaneously. Result order is still asserted, proving
+    concurrency did not disturb the positional contract."""
+
+    _BARRIER_TIMEOUT_S = 5.0
+
+    def _barrier_spawn(self, n: int):
+        barrier = threading.Barrier(n, timeout=self._BARRIER_TIMEOUT_S)
+
+        def spawn(leg: str, artifact: str):
+            # Blocks until all n legs have reached the barrier — only possible if the
+            # pool runs them concurrently. Serial execution ⇒ BrokenBarrierError here,
+            # caught by the invoke_* fail-closed wrapper ⇒ DEGRADED (not OK).
+            barrier.wait()
+            return ("OK", f"{leg}\nAGREE")
+
+        return spawn
+
+    def test_invoke_board_runs_seats_concurrently(self) -> None:
+        n = len(DEFAULT_BOARD.seats)
+        res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=self._barrier_spawn(n))
+        self.assertTrue(
+            all(r.status == "OK" for r in res.legs),
+            f"a leg did not run concurrently (barrier timed out): "
+            f"{[(r.leg, r.status) for r in res.legs]}",
+        )
+        self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))  # order preserved
+
+    def test_invoke_panel_runs_legs_concurrently(self) -> None:
+        n = len(pi.PANEL_LEGS)
+        res = pi.invoke_panel("artifact", pi.PANEL_LEGS, spawn=self._barrier_spawn(n))
+        self.assertTrue(
+            all(r.status == "OK" for r in res.legs),
+            f"a leg did not run concurrently (barrier timed out): "
+            f"{[(r.leg, r.status) for r in res.legs]}",
+        )
+        self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))  # order preserved
 
 
 if __name__ == "__main__":
