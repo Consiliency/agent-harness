@@ -322,6 +322,57 @@ class ConcurrencyProofTests(unittest.TestCase):
         )
         self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))  # order preserved
 
+    # --- the opt-in escape hatch: max_concurrency=1 forces SEQUENTIAL --------
+
+    def _unsatisfiable_barrier_spawn(self, n: int):
+        # A Barrier(n) that can NEVER be satisfied when only one leg runs at a time,
+        # with a short timeout (we EXPECT it to time out under serial execution).
+        barrier = threading.Barrier(n, timeout=0.5)
+
+        def spawn(leg: str, artifact: str):
+            barrier.wait()  # serial ⇒ the lone leg waits alone ⇒ BrokenBarrierError
+            return ("OK", f"{leg}\nAGREE")
+
+        return spawn
+
+    def test_invoke_board_max_concurrency_1_is_sequential(self) -> None:
+        # With a single worker, N seats can NEVER be in-flight at once, so the
+        # Barrier(N) is unsatisfiable → every leg's wait() breaks → fail-closed
+        # DEGRADED. That DEGRADED result IS the proof the seats never overlapped.
+        n = len(DEFAULT_BOARD.seats)
+        res = pi.invoke_board(
+            DEFAULT_BOARD, "artifact", spawn=self._unsatisfiable_barrier_spawn(n), max_concurrency=1
+        )
+        self.assertTrue(
+            all(r.status == "DEGRADED" for r in res.legs),
+            f"max_concurrency=1 must serialize (barrier unsatisfiable ⇒ DEGRADED): "
+            f"{[(r.leg, r.status) for r in res.legs]}",
+        )
+        self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))  # order preserved
+
+    def test_invoke_panel_max_concurrency_1_is_sequential(self) -> None:
+        n = len(pi.PANEL_LEGS)
+        res = pi.invoke_panel(
+            "artifact", pi.PANEL_LEGS, spawn=self._unsatisfiable_barrier_spawn(n), max_concurrency=1
+        )
+        self.assertTrue(
+            all(r.status == "DEGRADED" for r in res.legs),
+            f"max_concurrency=1 must serialize (barrier unsatisfiable ⇒ DEGRADED): "
+            f"{[(r.leg, r.status) for r in res.legs]}",
+        )
+        self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))  # order preserved
+
+    def test_max_concurrency_1_preserves_order_and_results(self) -> None:
+        # Sequential mode still produces the same ordered, byte-identical results as
+        # the parallel default — concurrency is a timing knob, never an outcome one.
+        reply = lambda leg, art: ("OK", f"{leg}\nAGREE")
+        par = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=reply)
+        seq = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=reply, max_concurrency=1)
+        self.assertEqual([r.leg for r in seq.legs], list(pi.PANEL_LEGS))
+        self.assertTrue(all(r.status == "OK" for r in seq.legs))
+        for p, s in zip(par.legs, seq.legs):
+            self.assertEqual((p.leg, p.status, p.text, p.seat_key), (s.leg, s.status, s.text, s.seat_key))
+
 
 if __name__ == "__main__":
     unittest.main()

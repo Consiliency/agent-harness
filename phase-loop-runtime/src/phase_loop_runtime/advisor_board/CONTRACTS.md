@@ -199,8 +199,23 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
 `invoke_board` and `invoke_panel` fan their seats/legs out across a bounded
 `ThreadPoolExecutor` (`_run_legs_ordered`), not a sequential loop — legs are blocking
 subprocess I/O (the CLI wait releases the GIL), so wall-clock is `~max(leg)`, not
-`sum(leg)`. Frozen invariants (concurrency is a **timing-only** change — never a leg's
-outcome; the golden proves byte-identity):
+`sum(leg)`.
+
+- **Parallel is the DEFAULT (opt-out, not opt-in).** Both entry points take a single
+  `max_concurrency: int | None = None` knob, threaded through the governed gates
+  (`governed_planning_gate` → `run_governed_premerge_loop` → `governed_premerge_for_run`)
+  so a caller CAN request sequential, while the default everywhere stays parallel:
+  - `None` (default) → parallel, bounded by `min(len(seats), 8)`.
+  - `1` → sequential (the opt-in escape hatch — debugging, a rate-limited / throttled
+    provider, a constrained host).
+  - `N` → cap concurrency at `N`.
+  It is the SAME thread-pool path: `max_workers = max(1, min(max_concurrency or len(seats), 8))`,
+  so `max_concurrency=1` degrades to one worker (strictly serial) with no separate
+  sequential branch. `max_concurrency` is a keyword-only, default-valued additive
+  extension to the frozen `invoke_panel` signature (back-compat, like `models` #66).
+
+Frozen invariants (concurrency is a **timing-only** change — never a leg's outcome;
+the golden proves byte-identity):
 
 - **Positional order** — futures are submitted in seat/leg order and read back by
   index, so `result[i]` corresponds to `seats[i]`/`legs[i]` regardless of finish
@@ -213,9 +228,11 @@ outcome; the golden proves byte-identity):
   fetch and the seat-validation/host-leg checks stay ABOVE the pool (one fetch, shared
   read); the observability emit stays AFTER, in seat order. Bounded `max_workers =
   min(len(seats), 8)`.
-- **Proof** — a `threading.Barrier(N)` test (all N legs must be in-flight at once or the
-  barrier times out → DEGRADED) proves genuine concurrency without real sleeps; it is
-  verified to discriminate serial from concurrent execution.
+- **Proof** — a `threading.Barrier(N)` test proves both directions without real sleeps:
+  the DEFAULT satisfies the barrier (all N legs in-flight at once → all OK), and
+  `max_concurrency=1` makes the same barrier unsatisfiable (one worker → it times out →
+  fail-closed DEGRADED), so the pair discriminates parallel from sequential. A third
+  test confirms sequential mode returns byte-identical ordered results.
 - **Thread-safety of the real leg paths** — the leg execs install NO signal handlers or
   timers (`signal.signal` / `alarm` / `setitimer` would raise `ValueError: signal only
   works in main thread` off the main thread); the only `signal.` use is `os.killpg(pid,

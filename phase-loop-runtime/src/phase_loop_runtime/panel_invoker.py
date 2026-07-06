@@ -1229,8 +1229,19 @@ def _run_legs_ordered(
     """Run ``run_one`` for every item CONCURRENTLY, returning results in ITEM ORDER.
 
     The panel/board legs are blocking subprocess I/O, so they fan out across a
-    bounded thread pool for real parallelism (wall-clock ≈ max(leg), not sum). Three
-    invariants the callers rely on:
+    bounded thread pool for real parallelism (wall-clock ≈ max(leg), not sum) — this
+    is the OUT-OF-THE-BOX behavior; nobody opts in to parallel.
+
+    ``max_concurrency`` is the single knob:
+
+    * ``None`` (default) → parallel, bounded by ``min(len(items), _PANEL_MAX_WORKERS)``.
+    * ``1``              → sequential (the opt-in escape hatch for debugging, a
+                           rate-limited / throttled provider, or a constrained host).
+    * ``N``              → cap concurrency at ``N``.
+
+    It is the SAME thread-pool path either way: ``max_concurrency=1`` naturally
+    degrades to ``max_workers=1`` (one worker ⇒ strictly serial), with no separate
+    sequential branch. Two invariants the callers rely on, INDEPENDENT of concurrency:
 
     * **Order preserved** — ``result[i]`` corresponds to ``items[i]`` regardless of
       which leg finishes first (futures are submitted in order and read back by
@@ -1249,8 +1260,7 @@ def _run_legs_ordered(
     seq = list(items)
     if not seq:
         return []
-    limit = _PANEL_MAX_WORKERS if max_concurrency is None else max_concurrency
-    max_workers = max(1, min(len(seq), limit))
+    max_workers = max(1, min(max_concurrency or len(seq), _PANEL_MAX_WORKERS))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(run_one, item) for item in seq]
         return [future.result() for future in futures]
@@ -1282,6 +1292,10 @@ def invoke_panel(
     subset; unset legs use ``DEFAULT_LEG_MODELS`` (the claude leg defaults to Fable,
     ``claude-fable-5`` — the review-path model, decoupled from the implementer
     ``CLAUDE_IMPLEMENTER_MODEL``). Replaces the prior need to monkeypatch a leg's model.
+
+    ``max_concurrency``: legs run in PARALLEL by default (``None`` → bounded by
+    ``min(len(legs), 8)``); pass ``1`` for sequential (the opt-in escape hatch), or
+    ``N`` to cap. Order + fail-closed semantics are identical regardless.
 
     A leg whose spawn raises, returns an unknown status, or returns empty text
     on an `ok` status is recorded as `degraded`/`empty` — never silently dropped
@@ -1325,6 +1339,7 @@ def invoke_panel_request(
     repo_dir: Path | str | None = None,
     mode: str = "review",
     models: Mapping[str, str] | None = None,
+    max_concurrency: int | None = None,
 ) -> PanelResult:
     """Run a panel from a ``PanelRequest`` value object (documented skill entry point).
 
@@ -1343,6 +1358,7 @@ def invoke_panel_request(
         repo_dir=repo_dir,
         mode=mode,
         models=models,
+        max_concurrency=max_concurrency,
     )
 
 
@@ -1508,6 +1524,11 @@ def invoke_board(
     dispatch). The native host leg is OBSERVED, never relaunched through the
     gateway for observability's sake. ``sink=None`` (the default) is a no-op — no
     envelope is built — so the ``default`` board stays byte-neutral.
+
+    ``max_concurrency``: seats run in PARALLEL by default (``None`` → bounded by
+    ``min(len(seats), 8)``); pass ``1`` for sequential (the opt-in escape hatch for
+    debugging / a throttled provider / a constrained host), or ``N`` to cap. Seat
+    order and fail-closed-per-seat semantics are identical regardless.
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
@@ -1602,8 +1623,9 @@ def invoke_board(
             status = "EMPTY"
         return PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key)
 
-    # Fan the seats out concurrently; results come back in SEAT ORDER (positional
-    # re-key + golden order/content assertions depend on it).
+    # Fan the seats out concurrently (parallel by default; max_concurrency=1 →
+    # sequential); results come back in SEAT ORDER (positional re-key + golden
+    # order/content assertions depend on it).
     results = _run_legs_ordered(list(board.seats), _run_seat, max_concurrency=max_concurrency)
     # Observability emit is a SEPARATE pass over the (unchanged) run results, in
     # seat order — 1 result per seat — so the run control-flow above is untouched

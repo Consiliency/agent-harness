@@ -153,6 +153,15 @@ advisor-board --seats gpt-5.5:max:codex <art>  # ad-hoc seats (model:effort[:har
 Runtime entry point: `panel_invoker.invoke_board(board, artifact, ...)`. Legacy
 callers keep using `panel_invoker.invoke_panel(...)` unchanged.
 
+**Legs run in parallel by default.** `invoke_board` / `invoke_panel` fan their
+seats/legs out across a bounded thread pool, so wall-clock is ~`max(leg)`, not
+`sum(leg)` (the legs are blocking subprocess I/O). Both take a single
+`max_concurrency` knob — **parallel by default** (`None` → bounded by
+`min(len(seats), 8)`); pass **`max_concurrency=1` for sequential** (debugging, a
+throttled provider, a constrained host), or `N` to cap. Seat order and
+fail-closed-per-seat semantics are identical regardless; the governed gates thread
+the knob through, defaulting to parallel.
+
 ---
 
 ## How to add a custom board
