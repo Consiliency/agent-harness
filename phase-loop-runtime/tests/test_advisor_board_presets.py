@@ -65,12 +65,27 @@ class PresetTests(unittest.TestCase):
             for s in claude_seats:
                 self.assertEqual(s.model, "claude-fable-5", f"{name}: {s.model}")
 
-    def test_brainstorm_and_doc_edit_keep_sonnet(self) -> None:
-        # The divergent-thinking boards deliberately KEEP Sonnet (diverse voice /
-        # low-stakes copyedit) — unchanged by the Fable review-path fix.
-        for name in ("brainstorm", "doc-edit"):
-            models = {s.model for s in PRESETS[name].seats}
-            self.assertIn("claude-sonnet-5", models, name)
+    def test_brainstorm_and_doc_edit_are_byte_neutral(self) -> None:
+        # The divergent-thinking boards deliberately KEEP Sonnet and are otherwise
+        # UNCHANGED by the Fable review-path fix. Pin the full seat tuples (model /
+        # effort / harness / lens) so any drift — not just a dropped Sonnet — trips.
+        unchanged = {
+            "brainstorm": (
+                ("claude-sonnet-5", "high", "claude", "adversarial"),
+                ("gpt-5.5", "high", "codex", "supportive"),
+                ("Gemini 3.1 Pro", "high", "gemini", "lateral"),
+            ),
+            "doc-edit": (
+                ("claude-sonnet-5", "medium", "claude", "copyedit"),
+                ("gpt-5.5", "medium", "codex", "structure"),
+            ),
+        }
+        for name, expected in unchanged.items():
+            self.assertEqual(
+                tuple((s.model, s.effort, s.harness, s.lens) for s in PRESETS[name].seats),
+                expected,
+                name,
+            )
 
     def test_legal_boards_present_and_shaped(self) -> None:
         legal = {
