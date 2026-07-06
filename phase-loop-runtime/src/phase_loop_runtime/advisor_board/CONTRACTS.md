@@ -216,3 +216,14 @@ outcome; the golden proves byte-identity):
 - **Proof** — a `threading.Barrier(N)` test (all N legs must be in-flight at once or the
   barrier times out → DEGRADED) proves genuine concurrency without real sleeps; it is
   verified to discriminate serial from concurrent execution.
+- **Thread-safety of the real leg paths** — the leg execs install NO signal handlers or
+  timers (`signal.signal` / `alarm` / `setitimer` would raise `ValueError: signal only
+  works in main thread` off the main thread); the only `signal.` use is `os.killpg(pid,
+  SIGTERM/SIGKILL)` (a constant, thread-safe), and timeouts run on `select.select(...)`
+  / `subprocess.run(timeout=...)`, not `SIGALRM`. Each leg stages its own temp review
+  dir, so concurrent legs never share filesystem state. Verified: the real `spawn=None`
+  path runs inside worker threads with no signal-in-thread error.
+- **Known edge (untested):** a custom board with two seats on the SAME lane (e.g. two
+  `claude` seats) now runs two concurrent same-lane CLI/PTY sessions — a scenario this
+  fan-out newly enables and nothing yet tests. The `default` board has one claude seat,
+  so it is unaffected.
