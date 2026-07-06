@@ -63,12 +63,20 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 # Which CLI binary backs each leg (used for metadata-only liveness preflight).
 _LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude"}
 
-# #66: the default model per leg. `invoke_panel(..., models={"claude": "claude-fable-5"})`
-# overrides any subset per-leg without an in-process monkeypatch of `CLAUDE_IMPLEMENTER_MODEL`.
+# #66: the default model per leg. `invoke_panel(..., models={"claude": "claude-sonnet-5"})`
+# overrides any subset per-leg without an in-process monkeypatch.
+#
+# The claude leg default is `claude-fable-5` (Fable): pre-merge review is a mid-tier
+# decision where being wrong is expensive, so the review path runs on Fable, NOT on
+# `CLAUDE_IMPLEMENTER_MODEL` (the implementer model, `claude-sonnet-5`). This dict is
+# the SINGLE source of truth for the panel's per-leg default model — the claude leg
+# builder (`_claude_tui_command`) and the Agent-View attempt both read it — so the
+# review-path model is decoupled from the implementer model and can never silently
+# drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-5.5",
     "gemini": "Gemini 3.1 Pro (High)",
-    "claude": CLAUDE_IMPLEMENTER_MODEL,
+    "claude": "claude-fable-5",
 }
 _LEG_TIMEOUT_BASE_S = 600
 _LEG_TIMEOUT_MAX_S = 1800
@@ -351,14 +359,14 @@ def _claude_tui_command(
     effort_args = (
         ("--effort", "max")
         if effort is None
-        else render_seat_invocation("claude", model or CLAUDE_IMPLEMENTER_MODEL, effort).effort_args
+        else render_seat_invocation("claude", model or DEFAULT_LEG_MODELS["claude"], effort).effort_args
     )
     command = [
         "claude",
         "--ax-screen-reader",
         "--safe-mode",
         "--model",
-        model or CLAUDE_IMPLEMENTER_MODEL,
+        model or DEFAULT_LEG_MODELS["claude"],
         *effort_args,
         "--permission-mode",
         "default",
@@ -894,7 +902,7 @@ def _exec_claude_agent_view_attempt(
     command = adapter.launch_command(
         None,
         name=_CLAUDE_AGENT_NAME,
-        model=CLAUDE_IMPLEMENTER_MODEL,
+        model=DEFAULT_LEG_MODELS["claude"],
         effort=effort,
         # Plan mode can block review-sized prompts; Read-only access lets Claude inspect the staged Markdown file.
         permission="default",
@@ -1223,9 +1231,10 @@ def invoke_panel(
     non-code question (architecture, product, red-teaming a plan) with no verdict
     required — substantial prose is a real leg.
 
-    ``models`` (#66): per-leg model override, e.g. ``{"claude": "claude-fable-5"}`` — any
-    subset; unset legs use ``DEFAULT_LEG_MODELS``. Replaces the prior need to monkeypatch
-    ``CLAUDE_IMPLEMENTER_MODEL``.
+    ``models`` (#66): per-leg model override, e.g. ``{"claude": "claude-sonnet-5"}`` — any
+    subset; unset legs use ``DEFAULT_LEG_MODELS`` (the claude leg defaults to Fable,
+    ``claude-fable-5`` — the review-path model, decoupled from the implementer
+    ``CLAUDE_IMPLEMENTER_MODEL``). Replaces the prior need to monkeypatch a leg's model.
 
     A leg whose spawn raises, returns an unknown status, or returns empty text
     on an `ok` status is recorded as `degraded`/`empty` — never silently dropped
