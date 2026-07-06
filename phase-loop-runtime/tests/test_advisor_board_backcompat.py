@@ -97,15 +97,17 @@ class InvokePanelApiStabilityTests(unittest.TestCase):
     def test_invoke_panel_signature_is_frozen(self) -> None:
         # ABDFREEZE-4: the invoke_panel() API is part of the back-compat contract.
         # The frozen positional/keyword contract (artifact, legs) is unchanged; the
-        # keyword-only, default-valued extensions (`models` #66, `max_concurrency`)
-        # are additive and back-compat — no existing caller passes them positionally.
+        # keyword-only, default-valued extensions (`models` #66, `max_concurrency`,
+        # and the ABDREF by-reference ingestion `artifact_ref` / `brief_ref`) are
+        # additive and back-compat — no existing caller passes them positionally.
         sig = inspect.signature(pi.invoke_panel)
         self.assertEqual(
             list(sig.parameters),
-            ["artifact", "legs", "spawn", "repo_dir", "mode", "models", "max_concurrency"],
+            ["artifact", "legs", "spawn", "repo_dir", "mode", "models",
+             "max_concurrency", "artifact_ref", "brief_ref"],
         )
         # The additions are keyword-only with defaults (the real back-compat guarantee).
-        for name in ("models", "max_concurrency"):
+        for name in ("models", "max_concurrency", "artifact_ref", "brief_ref"):
             self.assertEqual(sig.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
             self.assertIsNot(sig.parameters[name].default, inspect.Parameter.empty)
 
