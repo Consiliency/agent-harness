@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+## [0.2.1] — 2026-07-06
+
 - **Advisor Board purpose-derived default mode + advisory prompt hygiene.** A
   board's `purpose` now selects its default panel **mode** automatically, so a
   domain board — especially the legal boards (`legal-review`,
