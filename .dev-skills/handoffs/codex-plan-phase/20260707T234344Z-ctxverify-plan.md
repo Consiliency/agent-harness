@@ -22,7 +22,7 @@ Wrote `plans/phase-plan-v6-CTXVERIFY.md` for roadmap `specs/phase-plans-v6.md`.
 
 ## Validation
 
-- `validate_plan_dispatch_hints`: passed with no findings before writing the artifact.
+- Pre-write `validate_plan_dispatch_hints`: passed with no findings.
 - Written plan literal validation: passed with no findings.
 - `validate_plan_doc.py`: passed with 4 lanes and 8 warnings.
 - Roadmap validation: `validate-roadmap specs/phase-plans-v6.md` passed.
