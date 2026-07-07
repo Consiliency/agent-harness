@@ -321,6 +321,10 @@ of the caller context but still stage raw contents for each leg.
   JSON-escaped absolute path, byte count, streamed SHA-256 digest, untrusted MIME
   guess, untrusted extension hint, and optional best-effort PDF page count. Raw file
   contents are not written into `review-bundle.md`, prompt text, or the manifest.
+- **Metadata sensitivity.** Absolute pathnames and hashes can disclose sensitive
+  project names, customer names, filenames, document structure, and content
+  fingerprints even when raw bytes are not inlined. Callers should treat the
+  manifest as metadata-bearing, not private-by-construction.
 - **Filesystem boundary.** Paths are interpreted relative to the current process
   working directory when relative and are reported as `Path.resolve()` absolute
   paths. Entries must be regular files at validation time; missing paths,
@@ -329,6 +333,10 @@ of the caller context but still stage raw contents for each leg.
   resolution. The runtime opens the file once to stream size/hash metadata and, for
   PDF-looking files only, may reopen a bounded prefix for page counting; CTXIMPL owns
   any stronger root jail or TOCTOU hardening.
+- **Provider and backing limits.** `context_refs` assumes the selected provider and
+  backing can access the same local filesystem path from the leg runtime. Remote,
+  sandboxed, or service-backed harnesses may not have local file access even when
+  the manifest validates on the caller host.
 - **Soft-warning opt-in.** Missing or unreadable `context_refs` raise `ValueError`
   unless `context_refs_soft_warn=True`. Soft warning logs a warning and emits a
   `MISSING` or `UNREADABLE` entry. The manifest instruction text remains strict:
@@ -337,7 +345,9 @@ of the caller context but still stage raw contents for each leg.
   referenced contents are absent from the staged bundle and prompt produced by this
   runtime path. This is not a global DLP guarantee for provider logs, human-visible
   outputs, handoffs, screenshots, shell commands, or tools the leg chooses to run
-  after reading a referenced file.
+  after reading a referenced file. A leg may disclose file contents after it
+  intentionally inspects a referenced path unless an output policy forbids that
+  disclosure.
 - **Reliability names.** Direct entry points accept `timeouts_by_leg`; `PanelRequest`
   uses `timeout_seconds_by_leg`. Both feed the same per-leg override. Unset legs keep
   input-scaled defaults. The codex and gemini CLI legs retry one fast soft-empty or
