@@ -138,7 +138,7 @@ def scan_consiliency_gates(
         "local_integrity": _gate_local_integrity(repo_path, manifest, mode=mode),
         "layout_validity": _gate_layout_validity(repo_path, manifest, mode=mode),
         "version_skew": _gate_version_skew(manifest, mode=mode),
-        "git_discipline": _gate_git_discipline(repo_path, mode=mode),
+        "git_discipline": _gate_git_discipline(repo_path, manifest, mode=mode),
         "spec_conformance": _gate_spec_conformance(manifest, mode=mode),
     }
     if any(g["status"] == "blocked" for g in gates.values()):
@@ -162,6 +162,50 @@ def _gate_status(findings: list[dict[str, Any]], *, mode: str, capped_warn: bool
     if mode == "hard" and not capped_warn:
         return "blocked"
     return "warn"
+
+
+_SEVERITY = {"note": 0, "warn": 1, "blocked": 2}
+_SEVERITY_STATUS = {0: "passed", 1: "warn", 2: "blocked"}
+
+
+def _apply_posture(
+    findings: list[dict[str, Any]], *, manifest: Mapping[str, Any] | None, mode: str,
+    legacy_capped_all: bool = False, legacy_capped_codes: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Retractable teeth -- resolve each finding's posture from the contract registry and
+    derive the gate status. `observe` findings are RECORDED (as notes) but never escalate
+    past `passed`; `warn` -> warn; `enforce` -> warn unless the operator opted into `hard`
+    -> blocked. Any per-repo override that LOWERS a class below its default adds the
+    non-retractable `posture_retracted` finding -- fired from the manifest overrides, so
+    de-fanging is visible even on an otherwise-clean scan.
+
+    Contract < 0.6.2 fallback preserves each gate's PRIOR severity: `legacy_capped_all`
+    caps every finding at warn (version_skew's normative phase0 const), `legacy_capped_codes`
+    caps just those codes (spec_conformance's info tier); everything else follows mode."""
+    from . import gate_posture as gp
+
+    if not gp.available():
+        if not findings:
+            return {"status": "passed", "findings": findings}
+        worst = 0
+        for f in findings:
+            capped = legacy_capped_all or str(f.get("code") or "") in legacy_capped_codes
+            worst = max(worst, _SEVERITY["warn" if (capped or mode != "hard") else "blocked"])
+        return {"status": _SEVERITY_STATUS[worst], "findings": findings}
+
+    out: list[dict[str, Any]] = []
+    worst = 0
+    for f in findings:
+        res = gp.resolve_posture(str(f.get("code") or ""), manifest=manifest)
+        worst = max(worst, _SEVERITY.get(gp.posture_status(res["posture"], mode=mode), 1))
+        out.append({**f, "posture": res["posture"]})
+    retracted = gp.retracting_overrides(manifest)
+    if retracted:
+        r = gp.resolve_posture("posture_retracted", manifest=manifest)
+        worst = max(worst, _SEVERITY.get(gp.posture_status(r["posture"], mode=mode), 1))
+        out.append({"code": "posture_retracted", "posture": r["posture"], "retracted_classes": retracted,
+                    "message": "per-repo posture override lowered: " + ", ".join(retracted)})
+    return {"status": _SEVERITY_STATUS[worst], "findings": out}
 
 
 def _declared_archetypes_modifiers(manifest: Mapping[str, Any]) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
@@ -266,17 +310,16 @@ def _gate_spec_conformance(manifest: Mapping[str, Any], *, mode: str) -> dict[st
                          "message": f"spec-projection '{pid}' is '{raw}'; the conformance bar is '{_CONFORMANCE_FLOOR}'+ (declared but not digest-anchored). Informational -- pass requires {_CONFORMANCE_FLOOR}+ unless it is a sanctioned L0 stub or local policy overrides."})
         # else: at/above its contract floor and (hash-checked+ OR a sanctioned L0 stub) -> conforming
 
-    if loud:
-        status = _gate_status(loud + info, mode=mode)  # loud findings may block under hard mode
-    elif info:
-        status = "warn"  # info-grade never blocks, even under hard mode
-    else:
-        status = "passed"
-    # This gate does NO digest work itself -- it reads DECLARED maturity. Report its own
-    # maturity as presence-only (honest); hash-checked is the bar it enforces, not a claim
-    # about what it verified (that is local_integrity's job, and a canon-backed verifier's
-    # for higher rungs).
-    return {"status": status, "maturity": "presence-only", "findings": loud + info}
+    # Retractable teeth: the contract's posture registry (not a hardcoded loud/info split)
+    # now drives severity per finding-class -- spec_nonconforming/etc default to `warn`
+    # (advisory, may be raised to enforce per-repo), spec_below_conformance_bar to `observe`
+    # (a recorded note). This gate does NO digest work itself, so it reports its own
+    # maturity as presence-only (honest); hash-checked is the bar, not a verified claim.
+    # legacy_capped_codes: preserve the pre-registry info tier -- spec_below_conformance_bar
+    # never blocked even under hard, so cap it in the < 0.6.2 fallback.
+    result = _apply_posture(loud + info, manifest=manifest, mode=mode,
+                            legacy_capped_codes=frozenset({"spec_below_conformance_bar"}))
+    return {"status": result["status"], "maturity": "presence-only", "findings": result["findings"]}
 
 
 def _git_show(repo: Path, path: str) -> bytes | None:
@@ -323,10 +366,14 @@ def _gate_local_integrity(repo: Path, manifest: Mapping[str, Any], *, mode: str)
         checked_any = True
         if recorded != digest:
             findings.append({"code": "hash_drift", "doc_id": doc_id, "path": path, "expected": recorded, "actual": digest})
+    # Retractable teeth: hash_drift is an audit-chain invariant floored at `warn` in the
+    # registry (warns, does not hard-block by default; can be raised to enforce). Migrated
+    # onto the dial so the contract data matches live behavior (CR: Codex/Gemini/Fable).
+    posture = _apply_posture(findings, manifest=manifest, mode=mode)
     return {
-        "status": _gate_status(findings, mode=mode),
+        "status": posture["status"],
         "maturity": "hash-checked" if checked_any else "presence-only",
-        "findings": findings,
+        "findings": posture["findings"],
     }
 
 
@@ -365,7 +412,7 @@ def _gate_layout_validity(repo: Path, manifest: Mapping[str, Any], *, mode: str)
     return {"status": _gate_status(findings, mode=mode), "maturity": "presence-only", "findings": findings}
 
 
-def _gate_git_discipline(repo: Path, *, mode: str) -> dict[str, Any]:
+def _gate_git_discipline(repo: Path, manifest: Mapping[str, Any] | None, *, mode: str) -> dict[str, Any]:
     """Slice-G git-discipline guardrail: classify the repo's refs against the
     neutral contract's ``pipeline_ref_classes`` registry and check the
     write-footprint / branch-naming invariants. Consumes the contract, does not
@@ -397,7 +444,13 @@ def _gate_git_discipline(repo: Path, *, mode: str) -> dict[str, Any]:
         registry=registry,
         protocol=protocol,
     )
-    return {"status": _gate_status(findings, mode=mode), "maturity": "presence-only", "findings": findings}
+    # Retractable teeth: per-finding-class posture from the contract registry replaces the
+    # uniform _gate_status -- pipeline_branch_naming_drift softens to `observe` (a note),
+    # write_footprint_violation holds at its `warn` floor, and never_delete_human_refs is
+    # `enforce` and NON-RETRACTABLE. Legacy uniform behavior survives when the contract
+    # predates the posture registry (< 0.6.2).
+    result = _apply_posture(findings, manifest=manifest, mode=mode)
+    return {"status": result["status"], "maturity": "presence-only", "findings": result["findings"]}
 
 
 _RANGE_RE = re.compile(r"^>=\s*([0-9.]+)\s*<\s*([0-9.]+)$")
@@ -462,14 +515,19 @@ def _gate_version_skew(manifest: Mapping[str, Any], *, mode: str) -> dict[str, A
             )
         else:
             compatibility = "compatible"
-    # Normative: version-skew stays warn-only at Phase 0 regardless of the
-    # gate mode opt-in (version-skew-protocol.schema `default_behavior.
-    # phase0_severity` is a fixed const, not a per-consumer policy knob).
+    # Normative: version-skew stays warn-only at Phase 0. The `version_skew` finding class
+    # carries max_posture=warn in the contract posture registry, so the cap is now contract
+    # DATA (retractable teeth) rather than the hardcoded capped_warn flag -- the legacy
+    # cap survives (fallback) when the contract predates the registry.
+    # legacy_capped_all: the version-skew phase0 severity is a normative const `warn`, so
+    # the < 0.6.2 fallback must cap at warn (never block under hard) -- preserving the old
+    # capped_warn=True behavior.
+    posture = _apply_posture(findings, manifest=manifest, mode=mode, legacy_capped_all=True)
     return {
-        "status": _gate_status(findings, mode=mode, capped_warn=True),
+        "status": posture["status"],
         "maturity": "realized-edge-observed",
         "compatibility": compatibility,
         "installed_contract_version": installed_version,
         "repo_contract_version": repo_version or None,
-        "findings": findings,
+        "findings": posture["findings"],
     }

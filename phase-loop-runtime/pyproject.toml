@@ -22,15 +22,15 @@ dependencies = [
     "baml-py>=0.222,<0.223",
     "pydantic>=2,<3",
     "PyYAML>=6,<7",
-    # PIN (spec-integration v0.3.0): contract 0.6.1 is now published to PyPI, so the
-    # floor moves to 0.6.1 (0.6.0 shipped self-inconsistent version references that
-    # rejected itself — see contract PR #18) — this supplies the `pipeline_ref_classes` registry +
-    # `git_discipline_protocol` schema + authority-event contract, ACTIVATING the
-    # git-discipline guardrail (previously a latent no-op under the 0.3.0-resolving
-    # `<0.5.0` ceiling). Warn-default remains; the guardrail still degrades to a
-    # neutral no-op if an older contract is somehow present (`available()` is False
-    # below 0.4). See consiliency_gates git_discipline active/no-op matrix test.
-    "consiliency-contract>=0.6.1,<0.7",
+    # PIN (spec-integration v0.3.0): floor at 0.6.2 -- it ships the `gate_posture_registry`
+    # (retractable teeth) alongside `pipeline_ref_classes` + `git_discipline_protocol`. This
+    # ACTIVATES the git-discipline guardrail AND the posture dial (per-finding-class
+    # enforcement with non-retractable floors). The dial degrades gracefully on an older
+    # contract (gate_posture.available() False -> legacy per-gate behavior preserved), so
+    # < 0.6.2 stays safe; the floor guarantees the teeth are present. Warn-default remains;
+    # human_required is never set. (0.6.0 shipped self-inconsistent version refs -> fixed in
+    # 0.6.1, contract PR #18.)
+    "consiliency-contract>=0.6.2,<0.7",
     "jsonschema>=4,<5",
     # Advisor Board config loader (ABDREG) parses advisor-boards.toml. tomllib is
     # stdlib on 3.11+; on the 3.10 requires-python floor it is absent, so pull in

@@ -47,6 +47,13 @@ def _drop_docs(repo: Path, classes_ids: set[str]) -> None:
     Path(manifest_file).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _add_posture_override(repo: Path, overrides: dict[str, str]) -> None:
+    manifest_file = find_consiliency_manifest(repo)
+    data = json.loads(Path(manifest_file).read_text(encoding="utf-8"))
+    data["gate_posture_overrides"] = overrides
+    Path(manifest_file).write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 class SpecConformanceGateTest(unittest.TestCase):
     def _conf(self, repo: Path, mode: str = "warn") -> dict:
         result = scan_consiliency_gates(repo, env={"PHASE_LOOP_CONSILIENCY_GATES": mode})
@@ -115,18 +122,44 @@ class SpecConformanceGateTest(unittest.TestCase):
         with mock.patch.object(cg, "compose_required_documents", return_value=[row]):
             warn = cg._gate_spec_conformance(manifest, mode="warn")
             hard = cg._gate_spec_conformance(manifest, mode="hard")
-        self.assertEqual(warn["status"], "warn")
-        self.assertIn("spec_below_conformance_bar", {f["code"] for f in warn["findings"]})
-        # info-grade NEVER blocks, even under hard mode
-        self.assertEqual(hard["status"], "warn")
+        # Posture registry: spec_below_conformance_bar defaults to `observe` -> a recorded
+        # NOTE that never escalates the gate past passed (forgiving default), even under hard.
+        self.assertEqual(warn["status"], "passed")
+        self.assertEqual(hard["status"], "passed")
+        finding = next(f for f in warn["findings"] if f["code"] == "spec_below_conformance_bar")
+        self.assertEqual(finding["posture"], "observe")  # recorded, not warned
 
-    def test_nonconforming_blocks_under_hard_mode(self):
-        # Loud tier: non-conformance is a real defect -> may block under hard mode.
+    def test_retracting_an_advisory_emits_a_visible_posture_retracted_note(self):
+        # De-fanging is never silent: dialing spec_nonconforming down to observe records
+        # the finding as a note AND adds the non-retractable posture_retracted note.
+        with tempfile.TemporaryDirectory() as td:
+            repo = _scaffold(td)
+            _set_maturity(repo, _PROJ_DOC, "present-nonconforming")
+            _add_posture_override(repo, {"spec_nonconforming": "observe"})
+            gate = self._conf(repo)
+            codes = {f["code"] for f in gate["findings"]}
+            self.assertIn("posture_retracted", codes)
+            nonconf = next(f for f in gate["findings"] if f["code"] == "spec_nonconforming")
+            self.assertEqual(nonconf["posture"], "observe")  # retract honored (advisory)
+
+    def test_nonconforming_is_advisory_warn_by_default_even_under_hard(self):
+        # Retractable teeth: spec_nonconforming is ADVISORY (warn), not an invariant --
+        # so by default it never blocks, even under hard mode. Forgiving default.
         with tempfile.TemporaryDirectory() as td:
             repo = _scaffold(td)
             _set_maturity(repo, _PROJ_DOC, "present-nonconforming")
             gate = self._conf(repo, mode="hard")
-            self.assertEqual(gate["status"], "blocked")
+            self.assertEqual(gate["status"], "warn")  # advisory: warns, does not block
+
+    def test_a_repo_can_extend_teeth_to_block_nonconformance_under_hard(self):
+        # Opt-in teeth: raising spec_nonconforming to `enforce` per-repo makes it block
+        # under the operator's hard master switch.
+        with tempfile.TemporaryDirectory() as td:
+            repo = _scaffold(td)
+            _set_maturity(repo, _PROJ_DOC, "present-nonconforming")
+            _add_posture_override(repo, {"spec_nonconforming": "enforce"})
+            self.assertEqual(self._conf(repo, mode="hard")["status"], "blocked")
+            self.assertEqual(self._conf(repo, mode="warn")["status"], "warn")  # hard still the master switch
 
     def test_hash_checked_projection_passes(self):
         with tempfile.TemporaryDirectory() as td:
