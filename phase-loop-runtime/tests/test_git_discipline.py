@@ -186,12 +186,20 @@ class GateSeverityTest(unittest.TestCase):
             gd.load_protocol = self._orig_proto
             gd.gather_repo_ref_facts = self._orig_facts
 
-    def test_warns_by_default_blocks_on_opt_in(self):
+    def test_write_footprint_warns_by_default_and_blocks_on_enforce_opt_in(self):
+        # Retractable teeth: write_footprint_violation is an invariant FLOORED at warn --
+        # it warns by default (even under hard, forgiving), can't be silenced below warn,
+        # and blocks under hard only when a repo/fleet raises it to `enforce`.
         self._patch("consiliency/pipeline/v0.4", ["src/app.py"])
-        warn = _gate_git_discipline(Path("/nonexistent"), mode="warn")
-        hard = _gate_git_discipline(Path("/nonexistent"), mode="hard")
+        warn = _gate_git_discipline(Path("/nonexistent"), None, mode="warn")
+        hard = _gate_git_discipline(Path("/nonexistent"), None, mode="hard")
         self.assertEqual(warn["status"], "warn")
-        self.assertEqual(hard["status"], "blocked")
+        self.assertEqual(hard["status"], "warn")  # forgiving default: warns, does not block
+        enforce = {"gate_posture_overrides": {"write_footprint_violation": "enforce"}}
+        self.assertEqual(_gate_git_discipline(Path("/nonexistent"), enforce, mode="hard")["status"], "blocked")
+        # ...but it can never be silenced below its warn floor:
+        silence = {"gate_posture_overrides": {"write_footprint_violation": "observe"}}
+        self.assertEqual(_gate_git_discipline(Path("/nonexistent"), silence, mode="warn")["status"], "warn")
         self.assertTrue(warn["findings"])
         # The gate never emits a human_required signal.
         self.assertNotIn("human_required", warn)
@@ -200,7 +208,7 @@ class GateSeverityTest(unittest.TestCase):
 
     def test_clean_pipeline_branch_passes(self):
         self._patch("consiliency/pipeline/v0.4", [".consiliency/manifest.json"])
-        result = _gate_git_discipline(Path("/nonexistent"), mode="hard")
+        result = _gate_git_discipline(Path("/nonexistent"), None, mode="hard")
         self.assertEqual(result["status"], "passed")
 
 
@@ -214,7 +222,7 @@ class ContractAbsentDegradeTest(unittest.TestCase):
 
     def test_gate_degrades_to_passed_not_warn(self):
         # Neutral no-op even in hard mode -- must NOT flip governed scans to warn.
-        result = _gate_git_discipline(Path("/nonexistent"), mode="hard")
+        result = _gate_git_discipline(Path("/nonexistent"), None, mode="hard")
         self.assertEqual(result["status"], "passed")
         self.assertIn("latent", result["note"])
 
