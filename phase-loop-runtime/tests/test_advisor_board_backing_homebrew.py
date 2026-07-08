@@ -247,6 +247,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
             return 0, "AGREE", ""
 
         with patch.object(pi, "_claude_code_support_status", return_value=(True, "")), \
+                patch.object(pi, "_tui_capable", return_value=True), \
                 patch.object(pi, "_run_claude_tui_session", side_effect=fake_session), \
                 tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_claude_tui_leg(Path(rd), Path(od), 600, "bundle", effort="max", env=env)
@@ -263,6 +264,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
             return 0, "AGREE", ""
 
         with patch.object(pi, "_claude_code_support_status", return_value=(True, "")), \
+                patch.object(pi, "_tui_capable", return_value=True), \
                 patch.object(pi, "_run_claude_tui_session", side_effect=fake_session), \
                 tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_claude_tui_leg(Path(rd), Path(od), 600, "bundle", effort="max", env=env)

@@ -38,6 +38,7 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
+6. On a Claude Code host, the runtime defers the `claude` leg (returns `UNAVAILABLE`) instead of spawning a Claude TUI — a driving session that wants a Claude/Fable leg must supply it as a native Agent.
 
 ## Standalone Smoke Shape
 

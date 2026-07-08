@@ -33,6 +33,8 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 
 ## Use
 
+**On a Claude Code host, run the claude/Fable leg as a NATIVE Agent, not the runtime TUI.** When you are *inside* Claude Code, invoke the runtime for the `codex` and `gemini` legs only; the runtime returns the `claude` leg as `UNAVAILABLE` ("deferred to native Agent") by design — it must not spawn a second Claude TUI. Supply the third leg yourself with the Task tool (a Fable/Claude Agent given the same `review-instructions.md` + `review-bundle.md`), require it to end with `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, and reconcile all three. A `UNAVAILABLE` claude leg is a *gap to fill*, not an acceptable 2-leg board.
+
 1. Prefer the repo's governed phase-loop path when reviewing phase execution or pre-merge work.
 2. For a standalone smoke or diagnostic, stage the review material in a file and pass its path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_panel`.
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
@@ -48,3 +50,5 @@ panel = invoke_panel("", available_panel_legs(), artifact_ref="path/to/bundle.md
 for leg in panel.legs:
     print(leg.leg, leg.status)
 ```
+
+Under Claude Code, expect the `claude` leg to report `UNAVAILABLE` (deferred to the native Agent) — the runtime does not spawn a Claude TUI here. Supply that third leg natively (Task tool) and reconcile it with the `codex` + `gemini` results.
