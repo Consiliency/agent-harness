@@ -90,6 +90,63 @@ class GovernedGateTest(unittest.TestCase):
         self.assertEqual(captured["pool"], ("codex",))
         self.assertEqual(captured["kwargs"]["repo_dir"], "/tmp/repo-under-review")
 
+    def test_deferred_claude_leg_is_a_warn_never_a_block(self):
+        # #92 A6.4: a claude leg that returns ("UNAVAILABLE", "") records a
+        # non-gating panel_leg_degraded WARN naming the claude leg, introduces NO
+        # block, and the gate promotes on the two real legs' verdicts.
+        invoke = lambda art, pool, spawn=None: _panel(
+            PanelLegResult(leg="codex", status="ok", text="AGREE"),
+            PanelLegResult(leg="gemini", status="ok", text="AGREE"),
+            PanelLegResult(leg="claude", status="UNAVAILABLE", text=""),
+        )
+        result = governed_planning_gate(
+            artifact="ART", author_executor="pi", run_mode="governed",
+            available_legs=("codex", "gemini", "claude"), invoke=invoke,
+        )
+        self.assertTrue(result.promoted)  # promotes on the two real AGREEs
+        degraded = [f for f in result.findings if f.code == "panel_leg_degraded"]
+        self.assertEqual(len(degraded), 1)
+        self.assertEqual(degraded[0].severity, "warn")
+        self.assertIn("claude", degraded[0].reason)  # names the deferred leg
+        self.assertFalse(any(f.severity == "block" for f in result.findings))
+
+    def test_deferred_leg_does_not_mask_a_real_disagree(self):
+        # The gate's promote/hold decision is driven only by the real legs: a
+        # DISAGREE on codex still blocks even while the claude leg is deferred.
+        invoke = lambda art, pool, spawn=None: _panel(
+            PanelLegResult(leg="codex", status="ok", text="DISAGREE — real bug"),
+            PanelLegResult(leg="gemini", status="ok", text="AGREE"),
+            PanelLegResult(leg="claude", status="UNAVAILABLE", text=""),
+        )
+        result = governed_planning_gate(
+            artifact="ART", author_executor="pi", run_mode="governed",
+            available_legs=("codex", "gemini", "claude"), invoke=invoke,
+        )
+        self.assertFalse(result.promoted)
+        self.assertTrue(any(f.severity == "block" for f in result.findings))
+
+    def test_rejected_reason_as_text_would_block(self):
+        # NEGATIVE GUARD (#92 A4): returning the deferred REASON as leg text (the
+        # rejected design) yields a panel_nonconforming BLOCK — proving why the
+        # implementation must return EMPTY text instead.
+        invoke = lambda art, pool, spawn=None: _panel(
+            PanelLegResult(leg="codex", status="ok", text="AGREE"),
+            PanelLegResult(leg="gemini", status="ok", text="AGREE"),
+            PanelLegResult(
+                leg="claude", status="UNAVAILABLE",
+                text="claude leg not run by the runtime in this execution context",
+            ),
+        )
+        result = governed_planning_gate(
+            artifact="ART", author_executor="pi", run_mode="governed",
+            available_legs=("codex", "gemini", "claude"), invoke=invoke,
+        )
+        self.assertFalse(result.promoted)  # reason-as-text over-blocks
+        self.assertTrue(any(
+            f.code == "panel_nonconforming" and f.severity == "block"
+            for f in result.findings
+        ))
+
 
 class ReviewerPoolTest(unittest.TestCase):
     def test_pool_excludes_author_vendor(self):

@@ -20,6 +20,7 @@ import select
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import json
@@ -1172,6 +1173,41 @@ def _normalize_claude_agent_state(value: object) -> str:
     return "unknown"
 
 
+# Reason string used ONLY for the deferred-leg log line (auditability). It is
+# NEVER returned as the leg's review text — returning it as text would make
+# governed_review._findings_from_panel classify the leg `panel_nonconforming`
+# (a BLOCK), over-blocking every Claude-Code-hosted governed panel. See the
+# detailed plan (#92) A2/A4.
+_CLAUDE_LEG_DEFERRED_REASON = (
+    "claude leg not run by the runtime in this execution context "
+    "(under Claude Code / no controlling terminal); supply it as a NATIVE Agent "
+    "(Task tool) from the driving session — the runtime must not spawn a Claude TUI here."
+)
+
+
+def _under_claude_code(env: Mapping[str, str] | None = None) -> bool:
+    """True iff we are running INSIDE a Claude Code session (the wrong place to
+    spawn a second Claude TUI). Keyed on CLAUDECODE=1 (the harness's own marker);
+    corroborated by CLAUDE_CODE_ENTRYPOINT. Env is injectable for tests."""
+    e = os.environ if env is None else env
+    return str(e.get("CLAUDECODE", "")).strip() == "1" or bool(e.get("CLAUDE_CODE_ENTRYPOINT"))
+
+
+def _tui_capable(
+    env: Mapping[str, str] | None = None,
+    isatty: Callable[[], bool] | None = None,
+) -> bool:
+    """The TUI leg needs a real controlling terminal. False under Claude Code OR
+    when stdin/stdout is not a tty (headless/detached)."""
+    if _under_claude_code(env):
+        return False
+    check = isatty if isatty is not None else (lambda: sys.stdin.isatty() and sys.stdout.isatty())
+    try:
+        return check()
+    except Exception:
+        return False
+
+
 def _exec_claude_tui_leg(
     review_dir: Path,
     out_dir: Path,
@@ -1200,6 +1236,19 @@ def _exec_claude_tui_leg(
     supported, support_detail = _claude_code_support_status()
     if not supported:
         return "UNAVAILABLE", support_detail
+
+    if not _tui_capable(env):
+        # Under Claude Code / no controlling terminal: do NOT spawn a Claude TUI
+        # we cannot drive (issue #92). Degrade cleanly with the existing
+        # UNAVAILABLE status and EMPTY review text — the empty text is
+        # load-bearing (A4): an UNAVAILABLE leg with empty text becomes a
+        # non-gating `panel_leg_degraded` warn, never a block, and `usable`
+        # (status=="OK") never counts it as an AGREE. The driving session must
+        # supply this leg as a native Agent (Task tool).
+        logging.getLogger(__name__).warning(
+            "advisor-panel claude leg deferred: %s", _CLAUDE_LEG_DEFERRED_REASON
+        )
+        return "UNAVAILABLE", ""
 
     env = _subscription_env() if env is None else dict(env)
     output_file = out_dir / "panel-claude.txt"

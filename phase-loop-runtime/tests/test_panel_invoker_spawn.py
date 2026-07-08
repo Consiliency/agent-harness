@@ -38,6 +38,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             repo_dir.mkdir()
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._tui_capable", return_value=True),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(
@@ -139,6 +140,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             out_dir.mkdir()
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._tui_capable", return_value=True),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 777, "SECRET-SENTINEL")
@@ -158,6 +160,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             out_dir.mkdir()
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._tui_capable", return_value=True),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle")
@@ -172,6 +175,56 @@ class ClaudeTuiLegTest(unittest.TestCase):
         self.assertEqual(status, "OK")
         self.assertIn("AGREE", text)
         exec_claude.assert_called_once()
+
+
+class ClaudeLegDeferredUnderClaudeCodeTest(unittest.TestCase):
+    """#92 — under Claude Code / no-tty, the claude leg must NOT spawn a TUI it
+    cannot drive. It degrades to UNAVAILABLE with EMPTY text (never the reason as
+    text — that would be a `panel_nonconforming` BLOCK), and is never counted as
+    an AGREE."""
+
+    def test_headless_degrades_without_spawning_tui(self):
+        # env={"CLAUDECODE":"1"} injected through the guard's seam so the assertion
+        # is host-portable (not accidentally passing off the ambient env).
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with (
+                patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._run_claude_tui_session") as run_tui,
+            ):
+                status, text = pi._exec_claude_tui_leg(
+                    review_dir, out_dir, 600, "bundle", env={"CLAUDECODE": "1"}
+                )
+        self.assertEqual(status, "UNAVAILABLE")
+        self.assertEqual(text, "")  # EMPTY text is load-bearing (A4)
+        run_tui.assert_not_called()  # no PTY, no deadline wait
+
+    def test_under_claude_code_detection(self):
+        self.assertTrue(pi._under_claude_code({"CLAUDECODE": "1"}))
+        self.assertTrue(pi._under_claude_code({"CLAUDE_CODE_ENTRYPOINT": "cli"}))
+        self.assertFalse(pi._under_claude_code({}))
+        self.assertFalse(pi._under_claude_code({"CLAUDECODE": "0"}))
+
+    def test_tui_capable_no_tty_path(self):
+        # Not under Claude Code: capability is exactly the tty check.
+        self.assertFalse(pi._tui_capable(env={}, isatty=lambda: False))
+        self.assertTrue(pi._tui_capable(env={}, isatty=lambda: True))
+        # Under Claude Code: never capable, regardless of tty.
+        self.assertFalse(pi._tui_capable(env={"CLAUDECODE": "1"}, isatty=lambda: True))
+
+    def test_deferred_leg_is_not_counted_as_agreement(self):
+        panel = pi.PanelResult(legs=(
+            pi.PanelLegResult(leg="codex", status="OK", text="codex\nAGREE"),
+            pi.PanelLegResult(leg="gemini", status="OK", text="gemini\nAGREE"),
+            pi.PanelLegResult(leg="claude", status="UNAVAILABLE", text=""),
+        ))
+        claude = [leg for leg in panel.legs if leg.leg == "claude"][0]
+        self.assertFalse(claude.usable)
+        self.assertNotIn(claude, panel.usable_legs)
+        self.assertEqual([leg.leg for leg in panel.usable_legs], ["codex", "gemini"])
 
 
 class StatusMappingTest(unittest.TestCase):
