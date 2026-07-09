@@ -80,3 +80,50 @@ The closeout verdict is runner-authoritative: when the runner rejects a child's
 closeout, the persisted `terminal-summary.json` reflects the runner's blocking verdict
 (the child's self-reported `complete`/`passed` is not overlaid back), preventing a
 stale "complete" summary from reconcile-skipping the work on the next run.
+
+## Conformance library (one library, two roles)
+
+`phase_loop_runtime.conformance` is the named, stable, importable surface for the
+deterministic `.consiliency/` conformance evaluator. It is a re-export (not a
+re-implementation) of the same function the actor already runs, so an **external
+CR-fence** — in gp CI, a git-host pre-merge check, anywhere — can import and run
+the identical check:
+
+```python
+from phase_loop_runtime.conformance import scan_consiliency_gates
+
+verdict = scan_consiliency_gates("/path/to/repo")   # {"status": "passed" | "warn" | "blocked" | "skipped", "gates": {...}, ...}
+```
+
+The surface also exposes the pure cores (`evaluate_git_discipline`,
+`self_heal_partition`, `evaluate_governance_scope`) for consumers that already
+hold the injected facts.
+
+**Two roles, one library.** This is meant to be mounted BOTH as the actor-side
+self-check (a pre-PR sanity pass the author runs locally) AND as the
+authoritative CR-fence (the real validator). The actor-side result is **never
+authoritative** — the fence always re-runs the check itself. Because it is the
+same function versioned with the same vendored `consiliency_contract`, the honest
+actor sees exactly the verdict the fence will; a stale or dishonest actor result
+simply does not matter.
+
+**Scope.** This surface asserts the L0 **shape + governance** tier only. The
+cert-schema tier and authority/provenance verification are explicitly out of
+scope (delegated downstream / to gp).
+
+### `consiliency-ingest --check-only`
+
+`--check-only` decouples "run the check" from "is this repo adopted". It is
+strictly read-only (never shapes; ignores `--adopt`). It makes the exit code
+verdict-significant so a pre-PR actor is never misled into reading a no-op — or a
+failing verify — as a pass:
+
+| Repo state | mode | exit |
+|---|---|---|
+| adopted, verify clean (or `warn`) | `verify` | `0` |
+| adopted, gate scan `blocked` | `verify` | `1` |
+| un-adopted (no `.consiliency/manifest`) | `not-adopted` | `3` |
+| usage error | — | `2` |
+
+The plain (non-`--check-only`) path is unchanged — it keeps the silent green
+`skipped` no-op on an un-adopted repo and its existing exit `0`.
