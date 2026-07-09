@@ -23,6 +23,7 @@ class TestPhaseLoopRuntimeBoundary(unittest.TestCase):
         expected_all = [
             "__version__",
             "cli",
+            "conformance",
             "discovery",
             "handoff",
             "maintenance",

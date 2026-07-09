@@ -129,6 +129,7 @@ roots. See `docs/phase-loop/spec-discovery-roots.md`.
 The following modules under `phase_loop_runtime.*` are considered public:
 
 - `phase_loop_runtime.cli`: CLI entrypoint and parser definition.
+- `phase_loop_runtime.conformance`: Named conformance-check surface (the six L0 consiliency gates) for actor-side self-check and the CR-fence.
 - `phase_loop_runtime.discovery`: Roadmap and repository resolution.
 - `phase_loop_runtime.handoff`: TUI handoff generation and metadata.
 - `phase_loop_runtime.models`: Core data models, schemas, and literals.
