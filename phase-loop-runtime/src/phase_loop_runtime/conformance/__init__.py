@@ -36,6 +36,16 @@ from .outside_agent_pin import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     OutsideAgentContractPin,
 )
+from .outside_agent_real import (
+    OutsideAgentSubmittedRef,
+    OutsideAgentValidationExitCode,
+    OutsideAgentValidationVerdict,
+    build_outside_agent_validation_verdict,
+)
+from .outside_agent_real_output import (
+    digest_outside_agent_validation_bytes,
+    serialize_outside_agent_validation_verdict,
+)
 
 __all__ = [
     "scan_consiliency_gates",
@@ -60,4 +70,10 @@ __all__ = [
     "load_outside_agent_contract_pin",
     "EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN",
     "OutsideAgentContractPin",
+    "OutsideAgentSubmittedRef",
+    "OutsideAgentValidationExitCode",
+    "OutsideAgentValidationVerdict",
+    "build_outside_agent_validation_verdict",
+    "digest_outside_agent_validation_bytes",
+    "serialize_outside_agent_validation_verdict",
 ]

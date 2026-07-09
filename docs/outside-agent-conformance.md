@@ -41,11 +41,13 @@ metadata-only vector result evidence.
 
 `outside_agent_vectors.run_outside_agent_vectors()` runs metadata-only vector
 manifests through the same core and compares expected outcomes without copying
-canonical Consiliency/spec vector bodies into this repository.
+canonical Consiliency/spec vector bodies into this repository. This runner is CI
+and release evidence for the pinned contract and vector manifest; it is not run
+for every live governed-pipeline submission.
 
 OACORE only produces shared conformance facts. OAMOCK can later wrap those facts
-with advisory labeling. OAREAL can later attach the governed-pipeline runtime
-surface and authoritative acceptance behavior.
+with advisory labeling. OAREAL attaches the governed-pipeline runtime surface
+without changing the shared core or reusing advisory authority.
 
 ## Advisory Preflight
 
@@ -71,3 +73,44 @@ unexpected internal failures.
 Attach the generated advisory JSON as supporting evidence only. It can help
 reviewers and producers find cheap contract mistakes early, but governed-pipeline
 remains the authoritative acceptance and merge boundary.
+
+## Governed-Pipeline Validator
+
+Governed-pipeline invokes the real validator against one local metadata-only
+outside-agent submission JSON file and the submitted repo-relative refs:
+
+```bash
+phase-loop outside-agent-validate path/to/outside-agent-submission.json \
+  --output outside-agent-verdict.json \
+  --submitted-ref src/agent.py \
+  --submitted-ref docs/evidence.md
+```
+
+The command writes the same deterministic JSON to `--output` and stdout. The
+SDK entry points are
+`phase_loop_runtime.conformance.build_outside_agent_validation_verdict()` and
+`phase_loop_runtime.conformance.serialize_outside_agent_validation_verdict()`.
+Runtime validation calls `validate_outside_agent_submission()` once for the live
+submission, records submitted refs after repo-relative normalization, and sets
+`vectors_executed=false`; canonical vectors stay in CI and release verification.
+
+The real-validator JSON contains `validator_version`,
+`authority="governed_pipeline_validator"`, `verdict_schema_version`,
+`contract_pin`, top-level `vector_manifest_hash`, `input_digest`,
+`submitted_refs`, typed `status`, typed `blockers`, repo-relative
+`evidence_refs`, `redaction_posture="metadata_only"`, `vectors_executed=false`,
+and the numeric `exit_code`. It must not contain advisory-only labels,
+`accepted_for_merge`, `merge_verdict`, Portal projection fields, provider
+payloads, raw logs, copied schema JSON, copied vector bodies, local environment
+values, secrets, or absolute local paths.
+
+Exit code `0` means the submission conforms. Exit code `2` means malformed
+input, `3` means a redaction violation, `4` means provenance or digest metadata
+failed, `5` means the contract or vector pin failed, `6` means another typed
+conformance blocker, and `1` is reserved for unexpected internal errors.
+
+Downstream governed-pipeline refresh work should pin the published
+`consiliency-spec` package version or immutable contract git SHA together with
+`vector_manifest_hash`, then call the real validator command from its acceptance
+flow. Agent-harness supplies deterministic conformance evidence, while
+governed-pipeline remains the acceptance and merge authority.
