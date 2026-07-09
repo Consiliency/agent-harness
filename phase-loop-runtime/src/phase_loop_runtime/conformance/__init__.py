@@ -14,6 +14,22 @@ from ..consiliency_gates import (
 )
 from ..consiliency_ingest import evaluate_governance_scope
 from ..git_discipline import evaluate_git_discipline, self_heal_partition
+from .outside_agent_core import (
+    OutsideAgentBlocker,
+    OutsideAgentConformanceVerdict,
+    OutsideAgentEvidenceRef,
+    OutsideAgentSubmissionKind,
+    OutsideAgentVerdictStatus,
+    validate_outside_agent_submission,
+)
+from .outside_agent_imports import (
+    OutsideAgentContractError,
+    load_outside_agent_contract_pin,
+)
+from .outside_agent_pin import (
+    EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
+    OutsideAgentContractPin,
+)
 
 __all__ = [
     "scan_consiliency_gates",
@@ -24,4 +40,14 @@ __all__ = [
     "evaluate_git_discipline",
     "self_heal_partition",
     "evaluate_governance_scope",
+    "OutsideAgentBlocker",
+    "OutsideAgentConformanceVerdict",
+    "OutsideAgentEvidenceRef",
+    "OutsideAgentSubmissionKind",
+    "OutsideAgentVerdictStatus",
+    "validate_outside_agent_submission",
+    "OutsideAgentContractError",
+    "load_outside_agent_contract_pin",
+    "EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN",
+    "OutsideAgentContractPin",
 ]
