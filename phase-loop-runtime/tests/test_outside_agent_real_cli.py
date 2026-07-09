@@ -54,7 +54,9 @@ def test_cli_clean_pass_writes_file_and_stdout(tmp_path):
 
     assert result.returncode == 0
     assert json.loads(output_path.read_text(encoding="utf-8")) == payload
+    assert payload["gate_id"] == "real_conformance_gate.v0.1"
     assert payload["authority"] == "governed_pipeline_validator"
+    assert payload["command"] == "outside-agent-validate"
     assert payload["submitted_refs"] == ["src/agent.py"]
     assert payload["vectors_executed"] is False
     assert "accepted_for_merge" not in payload

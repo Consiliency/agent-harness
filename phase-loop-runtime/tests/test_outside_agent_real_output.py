@@ -34,8 +34,10 @@ def test_serializes_clean_governed_pipeline_verdict_shape():
         )
     )
 
+    assert payload["gate_id"] == "real_conformance_gate.v0.1"
     assert payload["authority"] == "governed_pipeline_validator"
     assert payload["validator_version"]
+    assert payload["command"] == "outside-agent-validate"
     assert payload["verdict_schema_version"] == "outside_agent_route_verdict.v0.1"
     assert payload["contract_pin"]["contract_package"] == "consiliency-spec"
     assert payload["vector_manifest_hash"] == payload["contract_pin"]["vector_manifest_hash"]

@@ -12,8 +12,10 @@ def serialize_outside_agent_validation_verdict(
 ) -> dict[str, Any]:
     verdict = validation.verdict
     return {
+        "gate_id": "real_conformance_gate.v0.1",
         "authority": validation.authority,
         "validator_version": validation.validator_version,
+        "command": "outside-agent-validate",
         "verdict_schema_version": verdict.verdict_schema_version,
         "contract_pin": {
             "schema_version": verdict.contract_pin.schema_version,

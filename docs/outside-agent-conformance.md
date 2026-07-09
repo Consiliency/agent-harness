@@ -94,7 +94,8 @@ Runtime validation calls `validate_outside_agent_submission()` once for the live
 submission, records submitted refs after repo-relative normalization, and sets
 `vectors_executed=false`; canonical vectors stay in CI and release verification.
 
-The real-validator JSON contains `validator_version`,
+The real-validator JSON contains `gate_id="real_conformance_gate.v0.1"`,
+`command="outside-agent-validate"`, `validator_version`,
 `authority="governed_pipeline_validator"`, `verdict_schema_version`,
 `contract_pin`, top-level `vector_manifest_hash`, `input_digest`,
 `submitted_refs`, typed `status`, typed `blockers`, repo-relative
