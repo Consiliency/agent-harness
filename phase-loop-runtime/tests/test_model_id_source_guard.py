@@ -13,6 +13,14 @@ import pytest
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_model_id_sources.py"
 
+# The guard is a REPO-SOURCE check; `scripts/` is not packaged into the wheel, so
+# in the standalone-from-wheel clean-room gate the script is absent. Skip there —
+# scanning an installed package for repo-source hardcodes is meaningless.
+pytestmark = pytest.mark.skipif(
+    not _SCRIPT.exists(),
+    reason="repo-only guard script (scripts/ not in the wheel); irrelevant standalone-from-wheel",
+)
+
 
 def _load_guard():
     spec = importlib.util.spec_from_file_location("check_model_id_sources", _SCRIPT)
@@ -22,7 +30,7 @@ def _load_guard():
     return module
 
 
-guard = _load_guard()
+guard = _load_guard() if _SCRIPT.exists() else None
 
 
 def test_guard_passes_on_real_tree() -> None:
