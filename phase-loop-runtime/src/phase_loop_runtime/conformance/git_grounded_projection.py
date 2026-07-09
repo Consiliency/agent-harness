@@ -238,7 +238,7 @@ def build_projection_index_entry(
     body_path: str,
     manifest_path: str,
     predicate: str = "git-grounded-observability",
-    gate_state: str = "pass",
+    gate_state: str | None = None,
 ) -> dict[str, Any]:
     """An index entry the portal's RUNTIME verify path (``isProjectionIndexEntry``
     + ``verifyProjCode``) ingests -- NOT a schema-valid ``projections.index.v1``
@@ -257,7 +257,19 @@ def build_projection_index_entry(
     non-cert, ``raw-sha256`` slot the portal runtime accepts). The misfit is made
     explicit via ``git_grounded_kind`` / ``kind_is_misnomer`` provenance rather
     than hidden -- honest finding, not a forced fit (see module docstring).
+
+    ``gate_state`` is a pure function of the projection's own
+    ``discipline_verdict`` and is DERIVED here when not supplied (``clean`` ->
+    ``pass``, anything else -> ``fail``). The portal surfaces ``gate_state``
+    verbatim once the digest binds, so hardcoding ``"pass"`` would render a
+    false-green for a repo whose body carries discipline findings. Deriving it
+    from the body makes that false-green structurally impossible on the default
+    path; an explicit override is honored only for callers that already hold an
+    authoritative verdict.
     """
+    if gate_state is None:
+        verdict = projection.body.get("discipline_verdict")
+        gate_state = "pass" if verdict == "clean" else "fail"
     return {
         "repo": repo_label,
         "kind": PORTAL_KIND_MISNOMER,

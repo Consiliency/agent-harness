@@ -78,14 +78,37 @@ class ContractAbsentTest(unittest.TestCase):
             if result["status"] == "skipped":
                 self.assertEqual(result["reason"], "contract-absent")
 
-    def test_build_body_raises_typed_error_when_registry_missing(self):
+    def test_contract_absent_is_deterministically_a_typed_skip(self):
+        """Pin the contract-absent branch (don't accept either outcome): with the
+        SoT loader forced to return no registry, an opted-in repo skips with the
+        typed ``contract-absent`` reason and never raises."""
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
-            # build_git_grounded_body is the pure layer; with no installed contract
-            # and registry=None it raises the typed GitGroundedContractAbsent that
-            # the reconciler catches and folds into a skip. We can only assert the
-            # typed-error TYPE exists and is a RuntimeError subclass here.
+            _opt_in(repo)
+            original = ggp.load_ref_classes
+            ggp.load_ref_classes = lambda *a, **k: None  # SoT registry unavailable
+            try:
+                result = ggp.reconcile_git_grounded_projection(repo, registry=None)
+            finally:
+                ggp.load_ref_classes = original
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["reason"], "contract-absent")
+            self.assertNotIn("body", result)
+
+    def test_build_body_raises_typed_error_when_registry_missing(self):
+        """The pure layer RAISES the typed error (not just that the type exists):
+        with the SoT loader forced empty and registry=None, build_git_grounded_body
+        raises GitGroundedContractAbsent -- the error the reconciler folds to a skip."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
             self.assertTrue(issubclass(ggp.GitGroundedContractAbsent, RuntimeError))
+            original = ggp.load_ref_classes
+            ggp.load_ref_classes = lambda *a, **k: None
+            try:
+                with self.assertRaises(ggp.GitGroundedContractAbsent):
+                    ggp.build_git_grounded_body(repo, registry=None)
+            finally:
+                ggp.load_ref_classes = original
 
 
 class EmissionTest(unittest.TestCase):
@@ -242,6 +265,46 @@ class PortalIndexEntryTest(unittest.TestCase):
             # The honest #152 finding is recorded as provenance, not hidden.
             self.assertTrue(entry["kind_is_misnomer"])
             self.assertEqual(entry["git_grounded_kind"], "proj-git-grounded")
+
+
+class GateStateTracksDisciplineVerdictTest(unittest.TestCase):
+    """gate_state MUST be a function of the body's discipline_verdict, never a
+    hardcoded 'pass'. The portal surfaces gate_state verbatim once the digest
+    binds, so a 'pass' over a findings body is a false-green -- exactly the class
+    of bug this coupling guards against."""
+
+    def _entry_for_verdict(self, verdict: str, **kwargs):
+        projection = ggp.GitGroundedProjection({"discipline_verdict": verdict})
+        return ggp.build_projection_index_entry(
+            projection,
+            repo_label="fixture",
+            body_path="spec-render/git-grounded/body.json",
+            manifest_path="spec-render/git-grounded/manifest.json",
+            **kwargs,
+        )
+
+    def test_clean_verdict_derives_pass(self):
+        self.assertEqual(self._entry_for_verdict("clean")["gate_state"], "pass")
+
+    def test_findings_verdict_derives_fail(self):
+        # THE regression guard: a discipline-findings body must NOT emit 'pass'.
+        self.assertEqual(self._entry_for_verdict("findings")["gate_state"], "fail")
+
+    def test_unknown_verdict_fails_closed_to_fail(self):
+        self.assertEqual(self._entry_for_verdict("")["gate_state"], "fail")
+
+    def test_explicit_override_is_honored_for_authoritative_callers(self):
+        # Back-compat: a caller holding an authoritative verdict may still set it.
+        entry = self._entry_for_verdict("findings", gate_state="pass")
+        self.assertEqual(entry["gate_state"], "pass")
+
+    def test_end_to_end_clean_repo_emits_pass(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            _opt_in(repo)
+            result = ggp.reconcile_git_grounded_projection(repo, registry=REGISTRY)
+            self.assertEqual(result["body"]["discipline_verdict"], "clean")
+            self.assertEqual(result["index_entry"]["gate_state"], "pass")
 
 
 class PublicSurfaceTest(unittest.TestCase):
