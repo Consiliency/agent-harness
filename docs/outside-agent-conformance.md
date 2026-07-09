@@ -46,3 +46,28 @@ canonical Consiliency/spec vector bodies into this repository.
 OACORE only produces shared conformance facts. OAMOCK can later wrap those facts
 with advisory labeling. OAREAL can later attach the governed-pipeline runtime
 surface and authoritative acceptance behavior.
+
+## Advisory Preflight
+
+Producers and outside agents can run a local advisory preflight before attaching
+work to a GitHub issue or PR:
+
+```bash
+phase-loop outside-agent-preflight path/to/outside-agent-submission.json --output outside-agent-advisory.json
+```
+
+The command reads one local metadata-only outside-agent submission JSON file,
+runs the same shared core, and emits advisory evidence with
+`authority="advisory"` and `redaction_posture="metadata_only"`. The output
+contains the typed core status and blockers, the pinned contract metadata, an
+input digest, repo-relative provenance refs, and metadata-only evidence refs. It
+does not include `accepted_for_merge`, `merge_verdict`, or any acceptance field.
+
+Exit code `0` means the advisory preflight found no blocker. Exit code `2`
+means the submission is malformed, `3` means it contains redaction-forbidden
+content, `4` means provenance or digest metadata failed, and `1` is reserved for
+unexpected internal failures.
+
+Attach the generated advisory JSON as supporting evidence only. It can help
+reviewers and producers find cheap contract mistakes early, but governed-pipeline
+remains the authoritative acceptance and merge boundary.

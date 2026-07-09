@@ -22,6 +22,12 @@ from .outside_agent_core import (
     OutsideAgentVerdictStatus,
     validate_outside_agent_submission,
 )
+from .outside_agent_advisory import (
+    OutsideAgentAdvisoryEvidence,
+    OutsideAgentAdvisoryExitCode,
+    build_outside_agent_advisory_evidence,
+    serialize_outside_agent_advisory_evidence,
+)
 from .outside_agent_imports import (
     OutsideAgentContractError,
     load_outside_agent_contract_pin,
@@ -46,6 +52,10 @@ __all__ = [
     "OutsideAgentSubmissionKind",
     "OutsideAgentVerdictStatus",
     "validate_outside_agent_submission",
+    "OutsideAgentAdvisoryEvidence",
+    "OutsideAgentAdvisoryExitCode",
+    "build_outside_agent_advisory_evidence",
+    "serialize_outside_agent_advisory_evidence",
     "OutsideAgentContractError",
     "load_outside_agent_contract_pin",
     "EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN",

@@ -66,7 +66,7 @@ SL-4 - Producer docs and OAMOCK verification reducer
 - **Tasks**:
   - test: Add CLI tests using temporary local JSON files for clean pass, malformed JSON, redaction violation, provenance failure, and output-file writing; assert no network, credential, or provider access is required.
   - impl: Register `outside-agent-preflight` on the existing `phase-loop` CLI entrypoint, parse a local submission path plus optional `--output`, map advisory classifications to the frozen exit codes, and print/write only serialized metadata-only advisory JSON.
-  - verify: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_advisory_cli.py tests/test_phase_loop_runtime_boundary.py::PhaseLoopRuntimeBoundaryTest::test_pyproject_console_scripts_share_cli_main -q`
+  - verify: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_advisory_cli.py tests/test_phase_loop_runtime_boundary.py::TestPhaseLoopRuntimeBoundary::test_pyproject_console_scripts_share_cli_main -q`
 
 ### SL-2 - Advisory Evidence Fixtures And Stable Output Cases
 
@@ -139,7 +139,7 @@ SL-4 - Producer docs and OAMOCK verification reducer
 ```bash
 PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v7.md
 cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_advisory.py tests/test_outside_agent_core_api.py -q
-cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_advisory_cli.py tests/test_phase_loop_runtime_boundary.py::PhaseLoopRuntimeBoundaryTest::test_pyproject_console_scripts_share_cli_main -q
+cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_advisory_cli.py tests/test_phase_loop_runtime_boundary.py::TestPhaseLoopRuntimeBoundary::test_pyproject_console_scripts_share_cli_main -q
 cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_advisory_fixtures.py -q
 cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_authority_boundary.py -q
 cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_contract_pin.py tests/test_outside_agent_contract_imports.py tests/test_outside_agent_contract_drift.py tests/test_outside_agent_core_api.py tests/test_outside_agent_schema_validation.py tests/test_outside_agent_provenance.py tests/test_outside_agent_redaction.py tests/test_outside_agent_vectors.py tests/test_outside_agent_advisory.py tests/test_outside_agent_advisory_cli.py tests/test_outside_agent_advisory_fixtures.py tests/test_outside_agent_authority_boundary.py -q
