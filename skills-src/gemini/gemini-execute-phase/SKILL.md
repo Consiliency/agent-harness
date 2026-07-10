@@ -161,6 +161,8 @@ Report:
 - commands not run and why;
 - follow-up risks or manual checks.
 
+In every report, handoff, and closeout above — and in any PR/issue body or commit message this run writes — reference issues and PRs as `repo#N` (or `owner/repo#N`), never a bare `#N`; the fleet is multi-repo, so a lone number is ambiguous.
+
 Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `gemini-config/shared/runtime-state.md` and use Gemini paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/gemini-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
