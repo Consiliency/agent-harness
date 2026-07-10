@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
+from .composition import compose_review_board
 from .fixtures import DEFAULT_BOARD
 from .registries import CompatibilityMatrix
 from .schema import EFFORT_LEVELS, Board, Seat
@@ -108,20 +109,14 @@ def parse_seats(
 
 # --- stand-in board catalog (until ABDREG's config loader + presets) --------
 
-# A stand-in ``code-review`` preset mirroring ``fixtures/advisor-boards.example.toml``
-# so ``advisor-board --board code-review`` resolved in ABDRESOLVE before the config
-# loader landed. SUPERSEDED by ``presets.PRESETS`` / ``config.load_boards`` (which
-# ship the seven real presets — the live ``code-review`` is now three frontier
-# adversarial seats on Fable, not this two-seat mirror); kept only as the ABDRESOLVE
-# stand-in fixture, off every live path.
-_STANDIN_CODE_REVIEW = Board(
-    name="code-review",
-    purpose="code-review",
-    seats=(
-        Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
-        Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="adversarial"),
-    ),
-)
+# A stand-in ``code-review`` board so ``advisor-board --board code-review`` resolved
+# in ABDRESOLVE before the config loader landed. SUPERSEDED by ``presets.PRESETS`` /
+# ``config.load_boards`` — the LIVE ``code-review`` is the 4-vendor board composed
+# AVAILABILITY-AWARE in ``config.load_boards`` (down vendors backfilled). This
+# stand-in is the all-vendors-up SNAPSHOT (identical to ``presets.CODE_REVIEW_BOARD``)
+# and is deliberately NOT availability-aware — it is off every live path (a real
+# caller seeds ``BoardResolver`` from ``load_boards``, never this default catalog).
+_STANDIN_CODE_REVIEW = compose_review_board(is_available=lambda _vendor: True)
 
 STANDIN_BOARDS: dict[str, Board] = {
     DEFAULT_BOARD.name: DEFAULT_BOARD,
