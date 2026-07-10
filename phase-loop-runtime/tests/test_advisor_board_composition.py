@@ -19,6 +19,7 @@ from phase_loop_runtime.advisor_board import (
     DEFAULT_TARGET_SEATS,
     FLOOR_SEATS,
     LENS_CYCLE,
+    board_independence,
     compose_review_board,
     default_matrix,
     validate_board,
@@ -138,6 +139,31 @@ class AvailabilitySimulationTests(unittest.TestCase):
     def test_target_below_floor_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             compose_review_board(is_available=_probe(ALL_VENDORS), target=2, floor=3)
+
+
+class BoardIndependenceReportingTests(unittest.TestCase):
+    """The composed board must REPORT cross-vendor independence (independent vs
+    degraded) so a governed gate (gp's degraded_independence) can fire on a
+    backfilled panel instead of trusting it as cross-vendor — the unanimous
+    4-vendor CR finding on #134."""
+
+    def test_four_distinct_vendors_is_independent(self) -> None:
+        ind = board_independence(compose_review_board(is_available=_probe(ALL_VENDORS)))
+        self.assertEqual(ind.level, "independent")
+        self.assertEqual(ind.distinct_vendors, 4)
+        self.assertEqual(ind.seats, DEFAULT_TARGET_SEATS)
+
+    def test_backfilled_boards_report_degraded(self) -> None:
+        for up in (("grok", "claude"), ("grok",)):
+            ind = board_independence(compose_review_board(is_available=_probe(up)))
+            self.assertEqual(ind.seats, DEFAULT_TARGET_SEATS)   # never choked below target
+            self.assertEqual(ind.level, "degraded")             # but honestly degraded
+            self.assertEqual(ind.distinct_vendors, len(up))
+
+    def test_no_vendors_is_none(self) -> None:
+        ind = board_independence(compose_review_board(is_available=_probe(())))
+        self.assertEqual(ind.level, "none")
+        self.assertEqual(ind.seats, 0)
 
 
 if __name__ == "__main__":

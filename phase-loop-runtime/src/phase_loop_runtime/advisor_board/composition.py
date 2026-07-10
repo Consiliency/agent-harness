@@ -35,9 +35,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
+from typing import NamedTuple
 
 from .registries import DEFAULT_HARNESS_REGISTRY
-from .schema import Board, Seat
+from .schema import Board, Seat, vendor_family
 
 # Ideal per-vendor seat, in deterministic composition order. Each vendor runs at
 # its MAX thinking (gemini's ceiling is ``high``) with a distinct primary lens.
@@ -136,6 +137,39 @@ def compose_review_board(
             break  # every available vendor exhausted its lens cycle
 
     return Board(name=name, purpose=purpose, seats=tuple(seats))
+
+
+class BoardIndependence(NamedTuple):
+    """The cross-vendor independence of a composed board — the governance signal a
+    consumer reads (e.g. gp's ``degraded_independence`` gate: auto_merge_disabled +
+    human_signoff) so it never trusts a same-vendor backfilled panel as if it were
+    cross-vendor independent."""
+
+    level: str            # "independent" | "degraded" | "none"
+    distinct_vendors: int
+    seats: int
+
+
+def board_independence(board: Board) -> BoardIndependence:
+    """Report whether ``board`` is cross-vendor ``independent`` or ``degraded``.
+
+    ``independent`` ONLY when every seat is a distinct vendor family (no backfill).
+    Any repeated vendor family means correlated blind spots → ``degraded`` (e.g. a
+    1-vendor board of 4 lens-varied seats). An empty board is ``none``. This is the
+    field the availability-aware fallback was missing: the 4-vendor CR (grok +
+    codex + gemini + claude, unanimous) flagged that a backfilled board looked
+    identical to a true cross-vendor one, so a governed gate could not fire on the
+    correlated-blind-spot risk."""
+    families = [vendor_family(seat.model, seat.harness) for seat in board.seats]
+    distinct = len(set(families))
+    n = len(families)
+    if n == 0:
+        level = "none"
+    elif distinct == n:
+        level = "independent"
+    else:
+        level = "degraded"
+    return BoardIndependence(level=level, distinct_vendors=distinct, seats=n)
 
 
 __all__ = [

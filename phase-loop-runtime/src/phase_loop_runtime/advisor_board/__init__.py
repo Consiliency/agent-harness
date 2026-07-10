@@ -83,6 +83,8 @@ from .composition import (
     DEFAULT_TARGET_SEATS,
     FLOOR_SEATS,
     LENS_CYCLE,
+    BoardIndependence,
+    board_independence,
     compose_review_board,
 )
 from .presets import (
@@ -227,6 +229,8 @@ __all__ = [
     "get_preset",
     # composition (availability-aware 4-vendor board)
     "compose_review_board",
+    "board_independence",
+    "BoardIndependence",
     "LENS_CYCLE",
     "DEFAULT_TARGET_SEATS",
     "FLOOR_SEATS",
