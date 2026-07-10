@@ -70,6 +70,35 @@ def test_codex_leg_argv_is_read_only_with_output_last_message(monkeypatch):
     assert captured["timeout"] == expected_timeout
 
 
+def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
+    captured = _capture_run(monkeypatch, stdout="AGREE")
+    with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        rdp = Path(rd)
+        pi._exec_leg("grok", rdp, Path(od))  # effort-absent → grok's max reasoning
+        expected_timeout = pi._leg_timeout_for(rdp)
+    cmd = captured["cmd"]
+    assert cmd[0] == "grok"
+    assert "-p" in cmd  # single-turn headless prompt
+    # plain headless output (stdout IS the review; no --output-last-message file)
+    assert cmd[cmd.index("--output-format") + 1] == "plain"
+    # runs the grok-4.5 default model at max reasoning
+    assert cmd[cmd.index("-m") + 1] == "grok-4.5"
+    assert cmd[cmd.index("--reasoning-effort") + 1] == "max"
+    # web search / tools stay ON — never disabled (matches codex/gemini convention)
+    assert "--disable-web-search" not in cmd
+    # grok is a SLOW leg: same +60s hard-kill grace as gemini, never a short timeout
+    assert captured["timeout"] == expected_timeout + 60
+
+
+def test_grok_leg_renders_seat_effort_through_the_map(monkeypatch):
+    captured = _capture_run(monkeypatch, stdout="AGREE")
+    with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        # a board seat's canonical effort reaches the CLI as --reasoning-effort <token>.
+        pi._exec_leg("grok", Path(rd), Path(od), effort="high", model="grok-4.5")
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--reasoning-effort") + 1] == "high"
+
+
 def test_gemini_leg_argv_uses_add_dir_and_scaled_print_timeout(monkeypatch):
     captured = _capture_run(monkeypatch, stdout="AGREE")
     with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:

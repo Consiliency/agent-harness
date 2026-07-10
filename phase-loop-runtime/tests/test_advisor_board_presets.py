@@ -64,16 +64,19 @@ class PresetTests(unittest.TestCase):
         for name in PRESET_NAMES:
             self.assertFalse(PRESETS[name].allow_api_key_fallback, name)
 
-    def test_code_review_is_three_adversarial_frontier_seats(self) -> None:
-        # review-class = three frontier vendors, always. Each seat adversarial;
-        # the claude seat is Fable, not the implementer sonnet.
+    def test_code_review_is_the_four_vendor_max_thinking_board(self) -> None:
+        # review-class = the 4-vendor cross-vendor board, each vendor at MAX thinking
+        # (gemini's ceiling is high) with a DISTINCT lens. The claude seat is Fable,
+        # not the implementer sonnet. This is the all-vendors-up composition; the
+        # availability-aware fallback is proven in test_advisor_board_composition.py.
         seats = get_preset("code-review").seats
         self.assertEqual(
             tuple((s.model, s.effort, s.harness, s.lens) for s in seats),
             (
-                ("gpt-5.6-sol", "max", "codex", "adversarial"),
-                ("Gemini 3.1 Pro", "high", "gemini", "adversarial"),
-                ("claude-fable-5", "max", "claude", "adversarial"),
+                ("grok-4.5", "max", "grok", "adversarial"),
+                ("claude-fable-5", "max", "claude", "correctness"),
+                ("gpt-5.6-sol", "max", "codex", "red-team"),
+                ("Gemini 3.1 Pro", "high", "gemini", "alternative-approach"),
             ),
         )
 

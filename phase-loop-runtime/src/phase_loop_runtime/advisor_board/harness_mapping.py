@@ -64,6 +64,17 @@ _CODEX_EFFORT: dict[str, str] = {
     "max": "xhigh",
 }
 
+# canonical effort -> grok ``--reasoning-effort`` token. The grok CLI accepts
+# ``none, minimal, low, medium, high, xhigh, max`` (verified via ``grok --help`` /
+# an out-of-range probe), so canonical ``max`` maps straight to grok's own ``max``
+# ceiling — the panel's grok seat runs at grok-4.5's maximum reasoning.
+_GROK_EFFORT: dict[str, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max",
+}
+
 # canonical effort -> the ``(Word)`` token agy/gemini bakes into the model name
 # (panel_invoker.py:1016 uses ``(High)``).
 _GEMINI_EFFORT_WORD: dict[str, str] = {
@@ -102,8 +113,9 @@ def _require_effort(effort: str) -> None:
 def render_seat_invocation(harness: str, model: str, effort: str) -> SeatInvocation:
     """Freeze: turn a canonical ``(harness, model, effort)`` into its CLI invocation.
 
-    Only the built-3 homebrew lanes (claude / codex / gemini) are frozen here —
-    they are what the ``default`` board's back-compat proof rides on. Breadth
+    Only the homebrew lanes (claude / codex / gemini / grok) are frozen here —
+    claude / codex / gemini are what the ``default`` board's back-compat proof
+    rides on; grok joins them for the 4-vendor ``code-review`` board. Breadth
     lanes (opencode / pi / cursor / amp) raise ``EffortMappingError`` until
     ABDREG/ABDHOME/ABDOMNI populate them; a board with an unmapped lane degrades
     skip-with-warning, never silently drops effort.
@@ -120,6 +132,11 @@ def render_seat_invocation(harness: str, model: str, effort: str) -> SeatInvocat
     if lane == "gemini":
         # panel_invoker.py:1016 -> effort baked into ``--model "<base> (Word)"``
         return SeatInvocation(lane, render_gemini_model(model, effort), (), MECH_MODEL_NAME)
+    if lane == "grok":
+        # grok headless -> ``--reasoning-effort <token>`` (alias ``--effort``); the
+        # model is passed verbatim via ``-m``. Same flag mechanism as claude.
+        token = _GROK_EFFORT[effort]
+        return SeatInvocation(lane, model, ("--reasoning-effort", token), MECH_FLAG)
     raise EffortMappingError(
         f"effort mapping for harness {harness!r} is populated in ABDREG/ABDHOME/ABDOMNI"
     )

@@ -65,7 +65,9 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 }
 
 # Which CLI binary backs each leg (used for metadata-only liveness preflight).
-_LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude"}
+# grok is NOT in ``PANEL_LEGS`` (the default 3-leg panel is byte-frozen) but IS a
+# registered homebrew lane a board seat can run on (the 4-vendor code-review board).
+_LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude", "grok": "grok"}
 
 # #66: the default model per leg. `invoke_panel(..., models={"claude": "claude-sonnet-5"})`
 # overrides any subset per-leg without an in-process monkeypatch.
@@ -81,6 +83,7 @@ DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-5.6-sol",  # model-id-source: panel per-leg default (single source of truth)
     "gemini": "Gemini 3.1 Pro (High)",
     "claude": "claude-fable-5",  # model-id-source: panel per-leg default (single source of truth)
+    "grok": "grok-4.5",  # model-id-source: panel per-leg default (single source of truth)
 }
 # Legs are blocking subprocess I/O (the CLI wait releases the GIL), so the panel /
 # board fans them out across threads for REAL parallelism — a 3-frontier max-effort
@@ -116,6 +119,10 @@ _LEG_TIMEOUT_BOUNDS: dict[str, tuple[int, int]] = {
     "codex": (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S),
     "gemini": (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S),
     "claude": (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S),
+    # grok is a SLOW headless agentic CLI (max-reasoning single-turn) — it MUST
+    # get the same full 600/1800s budget as the other frontier legs, never a
+    # short default that would silently time it out mid-review.
+    "grok": (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S),
 }
 
 
@@ -1521,6 +1528,54 @@ def _exec_leg(
                 break  # slow stall (not fast/transient) → don't re-run + double wall-clock
         out_file.write_text(review_text, encoding="utf-8")
         return rc, review_text, log_text
+    if leg == "grok":
+        out_file = out_dir / "panel-grok.txt"
+        # grok's headless single-turn (`-p`) prints the clean response to stdout and
+        # exits — like agy, its stdout IS the review (no --output-last-message file).
+        # The prompt is the small STAGED-BUNDLE POINTER (files live under --cwd), so
+        # passing it via `-p <PROMPT>` on argv is bounded. Web search / tools stay ON
+        # (no --disable-web-search), matching the codex/gemini leg convention.
+        # effort-absent defaults to grok's max reasoning; a seat renders its canonical
+        # effort through the map (``--reasoning-effort <token>``, grok's own ``max``).
+        grok_effort_args = (
+            ("--reasoning-effort", "max")
+            if effort is None
+            else render_seat_invocation("grok", model or DEFAULT_LEG_MODELS["grok"], effort).effort_args
+        )
+        cmd = [
+            "grok", "-p", prompt, "--output-format", "plain",
+            "--cwd", str(review_dir), "-m", model or DEFAULT_LEG_MODELS["grok"],
+            *grok_effort_args,
+        ]
+        # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn
+        # OR a transient-marker body, but NOT a hard subprocess timeout (124) and NOT
+        # an attempt that already burned most of its budget (a slow leg, not a
+        # transient stall — re-running would ~double wall-clock).
+        rc, review_text, log_text = 1, "", ""
+        for _attempt in range(2):
+            _t0 = time.monotonic()
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=str(review_dir), env=env, capture_output=True, text=True,
+                    timeout=timeout_s + 60, check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return 124, "", f"timeout after {timeout_s}s"
+            _elapsed = time.monotonic() - _t0
+            review_text = proc.stdout or ""
+            rc = proc.returncode
+            log_text = proc.stderr or ""
+            soft_empty = rc == 0 and not review_text.strip()
+            stall = bool(
+                _GEMINI_TRANSIENT_RE.search(log_text)
+                or (len(review_text.strip()) < 200 and _GEMINI_TRANSIENT_RE.search(review_text))
+            )
+            if not (soft_empty or stall):
+                break
+            if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
+                break
+        out_file.write_text(review_text, encoding="utf-8")
+        return rc, review_text, log_text
     # claude uses the TUI-backed subscription route, handled by `_exec_claude_tui_leg`.
     return 0, "", "unavailable"
 
@@ -1853,11 +1908,12 @@ def invoke_panel_request(
 
 # --- ABDHOME: the board seam (seats through the provider backing) ------------
 
-# The lanes the built-3 homebrew backing spawns natively. A homebrew seat on any
-# OTHER lane (breadth: opencode / pi / cursor / amp) has NO hand-written adapter
-# here — hand-writing breadth defeats the Omnigent maintenance-offload — so it is
-# Omnigent-or-skip (ABDOMNI) and degrades skip-with-warning in ABDHOME.
-_HOMEBREW_BUILT3: frozenset[str] = frozenset({"codex", "gemini", "claude"})
+# The lanes the homebrew backing spawns natively (the built-4: codex / gemini /
+# claude / grok). A homebrew seat on any OTHER lane (breadth: opencode / pi /
+# cursor / amp) has NO hand-written adapter here — hand-writing breadth defeats the
+# Omnigent maintenance-offload — so it is Omnigent-or-skip (ABDOMNI) and degrades
+# skip-with-warning in ABDHOME.
+_HOMEBREW_LANES: frozenset[str] = frozenset({"codex", "gemini", "claude", "grok"})
 
 
 def enforce_native_host_leg(board: Board, host: HostContext | None) -> Seat | None:
@@ -2104,7 +2160,7 @@ def invoke_board(
                 omnigent, omnigent_catalog or frozenset(), seat, leg, artifact, env_source, board, _skip)
         if decision.backing != BACKING_HOMEBREW:
             return _skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew")
-        if leg not in _HOMEBREW_BUILT3:
+        if leg not in _HOMEBREW_LANES:
             return _skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)")
         # Render effort (proves the mapping is frozen for this lane) + resolve the
         # actively-scrubbed env BEFORE spawning. A breadth lane raises

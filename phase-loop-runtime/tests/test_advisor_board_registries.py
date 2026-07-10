@@ -69,21 +69,26 @@ class PopulatedRegistryTests(unittest.TestCase):
     """ABDREG: the populated six-harness / model registries (the frozen stubs
     above still raise — that contract is unchanged)."""
 
-    def test_six_harnesses_registered_with_cli_and_backing(self) -> None:
+    def test_registered_harnesses_with_cli_and_backing(self) -> None:
         from phase_loop_runtime.advisor_board import DefaultHarnessRegistry
 
         reg = DefaultHarnessRegistry()
         names = tuple(h.name for h in reg.list_harnesses())
-        self.assertEqual(names, ("claude", "codex", "gemini", "opencode", "pi", "cursor"))
-        # built-3 are homebrew; breadth (opencode/pi/cursor) default to omnigent.
+        self.assertEqual(names, ("claude", "codex", "gemini", "grok", "opencode", "pi", "cursor"))
+        # built-4 are homebrew; breadth (opencode/pi/cursor) default to omnigent.
         by = {h.name: h for h in reg.list_harnesses()}
-        for built in ("claude", "codex", "gemini"):
+        for built in ("claude", "codex", "gemini", "grok"):
             self.assertEqual(by[built].backing, "homebrew")
         for breadth in ("opencode", "pi", "cursor"):
             self.assertEqual(by[breadth].backing, "omnigent")
-        # probe binaries reflect reality: gemini -> agy, cursor -> cursor-agent.
+        # probe binaries reflect reality: gemini -> agy, grok -> grok, cursor -> cursor-agent.
         self.assertEqual(by["gemini"].cli, "agy")
+        self.assertEqual(by["grok"].cli, "grok")
         self.assertEqual(by["cursor"].cli, "cursor-agent")
+        # grok is registered SUBSCRIPTION-ONLY (no vendor api-key var wired for it),
+        # while the other homebrew lanes support both credential lanes.
+        self.assertEqual(by["grok"].auth_lanes, ("subscription",))
+        self.assertEqual(by["codex"].auth_lanes, ("subscription", "api_key"))
 
     def test_cursor_availability_is_gated_on_cursor_agent_binary(self) -> None:
         from phase_loop_runtime.advisor_board import DefaultHarnessRegistry
@@ -108,6 +113,15 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(spec.default_lane, "codex")
         self.assertEqual(spec.runnable_by, ("codex", "opencode"))
         self.assertEqual(spec.vendor_family, "codex")  # derived from schema.vendor_family
+
+    def test_grok_model_resolves_to_the_grok_lane(self) -> None:
+        # grok-4.5 is the xAI-family model for the 4-vendor code-review board.
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+
+        spec = DEFAULT_MODEL_REGISTRY.get("grok-4.5")
+        self.assertEqual(spec.default_lane, "grok")
+        self.assertEqual(spec.vendor_family, "grok")
+        self.assertEqual(spec.runnable_by, ("grok",))  # grok-family runs only on the grok lane
 
     def test_unknown_model_raises_with_known_list(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY, UnknownModelError
