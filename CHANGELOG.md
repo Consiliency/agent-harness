@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Stall-aware leg-liveness monitor (kill on heartbeat extinction, not a blind
+  wall-clock).** The codex/gemini/grok print-mode review legs no longer hard-kill at
+  the input-scaled `timeout_s` (a slow-but-STREAMING frontier review was being killed
+  mid-review at the 600s floor, silently degrading the panel to fewer legs). Each leg
+  now runs through `panel_invoker._run_leg_with_liveness`, which terminates the whole
+  process group only on HEARTBEAT EXTINCTION — no new stdout/stderr byte AND no
+  process-group CPU advance for `_LEG_STALL_THRESHOLD_S` (180s). Both fds are watched
+  (codex streams its transcript to STDERR; grok/agy to STDOUT), and advancing
+  process-group CPU is a secondary, NON-killing reset (it can only extend a leg's
+  life, never false-kill). The wall-clock deadline is retained purely as a raised,
+  rarely-hit backstop (`max(timeout_s, _MAX_LEG_TIMEOUT_S)` == 1800s), so the existing
+  `except subprocess.TimeoutExpired → 124` path is preserved; the input-scaled
+  `timeout_s` now only feeds the #114 retry-fraction heuristic, not the kill.
 - **Fix: the gemini (agy) review leg silently ran an EMPTY prompt.** The leg passed
   `agy … -p -` and fed the composed prompt on stdin (`input=prompt`), but `agy -p -`
   IGNORES stdin and runs an empty prompt — agy printed its "How can I help you
