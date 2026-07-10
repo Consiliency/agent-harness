@@ -140,6 +140,26 @@ def test_exec_leg_threads_explicit_override_as_deadline(tmp_path, monkeypatch):
     assert captured["deadline_s"] == pi._MAX_LEG_TIMEOUT_S
 
 
+def test_default_spawn_threads_explicit_backstop_to_claude_tui(tmp_path, monkeypatch):
+    # End-to-end pin of concern-1 on the CLAUDE TUI path: _default_spawn is the sole
+    # resolver, so an explicit per-leg override must reach _run_claude_tui_session as
+    # ``backstop_s`` (the print path is already pinned by the test above).
+    captured = {}
+
+    def fake_tui(**kwargs):
+        captured["backstop_s"] = kwargs.get("backstop_s")
+        return 0, "Looks good.\nAGREE", ""
+
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_tui_capable", lambda *a, **k: True)
+    monkeypatch.setattr(pi, "_run_claude_tui_session", fake_tui)
+
+    pi._default_spawn("claude", "artifact", repo_dir=tmp_path, timeout_s=300)
+    assert captured["backstop_s"] == 300  # explicit override honored, not raised to _MAX
+    pi._default_spawn("claude", "artifact", repo_dir=tmp_path, timeout_s=None)
+    assert captured["backstop_s"] == pi._MAX_LEG_TIMEOUT_S  # default raised to the backstop
+
+
 # --- Concern 2: leader exits while a descendant still holds the pipe → reclaim, not hang ---
 
 @pytest.mark.skipif(not _CPU_AVAILABLE, reason="process-group kill needs a POSIX process group")
