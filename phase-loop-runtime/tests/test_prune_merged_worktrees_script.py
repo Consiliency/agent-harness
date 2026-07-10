@@ -27,6 +27,14 @@ _SCRIPT = (
     / "prune_merged_worktrees.sh"
 )
 
+# The helper is a REPO-SOURCE script under skills-src/; it is not packaged into
+# the wheel, so in the standalone-from-wheel clean-room gate _SCRIPT is absent.
+# Skip there — safety-testing a repo script against an installed wheel is moot.
+pytestmark = pytest.mark.skipif(
+    not _SCRIPT.exists(),
+    reason="repo-only helper (skills-src/ not in the wheel); irrelevant standalone-from-wheel",
+)
+
 
 def _git(cwd: Path, *args: str) -> str:
     env = {
