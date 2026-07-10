@@ -66,24 +66,39 @@ def _mock_fetch(mapping: dict[str, str]):
     return fetch
 
 
-def test_mock_registry_drives_verdicts_offline() -> None:
+def _synthetic_repo(tmp_path: Path) -> Path:
+    """A hermetic repo with known local pins (does not depend on the live
+    checkout, so this passes standalone-from-wheel in the Gate A clean room)."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "0.0.0"\n'
+        'dependencies = ["consiliency-contract>=0.6.5,<0.7"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "RELEASE_PIN").write_text("v0.6.2\n", encoding="utf-8")
+    consiliency = tmp_path / ".consiliency"
+    consiliency.mkdir()
+    (consiliency / "manifest.json").write_text(
+        json.dumps({"contract_version": "0.3.0"}), encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_mock_registry_drives_verdicts_offline(tmp_path) -> None:
     fetch = _mock_fetch(
         {
             # PyPI consiliency-contract latest == floor 0.6.5 -> current
             "pypi.org/pypi/consiliency-contract": json.dumps({"info": {"version": "0.6.5"}}),
-            # PyPI phase-loop-runtime ahead of the pin -> stale
+            # PyPI phase-loop-runtime ahead of the pin (0.6.2) -> stale
             "pypi.org/pypi/phase-loop-runtime": json.dumps({"info": {"version": "9.9.9"}}),
             # npm @consiliency/contract latest ahead of vendored 0.3.0 -> stale
             "registry.npmjs.org/@consiliency%2fcontract": json.dumps({"dist-tags": {"latest": "0.6.5"}}),
             "registry.npmjs.org/@consiliency%2fcanon-core": json.dumps({"dist-tags": {"latest": "0.1.0"}}),
         }
     )
-    # Point at the repo checkout so local pins (RELEASE_PIN, pyproject floor,
-    # vendored contract) resolve; the registry side is fully mocked.
-    repo = Path(__file__).resolve().parents[1]
+    repo = _synthetic_repo(tmp_path)
     bom = {e["target"]: e for e in doctor.build_bom(repo, fetch=fetch)}
-    assert bom["consiliency-contract"]["verdict"] == "current"
-    assert bom["install-agent-harness.sh ref"]["verdict"] == "stale"  # 0.6.1 < 9.9.9
+    assert bom["consiliency-contract"]["verdict"] == "current"  # 0.6.5 == 0.6.5
+    assert bom["install-agent-harness.sh ref"]["verdict"] == "stale"  # 0.6.2 < 9.9.9
     assert bom["@consiliency/contract"]["verdict"] == "stale"  # 0.3.0 < 0.6.5
     # canon-core has no local pin -> unknown even with a registry latest present
     assert bom["@consiliency/canon-core"]["verdict"] == "unknown"
