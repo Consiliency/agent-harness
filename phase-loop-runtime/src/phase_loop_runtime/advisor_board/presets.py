@@ -6,8 +6,9 @@ Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
                     the back-compat keystone holds by construction: the default
                     board reconstructs today's exact three seats (the claude seat
                     on Fable, ``claude-fable-5``).
-* ``code-review`` — three frontier vendors, each adversarial: codex ``gpt-5.6-sol``,
-                    ``Gemini 3.1 Pro``, and ``claude-fable-5``.
+* ``code-review`` — the 4-vendor cross-vendor board (grok / claude / codex /
+                    gemini) at max thinking, distinct lenses, composed
+                    availability-aware (``composition.compose_review_board``).
 * ``brainstorm``  — multi-vendor divergent thinking, lens-differentiated.
 * ``doc-edit``    — a lighter documentation-editing board.
 * ``legal-review`` / ``legal-strategy-review`` / ``legal-brainstorm`` — the legal
@@ -32,21 +33,20 @@ strings (``schema.py``): the legal lenses/purposes below need no enum extension.
 """
 from __future__ import annotations
 
+from .composition import compose_review_board
 from .fixtures import DEFAULT_BOARD
 from .schema import Board, Seat
 
-# code-review: review-class = three frontier vendors, always. Each seat carries the
-# adversarial lens (find-the-bug framing); the claude seat is Fable, not the
-# implementer. This supersedes the old two-seat (codex + sonnet) composition.
-CODE_REVIEW_BOARD: Board = Board(
-    name="code-review",
-    purpose="code-review",
-    seats=(
-        Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="adversarial"),
-        Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", lens="adversarial"),
-        Seat(model="claude-fable-5", effort="max", harness="claude", lens="adversarial"),
-    ),
-)
+# code-review: review-class = the 4-vendor cross-vendor board, each vendor at MAX
+# thinking with a DISTINCT lens (grok=adversarial, claude=correctness,
+# codex=red-team, gemini=alternative-approach). This is the IDEAL (all-vendors-up)
+# shape; the live panel composes it AVAILABILITY-AWARE via
+# ``composition.compose_review_board`` — down vendors are backfilled with distinct
+# lenses onto available vendors so the reviewer count never drops below the floor.
+# The static preset here is the all-available composition (so a snapshot / config
+# validation sees the canonical 4-seat board); it supersedes the old three-seat
+# adversarial board.
+CODE_REVIEW_BOARD: Board = compose_review_board(is_available=lambda _vendor: True)
 
 # brainstorm: divergent, multi-vendor, each seat a different thinking lens.
 BRAINSTORM_BOARD: Board = Board(

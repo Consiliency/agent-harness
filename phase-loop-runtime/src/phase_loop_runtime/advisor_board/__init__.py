@@ -79,7 +79,16 @@ from .matrix import (
     DefaultCompatibilityMatrix,
     default_matrix,
 )
+from .composition import (
+    DEFAULT_TARGET_SEATS,
+    FLOOR_SEATS,
+    LENS_CYCLE,
+    BoardIndependence,
+    board_independence,
+    compose_review_board,
+)
 from .presets import (
+    CODE_REVIEW_BOARD,
     DEFAULT_BOARD_NAME,
     PRESET_NAMES,
     PRESETS,
@@ -216,7 +225,15 @@ __all__ = [
     "PRESETS",
     "PRESET_NAMES",
     "DEFAULT_BOARD_NAME",
+    "CODE_REVIEW_BOARD",
     "get_preset",
+    # composition (availability-aware 4-vendor board)
+    "compose_review_board",
+    "board_independence",
+    "BoardIndependence",
+    "LENS_CYCLE",
+    "DEFAULT_TARGET_SEATS",
+    "FLOOR_SEATS",
     "BoardConfig",
     "BoardConfigError",
     "load_boards",

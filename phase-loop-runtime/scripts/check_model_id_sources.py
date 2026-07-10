@@ -40,6 +40,7 @@ MODEL_ID_REGEX = re.compile(
       | claude-(?:opus|sonnet|haiku)-[0-9]              # claude-opus-4-8, claude-sonnet-5
       | claude-fable-[0-9]                               # claude-fable-5
       | gemini-[0-9]                                     # gemini-3, gemini API-style ids
+      | grok-[0-9]\.[0-9]+                               # grok-4.5 (xAI-family)
       | o[0-9]-mini                                      # o3-mini
     )
     """,
@@ -65,6 +66,7 @@ MARKER = "model-id-source:"
 # ---------------------------------------------------------------------------
 REGISTRY_ALLOWLIST: frozenset[str] = frozenset(
     {
+        "src/phase_loop_runtime/advisor_board/composition.py",
         "src/phase_loop_runtime/advisor_board/fixtures.py",
         "src/phase_loop_runtime/advisor_board/presets.py",
         "src/phase_loop_runtime/advisor_board/registries.py",

@@ -184,21 +184,26 @@ class UnknownHarnessError(KeyError):
 
 # --- harness registry data --------------------------------------------------
 
-# The six harnesses. claude / codex / gemini are the built-3 (homebrew, native +
-# TUI legs, ABDHOME); opencode / pi / cursor are breadth — registered here
+# The registered harnesses. claude / codex / gemini / grok are the homebrew built-4
+# (native + TUI legs, ABDHOME); opencode / pi / cursor are breadth — registered here
 # regardless, but their default transport is ``omnigent`` (routed via
 # omniagent-plus -> Omnigent per ABDOMNI; NOT hand-written homebrew adapters).
-# ``cli`` is the availability-probe binary: codex -> ``codex``, gemini -> ``agy``
-# (panel_invoker._LEG_CLI), cursor -> ``cursor-agent`` (so cursor is gated on the
-# cursor-agent binary being present). All six support both credential lanes; the
-# subscription lane is the default and the api-key lane is reachable only behind a
-# board opt-in (never-silent-key).
+# ``cli`` is the availability-probe binary: codex -> ``codex``, gemini -> ``agy``,
+# grok -> ``grok`` (panel_invoker._LEG_CLI), cursor -> ``cursor-agent`` (so cursor is
+# gated on the cursor-agent binary being present). claude / codex / gemini support
+# both credential lanes; the subscription lane is the default and the api-key lane is
+# reachable only behind a board opt-in (never-silent-key). grok is registered
+# SUBSCRIPTION-ONLY (its headless CLI drives a Grok subscription login; no vendor
+# api-key var is wired for it — see ``backing.VENDOR_API_KEY_VARS``), so a grok seat
+# never touches the api-key lane.
 _BOTH_LANES: tuple[str, ...] = (AUTH_SUBSCRIPTION, AUTH_API_KEY)
+_SUBSCRIPTION_ONLY: tuple[str, ...] = (AUTH_SUBSCRIPTION,)
 
 _HARNESS_SPECS: tuple[HarnessSpec, ...] = (
     HarnessSpec(name="claude", cli="claude", auth_lanes=_BOTH_LANES, backing=BACKING_HOMEBREW),
     HarnessSpec(name="codex", cli="codex", auth_lanes=_BOTH_LANES, backing=BACKING_HOMEBREW),
     HarnessSpec(name="gemini", cli="agy", auth_lanes=_BOTH_LANES, backing=BACKING_HOMEBREW),
+    HarnessSpec(name="grok", cli="grok", auth_lanes=_SUBSCRIPTION_ONLY, backing=BACKING_HOMEBREW),
     HarnessSpec(name="opencode", cli="opencode", auth_lanes=_BOTH_LANES, backing=BACKING_OMNIGENT),
     HarnessSpec(name="pi", cli="pi", auth_lanes=_BOTH_LANES, backing=BACKING_OMNIGENT),
     HarnessSpec(name="cursor", cli="cursor-agent", auth_lanes=_BOTH_LANES, backing=BACKING_OMNIGENT),
@@ -255,6 +260,7 @@ _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     ("claude-haiku-4-5", "claude", "max"),
     ("claude-fable-5", "claude", "max"),
     ("Gemini 3.1 Pro", "gemini", "max"),
+    ("grok-4.5", "grok", "max"),
 )
 
 

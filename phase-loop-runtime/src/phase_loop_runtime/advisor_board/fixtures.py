@@ -72,10 +72,13 @@ CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("gpt-5.6-sol", "opencode"),
     ("claude-sonnet-5", "claude"),
     ("Gemini 3.1 Pro", "gemini"),
+    ("grok-4.5", "grok"),  # xAI-family model on the grok lane (4-vendor board)
 )
 CANONICAL_INVALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("gpt-5.6-sol", "claude"),        # openai-family model on the claude lane
     ("claude-sonnet-5", "codex"),  # anthropic model on the codex lane
+    ("grok-4.5", "claude"),        # xAI-family model on the claude lane
+    ("gpt-5.6-sol", "grok"),       # openai-family model on the grok lane
 )
 
 # A two-same-vendor-seat board: exercises result re-keying (leg -> seat) and the

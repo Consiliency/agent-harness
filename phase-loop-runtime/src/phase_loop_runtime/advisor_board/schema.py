@@ -81,6 +81,7 @@ _HARNESS_VENDOR: dict[str, str] = {
     "opencode": "codex",  # openai-family models
     "claude": "claude",
     "gemini": "gemini",
+    "grok": "grok",  # xAI-family models (grok-4.5) on the grok CLI lane
     "pi": "pi",
 }
 
@@ -110,6 +111,8 @@ def vendor_of_model(model: str) -> str:
         return "claude"
     if "gemini" in m or m in {"pro", "flash", "flash-lite", "auto"}:
         return "gemini"
+    if m.startswith("grok") or m.startswith("xai/"):
+        return "grok"  # the grok panel leg runs the xAI-family model
     if m.startswith("gpt") or m.startswith("o1") or m.startswith("o3") or m.startswith("openai/"):
         return "codex"  # the codex panel leg runs the openai-family model
     return ""
