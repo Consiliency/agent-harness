@@ -474,6 +474,26 @@ After all lanes merged:
 
 **Halt exception**: on Step 8 second-failure halt, `.claude/<harness>-execute-phase-state.json` persists for `--resume`. This is the documented dirty-tree exception; no commit required.
 
+### Worktree lifecycle — prune after merge (standing rule)
+
+**Standing rule: prune a lane's git worktree — and delete its now-dead branch — as soon as its PR merges. Never leave merged or abandoned worktrees behind.** Step 2a and Step 7 only cover the *in-run* `.claude/worktrees/` lanes. This rule covers the **sibling worktrees under the shared workspace volume** (`/mnt/workspace/worktrees/<project>-<branch>`, or the repo-sibling `../<project>-<branch>` fallback on hosts without it) that outlive a single run. Left unpruned, these accumulate without bound — the shared volume has reached thousands of stale merged worktrees because nothing swept them.
+
+This is a **sweep**, not a "delete the tree you're standing in." At closeout you have just *opened* this run's PR, so the current run's own branch/worktree is still unmerged — it is KEPT by the criterion below, which is exactly what you want. Run the sweep at closeout (and, cheaply, at phase start).
+
+For each sibling worktree from `git worktree list` (excluding the primary checkout and this run's own worktree), classify:
+
+- **SAFE to prune** — the branch is MERGED **and** the tree is CLEAN. MERGED means either `git merge-base --is-ancestor <branch> origin/main` (fetch first) OR `gh pr view <branch> --json state -q .state` reports `MERGED`. CLEAN means `git -C <path> status --porcelain` is empty.
+- **KEEP** — unmerged (work not yet on `origin/main` and no merged PR) OR dirty (`--porcelain` non-empty). Leave it and log one line. This preserves the current run's own worktree and any in-flight peer work.
+
+To prune a SAFE worktree:
+
+1. `git worktree remove --force <path>`.
+2. `git branch -D <branch>` — the branch is dead once its PR merged to `origin/main`, so deleting it is correct. **This is distinct from Step 2a**, which keeps human-named branches (`skills/*`, `feature/*`, `fix/*`) precisely because that case is *local incorporation before the PR merges* and the ref may still be wanted. Once the PR is MERGED on `origin`, delete the branch regardless of naming.
+
+**Permission-locked fallback (gotcha).** Worktrees whose `node_modules` (or other build output) was installed under a **different uid** — e.g. CI-offload / rootless-docker runs — are permission-locked. `git worktree remove --force` and a plain `rm -rf` will FAIL with `Permission denied`. When removal fails on permissions, fall back to `sudo rm -rf <path>` (or re-run the cleanup as the installing uid), then `git worktree prune` to drop the now-dangling administrative entry, then `git branch -D <branch>`. Do not treat a permission-denied removal as "KEEP" — it is still SAFE; it just needs the elevated path.
+
+An idempotent helper is available: `bash "$(git rev-parse --show-toplevel)/.claude/skills/<harness>-execute-phase/scripts/prune_merged_worktrees.sh"` (pass `--dry-run` to preview). It encodes exactly the MERGED+CLEAN criterion and the `sudo rm -rf` fallback above and is safe to re-run.
+
 ### Step 9.5 — Close-out: Reflection + Handoff
 
 Before close-out, run `git status --short -- <plan_path> <roadmap_path>` for every consumed or updated planning artifact. If any planning artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <path>` for each artifact. Rerun status and report `Artifact state: staged|tracked|modified|unstaged|blocked` for each artifact. Do not commit unless the user explicitly asked for a commit. Repo-local handoff files are operational state: do not `git add` an ignored handoff alongside the plan artifact unless the plan's owned-files/allowlist explicitly includes the handoff directory; leave ignored handoffs ignored and exclude them from artifact-state reporting.

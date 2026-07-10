@@ -150,3 +150,14 @@ Returns `{status: "published", branch, head_sha, pr_url}` on success (IF-0-P1-1;
 `pr_url` in the final response and include `head_sha` in the handoff for downstream
 consumers). Returns `{status: "publication_blocked", reason: <slug>}` on any violation —
 report `publication blocked` with the reason and stop.
+
+## Worktree lifecycle — prune after merge (standing rule)
+
+**Prune MERGED worktrees at closeout — a sweep, not "delete the tree you're standing in." The current run's own worktree is KEPT (its PR has not merged yet); never leave merged or abandoned worktrees behind.** The worktree established in Workflow step 6 (under `/mnt/workspace/worktrees/<project>-<branch>`, or the repo-sibling fallback) must NOT be pruned at closeout — you have just opened the PR and the branch is still unmerged; a prune here would discard unmerged work, which the Git safety invariant forbids. Keep it until the PR merges.
+
+The prune is a later sweep, gated on a SAFE criterion, never a blind delete:
+
+- **SAFE to prune** — the branch is MERGED (`git merge-base --is-ancestor <branch> origin/main` after a fetch, OR `gh pr view <branch> --json state -q .state` reports `MERGED`) **AND** the tree is CLEAN (`git -C <path> status --porcelain` is empty). Then `git worktree remove --force <path>` and `git branch -D <branch>` (the ref is dead once merged to `origin`).
+- **KEEP** — unmerged (no merged PR, work not on `origin/main`) or dirty. This is why the current run's own worktree is kept at closeout.
+
+**Permission-locked fallback (gotcha).** A worktree whose `node_modules`/build output was installed under a **different uid** (CI-offload / rootless-docker) is permission-locked: `git worktree remove --force` and plain `rm -rf` FAIL with `Permission denied`. Fall back to `sudo rm -rf <path>` (or re-run as the installing uid), then `git worktree prune`, then `git branch -D <branch>`. A permission-denied removal is still SAFE — do not reclassify it as KEEP.
