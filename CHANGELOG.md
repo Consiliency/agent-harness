@@ -18,8 +18,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   installed under a different uid (CI-offload / rootless-docker) reject
   `git worktree remove --force` and `rm -rf`, requiring a `sudo rm -rf` (or same-uid)
   fallback. Adds an idempotent `execute-phase/scripts/prune_merged_worktrees.sh`
-  helper that encodes the criterion and the fallback. Closes the gap that let
-  sibling worktrees accumulate without bound under the shared workspace volume.
+  helper that encodes the criterion and the fallback. The helper hardens the
+  `sudo rm -rf` fallback with three independent guards so a linked-worktree
+  invocation can never destroy the primary checkout: (a) the PRIMARY worktree
+  (first `git worktree list --porcelain` record) and the current worktree are
+  always excluded; (b) the `sudo` fallback is confined to paths strictly under the
+  approved worktrees base (`$PHASE_LOOP_WORKTREES_BASE`, else the parent of the
+  current worktree, with a trailing-slash prefix boundary); (c) it escalates to
+  `sudo -n rm -rf` ONLY on a genuine permission-denied git error — a "main working
+  tree"/locked/other failure skips with a warning. A script self-test proves the
+  primary is never selected when the sweep runs from a linked worktree. Closes the
+  gap that let sibling worktrees accumulate without bound under the shared
+  workspace volume.
 - **CI guard against hardcoded model IDs (`model-id-source` convention).** Adds
   `scripts/check_model_id_sources.py`, wired into CI, enforcing "reference the
   central constant, don't inline" for concrete model IDs in

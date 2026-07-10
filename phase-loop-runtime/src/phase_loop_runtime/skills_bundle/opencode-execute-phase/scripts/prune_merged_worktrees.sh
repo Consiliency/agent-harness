@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# prune_merged_worktrees.sh — standing "prune after merge" sweep (Step 9.6).
+# prune_merged_worktrees.sh — standing "prune after merge" sweep.
 #
-# Prunes SIBLING git worktrees (typically under /mnt/workspace/worktrees/ or a
+# Prunes SIBLING git worktrees (typically under the workspace worktrees base or a
 # repo sibling) whose branch has MERGED and whose tree is CLEAN, then deletes the
 # now-dead branch. Unlike sweep_stale_worktrees.sh (which keys off local
 # incorporation into HEAD and keeps human-named branches), this sweep is keyed off
@@ -15,26 +15,71 @@
 # KEEP           = unmerged OR dirty. Preserves this run's own (unmerged) worktree
 #                  and any in-flight peer work.
 #
-# Permission gotcha: worktrees whose node_modules/build output was installed under a
-# DIFFERENT uid (CI-offload / rootless-docker) are permission-locked; `git worktree
-# remove --force` and plain `rm -rf` FAIL. This script falls back to `sudo rm -rf`
-# then `git worktree prune`. A permission-denied removal is still SAFE, not KEEP.
+# SAFETY (three independent guards — a linked-worktree invocation must NEVER remove
+# the PRIMARY checkout, which would destroy the shared object store):
+#   (a) The PRIMARY worktree (first `worktree ` record of `git worktree list
+#       --porcelain`) and the CURRENT worktree are always skipped, never classified.
+#   (b) The `sudo rm -rf` fallback is CONFINED: it runs only for a path strictly
+#       under the approved worktrees base ($PHASE_LOOP_WORKTREES_BASE, else the
+#       parent of the current worktree). A path outside the base is never sudo-rm'd.
+#   (c) The fallback escalates ONLY on a genuine PERMISSION-denied git error
+#       (foreign-uid node_modules from CI-offload / rootless-docker). "is a main
+#       working tree", "is locked", or any other failure → skip + warn, never sudo.
 #
 # Usage:
 #   prune_merged_worktrees.sh [--dry-run]
 #     --dry-run   Print PRUNE/KEEP decisions without removing anything.
 #
+# Env:
+#   PHASE_LOOP_WORKTREES_BASE   Approved base dir for the sudo fallback confinement.
+#                               Defaults to the parent of the current worktree.
+#
 # Idempotent: re-running after a clean sweep is a no-op. Exit 0 on success.
 
 set -euo pipefail
+
+# --- pure predicates (extracted so the self-test can exercise them directly) ---
+
+# path_under_base <path> <base> — true iff <path> is strictly under <base>, using a
+# trailing-slash boundary so `/base-evil` does NOT match base `/base`. Both are
+# realpath-normalized. An empty path or base is always false (never confine nothing).
+path_under_base() {
+  local path="$1" base="$2"
+  [[ -n "$path" && -n "$base" ]] || return 1
+  local rp rb
+  rp=$(realpath -m -- "$path" 2>/dev/null) || return 1
+  rb=$(realpath -m -- "$base" 2>/dev/null) || return 1
+  [[ "$rp" == "$rb" ]] && return 1          # equal to base ≠ strictly under
+  [[ "$rp" == "$rb"/* ]]
+}
+
+# primary_worktree — the PRIMARY (main) checkout: the FIRST `worktree ` record of
+# `git worktree list --porcelain`. Git always lists the main tree first.
+primary_worktree() {
+  git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print; exit}'
+}
+
+# list_worktrees — every worktree path, one per line, tolerant of spaces in paths
+# (parses the porcelain `worktree ` record instead of splitting on whitespace).
+list_worktrees() {
+  git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print}'
+}
+
+# Guard: only source the predicates (for the self-test) without running the sweep.
+[[ "${PRUNE_MERGED_WORKTREES_LIB:-0}" == "1" ]] && return 0 2>/dev/null || true
+
+# --- sweep ---
 
 DRY_RUN=0
 for arg in "$@"; do
   [[ "$arg" == "--dry-run" ]] && DRY_RUN=1
 done
 
-TOPLEVEL=$(git rev-parse --show-toplevel)
-SELF_WT=$(git rev-parse --show-toplevel)  # the worktree this invocation runs in
+SELF_WT=$(git rev-parse --show-toplevel)          # the worktree this invocation runs in
+PRIMARY_WT=$(primary_worktree)                     # NEVER remove this
+# Approved base for the sudo fallback. Explicit override wins; else the parent of
+# the current worktree (the sibling worktrees live alongside it).
+WORKTREES_BASE="${PHASE_LOOP_WORKTREES_BASE:-$(dirname -- "$SELF_WT")}"
 PRUNED=0
 KEPT=0
 
@@ -57,22 +102,45 @@ is_merged() {
   return 1
 }
 
+# remove_worktree <path> — returns 0 iff <path> is gone afterward. Tries the
+# git-native removal first; escalates to a CONFINED, PERMISSION-ONLY sudo fallback.
 remove_worktree() {
-  # Try the git-native removal first; on failure (usually a foreign-uid
-  # permission lock) fall back to sudo rm -rf + prune. Returns 0 if the path is gone.
   local path="$1"
-  if git worktree remove --force "$path" 2>/dev/null; then
+  # Empty-var guard: never operate on an unset/empty path.
+  [[ -n "$path" ]] || { echo "WARN:  refusing removal of empty path" >&2; return 1; }
+
+  local err rc=0
+  err=$(git worktree remove --force "$path" 2>&1) || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
     return 0
   fi
-  echo "WARN:  $path — git worktree remove failed (likely a permission lock); using sudo rm -rf" >&2
-  sudo rm -rf "$path"
+
+  # Escalate ONLY on a genuine permission lock (foreign-uid build output).
+  if ! grep -qi 'permission denied' <<<"$err"; then
+    echo "WARN:  $path — git worktree remove failed (not a permission lock): ${err%%$'\n'*}; skipping" >&2
+    return 1
+  fi
+  # Confine the sudo path: must be strictly under the approved worktrees base.
+  if ! path_under_base "$path" "$WORKTREES_BASE"; then
+    echo "WARN:  $path — permission-locked but OUTSIDE approved base ($WORKTREES_BASE); refusing sudo rm" >&2
+    return 1
+  fi
+
+  echo "WARN:  $path — permission-locked (foreign uid); using confined 'sudo -n rm -rf'" >&2
+  local src=0
+  sudo -n rm -rf -- "$path" || src=$?
+  if [[ "$src" -ne 0 ]]; then
+    echo "WARN:  $path — 'sudo -n rm -rf' failed (rc=$src; no non-interactive sudo?); skipping" >&2
+    return 1
+  fi
   git worktree prune
   [[ ! -e "$path" ]]
 }
 
 while IFS= read -r wt; do
-  [[ "$wt" == "$TOPLEVEL" ]] && continue
-  [[ "$wt" == "$SELF_WT" ]] && continue
+  [[ -n "$wt" ]] || continue
+  [[ "$wt" == "$PRIMARY_WT" ]] && continue        # (a) never touch the primary checkout
+  [[ "$wt" == "$SELF_WT" ]] && continue           #     never touch the current worktree
 
   wt_branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "<detached>")
   if [[ "$wt_branch" == "<detached>" || "$wt_branch" == "HEAD" ]]; then
@@ -103,6 +171,6 @@ while IFS= read -r wt; do
       KEPT=$((KEPT + 1))
     fi
   fi
-done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
+done < <(list_worktrees)
 
-echo "prune-merged-worktrees: pruned=$PRUNED kept=$KEPT dry_run=$DRY_RUN"
+echo "prune-merged-worktrees: pruned=$PRUNED kept=$KEPT dry_run=$DRY_RUN base=$WORKTREES_BASE"

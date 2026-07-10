@@ -153,7 +153,7 @@ report `publication blocked` with the reason and stop.
 
 ## Worktree lifecycle — prune after merge (standing rule)
 
-**Prune this run's git worktree and delete its branch as soon as its PR merges. Never leave merged or abandoned worktrees behind.** The worktree established in Workflow step 6 (under `/mnt/workspace/worktrees/<project>-<branch>`, or the repo-sibling fallback) must NOT be pruned at closeout — you have just opened the PR and the branch is still unmerged; a prune here would discard unmerged work, which the Git safety invariant forbids. Keep it until the PR merges.
+**Prune MERGED worktrees at closeout — a sweep, not "delete the tree you're standing in." The current run's own worktree is KEPT (its PR has not merged yet); never leave merged or abandoned worktrees behind.** The worktree established in Workflow step 6 (under `/mnt/workspace/worktrees/<project>-<branch>`, or the repo-sibling fallback) must NOT be pruned at closeout — you have just opened the PR and the branch is still unmerged; a prune here would discard unmerged work, which the Git safety invariant forbids. Keep it until the PR merges.
 
 The prune is a later sweep, gated on a SAFE criterion, never a blind delete:
 
