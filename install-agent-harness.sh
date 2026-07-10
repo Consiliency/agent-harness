@@ -31,11 +31,14 @@ REPO="${AGENT_HARNESS_REPO:-https://github.com/ViperJuice/agent-harness}"
 resolve_ref() {
     if [ -n "${AGENT_HARNESS_REF:-}" ]; then printf '%s' "$AGENT_HARNESS_REF"; return 0; fi
     local here pin
-    here="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+    here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || here=""
     if [ -n "$here" ] && [ -f "$here/RELEASE_PIN" ]; then
         tr -d '[:space:]' < "$here/RELEASE_PIN"; return 0
     fi
-    pin="$(curl -fsSL "${REPO%.git}/raw/main/RELEASE_PIN" 2>/dev/null | tr -d '[:space:]')"
+    # `|| true` so a curl/network failure under `set -euo pipefail` does NOT abort
+    # the script mid-substitution — it leaves pin empty and falls to the friendly
+    # error below (which explains AGENT_HARNESS_REF / the pin URL).
+    pin="$(curl -fsSL "${REPO%.git}/raw/main/RELEASE_PIN" 2>/dev/null | tr -d '[:space:]' || true)"
     if [ -n "$pin" ]; then printf '%s' "$pin"; return 0; fi
     echo "ERROR: could not resolve the release pin. Set AGENT_HARNESS_REF=vX.Y.Z, or" >&2
     echo "       ensure network access to ${REPO%.git}/raw/main/RELEASE_PIN." >&2

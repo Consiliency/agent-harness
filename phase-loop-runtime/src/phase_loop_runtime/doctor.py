@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -398,6 +399,7 @@ def run_doctor(
         stale = stale_gating_targets(report["bom"])
         if stale:
             names = ", ".join(e["target"] for e in stale)
-            print(f"FAIL: stale gating BOM target(s): {names}", flush=True)
+            # To stderr so `--json` stdout stays pure, machine-parseable JSON.
+            print(f"FAIL: stale gating BOM target(s): {names}", file=sys.stderr, flush=True)
             return 1
     return 0

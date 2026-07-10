@@ -132,7 +132,8 @@ def test_fail_on_stale_exits_nonzero_on_gating_stale(capsys) -> None:
         bom_fixture=FIXTURES / "bom-stale.json",
     )
     assert rc == 1
-    assert "stale gating BOM target" in capsys.readouterr().out
+    # The FAIL line goes to stderr so `--json` stdout stays pure JSON.
+    assert "stale gating BOM target" in capsys.readouterr().err
 
 
 def test_fail_on_stale_ignores_non_gating_stale(capsys) -> None:
@@ -143,6 +144,22 @@ def test_fail_on_stale_ignores_non_gating_stale(capsys) -> None:
         bom_fixture=FIXTURES / "bom-current.json",
     )
     assert rc == 0
+
+
+def test_json_stdout_stays_pure_even_when_failing_on_stale(capsys) -> None:
+    # Regression: --json + --fail-on-stale must keep stdout as parseable JSON;
+    # the FAIL diagnostic goes to stderr.
+    rc = doctor.run_doctor(
+        repo=Path("."),
+        as_json=True,
+        fail_on_stale=True,
+        bom_fixture=FIXTURES / "bom-stale.json",
+    )
+    captured = capsys.readouterr()
+    assert rc == 1
+    payload = json.loads(captured.out)  # raises if stdout is not pure JSON
+    assert payload["schema"] == "phase-loop-doctor.v1"
+    assert "stale gating BOM target" in captured.err
 
 
 def test_without_fail_flag_stale_bom_still_exits_zero() -> None:
