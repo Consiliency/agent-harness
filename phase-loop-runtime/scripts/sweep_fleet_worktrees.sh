@@ -103,13 +103,22 @@ is_orphan_worktree() {
   [[ -n "$gitdir" ]] || return 1
   # Relative gitdir → resolve against the worktree dir.
   [[ "$gitdir" == /* ]] || gitdir="$path/$gitdir"
-  # Orphan iff the owning admin dir is genuinely ABSENT. `-e` alone conflates
-  # absence (ENOENT) with inaccessibility (EACCES anywhere in the ancestor chain),
-  # which would misread an existing-but-unreadable gitdir as absent and delete
-  # recoverable work. `stat`'s errno text discriminates — but STRIP the gitdir from
-  # the message first (the path is interpolated into it), so a gitdir literally
-  # containing "not found"/"no such file" cannot masquerade as ENOENT. Only a
-  # genuine ENOENT → orphan; ANY other stat failure (EACCES, …) → KEEP.
+  # Orphan iff the owning admin dir is genuinely ABSENT. `-e` conflates absence
+  # (ENOENT) with inaccessibility (EACCES anywhere in the ancestor chain), and
+  # parsing stat's error TEXT is path-contaminated. Use python3's errno-precise
+  # stat instead: FileNotFoundError is EXACTLY ENOENT, with no text/path parsing.
+  # Only ENOENT → orphan; exists → not orphan; EACCES/other → KEEP (fail-safe).
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -c 'import os,sys
+try: os.stat(sys.argv[1]); sys.exit(1)
+except FileNotFoundError: sys.exit(0)
+except OSError: sys.exit(1)' "$gitdir"; then
+      return 0                                       # ENOENT → orphan
+    fi
+    return 1                                          # exists / EACCES / other → KEEP
+  fi
+  # Fallback (no python3): path-stripped text match so a path containing
+  # "not found"/"no such file" cannot masquerade as ENOENT.
   local st
   st=$(stat -- "$gitdir" 2>&1) && return 1          # exists → not an orphan
   grep -qiE 'no such file|not found' <<<"${st//"$gitdir"/}" && return 0   # ENOENT → orphan
