@@ -102,8 +102,16 @@ is_orphan_worktree() {
   [[ -n "$gitdir" ]] || return 1
   # Relative gitdir → resolve against the worktree dir.
   [[ "$gitdir" == /* ]] || gitdir="$path/$gitdir"
-  # Orphan iff the owning admin dir is genuinely absent.
-  [[ ! -e "$gitdir" ]]
+  # Orphan iff the owning admin dir is genuinely ABSENT. Fail-safe against EACCES:
+  # `! -e` is ALSO false when a parent dir is unsearchable, which would misread an
+  # existing-but-inaccessible gitdir as absent and delete recoverable work. Only
+  # classify orphan when absence is POSITIVELY confirmable: the gitdir's parent is
+  # itself gone, or present AND searchable. Parent present-but-unsearchable → KEEP.
+  [[ -e "$gitdir" ]] && return 1
+  local gd_parent
+  gd_parent=$(dirname -- "$gitdir")
+  [[ -e "$gd_parent" && ! -x "$gd_parent" ]] && return 1
+  return 0
 }
 
 # Guard: only source the predicates (for the self-test) without running the sweep.
@@ -114,16 +122,26 @@ is_orphan_worktree() {
 DRY_RUN=1            # default: report only, remove nothing
 PRUNE=0
 ALERT_THRESHOLD=0
+_want_prune=0
+_want_dryrun=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run) DRY_RUN=1 ;;
-    --prune) PRUNE=1; DRY_RUN=0 ;;
+    --dry-run) _want_dryrun=1 ;;
+    --prune) _want_prune=1 ;;
     --alert-threshold) shift; ALERT_THRESHOLD="${1:-0}" ;;
     --alert-threshold=*) ALERT_THRESHOLD="${1#*=}" ;;
     *) echo "WARN:  ignoring unknown arg: $1" >&2 ;;
   esac
   shift
 done
+# Safety: --dry-run ALWAYS wins. Prune only when --prune was requested AND
+# --dry-run was NOT — so `--prune --dry-run` (a cautious operator) never deletes,
+# regardless of argument order.
+if [[ "$_want_prune" -eq 1 && "$_want_dryrun" -eq 0 ]]; then
+  PRUNE=1; DRY_RUN=0
+else
+  PRUNE=0; DRY_RUN=1
+fi
 
 if [[ ! -d "$WORKTREES_BASE" ]]; then
   echo "sweep-fleet-worktrees: base does not exist ($WORKTREES_BASE); nothing to sweep"
@@ -131,6 +149,7 @@ if [[ ! -d "$WORKTREES_BASE" ]]; then
 fi
 
 SELF_WT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")   # this script's own repo, if any
+SELF_WT=$(realpath -m -- "$SELF_WT" 2>/dev/null || echo "$SELF_WT")  # normalize; base may be a symlink
 
 PRUNABLE=0
 PRUNED=0
@@ -183,8 +202,10 @@ remove_dir() {
     return 0
   fi
 
-  # Escalate ONLY on a genuine permission lock (foreign-uid build output).
-  if ! grep -qi 'permission denied' <<<"$err"; then
+  # Escalate ONLY on a genuine permission lock (foreign-uid build output). Strip the
+  # candidate path from the error first, so a worktree path that itself contains the
+  # literal "permission denied" cannot coincidentally trigger a sudo escalation.
+  if ! grep -qi 'permission denied' <<<"${err//"$path"/}"; then
     echo "WARN:  $path — removal failed (not a permission lock): ${err%%$'\n'*}; skipping" >&2
     return 1
   fi
@@ -204,13 +225,19 @@ shopt -s nullglob
 for wt in "$WORKTREES_BASE"/*/; do
   wt="${wt%/}"                                    # strip trailing slash
   [[ -d "$wt" ]] || continue
-  [[ -n "$SELF_WT" && "$wt" == "$SELF_WT" ]] && continue   # never this run's own repo
+  # Compare on realpath-normalized forms. The base may be a symlink (e.g.
+  # /mnt/workspace -> /mnt/HC_Volume_...), so git's canonical paths would not
+  # string-match the symlinked candidate path — an aliased primary/self could
+  # otherwise slip the guards below.
+  wt_real=$(realpath -m -- "$wt" 2>/dev/null || echo "$wt")
+  [[ -n "$SELF_WT" && "$wt_real" == "$SELF_WT" ]] && continue   # never this run's own repo
 
   # (a) never touch any owning repo's PRIMARY checkout.
   # NB: owning_primary exits non-zero (git 128) for a non-git / orphaned dir; the
   # `|| primary=""` keeps `set -e` from aborting the sweep on the first such child.
   primary=$(owning_primary "$wt") || primary=""
-  if [[ -n "$primary" && "$wt" == "$primary" ]]; then
+  primary_real=$(realpath -m -- "$primary" 2>/dev/null || echo "$primary")
+  if [[ -n "$primary" && "$wt_real" == "$primary_real" ]]; then
     echo "KEEP:  $wt — primary checkout of its repo" >&2
     KEPT=$((KEPT + 1))
     continue
