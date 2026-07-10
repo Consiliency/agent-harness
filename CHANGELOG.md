@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Closeout standing rule: prune lane worktree after merge (permission-aware).**
+  The `claude`/`codex`/`gemini`/`opencode` `execute-phase` and `execute-detailed`
+  skill closeouts now codify a standing worktree-lifecycle rule: prune a lane's git
+  worktree and delete its now-dead branch as soon as its PR merges — never leave
+  merged or abandoned worktrees behind. The rule is a MERGED+CLEAN *sweep* (MERGED =
+  ancestor of `origin/main` OR `gh` reports the PR merged; CLEAN =
+  `git status --porcelain` empty), so the current run's own unmerged worktree is
+  KEPT and unmerged/dirty peer worktrees are left intact. Documents the
+  permission-locked gotcha — worktrees whose `node_modules`/build output was
+  installed under a different uid (CI-offload / rootless-docker) reject
+  `git worktree remove --force` and `rm -rf`, requiring a `sudo rm -rf` (or same-uid)
+  fallback. Adds an idempotent `execute-phase/scripts/prune_merged_worktrees.sh`
+  helper that encodes the criterion and the fallback. Closes the gap that let
+  sibling worktrees accumulate without bound under the shared workspace volume.
 - **CI guard against hardcoded model IDs (`model-id-source` convention).** Adds
   `scripts/check_model_id_sources.py`, wired into CI, enforcing "reference the
   central constant, don't inline" for concrete model IDs in
