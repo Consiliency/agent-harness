@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **4-vendor default review board + availability-aware lens-diversity fallback.**
+  The `code-review` board is now the 4-vendor cross-vendor panel — one seat per
+  frontier vendor (grok `grok-4.5`, claude `claude-fable-5`, codex `gpt-5.6-sol`,
+  gemini `Gemini 3.1 Pro`), each at its MAX thinking (gemini's ceiling is `high`)
+  with a DISTINCT review lens. Grok joins as a 4th homebrew review lane
+  (`grok -p <prompt> --output-format plain --cwd -m grok-4.5 --reasoning-effort`;
+  registered subscription-only; full 600/1800s slow-leg timeout bounds). The new
+  `advisor_board.composition.compose_review_board` composes the board
+  AVAILABILITY-AWARE: it targets 4 independent reviewers (hard floor 3) and never
+  collapses to 1–2 when vendors are down — each available vendor gets one
+  lens-distinct seat, then the remaining seats are backfilled onto available
+  vendors with different lenses (2 up → still 4 seats; 1 up → 4 distinct-lens
+  seats). It reuses the registry PATH probe
+  (`DEFAULT_HARNESS_REGISTRY.is_available`) so detection is registration-driven.
+  The bare `advisor-board`/`default` premerge board is unchanged (byte-frozen
+  3-leg panel; the golden + backcompat proofs stay green). The model-id-source
+  guard now also recognizes `grok-*` ids.
 - **Fix fleet-sweep ORPHAN false-positive (path-contaminated stat grep).** `sweep_fleet_worktrees.sh`'s ENOENT-vs-EACCES discriminator grepped the raw `stat` stderr, which interpolates the path — so a gitdir path literally containing "not found"/"no such file" (or a CRLF `.git` file) misclassified an inaccessible-but-present worktree as ORPHAN, deleting recoverable work under opt-in `--prune`. Strip the path from the stderr before matching + tolerate CRLF. Found by a Grok 4.5 adversarial review that the codex+claude PCR missed.
 - **Live prune-on-merge trigger + fleet-wide detection backstop.** Two hardening
   items that shorten the window merged worktrees linger and add a cross-repo
