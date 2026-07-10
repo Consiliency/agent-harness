@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Multi-repo issue/PR reference convention.** Adds a root `AGENTS.md`
+  (imported by a root `CLAUDE.md`) documenting that issue/PR numbers must be
+  qualified with their repo (`agent-harness#130` or
+  `ViperJuice/agent-harness#130`), never a bare `#130`, since the fleet is
+  multi-repo. The same convention is folded into the shipped phase-loop execute
+  skills (`*-execute-phase` and `*-execute-detailed` across all four harnesses)
+  at their report/handoff/PR-body points, and the neutral bundle
+  (`phase-loop-skills/` + packaged `skills_bundle/`) was regenerated to match.
 - **Closeout standing rule: prune lane worktree after merge (permission-aware).**
   The `claude`/`codex`/`gemini`/`opencode` `execute-phase` and `execute-detailed`
   skill closeouts now codify a standing worktree-lifecycle rule: prune a lane's git

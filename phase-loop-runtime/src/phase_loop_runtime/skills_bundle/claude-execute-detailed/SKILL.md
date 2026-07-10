@@ -111,6 +111,8 @@ Final response must include:
 - final dirty-path classification;
 - next action or blocker using the stable failure diagnostics above.
 
+In the final response, handoff, and any PR/issue body or commit message this run writes, reference issues and PRs as `repo#N` (or `owner/repo#N`), never a bare `#N`; the fleet is multi-repo, so a lone number is ambiguous.
+
 
 ## Publication
 

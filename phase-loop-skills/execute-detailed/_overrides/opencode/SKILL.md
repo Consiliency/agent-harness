@@ -103,6 +103,8 @@ Final response must include the detailed plan artifact path, changed files,
 verification command results, acceptance-criteria status, final dirty-path
 classification, and next action or blocker.
 
+In the final response, handoff, and any PR/issue body or commit message this run writes, reference issues and PRs as `repo#N` (or `owner/repo#N`), never a bare `#N`; the fleet is multi-repo, so a lone number is ambiguous.
+
 
 ## Publication
 
