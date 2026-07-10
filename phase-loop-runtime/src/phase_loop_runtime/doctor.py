@@ -21,6 +21,7 @@ DECOUPLE SL-1: this module pulls NO dotfiles-domain module
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 import urllib.request
@@ -36,20 +37,33 @@ SCHEMA_ID = "phase-loop-doctor.v1"
 # offline-degrade seam and the injection point for the offline mock-registry test.
 Fetcher = Callable[[str], Optional[str]]
 
-# Tools the doctor probes, with what each unlocks. `auth_relevant` marks the
-# executor CLIs for which an authed heuristic is meaningful (others report null).
-_TOOLS: tuple[tuple[str, str, bool], ...] = (
-    ("git", "version control", False),
-    ("uv", "uv tool install (primitive install path)", False),
-    ("python3", "python runtime", False),
-    ("node", "node / npx (governed-pipeline, DEPLOY)", False),
-    ("npm", "npm / npx package install", False),
-    ("docker", "docker compose self-host (DEPLOY)", False),
-    ("codex", "codex executor leg", True),
-    ("claude", "claude executor leg", True),
-    ("gemini", "gemini executor leg", True),
-    ("opencode", "opencode executor leg", True),
-    ("pi", "pi executor leg", True),
+# `phase-loop doctor` is a strict SUPERSET of `repo-validate doctor`: it probes
+# every tool `repo_validation.doctor_report()` does (unlocks labels below) and
+# ADDS the executor CLIs, and it folds doctor_report's `stack_hints` +
+# `declared_contracts` into the payload. `_CORE_TOOL_UNLOCKS` labels the
+# doctor_report tool set; unknown names fall back to the bare name.
+_CORE_TOOL_UNLOCKS: dict[str, str] = {
+    "git": "version control",
+    "just": "just task runner (repo agent:* contracts)",
+    "dagger": "dagger CI pipelines",
+    "docker": "docker compose self-host (DEPLOY)",
+    "node": "node / npx (governed-pipeline, DEPLOY)",
+    "pnpm": "pnpm package install",
+    "npm": "npm / npx package install",
+    "yarn": "yarn package install",
+    "bun": "bun runtime / package install",
+    "uv": "uv tool install (primitive install path)",
+    "python3": "python runtime",
+    "cargo": "cargo (rust builds)",
+}
+
+# Executor CLIs added on top of the repo-validate tool set; `authed` is meaningful.
+_EXECUTORS: tuple[tuple[str, str], ...] = (
+    ("codex", "codex executor leg"),
+    ("claude", "claude executor leg"),
+    ("gemini", "gemini executor leg"),
+    ("opencode", "opencode executor leg"),
+    ("pi", "pi executor leg"),
 )
 
 # Best-effort auth heuristics: credential-file presence per executor CLI. Only a
@@ -138,12 +152,26 @@ def _find_up(start: Path, name: str) -> Optional[Path]:
     return None
 
 
+# Version-shape guard: local pin sources feed the payload, so validate they look
+# like a version (v?X.Y[.Z...]) and drop anything else to None — keeps arbitrary
+# file content out of the metadata-only BOM (defense beyond the redactor prefixes).
+_VERSION_RE = re.compile(r"v?\d+(?:\.\d+)+[0-9A-Za-z.\-]*")
+
+
+def _as_version(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not _VERSION_RE.fullmatch(raw):
+        return None
+    return raw[1:] if raw.startswith("v") else raw
+
+
 def _release_pin(repo: Path) -> Optional[str]:
     pin_file = _find_up(repo, "RELEASE_PIN")
     if pin_file is None:
         return None
-    raw = pin_file.read_text(encoding="utf-8").strip()
-    return raw[1:] if raw.startswith("v") else raw
+    return _as_version(pin_file.read_text(encoding="utf-8"))
 
 
 def _contract_floor(repo: Path) -> Optional[str]:
@@ -177,7 +205,7 @@ def _vendored_contract_version(repo: Path) -> Optional[str]:
     except Exception:
         return None
     version = data.get("contract_version") or data.get("adoption", {}).get("contract_version")
-    return str(version) if version else None
+    return _as_version(str(version)) if version else None
 
 
 # --------------------------------------------------------------------------- #
@@ -244,8 +272,8 @@ def stale_gating_targets(bom: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 # tools + install surfaces
 # --------------------------------------------------------------------------- #
-def _cli_authed(name: str, present: bool, auth_relevant: bool) -> Optional[bool]:
-    if not present or not auth_relevant:
+def _cli_authed(name: str, present: bool) -> Optional[bool]:
+    if not present:
         return None
     for hint in _AUTH_HINTS.get(name, ()):  # boolean only — never the path
         if Path(hint).expanduser().exists():
@@ -253,15 +281,27 @@ def _cli_authed(name: str, present: bool, auth_relevant: bool) -> Optional[bool]
     return False
 
 
-def _tools_report() -> list[dict[str, Any]]:
+def _tools_report(core_tools: dict[str, Optional[str]]) -> list[dict[str, Any]]:
+    """Union of the repo-validate tool probe (converted to booleans — the raw
+    values are absolute `shutil.which` paths, forbidden by the metadata-only
+    redactor) and the executor CLIs."""
     out: list[dict[str, Any]] = []
-    for name, unlocks, auth_relevant in _TOOLS:
+    for name, path in core_tools.items():
+        out.append(
+            {
+                "name": name,
+                "present": path is not None,
+                "authed": None,
+                "unlocks": _CORE_TOOL_UNLOCKS.get(name, name),
+            }
+        )
+    for name, unlocks in _EXECUTORS:
         present = shutil.which(name) is not None
         out.append(
             {
                 "name": name,
                 "present": present,
-                "authed": _cli_authed(name, present, auth_relevant),
+                "authed": _cli_authed(name, present),
                 "unlocks": unlocks,
             }
         )
@@ -330,16 +370,26 @@ def build_doctor_report(
     fetch: Optional[Fetcher] = None,
     bom_fixture: Optional[Path] = None,
 ) -> dict[str, Any]:
-    tools = _tools_report()
+    # Strict superset of `repo-validate doctor`: resolve the same root and reuse
+    # its probe. `repo_validation` pulls no dotfiles-domain module (asserted by the
+    # decouple test), so this stays on the decoupled import graph.
+    root = repo_validation.find_repo_root(repo) or repo
+    rv = repo_validation.doctor_report(root)
+    tools = _tools_report(rv["tools"])  # type: ignore[arg-type]
     surfaces = [_wheel_bundled_surface(), *_interactive_surfaces(repo)]
     if bom_fixture is not None:
         bom = _load_bom_fixture(bom_fixture)
     else:
-        bom = build_bom(repo, fetch=fetch)
+        bom = build_bom(root, fetch=fetch)
     report = {
         "schema": SCHEMA_ID,
         "summary": _summary(tools, bom),
         "tools": tools,
+        # From repo_validation.doctor_report (superset). Metadata-only: filenames
+        # and target/runner strings. `repo_root` is intentionally OMITTED — it is
+        # an absolute path, which the metadata-only redactor forbids.
+        "stack_hints": list(rv["stack_hints"]),  # type: ignore[arg-type]
+        "declared_contracts": list(rv["declared_contracts"]),  # type: ignore[arg-type]
         "install_surfaces": surfaces,
         "bom": bom,
     }
@@ -368,6 +418,17 @@ def _print_doctor(report: dict[str, Any]) -> None:
         auth_str = "" if authed is None else (" authed" if authed else " NOT authed")
         state = "present" if tool["present"] else "missing"
         print(f"  {tool['name']:<10} {state}{auth_str}   → {tool['unlocks']}")
+    print("")
+    print("Repo stack hints:")
+    for hint in report.get("stack_hints", []):
+        print(f"  {hint}")
+    print("Declared agent contracts:")
+    contracts = report.get("declared_contracts", [])
+    if contracts:
+        for entry in contracts:
+            print(f"  {entry['target']:<12} {entry['runner']}")
+    else:
+        print("  none")
     print("")
     print("Install surfaces:")
     for surface in report["install_surfaces"]:

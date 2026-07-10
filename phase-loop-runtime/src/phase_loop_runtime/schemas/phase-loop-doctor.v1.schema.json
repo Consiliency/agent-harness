@@ -4,13 +4,31 @@
   "$comment": "Checked-in contract for `phase-loop doctor --json` (IF-0-AHADOPT-2). Metadata-only: NO absolute paths. Separate from phase-loop-install-status.v1 and the dotfiles adoption-bundle. Hand-authored; a golden fixture (phase-loop-doctor.v1.golden.json) and live output both validate against it.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "summary", "tools", "install_surfaces", "bom"],
+  "required": ["schema", "summary", "tools", "stack_hints", "declared_contracts", "install_surfaces", "bom"],
   "properties": {
     "schema": {
       "const": "phase-loop-doctor.v1"
     },
     "summary": {
       "type": "string"
+    },
+    "stack_hints": {
+      "type": "array",
+      "description": "Stack marker files present (from repo_validation.doctor_report; superset). Filenames only — metadata-only.",
+      "items": { "type": "string" }
+    },
+    "declared_contracts": {
+      "type": "array",
+      "description": "Declared agent validation contracts (from repo_validation.doctor_report; superset).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "runner"],
+        "properties": {
+          "target": { "type": "string" },
+          "runner": { "type": "string" }
+        }
+      }
     },
     "tools": {
       "type": "array",
