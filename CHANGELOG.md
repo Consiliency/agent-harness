@@ -6,12 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Fix task-message persistence compatibility (`ViperJuice/agent-harness#165`).**
+  Resolve governed approval sources by Codex app-server's persisted
+  `userMessage.clientId`, not its separately assigned item `id`, and require a
+  distinct `<source-client-id>-approval` user message for the exact JSON body.
+  Both messages must have one text item, unique client and stored identities,
+  source-before-approval ordering, fresh turn timestamps, and matching body
+  claims. A new local `--control-socket` transport uses the supported
+  `codex app-server proxy --sock` path so the resolver can run on the source
+  host and return its proof over an independently authenticated channel when
+  the managed daemon cannot expose an authenticated WebSocket. Desktop-managed
+  Codex 0.144.1 processes that expose an inert/non-enabled proxy remain blocked
+  with `source_task_unavailable`; the resolver does not bridge or replace them.
+  App-server-concatenated single-item envelopes remain rejected.
+
 - **Authenticated cross-host task-message proof resolver (`ViperJuice/agent-harness#155`).**
   Added neutral `task-message-probe` and `task-message-resolve` commands backed by
   the Codex app-server's authenticated WebSocket `thread/read` protocol. The
-  resolver accepts only an exact, pre-identified user-message item with a fixed
-  two-text-input envelope (source message plus JSON approval body), binds the
-  body's source identity and SHA-256 claim to the exact first-input UTF-8 bytes,
+  resolver accepts only an exact, pre-identified two-message envelope (source
+  message plus JSON approval body), binds the body's source identity and
+  SHA-256 claim to the exact source-message UTF-8 bytes,
   computes the RFC 8785 canonical approval digest, enforces freshness, and fails
   closed with a frozen typed error set. Probe/failure output is metadata-only;
   raw bytes are returned as base64 only on successful exact resolution. No

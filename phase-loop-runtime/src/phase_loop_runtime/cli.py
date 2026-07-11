@@ -755,11 +755,16 @@ def build_parser() -> argparse.ArgumentParser:
             name,
             help="Probe or resolve an exact authenticated Codex task-message source.",
         )
-        task_message_sub.add_argument("--endpoint", required=True, help="Authenticated Codex app-server ws:// or wss:// endpoint.")
+        task_message_transport = task_message_sub.add_mutually_exclusive_group(required=True)
+        task_message_transport.add_argument("--endpoint", help="Authenticated Codex app-server ws:// or wss:// endpoint.")
+        task_message_transport.add_argument(
+            "--control-socket",
+            help="Absolute local managed app-server control socket; use only on the source host over an independently authenticated channel.",
+        )
         task_message_sub.add_argument("--authority", required=True, help="Pinned source authority identity.")
         task_message_sub.add_argument(
             "--token-env",
-            required=True,
+            required=False,
             help="Environment variable containing the app-server bearer token; the token is never printed.",
         )
         task_message_sub.add_argument("--timeout-seconds", type=float, default=10.0)
@@ -1453,8 +1458,8 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
 def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
     from .task_message_resolver import CodexAppServerTaskMessageResolver, TaskMessageResolverError
 
-    token = os.environ.get(args.token_env, "")
-    if not token:
+    token = os.environ.get(args.token_env, "") if args.token_env else ""
+    if args.endpoint and not token:
         error = TaskMessageResolverError(
             "attestation_invalid",
             authority=args.authority,
@@ -1466,7 +1471,8 @@ def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
     try:
         resolver = CodexAppServerTaskMessageResolver(
             endpoint=args.endpoint,
-            bearer_token=token,
+            bearer_token=token or None,
+            control_socket=args.control_socket,
             authority=args.authority,
             max_source_age_seconds=getattr(args, "max_source_age_seconds", 900),
             timeout_seconds=args.timeout_seconds,
