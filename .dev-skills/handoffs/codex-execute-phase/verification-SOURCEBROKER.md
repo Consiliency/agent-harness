@@ -5,5 +5,6 @@ Summary: PASSED — focused suite 60 passed, 1 skipped; standalone suite 2,280 p
 - Redaction posture: metadata only.
 - Live deployment: deferred until the Agent Harness PR merges.
 - Runtime mutation: none.
+- Exact Git-install provenance: `uv pip install git+file://...@34ed29d4efd17c3534f1d77607b4402ebfc98e3f#subdirectory=phase-loop-runtime` and `verified_installed_agent_harness_sha(...)` returned the identical 40-hex commit.
 - Plan-validator warning: release-shape heuristic only; this plan explicitly performs no release dispatch.
 - Review: Grok AGREE; Gemini AGREE; Fabel AGREE on the prior candidate. Sol found six blockers; all six are remediated and exact-SHA four-agent re-review is pending.
