@@ -29,7 +29,8 @@ BLOCKED_KEYS = {"status", "code", "authority", "thread_id", "message_id"}
 RESOLVED_KEYS = {
     "status", "authority", "thread_id", "turn_id", "approval_turn_id", "message_id",
     "approval_message_id", "source_item_id", "approval_item_id", "message_sha256",
-    "approval_body_sha256", "approval_canonical_sha256", "source_started_at", "resolved_at",
+    "source_turn_index", "source_item_index", "approval_turn_index", "approval_item_index",
+    "approval_body_sha256", "approval_canonical_sha256", "source_started_at", "approval_started_at", "resolved_at",
     "message_bytes_b64", "approval_body_bytes_b64",
 }
 
@@ -137,6 +138,8 @@ class TaskMessageBrokerClient:
                         max_source_age_seconds=max_source_age_seconds,
                     ):
                         raise ValueError
+                    if self._readline_with_deadline(response) != b"":
+                        raise ValueError
                     if result.get("status") == "blocked":
                         raise TaskMessageResolverError(
                             result["code"],
@@ -226,14 +229,22 @@ class TaskMessageBrokerClient:
         if any(not isinstance(payload.get(key), str) or SHA256.fullmatch(payload[key]) is None for key in digest_keys):
             return False
         source_started_at = payload.get("source_started_at")
+        approval_started_at = payload.get("approval_started_at")
         resolved_at = payload.get("resolved_at")
+        source_position = (payload.get("source_turn_index"), payload.get("source_item_index"))
+        approval_position = (payload.get("approval_turn_index"), payload.get("approval_item_index"))
         if (
             type(source_started_at) is not int
+            or type(approval_started_at) is not int
             or type(resolved_at) is not int
             or type(max_source_age_seconds) is not int
+            or any(type(index) is not int or index < 0 for index in (*source_position, *approval_position))
+            or approval_position <= source_position
             or source_started_at <= 0
-            or resolved_at < source_started_at
+            or approval_started_at < source_started_at
+            or resolved_at < approval_started_at
             or resolved_at - source_started_at > max_source_age_seconds
+            or resolved_at - approval_started_at > max_source_age_seconds
         ):
             return False
         try:

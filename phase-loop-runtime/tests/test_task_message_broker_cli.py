@@ -91,10 +91,15 @@ def _resolved_payload() -> dict[str, object]:
         "approval_message_id": "message-1-approval",
         "source_item_id": "item-1",
         "approval_item_id": "item-2",
+        "source_turn_index": 0,
+        "source_item_index": 0,
+        "approval_turn_index": 1,
+        "approval_item_index": 0,
         "message_sha256": hashlib.sha256(SOURCE_BYTES).hexdigest(),
         "approval_body_sha256": hashlib.sha256(approval_bytes).hexdigest(),
         "approval_canonical_sha256": hashlib.sha256(rfc8785.dumps(json.loads(approval_bytes))).hexdigest(),
         "source_started_at": 1,
+        "approval_started_at": 2,
         "resolved_at": 2,
         "message_bytes_b64": base64.b64encode(SOURCE_BYTES).decode(),
         "approval_body_bytes_b64": base64.b64encode(approval_bytes).decode(),
@@ -223,7 +228,7 @@ def test_fresh_heartbeats_outlive_total_timeout_without_deadline() -> None:
     )
     assert client.probe()["status"] == "ready"
     assert seen_timeout == [15.0]
-    assert response.total_elapsed == 25
+    assert response.total_elapsed == 30
 
 
 def test_heartbeat_silence_fails_closed() -> None:
@@ -279,6 +284,9 @@ def test_duplicate_and_non_finite_frame_json_is_rejected(raw: bytes) -> None:
         ("approval_item_id", "item-1"),
         ("approval_turn_id", "turn-1"),
         ("resolved_at", 902),
+        ("approval_started_at", 0),
+        ("approval_turn_index", 0),
+        ("approval_item_index", -1),
         ("resolved_at", "2"),
     ],
 )
@@ -295,6 +303,20 @@ def test_valid_resolved_proof_is_accepted() -> None:
     client = _client([{"type": "result", "agent_harness_sha": SHA, "payload": _resolved_payload()}])
     result = client.resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
     assert result["message_sha256"] == hashlib.sha256(SOURCE_BYTES).hexdigest()
+
+
+def test_trailing_frame_or_junk_after_terminal_result_is_rejected() -> None:
+    first = json.dumps({"type": "result", "agent_harness_sha": SHA, "payload": {"status": "ready", "authority": AUTHORITY}}).encode() + b"\n"
+    for trailing in (b"junk\n", first):
+        client = TaskMessageBrokerClient(
+            broker_url="https://claw.test:8765",
+            bearer_token="token",
+            authority=AUTHORITY,
+            opener=lambda _request, timeout, raw=first + trailing: _RawResponse(raw),
+        )
+        with pytest.raises(TaskMessageResolverError) as exc:
+            client.probe()
+        assert exc.value.code == "attestation_invalid"
 
 
 @pytest.mark.parametrize(
