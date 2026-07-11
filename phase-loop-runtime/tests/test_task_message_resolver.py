@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from phase_loop_runtime.task_message_resolver import (
     CodexAppServerTaskMessageResolver,
     TaskMessageResolverError,
+    _ConnectionFailure,
+    _ControlSocketJsonRpcConnection,
 )
 from phase_loop_runtime.cli import main
 
@@ -23,6 +25,7 @@ from phase_loop_runtime.cli import main
 NOW = 1_800_000_000
 THREAD_ID = "019f4454-2012-7061-847d-1a9ab0e9ef00"
 MESSAGE_ID = "provdeploy-approval-001"
+APPROVAL_MESSAGE_ID = f"{MESSAGE_ID}-approval"
 AUTHORITY = "codex-app-server://claw.test"
 
 
@@ -40,23 +43,34 @@ def _approval(source: str, **changes: object) -> str:
 
 
 def _thread(source: str = "FM approves exact PROVDEPLOY body.", approval: str | None = None, **turn_changes: object) -> dict[str, object]:
-    turn: dict[str, object] = {
+    source_turn: dict[str, object] = {
         "id": "turn-001",
         "startedAt": NOW - 30,
         "status": "completed",
         "items": [
             {
-                "id": MESSAGE_ID,
+                "id": "item-source",
+                "clientId": MESSAGE_ID,
                 "type": "userMessage",
-                "content": [
-                    {"type": "text", "text": source},
-                    {"type": "text", "text": approval if approval is not None else _approval(source)},
-                ],
+                "content": [{"type": "text", "text": source}],
             }
         ],
     }
-    turn.update(turn_changes)
-    return {"thread": {"id": THREAD_ID, "turns": [turn]}}
+    source_turn.update(turn_changes)
+    approval_turn: dict[str, object] = {
+        "id": "turn-002",
+        "startedAt": NOW - 20,
+        "status": "completed",
+        "items": [
+            {
+                "id": "item-approval",
+                "clientId": APPROVAL_MESSAGE_ID,
+                "type": "userMessage",
+                "content": [{"type": "text", "text": approval if approval is not None else _approval(source)}],
+            }
+        ],
+    }
+    return {"thread": {"id": THREAD_ID, "turns": [source_turn, approval_turn]}}
 
 
 class FakeConnection:
@@ -107,6 +121,12 @@ def test_exact_bytes_and_canonical_digest_are_proven() -> None:
 
     assert proof.message_bytes == source.encode("utf-8")
     assert proof.approval_body_bytes == approval.encode("utf-8")
+    assert proof.message_id == MESSAGE_ID
+    assert proof.approval_message_id == APPROVAL_MESSAGE_ID
+    assert proof.source_item_id == "item-source"
+    assert proof.approval_item_id == "item-approval"
+    assert proof.turn_id == "turn-001"
+    assert proof.approval_turn_id == "turn-002"
     assert proof.message_sha256 == hashlib.sha256(source.encode("utf-8")).hexdigest()
     assert proof.approval_canonical_sha256 == hashlib.sha256(rfc8785.dumps(json.loads(approval))).hexdigest()
     assert connection.calls[-1] == ("thread/read", {"threadId": THREAD_ID, "includeTurns": True})
@@ -125,6 +145,71 @@ def test_one_byte_semantic_changes_change_the_proof() -> None:
 
     assert first_proof.message_sha256 != second_proof.message_sha256
     assert first_proof.approval_canonical_sha256 != second_proof.approval_canonical_sha256
+
+
+def test_stored_item_id_is_not_a_substitute_for_client_identity() -> None:
+    result = _thread()
+    source_item = result["thread"]["turns"][0]["items"][0]
+    source_item["id"] = MESSAGE_ID
+    source_item.pop("clientId")
+    resolver, _ = _resolver(result)
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert _code(exc) == "source_message_unavailable"
+
+
+def test_app_server_concatenated_single_item_is_rejected() -> None:
+    source = "FM approves exact PROVDEPLOY body."
+    result = _thread(source)
+    source_turn = result["thread"]["turns"][0]
+    source_turn["items"][0]["content"][0]["text"] = source + _approval(source)
+    result["thread"]["turns"] = [source_turn]
+    resolver, _ = _resolver(result)
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert _code(exc) == "approval_body_unavailable"
+
+
+def test_approval_message_must_follow_the_source_message() -> None:
+    result = _thread()
+    result["thread"]["turns"].reverse()
+    resolver, _ = _resolver(result)
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert _code(exc) == "source_identity_mismatch"
+
+
+def test_approval_client_identity_must_be_unique() -> None:
+    result = _thread()
+    result["thread"]["turns"].append(result["thread"]["turns"][1])
+    resolver, _ = _resolver(result)
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert _code(exc) == "source_identity_mismatch"
+
+
+def test_stored_item_identities_must_be_nonempty_and_distinct() -> None:
+    duplicate = _thread()
+    duplicate["thread"]["turns"][1]["items"][0]["id"] = "item-source"
+    duplicate_resolver, _ = _resolver(duplicate)
+    with pytest.raises(TaskMessageResolverError) as duplicate_exc:
+        duplicate_resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+    assert _code(duplicate_exc) == "source_identity_mismatch"
+
+    empty = _thread()
+    empty["thread"]["turns"][0]["items"][0]["id"] = ""
+    empty_resolver, _ = _resolver(empty)
+    with pytest.raises(TaskMessageResolverError) as empty_exc:
+        empty_resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+    assert _code(empty_exc) == "source_identity_mismatch"
 
 
 @pytest.mark.parametrize(
@@ -168,6 +253,27 @@ def test_unavailable_remote_authority_fails_closed() -> None:
     assert "secret payload" not in json.dumps(exc.value.metadata())
 
 
+def test_initialize_transport_failure_closes_the_open_connection() -> None:
+    connection = FakeConnection(_thread())
+
+    def fail_initialize(method: str, params: dict[str, object]) -> dict[str, object]:
+        raise _ConnectionFailure("source_task_unavailable")
+
+    connection.request = fail_initialize  # type: ignore[method-assign]
+    resolver = CodexAppServerTaskMessageResolver(
+        endpoint="ws://claw.test:8765",
+        bearer_token="test-token",
+        authority=AUTHORITY,
+        connection_factory=lambda endpoint, token, timeout: connection,
+    )
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.probe()
+
+    assert _code(exc) == "source_task_unavailable"
+    assert connection.closed is True
+
+
 def test_probe_is_metadata_only() -> None:
     resolver, connection = _resolver(_thread())
     assert resolver.probe() == {"status": "ready", "authority": AUTHORITY}
@@ -180,6 +286,64 @@ def test_probe_is_metadata_only() -> None:
             },
         )
     ]
+
+
+def test_local_control_socket_mode_uses_local_transport_without_bearer() -> None:
+    connection = FakeConnection(_thread())
+    observed: list[tuple[str, str, float]] = []
+
+    def factory(target: str, credential: str, timeout: float) -> FakeConnection:
+        observed.append((target, credential, timeout))
+        return connection
+
+    resolver = CodexAppServerTaskMessageResolver(
+        control_socket="/home/test/.codex/app-server-control/app-server-control.sock",
+        authority=AUTHORITY,
+        clock=lambda: NOW,
+        connection_factory=factory,
+    )
+
+    proof = resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert proof.message_id == MESSAGE_ID
+    assert observed == [("/home/test/.codex/app-server-control/app-server-control.sock", "", 10.0)]
+
+
+def test_control_socket_disables_websocket_compression(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+
+    class Socket:
+        def close(self) -> None:
+            observed["closed"] = True
+
+    def unix_connect(**kwargs: object) -> Socket:
+        observed.update(kwargs)
+        return Socket()
+
+    monkeypatch.setattr("websockets.sync.client.unix_connect", unix_connect)
+    connection = _ControlSocketJsonRpcConnection("/tmp/app-server.sock", "", 7.0)
+    connection.close()
+
+    assert observed == {
+        "path": "/tmp/app-server.sock",
+        "uri": "ws://localhost",
+        "compression": None,
+        "open_timeout": 7.0,
+        "close_timeout": 7.0,
+        "closed": True,
+    }
+
+
+def test_task_message_transport_is_exactly_one_of_websocket_or_control_socket() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        CodexAppServerTaskMessageResolver(authority=AUTHORITY)
+    with pytest.raises(ValueError, match="exactly one"):
+        CodexAppServerTaskMessageResolver(
+            endpoint="ws://claw.test:8765",
+            bearer_token="test-token",
+            control_socket="/tmp/app-server.sock",
+            authority=AUTHORITY,
+        )
 
 
 def test_authenticated_loopback_authority_resolves_from_separate_client_context() -> None:
@@ -248,3 +412,29 @@ def test_cli_missing_token_is_typed_and_metadata_only(monkeypatch: pytest.Monkey
         "thread_id": None,
         "message_id": None,
     }
+
+
+def test_cli_control_socket_rejects_token_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TASK_MESSAGE_TEST_TOKEN", "must-not-be-read")
+    output = io.StringIO()
+    with redirect_stdout(output):
+        code = main(
+            [
+                "task-message-probe",
+                "--control-socket",
+                "/tmp/app-server.sock",
+                "--authority",
+                AUTHORITY,
+                "--token-env",
+                "TASK_MESSAGE_TEST_TOKEN",
+            ]
+        )
+    assert code == 2
+    assert json.loads(output.getvalue()) == {
+        "status": "blocked",
+        "code": "attestation_invalid",
+        "authority": AUTHORITY,
+        "thread_id": None,
+        "message_id": None,
+    }
+    assert "must-not-be-read" not in output.getvalue()
