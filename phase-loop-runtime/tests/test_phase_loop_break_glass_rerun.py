@@ -106,6 +106,9 @@ def _seed_blocked_scope_violation(
                 "required_human_inputs": (),
                 "access_attempts": (),
             },
+            # A real closeout_scope_violation records the attested remainder here; the
+            # break-glass rerun scopes its live-git re-derive to exactly this set.
+            metadata={"closeout": {"unowned_dirty_paths": [remainder]}},
             **event_provenance(roadmap, "CONTRACT"),
         ),
     )
@@ -145,6 +148,28 @@ def test_break_glass_rerun_force_commits_and_clears(tmp_path):
     assert "rogue.py" not in _git(repo, "status", "--short")
 
 
+def test_break_glass_rerun_does_not_sweep_unrelated_live_dirt(tmp_path):
+    # CR: the break-glass re-derive is scoped to the remainder the prior closeout
+    # RECORDED (what the reason attests to), not repo-wide live dirt. An unrelated
+    # dirty file the operator happens to have in the tree must NOT be force-committed
+    # under a reason that named only the phase's remainder.
+    repo, roadmap = _seed_blocked_scope_violation(tmp_path, remainder="rogue.py")
+    (repo / "utils.py").write_text("unrelated operator edit\n", encoding="utf-8")
+
+    snapshot, _results = run_loop(
+        repo,
+        roadmap,
+        phase="CONTRACT",
+        closeout_mode="commit",
+        allow_unowned_reason="verified rogue.py only",
+    )
+
+    committed = _git(repo, "show", "--name-only", "--format=", "HEAD")
+    assert "rogue.py" in committed
+    assert "utils.py" not in committed
+    assert "utils.py" in _git(repo, "status", "--short")
+
+
 def test_break_glass_rerun_without_reason_still_short_circuits(tmp_path):
     # No reason -> the human-required block is NOT broken through (unchanged behavior).
     repo, roadmap = _seed_blocked_scope_violation(tmp_path, remainder="rogue.py")
@@ -173,6 +198,12 @@ def test_break_glass_rerun_never_commits_secret_even_with_reason(tmp_path):
     assert snapshot.phases["CONTRACT"] == "blocked"
     assert _git(repo, "rev-parse", "HEAD").strip() == head_before
     assert ".env" in _git(repo, "status", "--short")
+    # CR (secret-only break-glass): the sticky human-required gate must NOT be
+    # downgraded to a non-human dirty_worktree_conflict — a secret-only remainder
+    # keeps closeout_scope_violation + human_required so the loop cannot silently
+    # leave the human gate and run automation against a secret-dirty tree.
+    assert snapshot.blocker_class == "closeout_scope_violation"
+    assert snapshot.human_required is True
 
 
 def test_break_glass_commit_does_not_sweep_a_pre_staged_secret(tmp_path):

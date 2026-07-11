@@ -24,12 +24,18 @@
   with the reason (this is the "SL-1 rerun" the BREAKGLASS protocol promises); all
   other human-required blockers still short-circuit. The closeout fallback
   re-derives the unowned remainder from live git when the reconciled blocked
-  snapshot carries no dirty summary, so the remainder is force-committed under the
-  audited reason. Secrets remain non-break-glassable and keep the phase blocked.
+  snapshot carries no dirty summary, **scoped to the remainder the prior closeout
+  recorded** (the paths the operator's reason attests to) intersected with what is
+  still dirty — so an unrelated live edit can never be force-committed under a reason
+  that named only the phase's remainder. Secrets remain non-break-glassable and keep
+  the phase blocked.
   The closeout commit is now **scoped to the accepted paths** (`git commit -- …`):
   previously a pathspec-less commit could sweep a pre-staged unrelated file — including
   a `.env`/secret the fallback deliberately excluded — into the commit, silently
-  defeating the secrets-never-break-glassable contract.
+  defeating the secrets-never-break-glassable contract. A **secret-only** break-glass
+  remainder now also keeps the sticky `closeout_scope_violation` (`human_required`)
+  gate instead of downgrading to a non-human `dirty_worktree_conflict`, so the loop
+  cannot silently leave the human gate and run automation against a secret-dirty tree.
 
 - **A valid planned repair closeout clears the stale blocker instead of looping
   repair (`ViperJuice/agent-harness#59`).** When a bounded repair child reshaped
@@ -43,7 +49,10 @@
   not on `blocker_class` alone. A genuinely un-repaired blocker still repairs, and a
   later blocking event — even one with no `child_automation` metadata (e.g. a
   runner-emitted `repeated_verification_failure`) — supersedes an earlier planned
-  child and does not clear.
+  child and does not clear. The evidence predicate is **fail-closed**: the
+  positive-signal fields (`status=planned`, `verification_status=not_run`, an empty
+  `dirty_paths` list, `human_required` present and not `true`) must all be present and
+  valid, so a truncated/partial child payload cannot clear a blocker.
 
 - **Explicit `--phase` consistency on the concurrent coordinator-waves selector.**
   `_select_parallel_dispatch_phase` did not accept a `phase` argument, so it could

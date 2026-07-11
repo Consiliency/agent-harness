@@ -6351,21 +6351,31 @@ def _planned_repair_closeout(automation: dict[str, object]) -> bool:
     # #59: the repair child reshaped the plan and emitted a VALID planned closeout —
     # planned + explicitly not_run, a clean tree (no dirty paths), no blocker, not
     # human-required. The signal that the stale non-human blocker is resolved and the
-    # phase should re-execute from the repaired plan rather than loop repair. Every
-    # field is required to be PRESENT and correct: a missing verification status or a
-    # missing/non-empty dirty-path list is not the #59 evidence and must not clear.
+    # phase should re-execute from the repaired plan rather than loop repair.
+    #
+    # Fail-CLOSED (CR): the load-bearing positive signals a valid planned-repair
+    # closeout ALWAYS emits non-null — `status=planned`, `verification_status=not_run`,
+    # and an empty `dirty_paths` LIST — are each required present-and-valid (an absent
+    # field yields None via `.get()` and fails its check). The human/blocker fields are
+    # deliberately NOT presence-required: the event ledger strips null values on
+    # serialization, so a clean closeout's `human_required=null` / `blocker_class=null`
+    # can be legitimately absent on read-back (this is exactly the #59 payload). A
+    # genuinely human-required child instead carries the non-null `"true"` rejected
+    # below, and a real blocker carries a non-null class; so absence is safe.
     if _phase_status_literal(automation.get("automation_status")) != "planned":
         return False
     if automation.get("automation_verification_status") != "not_run":
         return False
+    dirty = automation.get("dirty_paths")
+    if not isinstance(dirty, list) or dirty:
+        return False
+    # Not human-required: false / null / none / absent all pass; only an explicit
+    # `true` keeps the human gate.
     if str(automation.get("automation_human_required", "")).lower() == "true":
         return False
     if _optional_automation_literal(automation.get("automation_blocker_class")):
         return False
     if _optional_automation_literal(automation.get("automation_blocker_summary")):
-        return False
-    dirty = automation.get("dirty_paths")
-    if not isinstance(dirty, list) or dirty:
         return False
     return True
 
@@ -7661,6 +7671,26 @@ def _closeout_lane_ir_blocker(repo: Path, roadmap: Path, phase: str) -> dict[str
     }
 
 
+def _recorded_closeout_unowned_remainder(repo: Path, phase: str) -> frozenset[str]:
+    # #71 CR: an operator `--closeout-allow-unowned` reason attests to the unowned
+    # remainder the PRIOR closeout recorded — not to arbitrary live worktree dirt. On
+    # the break-glass rerun the reconciled blocked snapshot carries no dirty summary,
+    # so the fallback re-derives from live git; scope that re-derive to THIS recorded
+    # remainder so an unrelated edit the operator happens to have in the tree can never
+    # be force-committed under a reason that named only the phase's remainder.
+    for event in reversed(read_events(repo)):
+        if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        metadata = event.get("metadata")
+        closeout = metadata.get("closeout") if isinstance(metadata, dict) else None
+        if not isinstance(closeout, dict):
+            continue
+        recorded = closeout.get("unowned_dirty_paths") or closeout.get("closeout_unowned_remainder")
+        if recorded:
+            return frozenset(str(p) for p in recorded)
+    return frozenset()
+
+
 def _perform_phase_closeout(
     repo: Path,
     roadmap: Path,
@@ -7726,12 +7756,16 @@ def _perform_phase_closeout(
     # snapshot carries no dirty summary (the blocking closeout event records the
     # remainder under `closeout` metadata, not `completion_dirty_worktree`, so
     # reconcile surfaces empty `dirty_paths`). Re-derive the remainder from LIVE
-    # git ONLY when an operator reason is present, so the force-commit below has
-    # something to accept. With no reason this is a byte-identical no-op
-    # (`fallback_dirty_paths` is exactly `snapshot.dirty_paths`).
+    # git ONLY when an operator reason is present, and SCOPE it to the remainder the
+    # prior closeout actually recorded (the paths the operator's reason attests to),
+    # intersected with what is still dirty — so an unrelated live edit can never be
+    # force-committed under a reason that named only the phase's remainder. With no
+    # reason this is a byte-identical no-op (`fallback_dirty_paths` is exactly
+    # `snapshot.dirty_paths`).
     fallback_dirty_paths = snapshot.dirty_paths
     if break_glass_reason and not fallback_dirty_paths:
-        fallback_dirty_paths = tuple(_dirty_paths(repo))
+        attested_remainder = _recorded_closeout_unowned_remainder(repo, phase)
+        fallback_dirty_paths = tuple(p for p in _dirty_paths(repo) if p in attested_remainder)
     if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and fallback_dirty_paths:
         plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
         if plan_for_fallback is not None:
@@ -7783,7 +7817,7 @@ def _perform_phase_closeout(
                     unowned_remainder = unsafe_unowned
                     if unsafe_unowned:
                         metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
-                elif ownership_for_fallback.is_control_only and unsafe_unowned:
+                elif (ownership_for_fallback.is_control_only or break_glass_reason) and unsafe_unowned:
                     # CLOSEOUT (#42 / IF-0-CLOSEOUT-1): a verified control/backfill
                     # phase owns no files, so there is no owned subset to commit
                     # (commit_set is empty) — yet it produced UNSAFE unowned dirt
@@ -7795,6 +7829,15 @@ def _perform_phase_closeout(
                     # commit_set non-empty and divert to the `if` above); secrets are never
                     # folded into break_glass_unowned, so a secret stays in unsafe_unowned
                     # here and keeps blocking regardless of any reason.
+                    #
+                    # #71 CR (secret-only break-glass): the same must hold for a plan that
+                    # DOES own files when the operator supplied a break-glass reason but the
+                    # whole live remainder is secrets — commit_set is empty and the secret is
+                    # (correctly) never break-glassed, so without this the refuse branch would
+                    # fall through to a NON-human `dirty_worktree_conflict`, silently
+                    # DOWNGRADING the sticky human-required `closeout_scope_violation` gate.
+                    # Gating on `break_glass_reason` keeps the non-break-glass path
+                    # (missing_phase_owned_dirty_paths for an all-unowned tree) byte-identical.
                     unowned_remainder = unsafe_unowned
                     metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
     if not snapshot.phase_owned_dirty or not closeout_dirty_paths:

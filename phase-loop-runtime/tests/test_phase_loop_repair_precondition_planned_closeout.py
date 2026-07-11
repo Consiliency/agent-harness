@@ -190,6 +190,34 @@ def test_planned_child_missing_verification_status_does_not_clear(tmp_path):
     assert result["status"] != "cleared", result
 
 
+def test_planned_child_with_null_human_required_still_clears(tmp_path):
+    # #59 real-payload guard: the repair child emits `human_required: null`
+    # (parsed to the string "null"); the event ledger strips genuine None values, so
+    # a clean closeout may legitimately omit the blocker fields entirely. Presence of
+    # the load-bearing signals (planned / not_run / empty dirty_paths) is enough — a
+    # null/absent human_required must NOT block the clear (else #59 stays broken).
+    repo, roadmap, plan = _setup(tmp_path)
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase="CONTRACT",
+            action="repair", status="planned", model="gpt-5.6-terra",
+            reasoning_effort="medium", source="fixture",
+            metadata={"child_automation": {
+                "automation_status": "planned",
+                "automation_verification_status": "not_run",
+                "automation_human_required": "null",
+                # blocker_class / blocker_summary legitimately absent (null-stripped)
+                "dirty_paths": [],
+            }},
+            **event_provenance(roadmap, "CONTRACT"),
+        ),
+    )
+    snapshot = _blocked_snapshot(repo, roadmap, blocker_class="contract_bug")
+    result = repair_precondition_for_snapshot(repo, roadmap, "CONTRACT", plan, snapshot)
+    assert result["status"] == "cleared", result
+
+
 def test_human_required_contract_bug_still_sticky(tmp_path):
     # A human-required blocker is never cleared by the planned-repair path.
     repo, roadmap, plan = _setup(tmp_path)
