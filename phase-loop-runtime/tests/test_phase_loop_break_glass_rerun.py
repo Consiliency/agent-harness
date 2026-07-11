@@ -30,9 +30,10 @@ from pathlib import Path
 
 from phase_loop_runtime.events import append_event
 from phase_loop_runtime.models import LoopEvent, StateSnapshot, utc_now
+from phase_loop_runtime.profiles import resolve_profile
 from phase_loop_runtime.provenance import event_provenance, snapshot_provenance
 from phase_loop_runtime.reconcile import reconcile
-from phase_loop_runtime.runner import run_loop
+from phase_loop_runtime.runner import _perform_phase_closeout, run_loop
 from phase_loop_runtime.state import write_state
 from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 
@@ -171,6 +172,42 @@ def test_break_glass_rerun_never_commits_secret_even_with_reason(tmp_path):
 
     assert snapshot.phases["CONTRACT"] == "blocked"
     assert _git(repo, "rev-parse", "HEAD").strip() == head_before
+    assert ".env" in _git(repo, "status", "--short")
+
+
+def test_break_glass_commit_does_not_sweep_a_pre_staged_secret(tmp_path):
+    # CR finding (secret leak): a pathspec-less `git commit` swept a pre-STAGED
+    # unrelated `.env` into the closeout commit even though the fallback excluded it
+    # from closeout_dirty_paths — silently defeating secrets-never-break-glassable.
+    # The closeout must commit ONLY the accepted paths and never the operator's index.
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("owned_a.py",))
+    commit_fixture_paths(repo, "add CONTRACT plan", plan)
+    (repo / "owned_a.py").write_text("owned\n", encoding="utf-8")
+    (repo / "rogue.py").write_text("unowned source the operator accepts\n", encoding="utf-8")
+    # Operator has ALSO pre-staged an unrelated secret in the index.
+    (repo / ".env").write_text("API_TOKEN=supersecret\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".env"], check=True)
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"CONTRACT": "awaiting_phase_closeout"}, current_phase="CONTRACT",
+        phase_owned_dirty=False, phase_owned_dirty_paths=(),
+        dirty_paths=("owned_a.py", "rogue.py"),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "CONTRACT", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+        allow_unowned_reason="operator override for rogue.py only",
+    )
+
+    committed = _git(repo, "show", "--name-only", "--format=", "HEAD")
+    assert "owned_a.py" in committed and "rogue.py" in committed
+    # The pre-staged secret must NOT be swept into the commit.
+    assert ".env" not in committed
+    # ...and it is still present (staged) in the worktree, not silently discarded.
     assert ".env" in _git(repo, "status", "--short")
 
 

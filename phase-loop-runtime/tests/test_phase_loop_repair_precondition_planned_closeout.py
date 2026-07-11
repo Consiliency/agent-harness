@@ -134,6 +134,62 @@ def test_later_blocked_child_supersedes_planned_evidence(tmp_path):
     assert result["status"] != "cleared", result
 
 
+def _append_plain_blocked(repo: Path, roadmap: Path, *, blocker_class="repeated_verification_failure"):
+    # A runner-emitted blocker carries NO child_automation metadata (unlike a child
+    # closeout). It must still supersede an earlier planned child.
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase="CONTRACT",
+            action="execute", status="blocked", model="gpt-5.6-terra",
+            reasoning_effort="medium", source="fixture",
+            blocker={
+                "human_required": False, "blocker_class": blocker_class,
+                "blocker_summary": "fresh live failure after the repair",
+                "required_human_inputs": (), "access_attempts": (),
+            },
+            **event_provenance(roadmap, "CONTRACT"),
+        ),
+    )
+
+
+def test_later_plain_blocked_event_without_child_automation_supersedes_planned(tmp_path):
+    # CR finding: the reader must not skip past a later blocked event that carries no
+    # child_automation and then clear on an earlier planned child.
+    repo, roadmap, plan = _setup(tmp_path)
+    _append_child_automation(repo, roadmap, status="planned", verification_status="not_run")
+    _append_plain_blocked(repo, roadmap)
+    snapshot = _blocked_snapshot(repo, roadmap, blocker_class="repeated_verification_failure")
+    result = repair_precondition_for_snapshot(repo, roadmap, "CONTRACT", plan, snapshot)
+    assert result["status"] != "cleared", result
+
+
+def test_planned_child_missing_verification_status_does_not_clear(tmp_path):
+    # CR finding: a planned child whose verification_status is absent is not the #59
+    # evidence and must not clear.
+    repo, roadmap, plan = _setup(tmp_path)
+    append_event(
+        repo,
+        LoopEvent(
+            timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase="CONTRACT",
+            action="repair", status="planned", model="gpt-5.6-terra",
+            reasoning_effort="medium", source="fixture",
+            metadata={"child_automation": {
+                "automation_status": "planned",
+                # verification_status intentionally omitted
+                "automation_human_required": "false",
+                "automation_blocker_class": None,
+                "automation_blocker_summary": None,
+                "dirty_paths": [],
+            }},
+            **event_provenance(roadmap, "CONTRACT"),
+        ),
+    )
+    snapshot = _blocked_snapshot(repo, roadmap, blocker_class="contract_bug")
+    result = repair_precondition_for_snapshot(repo, roadmap, "CONTRACT", plan, snapshot)
+    assert result["status"] != "cleared", result
+
+
 def test_human_required_contract_bug_still_sticky(tmp_path):
     # A human-required blocker is never cleared by the planned-repair path.
     repo, roadmap, plan = _setup(tmp_path)

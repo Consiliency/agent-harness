@@ -2,11 +2,17 @@
 scheduler (coordinator-waves) path.
 
 The serial selector ``_select_ready_phase(repo, roadmap, classifications, phase)``
-already honors an explicit phase, but the concurrent coordinator-waves selector
-``_select_parallel_dispatch_phase(coordinator_waves, classifications)`` silently
-dropped it — wave order picked the phase instead, and a fully-blocked earlier wave
-halted the loop even when the operator asked for a ready independent phase in a
-later wave.
+already honors an explicit phase; the concurrent coordinator-waves selector
+``_select_parallel_dispatch_phase`` did not accept a ``phase`` argument at all, so it
+could only pick by wave order and a fully-blocked earlier wave halted the loop.
+
+Reachability note (CR): today ``coordinator_waves`` is populated only when ``phase``
+is ``None`` (its derivation is gated on ``phase is None``), so through ``run_loop``
+this selector is never called with an explicit phase — the explicit-phase case is
+served by ``_select_ready_phase``. Threading ``phase`` here is therefore a
+**defensive consistency** guarantee (the helper honors an explicit phase, bounded to
+the wave structure, if that invariant ever changes), not a fix for a currently
+reachable production defect. These tests pin the helper's contract directly.
 """
 
 from __future__ import annotations

@@ -4413,6 +4413,13 @@ def run_loop(
                 if wave_signal == "dispatched":
                     continue
                 # "serial": fall through to single-phase dispatch below.
+            # NOTE (lane d): today `coordinator_waves` is non-empty only when `phase`
+            # is None (see its derivation, gated on `phase is None`), so this branch
+            # is reached with `phase=None` and the explicit-phase case is served by
+            # `_select_ready_phase` below. Passing `phase` here is a defensive
+            # consistency guarantee: if that invariant ever changes, the wave selector
+            # honors an explicit phase (bounded to the wave structure) exactly as the
+            # serial selector does, rather than silently dropping it.
             alias = (
                 _select_parallel_dispatch_phase(coordinator_waves, classifications, phase)
                 if coordinator_waves
@@ -6342,12 +6349,14 @@ def _latest_verified_dirty_child_automation(repo: Path, phase: str) -> dict[str,
 
 def _planned_repair_closeout(automation: dict[str, object]) -> bool:
     # #59: the repair child reshaped the plan and emitted a VALID planned closeout —
-    # planned/not_run, a clean tree (no dirty paths), no blocker, not human-required.
-    # The signal that the stale non-human blocker is resolved and the phase should
-    # re-execute from the repaired plan rather than loop repair.
+    # planned + explicitly not_run, a clean tree (no dirty paths), no blocker, not
+    # human-required. The signal that the stale non-human blocker is resolved and the
+    # phase should re-execute from the repaired plan rather than loop repair. Every
+    # field is required to be PRESENT and correct: a missing verification status or a
+    # missing/non-empty dirty-path list is not the #59 evidence and must not clear.
     if _phase_status_literal(automation.get("automation_status")) != "planned":
         return False
-    if automation.get("automation_verification_status") not in (None, "not_run"):
+    if automation.get("automation_verification_status") != "not_run":
         return False
     if str(automation.get("automation_human_required", "")).lower() == "true":
         return False
@@ -6356,24 +6365,26 @@ def _planned_repair_closeout(automation: dict[str, object]) -> bool:
     if _optional_automation_literal(automation.get("automation_blocker_summary")):
         return False
     dirty = automation.get("dirty_paths")
-    if isinstance(dirty, list) and dirty:
+    if not isinstance(dirty, list) or dirty:
         return False
     return True
 
 
 def _latest_planned_repair_child_automation(repo: Path, phase: str) -> dict[str, object] | None:
-    # #59: consult ONLY the most recent child automation for the phase — a later
-    # blocked/interrupted repair must NOT be cleared by an earlier planned closeout.
+    # #59: clear ONLY when the most recent DECISIVE event for the phase is a valid
+    # planned repair closeout. A later blocked / blocker event — even one that carries
+    # no `child_automation` (e.g. a runner-emitted repeated_verification_failure) —
+    # supersedes an earlier planned child and must NOT clear. Walk newest→oldest and
+    # decide on the first decisive event: a `child_automation` payload or a block.
     for event in reversed(read_events(repo)):
         if str(event.get("phase", "")).upper() != phase.upper():
             continue
         metadata = event.get("metadata")
-        if not isinstance(metadata, dict):
-            continue
-        automation = metadata.get("child_automation")
-        if not isinstance(automation, dict):
-            continue
-        return dict(automation) if _planned_repair_closeout(automation) else None
+        automation = metadata.get("child_automation") if isinstance(metadata, dict) else None
+        if isinstance(automation, dict):
+            return dict(automation) if _planned_repair_closeout(automation) else None
+        if event.get("status") == "blocked" or event.get("blocker"):
+            return None
     return None
 
 
@@ -7949,7 +7960,15 @@ def _perform_phase_closeout(
                     # constructor). The early return SKIPS the commit — a block must
                     # not commit — but reuses the canonical event shape.
                     return status, _closeout_event()
-                commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
+                # SECURITY (#71 CR): commit ONLY the closeout paths, never the whole
+                # index. A pathspec-less `git commit` sweeps in any pre-staged
+                # unrelated file — including a `.env`/secret the fallback deliberately
+                # excluded from `closeout_dirty_paths` — silently defeating the
+                # secrets-never-break-glassable contract. Scoping the commit to the
+                # exact accepted paths isolates it from the operator's index state.
+                commit_result = _run_git_closeout(
+                    repo, "commit", "-F", "-", "--", *closeout_dirty_paths, input_text=commit_message
+                )
                 if commit_result.returncode != 0:
                     status, blocker = _commit_failure_closeout(
                         metadata,
