@@ -72,9 +72,33 @@ def _seat_for(vendor: str, lens: str) -> Seat:
     return Seat(model=spec["model"], effort=spec["effort"], harness=spec["harness"], lens=lens)
 
 
+def default_board_auth_ok(vendor: str) -> bool:
+    """Production auth gate for a board vendor (REVIEWGOV-W1 / #151).
+
+    Reuses the executor's OWN cached, timeout-bounded, fail-closed ``auth_ok`` — the
+    closure ``capability_registry`` binds onto each record, which wraps
+    ``executor_availability.auth_ok_for`` over that record's
+    ``auth_preflight_probes`` (the same probes ``run_auth_preflight`` uses). So the
+    board's auth verdict is single-sourced with the dispatch path's, cached across
+    the board's seats, and never re-implements probing. A board vendor with no
+    registered capability record, or whose gate raises, fails CLOSED (treated as
+    unauthed → dropped → backfilled). The board vendors (grok/claude/codex/gemini)
+    map 1:1 onto executor names. Import is function-local to avoid the
+    ``advisor_board`` ↔ ``capability_registry`` import cycle."""
+    from ..capability_registry import capability_registry
+
+    try:
+        gate = capability_registry().get(vendor)
+        auth_ok = getattr(gate, "auth_ok", None) if gate is not None else None
+        return bool(auth_ok()) if auth_ok is not None else False
+    except Exception:
+        return False
+
+
 def compose_review_board(
     *,
     is_available: Callable[[str], bool] | None = None,
+    auth_ok: Callable[[str], bool] | None = None,
     target: int = DEFAULT_TARGET_SEATS,
     floor: int = FLOOR_SEATS,
     name: str = "code-review",
@@ -82,19 +106,49 @@ def compose_review_board(
 ) -> Board:
     """Compose the availability-aware review board.
 
-    ``is_available(vendor) -> bool`` decides which vendors are up; it defaults to
-    the advisor-board's canonical PATH probe
-    (``DEFAULT_HARNESS_REGISTRY.is_available``) so composition is registration-
-    driven and grok is probed exactly like codex/gemini/claude. Inject it in tests
-    to simulate 4/3/2/1 vendors up.
+    A vendor is seated only when it is BOTH reachable AND authenticated —
+    composition gates on ``is_available ∧ auth_ok`` (REVIEWGOV IF-0-REVIEWGOV-1 /
+    #151). A PATH-present-but-unauthenticated vendor (e.g. a ``grok`` binary on PATH
+    with no logged-in session) is treated as **down**: it is dropped and its seat is
+    backfilled onto an authenticated vendor with a distinct lens, exactly like a
+    PATH-absent vendor. This closes the hole where the board composed on PATH alone
+    and seated a vendor whose leg would then fail-closed to DEGRADED.
+
+    ``is_available(vendor) -> bool`` decides reachability; it defaults to the
+    advisor-board's canonical PATH probe (``DEFAULT_HARNESS_REGISTRY.is_available``)
+    so composition is registration-driven and grok is probed exactly like
+    codex/gemini/claude.
+
+    ``auth_ok(vendor) -> bool`` decides authentication; it defaults to
+    ``default_board_auth_ok`` (the cached, timeout-bounded, fail-closed
+    ``auth_ok_for`` gate), so the production default is genuinely auth-aware.
+
+    **Test affordance (documented coupling, not the general contract):** when
+    ``is_available`` is INJECTED but ``auth_ok`` is not, auth defaults to
+    pass-through (every vendor treated authed) so an availability-SIMULATION caller
+    fully owns the gate and never shells out to the real auth probe. Inject
+    ``auth_ok`` explicitly to simulate the auth dimension. The all-vendors-up static
+    presets (``presets.CODE_REVIEW_BOARD``, ``resolver._STANDIN_CODE_REVIEW``) rely
+    on this so their module-import composition stays hermetic. Any NON-test caller
+    that injects ``is_available`` alone therefore opts OUT of auth gating — pass
+    ``auth_ok`` (e.g. ``default_board_auth_ok``) to keep it.
 
     Returns a ``Board`` of exactly ``target`` seats whenever ≥1 vendor is available
-    (never fewer than ``floor``); an empty board only when NO vendor is available.
+    and authed (never fewer than ``floor``); an empty board only when NO vendor is
+    both up and authed.
     """
     if target < floor:
         raise ValueError(f"target {target} is below the floor {floor}")
-    probe = is_available if is_available is not None else DEFAULT_HARNESS_REGISTRY.is_available
-    available = [v for v in _VENDOR_ORDER if probe(v)]
+    avail_probe = is_available if is_available is not None else DEFAULT_HARNESS_REGISTRY.is_available
+    if auth_ok is not None:
+        auth_probe = auth_ok
+    elif is_available is not None:
+        # Injected availability owns the gate: auth defaults to pass-through so a
+        # simulation caller never shells out (see docstring test affordance).
+        auth_probe = lambda _vendor: True  # noqa: E731
+    else:
+        auth_probe = default_board_auth_ok
+    available = [v for v in _VENDOR_ORDER if avail_probe(v) and auth_probe(v)]
     if not available:
         # Nothing to compose — the caller's run degrades wholesale. (The floor is a
         # count of INDEPENDENT reviewers to seat on AVAILABLE vendors; with zero up
@@ -174,6 +228,7 @@ def board_independence(board: Board) -> BoardIndependence:
 
 __all__ = [
     "compose_review_board",
+    "default_board_auth_ok",
     "LENS_CYCLE",
     "DEFAULT_TARGET_SEATS",
     "FLOOR_SEATS",

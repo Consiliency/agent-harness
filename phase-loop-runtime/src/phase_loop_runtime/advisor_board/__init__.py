@@ -86,6 +86,7 @@ from .composition import (
     BoardIndependence,
     board_independence,
     compose_review_board,
+    default_board_auth_ok,
 )
 from .presets import (
     CODE_REVIEW_BOARD,
@@ -229,6 +230,7 @@ __all__ = [
     "get_preset",
     # composition (availability-aware 4-vendor board)
     "compose_review_board",
+    "default_board_auth_ok",
     "board_independence",
     "BoardIndependence",
     "LENS_CYCLE",

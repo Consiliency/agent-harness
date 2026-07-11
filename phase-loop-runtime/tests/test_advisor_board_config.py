@@ -87,6 +87,26 @@ class CodeReviewAvailabilityAwareTests(unittest.TestCase):
         self.assertEqual(len(board.seats), 4)
         self.assertTrue(all(s.harness in {"claude", "codex"} for s in board.seats))
 
+    def test_auth_ok_opt_in_drops_an_unauthed_vendor_on_the_live_path(self) -> None:
+        # REVIEWGOV-W1 / #151: passing ``auth_ok`` makes the LIVE convening path
+        # auth-aware — a PATH-present-but-unauthed vendor (grok) is dropped and
+        # backfilled, exactly like a PATH-absent one. Availability all-up, grok
+        # unauthed.
+        matrix = default_matrix(probe=lambda cli: True, env={})
+        board = load_boards(
+            self._NONEXISTENT, matrix=matrix,
+            auth_ok=lambda v: v != "grok",
+        ).get("code-review")
+        self.assertEqual(len(board.seats), 4)                       # never choked
+        self.assertTrue(all(s.harness != "grok" for s in board.seats))
+
+    def test_auth_ok_omitted_keeps_the_board_availability_only(self) -> None:
+        # Back-compat + hermetic: with no ``auth_ok`` the composed board is
+        # availability-only (grok on PATH stays seated; no real auth probe runs).
+        matrix = default_matrix(probe=lambda cli: True, env={})
+        board = load_boards(self._NONEXISTENT, matrix=matrix).get("code-review")
+        self.assertEqual({s.harness for s in board.seats}, {"grok", "claude", "codex", "gemini"})
+
     def test_user_defined_code_review_overrides_the_composed_board(self) -> None:
         # A user board named code-review wins over availability-aware composition.
         body = """

@@ -168,6 +168,7 @@ def load_boards(
     matrix: Any | None = None,
     validate: bool = True,
     is_available: "Callable[[str], bool] | None" = None,
+    auth_ok: "Callable[[str], bool] | None" = None,
 ) -> BoardConfig:
     """Load the board config, layering user boards over the built-in presets.
 
@@ -185,6 +186,15 @@ def load_boards(
     availability view is single-sourced) and otherwise defaults to the advisor-
     board PATH probe. Composition happens BEFORE the user overlay, so a
     user-defined ``code-review`` board still wins.
+
+    ``auth_ok(vendor) -> bool`` (REVIEWGOV-W1 / #151) additionally gates the
+    composed ``code-review`` board on AUTHENTICATION so a PATH-present-but-unauthed
+    vendor is dropped and backfilled. It is **opt-in**: when omitted the composed
+    board stays availability-only (back-compat, and hermetic — it never shells out
+    to the real auth probe during a plain ``load_boards`` call). A caller convening
+    a real board (e.g. the ``advisor-board`` CLI) passes
+    ``advisor_board.default_board_auth_ok`` to make the live path genuinely
+    auth-aware.
     """
     boards: dict[str, Board] = dict(PRESETS)
     default_board = DEFAULT_BOARD_NAME
@@ -193,7 +203,12 @@ def load_boards(
     compose_probe = is_available
     if compose_probe is None and matrix is not None:
         compose_probe = getattr(getattr(matrix, "harnesses", None), "is_available", None)
-    composed_review = compose_review_board(is_available=compose_probe)
+    # Auth gate is OPT-IN (default availability-only, hermetic + back-compat). When
+    # a probe IS injected for availability but no ``auth_ok`` is passed, hand the
+    # composer an explicit pass-through so it never falls through to the real,
+    # subprocess-backed auth default on this loader path.
+    compose_auth = auth_ok if auth_ok is not None else (lambda _vendor: True)
+    composed_review = compose_review_board(is_available=compose_probe, auth_ok=compose_auth)
     boards[composed_review.name] = composed_review
 
     cfg_path = path if path is not None else board_config_path(env)
