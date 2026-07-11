@@ -88,6 +88,25 @@ def test_authentication_fails_before_resolver_construction() -> None:
         server.server_close()
 
 
+def test_authenticated_empty_body_is_rejected_before_resolver_construction() -> None:
+    calls: list[int] = []
+    server = _server(calls=calls)
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/v1/task-message/probe",
+            data=b"",
+            method="POST",
+            headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as exc:
+            urlopen(request, timeout=1)
+        assert exc.value.code == 400
+        assert calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_resolve_streams_exact_heartbeats_then_terminal_result() -> None:
     server = _server(delay=0.025)
     try:

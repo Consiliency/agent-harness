@@ -155,10 +155,10 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
 
         def _read_payload(self) -> dict[str, object]:
             raw_length = self.headers.get("Content-Length", "")
-            if not raw_length.isdigit() or not 0 <= int(raw_length) <= MAX_REQUEST_BYTES:
+            if not raw_length.isdigit() or not 0 < int(raw_length) <= MAX_REQUEST_BYTES:
                 raise ValueError
             raw = self.rfile.read(int(raw_length))
-            value = decode_strict_json(raw or b"{}")
+            value = decode_strict_json(raw)
             if not isinstance(value, dict):
                 raise ValueError
             return value
