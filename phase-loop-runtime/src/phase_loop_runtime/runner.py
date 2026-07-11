@@ -7950,7 +7950,18 @@ def _perform_phase_closeout(
         # is untouched. The governed panel then reviews, and the pathspec-less commit
         # below then commits, the EXACT isolated staged index: "reviewed == committed"
         # by construction, and nothing outside `closeout_dirty_paths` can ever land.
-        _run_git_closeout(repo, "reset", "--quiet", "HEAD")
+        reset_result = _run_git_closeout(repo, "reset", "--quiet", "HEAD")
+        if reset_result.returncode != 0:
+            # Fail-CLOSED (CR): if index isolation itself fails, do NOT proceed to a
+            # commit that could still carry pre-staged content — surface it as a commit
+            # failure rather than committing an un-isolated index.
+            status, blocker = _commit_failure_closeout(
+                metadata,
+                stage="index_isolation",
+                returncode=reset_result.returncode,
+                stderr=reset_result.stderr or reset_result.stdout,
+            )
+            return status, _closeout_event()
         add_result = _run_git_closeout(repo, "add", "--", *closeout_dirty_paths)
         if add_result.returncode != 0:
             status, blocker = _commit_failure_closeout(
@@ -8000,6 +8011,9 @@ def _perform_phase_closeout(
                 # block returns a non-human review_gate_block and does NOT commit. The
                 # nothing-staged no-op finalize (issue #6) is handled above and never
                 # reaches here, so the gate never blocks a legitimate empty commit.
+                # Capture the exact staged tree the panel is about to review so the
+                # commit can prove it is byte-identical (below).
+                reviewed_tree = _git_output(repo, "write-tree")
                 _governed = _governed_premerge_review(
                     repo, roadmap, phase, plan, terminal_status,
                     closeout_dirty_paths, snapshot.terminal_summary, run_mode,
@@ -8016,6 +8030,18 @@ def _perform_phase_closeout(
                     # CR #9: emit via the single shared builder (no duplicated event
                     # constructor). The early return SKIPS the commit — a block must
                     # not commit — but reuses the canonical event shape.
+                    return status, _closeout_event()
+                # reviewed == committed (CR): if anything (a hook, a concurrent
+                # process) changed the staged index during the review window, the tree
+                # hash will differ — refuse to commit unreviewed bytes rather than land
+                # them. In the autonomous no-op-review path this is trivially equal.
+                if _git_output(repo, "write-tree") != reviewed_tree:
+                    status, blocker = _commit_failure_closeout(
+                        metadata,
+                        stage="index_drift_after_review",
+                        returncode=1,
+                        stderr="staged index changed between governed review and commit",
+                    )
                     return status, _closeout_event()
                 # Commit the STAGED index (pathspec-less), which the index-isolation
                 # above narrowed to exactly the reviewed closeout paths. A pathspec
@@ -8287,12 +8313,10 @@ def _closeout_nothing_staged(repo: Path, paths: tuple[str, ...] = ()) -> bool:
     branch" (a successful no-op finalize, issue #6) from a real commit failure. `git
     diff --cached --quiet` exits 0 when there are no staged changes, 1 when there are.
 
-    Scoped to the closeout ``paths`` (CR): the closeout commit is path-scoped
-    (``git commit -- <paths>``), so this no-op check must ask "are the CLOSEOUT paths
-    already committed" and ignore any unrelated staged file the scoped commit would
-    never touch — otherwise an unrelated staged file makes the whole-index check see
-    "something staged", diverting a valid already-committed closeout into the commit
-    branch where the scoped commit then fails with "nothing to commit".
+    Scoped to the closeout ``paths`` (CR): the closeout stages only these paths onto
+    an isolated index, so this no-op check asks "are the CLOSEOUT paths already
+    committed" specifically. (With index isolation the whole-index check would agree,
+    but scoping keeps the no-op decision correct and independent of that isolation.)
     """
     args = ["diff", "--cached", "--quiet"]
     if paths:

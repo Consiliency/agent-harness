@@ -318,6 +318,45 @@ def test_closeout_commits_reviewed_staged_bytes_not_worktree(tmp_path, monkeypat
     assert "UNREVIEWED" not in committed_bytes
 
 
+def test_closeout_refuses_when_index_drifts_during_review(tmp_path, monkeypatch):
+    # CR (reviewed == committed, index drift): if a hook/concurrent process STAGES
+    # different bytes during the governed review window, the closeout must refuse to
+    # commit the unreviewed index rather than land it.
+    import phase_loop_runtime.runner as runner_mod
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("owned_a.py",))
+    commit_fixture_paths(repo, "add CONTRACT plan", plan)
+    (repo / "owned_a.py").write_text("REVIEWED bytes\n", encoding="utf-8")
+    head_before = _git(repo, "rev-parse", "HEAD").strip()
+
+    def stage_tamper_then_pass(*_args, **_kwargs):
+        # Stage different bytes into the index during the review window.
+        (repo / "owned_a.py").write_text("UNREVIEWED tampered bytes\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "owned_a.py"], check=True)
+        return None  # no governed block
+
+    monkeypatch.setattr(runner_mod, "_governed_premerge_review", stage_tamper_then_pass)
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"CONTRACT": "awaiting_phase_closeout"}, current_phase="CONTRACT",
+        phase_owned_dirty=True, phase_owned_dirty_paths=("owned_a.py",),
+        dirty_paths=("owned_a.py",),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "CONTRACT", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+    )
+
+    # Refused: no commit of the drifted (unreviewed) index.
+    assert status != "complete"
+    assert _git(repo, "rev-parse", "HEAD").strip() == head_before
+    assert event.metadata["closeout"]["commit_failure"]["stage"] == "index_drift_after_review"
+
+
 def test_break_glass_reason_does_not_break_through_non_closeout_blocker(tmp_path):
     # A non-break-glassable human-required blocker (missing_secret) still short-circuits
     # even with a reason — break-through is scoped to closeout_scope_violation.
