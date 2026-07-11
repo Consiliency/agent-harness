@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, ClassVar, Iterable
 
 
 PHASE_STATUSES = (
@@ -1759,6 +1759,50 @@ class ExecutorCapabilityRecord:
     default_claude_execution_mode: str | None = None
     claude_execution_policies: tuple["ClaudeTeamPolicy", ...] = ()
 
+    # EXECREG (IF-0-EXECREG-1): registry-driven launch / availability / auth /
+    # provider-backing / session capture. These are runtime bindings, NOT dataclass
+    # fields — declared as ClassVar so `dataclasses.fields()` / `asdict()` /
+    # `replace()` / `__eq__` never see them (so `json.dumps(asdict(record))` can
+    # never trip over a function object, and record equality is unaffected). Every
+    # record exposes them as attributes defaulting to None; `capability_registry()`
+    # attaches per-record callables via `bind_runtime()` (which uses
+    # `object.__setattr__`, the frozen-dataclass escape hatch). The callables live
+    # in `launcher` / `executor_availability`, bound lazily to avoid the
+    # launcher<->capability_registry import cycle. `build_launch_spec` delegates to
+    # `build_command`; adding an executor is a record addition, not an if-branch edit.
+    build_command: ClassVar[Callable[["LaunchRequest", "ExecutorCapabilityRecord"], Any] | None] = None
+    is_available: ClassVar[Callable[[], bool] | None] = None
+    auth_ok: ClassVar[Callable[[], bool] | None] = None
+    provider_backing: ClassVar[Any] = None
+    get_session_transcript: ClassVar[Callable[["LaunchRequest"], Any] | None] = None
+
+    _RUNTIME_BINDINGS: ClassVar[tuple[str, ...]] = (
+        "build_command",
+        "is_available",
+        "auth_ok",
+        "provider_backing",
+        "get_session_transcript",
+    )
+
+    def bind_runtime(self, **bindings: Any) -> "ExecutorCapabilityRecord":
+        """Return a copy of this record with EXECREG runtime callables attached as
+        instance attributes (via ``object.__setattr__`` — the frozen escape hatch).
+        They are not dataclass fields, so they never enter ``asdict`` / ``replace`` /
+        equality. Bindings already present on ``self`` are CARRIED FORWARD (``replace``
+        copies only fields, not these instance attrs), so a partial re-bind overrides
+        only the named bindings and never silently drops the others. Unknown binding
+        names are rejected loudly."""
+        unknown = set(bindings) - set(self._RUNTIME_BINDINGS)
+        if unknown:
+            raise ValueError(f"unknown runtime binding(s): {sorted(unknown)}")
+        clone = replace(self)
+        for name in self._RUNTIME_BINDINGS:
+            if name in bindings:
+                object.__setattr__(clone, name, bindings[name])
+            elif name in self.__dict__:  # a binding already set on self -> preserve it
+                object.__setattr__(clone, name, self.__dict__[name])
+        return clone
+
     def __post_init__(self) -> None:
         require_literal(self.executor, EXECUTORS, "executor")
         require_literal(self.injection_mode, INJECTION_MODES, "injection mode")
@@ -1780,6 +1824,9 @@ class ExecutorCapabilityRecord:
             require_literal(profile, MODEL_PROFILES, "default model profile")
 
     def to_json(self) -> dict[str, Any]:
+        # The EXECREG runtime callables are ClassVar bindings, not dataclass fields,
+        # so asdict() never includes them — the metadata JSON is exactly what it was
+        # before those bindings existed (no function objects).
         return clean_dict(asdict(self))
 
 

@@ -6,6 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+- **Registry-driven launch dispatch (EXECDISPATCH EXECREG, IF-0-EXECREG-1).**
+  `ExecutorCapabilityRecord` (`models.py`) now carries optional
+  `build_command` / `is_available` / `auth_ok` / `provider_backing` /
+  `get_session_transcript` fields, and `build_launch_spec` delegates to the
+  record's `build_command` instead of a hardcoded `if request.executor == …`
+  if-branch chain. Runnable-command construction for every executor (codex,
+  claude, gemini, opencode, pi, command, manual) is now a per-record build
+  function; adding an executor is a capability-record addition, not a dispatch
+  edit. Behavior is spec-identical — a normalized `LaunchSpec` golden (every
+  field except the two pass-through preamble objects, `prompt_bundle` /
+  `injection_metadata`, which a single shared helper computes identically for all
+  executors) is asserted byte-identical for every executor across codex, gemini,
+  opencode, pi, command, manual and the claude agent_view / channel / print route
+  paths; the golden was regenerated on the pre-refactor base and proven to match
+  the refactored output byte-for-byte. Availability (PATH probe) and auth (cached,
+  bounded probe gate) live
+  in the new `executor_availability` module and are dormant until AUTOSEL. No
+  default-executor or runtime behavior change.
+
 - **SPIKE-DISSECT research artifacts (EXECDISPATCH Phase 3, gate IF-0-DISSECT-1).**
   Added a research-only spike under `spikes/execdispatch-dissect/` — a versioned
   tool-usage-profile schema (`schema.v0.draft.json` → frozen `schema.v1.json`), a

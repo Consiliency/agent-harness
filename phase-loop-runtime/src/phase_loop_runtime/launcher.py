@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any
+from typing import Any, Callable
 
 from .capability_registry import capability_registry
 from .claude_agent_view import ClaudeAgentViewAdapter, AgentViewLifecycleResult, workspace_trust_state
@@ -24,6 +24,7 @@ from .models import (
     ClaudeTeamPolicy,
     DelegationRequest,
     DispatchDecision,
+    ExecutorCapabilityRecord,
     HarnessLaneAssignment,
     PhaseTeamEligibility,
     InjectionMetadata,
@@ -760,29 +761,106 @@ def build_launch_request(
     )
 
 
-def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
-    capability = capability_registry()[request.executor]
+def _launch_preamble(request: LaunchRequest):
+    """Executor-agnostic launch preamble (pure fn of request). Extracted so every
+    per-executor build_command reproduces it byte-identically (EXECREG lane b)."""
     closeout_schema = _closeout_schema_for_request(request)
     prompt_bundle = _prompt_bundle_with_closeout_schema(request.executor, request.prompt_bundle, closeout_schema)
     injection_metadata = _injection_metadata_for_prompt_bundle(request.injection_metadata, prompt_bundle)
-    if request.executor == "codex":
-        command = build_codex_command(
-            request.repo,
-            request.model_selection,
-            prompt_bundle.render_prompt(),
-            json_output=request.json_output,
-            bypass_approvals=request.bypass_approvals,
-            closeout_schema=closeout_schema,
-        )
+    return closeout_schema, prompt_bundle, injection_metadata
+
+
+def build_codex_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
+    capability = record
+    closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
+    command = build_codex_command(
+        request.repo,
+        request.model_selection,
+        prompt_bundle.render_prompt(),
+        json_output=request.json_output,
+        bypass_approvals=request.bypass_approvals,
+        closeout_schema=closeout_schema,
+    )
+    return LaunchSpec(
+        executor="codex",
+        command=command,
+        prompt_bundle=prompt_bundle,
+        injection_metadata=injection_metadata,
+        delivery_mode=injection_metadata.injection_mode,
+        dispatch_decision=request.dispatch_decision,
+        available=True,
+        harness_lane_assignment=request.harness_lane_assignment,
+        live_proof_gate=capability.live_proof_gate,
+        promotion_status=capability.promotion_status,
+        promotion_requirements=capability.promotion_requirements,
+        auth_preflight_mode=capability.auth_preflight_mode,
+        auth_preflight_probes=capability.auth_preflight_probes,
+        timeout_posture=capability.timeout_posture,
+        output_capture_format=capability.output_capture_format,
+        terminal_summary_artifact=capability.terminal_summary_artifact,
+        permission_posture=capability.permission_posture,
+        selected_model=request.model_selection.model,
+        selected_effort=request.model_selection.effort,
+        profile_source=request.model_selection.source,
+        override_reason=request.model_selection.override_reason,
+        wrapped_cwd=str(request.repo),
+        launch_timeout_seconds=request.launch_timeout_seconds,
+        # No build-time temp to clean (#63): the command holds a placeholder;
+        # the real path is materialized + cleaned at launch from the resolved
+        # command. cleanup_paths stays empty here.
+        cleanup_paths=(),
+        codex_output_schema=closeout_schema,
+    )
+
+
+def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
+    capability = record
+    closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
+    delivery_mode = "context_file" if _claude_uses_context_file(prompt_bundle) else injection_metadata.injection_mode
+    route_selection = resolve_claude_route()
+    claude_policy = request.claude_team_policy or _claude_policy_for_mode(
+        capability,
+        request.claude_execution_mode or capability.default_claude_execution_mode or "solo",
+    )
+    eligibility = request.phase_team_eligibility or classify_phase_team_eligibility(request.repo, request.roadmap, request.plan)
+    policy_error = _claude_team_policy_error(
+        action=request.action,
+        execution_mode=request.claude_execution_mode or "solo",
+        policy=claude_policy,
+        eligibility=eligibility,
+    )
+    route_error = route_selection.error
+    if route_error is None and route_selection.route == "claude_channel":
+        # DFCHPREFLIGHT (IF-0-DFCHPREFLIGHT-1): a Channel route launch requires
+        # a session id AND a loopback sidecar URL. Missing/blocked prerequisites
+        # reduce to a metadata-only route blocker here (no claude -p built), not
+        # a deferred failure at sidecar-client construction.
+        # Guard on `route_error is None` so a route-resolution error (e.g. the
+        # DFCHROUTE CI-requires-explicit-route block) is not overwritten by the
+        # more-specific channel prerequisite message.
+        if not route_selection.session_id:
+            route_error = "Claude Channel route requires PHASE_LOOP_CHANNEL_SESSION_ID or PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID."
+        elif not is_loopback_http_url(route_selection.sidecar_url or ""):
+            # NB: resolve_claude_route already defaults an UNSET URL to the
+            # loopback default, so an empty value here means the operator
+            # explicitly set PHASE_LOOP_CLAUDE_CHANNEL_URL= (blank) — that is a
+            # misconfiguration and must block, not silently use the default.
+            route_error = (
+                "Claude Channel route requires a loopback sidecar URL "
+                f"({route_selection.sidecar_url or '<empty>'}); remote/non-loopback transport is blocked."
+            )
+    if policy_error is not None:
         return LaunchSpec(
-            executor="codex",
-            command=command,
+            executor="claude",
+            command=_stub_command(request, policy_error),
             prompt_bundle=prompt_bundle,
             injection_metadata=injection_metadata,
-            delivery_mode=injection_metadata.injection_mode,
+            delivery_mode=delivery_mode,
             dispatch_decision=request.dispatch_decision,
-            available=True,
+            available=False,
             harness_lane_assignment=request.harness_lane_assignment,
+            dry_run_only=False,
+            reason=policy_error,
             live_proof_gate=capability.live_proof_gate,
             promotion_status=capability.promotion_status,
             promotion_requirements=capability.promotion_requirements,
@@ -798,209 +876,63 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             override_reason=request.model_selection.override_reason,
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
-            # No build-time temp to clean (#63): the command holds a placeholder;
-            # the real path is materialized + cleaned at launch from the resolved
-            # command. cleanup_paths stays empty here.
-            cleanup_paths=(),
-            codex_output_schema=closeout_schema,
+            claude_execution_mode=request.claude_execution_mode or "solo",
+            claude_team_policy=claude_policy,
+            phase_team_eligibility=eligibility,
+            claude_route=route_selection.route,
+            claude_route_reason=route_selection.reason,
+            claude_sidecar_url=route_selection.sidecar_url,
+            claude_channel_session_id=route_selection.session_id,
         )
-    if request.executor == "claude":
-        delivery_mode = "context_file" if _claude_uses_context_file(prompt_bundle) else injection_metadata.injection_mode
-        route_selection = resolve_claude_route()
-        claude_policy = request.claude_team_policy or _claude_policy_for_mode(
-            capability,
-            request.claude_execution_mode or capability.default_claude_execution_mode or "solo",
-        )
-        eligibility = request.phase_team_eligibility or classify_phase_team_eligibility(request.repo, request.roadmap, request.plan)
-        policy_error = _claude_team_policy_error(
-            action=request.action,
-            execution_mode=request.claude_execution_mode or "solo",
-            policy=claude_policy,
-            eligibility=eligibility,
-        )
-        route_error = route_selection.error
-        if route_error is None and route_selection.route == "claude_channel":
-            # DFCHPREFLIGHT (IF-0-DFCHPREFLIGHT-1): a Channel route launch requires
-            # a session id AND a loopback sidecar URL. Missing/blocked prerequisites
-            # reduce to a metadata-only route blocker here (no claude -p built), not
-            # a deferred failure at sidecar-client construction.
-            # Guard on `route_error is None` so a route-resolution error (e.g. the
-            # DFCHROUTE CI-requires-explicit-route block) is not overwritten by the
-            # more-specific channel prerequisite message.
-            if not route_selection.session_id:
-                route_error = "Claude Channel route requires PHASE_LOOP_CHANNEL_SESSION_ID or PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID."
-            elif not is_loopback_http_url(route_selection.sidecar_url or ""):
-                # NB: resolve_claude_route already defaults an UNSET URL to the
-                # loopback default, so an empty value here means the operator
-                # explicitly set PHASE_LOOP_CLAUDE_CHANNEL_URL= (blank) — that is a
-                # misconfiguration and must block, not silently use the default.
-                route_error = (
-                    "Claude Channel route requires a loopback sidecar URL "
-                    f"({route_selection.sidecar_url or '<empty>'}); remote/non-loopback transport is blocked."
-                )
-        if policy_error is not None:
-            return LaunchSpec(
-                executor="claude",
-                command=_stub_command(request, policy_error),
-                prompt_bundle=prompt_bundle,
-                injection_metadata=injection_metadata,
-                delivery_mode=delivery_mode,
-                dispatch_decision=request.dispatch_decision,
-                available=False,
-                harness_lane_assignment=request.harness_lane_assignment,
-                dry_run_only=False,
-                reason=policy_error,
-                live_proof_gate=capability.live_proof_gate,
-                promotion_status=capability.promotion_status,
-                promotion_requirements=capability.promotion_requirements,
-                auth_preflight_mode=capability.auth_preflight_mode,
-                auth_preflight_probes=capability.auth_preflight_probes,
-                timeout_posture=capability.timeout_posture,
-                output_capture_format=capability.output_capture_format,
-                terminal_summary_artifact=capability.terminal_summary_artifact,
-                permission_posture=capability.permission_posture,
-                selected_model=request.model_selection.model,
-                selected_effort=request.model_selection.effort,
-                profile_source=request.model_selection.source,
-                override_reason=request.model_selection.override_reason,
-                wrapped_cwd=str(request.repo),
-                launch_timeout_seconds=request.launch_timeout_seconds,
-                claude_execution_mode=request.claude_execution_mode or "solo",
-                claude_team_policy=claude_policy,
-                phase_team_eligibility=eligibility,
-                claude_route=route_selection.route,
-                claude_route_reason=route_selection.reason,
-                claude_sidecar_url=route_selection.sidecar_url,
-                claude_channel_session_id=route_selection.session_id,
-            )
-        if route_error is not None:
-            return LaunchSpec(
-                executor="claude",
-                command=_stub_command(request, route_error),
-                prompt_bundle=prompt_bundle,
-                injection_metadata=injection_metadata,
-                delivery_mode=delivery_mode,
-                dispatch_decision=request.dispatch_decision,
-                available=False,
-                harness_lane_assignment=request.harness_lane_assignment,
-                dry_run_only=False,
-                reason=route_error,
-                live_proof_gate=capability.live_proof_gate,
-                promotion_status=capability.promotion_status,
-                promotion_requirements=capability.promotion_requirements,
-                auth_preflight_mode=capability.auth_preflight_mode,
-                auth_preflight_probes=capability.auth_preflight_probes,
-                timeout_posture=capability.timeout_posture,
-                output_capture_format=capability.output_capture_format,
-                terminal_summary_artifact=capability.terminal_summary_artifact,
-                permission_posture=capability.permission_posture,
-                selected_model=request.model_selection.model,
-                selected_effort=request.model_selection.effort,
-                profile_source=request.model_selection.source,
-                override_reason=request.model_selection.override_reason,
-                wrapped_cwd=str(request.repo),
-                launch_timeout_seconds=request.launch_timeout_seconds,
-                claude_execution_mode=request.claude_execution_mode or "solo",
-                claude_team_policy=claude_policy,
-                phase_team_eligibility=eligibility,
-                claude_route=route_selection.route,
-                claude_route_reason=route_selection.reason,
-                claude_sidecar_url=route_selection.sidecar_url,
-                claude_channel_session_id=route_selection.session_id,
-            )
-        if route_selection.route == "claude_channel":
-            return LaunchSpec(
-                executor="claude",
-                command=[
-                    "claude-channel",
-                    "send",
-                    "--sidecar-url",
-                    route_selection.sidecar_url or DEFAULT_CLAUDE_CHANNEL_SIDECAR_URL,
-                    "--session-id",
-                    route_selection.session_id or "",
-                ],
-                prompt_bundle=prompt_bundle,
-                injection_metadata=injection_metadata,
-                delivery_mode="channel",
-                dispatch_decision=request.dispatch_decision,
-                available=True,
-                harness_lane_assignment=request.harness_lane_assignment,
-                live_proof_gate=capability.live_proof_gate,
-                promotion_status=capability.promotion_status,
-                promotion_requirements=capability.promotion_requirements,
-                auth_preflight_mode=capability.auth_preflight_mode,
-                auth_preflight_probes=capability.auth_preflight_probes,
-                timeout_posture=capability.timeout_posture,
-                output_capture_format=capability.output_capture_format,
-                terminal_summary_artifact=capability.terminal_summary_artifact,
-                permission_posture=capability.permission_posture,
-                selected_model=request.model_selection.model,
-                selected_effort=request.model_selection.effort,
-                profile_source=request.model_selection.source,
-                override_reason=request.model_selection.override_reason,
-                wrapped_cwd=str(request.repo),
-                launch_timeout_seconds=request.launch_timeout_seconds,
-                claude_execution_mode=request.claude_execution_mode or "solo",
-                claude_team_policy=claude_policy,
-                phase_team_eligibility=eligibility,
-                claude_route=route_selection.route,
-                claude_route_reason=route_selection.reason,
-                claude_sidecar_url=route_selection.sidecar_url,
-                claude_channel_session_id=route_selection.session_id,
-            )
-        if route_selection.route == "claude_agent_view":
-            permission_mode = _claude_permission_mode(request.action, request.bypass_approvals)
-            return LaunchSpec(
-                executor="claude",
-                command=ClaudeAgentViewAdapter().launch_command(
-                    CLAUDE_CONTEXT_PLACEHOLDER if delivery_mode == "context_file" else prompt_bundle.render_context(),
-                    cwd=request.repo,
-                    model=request.model_selection.model,
-                    effort=request.model_selection.effort,
-                    permission=permission_mode,
-                ),
-                prompt_bundle=prompt_bundle,
-                injection_metadata=injection_metadata,
-                delivery_mode="agent_view",
-                dispatch_decision=request.dispatch_decision,
-                available=True,
-                harness_lane_assignment=request.harness_lane_assignment,
-                live_proof_gate=capability.live_proof_gate,
-                promotion_status=capability.promotion_status,
-                promotion_requirements=capability.promotion_requirements,
-                auth_preflight_mode=capability.auth_preflight_mode,
-                auth_preflight_probes=capability.auth_preflight_probes,
-                timeout_posture=capability.timeout_posture,
-                output_capture_format=capability.output_capture_format,
-                terminal_summary_artifact=capability.terminal_summary_artifact,
-                permission_posture=capability.permission_posture,
-                selected_model=request.model_selection.model,
-                selected_effort=request.model_selection.effort,
-                profile_source=request.model_selection.source,
-                override_reason=request.model_selection.override_reason,
-                wrapped_cwd=str(request.repo),
-                launch_timeout_seconds=request.launch_timeout_seconds,
-                claude_execution_mode=request.claude_execution_mode or "solo",
-                claude_team_policy=claude_policy,
-                phase_team_eligibility=eligibility,
-                claude_route=route_selection.route,
-                claude_route_reason=route_selection.reason,
-            )
+    if route_error is not None:
         return LaunchSpec(
             executor="claude",
-            command=build_claude_command(
-                request.repo,
-                request.model_selection,
-                CLAUDE_CONTEXT_PLACEHOLDER if delivery_mode == "context_file" else prompt_bundle.render_context(),
-                permission_mode=_claude_permission_mode(request.action, request.bypass_approvals),
-                allowed_tools=",".join(claude_policy.allowed_tools) if claude_policy.allowed_tools else CLAUDE_ADAPTER_ALLOWED_TOOLS,
-                disallowed_tools=",".join(claude_policy.disallowed_tools) if claude_policy.disallowed_tools else CLAUDE_ADAPTER_DISALLOWED_TOOLS,
-                bypass_approvals=request.bypass_approvals,
-                closeout_schema=closeout_schema,
-            ),
+            command=_stub_command(request, route_error),
             prompt_bundle=prompt_bundle,
             injection_metadata=injection_metadata,
             delivery_mode=delivery_mode,
+            dispatch_decision=request.dispatch_decision,
+            available=False,
+            harness_lane_assignment=request.harness_lane_assignment,
+            dry_run_only=False,
+            reason=route_error,
+            live_proof_gate=capability.live_proof_gate,
+            promotion_status=capability.promotion_status,
+            promotion_requirements=capability.promotion_requirements,
+            auth_preflight_mode=capability.auth_preflight_mode,
+            auth_preflight_probes=capability.auth_preflight_probes,
+            timeout_posture=capability.timeout_posture,
+            output_capture_format=capability.output_capture_format,
+            terminal_summary_artifact=capability.terminal_summary_artifact,
+            permission_posture=capability.permission_posture,
+            selected_model=request.model_selection.model,
+            selected_effort=request.model_selection.effort,
+            profile_source=request.model_selection.source,
+            override_reason=request.model_selection.override_reason,
+            wrapped_cwd=str(request.repo),
+            launch_timeout_seconds=request.launch_timeout_seconds,
+            claude_execution_mode=request.claude_execution_mode or "solo",
+            claude_team_policy=claude_policy,
+            phase_team_eligibility=eligibility,
+            claude_route=route_selection.route,
+            claude_route_reason=route_selection.reason,
+            claude_sidecar_url=route_selection.sidecar_url,
+            claude_channel_session_id=route_selection.session_id,
+        )
+    if route_selection.route == "claude_channel":
+        return LaunchSpec(
+            executor="claude",
+            command=[
+                "claude-channel",
+                "send",
+                "--sidecar-url",
+                route_selection.sidecar_url or DEFAULT_CLAUDE_CHANNEL_SIDECAR_URL,
+                "--session-id",
+                route_selection.session_id or "",
+            ],
+            prompt_bundle=prompt_bundle,
+            injection_metadata=injection_metadata,
+            delivery_mode="channel",
             dispatch_decision=request.dispatch_decision,
             available=True,
             harness_lane_assignment=request.harness_lane_assignment,
@@ -1024,91 +956,23 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             phase_team_eligibility=eligibility,
             claude_route=route_selection.route,
             claude_route_reason=route_selection.reason,
-            claude_route_warnings=route_selection.warnings,
             claude_sidecar_url=route_selection.sidecar_url,
             claude_channel_session_id=route_selection.session_id,
         )
-    if request.executor == "gemini":
+    if route_selection.route == "claude_agent_view":
+        permission_mode = _claude_permission_mode(request.action, request.bypass_approvals)
         return LaunchSpec(
-            executor="gemini",
-            command=build_gemini_command(
-                request.repo,
-                request.model_selection,
-                action=request.action,
-                context_file=GEMINI_CONTEXT_PLACEHOLDER,
+            executor="claude",
+            command=ClaudeAgentViewAdapter().launch_command(
+                CLAUDE_CONTEXT_PLACEHOLDER if delivery_mode == "context_file" else prompt_bundle.render_context(),
+                cwd=request.repo,
+                model=request.model_selection.model,
+                effort=request.model_selection.effort,
+                permission=permission_mode,
             ),
             prompt_bundle=prompt_bundle,
             injection_metadata=injection_metadata,
-            delivery_mode=injection_metadata.injection_mode,
-            dispatch_decision=request.dispatch_decision,
-            available=True,
-            harness_lane_assignment=request.harness_lane_assignment,
-            live_proof_gate=capability.live_proof_gate,
-            promotion_status=capability.promotion_status,
-            promotion_requirements=capability.promotion_requirements,
-            auth_preflight_mode=capability.auth_preflight_mode,
-            auth_preflight_probes=capability.auth_preflight_probes,
-            timeout_posture=capability.timeout_posture,
-            output_capture_format=capability.output_capture_format,
-            terminal_summary_artifact=capability.terminal_summary_artifact,
-            permission_posture=capability.permission_posture,
-            selected_model=request.model_selection.model,
-            selected_effort=request.model_selection.effort,
-            profile_source=request.model_selection.source,
-            override_reason=request.model_selection.override_reason,
-            launch_timeout_seconds=request.launch_timeout_seconds,
-        )
-    if request.executor == "opencode":
-        selected_agent = _opencode_agent(request.action)
-        selected_model = _opencode_model(request.model_selection.model)
-        command, selected_variant = build_opencode_command(
-            request.repo,
-            request.model_selection,
-            action=request.action,
-            agent=selected_agent,
-            context_file=OPENCODE_CONTEXT_PLACEHOLDER,
-            bypass_approvals=request.bypass_approvals,
-        )
-        return LaunchSpec(
-            executor="opencode",
-            command=command,
-            prompt_bundle=prompt_bundle,
-            injection_metadata=injection_metadata,
-            delivery_mode=injection_metadata.injection_mode,
-            dispatch_decision=request.dispatch_decision,
-            available=True,
-            harness_lane_assignment=request.harness_lane_assignment,
-            live_proof_gate=capability.live_proof_gate,
-            promotion_status=capability.promotion_status,
-            promotion_requirements=capability.promotion_requirements,
-            auth_preflight_mode=capability.auth_preflight_mode,
-            auth_preflight_probes=capability.auth_preflight_probes,
-            timeout_posture=capability.timeout_posture,
-            output_capture_format=capability.output_capture_format,
-            terminal_summary_artifact=capability.terminal_summary_artifact,
-            permission_posture=capability.permission_posture,
-            selected_agent=selected_agent,
-            selected_model=selected_model,
-            selected_effort=request.model_selection.effort,
-            profile_source=request.model_selection.source,
-            override_reason=request.model_selection.override_reason,
-            selected_variant=selected_variant,
-            launch_timeout_seconds=request.launch_timeout_seconds,
-        )
-    if request.executor == "pi":
-        return LaunchSpec(
-            executor="pi",
-            command=build_pi_command(
-                request.repo,
-                request.model_selection,
-                action=request.action,
-                context_file=PI_CONTEXT_PLACEHOLDER,
-                plan=request.plan,
-                bypass_approvals=request.bypass_approvals,
-            ),
-            prompt_bundle=prompt_bundle,
-            injection_metadata=injection_metadata,
-            delivery_mode=injection_metadata.injection_mode,
+            delivery_mode="agent_view",
             dispatch_decision=request.dispatch_decision,
             available=True,
             harness_lane_assignment=request.harness_lane_assignment,
@@ -1127,9 +991,177 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             override_reason=request.model_selection.override_reason,
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
+            claude_execution_mode=request.claude_execution_mode or "solo",
+            claude_team_policy=claude_policy,
+            phase_team_eligibility=eligibility,
+            claude_route=route_selection.route,
+            claude_route_reason=route_selection.reason,
         )
-    if request.executor == "command":
-        return _build_command_launch_spec(request, capability)
+    return LaunchSpec(
+        executor="claude",
+        command=build_claude_command(
+            request.repo,
+            request.model_selection,
+            CLAUDE_CONTEXT_PLACEHOLDER if delivery_mode == "context_file" else prompt_bundle.render_context(),
+            permission_mode=_claude_permission_mode(request.action, request.bypass_approvals),
+            allowed_tools=",".join(claude_policy.allowed_tools) if claude_policy.allowed_tools else CLAUDE_ADAPTER_ALLOWED_TOOLS,
+            disallowed_tools=",".join(claude_policy.disallowed_tools) if claude_policy.disallowed_tools else CLAUDE_ADAPTER_DISALLOWED_TOOLS,
+            bypass_approvals=request.bypass_approvals,
+            closeout_schema=closeout_schema,
+        ),
+        prompt_bundle=prompt_bundle,
+        injection_metadata=injection_metadata,
+        delivery_mode=delivery_mode,
+        dispatch_decision=request.dispatch_decision,
+        available=True,
+        harness_lane_assignment=request.harness_lane_assignment,
+        live_proof_gate=capability.live_proof_gate,
+        promotion_status=capability.promotion_status,
+        promotion_requirements=capability.promotion_requirements,
+        auth_preflight_mode=capability.auth_preflight_mode,
+        auth_preflight_probes=capability.auth_preflight_probes,
+        timeout_posture=capability.timeout_posture,
+        output_capture_format=capability.output_capture_format,
+        terminal_summary_artifact=capability.terminal_summary_artifact,
+        permission_posture=capability.permission_posture,
+        selected_model=request.model_selection.model,
+        selected_effort=request.model_selection.effort,
+        profile_source=request.model_selection.source,
+        override_reason=request.model_selection.override_reason,
+        wrapped_cwd=str(request.repo),
+        launch_timeout_seconds=request.launch_timeout_seconds,
+        claude_execution_mode=request.claude_execution_mode or "solo",
+        claude_team_policy=claude_policy,
+        phase_team_eligibility=eligibility,
+        claude_route=route_selection.route,
+        claude_route_reason=route_selection.reason,
+        claude_route_warnings=route_selection.warnings,
+        claude_sidecar_url=route_selection.sidecar_url,
+        claude_channel_session_id=route_selection.session_id,
+    )
+
+
+def build_gemini_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
+    capability = record
+    closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
+    return LaunchSpec(
+        executor="gemini",
+        command=build_gemini_command(
+            request.repo,
+            request.model_selection,
+            action=request.action,
+            context_file=GEMINI_CONTEXT_PLACEHOLDER,
+        ),
+        prompt_bundle=prompt_bundle,
+        injection_metadata=injection_metadata,
+        delivery_mode=injection_metadata.injection_mode,
+        dispatch_decision=request.dispatch_decision,
+        available=True,
+        harness_lane_assignment=request.harness_lane_assignment,
+        live_proof_gate=capability.live_proof_gate,
+        promotion_status=capability.promotion_status,
+        promotion_requirements=capability.promotion_requirements,
+        auth_preflight_mode=capability.auth_preflight_mode,
+        auth_preflight_probes=capability.auth_preflight_probes,
+        timeout_posture=capability.timeout_posture,
+        output_capture_format=capability.output_capture_format,
+        terminal_summary_artifact=capability.terminal_summary_artifact,
+        permission_posture=capability.permission_posture,
+        selected_model=request.model_selection.model,
+        selected_effort=request.model_selection.effort,
+        profile_source=request.model_selection.source,
+        override_reason=request.model_selection.override_reason,
+        launch_timeout_seconds=request.launch_timeout_seconds,
+    )
+
+
+def build_opencode_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
+    capability = record
+    closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
+    selected_agent = _opencode_agent(request.action)
+    selected_model = _opencode_model(request.model_selection.model)
+    command, selected_variant = build_opencode_command(
+        request.repo,
+        request.model_selection,
+        action=request.action,
+        agent=selected_agent,
+        context_file=OPENCODE_CONTEXT_PLACEHOLDER,
+        bypass_approvals=request.bypass_approvals,
+    )
+    return LaunchSpec(
+        executor="opencode",
+        command=command,
+        prompt_bundle=prompt_bundle,
+        injection_metadata=injection_metadata,
+        delivery_mode=injection_metadata.injection_mode,
+        dispatch_decision=request.dispatch_decision,
+        available=True,
+        harness_lane_assignment=request.harness_lane_assignment,
+        live_proof_gate=capability.live_proof_gate,
+        promotion_status=capability.promotion_status,
+        promotion_requirements=capability.promotion_requirements,
+        auth_preflight_mode=capability.auth_preflight_mode,
+        auth_preflight_probes=capability.auth_preflight_probes,
+        timeout_posture=capability.timeout_posture,
+        output_capture_format=capability.output_capture_format,
+        terminal_summary_artifact=capability.terminal_summary_artifact,
+        permission_posture=capability.permission_posture,
+        selected_agent=selected_agent,
+        selected_model=selected_model,
+        selected_effort=request.model_selection.effort,
+        profile_source=request.model_selection.source,
+        override_reason=request.model_selection.override_reason,
+        selected_variant=selected_variant,
+        launch_timeout_seconds=request.launch_timeout_seconds,
+    )
+
+
+def build_pi_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
+    capability = record
+    closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
+    return LaunchSpec(
+        executor="pi",
+        command=build_pi_command(
+            request.repo,
+            request.model_selection,
+            action=request.action,
+            context_file=PI_CONTEXT_PLACEHOLDER,
+            plan=request.plan,
+            bypass_approvals=request.bypass_approvals,
+        ),
+        prompt_bundle=prompt_bundle,
+        injection_metadata=injection_metadata,
+        delivery_mode=injection_metadata.injection_mode,
+        dispatch_decision=request.dispatch_decision,
+        available=True,
+        harness_lane_assignment=request.harness_lane_assignment,
+        live_proof_gate=capability.live_proof_gate,
+        promotion_status=capability.promotion_status,
+        promotion_requirements=capability.promotion_requirements,
+        auth_preflight_mode=capability.auth_preflight_mode,
+        auth_preflight_probes=capability.auth_preflight_probes,
+        timeout_posture=capability.timeout_posture,
+        output_capture_format=capability.output_capture_format,
+        terminal_summary_artifact=capability.terminal_summary_artifact,
+        permission_posture=capability.permission_posture,
+        selected_model=request.model_selection.model,
+        selected_effort=request.model_selection.effort,
+        profile_source=request.model_selection.source,
+        override_reason=request.model_selection.override_reason,
+        wrapped_cwd=str(request.repo),
+        launch_timeout_seconds=request.launch_timeout_seconds,
+    )
+
+
+def build_command_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
+    capability = record
+    closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
+    return _build_command_launch_spec(request, capability)
+
+
+def build_manual_launch_spec(request: LaunchRequest, record: ExecutorCapabilityRecord) -> LaunchSpec:
+    capability = record
+    closeout_schema, prompt_bundle, injection_metadata = _launch_preamble(request)
     reason = STUB_EXECUTOR_REASONS[request.executor]
     return LaunchSpec(
         executor=request.executor,
@@ -1153,6 +1185,32 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
         permission_posture=capability.permission_posture,
         launch_timeout_seconds=request.launch_timeout_seconds,
     )
+
+
+# EXECREG (IF-0-EXECREG-1): runnable-command construction is registry-driven.
+# build_launch_spec delegates to the record's build_command; adding an executor is
+# a capability-record addition (+ its build fn here) referenced from the record,
+# never an if-branch edit. command/manual are ordinary builders, not an exempt tail.
+LAUNCH_COMMAND_BUILDERS: dict[str, Callable[[LaunchRequest, ExecutorCapabilityRecord], LaunchSpec]] = {
+    "codex": build_codex_launch_spec,
+    "claude": build_claude_launch_spec,
+    "gemini": build_gemini_launch_spec,
+    "opencode": build_opencode_launch_spec,
+    "pi": build_pi_launch_spec,
+    "command": build_command_launch_spec,
+    "manual": build_manual_launch_spec,
+}
+
+
+def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
+    record = capability_registry()[request.executor]
+    builder = record.build_command
+    if builder is None:
+        raise ValueError(
+            f"executor {request.executor!r} has no build_command bound on its "
+            "capability record"
+        )
+    return builder(request, record)
 
 
 def _build_command_launch_spec(request: LaunchRequest, capability) -> LaunchSpec:
