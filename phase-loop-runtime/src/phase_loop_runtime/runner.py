@@ -152,6 +152,7 @@ from .observability import (
     build_terminal_summary,
     build_work_unit_metric,
     merge_launch_metadata,
+    read_launch_metadata,
     operator_halt_metadata,
     phase_loop_metrics_path,
     read_work_unit_metrics,
@@ -192,7 +193,15 @@ from .panel_invoker import available_panel_legs
 from .reconcile import reconcile
 from .review_summary import summarize_run
 from .route_log import build_route_log, with_route_log
-from .release_guard import release_dispatch_blocker
+from .release_guard import (
+    OperatorApprovalError,
+    ReleaseDispatchBlocker,
+    is_release_dispatch_plan,
+    operator_approval_from,
+    release_dispatch_blocker,
+)
+from .runtime_paths import phase_loop_dir
+from .discovery import roadmap_repo_relative_path
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
 from .verification_evidence import (
@@ -1534,6 +1543,9 @@ def run_loop(
     with dispatch_lock_context, loop_context:
         def _prepare_phase_launch() -> "tuple[_DispatchOutcome | None, _DispatchPrep | None]":
             nonlocal blocker, current, executor, phase_aliases, selection, snapshot, wave_index
+            # #145: the fresh, injected operator-approval metadata for a release-dispatch
+            # launch (None for non-release or when the gate fail-closed above).
+            resolved_operator_approval: dict[str, object] | None = None
 
             def _dry_run_closeout_preview(pending_status: str) -> _DispatchOutcome:
                 # #78: a dry run must never perform closeout side effects (governed
@@ -2838,7 +2850,17 @@ def run_loop(
                 )
                 return (_DispatchOutcome("break", None), None)
             if not dry_run and launch_action == "execute":
-                release_blocker = release_dispatch_blocker(repo, plan)
+                # #145: a release-dispatch launch must carry the typed operator approval
+                # into the runner/executor context. Resolve + freshness-scope it here;
+                # a missing/stale/malformed record fail-closes to the SAME admin_approval
+                # emit path as the existing dirty/branch-sync release guard, and a fresh
+                # valid record is stashed for injection into the launch/state/event
+                # metadata just before the child is launched (below).
+                approval_metadata, approval_blocker = _resolve_release_dispatch_operator_approval(
+                    repo, roadmap, plan, alias
+                )
+                resolved_operator_approval = approval_metadata
+                release_blocker = release_dispatch_blocker(repo, plan) or approval_blocker
                 if release_blocker:
                     classifications[alias] = "blocked"
                     append_event(
@@ -3063,6 +3085,14 @@ def run_loop(
             artifacts = run_artifacts(repo, alias, launch_action, len(results) + 1, spec) if observe else {}
             if artifacts:
                 merge_launch_metadata(artifacts.get("metadata"), {"execution_policy": execution_policy.to_json()})
+                if resolved_operator_approval is not None:
+                    # #145: inject the resolved, secret-free approval into the launch
+                    # metadata the child reads, so SL-0 verifies it from runner context
+                    # (not unstructured chat history) — the record is no longer
+                    # absent_from_runner_context.
+                    merge_launch_metadata(
+                        artifacts.get("metadata"), {"operator_approval": resolved_operator_approval}
+                    )
                 if execution_source_bundle_context is not None:
                     merge_launch_metadata(
                         artifacts.get("metadata"),
@@ -4106,6 +4136,13 @@ def run_loop(
                 missing_plan_after_planning=missing_plan_after_planning,
                 execution_policy=execution_policy.to_json(),
             )
+            if artifacts:
+                # #145: surface the injected operator approval in the launch EVENT
+                # metadata (durable in the ledger + carried to state), not only the
+                # launch-metadata file the child reads.
+                _injected_approval = (read_launch_metadata(artifacts.get("metadata")) or {}).get("operator_approval")
+                if _injected_approval:
+                    launch_metadata["operator_approval"] = _injected_approval
             if repair_loop_pivot:
                 launch_metadata["repair_loop_guard"] = repair_loop_pivot
             if rotation_state is not None:
@@ -7111,6 +7148,89 @@ def _successful_missing_closeout_blocker(result: LaunchResult, blocker: dict | N
         return False
     summary = str(blocker.get("blocker_summary") or "")
     return "did not emit a valid shared automation closeout" in summary
+
+
+OPERATOR_APPROVAL_RECORD_NAME = "operator-approval.json"
+
+
+def operator_approval_record_path(repo: Path) -> Path:
+    """The metadata-only operator-approval record a release-dispatch launch reads."""
+    return phase_loop_dir(repo) / OPERATOR_APPROVAL_RECORD_NAME
+
+
+def _resolve_release_dispatch_operator_approval(
+    repo: Path,
+    roadmap: Path,
+    plan: Path | None,
+    phase: str,
+) -> tuple[dict[str, object] | None, ReleaseDispatchBlocker | None]:
+    """#145: resolve + freshness-scope the typed operator approval a release-dispatch
+    launch requires, so the runner INJECTS it into the launch/state/event context
+    instead of the executor discovering it absent (``record_status=
+    absent_from_runner_context``) and closing with ``admin_approval`` before the
+    mutation — even when the outer run used ``--bypass-approvals``.
+
+    Division of labour (per #145): the child's SL-0 gate still does the *target
+    coverage* check (``OperatorApproval.covers``); the runner's job is
+    resolve + scope + inject + fail-closed-on-absent. So this NEVER does coverage
+    here. It fail-closes to a sticky ``admin_approval`` blocker only when a fresh,
+    valid record cannot be injected: absent, unreadable/malformed, secret-bearing
+    (rejected by ``operator_approval_from``), or STALE — scoped to this exact
+    roadmap + phase, mirroring ``_closeout_allow_unowned_attested``'s content-bound
+    freshness so an approval written for a different phase cannot authorize this one.
+
+    The gate is PLAN-DECLARED opt-in: it applies only to a release-dispatch plan
+    whose frontmatter sets ``phase_loop_requires_operator_approval: true`` (the plan
+    whose SL-0 gate requires the record, per #145). An existing release-dispatch plan
+    that does not opt in launches unchanged — no new blanket approval requirement.
+
+    Returns ``(approval_metadata, None)`` to inject when a fresh valid record
+    exists, ``(None, blocker)`` when required-but-unavailable, and ``(None, None)``
+    when the plan is not a release-dispatch plan or does not require approval."""
+    if plan is None or not is_release_dispatch_plan(plan):
+        return None, None
+    if str(plan_metadata(plan).get("phase_loop_requires_operator_approval", "")).lower() != "true":
+        return None, None
+    record_path = operator_approval_record_path(repo)
+
+    def _fail_closed(reason_key: str, human_reason: str) -> ReleaseDispatchBlocker:
+        return ReleaseDispatchBlocker(
+            blocker_class="admin_approval",
+            blocker_summary=(
+                f"Release dispatch for {phase} requires a typed operator approval record; "
+                f"{human_reason}."
+            ),
+            required_human_inputs=(
+                f"Write a metadata-only approval to `{record_path}` naming the approved "
+                "targets, source, watch-window owner, and this roadmap/phase/run, then rerun.",
+            ),
+            metadata={
+                "guard": "release_dispatch",
+                "reason": f"operator_approval_{reason_key}",
+                "record_path": str(record_path),
+                "record_status": reason_key,
+                "phase": phase,
+            },
+        )
+
+    if not record_path.exists():
+        return None, _fail_closed("absent", "no approval record is present")
+    try:
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, _fail_closed("malformed", "the approval record is unreadable or not valid JSON")
+    try:
+        approval = operator_approval_from(payload)
+    except OperatorApprovalError:
+        return None, _fail_closed(
+            "malformed", "the approval record is malformed or carried a secret-bearing key"
+        )
+    roadmap_rel = roadmap_repo_relative_path(repo, roadmap)
+    if approval.phase.upper() != phase.upper() or approval.roadmap not in {str(roadmap), roadmap_rel}:
+        return None, _fail_closed(
+            "stale", "the approval record is scoped to a different roadmap/phase"
+        )
+    return approval.to_metadata(), None
 
 
 def _launch_contract_blocker(

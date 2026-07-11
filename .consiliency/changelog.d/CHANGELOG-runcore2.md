@@ -55,3 +55,20 @@
   top-of-file "Operator Stop Summary" section in `.phase-loop/tui-handoff.md`. The
   bridge-skill wiring that injects it into each harness's final response is homed in
   the skill sources (SKILLREF), not the runtime.
+
+- **Runner-side operator-approval injection for release-dispatch (agent-harness#145).**
+  Completes #145 (UNATTEND landed the typed `OperatorApproval` record + `dispatch_lock`
+  fix; this wires it into the runner executor context). A release-dispatch plan that
+  opts in with `phase_loop_requires_operator_approval: true` now has the runner
+  resolve a metadata-only `.phase-loop/operator-approval.json`, freshness-scope it to
+  this exact roadmap + phase (mirroring `_closeout_allow_unowned_attested`), and
+  inject `OperatorApproval.to_metadata()` into the launch-metadata file the child
+  reads plus the launch event/state — so SL-0 verifies the approval from runner
+  context instead of `record_status=absent_from_runner_context` (even under
+  `--bypass-approvals`). When a fresh valid record cannot be injected — absent,
+  malformed, secret-bearing (rejected by `operator_approval_from`), or STALE (scoped
+  to a different roadmap/phase) — the runner fail-closes to a sticky, human-required
+  `admin_approval` blocker BEFORE launch, flowing through the existing
+  `release_dispatch_blocker` emit path. Target-coverage stays with the child's SL-0
+  `OperatorApproval.covers()` — the runner does not re-implement it. The gate is
+  plan-declared opt-in, so existing release-dispatch plans launch unchanged.
