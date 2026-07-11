@@ -1788,13 +1788,19 @@ class ExecutorCapabilityRecord:
         """Return a copy of this record with EXECREG runtime callables attached as
         instance attributes (via ``object.__setattr__`` — the frozen escape hatch).
         They are not dataclass fields, so they never enter ``asdict`` / ``replace`` /
-        equality. Unknown binding names are rejected loudly."""
+        equality. Bindings already present on ``self`` are CARRIED FORWARD (``replace``
+        copies only fields, not these instance attrs), so a partial re-bind overrides
+        only the named bindings and never silently drops the others. Unknown binding
+        names are rejected loudly."""
         unknown = set(bindings) - set(self._RUNTIME_BINDINGS)
         if unknown:
             raise ValueError(f"unknown runtime binding(s): {sorted(unknown)}")
         clone = replace(self)
-        for name, value in bindings.items():
-            object.__setattr__(clone, name, value)
+        for name in self._RUNTIME_BINDINGS:
+            if name in bindings:
+                object.__setattr__(clone, name, bindings[name])
+            elif name in self.__dict__:  # a binding already set on self -> preserve it
+                object.__setattr__(clone, name, self.__dict__[name])
         return clone
 
     def __post_init__(self) -> None:

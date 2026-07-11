@@ -145,6 +145,25 @@ def test_build_launch_spec_raises_when_build_command_unbound(monkeypatch):
         launcher.build_launch_spec(_Req())
 
 
+def test_bind_runtime_partial_rebind_preserves_other_bindings():
+    # CR re-review (codex minor): re-binding one runtime attr on an already-bound
+    # record must NOT drop the others.
+    record = capability_registry()["codex"]
+    assert record.build_command is not None and record.auth_ok is not None
+
+    def new_is_available():
+        return True
+
+    rebound = record.bind_runtime(is_available=new_is_available)
+    assert rebound.is_available is new_is_available          # overridden
+    assert rebound.build_command is record.build_command      # preserved
+    assert rebound.auth_ok is record.auth_ok                  # preserved
+    assert rebound.provider_backing == record.provider_backing
+    # And unknown binding names are rejected loudly.
+    with pytest.raises(ValueError, match="unknown runtime binding"):
+        record.bind_runtime(not_a_binding=1)
+
+
 def test_asdict_and_to_json_never_carry_callables_on_bound_records():
     # CR guard: the runtime callables are ClassVar bindings, not dataclass fields,
     # so asdict() / to_json() on a BOUND record stay JSON-serializable (no function
