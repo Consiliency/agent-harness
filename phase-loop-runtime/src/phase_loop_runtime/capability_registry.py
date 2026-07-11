@@ -241,6 +241,52 @@ DEFAULT_CAPABILITY_REGISTRY = {
         output_capture_format="terminal_summary",
         default_model_profiles={action: _ACTION_DEFAULT_PROFILES[action] for action in ("roadmap", "plan", "execute", "repair", "review")},
     ),
+    "grok": ExecutorCapabilityRecord(
+        executor="grok",
+        supported_actions=("roadmap", "plan", "execute", "repair", "review"),
+        # GROKEXEC: grok runs headless (`grok -p`) with `--output-format plain`, so
+        # like the agy/gemini leg it has NO structured-output flag on this path (the
+        # closeout is prompt-injected + text-parsed). Its permission model is
+        # all-or-nothing per-run (`--permission-mode`), so `explicit_approval_controls`
+        # is dropped, mirroring gemini. `skill_bundle_injection` is ALSO dropped: grok
+        # ships no bespoke phase-loop skill bundle, so it is driven purely by the
+        # staged context file (`context_file_instructions`) — claiming bundle injection
+        # would be dishonest (no grok-* skills exist to inject).
+        capabilities=(
+            "live_launch",
+            "dry_run",
+            "inline_instructions",
+            "context_file_instructions",
+        ),
+        strengths=("xAI-family reasoning model", "context-file friendly", "authenticated local CLI"),
+        # grok write actions auto-approve via `--permission-mode bypassPermissions`;
+        # `review` is HARD read-only via a `--tools` allow-list of read/search
+        # built-ins only (headless grok auto-approves writes regardless of
+        # permission-mode/sandbox, so tool restriction is the only real lever).
+        limits=(
+            "requires local grok CLI subscription auth",
+            "grok headless auto-approves writes; write actions run bypassPermissions, review is read-only via a read-only --tools allow-list",
+            "grok --output-format plain emits no structured JSON; closeout is prompt-injected and text-parsed",
+        ),
+        injection_mode="context_file",
+        permission_posture="explicit",
+        subagent_posture="limited",
+        live_available=True,
+        dry_run_available=True,
+        live_proof_gate="disposable_proof_required",
+        promotion_status="proof_gated",
+        promotion_requirements=(
+            "fake harness parity regression proof",
+            "disposable live roadmap proof",
+            "launch.json",
+            "terminal-summary.json",
+        ),
+        auth_preflight_mode="metadata_only",
+        auth_preflight_probes=("grok --version", "grok --help"),
+        timeout_posture="runner_managed",
+        output_capture_format="terminal_summary",
+        default_model_profiles={action: _ACTION_DEFAULT_PROFILES[action] for action in ("roadmap", "plan", "execute", "repair", "review")},
+    ),
     "opencode": ExecutorCapabilityRecord(
         executor="opencode",
         supported_actions=("roadmap", "plan", "execute", "repair", "review"),
@@ -436,6 +482,18 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
             "thinkingConfig.thinkingLevel is carried by custom aliases and is not exposed as a CLI flag.",
         ),
     ),
+    "grok": ProviderPolicyCapability(
+        provider="xai",
+        executor="grok",
+        supported_work_units=_ALL_WORK_UNITS,
+        supported_efforts=_ALL_EFFORTS,
+        unsupported_policy_behavior=_FAIL_CLOSED,
+        default_effort="medium",
+        effort_map={effort: effort for effort in _ALL_EFFORTS},
+        notes=(
+            "grok's `--reasoning-effort` CLI flag accepts a superset of NORMALIZED_EFFORT_LEVELS (its own set adds `none`), so every normalized effort passes through directly with no clamp.",
+        ),
+    ),
     "gemini-api": ProviderPolicyCapability(
         provider="gemini-api-openai-compatible",
         executor="command",
@@ -533,7 +591,7 @@ def _bind_capability_records(
     break the launcher<->capability_registry import cycle (launcher imports this
     module at top level). The cache/memo for auth/availability lives in
     ``executor_availability`` (module level), never on the frozen record."""
-    from .launcher import LAUNCH_COMMAND_BUILDERS
+    from .launcher import LAUNCH_COMMAND_BUILDERS, SESSION_TRANSCRIPT_HOOKS
     from .executor_availability import auth_ok_for, is_executor_available
 
     bound: dict[str, ExecutorCapabilityRecord] = {}
@@ -547,7 +605,11 @@ def _bind_capability_records(
                 )
             ),
             provider_backing=_provider_backing_for(name),
-            get_session_transcript=None,
+            # EXECREG session-preservation seam: a metadata-only transcript hook per
+            # executor (registry-driven, like build_command). Only executors that
+            # persist a discoverable session (grok) register one; the rest resolve
+            # to None — dormant until AUTOSEL/observability wires them.
+            get_session_transcript=SESSION_TRANSCRIPT_HOOKS.get(name),
         )
     return bound
 
