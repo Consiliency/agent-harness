@@ -36,12 +36,24 @@ REVIEW_MODE_ENV = "PHASE_LOOP_REVIEW"
 
 @dataclass(frozen=True)
 class ReviewFinding:
-    """A single review-gate observation about a closeout."""
+    """A single review-gate observation about a closeout.
+
+    ``reason`` is the SHORT gate-generated summary (``panel leg gemini raised a
+    blocking concern``). ``body`` (issue #80) is the ACTUAL panel finding text — the
+    concrete review a non-human repair reads to know WHAT to fix; the runner's
+    panel scratch dir is torn down after the leg completes, so if the body is not
+    carried here it is lost. ``reviewed_sha`` (issue #88) binds the verdict to the
+    exact reviewed commit so a consumer can reject a verdict computed against a
+    different head (SHA-bound agent-review-gate). Both are optional so every
+    existing caller and persisted finding stay byte-for-byte unchanged.
+    """
 
     code: str
     reason: str
     severity: ReviewSeverity = "warn"
     blocker_class: str | None = None
+    body: str | None = None
+    reviewed_sha: str | None = None
 
     def __post_init__(self) -> None:
         if self.severity not in REVIEW_SEVERITIES:
@@ -56,6 +68,13 @@ class ReviewFinding:
         }
         if self.blocker_class is not None:
             payload["blocker_class"] = self.blocker_class
+        # #80: persist the actual finding body so it survives the panel-scratch
+        # teardown and reaches durable state/handoff/ledger artifacts.
+        if self.body is not None:
+            payload["body"] = self.body
+        # #88: persist the reviewed commit the verdict is bound to.
+        if self.reviewed_sha is not None:
+            payload["reviewed_sha"] = self.reviewed_sha
         return payload
 
 
@@ -175,6 +194,66 @@ def apply_review_findings(
         "blocker": updated_blocker,
         "results": results,
     }
+
+
+def verdict_binds_to(finding: ReviewFinding, head_sha: str | None) -> bool:
+    """#88 SHA-bound agent-review-gate: True iff ``finding``'s verdict was computed
+    against ``head_sha``.
+
+    A finding with no recorded ``reviewed_sha`` is UNBOUND — it cannot vouch for any
+    specific commit, so it never binds (fail-closed). A ``head_sha`` of ``None``
+    (unknown head) likewise cannot be vouched for. Binding is an exact match: a
+    verdict reviewed at an earlier head must NOT be trusted for a newer head."""
+    if not finding.reviewed_sha or not head_sha:
+        return False
+    return finding.reviewed_sha == head_sha
+
+
+def ratification_findings(decision) -> tuple[ReviewFinding, ...]:
+    """Translate a ``ratification_policy.RatificationDecision`` into closeout findings
+    (the posture wiring for IF-0-POLICY-1).
+
+    * ``escalate``  -> a single ``block`` finding with ``blocker_class=
+      "review_gate_block"`` — a NON-human, agent-recoverable hold (never
+      ``human_required``), carrying the actionable shortfall detail as ``body`` and
+      the reviewed SHA (#88 binding).
+    * ``proceed_degraded`` -> a single ``warn`` finding recording the durable audit
+      trail that a degraded board was knowingly accepted (the loop continues).
+    * ``ratified`` -> no finding (a clean pass is non-gating; the caller persists
+      ``decision.to_audit()`` separately if it wants the positive record).
+
+    Import is function-local so this module has no hard dependency on
+    ``ratification_policy`` (and there is no import cycle).
+    """
+    from .ratification_policy import ESCALATE, PROCEED_DEGRADED, shortfall_detail
+
+    detail = shortfall_detail(decision)
+    reviewed_sha = decision.facts.reviewed_sha
+    if decision.status == ESCALATE:
+        return (
+            ReviewFinding(
+                code=f"ratification_shortfall_{decision.gate or 'gate'}",
+                reason=f"ratification policy not met for {decision.gate or 'gate'}: {detail}",
+                severity="block",
+                blocker_class="review_gate_block",
+                body=detail,
+                reviewed_sha=reviewed_sha,
+            ),
+        )
+    if decision.status == PROCEED_DEGRADED:
+        return (
+            ReviewFinding(
+                code=f"ratification_degraded_{decision.gate or 'gate'}",
+                reason=(
+                    f"ratification proceeded on a degraded board for "
+                    f"{decision.gate or 'gate'}: {detail}"
+                ),
+                severity="warn",
+                body=detail,
+                reviewed_sha=reviewed_sha,
+            ),
+        )
+    return ()
 
 
 def load_builtin_closeout_validators() -> None:

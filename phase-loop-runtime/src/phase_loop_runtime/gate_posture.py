@@ -25,6 +25,10 @@ from typing import Any, Mapping
 _RUNG = {"observe": 0, "warn": 1, "enforce": 2}
 # Optional per-repo overrides live under this manifest key: {finding_code: posture}.
 MANIFEST_OVERRIDE_KEY = "gate_posture_overrides"
+# Optional per-repo ratification-policy overrides (REVIEWGOV W3, IF-0-POLICY-1) live
+# under this key: {gate: {required_vendors, required_lens_coverage, required_consensus,
+# on_shortfall}} — a partial dict per gate patches the frozen default for that gate.
+RATIFICATION_OVERRIDE_KEY = "ratification_policy_overrides"
 _DEFAULT_UNLISTED = {"category": "advisory", "default_posture": "warn", "min_posture": "observe"}
 
 
@@ -121,6 +125,48 @@ def retracting_overrides(manifest: Mapping[str, Any] | None) -> list[str]:
         return []
     out = [code for code in _overrides(manifest) if resolve_posture(code, manifest=manifest)["retracted"]]
     return sorted(set(out))
+
+
+def resolve_ratification_policy(gate: str, *, manifest: Mapping[str, Any] | None = None):
+    """Resolve the effective ``RatificationPolicy`` for a ratification ``gate``
+    (REVIEWGOV W3 — the posture bridge onto IF-0-POLICY-1).
+
+    Starts from the frozen ``DEFAULT_RATIFICATION_POLICIES[gate]`` and applies any
+    per-repo ``.consiliency/manifest.json`` override under
+    :data:`RATIFICATION_OVERRIDE_KEY` — a partial per-gate dict patches only the
+    named fields, so a repo can (e.g.) drop ``pre-merge-CR`` to
+    ``on_shortfall=proceed_degraded`` for a 1-subscription operator without
+    respecifying the whole policy. Unknown gates and malformed overrides fall back
+    to the default (fail-safe, never a traceback). Import is function-local so the
+    posture module has no hard dependency on the policy module.
+    """
+    from dataclasses import replace
+
+    from .ratification_policy import DEFAULT_RATIFICATION_POLICIES, RatificationPolicy
+
+    base = DEFAULT_RATIFICATION_POLICIES.get(gate)
+    if base is None:
+        # Unknown gate → the most conservative shipped default (release-dispatch).
+        base = DEFAULT_RATIFICATION_POLICIES["release-dispatch"]
+    override: Mapping[str, Any] | None = None
+    if isinstance(manifest, Mapping):
+        raw = manifest.get(RATIFICATION_OVERRIDE_KEY)
+        if isinstance(raw, Mapping):
+            gate_raw = raw.get(gate)
+            if isinstance(gate_raw, Mapping):
+                override = gate_raw
+    if not override:
+        return base
+    allowed = {"required_vendors", "required_lens_coverage", "required_consensus", "on_shortfall"}
+    patch = {str(k): v for k, v in override.items() if k in allowed}
+    if not patch:
+        return base
+    try:
+        return replace(base, **patch)
+    except (ValueError, TypeError):
+        # A malformed override (bad type / out-of-enum value) must never break the
+        # gate — fall back to the frozen default (fail-safe).
+        return base
 
 
 def posture_status(posture: str, *, mode: str) -> str:

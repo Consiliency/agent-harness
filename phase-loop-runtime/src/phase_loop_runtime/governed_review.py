@@ -114,11 +114,17 @@ class GateResult:
     panel: PanelResult | None = None
 
 
-def _findings_from_panel(panel: PanelResult) -> tuple[ReviewFinding, ...]:
+def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None) -> tuple[ReviewFinding, ...]:
     """Fail-closed translation of panel leg outputs into findings. A leg that is
     not usable (empty/timeout/degraded/unavailable) becomes a `warn` finding so
     the reduced confidence is recorded; a usable leg whose verdict signals a
-    blocking concern becomes a `block` finding."""
+    blocking concern becomes a `block` finding.
+
+    #80: a leg that carries SUBSTANTIVE review text (a block or a non-conforming
+    review) stamps that text onto the finding's ``body`` so the concrete, actionable
+    review survives the panel-scratch teardown and reaches durable artifacts — the
+    generic ``reason`` alone is not enough for a non-human repair. #88: every finding
+    is bound to ``reviewed_sha`` (the exact reviewed commit) when known."""
     findings: list[ReviewFinding] = []
     for leg in panel.legs:
         if not leg.usable:
@@ -137,12 +143,15 @@ def _findings_from_panel(panel: PanelResult) -> tuple[ReviewFinding, ...]:
                     ),
                     severity="block",
                     blocker_class="review_gate_block",
+                    body=leg.text,
+                    reviewed_sha=reviewed_sha,
                 ))
             else:
                 findings.append(ReviewFinding(
                     code="panel_leg_degraded",
                     reason=f"panel leg {leg.leg} unusable ({leg.status})",
                     severity="warn",
+                    reviewed_sha=reviewed_sha,
                 ))
             continue
         if _leg_blocks(leg.text):
@@ -151,6 +160,9 @@ def _findings_from_panel(panel: PanelResult) -> tuple[ReviewFinding, ...]:
                 reason=f"panel leg {leg.leg} raised a blocking concern",
                 severity="block",
                 blocker_class="review_gate_block",
+                # #80: the actual blocking review text, not just the generic reason.
+                body=leg.text,
+                reviewed_sha=reviewed_sha,
             ))
         else:
             # A "nit" is non-blocking; recorded at `warn` severity (the rigor-v1
@@ -190,6 +202,7 @@ def governed_planning_gate(
     spawn=None,
     repo_dir=None,
     max_concurrency: int | None = None,
+    reviewed_sha: str | None = None,
 ) -> GateResult:
     """Evaluate a governed gate (plan-stage or pre-merge).
 
@@ -202,6 +215,10 @@ def governed_planning_gate(
     conforming, the gate HOLDS (non-human ``review_gate_block``) rather than
     advisory-passing a review that never really happened (advisor-panel
     reconciliation, verified — the prior advisory-pass was a fail-open).
+
+    ``reviewed_sha`` (#88): the exact commit under review — stamped onto every
+    emitted finding so a consumer can bind the verdict to that commit
+    (``closeout_validators.verdict_binds_to``) and reject a stale verdict.
     """
     if run_mode != "governed":
         return GateResult(ran=False, promoted=True)
@@ -245,7 +262,7 @@ def governed_planning_gate(
     if max_concurrency is not None:
         invoke_kwargs["max_concurrency"] = max_concurrency
     panel = invoke(artifact, pool, **invoke_kwargs)
-    findings = _findings_from_panel(panel)
+    findings = _findings_from_panel(panel, reviewed_sha=reviewed_sha)
     if not panel.usable_legs:
         # Pool existed but no leg produced a usable, conforming review → the review
         # did not actually happen. Fail closed, never silent-pass.
