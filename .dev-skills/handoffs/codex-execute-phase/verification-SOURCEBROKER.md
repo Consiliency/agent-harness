@@ -1,6 +1,6 @@
 # Verification: SOURCEBROKER
 
-Summary: PASSED — focused suite 43 passed; standalone suite 2,263 passed, 35 skipped, 592 deselected, 551 subtests; 0.7.0 sdist/wheel build, roadmap validation, plan validation, syntax checks, and git diff check passed.
+Summary: PASSED — focused suite 49 passed; standalone suite 2,269 passed, 35 skipped, 592 deselected, 551 subtests; 0.7.0 sdist/wheel build, roadmap validation, plan validation, syntax checks, and git diff check passed.
 
 - Redaction posture: metadata only.
 - Live deployment: deferred until the Agent Harness PR merges.

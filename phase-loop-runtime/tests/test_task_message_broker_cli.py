@@ -78,6 +78,20 @@ def test_client_rejects_malformed_frames(frame: dict[str, object]) -> None:
     assert exc.value.code == "attestation_invalid"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "ready", "authority": "codex-app-server://wrong"},
+        {"status": "ready", "authority": AUTHORITY, "extra": True},
+        {"status": "blocked", "code": "unknown", "authority": AUTHORITY, "thread_id": None, "message_id": None},
+    ],
+)
+def test_client_rejects_non_exact_resolver_payload(payload: dict[str, object]) -> None:
+    with pytest.raises(TaskMessageResolverError) as exc:
+        _client([{"type": "result", "agent_harness_sha": SHA, "payload": payload}]).probe()
+    assert exc.value.code == "attestation_invalid"
+
+
 def test_remote_plain_http_is_rejected() -> None:
     with pytest.raises(ValueError, match="HTTPS"):
         TaskMessageBrokerClient(

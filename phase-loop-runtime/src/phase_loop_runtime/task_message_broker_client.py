@@ -9,12 +9,20 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from .task_message_resolver import TaskMessageResolverError
+from .task_message_resolver import FAILURE_CODES, TaskMessageResolverError
 
 
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 MAX_FRAME_BYTES = 1_048_576
 OpenFn = Callable[..., BinaryIO]
+READY_KEYS = {"status", "authority"}
+BLOCKED_KEYS = {"status", "code", "authority", "thread_id", "message_id"}
+RESOLVED_KEYS = {
+    "status", "authority", "thread_id", "turn_id", "approval_turn_id", "message_id",
+    "approval_message_id", "source_item_id", "approval_item_id", "message_sha256",
+    "approval_body_sha256", "approval_canonical_sha256", "source_started_at", "resolved_at",
+    "message_bytes_b64", "approval_body_bytes_b64",
+}
 
 
 class TaskMessageBrokerClient:
@@ -98,6 +106,8 @@ class TaskMessageBrokerClient:
                     result = frame["payload"]
                     if not isinstance(sha, str) or COMMIT_SHA.fullmatch(sha) is None or not isinstance(result, dict):
                         raise ValueError
+                    if not self._valid_payload(result, path=path, thread_id=thread_id, message_id=message_id):
+                        raise ValueError
                     return {**result, "agent_harness_sha": sha}
         except HTTPError as exc:
             code = "attestation_invalid" if exc.code in {401, 403} else "source_task_unavailable"
@@ -116,3 +126,29 @@ class TaskMessageBrokerClient:
                 thread_id=thread_id,
                 message_id=message_id,
             ) from None
+
+    def _valid_payload(
+        self,
+        payload: dict[str, object],
+        *,
+        path: str,
+        thread_id: str | None,
+        message_id: str | None,
+    ) -> bool:
+        if payload.get("authority") != self._authority:
+            return False
+        if payload.get("status") == "blocked":
+            return (
+                set(payload) == BLOCKED_KEYS
+                and payload.get("code") in FAILURE_CODES
+                and payload.get("thread_id") == thread_id
+                and payload.get("message_id") == message_id
+            )
+        if path.endswith("/probe"):
+            return set(payload) == READY_KEYS and payload.get("status") == "ready"
+        return (
+            set(payload) == RESOLVED_KEYS
+            and payload.get("status") == "resolved"
+            and payload.get("thread_id") == thread_id
+            and payload.get("message_id") == message_id
+        )

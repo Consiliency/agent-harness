@@ -120,6 +120,24 @@ def test_request_schema_and_loopback_bind_fail_closed() -> None:
         ))
 
 
+@pytest.mark.parametrize("path,content_type", [("/v1/task-message/probe?extra=1", "application/json"), ("/v1/task-message/probe", "text/plain")])
+def test_query_and_non_json_requests_are_rejected(path: str, content_type: str) -> None:
+    server = _server()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}{path}",
+            data=b"{}",
+            method="POST",
+            headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": content_type},
+        )
+        with pytest.raises(HTTPError) as exc:
+            urlopen(request, timeout=1)
+        assert exc.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_boolean_age_and_oversized_request_are_rejected() -> None:
     server = _server()
     try:
@@ -169,7 +187,7 @@ def test_disconnect_holds_single_flight_until_owner_socket_worker_finishes() -> 
         body = b"{}"
         raw.sendall(
             b"POST /v1/task-message/probe HTTP/1.1\r\n"
-            + f"Host: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+            + f"Host: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n".encode()
             + body
         )
         raw.close()
@@ -195,5 +213,19 @@ def test_header_write_failure_joins_worker_and_releases_single_flight() -> None:
     handler.send_response = lambda _status: (_ for _ in ()).throw(BrokenPipeError())
     handler.close_connection = False
     handler._stream(broker.probe)
+    assert broker.acquire() is True
+    broker.release()
+
+
+def test_worker_start_failure_releases_single_flight(monkeypatch) -> None:
+    broker = TaskMessageBroker(
+        BrokerConfig(AUTHORITY, hashlib.sha256(TOKEN.encode()).hexdigest(), SHA),
+        lambda _age: _Resolver(),
+    )
+    assert broker.acquire() is True
+    handler = object.__new__(make_handler(broker))
+    monkeypatch.setattr(threading.Thread, "start", lambda _self: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    with pytest.raises(RuntimeError, match="unavailable"):
+        handler._stream(broker.probe)
     assert broker.acquire() is True
     broker.release()

@@ -93,9 +93,13 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
             if not broker.authenticated(self.headers.get("Authorization")):
                 self._write_json({"status": "blocked", "code": "attestation_invalid"}, HTTPStatus.UNAUTHORIZED)
                 return
-            path = urlsplit(self.path).path
+            parsed_path = urlsplit(self.path)
+            path = parsed_path.path
             if path not in {PROBE_PATH, RESOLVE_PATH}:
                 self._write_json({"status": "blocked", "code": "source_task_unavailable"}, HTTPStatus.NOT_FOUND)
+                return
+            if parsed_path.query or self.headers.get_content_type() != "application/json":
+                self._write_json({"status": "blocked", "code": "attestation_invalid"}, HTTPStatus.BAD_REQUEST)
                 return
             try:
                 payload = self._read_payload()
@@ -165,9 +169,11 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
                 outcome.put(payload)
 
             worker = threading.Thread(target=run, daemon=True)
-            worker.start()
             sequence = 0
+            started = False
             try:
+                worker.start()
+                started = True
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.send_header("Cache-Control", "no-store")
@@ -206,7 +212,8 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
             except (BrokenPipeError, ConnectionResetError):
                 return
             finally:
-                worker.join()
+                if started:
+                    worker.join()
                 broker.release()
                 self.close_connection = True
 
@@ -218,7 +225,10 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             self.close_connection = True
 
     return Handler
