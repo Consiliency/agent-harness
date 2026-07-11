@@ -242,6 +242,42 @@ def test_break_glass_commit_does_not_sweep_a_pre_staged_secret(tmp_path):
     assert ".env" in _git(repo, "status", "--short")
 
 
+def test_noop_finalize_ignores_unrelated_staged_file(tmp_path):
+    # CR: the closeout commit is path-scoped, so the "nothing staged" no-op check
+    # (issue #6: verified work already on the base branch) must be scoped to the
+    # closeout paths too. An unrelated staged file must NOT divert a valid
+    # already-committed closeout into the commit branch (where the scoped commit
+    # would fail "nothing to commit" and spuriously block).
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("owned_a.py",))
+    (repo / "owned_a.py").write_text("verified work already committed out-of-band\n", encoding="utf-8")
+    commit_fixture_paths(repo, "add plan + owned work", plan, repo / "owned_a.py")
+    # An unrelated file is staged in the operator's index.
+    (repo / "utils.py").write_text("unrelated staged edit\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "utils.py"], check=True)
+    head_before = _git(repo, "rev-parse", "HEAD").strip()
+
+    snapshot = StateSnapshot(
+        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+        phases={"CONTRACT": "awaiting_phase_closeout"}, current_phase="CONTRACT",
+        phase_owned_dirty=True, phase_owned_dirty_paths=("owned_a.py",),
+        dirty_paths=("owned_a.py",),
+        closeout_terminal_status="complete", **snapshot_provenance(roadmap),
+    )
+    status, event = _perform_phase_closeout(
+        repo, roadmap, "CONTRACT", snapshot, resolve_profile("execute"),
+        action="execute", closeout_mode="commit",
+    )
+
+    assert status == "complete", (status, event.blocker)
+    assert event.metadata["closeout"]["closeout_action"] == "noop_already_committed"
+    # No new commit, and the unrelated staged file was neither committed nor touched.
+    assert _git(repo, "rev-parse", "HEAD").strip() == head_before
+    assert "utils.py" not in _git(repo, "show", "--name-only", "--format=", "HEAD")
+    assert "A  utils.py" in _git(repo, "status", "--short")
+
+
 def test_break_glass_reason_does_not_break_through_non_closeout_blocker(tmp_path):
     # A non-break-glassable human-required blocker (missing_secret) still short-circuits
     # even with a reason — break-through is scoped to closeout_scope_violation.

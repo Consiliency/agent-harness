@@ -7951,7 +7951,7 @@ def _perform_phase_closeout(
                 returncode=add_result.returncode,
                 stderr=add_result.stderr or add_result.stdout,
             )
-        elif terminal_status == "complete" and _closeout_nothing_staged(repo):
+        elif terminal_status == "complete" and _closeout_nothing_staged(repo, closeout_dirty_paths):
             # Issue #6: the phase's verified work is already on the base branch (committed
             # out-of-band, e.g. via a merged PR), so nothing is staged. `git commit` would
             # exit non-zero and be mistaken for a commit failure, leaving the phase
@@ -8273,14 +8273,25 @@ def _run_git_closeout(repo: Path, *args: str, input_text: str | None = None) -> 
     )
 
 
-def _closeout_nothing_staged(repo: Path) -> bool:
-    """True when there is nothing staged to commit (the index matches HEAD).
+def _closeout_nothing_staged(repo: Path, paths: tuple[str, ...] = ()) -> bool:
+    """True when there is nothing staged to commit for the closeout ``paths`` (they
+    match HEAD).
 
     Used by closeout to distinguish "the phase's verified work is already on the base
     branch" (a successful no-op finalize, issue #6) from a real commit failure. `git
     diff --cached --quiet` exits 0 when there are no staged changes, 1 when there are.
+
+    Scoped to the closeout ``paths`` (CR): the closeout commit is path-scoped
+    (``git commit -- <paths>``), so this no-op check must ask "are the CLOSEOUT paths
+    already committed" and ignore any unrelated staged file the scoped commit would
+    never touch — otherwise an unrelated staged file makes the whole-index check see
+    "something staged", diverting a valid already-committed closeout into the commit
+    branch where the scoped commit then fails with "nothing to commit".
     """
-    return _run_git_closeout(repo, "diff", "--cached", "--quiet").returncode == 0
+    args = ["diff", "--cached", "--quiet"]
+    if paths:
+        args += ["--", *paths]
+    return _run_git_closeout(repo, *args).returncode == 0
 
 
 def _commit_failure_closeout(
