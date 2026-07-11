@@ -84,6 +84,22 @@ The advisory result can catch metadata-only schema, redaction, provenance, and
 digest issues early. It is not acceptance authority and must not be treated as a
 merge verdict.
 
+## Release Step — bump `RELEASE_PIN` in lockstep (PUSHFLOW)
+
+- When cutting a release, bump the checked-in `RELEASE_PIN` to the new
+  `vX.Y.Z` **in the same release commit** as the `phase-loop-runtime` package
+  version (they are kept equal by the release-consistency guard in
+  `tests/test_release_pin_autotrack.py`).
+- `install-agent-harness.sh` pins the persistent clone at
+  `~/.local/share/agent-harness` (or `$AGENT_HARNESS_HOME`) to `RELEASE_PIN`. If
+  `RELEASE_PIN` is not bumped, previously installed clones stay behind (the live
+  gap where clones sat at `0.6.0` under `RELEASE_PIN=v0.7.0`).
+- `phase-loop doctor` surfaces a `stale` BOM verdict for
+  `pinned agent clone (~/.local/share/agent-harness)` when a local clone is behind
+  `RELEASE_PIN`. The remediation is to re-run `install-agent-harness.sh` (which
+  runs `git -C ~/.local/share/agent-harness fetch + checkout $REF`). The check is
+  advisory (WARN, never gating).
+
 ## Maintainer Dispatch Boundary
 
 - The package is not published from this handoff.

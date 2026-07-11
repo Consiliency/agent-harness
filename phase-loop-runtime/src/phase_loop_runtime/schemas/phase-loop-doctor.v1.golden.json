@@ -1,6 +1,6 @@
 {
   "schema": "phase-loop-doctor.v1",
-  "summary": "13/17 tools present; BOM 2 current / 1 stale / 2 unknown (0 gating-stale)",
+  "summary": "13/17 tools present; BOM 2 current / 2 stale / 2 unknown (0 gating-stale)",
   "tools": [
     { "name": "git", "present": true, "authed": null, "unlocks": "version control" },
     { "name": "just", "present": true, "authed": null, "unlocks": "just task runner (repo agent:* contracts)" },
@@ -67,6 +67,15 @@
       "note": "no local pin in the primitive; reported for visibility"
     },
     {
+      "target": "pinned agent clone (~/.local/share/agent-harness)",
+      "ecosystem": "git-clone",
+      "pinned": "0.6.0",
+      "latest": "0.7.0",
+      "verdict": "stale",
+      "gating": false,
+      "note": "clone behind RELEASE_PIN -> re-run install-agent-harness.sh (git -C ~/.local/share/agent-harness fetch+checkout $REF); the release step must bump RELEASE_PIN in lockstep so clones re-pin"
+    },
+    {
       "target": "mac-skills ref",
       "ecosystem": "dotfiles",
       "pinned": null,
@@ -75,5 +84,12 @@
       "gating": false,
       "note": "owned by dotfiles; not resolvable from the decoupled primitive"
     }
-  ]
+  ],
+  "worktree_divergence": {
+    "base_ref": "origin/main",
+    "worktree_count": 3,
+    "max_commits_ahead": 42,
+    "threshold": 20,
+    "verdict": "warn"
+  }
 }

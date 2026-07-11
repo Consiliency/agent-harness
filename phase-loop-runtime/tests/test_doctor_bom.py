@@ -109,6 +109,13 @@ def test_offline_registry_degrades_to_unknown_never_raises() -> None:
     repo = Path(__file__).resolve().parents[1]
     bom = doctor.build_bom(repo, fetch=offline)
     for entry in bom:
+        # PUSHFLOW: the pinned-clone entry (git-clone) is a LOCAL check — clone
+        # version vs the checked-in RELEASE_PIN — so it resolves offline (current/
+        # stale) rather than degrading to unknown. Every registry-backed entry
+        # (pypi/npm) must still degrade to unknown when the fetch fails.
+        if entry["ecosystem"] == "git-clone":
+            assert entry["verdict"] in {"current", "stale", "unknown"}, entry
+            continue
         assert entry["verdict"] == "unknown", entry
     # And it validates + does not raise through the full report path.
     report = doctor.build_doctor_report(repo, fetch=offline)

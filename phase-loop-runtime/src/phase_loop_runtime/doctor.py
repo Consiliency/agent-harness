@@ -21,8 +21,10 @@ DECOUPLE SL-1: this module pulls NO dotfiles-domain module
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
@@ -174,6 +176,57 @@ def _release_pin(repo: Path) -> Optional[str]:
     return _as_version(pin_file.read_text(encoding="utf-8"))
 
 
+def _pinned_clone_dir() -> Path:
+    """The persistent agent-harness clone dir the installer maintains.
+
+    Mirrors ``install-agent-harness.sh``: ``$AGENT_HARNESS_HOME`` else
+    ``~/.local/share/agent-harness``. A ``~``-relative literal — never emitted as an
+    absolute path into the metadata-only payload.
+    """
+    home = os.environ.get("AGENT_HARNESS_HOME")
+    return Path(home).expanduser() if home else (Path.home() / ".local" / "share" / "agent-harness")
+
+
+def _git_describe_tag(clone: Path) -> Optional[str]:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(clone), "describe", "--tags", "--abbrev=0"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
+def _pinned_clone_version(clone: Optional[Path] = None) -> Optional[str]:
+    """The release version the pinned clone is checked out at (v-stripped).
+
+    Sources, in order: the nearest git tag of the checkout, then the clone's own
+    checked-out ``RELEASE_PIN`` (release-consistency keeps it == the release
+    version). Degrades to ``None`` when the clone is absent or unreadable — the
+    caller renders that as verdict ``unknown``, never a failure.
+    """
+    clone = clone or _pinned_clone_dir()
+    if not clone.is_dir():
+        return None
+    tag = _as_version(_git_describe_tag(clone))
+    if tag:
+        return tag
+    pin = clone / "RELEASE_PIN"
+    if pin.is_file():
+        try:
+            return _as_version(pin.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+    return None
+
+
 def _contract_floor(repo: Path) -> Optional[str]:
     """The `consiliency-contract>=X` floor from phase-loop-runtime/pyproject.toml."""
     for rel in ("pyproject.toml", "phase-loop-runtime/pyproject.toml"):
@@ -253,6 +306,23 @@ def build_bom(repo: Path, *, fetch: Optional[Fetcher] = None) -> list[dict[str, 
             _npm_latest("@consiliency/canon-core", fetch),
             gating=False,
             note="no local pin in the primitive; reported for visibility",
+        ),
+        # PUSHFLOW: the pinned agent clone the installer maintains vs the checked-in
+        # RELEASE_PIN. `pinned` = the clone's checked-out release; `latest` = this
+        # repo's RELEASE_PIN. A `stale` verdict means the clone is BEHIND RELEASE_PIN
+        # (the live gap where clones sat at 0.6.0 under RELEASE_PIN=v0.7.0). Offline /
+        # no clone => `unknown`. gating=False: WARN only, never fails --fail-on-stale.
+        _entry(
+            "pinned agent clone (~/.local/share/agent-harness)",
+            "git-clone",
+            _pinned_clone_version(),
+            _release_pin(repo),
+            gating=False,
+            note=(
+                "clone behind RELEASE_PIN -> re-run install-agent-harness.sh "
+                "(git -C ~/.local/share/agent-harness fetch+checkout $REF); the "
+                "release step must bump RELEASE_PIN in lockstep so clones re-pin"
+            ),
         ),
         _entry(
             "mac-skills ref",
@@ -349,6 +419,41 @@ def _interactive_surfaces(repo: Path) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# worktree divergence (PUSHFLOW: ahead-of-origin aggregate)
+# --------------------------------------------------------------------------- #
+def build_worktree_divergence(repo: Path) -> dict[str, Any]:
+    """Aggregate ahead-of-base signal for `phase-loop doctor`.
+
+    Mirrors the per-worktree `commits_ahead_of_origin` from the worktree index as a
+    metadata-only summary (counts + verdict, NEVER worktree paths). `verdict` is
+    ``warn`` when any worktree exceeds `AHEAD_WARN_THRESHOLD`, else ``ok``; a repo
+    with no divergent worktrees is ``ok`` with `max_commits_ahead=0`. Advisory only
+    — never human_required. Degrades to an empty/ok summary on any git error.
+    """
+    from .worktree_index import AHEAD_WARN_THRESHOLD, build_index
+
+    try:
+        report = build_index(repo)
+    except Exception:
+        return {
+            "base_ref": "origin/main",
+            "worktree_count": 0,
+            "max_commits_ahead": 0,
+            "threshold": AHEAD_WARN_THRESHOLD,
+            "verdict": "ok",
+        }
+    aheads = [wt.commits_ahead_of_origin for wt in report.worktrees if wt.commits_ahead_of_origin is not None]
+    max_ahead = max(aheads, default=0)
+    return {
+        "base_ref": report.base_ref,
+        "worktree_count": len(report.worktrees),
+        "max_commits_ahead": max_ahead,
+        "threshold": AHEAD_WARN_THRESHOLD,
+        "verdict": "warn" if max_ahead > AHEAD_WARN_THRESHOLD else "ok",
+    }
+
+
+# --------------------------------------------------------------------------- #
 # assembly
 # --------------------------------------------------------------------------- #
 def _summary(tools: list[dict[str, Any]], bom: list[dict[str, Any]]) -> str:
@@ -392,6 +497,8 @@ def build_doctor_report(
         "declared_contracts": list(rv["declared_contracts"]),  # type: ignore[arg-type]
         "install_surfaces": surfaces,
         "bom": bom,
+        # PUSHFLOW: ahead-of-origin divergence aggregate (counts only, no paths).
+        "worktree_divergence": build_worktree_divergence(root),
     }
     # Metadata-only guarantee: no absolute paths, no secrets. Reuses the same
     # redaction contract as phase-loop-install-status.v1.
@@ -441,6 +548,15 @@ def _print_doctor(report: dict[str, Any]) -> None:
         print(
             f"  [{entry['verdict']:<7}] {entry['target']:<32} "
             f"pinned={entry['pinned']} latest={entry['latest']} ({entry['ecosystem']}, {gate})"
+        )
+    div = report.get("worktree_divergence")
+    if div:
+        print("")
+        print("Worktree divergence (ahead of base):")
+        print(
+            f"  [{div['verdict']:<7}] {div['worktree_count']} worktree(s); "
+            f"max {div['max_commits_ahead']} ahead of {div['base_ref']} "
+            f"(warn threshold {div['threshold']})"
         )
 
 
