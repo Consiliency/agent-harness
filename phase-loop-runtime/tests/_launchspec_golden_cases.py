@@ -123,12 +123,34 @@ def build_cases() -> dict[str, dict[str, Any]]:
         spec = build_launch_spec(_base_request("command", command_adapter=_command_adapter()))
         cases["command"] = _normalize(spec.to_json())
 
-        # claude: pin route (agent_view) + explicit policy/eligibility to avoid fs reads.
-        claude_request = _base_request(
-            "claude",
-            claude_execution_mode="solo",
-            phase_team_eligibility=_pinned_claude_eligibility(),
-        )
-        spec = build_launch_spec(claude_request)
-        cases["claude_agent_view_solo"] = _normalize(spec.to_json())
+        # claude: cover the distinct route return paths of the (moved) claude branch
+        # — agent_view, channel (command=claude-channel …), and print
+        # (build_claude_command + billing warning). Explicit policy/eligibility keeps
+        # the filesystem out of it; each variant pins only its route (+ a fixed
+        # channel session id) so the snapshot is machine-independent.
+        claude_variants = {
+            "claude_agent_view_solo": {"PHASE_LOOP_CLAUDE_ROUTE": "agent_view"},
+            "claude_channel_solo": {
+                "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+                "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID": "golden-session-id",
+            },
+            "claude_print_solo": {"PHASE_LOOP_CLAUDE_ROUTE": "print"},
+        }
+        for case_name, overrides in claude_variants.items():
+            saved = {k: os.environ.get(k) for k in overrides}
+            try:
+                for k, v in overrides.items():
+                    os.environ[k] = v
+                claude_request = _base_request(
+                    "claude",
+                    claude_execution_mode="solo",
+                    phase_team_eligibility=_pinned_claude_eligibility(),
+                )
+                cases[case_name] = _normalize(build_launch_spec(claude_request).to_json())
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
     return cases

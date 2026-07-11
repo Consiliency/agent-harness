@@ -508,8 +508,64 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
 }
 
 
+_BOUND_CAPABILITY_REGISTRY: dict[str, ExecutorCapabilityRecord] | None = None
+
+
+def _provider_backing_for(executor: str):
+    """EXECREG (IF-0-EXECREG-1): the ``provider_backing`` seam hook, wired to the
+    ``AgentRuntimeProvider`` seam (``agent_runtime_provider.py``). The registry maps
+    each executor to its ``AgentRuntimeProvider`` backing; none is registered yet,
+    so every executor resolves to ``None`` — nullable, no behavior change. A future
+    backing swap (TUI -> official API, per north-star Principle 3) is a binding here,
+    not a dispatch edit. Function-local import keeps this off the module import path
+    (and out of any cycle)."""
+    from .agent_runtime_provider import AgentRuntimeProvider
+
+    # executor -> registered AgentRuntimeProvider backing (empty until B5/backings land).
+    provider_registry: dict[str, AgentRuntimeProvider] = {}
+    return provider_registry.get(executor)
+
+
+def _bind_capability_records(
+    base: dict[str, ExecutorCapabilityRecord]
+) -> dict[str, ExecutorCapabilityRecord]:
+    """Attach the EXECREG callables to each base record. Function-local imports
+    break the launcher<->capability_registry import cycle (launcher imports this
+    module at top level). The cache/memo for auth/availability lives in
+    ``executor_availability`` (module level), never on the frozen record."""
+    from dataclasses import replace
+
+    from .launcher import LAUNCH_COMMAND_BUILDERS
+    from .executor_availability import auth_ok_for, is_executor_available
+
+    bound: dict[str, ExecutorCapabilityRecord] = {}
+    for name, record in base.items():
+        bound[name] = replace(
+            record,
+            build_command=LAUNCH_COMMAND_BUILDERS.get(name),
+            is_available=(lambda executor=name: is_executor_available(executor)),
+            auth_ok=(
+                lambda executor=name, probes=record.auth_preflight_probes: auth_ok_for(
+                    executor, probes
+                )
+            ),
+            provider_backing=_provider_backing_for(name),
+            get_session_transcript=None,
+        )
+    return bound
+
+
 def capability_registry() -> dict[str, ExecutorCapabilityRecord]:
-    return DEFAULT_CAPABILITY_REGISTRY
+    """The executor capability registry, with EXECREG callables bound onto each
+    record (``build_command`` / ``is_available`` / ``auth_ok`` /
+    ``provider_backing`` / ``get_session_transcript``). Bound lazily + cached so the
+    launcher import cycle is avoided and the binding cost is paid once. Metadata is
+    identical to ``DEFAULT_CAPABILITY_REGISTRY`` (record equality is compare-stable —
+    the callables are ``compare=False``)."""
+    global _BOUND_CAPABILITY_REGISTRY
+    if _BOUND_CAPABILITY_REGISTRY is None:
+        _BOUND_CAPABILITY_REGISTRY = _bind_capability_records(DEFAULT_CAPABILITY_REGISTRY)
+    return _BOUND_CAPABILITY_REGISTRY
 
 
 def provider_policy_capabilities() -> dict[str, ProviderPolicyCapability]:

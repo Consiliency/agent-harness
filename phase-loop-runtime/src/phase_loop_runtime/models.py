@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import fnmatch
 import hashlib
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 
 PHASE_STATUSES = (
@@ -1758,6 +1758,34 @@ class ExecutorCapabilityRecord:
     known_failure_cases: tuple[str, ...] = ()
     default_claude_execution_mode: str | None = None
     claude_execution_policies: tuple["ClaudeTeamPolicy", ...] = ()
+    # EXECREG (IF-0-EXECREG-1): registry-driven launch / availability / auth /
+    # provider-backing / session capture. All optional so every existing
+    # constructor keeps working, and compare-excluded so record equality is
+    # unaffected. These hold callables that live in `launcher` /
+    # `executor_availability` (not this module); they are bound lazily inside
+    # `capability_registry()` via `dataclasses.replace` to avoid the
+    # launcher<->capability_registry import cycle. `build_launch_spec` delegates
+    # to `build_command`; adding an executor is a record addition, not an
+    # if-branch edit.
+    build_command: "Callable[[LaunchRequest, ExecutorCapabilityRecord], Any] | None" = field(
+        default=None, compare=False
+    )
+    is_available: "Callable[[], bool] | None" = field(default=None, compare=False)
+    auth_ok: "Callable[[], bool] | None" = field(default=None, compare=False)
+    provider_backing: Any = field(default=None, compare=False)
+    get_session_transcript: "Callable[[LaunchRequest], Any] | None" = field(
+        default=None, compare=False
+    )
+
+    # Fields that carry callables / opaque seam references — never serialized (would
+    # dump function objects) and excluded from the metadata to_json().
+    _NON_SERIALIZED_FIELDS = (
+        "build_command",
+        "is_available",
+        "auth_ok",
+        "provider_backing",
+        "get_session_transcript",
+    )
 
     def __post_init__(self) -> None:
         require_literal(self.executor, EXECUTORS, "executor")
@@ -1780,7 +1808,14 @@ class ExecutorCapabilityRecord:
             require_literal(profile, MODEL_PROFILES, "default model profile")
 
     def to_json(self) -> dict[str, Any]:
-        return clean_dict(asdict(self))
+        # Exclude the callable / opaque EXECREG fields — the metadata JSON stays
+        # exactly what it was before those fields existed (no function objects).
+        data = {
+            key: value
+            for key, value in asdict(self).items()
+            if key not in self._NON_SERIALIZED_FIELDS
+        }
+        return clean_dict(data)
 
 
 @dataclass(frozen=True)
