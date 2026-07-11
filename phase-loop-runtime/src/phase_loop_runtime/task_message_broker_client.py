@@ -82,6 +82,7 @@ class TaskMessageBrokerClient:
             },
             thread_id=thread_id,
             message_id=message_id,
+            max_source_age_seconds=max_source_age_seconds,
         )
 
     def _request(
@@ -91,6 +92,7 @@ class TaskMessageBrokerClient:
         *,
         thread_id: str | None = None,
         message_id: str | None = None,
+        max_source_age_seconds: int | None = None,
     ) -> dict[str, object]:
         request = Request(
             f"{self._base_url}{path}",
@@ -127,7 +129,13 @@ class TaskMessageBrokerClient:
                     result = frame["payload"]
                     if not isinstance(sha, str) or COMMIT_SHA.fullmatch(sha) is None or not isinstance(result, dict):
                         raise ValueError
-                    if not self._valid_payload(result, path=path, thread_id=thread_id, message_id=message_id):
+                    if not self._valid_payload(
+                        result,
+                        path=path,
+                        thread_id=thread_id,
+                        message_id=message_id,
+                        max_source_age_seconds=max_source_age_seconds,
+                    ):
                         raise ValueError
                     if result.get("status") == "blocked":
                         raise TaskMessageResolverError(
@@ -180,6 +188,7 @@ class TaskMessageBrokerClient:
         path: str,
         thread_id: str | None,
         message_id: str | None,
+        max_source_age_seconds: int | None,
     ) -> bool:
         if payload.get("authority") != self._authority:
             return False
@@ -208,12 +217,24 @@ class TaskMessageBrokerClient:
             return False
         if payload.get("approval_message_id") != f"{message_id}-approval":
             return False
+        if (
+            payload.get("source_item_id") == payload.get("approval_item_id")
+            or payload.get("turn_id") == payload.get("approval_turn_id")
+        ):
+            return False
         digest_keys = {"message_sha256", "approval_body_sha256", "approval_canonical_sha256"}
         if any(not isinstance(payload.get(key), str) or SHA256.fullmatch(payload[key]) is None for key in digest_keys):
             return False
         source_started_at = payload.get("source_started_at")
         resolved_at = payload.get("resolved_at")
-        if type(source_started_at) is not int or type(resolved_at) is not int or source_started_at <= 0 or resolved_at < source_started_at:
+        if (
+            type(source_started_at) is not int
+            or type(resolved_at) is not int
+            or type(max_source_age_seconds) is not int
+            or source_started_at <= 0
+            or resolved_at < source_started_at
+            or resolved_at - source_started_at > max_source_age_seconds
+        ):
             return False
         try:
             message_bytes = _decode_canonical_base64(payload.get("message_bytes_b64"))

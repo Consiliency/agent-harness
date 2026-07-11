@@ -276,6 +276,9 @@ def test_duplicate_and_non_finite_frame_json_is_rejected(raw: bytes) -> None:
         ("message_sha256", "0" * 64),
         ("approval_body_bytes_b64", "***"),
         ("source_item_id", 7),
+        ("approval_item_id", "item-1"),
+        ("approval_turn_id", "turn-1"),
+        ("resolved_at", 902),
         ("resolved_at", "2"),
     ],
 )
