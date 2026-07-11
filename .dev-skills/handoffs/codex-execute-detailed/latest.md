@@ -13,10 +13,10 @@ verification_artifact_path: .dev-skills/handoffs/codex-execute-detailed/verifica
 
 Implemented the bounded Agent Harness compatibility repair for `ViperJuice/agent-harness#165`.
 
-The resolver now uses Codex app-server's persisted `userMessage.clientId`, requires a separate deterministic `-approval` message with one text input, binds both stored item identities and turn timestamps, and rejects the app-server-concatenated one-item shape. A local `--control-socket` transport fails closed when the supported `codex app-server proxy --sock` path is unavailable.
+The resolver now uses Codex app-server's persisted `userMessage.clientId`, requires a separate deterministic `-approval` message with one text input, binds both stored item identities and turn timestamps, and rejects the app-server-concatenated one-item shape. A local `--control-socket` transport uses Codex 0.144.1's WebSocket-over-Unix owner socket with compression disabled.
 
-Verification passed: 20 focused tests; 2,240 standalone runtime tests with 35 skipped; sdist and wheel built. Public CLI/operator documentation was updated (`doc_delta_decision=docs_updated`).
+Verification passed: 21 focused tests; 2,241 standalone runtime tests with 35 skipped; sdist and wheel built; live owner-socket initialize passed on ai and claw. Public CLI/operator documentation was updated (`doc_delta_decision=docs_updated`).
 
 Plan-manifest lifecycle recording was not possible because no manifest entry exists for `plans/detailed-trusted-task-message-resolver-20260711.md`; no manual manifest rewrite was attempted.
 
-NORMALIZE remains blocked by Codex Desktop-managed app-server 0.144.1: the live ai and claw processes cannot enable or serve control-socket proxy responses, and no supported authenticated transport reaches their materialized task state. Publish as a draft until that product/runtime boundary is resolved and a real authenticated round trip passes.
+The transport blocker is cleared without a network listener. Keep the PR draft until a real two-message source/body resolution round trip passes on claw, the runtime is deployed to ai/claw, and ai-stack's reader invokes the claw-local resolver over authenticated SSH.

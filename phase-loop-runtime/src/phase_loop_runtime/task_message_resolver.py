@@ -5,8 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import selectors
-import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
@@ -162,31 +160,34 @@ class _WebSocketJsonRpcConnection:
 class _ControlSocketJsonRpcConnection:
     def __init__(self, control_socket: str, _unused_token: str, timeout_seconds: float) -> None:
         try:
-            self._process = subprocess.Popen(
-                ("codex", "app-server", "proxy", "--sock", control_socket),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                bufsize=1,
+            from websockets.sync.client import unix_connect
+
+            self._socket = unix_connect(
+                path=control_socket,
+                uri="ws://localhost",
+                compression=None,
+                open_timeout=timeout_seconds,
+                close_timeout=timeout_seconds,
             )
-        except OSError as exc:
+        except Exception as exc:
             raise _ConnectionFailure("source_task_unavailable") from exc
-        if self._process.stdin is None or self._process.stdout is None:
-            self.close()
-            raise _ConnectionFailure("source_task_unavailable")
-        self._stdin = self._process.stdin
-        self._stdout = self._process.stdout
         self._timeout_seconds = timeout_seconds
         self._next_id = 1
 
     def request(self, method: str, params: Mapping[str, object]) -> Mapping[str, Any]:
         request_id = self._next_id
         self._next_id += 1
-        self._send({"id": request_id, "method": method, "params": dict(params)})
+        self._socket.send(json.dumps({"id": request_id, "method": method, "params": dict(params)}, separators=(",", ":")))
         while True:
-            message = self._receive()
-            if message.get("id") != request_id:
+            try:
+                raw_message = self._socket.recv(timeout=self._timeout_seconds)
+            except TimeoutError as exc:
+                raise _ConnectionFailure("source_task_unavailable") from exc
+            try:
+                message = json.loads(raw_message)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise _JsonRpcFailure({"code": -32700}) from exc
+            if not isinstance(message, dict) or message.get("id") != request_id:
                 continue
             if "error" in message:
                 raise _JsonRpcFailure(message["error"])
@@ -196,49 +197,10 @@ class _ControlSocketJsonRpcConnection:
             return result
 
     def notify(self, method: str, params: Mapping[str, object]) -> None:
-        self._send({"method": method, "params": dict(params)})
+        self._socket.send(json.dumps({"method": method, "params": dict(params)}, separators=(",", ":")))
 
     def close(self) -> None:
-        process = getattr(self, "_process", None)
-        if process is None:
-            return
-        if process.stdin is not None:
-            process.stdin.close()
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-
-    def _send(self, message: Mapping[str, object]) -> None:
-        try:
-            self._stdin.write(json.dumps(dict(message), separators=(",", ":")) + "\n")
-            self._stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            raise _ConnectionFailure("source_task_unavailable") from exc
-
-    def _receive(self) -> Mapping[str, Any]:
-        selector = selectors.DefaultSelector()
-        try:
-            selector.register(self._stdout, selectors.EVENT_READ)
-            if not selector.select(self._timeout_seconds):
-                raise _ConnectionFailure("source_task_unavailable")
-            raw_message = self._stdout.readline()
-        finally:
-            selector.close()
-        if not raw_message:
-            raise _ConnectionFailure("source_task_unavailable")
-        try:
-            message = json.loads(raw_message)
-        except json.JSONDecodeError as exc:
-            raise _JsonRpcFailure({"code": -32700}) from exc
-        if not isinstance(message, dict):
-            raise _JsonRpcFailure({"code": -32700})
-        return message
+        self._socket.close()
 
 
 class _ConnectionFailure(RuntimeError):

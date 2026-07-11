@@ -12,12 +12,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   distinct `<source-client-id>-approval` user message for the exact JSON body.
   Both messages must have one text item, unique client and stored identities,
   source-before-approval ordering, fresh turn timestamps, and matching body
-  claims. A new local `--control-socket` transport uses the supported
-  `codex app-server proxy --sock` path so the resolver can run on the source
-  host and return its proof over an independently authenticated channel when
-  the managed daemon cannot expose an authenticated WebSocket. Desktop-managed
-  Codex 0.144.1 processes that expose an inert/non-enabled proxy remain blocked
-  with `source_task_unavailable`; the resolver does not bridge or replace them.
+  claims. A new local `--control-socket` transport performs the supported
+  WebSocket-over-Unix handshake with compression disabled, so the resolver can
+  run on the source host and return its proof over an independently
+  authenticated channel without exposing a network listener.
   App-server-concatenated single-item envelopes remain rejected.
 
 - **Authenticated cross-host task-message proof resolver (`ViperJuice/agent-harness#155`).**

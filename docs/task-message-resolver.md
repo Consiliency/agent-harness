@@ -30,11 +30,10 @@ phase-loop task-message-probe \
 
 The probe performs only the authenticated app-server initialization handshake and emits authority/status metadata. It does not read a task or message.
 
-Codex app-server 0.144.1 does not attach a second WebSocket listener to the
-host-managed daemon, and `app-server proxy` is stdio-only. For a managed source
-task, run the resolver on the source host against its owner-only control socket
-and carry the JSON result back over a separately authenticated channel such as
-tailnet SSH:
+Codex app-server 0.144.1's owner-only Unix control socket is itself a WebSocket
+transport. For a managed source task, run the resolver on the source host
+against that socket and carry the JSON result back over a separately
+authenticated channel such as tailnet SSH:
 
 ```sh
 ssh claw.example.ts.net phase-loop task-message-resolve \
@@ -45,19 +44,14 @@ ssh claw.example.ts.net phase-loop task-message-resolve \
   --max-source-age-seconds 900
 ```
 
-`--control-socket` is local-side only and invokes the supported `codex
-app-server proxy --sock` command. It does not expose the Unix socket or add a
+`--control-socket` is local-side only. It performs the required WebSocket HTTP
+Upgrade directly over the Unix socket with compression disabled, matching
+Codex 0.144.1's supported transport. It does not expose the socket or add a
 network listener. The caller is responsible for authenticating the outer
-channel and pinning `--authority` to that source host. WebSocket mode continues
-to require `--token-env`; control-socket mode never accepts or reads a bearer.
-
-The proxy must return a successful initialize response before this mode is
-usable. Codex Desktop-managed app-server 0.144.1 processes on ai and claw expose
-the socket but return no proxy bytes, and `daemon enable-remote-control` refuses
-because those processes are not daemon-managed. That configuration remains
-blocked with `source_task_unavailable`; do not restart the Desktop daemon,
-replace it with a separate source, or bridge the socket outside a supported
-authenticated Codex transport merely to satisfy this command.
+channel and pinning `--authority` to that source host. Network WebSocket mode
+continues to require `--token-env`; control-socket mode never accepts or reads a
+bearer. A missing socket, failed handshake, or unavailable task fails closed
+with `source_task_unavailable`.
 
 Resolve one exact source after the probe is ready:
 

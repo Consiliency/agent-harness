@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from phase_loop_runtime.task_message_resolver import (
     CodexAppServerTaskMessageResolver,
     TaskMessageResolverError,
+    _ControlSocketJsonRpcConnection,
 )
 from phase_loop_runtime.cli import main
 
@@ -249,7 +250,7 @@ def test_probe_is_metadata_only() -> None:
     ]
 
 
-def test_local_control_socket_mode_uses_proxy_without_bearer() -> None:
+def test_local_control_socket_mode_uses_local_transport_without_bearer() -> None:
     connection = FakeConnection(_thread())
     observed: list[tuple[str, str, float]] = []
 
@@ -268,6 +269,31 @@ def test_local_control_socket_mode_uses_proxy_without_bearer() -> None:
 
     assert proof.message_id == MESSAGE_ID
     assert observed == [("/home/test/.codex/app-server-control/app-server-control.sock", "", 10.0)]
+
+
+def test_control_socket_disables_websocket_compression(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+
+    class Socket:
+        def close(self) -> None:
+            observed["closed"] = True
+
+    def unix_connect(**kwargs: object) -> Socket:
+        observed.update(kwargs)
+        return Socket()
+
+    monkeypatch.setattr("websockets.sync.client.unix_connect", unix_connect)
+    connection = _ControlSocketJsonRpcConnection("/tmp/app-server.sock", "", 7.0)
+    connection.close()
+
+    assert observed == {
+        "path": "/tmp/app-server.sock",
+        "uri": "ws://localhost",
+        "compression": None,
+        "open_timeout": 7.0,
+        "close_timeout": 7.0,
+        "closed": True,
+    }
 
 
 def test_task_message_transport_is_exactly_one_of_websocket_or_control_socket() -> None:
