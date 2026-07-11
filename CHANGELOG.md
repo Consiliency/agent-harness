@@ -6,6 +6,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## Unreleased
 
+<<<<<<< HEAD
 - **Registry-driven launch dispatch (EXECDISPATCH EXECREG, IF-0-EXECREG-1).**
   `ExecutorCapabilityRecord` (`models.py`) now carries optional
   `build_command` / `is_available` / `auth_ok` / `provider_backing` /
@@ -24,6 +25,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   bounded probe gate) live
   in the new `executor_availability` module and are dormant until AUTOSEL. No
   default-executor or runtime behavior change.
+
+- **SPIKE-DISSECT research artifacts (EXECDISPATCH Phase 3, gate IF-0-DISSECT-1).**
+  Added a research-only spike under `spikes/execdispatch-dissect/` — a versioned
+  tool-usage-profile schema (`schema.v0.draft.json` → frozen `schema.v1.json`), a
+  metadata-only extractor (`extract_profile.py`), a stdlib-only validator with an
+  active semantic redaction gate (`validate_profile.py`), claude-code + codex
+  datasets, and a per-harness feasibility verdict. No production `src/` change; the
+  CHANGELOG entry accompanies the committed `schema*.json` public-surface files so
+  the docs-freshness audit stays green. Answers north-star B1 (profiles extractable
+  for ≥2 harnesses: claude-code + codex).
+
+- **EXECDISPATCH roadmap + pi-native north star (docs).** Adds
+  `specs/phase-plans-v8.md` (the panel-ratified EXECDISPATCH phase plan —
+  EXECREG → GROKEXEC → AUTOSEL serial spine plus the SPIKE-DISSECT parallel
+  root) and `specs/north-star-pi-native.md` (the vision + gated backlog the
+  roadmap executes against). Docs-only; no runtime change.
 
 - **`consiliency-harness` publish uses the `pypi` environment.** The
   trusted-publishing workflow now gates on the same `pypi` GitHub environment as the
