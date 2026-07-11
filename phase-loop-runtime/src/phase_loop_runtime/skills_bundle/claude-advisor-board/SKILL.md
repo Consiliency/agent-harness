@@ -13,7 +13,7 @@ The advisor-board (formerly advisor-panel) implementation is owned by `agent-har
 
 - Runtime primitive: `phase_loop_runtime.panel_invoker`
 - Board model: `phase_loop_runtime.advisor_board` (seats, boards, resolver, validation)
-- Entry points: `available_panel_legs`, `invoke_panel`, and `invoke_panel_request` (from a `PanelRequest`)
+- Entry points (runnable default): `advisor_board.composition.compose_review_board` + `panel_invoker.invoke_board`, exposed as the `phase-loop advisor-board <artifact>` CLI. The legacy `available_panel_legs`/`invoke_panel`/`invoke_panel_request` stay in place for the governed review/pre-merge gates (unchanged, byte-identical golden).
 - Governed workflow integration: phase-loop governed review/pre-merge paths
 
 Do not call dotfiles advisor-panel scripts, copy provider-specific shell scripts, or introduce a separate implementation in the skill body. The skill is a thin operator guide over the runtime primitive.
@@ -42,7 +42,7 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 **On a Harness Code host, run the claude/Fable leg as a NATIVE Agent, not the runtime TUI.** When you are *inside* Harness Code, invoke the runtime for the `codex` and `gemini` legs only; the runtime returns the `claude` leg as `UNAVAILABLE` ("deferred to native Agent") by design — it must not spawn a second Harness TUI. Supply the third leg yourself with the Task tool (a Fable/Harness Agent given the same `review-instructions.md` + `review-bundle.md`), require it to end with `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, and reconcile all three. A `UNAVAILABLE` <harness> leg is a *gap to fill*, not an acceptable 2-leg board.
 
 1. Prefer the repo's governed phase-loop path when reviewing phase execution or pre-merge work.
-2. For a standalone smoke or diagnostic, stage the review material in a file and pass its path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_panel`.
+2. For a standalone smoke or diagnostic, run `phase-loop advisor-board <artifact>` (or, in-process, compose with `compose_review_board` and pass the material's path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_board`).
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
@@ -50,11 +50,15 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 ## Standalone Smoke Shape
 
 ```python
-from phase_loop_runtime.panel_invoker import available_panel_legs, invoke_panel
+from phase_loop_runtime.advisor_board.composition import compose_review_board
+from phase_loop_runtime.panel_invoker import invoke_board
 
-panel = invoke_panel("", available_panel_legs(), artifact_ref="path/to/bundle.md")
-for leg in panel.legs:
-    print(leg.leg, leg.status)
+# Availability-aware by default: compose_review_board seats only vendors that are
+# BOTH on PATH and authenticated (unauthed vendors are dropped and backfilled).
+board = compose_review_board()
+result = invoke_board(board, "", artifact_ref="path/to/bundle.md")
+for leg in result.legs:
+    print(leg.seat_key, leg.status)
 ```
 
 Under Harness Code, expect the `claude` leg to report `UNAVAILABLE` (deferred to the native Agent) — the runtime does not spawn a Harness TUI here. Supply that third leg natively (Task tool) and reconcile it with the `codex` + `gemini` results.

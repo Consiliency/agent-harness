@@ -16,7 +16,7 @@ from .consiliency_ingest import ingest
 from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
 from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
-from .discovery import find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
+from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
@@ -733,6 +733,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Repo-relative ref submitted to governed-pipeline; may be repeated.",
     )
+    # advisor-board (LEGACY / CLEANSHIP P7): the RUNNABLE agent-facing default for
+    # the 4-vendor board. Composes availability-aware via compose_review_board
+    # (REVIEWGOV IF-0-REVIEWGOV-1: is_available ∧ auth_ok) and dispatches via
+    # invoke_board — the legacy invoke_panel is untouched. Registered outside the
+    # common-args loop: it takes a single positional artifact and its own --json.
+    advisor_board_sub = subparsers.add_parser(
+        "advisor-board",
+        help=(
+            "Run an availability-aware cross-vendor advisor board over an artifact "
+            "(composes via compose_review_board; dispatches via invoke_board)."
+        ),
+    )
+    advisor_board_sub.add_argument(
+        "artifact", metavar="artifact",
+        help="Path to the review material staged into the board bundle.",
+    )
+    advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.")
     for name in ("task-message-probe", "task-message-resolve"):
         task_message_sub = subparsers.add_parser(
             name,
@@ -850,6 +867,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _outside_agent_validate_command(args=args)
     if command in {"task-message-probe", "task-message-resolve"}:
         return _task_message_command(args=args, resolve=command == "task-message-resolve")
+    if command == "advisor-board":
+        return _advisor_board_command(args=args)
     if command == "docs-audit":
         from . import docs_audit
 
@@ -1028,9 +1047,13 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     try:
         roadmap = select_roadmap(repo, args.roadmap)
         _warn_roadmap_validation(roadmap)
-    except RuntimeError as exc:
-        if "ambiguous roadmap selection" not in str(exc):
-            raise
+    except AmbiguousRoadmapError:
+        # LEGACY (CLEANSHIP P7): a bare run with >1 specs/phase-plans-v*.md and no
+        # state/manifest/handoff to disambiguate is a RECOVERABLE blocker, not an
+        # uncaught RuntimeError traceback. agent-harness itself ships v1–v9, so once
+        # the frozen-at-v4 manifest stops resolving (completed-skip), a bare run
+        # reaches exactly this branch — it must surface an actionable "specify
+        # --roadmap" blocker (blocker_class in BLOCKER_CLASSES), never crash.
         if command == "state":
             print(render_state_inspection(inspect_state(repo), as_json=as_json))
             return 0
@@ -1227,6 +1250,58 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 print("Log:", result.log_path)
         print(render_status(snapshot, as_json=False))
     return _run_returncode(snapshot, results)
+
+
+def _advisor_board_command(*, args: argparse.Namespace) -> int:
+    """LEGACY (CLEANSHIP P7): run the 4-vendor advisor board as the RUNNABLE
+    agent-facing default. Composes availability-aware seats via
+    ``compose_review_board`` (REVIEWGOV IF-0-REVIEWGOV-1: ``is_available ∧ auth_ok``,
+    so an unauthed vendor is dropped and backfilled) and dispatches them through
+    ``invoke_board``. The load-bearing legacy ``invoke_panel`` is NOT used here — this
+    is the additive board surface. Function-local imports keep the advisor_board /
+    panel_invoker graph off the bare ``import cli`` path and let tests patch the
+    composition/dispatch seams without shelling out to real vendor CLIs."""
+    from .advisor_board.composition import board_independence, compose_review_board
+    from .panel_invoker import invoke_board
+
+    artifact_path = Path(args.artifact)
+    if not artifact_path.exists():
+        print(f"advisor-board: artifact not found: {artifact_path}", file=sys.stderr)
+        return 2
+    # Auth-aware production composition: only vendors that are BOTH on PATH and
+    # authenticated are seated; the rest are backfilled onto authed vendors.
+    board = compose_review_board()
+    if not board.seats:
+        print(
+            "advisor-board: no vendor is both available and authenticated — nothing to compose.",
+            file=sys.stderr,
+        )
+        return 2
+    result = invoke_board(board, "", artifact_ref=str(artifact_path))
+    independence = board_independence(board)
+    if bool(getattr(args, "json", False)):
+        payload = {
+            "board": board.name,
+            "independence": {
+                "level": independence.level,
+                "distinct_vendors": independence.distinct_vendors,
+                "seats": independence.seats,
+            },
+            "legs": [
+                {"seat_key": leg.seat_key, "leg": leg.leg, "status": leg.status, "detail": leg.detail}
+                for leg in result.legs
+            ],
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(
+        f"advisor-board: {board.name} — independence={independence.level} "
+        f"({independence.distinct_vendors} distinct vendors / {independence.seats} seats)"
+    )
+    for leg in result.legs:
+        detail = f" — {leg.detail}" if leg.detail else ""
+        print(f"  [{leg.status}] {leg.seat_key}{detail}")
+    return 0
 
 
 def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
