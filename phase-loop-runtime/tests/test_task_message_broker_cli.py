@@ -336,6 +336,47 @@ def test_cli_broker_mode_fails_closed_without_token(monkeypatch) -> None:
     assert json.loads(stdout.getvalue())["code"] == "attestation_invalid"
 
 
+def test_valid_broker_blocked_result_preserves_error_contract() -> None:
+    payload = {
+        "status": "blocked",
+        "code": "source_task_unavailable",
+        "authority": AUTHORITY,
+        "thread_id": None,
+        "message_id": None,
+    }
+    with pytest.raises(TaskMessageResolverError) as exc:
+        _client([{"type": "result", "agent_harness_sha": SHA, "payload": payload}]).probe()
+    assert exc.value.metadata() == payload
+
+
+def test_cli_broker_blocked_result_exits_two_with_exact_metadata(monkeypatch) -> None:
+    class BlockedClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def probe(self) -> dict[str, object]:
+            raise TaskMessageResolverError("source_task_unavailable", authority=AUTHORITY)
+
+    monkeypatch.setattr("phase_loop_runtime.task_message_broker_client.TaskMessageBrokerClient", BlockedClient)
+    monkeypatch.setenv("BROKER_TOKEN", "secret")
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        code = main([
+            "task-message-probe",
+            "--broker-url", "https://claw.test:8765",
+            "--authority", AUTHORITY,
+            "--token-env", "BROKER_TOKEN",
+        ])
+    assert code == 2
+    assert json.loads(stdout.getvalue()) == {
+        "status": "blocked",
+        "code": "source_task_unavailable",
+        "authority": AUTHORITY,
+        "thread_id": None,
+        "message_id": None,
+    }
+
+
 def test_user_service_is_loopback_digest_only_and_does_not_manage_codex() -> None:
     unit = files("phase_loop_runtime").joinpath("deploy/phase-loop-task-message-broker.service").read_text()
     assert "--host 127.0.0.1" in unit

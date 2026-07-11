@@ -117,6 +117,13 @@ class TaskMessageBrokerClient:
                         raise ValueError
                     if not self._valid_payload(result, path=path, thread_id=thread_id, message_id=message_id):
                         raise ValueError
+                    if result.get("status") == "blocked":
+                        raise TaskMessageResolverError(
+                            result["code"],
+                            authority=self._authority,
+                            thread_id=thread_id,
+                            message_id=message_id,
+                        )
                     return {**result, "agent_harness_sha": sha}
         except HTTPError as exc:
             code = "attestation_invalid" if exc.code in {401, 403} else "source_task_unavailable"
