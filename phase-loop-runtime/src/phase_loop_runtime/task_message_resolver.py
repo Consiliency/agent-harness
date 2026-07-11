@@ -25,6 +25,7 @@ FAILURE_CODES = frozenset(
     }
 )
 APPROVAL_CLIENT_ID_SUFFIX = "-approval"
+APPROVAL_CONTRACT_VERSION = "embedding_provenance_deploy_approval.v2"
 
 
 class TaskMessageResolverError(LookupError):
@@ -426,7 +427,11 @@ class CodexAppServerTaskMessageResolver:
             "source_message_id",
             "source_message_sha256",
         }
-        if not required_claims.issubset(approval) or approval.get("authorized") is not True:
+        if (
+            not required_claims.issubset(approval)
+            or approval.get("contract_version") != APPROVAL_CONTRACT_VERSION
+            or approval.get("authorized") is not True
+        ):
             raise self._error("approval_body_unavailable", thread_id, message_id)
         if approval.get("source_thread_id") != thread_id or approval.get("source_message_id") != message_id:
             raise self._error("source_identity_mismatch", thread_id, message_id)

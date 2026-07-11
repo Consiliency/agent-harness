@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 import rfc8785
 
 from .task_message_broker import decode_strict_json
-from .task_message_resolver import FAILURE_CODES, TaskMessageResolverError
+from .task_message_resolver import APPROVAL_CONTRACT_VERSION, FAILURE_CODES, TaskMessageResolverError
 
 
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
@@ -204,7 +204,13 @@ class TaskMessageBrokerClient:
         except (TypeError, ValueError, json.JSONDecodeError):
             return False
         return (
-            hashlib.sha256(message_bytes).hexdigest() == payload["message_sha256"]
+            isinstance(approval_document, dict)
+            and approval_document.get("contract_version") == APPROVAL_CONTRACT_VERSION
+            and approval_document.get("authorized") is True
+            and approval_document.get("source_thread_id") == thread_id
+            and approval_document.get("source_message_id") == message_id
+            and approval_document.get("source_message_sha256") == hashlib.sha256(message_bytes).hexdigest()
+            and hashlib.sha256(message_bytes).hexdigest() == payload["message_sha256"]
             and hashlib.sha256(approval_body_bytes).hexdigest() == payload["approval_body_sha256"]
             and hashlib.sha256(canonical).hexdigest() == payload["approval_canonical_sha256"]
         )

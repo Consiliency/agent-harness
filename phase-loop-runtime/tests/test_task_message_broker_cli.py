@@ -21,7 +21,18 @@ from phase_loop_runtime.cli import main
 AUTHORITY = "codex-app-server://claw.test"
 SHA = "b" * 40
 SOURCE_BYTES = b"governed source"
-APPROVAL_BYTES = b'{"approved":true}'
+
+
+def _approval_bytes(**overrides: object) -> bytes:
+    body: dict[str, object] = {
+        "contract_version": "embedding_provenance_deploy_approval.v2",
+        "authorized": True,
+        "source_thread_id": "thread-1",
+        "source_message_id": "message-1",
+        "source_message_sha256": hashlib.sha256(SOURCE_BYTES).hexdigest(),
+    }
+    body.update(overrides)
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
 
 
 class _Response(io.BytesIO):
@@ -67,6 +78,7 @@ class _TrickleResponse(_Response):
 
 
 def _resolved_payload() -> dict[str, object]:
+    approval_bytes = _approval_bytes()
     return {
         "status": "resolved",
         "authority": AUTHORITY,
@@ -78,12 +90,12 @@ def _resolved_payload() -> dict[str, object]:
         "source_item_id": "item-1",
         "approval_item_id": "item-2",
         "message_sha256": hashlib.sha256(SOURCE_BYTES).hexdigest(),
-        "approval_body_sha256": hashlib.sha256(APPROVAL_BYTES).hexdigest(),
-        "approval_canonical_sha256": hashlib.sha256(rfc8785.dumps(json.loads(APPROVAL_BYTES))).hexdigest(),
+        "approval_body_sha256": hashlib.sha256(approval_bytes).hexdigest(),
+        "approval_canonical_sha256": hashlib.sha256(rfc8785.dumps(json.loads(approval_bytes))).hexdigest(),
         "source_started_at": 1,
         "resolved_at": 2,
         "message_bytes_b64": base64.b64encode(SOURCE_BYTES).decode(),
-        "approval_body_bytes_b64": base64.b64encode(APPROVAL_BYTES).decode(),
+        "approval_body_bytes_b64": base64.b64encode(approval_bytes).decode(),
     }
 
 
@@ -232,6 +244,42 @@ def test_valid_resolved_proof_is_accepted() -> None:
     client = _client([{"type": "result", "agent_harness_sha": SHA, "payload": _resolved_payload()}])
     result = client.resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
     assert result["message_sha256"] == hashlib.sha256(SOURCE_BYTES).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"authorized": False},
+        {"contract_version": "wrong"},
+        {"source_thread_id": "thread-2"},
+        {"source_message_id": "message-2"},
+        {"source_message_sha256": "0" * 64},
+    ],
+)
+def test_approval_claims_must_authorize_and_bind_source(overrides: dict[str, object]) -> None:
+    payload = _resolved_payload()
+    approval_bytes = _approval_bytes(**overrides)
+    payload["approval_body_bytes_b64"] = base64.b64encode(approval_bytes).decode()
+    payload["approval_body_sha256"] = hashlib.sha256(approval_bytes).hexdigest()
+    payload["approval_canonical_sha256"] = hashlib.sha256(rfc8785.dumps(json.loads(approval_bytes))).hexdigest()
+    client = _client([{"type": "result", "agent_harness_sha": SHA, "payload": payload}])
+    with pytest.raises(TaskMessageResolverError) as exc:
+        client.resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
+    assert exc.value.code == "attestation_invalid"
+
+
+def test_approval_missing_required_claim_is_rejected() -> None:
+    body = json.loads(_approval_bytes())
+    del body["authorized"]
+    approval_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    payload = _resolved_payload()
+    payload["approval_body_bytes_b64"] = base64.b64encode(approval_bytes).decode()
+    payload["approval_body_sha256"] = hashlib.sha256(approval_bytes).hexdigest()
+    payload["approval_canonical_sha256"] = hashlib.sha256(rfc8785.dumps(body)).hexdigest()
+    client = _client([{"type": "result", "agent_harness_sha": SHA, "payload": payload}])
+    with pytest.raises(TaskMessageResolverError) as exc:
+        client.resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
+    assert exc.value.code == "attestation_invalid"
 
 
 def test_oversized_frame_fails_closed() -> None:
