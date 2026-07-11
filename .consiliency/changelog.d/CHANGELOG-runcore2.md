@@ -23,3 +23,24 @@
   `missing_phase_owned_dirty_paths` even for a plan with explicit lane ownership.
   The prompt now sources the plan's declared owned patterns via
   `parse_plan_ownership`, mirroring the governed `build_lane_prompt_bundle` path.
+
+- **Unobserved (`--no-observe`) executor children no longer hang silently
+  (agent-harness#61, agent-harness#86).** An unobserved planner/execute child fell
+  to `launcher.launch`'s bare `subprocess.run` branch (`log_path=None`), which has
+  no heartbeat, no quiet-child / CPU-idle stall detection, and no timeout — so an
+  idle child wedged the parent inside `subprocess.run` with a stale monitor and no
+  fresh artifact (the avatar-client ARTIFACTS/SCENARIO wedge). `launch` now takes an
+  opt-in `ephemeral_monitor` flag (set by `launch_with_spec` whenever the child is
+  unobserved) that routes the child through the SAME streaming + quiet-child
+  detector used for observed runs, against a throwaway log dir that is discarded
+  afterward (nothing persisted, honoring `--no-observe`). `result.stalled` /
+  `result.timed_out` now fire, so the runner's existing `_launch_contract_blocker`
+  emits a structured `stalled_child_observation` blocker instead of hanging. The
+  wall-clock timeout stays opt-in (the "no short timeout on CLI legs" rule); the
+  quiet/CPU-idle detector is what catches the wedge. Cross-repo train node children
+  inherit this coverage automatically (they run through `run_loop` →
+  `launch_with_spec`). Not closed here: agent-harness#90 (rehydrating a completed
+  roadmap from committed closeout artifacts without a runner-owned
+  `verification.json` — a reconcile rehydration-contract change that must not weaken
+  the `verification.json` tamper-evidence gate) and the roadmap-format-handling half
+  of agent-harness#60 — both left open.

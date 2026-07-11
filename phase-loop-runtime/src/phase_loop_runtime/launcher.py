@@ -1815,6 +1815,9 @@ def launch_with_spec(
             quiet_blocker_seconds=quiet_blocker_seconds,
             timeout_seconds=spec.launch_timeout_seconds,
             cwd=spec.wrapped_cwd,
+            # #61/#86: even an unobserved (--no-observe) executor child must get
+            # quiet-child / stall detection so it can't hang the parent silently.
+            ephemeral_monitor=log_path is None,
         )
     finally:
         # Clean from the RESOLVED command so the launch-time materialized codex
@@ -2067,6 +2070,7 @@ def launch(
     timeout_seconds: int | None = None,
     cwd: str | Path | None = None,
     env: dict[str, str] | None = None,
+    ephemeral_monitor: bool = False,
 ) -> LaunchResult:
     # AUTOSEL (change #5): the CLI executor-child spawn path gets a scrubbed +
     # sentinel-stamped env — Claude Code's self-markers removed and PHASE_LOOP_CHILD=1
@@ -2078,6 +2082,21 @@ def launch(
     # never auto-picks claude, so those routes don't need the run-from sentinel.
     # ``env`` is injectable for tests; None => derive from the live environment.
     child_env = child_executor_env(env) if env is not None else child_executor_env()
+    # #61/#86: an UNOBSERVED (--no-observe) executor child would otherwise fall to
+    # the bare `subprocess.run` branch below, which has no heartbeat, no quiet-child
+    # / stall detection, and no timeout — so an idle planner/execute child hangs the
+    # parent silently (the exact avatar-client ARTIFACTS / SCENARIO wedge). When a
+    # caller opts into `ephemeral_monitor`, route the child through the SAME
+    # streaming + heartbeat path used for observed runs against a throwaway log dir,
+    # then discard the artifacts (nothing is persisted, honoring --no-observe). This
+    # makes `result.stalled` / `result.timed_out` fire so the runner's existing
+    # `_launch_contract_blocker` emits a structured stalled_child_observation blocker
+    # instead of wedging. Wall-clock timeout stays opt-in (the "no short timeout on
+    # CLI legs" rule); the quiet/CPU-idle detector is what catches the wedge.
+    ephemeral_run_dir: tempfile.TemporaryDirectory | None = None
+    if log_path is None and ephemeral_monitor and not dry_run:
+        ephemeral_run_dir = tempfile.TemporaryDirectory(prefix="phase-loop-ephemeral-run-")
+        log_path = Path(ephemeral_run_dir.name) / "output.log"
     if log_path is not None and heartbeat_path is None:
         heartbeat_path = heartbeat_path_for_log(log_path)
     if dry_run:
@@ -2256,13 +2275,17 @@ def launch(
             process_group_id=process_group_id,
         )
         write_run_heartbeat(heartbeat_path, heartbeat_summary)
-    return LaunchResult(
+    # For an ephemeral (unobserved) run the log dir is discarded, so the persisted
+    # paths must NOT be surfaced (they'd dangle). The liveness verdict
+    # (stalled/timed_out/interrupted + cleanup_evidence) and captured output are what
+    # the runner consumes; those survive the temp-dir teardown.
+    result = LaunchResult(
         command=command,
         returncode=returncode,
         output="".join(output_parts),
-        log_path=str(log_path),
-        heartbeat_path=str(heartbeat_path) if heartbeat_path else None,
-        terminal_path=str(log_path.parent / "terminal-summary.json"),
+        log_path=None if ephemeral_run_dir is not None else str(log_path),
+        heartbeat_path=None if ephemeral_run_dir is not None else (str(heartbeat_path) if heartbeat_path else None),
+        terminal_path=None if ephemeral_run_dir is not None else str(log_path.parent / "terminal-summary.json"),
         heartbeat_summary=heartbeat_summary,
         process_pid=process.pid,
         process_group_id=process_group_id,
@@ -2273,6 +2296,9 @@ def launch(
         stalled=stalled,
         cleanup_evidence=cleanup_evidence,
     )
+    if ephemeral_run_dir is not None:
+        ephemeral_run_dir.cleanup()
+    return result
 
 
 def _stub_command(request: LaunchRequest, reason: str) -> list[str]:
