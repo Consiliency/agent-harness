@@ -11,7 +11,7 @@ import threading
 from typing import BinaryIO, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import rfc8785
 
@@ -34,6 +34,18 @@ RESOLVED_KEYS = {
 }
 
 
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+
+_NO_REDIRECT_OPENER = build_opener(_NoRedirect)
+
+
+def _open_without_redirects(request: Request, *, timeout: float) -> BinaryIO:
+    return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
+
+
 class TaskMessageBrokerClient:
     def __init__(
         self,
@@ -42,7 +54,7 @@ class TaskMessageBrokerClient:
         bearer_token: str,
         authority: str,
         heartbeat_timeout_seconds: float = 15.0,
-        opener: OpenFn = urlopen,
+        opener: OpenFn = _open_without_redirects,
     ) -> None:
         parsed = urlsplit(broker_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -126,7 +138,7 @@ class TaskMessageBrokerClient:
                         )
                     return {**result, "agent_harness_sha": sha}
         except HTTPError as exc:
-            code = "attestation_invalid" if exc.code in {401, 403} else "source_task_unavailable"
+            code = "attestation_invalid" if exc.code in {401, 403} or 300 <= exc.code < 400 else "source_task_unavailable"
             raise TaskMessageResolverError(code, authority=self._authority, thread_id=thread_id, message_id=message_id) from exc
         except (TimeoutError, URLError, OSError):
             raise TaskMessageResolverError(

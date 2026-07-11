@@ -239,6 +239,45 @@ def test_blocked_resolver_result_is_metadata_only() -> None:
         server.server_close()
 
 
+@pytest.mark.parametrize("mode,expected_code", [("exception", "source_task_unavailable"), ("oversized", "source_bytes_unavailable")])
+def test_resolve_fallbacks_preserve_requested_identities(mode: str, expected_code: str) -> None:
+    class FallbackProof:
+        def payload(self) -> dict[str, object]:
+            if mode == "exception":
+                raise RuntimeError("unavailable")
+            return {"oversized": "x" * 1_100_000}
+
+    class FallbackResolver(_Resolver):
+        def resolve(self, **_kwargs: object) -> FallbackProof:
+            if mode == "exception":
+                raise RuntimeError("unavailable")
+            return FallbackProof()
+
+    broker = TaskMessageBroker(
+        BrokerConfig(AUTHORITY, hashlib.sha256(TOKEN.encode()).hexdigest(), SHA, heartbeat_seconds=0.01),
+        lambda _age: FallbackResolver(),
+    )
+    server = build_server("127.0.0.1", 0, broker)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with _post(
+            server,
+            "/v1/task-message/resolve",
+            {"thread_id": "thread-1", "message_id": "message-1", "max_source_age_seconds": 900},
+        ) as response:
+            result = json.loads(list(response)[-1])["payload"]
+        assert result == {
+            "status": "blocked",
+            "code": expected_code,
+            "authority": AUTHORITY,
+            "thread_id": "thread-1",
+            "message_id": "message-1",
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_disconnect_holds_single_flight_until_owner_socket_worker_finishes() -> None:
     server = _server(delay=0.12)
     try:

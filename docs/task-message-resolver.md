@@ -57,6 +57,15 @@ startup and requires both `requested_revision` and `commit_id` to exactly match
 from a moving branch/tag, or any supplied SHA mismatch fails before the broker
 binds a listener.
 
+Install the exact merged revision into the broker's dedicated venv; do not use
+the fleet-wide `~/.local/bin/phase-loop` installation:
+
+```sh
+uv venv "$HOME/.local/share/phase-loop-task-message-broker"
+uv pip install --python "$HOME/.local/share/phase-loop-task-message-broker/bin/python" \
+  "git+https://github.com/ViperJuice/agent-harness@${AGENT_HARNESS_SHA}#subdirectory=phase-loop-runtime"
+```
+
 The service binds `127.0.0.1:18765`. Expose that loopback endpoint only through
 Tailscale Serve HTTPS:
 
@@ -66,10 +75,11 @@ tailscale serve --service=svc:phase-loop-task-message-broker --bg --https=8765 h
 
 Never use Tailscale Funnel. Probe from the authenticated caller:
 
-The unit hides the user's home, binds back only the installed runtime and the
-owner-socket directory read-only, uses private devices and temporary storage,
-and permits IP traffic only on loopback. Do not weaken those restrictions to
-make deployment succeed.
+The unit hides the user's home, binds back only the dedicated broker venv and
+the owner-socket directory read-only, uses private devices and temporary
+storage, and permits IP traffic only on loopback. It does not expose the rest of
+`~/.local`. Do not weaken those restrictions to make deployment succeed. The
+client rejects redirects rather than forwarding its bearer to another origin.
 
 The user-service environment file is `%h/.config/phase-loop/task-message-broker.env`
 and contains exactly `TASK_MESSAGE_TOKEN_SHA256=<64-hex>` plus

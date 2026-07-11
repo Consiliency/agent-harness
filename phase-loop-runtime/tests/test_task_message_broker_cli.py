@@ -4,9 +4,11 @@ import io
 import base64
 import hashlib
 import json
+import threading
 import time
 from email.message import Message
 from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
 
@@ -153,6 +155,52 @@ def test_remote_plain_http_is_rejected() -> None:
             bearer_token="token",
             authority=AUTHORITY,
         )
+
+
+def test_redirect_is_rejected_without_forwarding_bearer() -> None:
+    received_authorization: list[str | None] = []
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            received_authorization.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+
+        do_POST = do_GET
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.send_response(307)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_port}/stolen")
+            self.end_headers()
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    redirect = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (target, redirect)]
+    for thread in threads:
+        thread.start()
+    try:
+        client = TaskMessageBrokerClient(
+            broker_url=f"http://127.0.0.1:{redirect.server_port}",
+            bearer_token="secret",
+            authority=AUTHORITY,
+        )
+        with pytest.raises(TaskMessageResolverError) as exc:
+            client.probe()
+        assert exc.value.code == "attestation_invalid"
+        assert received_authorization == []
+    finally:
+        redirect.shutdown()
+        target.shutdown()
+        redirect.server_close()
+        target.server_close()
 
 
 def test_fresh_heartbeats_outlive_total_timeout_without_deadline() -> None:
@@ -349,6 +397,22 @@ def test_valid_broker_blocked_result_preserves_error_contract() -> None:
     assert exc.value.metadata() == payload
 
 
+@pytest.mark.parametrize("code", ["source_task_unavailable", "source_bytes_unavailable"])
+def test_broker_resolve_failure_preserves_requested_identities(code: str) -> None:
+    payload = {
+        "status": "blocked",
+        "code": code,
+        "authority": AUTHORITY,
+        "thread_id": "thread-1",
+        "message_id": "message-1",
+    }
+    with pytest.raises(TaskMessageResolverError) as exc:
+        _client([{"type": "result", "agent_harness_sha": SHA, "payload": payload}]).resolve(
+            thread_id="thread-1", message_id="message-1", max_source_age_seconds=900
+        )
+    assert exc.value.metadata() == payload
+
+
 def test_cli_broker_blocked_result_exits_two_with_exact_metadata(monkeypatch) -> None:
     class BlockedClient:
         def __init__(self, **_kwargs: object) -> None:
@@ -377,6 +441,42 @@ def test_cli_broker_blocked_result_exits_two_with_exact_metadata(monkeypatch) ->
     }
 
 
+def test_cli_broker_resolve_failure_exits_two_with_requested_identities(monkeypatch) -> None:
+    class BlockedClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def resolve(self, *, thread_id: str, message_id: str, max_source_age_seconds: int) -> dict[str, object]:
+            raise TaskMessageResolverError(
+                "source_bytes_unavailable",
+                authority=AUTHORITY,
+                thread_id=thread_id,
+                message_id=message_id,
+            )
+
+    monkeypatch.setattr("phase_loop_runtime.task_message_broker_client.TaskMessageBrokerClient", BlockedClient)
+    monkeypatch.setenv("BROKER_TOKEN", "secret")
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        code = main([
+            "task-message-resolve",
+            "--broker-url", "https://claw.test:8765",
+            "--authority", AUTHORITY,
+            "--token-env", "BROKER_TOKEN",
+            "--thread-id", "thread-1",
+            "--message-id", "message-1",
+            "--max-source-age-seconds", "900",
+        ])
+    assert code == 2
+    assert json.loads(stdout.getvalue()) == {
+        "status": "blocked",
+        "code": "source_bytes_unavailable",
+        "authority": AUTHORITY,
+        "thread_id": "thread-1",
+        "message_id": "message-1",
+    }
+
+
 def test_user_service_is_loopback_digest_only_and_does_not_manage_codex() -> None:
     unit = files("phase_loop_runtime").joinpath("deploy/phase-loop-task-message-broker.service").read_text()
     assert "--host 127.0.0.1" in unit
@@ -386,6 +486,8 @@ def test_user_service_is_loopback_digest_only_and_does_not_manage_codex() -> Non
     assert "codex app-server" not in unit
     assert "tailscale" not in unit
     assert "ProtectHome=tmpfs" in unit
+    assert "BindReadOnlyPaths=%h/.local/share/phase-loop-task-message-broker" in unit
+    assert "\nBindReadOnlyPaths=%h/.local\n" not in unit
     assert "BindReadOnlyPaths=%h/.codex/app-server-control" in unit
     assert "PrivateDevices=yes" in unit
     assert "IPAddressDeny=any" in unit

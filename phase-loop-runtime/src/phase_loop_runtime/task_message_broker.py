@@ -141,14 +141,14 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 payload = self._read_payload()
-                operation = self._operation(path, payload)
+                operation, thread_id, message_id = self._operation(path, payload)
             except ValueError:
                 self._write_json({"status": "blocked", "code": "attestation_invalid"}, HTTPStatus.BAD_REQUEST)
                 return
             if not broker.acquire():
                 self._write_json({"status": "blocked", "code": "source_task_unavailable"}, HTTPStatus.SERVICE_UNAVAILABLE)
                 return
-            self._stream(operation)
+            self._stream(operation, thread_id=thread_id, message_id=message_id)
 
         def log_message(self, _format: str, *_args: object) -> None:
             return
@@ -163,11 +163,13 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
                 raise ValueError
             return value
 
-        def _operation(self, path: str, payload: dict[str, object]) -> Callable[[], dict[str, object]]:
+        def _operation(
+            self, path: str, payload: dict[str, object]
+        ) -> tuple[Callable[[], dict[str, object]], str | None, str | None]:
             if path == PROBE_PATH:
                 if payload:
                     raise ValueError
-                return broker.probe
+                return broker.probe, None, None
             if set(payload) != {"thread_id", "message_id", "max_source_age_seconds"}:
                 raise ValueError
             thread_id = payload["thread_id"]
@@ -182,13 +184,23 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
                 or not 0 < max_age <= broker.config.max_source_age_seconds
             ):
                 raise ValueError
-            return lambda: broker.resolve(
-                thread_id=thread_id,
-                message_id=message_id,
-                max_source_age_seconds=max_age,
+            return (
+                lambda: broker.resolve(
+                    thread_id=thread_id,
+                    message_id=message_id,
+                    max_source_age_seconds=max_age,
+                ),
+                thread_id,
+                message_id,
             )
 
-        def _stream(self, operation: Callable[[], dict[str, object]]) -> None:
+        def _stream(
+            self,
+            operation: Callable[[], dict[str, object]],
+            *,
+            thread_id: str | None = None,
+            message_id: str | None = None,
+        ) -> None:
             outcome: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
 
             def run() -> None:
@@ -201,8 +213,8 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
                         "status": "blocked",
                         "code": "source_task_unavailable",
                         "authority": broker.config.authority,
-                        "thread_id": None,
-                        "message_id": None,
+                        "thread_id": thread_id,
+                        "message_id": message_id,
                     }
                 outcome.put(payload)
 
@@ -235,8 +247,8 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
                                         "status": "blocked",
                                         "code": "source_bytes_unavailable",
                                         "authority": broker.config.authority,
-                                        "thread_id": None,
-                                        "message_id": None,
+                                        "thread_id": thread_id,
+                                        "message_id": message_id,
                                     },
                                 }
                             )
