@@ -2038,13 +2038,16 @@ def run_loop(
                 )
                 if recovered is not None:
                     recovered_status, recovered_event = recovered
+                    if recovered_status == "awaiting_phase_closeout" and closeout_mode != "manual" and dry_run:
+                        # #78: the repair-recovery re-closeout is equally side-effecting
+                        # (governed panel / git add / commit). Preview and break BEFORE
+                        # persisting the recovery reclassification event, so a dry run of
+                        # a blocked phase with verified-dirty automation stays fully inert
+                        # (no ledger write, no panel, no commit).
+                        return (_dry_run_closeout_preview("awaiting_phase_closeout"), None)
                     append_event(repo, recovered_event)
                     classifications[alias] = recovered_status
                     if recovered_status == "awaiting_phase_closeout" and closeout_mode != "manual":
-                        if dry_run:
-                            # #78: the repair-recovery re-closeout is equally
-                            # side-effecting — preview and break rather than commit.
-                            return (_dry_run_closeout_preview("awaiting_phase_closeout"), None)
                         closeout_snapshot = reconcile(repo, roadmap)
                         classifications[alias], closeout_event = _perform_phase_closeout(
                             repo,
