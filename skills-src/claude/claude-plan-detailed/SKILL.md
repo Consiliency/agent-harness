@@ -57,6 +57,8 @@ Keep the full starting `git status --short --untracked-files=all` output in the 
 
 ### Step 2 — Parallel reconnaissance via Explore teammates
 
+**Skip this reconnaissance when the context is already in session.** If the files this change touches have already been read, the architecture was just discussed, or the caller supplied the file map, do not spawn Explore teammates to re-gather what you already have — plan directly from it. Keep reconnaissance proportional to the change: a bounded one- or two-file fix needs targeted reads, not a parallel Explore fan-out.
+
 Launch up to 3 `Agent(subagent_type: "Explore")` calls in a single message (1–2 is usual for single-concern work). Each Agent call MUST set `name:` for `SendMessage` addressability.
 
 Teammate-naming template: `explore-<area>` (e.g., `explore-auth`, `explore-schema`).
@@ -153,13 +155,20 @@ Resolve paths:
 REFLECTION_PATH=resolve_skill_bundle_root("codex")/claude-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
-from importlib import util
 from pathlib import Path
 repo = Path.cwd().resolve()
-spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-mod = util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(mod.resolve_handoff_path(repo, "claude-plan-detailed"))
+skill = "claude-plan-detailed"
+try:
+    # Primary: the installed phase_loop_runtime.skill_paths resolver.
+    from phase_loop_runtime.skill_paths import resolve_handoff_root
+    print(resolve_handoff_root(repo) / skill / "latest.md")
+except Exception:
+    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
+    from importlib import util
+    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
+    mod = util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    print(mod.resolve_handoff_path(repo, skill))
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
