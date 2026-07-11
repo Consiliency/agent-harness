@@ -777,22 +777,39 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
-    # Issue #83: --allow-branchgov opts into the convention-branch switch even when
-    # it would orphan a locally-committed roadmap, by exporting the explicit
-    # override the runtime preflight reads (flag.branchgov_override_explicit). Scope
-    # the env mutation to this invocation (restore the prior value) so it does not
-    # leak process-globally — the override applies for THIS run, not the process.
-    if getattr(args, "allow_branchgov", False):
-        _previous_branchgov = os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE")
-        os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = "true"
-        try:
-            return _main(parser, args, command)
-        finally:
-            if _previous_branchgov is None:
-                os.environ.pop("PHASE_LOOP_BRANCHGOV_ENABLE", None)
-            else:
-                os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = _previous_branchgov
-    return _main(parser, args, command)
+    try:
+        # Issue #83: --allow-branchgov opts into the convention-branch switch even when
+        # it would orphan a locally-committed roadmap, by exporting the explicit
+        # override the runtime preflight reads (flag.branchgov_override_explicit). Scope
+        # the env mutation to this invocation (restore the prior value) so it does not
+        # leak process-globally — the override applies for THIS run, not the process.
+        if getattr(args, "allow_branchgov", False):
+            _previous_branchgov = os.environ.get("PHASE_LOOP_BRANCHGOV_ENABLE")
+            os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = "true"
+            try:
+                return _main(parser, args, command)
+            finally:
+                if _previous_branchgov is None:
+                    os.environ.pop("PHASE_LOOP_BRANCHGOV_ENABLE", None)
+                else:
+                    os.environ["PHASE_LOOP_BRANCHGOV_ENABLE"] = _previous_branchgov
+        return _main(parser, args, command)
+    except AmbiguousRoadmapError as exc:
+        # LEGACY (CLEANSHIP P7) safety net: ANY command that auto-selects a roadmap and
+        # finds >1 candidate with nothing to disambiguate degrades to a RECOVERABLE,
+        # actionable error (exit 2) — never an uncaught traceback. This is load-bearing
+        # with the completed-skip: once a frozen/all-completed manifest stops resolving,
+        # commands like `execute`/`validate-roadmap`/`fleet-map`/`reconcile` (which call
+        # select_roadmap outside the run-path handler) would otherwise crash. Commands
+        # with a RICHER blocker snapshot (run/resume/dry-run/status/state/monitor/handoff)
+        # catch it earlier in `_main` and still emit their snapshot; this covers the rest.
+        candidates = ", ".join(str(c) for c in exc.candidates)
+        print(
+            f"phase-loop {command}: ambiguous roadmap selection — pass --roadmap"
+            + (f" (candidates: {candidates})" if candidates else ""),
+            file=sys.stderr,
+        )
+        return 2
 
 
 def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: str) -> int:
@@ -1265,8 +1282,8 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     from .panel_invoker import invoke_board
 
     artifact_path = Path(args.artifact)
-    if not artifact_path.exists():
-        print(f"advisor-board: artifact not found: {artifact_path}", file=sys.stderr)
+    if not artifact_path.is_file():
+        print(f"advisor-board: artifact not found (not a file): {artifact_path}", file=sys.stderr)
         return 2
     # Auth-aware production composition: only vendors that are BOTH on PATH and
     # authenticated are seated; the rest are backfilled onto authed vendors.

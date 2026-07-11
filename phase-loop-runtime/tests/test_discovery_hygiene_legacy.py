@@ -141,6 +141,22 @@ class AmbiguousRoadmapBlockerTest(unittest.TestCase):
                 self.assertEqual(snap.blocker_class, "ambiguous_roadmap_selection")
                 self.assertTrue(snap.human_required)
 
+    def test_non_run_commands_degrade_not_traceback(self):
+        # CR (grok, major): the crash-fix must cover EVERY command that auto-selects a
+        # roadmap, not just the run-path handler. `execute` and `validate-roadmap` call
+        # select_roadmap outside that handler; a multi-roadmap repo with no --roadmap
+        # must exit 2 via the top-level safety net, not raise an uncaught
+        # AmbiguousRoadmapError traceback.
+        for argv in (
+            ["execute", "SOMEPHASE"],
+            ["validate-roadmap"],
+        ):
+            with tempfile.TemporaryDirectory() as td:
+                repo = make_repo(Path(td))
+                _write_roadmap(repo, "v2", "OTHER")
+                rc = cli_main([*argv, "--repo", str(repo)])
+                self.assertEqual(rc, 2, f"{argv[0]} must degrade to exit 2, not crash")
+
 
 class ResumeLadderTest(unittest.TestCase):
     def test_select_roadmap_resume_state_wins(self):

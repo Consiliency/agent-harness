@@ -22,7 +22,7 @@ Do not call dotfiles advisor-panel scripts, copy provider-specific shell scripts
 
 Named boards live in `phase_loop_runtime.advisor_board.presets`; the default review board is `code-review`, a 4-vendor cross-vendor panel — one seat per frontier vendor (grok, claude, codex, gemini), each at its MAXIMUM thinking with a DISTINCT review lens (adversarial / correctness / red-team / alternative-approach).
 
-Composition is AVAILABILITY-AWARE (`composition.compose_review_board`): it targets 4 independent reviewers (hard floor 3) and NEVER collapses to 1–2 when vendors are down. Each vendor present on PATH gets one lens-distinct seat first; the remaining seats are BACKFILLED onto the available vendors with DIFFERENT lenses. So 2 vendors up still yields a full 4-seat board, and 1 vendor up yields 4 distinct-lens seats on that vendor. The bare `advisor-board` (`default`/premerge) board is unchanged — the byte-frozen 3-leg panel.
+Composition is AVAILABILITY-AWARE (`composition.compose_review_board`): it targets 4 independent reviewers (hard floor 3) and NEVER collapses to 1–2 when vendors are down. Each vendor that is both present on PATH AND authenticated gets one lens-distinct seat first; the remaining seats are BACKFILLED onto the available (up + authed) vendors with DIFFERENT lenses. So 2 vendors up still yields a full 4-seat board, and 1 vendor up yields 4 distinct-lens seats on that vendor. The bare `advisor-board` (`default`/premerge) board is unchanged — the byte-frozen 3-leg panel.
 
 ## Three Ways To Feed Material
 
