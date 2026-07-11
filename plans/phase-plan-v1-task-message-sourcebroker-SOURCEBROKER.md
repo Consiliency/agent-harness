@@ -56,7 +56,7 @@ SL-2 — Documentation and verification reducer
 - **Tasks**:
   - test: cover mutually exclusive transports, token lookup only for authenticated remote modes, duplicate-key/non-finite rejection, complete-frame heartbeat deadlines, exact proof validation, immutable installed VCS provenance, and sanitized CLI output;
   - impl: stream NDJSON with a bounded connect timeout and a deadline reset only by a complete valid frame; cryptographically validate the full resolver proof and independently enforce approval authorization, contract version, source identity, and source digest binding; derive the attested `agent_harness_sha` from exact PEP 610 Git provenance and reject any supplied-pin mismatch;
-  - impl: ship a hardened user service in both the source deployment tree and wheel package data; run from a dedicated broker venv, store no raw token, expose only that venv and owner-socket paths, permit only loopback IP traffic, reject HTTP redirects, and never start or restart Codex app-server;
+  - impl: ship a hardened user service in both the source deployment tree and wheel package data; run from a dedicated broker venv, store no raw token, expose only that venv and the exact owner-socket inode, permit only loopback IP traffic, reject HTTP redirects, and never start or restart Codex app-server;
   - verify: `cd phase-loop-runtime && uv run --with pytest python -m pytest tests/test_task_message_resolver.py tests/test_task_message_broker_cli.py -q`.
 
 ### SL-2 — Documentation and verification reducer

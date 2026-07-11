@@ -76,9 +76,9 @@ tailscale serve --service=svc:phase-loop-task-message-broker --bg --https=8765 h
 Never use Tailscale Funnel. Probe from the authenticated caller:
 
 The unit hides the user's home, binds back only the dedicated broker venv and
-the owner-socket directory read-only, uses private devices and temporary
+the exact `app-server-control.sock` inode read-only, uses private devices and temporary
 storage, and permits IP traffic only on loopback. It does not expose the rest of
-`~/.local`. Do not weaken those restrictions to make deployment succeed. The
+`~/.local` or any adjacent Codex logs/sockets. Do not weaken those restrictions to make deployment succeed. The
 client rejects redirects rather than forwarding its bearer to another origin.
 
 The user-service environment file is `%h/.config/phase-loop/task-message-broker.env`

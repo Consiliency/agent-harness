@@ -488,7 +488,8 @@ def test_user_service_is_loopback_digest_only_and_does_not_manage_codex() -> Non
     assert "ProtectHome=tmpfs" in unit
     assert "BindReadOnlyPaths=%h/.local/share/phase-loop-task-message-broker" in unit
     assert "\nBindReadOnlyPaths=%h/.local\n" not in unit
-    assert "BindReadOnlyPaths=%h/.codex/app-server-control" in unit
+    assert "BindReadOnlyPaths=%h/.codex/app-server-control/app-server-control.sock" in unit
+    assert "\nBindReadOnlyPaths=%h/.codex/app-server-control\n" not in unit
     assert "PrivateDevices=yes" in unit
     assert "IPAddressDeny=any" in unit
     assert "IPAddressAllow=localhost" in unit
