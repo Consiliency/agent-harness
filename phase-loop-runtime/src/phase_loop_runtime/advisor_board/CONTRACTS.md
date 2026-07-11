@@ -255,6 +255,19 @@ the golden proves byte-identity):
   `claude` seats) now runs two concurrent same-lane CLI/PTY sessions — a scenario this
   fan-out newly enables and nothing yet tests. The `default` board has one claude seat,
   so it is unaffected.
+- **Opt-in streaming delivery (REVIEWGOV IF-0-REVIEWGOV-2).** `_run_legs_ordered` (and
+  the `invoke_panel` / `invoke_board` entry points) take optional, keyword-only,
+  default-`None` `on_leg_complete` (a per-leg callback) and `stream_dir` /
+  `review_dir` (incremental per-leg verdict files). When BOTH are `None` the path is
+  byte-for-byte the historical one — block on the futures in submission order — so the
+  golden is untouched. When EITHER is set, results are collected via `as_completed` so
+  each leg is delivered the MOMENT it lands (callback + a `leg-<i>-<label>.verdict.json`
+  file written into the dir), while the **consolidated return is still re-sorted to
+  submission order** (`result[i]` ↔ `items[i]`). The side-channel is **fail-open**: a
+  raising callback or an unwritable dir is swallowed (logged), never breaking the pool
+  or failing a leg. Proven by a SINGLE shared out-of-order-completion fixture used by
+  both the default-ordering (golden) and fast-before-slow (streaming) tests, so the
+  golden cannot pass trivially.
 
 ## ABDREF — "Reference, don't inline" ingestion · `panel_invoker._resolve_artifact` / `_resolve_brief`
 

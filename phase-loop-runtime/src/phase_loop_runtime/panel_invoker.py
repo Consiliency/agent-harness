@@ -25,11 +25,11 @@ import tempfile
 import time
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence, cast
 
 from .agent_runtime_provider import (
     CreateSessionRequest,
@@ -1973,11 +1973,52 @@ def _default_spawn_via_provider(
     return status, text
 
 
+def _write_incremental_verdict(review_dir: Path, index: int, result: "PanelLegResult") -> None:
+    """Write one leg's verdict to ``review_dir`` the moment it lands (streaming).
+
+    Best-effort / fail-OPEN: an unwritable ``review_dir`` (missing, read-only, race)
+    must never break the pool or fail a real review, so every error is swallowed
+    (the consolidated ordered return is still authoritative). The filename is
+    index-prefixed so it is stable, submission-ordered on disk, and unique even for
+    two same-vendor seats sharing a leg label."""
+    try:
+        review_dir.mkdir(parents=True, exist_ok=True)
+        label = re.sub(r"[^0-9A-Za-z._-]+", "_", str(result.seat_key or result.leg))
+        path = review_dir / f"leg-{index:04d}-{label}.verdict.json"
+        payload = {
+            "index": index,
+            "leg": result.leg,
+            "seat_key": result.seat_key,
+            "status": result.status,
+            "usable": result.usable,
+            "text": result.text,
+            "detail": result.detail,
+        }
+        # Atomic publish: write a temp sibling then os.replace, so a directory
+        # watcher never observes/parses a partially-written verdict file.
+        body = json.dumps(payload, indent=2, sort_keys=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:  # fail-open: streaming side-channel never breaks the review
+        # Best-effort cleanup of a half-written temp sibling (a failure between the
+        # write and the replace); harmless to watchers (the .tmp misses the glob).
+        try:
+            tmp.unlink(missing_ok=True)  # type: ignore[possibly-undefined]
+        except Exception:
+            pass
+        logging.getLogger(__name__).warning(
+            "streaming verdict write failed for leg %s", getattr(result, "leg", "?"), exc_info=True
+        )
+
+
 def _run_legs_ordered(
     items: "Sequence[object]",
     run_one: "Callable[[object], PanelLegResult]",
     *,
     max_concurrency: int | None = None,
+    on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
+    review_dir: "Path | None" = None,
 ) -> list[PanelLegResult]:
     """Run ``run_one`` for every item CONCURRENTLY, returning results in ITEM ORDER.
 
@@ -2009,14 +2050,56 @@ def _run_legs_ordered(
       sequential (the escape hatch for debugging / rate-limits / a constrained host);
       ``N`` caps at N. Nobody opts *in* to parallel — it is the out-of-the-box
       behavior.
+
+    **Streaming delivery (opt-in, REVIEWGOV IF-0-REVIEWGOV-2).** ``on_leg_complete``
+    and ``review_dir`` are OPTIONAL. When BOTH are ``None`` (the default) the path is
+    byte-for-byte the historical one: block on the futures in submission order and
+    return them — so ``invoke_panel``'s load-bearing golden is untouched. When EITHER
+    is set, results are collected via ``as_completed`` so each leg is delivered THE
+    MOMENT IT LANDS (out of submission order): ``on_leg_complete(result)`` fires per
+    leg and, when ``review_dir`` is set, an incremental per-leg verdict file is
+    written there — no head-of-line blocking on the slow leg's backstop. The
+    **consolidated return is still re-sorted to submission order** (``result[i]`` ↔
+    ``items[i]``) so the ordered contract every consolidating caller relies on holds
+    identically in both modes. The callback is fail-OPEN (a raising callback can
+    never break the pool or fail a leg). Delivery (callback + file write) runs on
+    the single collector thread, so a SLOW ``on_leg_complete`` delays delivery of
+    the later-completing legs — "the moment it lands" holds for a fast consumer.
     """
     seq = list(items)
     if not seq:
         return []
     max_workers = max(1, min(max_concurrency or len(seq), _PANEL_MAX_WORKERS))
+    streaming = on_leg_complete is not None or review_dir is not None
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(run_one, item) for item in seq]
-        return [future.result() for future in futures]
+        if not streaming:
+            # DEFAULT PATH — byte-identical: block in submission order, return in order.
+            return [future.result() for future in futures]
+        # STREAMING PATH — deliver each leg as it LANDS (out of order), then re-sort
+        # the consolidated return to submission order.
+        index_of = {future: i for i, future in enumerate(futures)}
+        results: list[PanelLegResult | None] = [None] * len(seq)
+        for future in as_completed(futures):
+            i = index_of[future]
+            result = future.result()  # run_one is fail-closed ⇒ never raises
+            results[i] = result
+            if review_dir is not None:
+                _write_incremental_verdict(review_dir, i, result)
+            if on_leg_complete is not None:
+                try:
+                    on_leg_complete(result)
+                except Exception:  # fail-open: a raising callback never breaks the pool
+                    logging.getLogger(__name__).warning(
+                        "on_leg_complete callback raised for leg %s", result.leg, exc_info=True
+                    )
+        # Every future produced a result (run_one is fail-closed). Fail LOUD if a
+        # slot stayed None rather than silently shrinking the list — a length change
+        # would break the positional ``result[i] ↔ items[i]`` contract worse than a
+        # crash would.
+        if any(r is None for r in results):
+            raise RuntimeError("streaming fan-out lost a leg result (positional contract broken)")
+        return cast("list[PanelLegResult]", results)
 
 
 def invoke_panel(
@@ -2033,6 +2116,8 @@ def invoke_panel(
     context_refs: str | Sequence[str] | None = None,
     context_refs_soft_warn: bool = False,
     timeouts_by_leg: Mapping[str, int] | None = None,
+    on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
+    stream_dir: Path | str | None = None,
 ) -> PanelResult:
     """Run the requested panel legs through the spawn boundary, fail-closed.
 
@@ -2076,6 +2161,14 @@ def invoke_panel(
     A leg whose spawn raises, returns an unknown status, or returns empty text
     on an `ok` status is recorded as `degraded`/`empty` — never silently dropped
     and never mistaken for a real review.
+
+    ``on_leg_complete`` / ``stream_dir`` (REVIEWGOV IF-0-REVIEWGOV-2, opt-in): when
+    either is set, each leg's ``PanelLegResult`` is delivered THE MOMENT IT LANDS —
+    ``on_leg_complete(result)`` fires per leg and, with ``stream_dir``, an
+    incremental per-leg verdict file is written there — so a consumer can start
+    reconciling as legs return instead of waiting on the slowest. The consolidated
+    ``PanelResult`` is still in canonical leg order. Both default to ``None`` (the
+    exact historical behavior; the golden path is untouched).
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
@@ -2117,7 +2210,11 @@ def invoke_panel(
             status = "EMPTY"
         return PanelLegResult(leg=leg, status=status, text=str(text))
 
-    results = _run_legs_ordered(list(legs), _run_leg, max_concurrency=max_concurrency)
+    results = _run_legs_ordered(
+        list(legs), _run_leg, max_concurrency=max_concurrency,
+        on_leg_complete=on_leg_complete,
+        review_dir=Path(stream_dir) if stream_dir is not None else None,
+    )
     return PanelResult(legs=tuple(results))
 
 
@@ -2288,6 +2385,8 @@ def invoke_board(
     context_refs: str | Sequence[str] | None = None,
     context_refs_soft_warn: bool = False,
     timeouts_by_leg: Mapping[str, int] | None = None,
+    on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
+    stream_dir: Path | str | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -2349,6 +2448,12 @@ def invoke_board(
     doc-edit / general board runs ``"advisory"`` analysis. A caller-passed
     ``mode`` still OVERRIDES the derivation. ``DEFAULT_BOARD.purpose`` is
     ``premerge-review`` → derives ``"review"`` → the golden byte-identity holds.
+
+    ``on_leg_complete`` / ``stream_dir`` (REVIEWGOV IF-0-REVIEWGOV-2, opt-in): when
+    either is set, each seat's ``PanelLegResult`` is delivered the moment it lands
+    (callback + an incremental per-leg verdict file in ``stream_dir``) so a consumer
+    can reconcile as seats return; the consolidated ``PanelResult`` stays in seat
+    order. Both ``None`` (default) is the byte-identical historical path.
     """
     if mode is None:
         mode = _mode_for_purpose(board.purpose)
@@ -2458,8 +2563,14 @@ def invoke_board(
 
     # Fan the seats out concurrently (parallel by default; max_concurrency=1 →
     # sequential); results come back in SEAT ORDER (positional re-key + golden
-    # order/content assertions depend on it).
-    results = _run_legs_ordered(list(board.seats), _run_seat, max_concurrency=max_concurrency)
+    # order/content assertions depend on it). ``on_leg_complete`` / ``stream_dir``
+    # (opt-in, REVIEWGOV IF-0-REVIEWGOV-2) deliver each seat's verdict as it lands;
+    # both ``None`` (default) keeps the byte-identical ordered path (golden intact).
+    results = _run_legs_ordered(
+        list(board.seats), _run_seat, max_concurrency=max_concurrency,
+        on_leg_complete=on_leg_complete,
+        review_dir=Path(stream_dir) if stream_dir is not None else None,
+    )
     # Observability emit is a SEPARATE pass over the (unchanged) run results, in
     # seat order — 1 result per seat — so the run control-flow above is untouched
     # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.
