@@ -122,6 +122,9 @@ DEFAULT_CAPABILITY_REGISTRY = {
         subagent_posture="native",
         live_available=True,
         dry_run_available=True,
+        # tty-only: the claude leg drives the interactive TUI and needs a real
+        # controlling terminal, so it must never be auto-picked headlessly.
+        headless_launchable=False,
         live_proof_gate="disposable_proof_required",
         promotion_status="proof_gated",
         promotion_requirements=(
@@ -400,6 +403,8 @@ DEFAULT_CAPABILITY_REGISTRY = {
         subagent_posture="none",
         live_available=False,
         dry_run_available=True,
+        # No headless launch surface at all (operator handoff, not a spawned CLI).
+        headless_launchable=False,
         promotion_status="manual_only",
         promotion_requirements=("manual import", "shared automation handoff"),
         timeout_posture="unknown",
@@ -757,7 +762,18 @@ def resolve_dispatch_decision(
     operator: DispatchHints | None = None,
     plan: DispatchHints | None = None,
     roadmap: DispatchHints | None = None,
+    default_executor: str | None = None,
 ) -> DispatchDecision:
+    # AUTOSEL (IF-0-AUTOSEL-2): ``default_executor`` replaces the bare codex seed.
+    # It is the PRIMARY ``preferred`` only when no operator/plan/roadmap hint names
+    # one; when a preferred hint IS set the seed is demoted to a TRAILING fallback
+    # candidate (last in ``candidate_order``). ``None`` reproduces legacy behavior
+    # exactly (seed = ``default_executor_for_action(action)`` == codex in both roles),
+    # so callers that set ``preferred_executors`` explicitly (repair pivot, work-unit
+    # rotation, delegation broker) are unaffected — they pass ``None`` and the trailing
+    # candidate stays legacy codex. The runner only passes a non-None seed when there
+    # is NO preferred hint, so an AUTOSEL pick never displaces an operator's choice.
+    seed_default = default_executor or default_executor_for_action(action)
     registry = registry or capability_registry()
     if action == "maintain-skills":
         return DispatchDecision(
@@ -772,9 +788,9 @@ def resolve_dispatch_decision(
     allowed = merged.allowed_executors or tuple(
         executor for executor, record in registry.items() if action in record.supported_actions
     )
-    preferred = merged.preferred_executors or (default_executor_for_action(action),)
+    preferred = merged.preferred_executors or (seed_default,)
     fallback = tuple(executor for executor in merged.fallback_executors if executor not in preferred)
-    candidate_order = _dedupe((*preferred, *fallback, *allowed, default_executor_for_action(action)))
+    candidate_order = _dedupe((*preferred, *fallback, *allowed, seed_default))
     considered: list[str] = []
     degraded = active_degraded_executors(repo) if repo is not None and not dry_run else set()
     degraded_viable: list[str] = []
@@ -789,6 +805,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "disabled_executor",
                     f"Dispatch policy rejected `{executor}` for `{action}` because it is disabled by hints.",
+                    seed_default=seed_default,
                 )
             continue
         if executor not in allowed:
@@ -799,6 +816,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "executor_not_allowed",
                     f"Dispatch policy rejected `{executor}` for `{action}` because it is outside the allowed executor set.",
+                    seed_default=seed_default,
                 )
             continue
         record = registry.get(executor)
@@ -810,6 +828,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "unsupported_action",
                     f"Dispatch policy rejected `{executor}` for `{action}` because the registry does not support that action.",
+                    seed_default=seed_default,
                 )
             continue
         missing = tuple(capability for capability in merged.required_capabilities if capability not in record.capabilities)
@@ -821,6 +840,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "missing_required_capabilities",
                     f"Dispatch policy rejected `{executor}` for `{action}` because it lacks required capabilities: {', '.join(missing)}.",
+                    seed_default=seed_default,
                 )
             continue
         if dry_run:
@@ -834,6 +854,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "live_launch_unavailable",
                     f"Dispatch policy selected `{executor}` for `{action}`, but that executor is currently dry-run-only.",
+                    seed_default=seed_default,
                 )
             if executor in preferred and fallback:
                 continue
@@ -862,6 +883,7 @@ def resolve_dispatch_decision(
             tuple(considered or candidate_order),
             "all_candidates_session_degraded",
             f"Dispatch policy could not resolve a live executor for `{action}` because all otherwise viable candidates are session-degraded.",
+            seed_default=seed_default,
         )
 
     return _blocked_decision(
@@ -870,6 +892,7 @@ def resolve_dispatch_decision(
         tuple(considered or candidate_order),
         "no_allowed_executor",
         f"Dispatch policy could not resolve an executor for `{action}` with the current hints and registry.",
+        seed_default=seed_default,
     )
 
 
@@ -942,12 +965,17 @@ def _blocked_decision(
     considered: tuple[str, ...],
     blocked_reason: str,
     blocked_summary: str,
+    *,
+    seed_default: str | None = None,
 ) -> DispatchDecision:
+    # AUTOSEL: the reported preferred set must match the seed actually resolved
+    # (grok CR #1) — an AUTOSEL seed of e.g. grok must not be reported as codex on
+    # a blocked decision. ``None`` reproduces the legacy codex default.
     return DispatchDecision(
         action=action,
         selected_executor=None,
         source=merged.source,
-        preferred_executors=merged.preferred_executors or (default_executor_for_action(action),),
+        preferred_executors=merged.preferred_executors or (seed_default or default_executor_for_action(action),),
         allowed_executors=merged.allowed_executors,
         fallback_executors=merged.fallback_executors,
         disabled_executors=merged.disabled_executors,

@@ -49,11 +49,21 @@ class _DispatchPrep(NamedTuple):
     rotation_preferred_executor: object
     selection: object
     spec: object
+    # AUTOSEL provenance string for a genuine layer-2/3 auto-pick (grok CR #4), so
+    # the "why was X the default?" evidence lands in the persisted launch event, not
+    # only on stderr (which detached/CI runs may not capture). None otherwise.
+    autosel_provenance: object = None
 
 from .broker import validate_delegation_request
 from .baml_modular import BamlValidationError, parse_baml_response
-from .capability_registry import default_executor_for_work_unit, describe_dispatch_decision, resolve_dispatch_decision
+from .capability_registry import (
+    default_executor_for_work_unit,
+    describe_dispatch_decision,
+    merge_dispatch_hints,
+    resolve_dispatch_decision,
+)
 from .classifier import classify_all
+from .default_executor_resolver import DefaultResolutionContext, resolve_default_executor
 from .closeout_evidence_audit import audit_closeout_evidence
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
 from .consiliency_gates import scan_consiliency_gates
@@ -2414,6 +2424,43 @@ def run_loop(
                 disabled_executors=disabled_executors,
                 required_capabilities=required_capabilities,
             )
+            # AUTOSEL (IF-0-AUTOSEL-2, lane c): resolve the DEFAULT executor via the
+            # layered resolver and feed it as the seed. It is consulted by
+            # resolve_dispatch_decision ONLY when no operator/plan/roadmap hint names
+            # a preferred executor (i.e. the historical codex auto-seed); an explicit
+            # hint still wins (Layer 1) and the seed is ignored. Rotation feeds
+            # operator hints upstream, so the rotation path is unchanged.
+            has_explicit_preferred = bool(
+                (operator_dispatch_hints and operator_dispatch_hints.preferred_executors)
+                or (effective_plan_dispatch_hints and effective_plan_dispatch_hints.preferred_executors)
+                or (effective_roadmap_dispatch_hints and effective_roadmap_dispatch_hints.preferred_executors)
+            )
+            # Skip the resolver entirely when an explicit hint exists: its seed would
+            # be ignored by resolve_dispatch_decision, and running the single-available
+            # scan would shell out auth probes to executors the operator did not ask
+            # for. Only compute the AUTO default when it can actually be consulted.
+            # When it runs, feed it the SAME merged allowed/disabled/required policy
+            # constraints dispatch enforces, so an AUTO pick is never something
+            # dispatch would then hard-block as a preferred candidate.
+            if has_explicit_preferred:
+                autosel_selection = None
+            else:
+                _merged_hints = merge_dispatch_hints(
+                    action=launch_action,
+                    operator=operator_dispatch_hints,
+                    plan=effective_plan_dispatch_hints,
+                    roadmap=effective_roadmap_dispatch_hints,
+                )
+                autosel_selection = resolve_default_executor(
+                    DefaultResolutionContext(
+                        action=launch_action,
+                        explicit_executor=None,
+                        dry_run=dry_run,
+                        allowed_executors=_merged_hints.allowed_executors,
+                        disabled_executors=_merged_hints.disabled_executors,
+                        required_capabilities=_merged_hints.required_capabilities,
+                    )
+                )
             dispatch_decision = resolve_dispatch_decision(
                 action=launch_action,
                 dry_run=dry_run,
@@ -2421,7 +2468,12 @@ def run_loop(
                 operator=operator_dispatch_hints,
                 plan=effective_plan_dispatch_hints,
                 roadmap=effective_roadmap_dispatch_hints,
+                default_executor=autosel_selection.executor if autosel_selection is not None else None,
             )
+            if autosel_selection is not None and autosel_selection.is_auto:
+                # A genuine layer-2/3 auto-pick that was actually consulted: surface
+                # the provenance + the discoverable escape hatch (change #6).
+                print(f"[autosel] {autosel_selection.provenance_log()}", file=sys.stderr)
             if rotation_state is not None and rotation_state.mode == "phase" and rotation_preferred_executor is not None:
                 rotation_state.advance(dispatch_decision.selected_executor)
             repair_loop_pivot: dict[str, object] | None = None
@@ -2988,6 +3040,11 @@ def run_loop(
                 rotation_preferred_executor=rotation_preferred_executor,
                 selection=selection,
                 spec=spec,
+                autosel_provenance=(
+                    autosel_selection.provenance_log()
+                    if autosel_selection is not None and autosel_selection.is_auto
+                    else None
+                ),
             ))
 
         def _finalize_phase_launch(prep: "_DispatchPrep", result) -> "_DispatchOutcome":
@@ -3182,6 +3239,10 @@ def run_loop(
                 launch_event_metadata = result.event_metadata()
                 if terminal_summary.get("metric_id"):
                     launch_event_metadata["metric_id"] = terminal_summary["metric_id"]
+                if prep.autosel_provenance:
+                    # Persist the AUTOSEL provenance on the launch event (grok CR #4)
+                    # so the auto-pick rationale survives in detached/CI runs.
+                    launch_event_metadata["autosel"] = prep.autosel_provenance
                 append_event(
                     repo,
                     LoopEvent(
