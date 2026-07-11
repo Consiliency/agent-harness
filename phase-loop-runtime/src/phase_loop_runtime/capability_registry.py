@@ -805,6 +805,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "disabled_executor",
                     f"Dispatch policy rejected `{executor}` for `{action}` because it is disabled by hints.",
+                    seed_default=seed_default,
                 )
             continue
         if executor not in allowed:
@@ -815,6 +816,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "executor_not_allowed",
                     f"Dispatch policy rejected `{executor}` for `{action}` because it is outside the allowed executor set.",
+                    seed_default=seed_default,
                 )
             continue
         record = registry.get(executor)
@@ -826,6 +828,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "unsupported_action",
                     f"Dispatch policy rejected `{executor}` for `{action}` because the registry does not support that action.",
+                    seed_default=seed_default,
                 )
             continue
         missing = tuple(capability for capability in merged.required_capabilities if capability not in record.capabilities)
@@ -837,6 +840,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "missing_required_capabilities",
                     f"Dispatch policy rejected `{executor}` for `{action}` because it lacks required capabilities: {', '.join(missing)}.",
+                    seed_default=seed_default,
                 )
             continue
         if dry_run:
@@ -850,6 +854,7 @@ def resolve_dispatch_decision(
                     tuple(considered),
                     "live_launch_unavailable",
                     f"Dispatch policy selected `{executor}` for `{action}`, but that executor is currently dry-run-only.",
+                    seed_default=seed_default,
                 )
             if executor in preferred and fallback:
                 continue
@@ -878,6 +883,7 @@ def resolve_dispatch_decision(
             tuple(considered or candidate_order),
             "all_candidates_session_degraded",
             f"Dispatch policy could not resolve a live executor for `{action}` because all otherwise viable candidates are session-degraded.",
+            seed_default=seed_default,
         )
 
     return _blocked_decision(
@@ -886,6 +892,7 @@ def resolve_dispatch_decision(
         tuple(considered or candidate_order),
         "no_allowed_executor",
         f"Dispatch policy could not resolve an executor for `{action}` with the current hints and registry.",
+        seed_default=seed_default,
     )
 
 
@@ -958,12 +965,17 @@ def _blocked_decision(
     considered: tuple[str, ...],
     blocked_reason: str,
     blocked_summary: str,
+    *,
+    seed_default: str | None = None,
 ) -> DispatchDecision:
+    # AUTOSEL: the reported preferred set must match the seed actually resolved
+    # (grok CR #1) — an AUTOSEL seed of e.g. grok must not be reported as codex on
+    # a blocked decision. ``None`` reproduces the legacy codex default.
     return DispatchDecision(
         action=action,
         selected_executor=None,
         source=merged.source,
-        preferred_executors=merged.preferred_executors or (default_executor_for_action(action),),
+        preferred_executors=merged.preferred_executors or (seed_default or default_executor_for_action(action),),
         allowed_executors=merged.allowed_executors,
         fallback_executors=merged.fallback_executors,
         disabled_executors=merged.disabled_executors,

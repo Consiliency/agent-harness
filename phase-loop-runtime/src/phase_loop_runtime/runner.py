@@ -49,6 +49,10 @@ class _DispatchPrep(NamedTuple):
     rotation_preferred_executor: object
     selection: object
     spec: object
+    # AUTOSEL provenance string for a genuine layer-2/3 auto-pick (grok CR #4), so
+    # the "why was X the default?" evidence lands in the persisted launch event, not
+    # only on stderr (which detached/CI runs may not capture). None otherwise.
+    autosel_provenance: object = None
 
 from .broker import validate_delegation_request
 from .baml_modular import BamlValidationError, parse_baml_response
@@ -3036,6 +3040,11 @@ def run_loop(
                 rotation_preferred_executor=rotation_preferred_executor,
                 selection=selection,
                 spec=spec,
+                autosel_provenance=(
+                    autosel_selection.provenance_log()
+                    if autosel_selection is not None and autosel_selection.is_auto
+                    else None
+                ),
             ))
 
         def _finalize_phase_launch(prep: "_DispatchPrep", result) -> "_DispatchOutcome":
@@ -3230,6 +3239,10 @@ def run_loop(
                 launch_event_metadata = result.event_metadata()
                 if terminal_summary.get("metric_id"):
                     launch_event_metadata["metric_id"] = terminal_summary["metric_id"]
+                if prep.autosel_provenance:
+                    # Persist the AUTOSEL provenance on the launch event (grok CR #4)
+                    # so the auto-pick rationale survives in detached/CI runs.
+                    launch_event_metadata["autosel"] = prep.autosel_provenance
                 append_event(
                     repo,
                     LoopEvent(

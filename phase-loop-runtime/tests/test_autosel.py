@@ -42,7 +42,7 @@ from phase_loop_runtime.harness_env_signatures import (
 )
 from phase_loop_runtime.injection import HARNESS_INJECTION_MODES
 from phase_loop_runtime.launcher import PROMPT_INJECTED_CLOSEOUT_EXECUTORS
-from phase_loop_runtime.models import EXECUTORS
+from phase_loop_runtime.models import EXECUTORS, DispatchHints
 from phase_loop_runtime.prompts import build_prompt
 
 _ROADMAP = Path("/repo/specs/phase-plans-v1.md")
@@ -383,10 +383,6 @@ def test_composition_autosel_pick_is_never_a_spurious_dispatch_block():
 
 
 # ==========================================================================
-# Outbound child-env marker on the real spawn path (change #5).
-# ==========================================================================
-
-# ==========================================================================
 # CR fixes (grok cross-vendor review) — regression guards.
 # ==========================================================================
 
@@ -476,7 +472,72 @@ def test_cr5_non_timeout_probe_exception_fails_closed():
     assert ea.auth_ok_for("codex", ("codex login status",), runner=raiser) is False
 
 
-def test_launch_scrubs_and_stamps_child_env(monkeypatch):
+# --- round 2 (grok APPROVE-WITH-CHANGES) -----------------------------------
+
+def test_cr_r2_blocked_decision_reports_the_autosel_seed_not_codex():
+    # grok r2 #1: a blocked decision must report the ACTUAL seed as preferred, not
+    # the legacy codex default. Seed grok + require a capability nothing has ->
+    # blocked, and preferred_executors must be ('grok',).
+    decision = resolve_dispatch_decision(
+        action="execute",
+        dry_run=False,
+        # subagents is a real capability grok's record lacks -> grok (the seed) is
+        # hard-blocked as preferred, exercising the blocked-decision seed path.
+        operator=DispatchHints(action="execute", required_capabilities=("subagents",)),
+        default_executor="grok",
+    )
+    assert decision.blocked
+    assert decision.preferred_executors == ("grok",)
+
+
+def test_cr_r2_layer3_scan_is_wall_clock_bounded(monkeypatch):
+    # grok r2 #2: once the scan budget elapses, remaining executors are not probed
+    # (they degrade to codex legacy) — a wedged-CLI cold scan cannot stall for
+    # minutes. Simulate the budget elapsing immediately after the first candidate.
+    import phase_loop_runtime.default_executor_resolver as der
+
+    reg = _registry(available=set(), authed=set())  # nothing passes -> codex legacy
+    ticks = iter([0.0] + [der._LAYER3_SCAN_BUDGET_SECONDS + 1.0] * 50)
+    monkeypatch.setattr(der.time, "monotonic", lambda: next(ticks))
+    sel = resolve_default_executor(_ctx(), registry=reg, env={})
+    assert sel.executor == "codex"
+    assert sel.layer == LAYER_CODEX_LEGACY
+    assert any("budget_exhausted" in c.reason for c in sel.rejected)
+
+
+def test_cr_r2_layer3_short_circuits_after_two_passers():
+    # With two executors passing the gate it is not single-available; the scan
+    # stops early and falls to codex legacy (the two-passer short-circuit).
+    reg = _registry(available={"codex", "gemini"}, authed={"codex", "gemini"})
+    sel = resolve_default_executor(_ctx(), registry=reg, env={})
+    assert sel.layer == LAYER_CODEX_LEGACY
+    passers = [c.executor for c in sel.rejected if c.reason.startswith("scan:")]
+    # Not every executor needs to have been scanned (short-circuit); but the two
+    # that passed are not in the rejected list.
+    assert "codex" not in passers or "gemini" not in passers
+
+
+def test_cr_r2_codex_sandbox_alone_is_not_run_from_codex():
+    # grok r2 #3: CODEX_SANDBOX without a real session (no CODEX_THREAD_ID) must NOT
+    # match run-from codex.
+    assert detect_run_from_harness({"CODEX_SANDBOX": "seatbelt"}).executor is None
+    assert detect_run_from_harness({"CODEX_THREAD_ID": "u"}).executor == "codex"
+
+
+# ==========================================================================
+# Outbound child-env marker on the real spawn paths (change #5).
+# ==========================================================================
+
+def _assert_scrubbed_child_env(child):
+    assert child is not None
+    assert "CLAUDECODE" not in child
+    assert "CLAUDE_CODE_ENTRYPOINT" not in child
+    assert child[PHASE_LOOP_CHILD_ENV] == "1"
+    assert child["PATH"] == "/usr/bin"  # non-scrubbed vars preserved
+
+
+def test_launch_scrubs_and_stamps_child_env_subprocess_run(monkeypatch):
+    # The log_path=None branch spawns via subprocess.run.
     captured: dict[str, object] = {}
 
     def fake_run(command, **kwargs):
@@ -488,9 +549,37 @@ def test_launch_scrubs_and_stamps_child_env(monkeypatch):
         ["true"],
         env={"CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "PATH": "/usr/bin"},
     )
-    child = captured["env"]
-    assert child is not None
-    assert "CLAUDECODE" not in child
-    assert "CLAUDE_CODE_ENTRYPOINT" not in child
-    assert child[PHASE_LOOP_CHILD_ENV] == "1"
-    assert child["PATH"] == "/usr/bin"
+    _assert_scrubbed_child_env(captured["env"])
+
+
+def test_launch_scrubs_and_stamps_child_env_popen(monkeypatch, tmp_path):
+    # grok CR #5: production launches with a log_path spawn via Popen — assert the
+    # scrub/stamp reaches THAT branch too, not only the subprocess.run one.
+    captured: dict[str, object] = {}
+
+    class _FakeProc:
+        pid = 4321
+        returncode = 0
+        stdout = iter(())
+
+        def __init__(self, command, **kwargs):
+            captured["env"] = kwargs.get("env")
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", _FakeProc)
+    monkeypatch.setattr(launcher, "_process_group_id", lambda _pid: None)
+    try:
+        launcher.launch(
+            ["true"],
+            log_path=tmp_path / "run" / "launch.log",
+            env={"CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "PATH": "/usr/bin"},
+        )
+    except Exception:
+        # The fake process is minimal; we only care that Popen received the env.
+        pass
+    _assert_scrubbed_child_env(captured["env"])

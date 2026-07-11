@@ -107,13 +107,16 @@ def _marker_matches(env: Mapping[str, str], var: str, expected: str | None) -> b
 HARNESS_ENV_SIGNATURES: dict[str, HarnessEnvSignature] = {
     "codex": HarnessEnvSignature(
         executor="codex",
-        markers=(("CODEX_THREAD_ID", None), ("CODEX_SANDBOX", None)),
+        # CODEX_THREAD_ID (per-session UUID) is the sole reliable run-from marker:
+        # it is set for every codex session in the shell codex runs commands in.
+        # CODEX_SANDBOX is deliberately NOT matched — a host/CI that exports a
+        # sandbox flag without a real codex session would otherwise spuriously take
+        # layer 2 (grok CR #3).
+        markers=(("CODEX_THREAD_ID", None),),
         verification=VERIFIED_IN_LANE,
         discriminator_note=(
-            "CODEX_THREAD_ID (per-session UUID) is set in the shell codex runs "
-            "commands in (the run-from context); CODEX_SANDBOX corroborates on "
-            "sandboxed hosts. Session-specific, so ordered before the leaky claude "
-            "markers. Sentinel disambiguates a phase-loop child."
+            "CODEX_THREAD_ID is session-specific, so ordered before the leaky "
+            "claude markers. Sentinel disambiguates a phase-loop child."
         ),
     ),
     "claude": HarnessEnvSignature(

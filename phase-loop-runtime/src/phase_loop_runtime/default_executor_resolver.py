@@ -32,6 +32,7 @@ want the old deterministic default back.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Mapping
 
@@ -45,6 +46,12 @@ from .injection import HARNESS_INJECTION_MODES
 
 # Escape-hatch env var. When set to exactly "1", layers 2-3 are skipped entirely.
 DISABLE_AUTOSEL_ENV = "EXECDISPATCH_DISABLE_AUTOSEL"
+
+# Wall-clock budget for the whole Layer-3 single-available scan (grok CR #2). Auth
+# probes are per-executor bounded (_PROBE_TIMEOUT_SECONDS) and cached; this caps the
+# aggregate so a cold resolution with several wedged CLIs degrades to codex legacy
+# rather than stalling the dispatch hot path for minutes.
+_LAYER3_SCAN_BUDGET_SECONDS = 20.0
 
 LAYER_EXPLICIT = "explicit_override"
 LAYER_RUN_FROM = "run_from_harness"
@@ -215,11 +222,27 @@ def resolve_default_executor(
 
         # Layer 3 — single-available registry scan. Pick iff exactly one executor
         # passes the AUTO gate (never guess among several).
+        #
+        # Fail-BOUNDED, not just fail-closed per probe (grok CR #2): the auth probe
+        # is the only slow step (bounded to _PROBE_TIMEOUT_SECONDS each). Two guards
+        # keep the whole scan bounded even when several installed CLIs wedge:
+        #   * short-circuit once a SECOND executor passes — we already know it is not
+        #     single-available, so probing the rest is pointless (bounds the healthy
+        #     multi-executor case to two probe sets);
+        #   * a wall-clock scan budget — once exceeded, remaining executors are not
+        #     probed (they degrade to codex legacy), so a cold resolution with wedged
+        #     CLIs can stall at most ~budget + one in-flight probe, never minutes.
         passing: list[str] = []
+        scan_deadline = time.monotonic() + _LAYER3_SCAN_BUDGET_SECONDS
         for executor, record in registry.items():
+            if time.monotonic() > scan_deadline:
+                rejected.append(RejectedCandidate(executor, "scan:budget_exhausted"))
+                continue
             reason = _gate_candidate(executor, record, ctx=ctx)
             if reason is None:
                 passing.append(executor)
+                if len(passing) > 1:
+                    break  # not single-available; stop scanning (bounded)
             else:
                 rejected.append(RejectedCandidate(executor, f"scan:{reason}"))
         if len(passing) == 1:

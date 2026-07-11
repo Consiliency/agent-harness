@@ -23,8 +23,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   threaded into `resolve_dispatch_decision` (the historical codex auto-seed
   site); explicit hints, the work-unit rotation path, and delegation/child
   defaults are unchanged. Availability/auth probes are now bounded by a strict
-  subprocess timeout and fail CLOSED (a wedged CLI can no longer freeze the
-  dispatch hot path), and every phase-loop-owned child executor spawn now scrubs
+  per-probe subprocess timeout AND the single-available scan carries a wall-clock
+  budget and short-circuits once a second executor passes, so a wedged CLI can no
+  longer stall the dispatch hot path (it degrades to the codex default); probes
+  fail CLOSED on a timeout or any error. Every phase-loop-owned child executor spawn now scrubs
   Claude Code's self-markers and stamps `PHASE_LOOP_CHILD=1` so a child never
   mis-reads the host harness as its own run-from context. New record field
   `ExecutorCapabilityRecord.headless_launchable`.
