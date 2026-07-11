@@ -4,7 +4,7 @@
   "$comment": "Checked-in contract for `phase-loop doctor --json` (IF-0-AHADOPT-2). Metadata-only: NO absolute paths. Separate from phase-loop-install-status.v1 and the dotfiles adoption-bundle. Hand-authored; a golden fixture (phase-loop-doctor.v1.golden.json) and live output both validate against it.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "summary", "tools", "stack_hints", "declared_contracts", "install_surfaces", "bom"],
+  "required": ["schema", "summary", "tools", "stack_hints", "declared_contracts", "install_surfaces", "bom", "worktree_divergence"],
   "properties": {
     "schema": {
       "const": "phase-loop-doctor.v1"
@@ -75,7 +75,7 @@
           "target": { "type": "string" },
           "ecosystem": {
             "type": "string",
-            "enum": ["pypi", "pypi(phase-loop-runtime)", "npm", "dotfiles"]
+            "enum": ["pypi", "pypi(phase-loop-runtime)", "npm", "dotfiles", "git-clone"]
           },
           "pinned": { "type": ["string", "null"] },
           "latest": { "type": ["string", "null"] },
@@ -88,6 +88,22 @@
             "description": "When true, a `stale` verdict makes `phase-loop doctor --fail-on-stale` exit non-zero. Repo-owned targets gate; vendored/foreign refs are reported but do not gate."
           },
           "note": { "type": "string" }
+        }
+      }
+    },
+    "worktree_divergence": {
+      "type": "object",
+      "description": "PUSHFLOW: ahead-of-base divergence aggregate mirroring the worktree index's per-worktree commits_ahead_of_origin. Counts only — metadata-only, NO worktree paths. Advisory (verdict warn|ok); never human_required.",
+      "additionalProperties": false,
+      "required": ["base_ref", "worktree_count", "max_commits_ahead", "threshold", "verdict"],
+      "properties": {
+        "base_ref": { "type": "string" },
+        "worktree_count": { "type": "integer" },
+        "max_commits_ahead": { "type": "integer" },
+        "threshold": { "type": "integer" },
+        "verdict": {
+          "type": "string",
+          "enum": ["ok", "warn"]
         }
       }
     }

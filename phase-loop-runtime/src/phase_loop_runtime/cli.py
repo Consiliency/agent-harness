@@ -254,7 +254,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet-warning-seconds", type=int, default=600)
     parser.add_argument("--quiet-blocker-seconds", type=int, default=1800)
     parser.add_argument("--no-heartbeat", action="store_true")
-    parser.add_argument("--closeout-mode", choices=CLOSEOUT_MODES, default="manual")
+    # PUSHFLOW: SUPPRESS (not default="manual") so an unset closeout mode leaves NO
+    # attribute — `_resolve_run_closeout_mode` then applies the command-aware default
+    # (push for the outer run loop, manual elsewhere). A value passed in THIS
+    # before-subcommand position survives the subcommand parse (the run/resume/dry-run
+    # subparser also uses SUPPRESS), so an explicit `--closeout-mode` wins in BOTH
+    # option positions (was clobbered to the subparser default before).
+    parser.add_argument("--closeout-mode", choices=CLOSEOUT_MODES, default=argparse.SUPPRESS)
     parser.add_argument("--work-unit-mode", action="store_true")
     parser.add_argument("--rotate-executors")
     parser.add_argument("--rotation-mode", choices=("phase", "work_unit"), default="phase")
@@ -285,7 +291,24 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--mode", help="The execution mode: execute, repair, or review.")
         _add_common_subparser_args(sub, name=name)
         if name in {"run", "resume", "dry-run"}:
-            sub.add_argument("--closeout-mode", choices=CLOSEOUT_MODES)
+            # PUSHFLOW: closeout pushes by DEFAULT for run/resume/dry-run (the outer
+            # orchestration loop). An explicit --closeout-mode always wins; when none
+            # is given the default is `push` (was `manual`), so phase-owned work lands
+            # on origin instead of accumulating locally. --no-push restores the prior
+            # `manual` default for operators who want to withhold the push. The push
+            # itself degrades gracefully with no push remote (recorded as push_refused
+            # by the runner, never an error). See _resolve_run_closeout_mode.
+            # SUPPRESS so an unset value does NOT overwrite a before-subcommand
+            # `--closeout-mode` with None, and so the absent case falls through to the
+            # command-aware push default in _resolve_run_closeout_mode.
+            sub.add_argument("--closeout-mode", choices=CLOSEOUT_MODES, default=argparse.SUPPRESS)
+            sub.add_argument(
+                "--no-push",
+                action="store_true",
+                help="Suppress the push-by-default closeout: fall back to manual "
+                "closeout (the prior default) instead of pushing phase-owned work to "
+                "origin. Ignored when --closeout-mode is given explicitly.",
+            )
             sub.add_argument(
                 "--governed",
                 action="store_true",
@@ -346,6 +369,13 @@ def build_parser() -> argparse.ArgumentParser:
             )
             sub.add_argument("--path", help="Report freshness holders for a single repo-relative path. Omit to report every path touched by an active worktree.")
             sub.add_argument("--base", help="Diff base ref (default: origin/<default-branch>, falling back to origin/main).")
+            sub.add_argument(
+                "--fail-on-ahead",
+                action="store_true",
+                help="PUSHFLOW opt-in soft-block: exit non-zero when any worktree is more than "
+                "AHEAD_WARN_THRESHOLD commits ahead of the base ref (unpushed local divergence). "
+                "Default is WARN-only; never human_required.",
+            )
         if name == "consiliency-lease":
             sub.description = (
                 "CS-0.10c: local-file LeaseStore -- soft, TTL+heartbeat path-set leases so parallel "
@@ -831,6 +861,32 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
+def _resolve_run_closeout_mode(args: argparse.Namespace, command: str) -> str:
+    """PUSHFLOW: resolve the effective closeout mode for the outer run loop.
+
+    Precedence (explicit-wins in EITHER option position, then the flipped default):
+
+    1. An explicit ``--closeout-mode`` always wins. Both the top-level and the
+       ``run``/``resume``/``dry-run`` subparser use ``argparse.SUPPRESS``, so the
+       attribute exists only when the operator passed it (before OR after the
+       subcommand); a value given before the subcommand is no longer clobbered.
+    2. Otherwise, for the outer orchestration loop (``run``/``resume``/``dry-run``,
+       including the implicit no-subcommand forms) the default flips to ``"push"``
+       so phase-owned work lands on origin instead of accumulating unpushed — unless
+       ``--no-push`` restores ``"manual"``. The runner degrades to ``push_refused``
+       when there is no push remote (never an error).
+    3. Every other command that reaches ``run_loop`` (``execute``, ``maintain-skills``)
+       keeps the prior ``"manual"`` default — the push flip is scoped to the outer
+       loop and must never turn an inner ``execute`` leg into a pusher.
+    """
+    explicit = getattr(args, "closeout_mode", None)
+    if explicit:
+        return explicit
+    if command in {"run", "resume", "dry-run"}:
+        return "manual" if getattr(args, "no_push", False) else "push"
+    return "manual"
+
+
 def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: str) -> int:
     allow_cross_phase_dirty_reason = getattr(args, "allow_cross_phase_dirty", None)
     if allow_cross_phase_dirty_reason is not None:
@@ -939,6 +995,20 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             print(json.dumps(report.to_json(), indent=2))
         else:
             print(worktree_index.render_human(report))
+        # PUSHFLOW: opt-in soft-block on unpushed local divergence. WARN-only by
+        # default (the count is already in the report/render); --fail-on-ahead makes
+        # it exit non-zero. Never human_required.
+        if getattr(args, "fail_on_ahead", False):
+            over = worktree_index.worktrees_ahead_over_threshold(report)
+            if over:
+                names = ", ".join(f"{wt.branch or wt.path} (+{wt.commits_ahead_of_origin})" for wt in over)
+                print(
+                    f"FAIL: {len(over)} worktree(s) more than {worktree_index.AHEAD_WARN_THRESHOLD} "
+                    f"commits ahead of {report.base_ref} (unpushed local divergence): {names}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 1
         return 0
     if command == "consiliency-lease":
         repo_arg = args.repo or "."
@@ -1242,7 +1312,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         quiet_warning_seconds=args.quiet_warning_seconds or 600,
         quiet_blocker_seconds=args.quiet_blocker_seconds or 1800,
         heartbeat_enabled=not bool(args.no_heartbeat),
-        closeout_mode=args.closeout_mode or "manual",
+        closeout_mode=_resolve_run_closeout_mode(args, command),
         enable_tier_3=bool(getattr(args, "enable_tier_3", False)),
         tier_3_budget=3 if getattr(args, "tier_3_budget", 3) is None else getattr(args, "tier_3_budget", 3),
         command_adapter_name=args.command_name,

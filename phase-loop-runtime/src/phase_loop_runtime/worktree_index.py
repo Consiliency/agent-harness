@@ -15,9 +15,17 @@ there is nothing else to report.
 from __future__ import annotations
 
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
+
+
+# PUSHFLOW: how many commits a worktree branch may sit ahead of the base ref
+# before the index WARNS (and, opt-in, soft-blocks). Chosen to catch the observed
+# 70–100-commit local-only divergence long before it gets there, while staying
+# quiet for the handful of commits a normal in-flight phase carries. NEVER
+# human_required — the count is advisory; `--fail-on-ahead` is the opt-in gate.
+AHEAD_WARN_THRESHOLD = 20
 
 
 @dataclass(frozen=True)
@@ -29,6 +37,12 @@ class WorktreeRef:
     head_sha: str | None
     bare: bool = False
     detached: bool = False
+    # PUSHFLOW: commits this worktree's branch is ahead of the base ref
+    # (`git rev-list --count <base>..<branch>`). None when it cannot be computed
+    # (bare/detached/branch missing from the base's history). Mirrors `main_behind`
+    # as an ahead-of-origin divergence signal — a large count means work is piling
+    # up locally and hasn't been pushed.
+    commits_ahead_of_origin: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -150,6 +164,21 @@ def list_worktrees(repo: Path) -> tuple[WorktreeRef, ...]:
     return tuple(entries)
 
 
+def _commits_ahead(repo: Path, ref: str, base_ref: str) -> int | None:
+    """Commits `ref` is ahead of `base_ref` (`git rev-list --count base..ref`).
+
+    None when the count cannot be derived (unknown ref, base not in history) — the
+    signal degrades to absent rather than lying with a 0.
+    """
+    out = _git(repo, "rev-list", "--count", f"{base_ref}..{ref}")
+    if out is None:
+        return None
+    try:
+        return int(out)
+    except ValueError:
+        return None
+
+
 def branch_touched_paths(repo: Path, branch: str, base_ref: str) -> tuple[str, ...]:
     """Repo-relative paths `branch` touches relative to `base_ref` (`git diff --name-only`)."""
     output = _git(repo, "diff", f"{base_ref}...{branch}", "--name-only")
@@ -206,6 +235,15 @@ def build_index(repo: Path, *, base_ref: str | None = None, path: str | None = N
     resolved_base = base_ref or default_base_ref(repo)
     worktrees = list_worktrees(repo)
 
+    # PUSHFLOW: annotate each non-bare worktree with its ahead-of-base count. Done
+    # here (not in list_worktrees) because the base ref is only known at build time.
+    worktrees = tuple(
+        wt
+        if wt.bare or not wt.branch
+        else replace(wt, commits_ahead_of_origin=_commits_ahead(repo, wt.branch, resolved_base))
+        for wt in worktrees
+    )
+
     touched_by_worktree: dict[WorktreeRef, tuple[str, ...]] = {}
     for worktree in worktrees:
         if worktree.bare or not worktree.branch:
@@ -225,11 +263,41 @@ def build_index(repo: Path, *, base_ref: str | None = None, path: str | None = N
     return WorktreeIndexReport(base_ref=resolved_base, worktrees=worktrees, paths=paths)
 
 
+def worktrees_ahead_over_threshold(
+    report: WorktreeIndexReport, *, threshold: int | None = None
+) -> tuple[WorktreeRef, ...]:
+    """PUSHFLOW: worktrees whose ahead-of-base count exceeds `threshold`.
+
+    The opt-in `--fail-on-ahead` soft-block acts on this set; by default it only
+    drives a WARN line in `render_human`. Never human_required. `threshold=None`
+    resolves the module-level `AHEAD_WARN_THRESHOLD` at CALL time (not def time) so
+    the default tracks any override.
+    """
+    if threshold is None:
+        threshold = AHEAD_WARN_THRESHOLD
+    return tuple(
+        wt
+        for wt in report.worktrees
+        if wt.commits_ahead_of_origin is not None and wt.commits_ahead_of_origin > threshold
+    )
+
+
 def render_human(report: WorktreeIndexReport) -> str:
     lines = [f"base_ref: {report.base_ref}", f"worktrees ({len(report.worktrees)}):"]
     for worktree in report.worktrees:
         tag = " [detached]" if worktree.detached else ""
-        lines.append(f"  {worktree.path}  branch={worktree.branch or '-'}{tag}  head={worktree.head_sha or '-'}")
+        ahead = worktree.commits_ahead_of_origin
+        if ahead is None:
+            ahead_str = ""
+        elif ahead > AHEAD_WARN_THRESHOLD:
+            ahead_str = f"  [{ahead} ahead of base — WARN: push to origin]"
+        elif ahead > 0:
+            ahead_str = f"  [{ahead} ahead]"
+        else:
+            ahead_str = ""
+        lines.append(
+            f"  {worktree.path}  branch={worktree.branch or '-'}{tag}  head={worktree.head_sha or '-'}{ahead_str}"
+        )
 
     if not report.paths:
         lines.append("")
