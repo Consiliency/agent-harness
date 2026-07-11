@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import shlex
+import shutil
 import string
 import subprocess
 import tempfile
@@ -96,6 +97,21 @@ PROMPT_INJECTED_CLOSEOUT_EXECUTORS = frozenset({"gemini", "grok", "opencode", "p
 # omitted, so the review action cannot mutate the workspace. Verified against the
 # live grok tool set (`read_file`/`grep`/`list_dir`/`search_tool`).
 GROK_REVIEW_READONLY_TOOLS = "read_file,grep,list_dir,search_tool"
+
+# agy (gemini) review-leg sandbox (IF-0-SANDBOX-1). Unlike grok's `--tools`
+# allow-list or codex's honored `--sandbox read-only`, agy exposes NO CLI lever
+# that makes a headless run read-only (`--sandbox` still permits file writes and
+# there is no per-tool restriction), so a review leg pointed at `--add-dir <repo>`
+# can mutate the live worktree. The ONLY sound mechanism for agy is to point it at
+# a STAGED COPY of the tree — never the live repo. `build_gemini_command` emits the
+# repo path behind this prefix for the `review` action; `_resolve_command_context`
+# decodes it at LAUNCH time, materializes a gitignore-aware copy, and substitutes
+# the staged path. The copy is cleaned in `launch_with_spec`'s `finally`. Build
+# without launch never materializes anything (the placeholder stays inert).
+GEMINI_REVIEW_STAGE_PREFIX = "__PHASE_LOOP_REVIEW_STAGE__:"
+# Directory name prefix for a materialized review-stage copy — the launch-time
+# cleanup detects staged dirs among the resolved `--add-dir` values by this prefix.
+_REVIEW_STAGE_DIR_PREFIX = "pl-review-stage-"
 
 # grok execute-time tool DENY-list (#154). Removes the privileged non-coding
 # built-ins that have no place in a single-turn headless execute leg — scheduling,
@@ -649,16 +665,20 @@ def build_gemini_command(
     #
     # Approval posture: agy has NO granular approval mode (and `--sandbox` still
     # permits file writes), so write actions auto-approve with
-    # --dangerously-skip-permissions while `review` STAYS READ-ONLY by omitting it —
-    # an analysis-only review prompt needs no tool approvals, mirroring the
-    # gemini-cli-runner skill's read-only `agy -p`. (`bypass_approvals` is moot for
-    # agy's all-or-nothing model.)
+    # --dangerously-skip-permissions while `review` omits it. But omission alone is
+    # NOT a read-only guarantee (agy exposes no honored read-only lever), so the
+    # security-load-bearing constraint for a `review` leg is the STAGED-COPY
+    # workspace: `--add-dir` carries the repo behind GEMINI_REVIEW_STAGE_PREFIX so
+    # `_resolve_command_context` substitutes a launch-time gitignore-aware copy —
+    # agy can only ever write the throwaway copy, never the reviewed tree
+    # (IF-0-SANDBOX-1). (`bypass_approvals` is moot for agy's all-or-nothing model.)
     command = ["agy", "--model", _gemini_cli_model(selection.model)]
     if action != "review":
         command.append("--dangerously-skip-permissions")
+    add_dir_value = f"{GEMINI_REVIEW_STAGE_PREFIX}{repo}" if action == "review" else str(repo)
     command += [
         "--add-dir",
-        str(repo),
+        add_dir_value,
         "-p",
         (
             f"Read and follow the workflow instructions in `{context_file}` exactly. "
@@ -1772,7 +1792,7 @@ def launch_with_spec(
         return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
     if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
         return _result_with_spec(_launch_claude_agent_view(spec, log_path=log_path), spec)
-    command = _resolve_command_context(spec, log_path)
+    command = _resolve_command_context(spec, log_path, dry_run=dry_run)
     # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): runtime no-hidden-print guard. A primary
     # Claude route (Channel / Agent View) must never resolve to a real `claude -p`
     # invocation; the build path guarantees this structurally, so a violation is a
@@ -1801,7 +1821,11 @@ def launch_with_spec(
         # schema path (run-scoped or fallback) is removed here (#63), alongside any
         # build-time cleanup paths. Build-without-launch never reaches this.
         cleanup_evidence = _cleanup_paths(
-            tuple(dict.fromkeys((*spec.cleanup_paths, *_schema_cleanup_paths(command))))
+            tuple(dict.fromkeys((
+                *spec.cleanup_paths,
+                *_schema_cleanup_paths(command),
+                *_review_stage_cleanup_paths(command),
+            )))
         )
     if cleanup_evidence:
         result = replace(
@@ -1941,7 +1965,12 @@ def _cleanup_paths(paths: tuple[str, ...]) -> dict[str, Any] | None:
     for raw_path in paths:
         path = Path(raw_path)
         try:
-            if path.exists():
+            if path.is_dir() and not path.is_symlink():
+                # A materialized review-stage COPY (IF-0-SANDBOX-1) is a directory;
+                # the codex schema / context temps are files. Handle both.
+                shutil.rmtree(path)
+                removed.append(str(path))
+            elif path.exists() or path.is_symlink():
                 path.unlink()
                 removed.append(str(path))
             else:
@@ -2470,7 +2499,111 @@ def _drop_arg_pair(command: list[str], flag: str) -> list[str]:
     return resolved
 
 
-def _resolve_command_context(spec: LaunchSpec, log_path: Path | None) -> list[str]:
+def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
+    """Materialize a gitignore-aware COPY of the review tree (IF-0-SANDBOX-1).
+
+    The agy review leg honors no read-only CLI lever, so it is sandboxed by being
+    pointed at this throwaway copy instead of the live worktree — a write can only
+    ever hit the copy. The copy reproduces the WORKING-TREE state a reviewer sees
+    (tracked files at their working-tree content, plus untracked-but-not-ignored
+    files) while excluding ignored build artifacts (node_modules/target/…) and
+    `.git`, so it is cheap and captures uncommitted changes. Falls back to a plain
+    recursive copy for a non-git tree.
+
+    The copy roots under the run dir when a ``log_path`` exists (reclaimed with the
+    run/worktree on SIGKILL) and under the system temp dir otherwise; either way it
+    is removed in ``launch_with_spec``'s ``finally`` (detected by the
+    ``_REVIEW_STAGE_DIR_PREFIX`` dir name). Only reached inside that try/finally.
+    """
+    parent = log_path.parent if log_path is not None else Path(tempfile.gettempdir())
+    parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=_REVIEW_STAGE_DIR_PREFIX, dir=str(parent)))
+    rel_paths = _git_review_tree_paths(repo)
+    if rel_paths is None:
+        # Not a git tree (or git unavailable): copy the whole tree minus VCS metadata.
+        shutil.copytree(
+            repo,
+            staged,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".git"),
+            symlinks=True,
+        )
+        return staged
+    for rel in rel_paths:
+        src = repo / rel
+        # ``git ls-files`` can list a path that no longer exists on disk (e.g. a
+        # tracked file deleted-but-unstaged); skip it rather than fail the leg.
+        if not src.exists() and not src.is_symlink():
+            continue
+        dest = staged / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_symlink() or src.is_file():
+            shutil.copy2(src, dest, follow_symlinks=False)
+    return staged
+
+
+def _git_review_tree_paths(repo: Path) -> list[str] | None:
+    """Working-tree-relative paths a reviewer should see: tracked + untracked but
+    not ignored. ``None`` when ``repo`` is not a git checkout or git is unavailable
+    (the caller falls back to a full copy)."""
+    try:
+        tracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-z"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if tracked.returncode != 0:
+            return None
+        untracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-z", "--others", "--exclude-standard"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return None
+    paths = [p for p in tracked.stdout.split("\0") if p]
+    if untracked.returncode == 0:
+        paths.extend(p for p in untracked.stdout.split("\0") if p)
+    # De-dupe while preserving order (a path can appear once; belt-and-suspenders).
+    return list(dict.fromkeys(paths))
+
+
+def _resolve_gemini_review_stage(
+    command: list[str], log_path: Path | None, *, dry_run: bool = False
+) -> list[str]:
+    """Substitute the agy review-leg stage placeholder with a materialized staged
+    copy of the reviewed tree (IF-0-SANDBOX-1). No-op when the placeholder is
+    absent (non-review gemini actions keep the live ``--add-dir <repo>``).
+
+    On ``dry_run`` nothing is launched, so no copy is materialized — the placeholder
+    resolves to the live repo path for a deterministic, side-effect-free command
+    render (the write-capable leg never runs, so there is nothing to sandbox)."""
+    resolved = list(command)
+    for index, part in enumerate(resolved):
+        if isinstance(part, str) and part.startswith(GEMINI_REVIEW_STAGE_PREFIX):
+            live_repo = Path(part[len(GEMINI_REVIEW_STAGE_PREFIX):])
+            resolved[index] = str(live_repo) if dry_run else str(_stage_review_tree(live_repo, log_path))
+            break
+    return resolved
+
+
+def _review_stage_cleanup_paths(command: list[str]) -> tuple[str, ...]:
+    """Staged review-tree copies to remove after launch — the ``--add-dir`` values
+    whose dir name carries ``_REVIEW_STAGE_DIR_PREFIX`` (see ``_stage_review_tree``)."""
+    paths: list[str] = []
+    for index, part in enumerate(command):
+        if part == "--add-dir" and index + 1 < len(command):
+            value = command[index + 1]
+            if Path(value).name.startswith(_REVIEW_STAGE_DIR_PREFIX):
+                paths.append(value)
+    return tuple(paths)
+
+
+def _resolve_command_context(
+    spec: LaunchSpec, log_path: Path | None, *, dry_run: bool = False
+) -> list[str]:
     if spec.executor == "codex" and CODEX_OUTPUT_SCHEMA_PLACEHOLDER in " ".join(spec.command):
         if spec.codex_output_schema is None:
             # Inconsistent (placeholder without a schema): never hand codex a
@@ -2508,13 +2641,18 @@ def _resolve_command_context(spec: LaunchSpec, log_path: Path | None) -> list[st
             )
         return resolved
     if spec.executor == "gemini" and GEMINI_CONTEXT_PLACEHOLDER in " ".join(spec.command):
-        repo_path = _command_repo_path(spec.command, "--add-dir")
+        # IF-0-SANDBOX-1: a `review` action carries the repo behind the stage
+        # placeholder — materialize a gitignore-aware COPY and point --add-dir at it
+        # so the write-capable agy leg can never mutate the reviewed tree. Non-review
+        # actions keep the live repo path unchanged.
+        staged_command = _resolve_gemini_review_stage(spec.command, log_path, dry_run=dry_run)
+        repo_path = _command_repo_path(staged_command, "--add-dir")
         if repo_path is None:
-            return spec.command
+            return staged_command
         context_path = _gemini_workspace_context_path(repo_path, log_path, spec.prompt_bundle.render_context())
         if context_path is None:
-            return spec.command
-        command = [part.replace(GEMINI_CONTEXT_PLACEHOLDER, context_path) for part in spec.command]
+            return staged_command
+        command = [part.replace(GEMINI_CONTEXT_PLACEHOLDER, context_path) for part in staged_command]
         mirror_root = str(Path(context_path).parent)
         if mirror_root != str(repo_path) and mirror_root not in command:
             # agy --add-dir is repeatable (one dir each), so add the context mirror dir

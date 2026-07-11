@@ -1,5 +1,5 @@
 ---
-name: codex-advisor-board
+name: advisor-board
 description: Run a customizable cross-vendor advisor board (formerly advisor-panel; that name remains a working alias) through the agent-harness runtime primitive when a high-stakes change needs independent review evidence.
 ---
 
@@ -44,28 +44,7 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
-6. The runtime never spawns a Claude TUI it cannot drive, so on a deferred host the `claude` leg returns `UNAVAILABLE` with empty text — the driving host supplies that leg through its OWN native sub-agent, not the runtime. See "Fulfilling the deferred claude leg natively" below.
-
-## Fulfilling The Deferred Claude Leg Natively (#125)
-
-When there is no controlling terminal to drive a Claude TUI, the runtime defers the `claude` leg (`status="UNAVAILABLE"`, empty text — never counted as an AGREE, recorded as a non-gating `panel_leg_degraded` warn). There are TWO deferral cases, and the runtime now distinguishes them with a machine-branchable reason code:
-
-- `under_claude_code` — you are running INSIDE a Claude Code session (`CLAUDECODE=1`). The driving Claude Code session supplies the leg as its own native `Task` Agent.
-- `native_adapter_required` — a headless / no-tty host such as the **Harness Desktop** tool shell (`CLAUDECODE` unset, stdin/stdout not a tty). The Harness host fulfills the leg through its native sub-agent adapter (`multi_agent_v1.spawn_agent`).
-
-Do NOT accept the 2-leg board silently. From Harness Desktop, ask the runtime for the structured request instead of parsing the log line, then fulfill it natively:
-
-```python
-from phase_loop_runtime.panel_invoker import native_agent_leg_request
-
-req = native_agent_leg_request(mode="review")   # env defaults to os.environ
-# req.reason == "native_adapter_required" on a Harness/no-tty host
-# spawn a Harness native sub-agent seeded with the SAME review bundle you passed the
-# board, plus req.instructions (the review brief) and req.verdict_contract, on
-# req.model (Fable by default). req.to_dict() is JSON for the tool boundary.
-```
-
-The native agent must be given the same `review-bundle.md` material the board reviewed, must follow `req.instructions`, and (for `mode="review"`) must end with exactly one of `AGREE` / `PARTIALLY AGREE` / `DISAGREE` per `req.verdict_contract`. Reconcile its verdict with the <harness> + gemini legs as the third seat. A `UNAVAILABLE` claude leg is a gap to fill, not an acceptable 2-leg board.
+6. On a Claude Code host, the runtime defers the `claude` leg (returns `UNAVAILABLE`) instead of spawning a Claude TUI — a driving session that wants a Claude/Fable leg must supply it as a native Agent.
 
 ## Standalone Smoke Shape
 
