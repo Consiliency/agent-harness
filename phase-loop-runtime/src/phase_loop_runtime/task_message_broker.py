@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import importlib.metadata
 import json
 import queue
 import re
@@ -24,6 +25,43 @@ MAX_RESPONSE_BYTES = 1_048_576
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def decode_strict_json(raw: bytes | str) -> object:
+    def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON member")
+            value[key] = item
+        return value
+
+    def reject_constant(_value: str) -> object:
+        raise ValueError("non-finite JSON number")
+
+    return json.loads(raw, object_pairs_hook=object_pairs, parse_constant=reject_constant)
+
+
+def verified_installed_agent_harness_sha(expected: str) -> str:
+    if COMMIT_SHA.fullmatch(expected) is None:
+        raise ValueError("invalid Agent Harness SHA")
+    try:
+        raw = importlib.metadata.distribution("phase-loop-runtime").read_text("direct_url.json")
+        document = decode_strict_json(raw or "")
+    except Exception as exc:
+        raise ValueError("installed Agent Harness provenance unavailable") from exc
+    if not isinstance(document, dict):
+        raise ValueError("installed Agent Harness provenance invalid")
+    vcs_info = document.get("vcs_info")
+    if not isinstance(vcs_info, dict) or set(vcs_info) != {"vcs", "requested_revision", "commit_id"}:
+        raise ValueError("installed Agent Harness VCS provenance invalid")
+    if (
+        vcs_info.get("vcs") != "git"
+        or vcs_info.get("requested_revision") != expected
+        or vcs_info.get("commit_id") != expected
+    ):
+        raise ValueError("installed Agent Harness SHA mismatch")
+    return expected
 
 
 @dataclass(frozen=True)
@@ -120,7 +158,7 @@ def make_handler(broker: TaskMessageBroker) -> type[BaseHTTPRequestHandler]:
             if not raw_length.isdigit() or not 0 <= int(raw_length) <= MAX_REQUEST_BYTES:
                 raise ValueError
             raw = self.rfile.read(int(raw_length))
-            value = json.loads(raw or b"{}")
+            value = decode_strict_json(raw or b"{}")
             if not isinstance(value, dict):
                 raise ValueError
             return value

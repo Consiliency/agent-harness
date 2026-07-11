@@ -1544,14 +1544,15 @@ def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
 
 
 def _task_message_broker_serve_command(args: argparse.Namespace) -> int:
-    from .task_message_broker import BrokerConfig, TaskMessageBroker, build_server
+    from .task_message_broker import BrokerConfig, TaskMessageBroker, build_server, verified_installed_agent_harness_sha
     from .task_message_resolver import CodexAppServerTaskMessageResolver
 
     try:
+        agent_harness_sha = verified_installed_agent_harness_sha(args.agent_harness_sha)
         config = BrokerConfig(
             authority=args.authority,
             token_sha256=args.token_sha256,
-            agent_harness_sha=args.agent_harness_sha,
+            agent_harness_sha=agent_harness_sha,
             heartbeat_seconds=args.heartbeat_seconds,
         )
 

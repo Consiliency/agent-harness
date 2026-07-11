@@ -43,11 +43,19 @@ with `source_task_unavailable`.
 ### Tailnet broker
 
 The broker is a separate read-only wrapper around the local resolver, not an
-app-server proxy. Install `deploy/phase-loop-task-message-broker.service` as a
-user unit on the source host. Its environment file contains only the SHA-256 of
-the capability token and the merged 40-hex Agent Harness commit; it never
-contains the raw token. Source the raw token from 1Password only into the caller
-environment.
+app-server proxy. Install the exact merged Agent Harness commit with an immutable
+VCS revision, then install `deploy/phase-loop-task-message-broker.service` as a
+user unit on the source host. The unit also ships inside the runtime wheel as
+`phase_loop_runtime/deploy/phase-loop-task-message-broker.service`. Its
+environment file contains only the SHA-256 of the capability token and the
+merged 40-hex Agent Harness commit; it never contains the raw token. Source the
+raw token from 1Password only into the caller environment.
+
+The broker reads the installed distribution's PEP 610 `direct_url.json` at
+startup and requires both `requested_revision` and `commit_id` to exactly match
+`AGENT_HARNESS_SHA`. An installation without Git VCS provenance, one installed
+from a moving branch/tag, or any supplied SHA mismatch fails before the broker
+binds a listener.
 
 The service binds `127.0.0.1:18765`. Expose that loopback endpoint only through
 Tailscale Serve HTTPS:
@@ -57,6 +65,11 @@ tailscale serve --service=svc:phase-loop-task-message-broker --bg --https=8765 h
 ```
 
 Never use Tailscale Funnel. Probe from the authenticated caller:
+
+The unit hides the user's home, binds back only the installed runtime and the
+owner-socket directory read-only, uses private devices and temporary storage,
+and permits IP traffic only on loopback. Do not weaken those restrictions to
+make deployment succeed.
 
 The user-service environment file is `%h/.config/phase-loop/task-message-broker.env`
 and contains exactly `TASK_MESSAGE_TOKEN_SHA256=<64-hex>` plus

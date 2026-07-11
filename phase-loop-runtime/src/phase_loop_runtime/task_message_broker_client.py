@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import queue
 import re
+import threading
 from typing import BinaryIO, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+import rfc8785
+
+from .task_message_broker import decode_strict_json
 from .task_message_resolver import FAILURE_CODES, TaskMessageResolverError
 
 
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 MAX_FRAME_BYTES = 1_048_576
 OpenFn = Callable[..., BinaryIO]
 READY_KEYS = {"status", "authority"}
@@ -89,10 +98,10 @@ class TaskMessageBrokerClient:
                     raise ValueError
                 sequence = 0
                 while True:
-                    raw = response.readline(MAX_FRAME_BYTES + 1)
+                    raw = self._readline_with_deadline(response)
                     if not raw or len(raw) > MAX_FRAME_BYTES:
                         raise ValueError
-                    frame = json.loads(raw)
+                    frame = decode_strict_json(raw)
                     if not isinstance(frame, dict):
                         raise ValueError
                     if frame.get("type") == "heartbeat":
@@ -127,6 +136,24 @@ class TaskMessageBrokerClient:
                 message_id=message_id,
             ) from None
 
+    def _readline_with_deadline(self, response: BinaryIO) -> bytes:
+        completed: queue.Queue[bytes | BaseException] = queue.Queue(maxsize=1)
+
+        def read() -> None:
+            try:
+                completed.put(response.readline(MAX_FRAME_BYTES + 1))
+            except BaseException as exc:
+                completed.put(exc)
+
+        threading.Thread(target=read, daemon=True).start()
+        try:
+            result = completed.get(timeout=self._heartbeat_timeout_seconds)
+        except queue.Empty as exc:
+            raise TimeoutError from exc
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
     def _valid_payload(
         self,
         payload: dict[str, object],
@@ -141,14 +168,52 @@ class TaskMessageBrokerClient:
             return (
                 set(payload) == BLOCKED_KEYS
                 and payload.get("code") in FAILURE_CODES
+                and isinstance(payload.get("authority"), str)
                 and payload.get("thread_id") == thread_id
                 and payload.get("message_id") == message_id
             )
         if path.endswith("/probe"):
-            return set(payload) == READY_KEYS and payload.get("status") == "ready"
-        return (
+            return set(payload) == READY_KEYS and payload.get("status") == "ready" and isinstance(payload.get("authority"), str)
+        if not (
             set(payload) == RESOLVED_KEYS
             and payload.get("status") == "resolved"
             and payload.get("thread_id") == thread_id
             and payload.get("message_id") == message_id
+        ):
+            return False
+        identity_keys = {
+            "thread_id", "turn_id", "approval_turn_id", "message_id",
+            "approval_message_id", "source_item_id", "approval_item_id",
+        }
+        if any(not isinstance(payload.get(key), str) or SAFE_ID.fullmatch(payload[key]) is None for key in identity_keys):
+            return False
+        if payload.get("approval_message_id") != f"{message_id}-approval":
+            return False
+        digest_keys = {"message_sha256", "approval_body_sha256", "approval_canonical_sha256"}
+        if any(not isinstance(payload.get(key), str) or SHA256.fullmatch(payload[key]) is None for key in digest_keys):
+            return False
+        source_started_at = payload.get("source_started_at")
+        resolved_at = payload.get("resolved_at")
+        if type(source_started_at) is not int or type(resolved_at) is not int or source_started_at <= 0 or resolved_at < source_started_at:
+            return False
+        try:
+            message_bytes = _decode_canonical_base64(payload.get("message_bytes_b64"))
+            approval_body_bytes = _decode_canonical_base64(payload.get("approval_body_bytes_b64"))
+            approval_document = decode_strict_json(approval_body_bytes)
+            canonical = rfc8785.dumps(approval_document)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return (
+            hashlib.sha256(message_bytes).hexdigest() == payload["message_sha256"]
+            and hashlib.sha256(approval_body_bytes).hexdigest() == payload["approval_body_sha256"]
+            and hashlib.sha256(canonical).hexdigest() == payload["approval_canonical_sha256"]
         )
+
+
+def _decode_canonical_base64(value: object) -> bytes:
+    if not isinstance(value, str):
+        raise ValueError("base64 value must be text")
+    decoded = base64.b64decode(value, validate=True)
+    if base64.b64encode(decoded).decode("ascii") != value:
+        raise ValueError("base64 value is not canonical")
+    return decoded

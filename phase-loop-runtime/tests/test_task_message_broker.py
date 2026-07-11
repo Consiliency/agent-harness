@@ -10,7 +10,13 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from phase_loop_runtime.task_message_broker import BrokerConfig, TaskMessageBroker, build_server, make_handler
+from phase_loop_runtime.task_message_broker import (
+    BrokerConfig,
+    TaskMessageBroker,
+    build_server,
+    make_handler,
+    verified_installed_agent_harness_sha,
+)
 from phase_loop_runtime.task_message_resolver import TaskMessageResolverError
 
 
@@ -156,6 +162,40 @@ def test_boolean_age_and_oversized_request_are_rejected() -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize("body", [b'{"thread_id":"one","thread_id":"two","message_id":"message-1","max_source_age_seconds":900}', b'{"value":NaN}'])
+def test_duplicate_and_non_finite_request_json_is_rejected(body: bytes) -> None:
+    server = _server()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/v1/task-message/resolve",
+            data=body,
+            method="POST",
+            headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as exc:
+            urlopen(request, timeout=1)
+        assert exc.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_installed_sha_must_match_exact_vcs_provenance(monkeypatch) -> None:
+    class Distribution:
+        def read_text(self, name: str) -> str:
+            assert name == "direct_url.json"
+            return json.dumps({
+                "url": "https://github.com/ViperJuice/agent-harness.git",
+                "subdirectory": "phase-loop-runtime",
+                "vcs_info": {"vcs": "git", "requested_revision": SHA, "commit_id": SHA},
+            })
+
+    monkeypatch.setattr("phase_loop_runtime.task_message_broker.importlib.metadata.distribution", lambda _name: Distribution())
+    assert verified_installed_agent_harness_sha(SHA) == SHA
+    with pytest.raises(ValueError, match="mismatch"):
+        verified_installed_agent_harness_sha("b" * 40)
 
 
 def test_blocked_resolver_result_is_metadata_only() -> None:

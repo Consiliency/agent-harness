@@ -54,9 +54,9 @@ SL-2 — Documentation and verification reducer
 - **Interfaces consumed**: `TaskMessageBroker`, exact `/v1/task-message/probe` and `/v1/task-message/resolve` request schemas, exact NDJSON frames; existing endpoint/control-socket transports (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: cover mutually exclusive transports, token lookup only for authenticated remote modes, exact/no-extra-key parsing, 40-hex release SHA, no total request deadline while heartbeats advance, 15-second inactivity failure, and sanitized CLI output;
-  - impl: stream NDJSON with a bounded connect timeout and heartbeat-reset inactivity bound; preserve existing resolver payload while adding `agent_harness_sha`; expose server command with fixed loopback default and validated digest/SHA config;
-  - impl: add a hardened user service that stores no raw token, opens no tailnet/public listener, and never starts or restarts Codex app-server;
+  - test: cover mutually exclusive transports, token lookup only for authenticated remote modes, duplicate-key/non-finite rejection, complete-frame heartbeat deadlines, exact proof validation, immutable installed VCS provenance, and sanitized CLI output;
+  - impl: stream NDJSON with a bounded connect timeout and a deadline reset only by a complete valid frame; cryptographically validate the full resolver proof; derive the attested `agent_harness_sha` from exact PEP 610 Git provenance and reject any supplied-pin mismatch;
+  - impl: ship a hardened user service in both the source deployment tree and wheel package data; store no raw token, expose only runtime/owner-socket paths, permit only loopback IP traffic, and never start or restart Codex app-server;
   - verify: `cd phase-loop-runtime && uv run --with pytest python -m pytest tests/test_task_message_resolver.py tests/test_task_message_broker_cli.py -q`.
 
 ### SL-2 — Documentation and verification reducer
@@ -92,9 +92,9 @@ git diff --check
 ## Acceptance Criteria
 
 - [ ] `tests/test_task_message_broker.py` proves authentication fails before owner-socket access and failure JSON contains no token/proof bytes.
-- [ ] `tests/test_task_message_broker.py` and `tests/test_task_message_broker_cli.py` prove exact NDJSON frames and 40-hex release SHA end to end.
-- [ ] `tests/test_task_message_broker_cli.py` proves fresh heartbeats outlive any total duration while 15 seconds of inactivity fails closed.
-- [ ] `deploy/phase-loop-task-message-broker.service` static assertions prove loopback bind, and `docs/task-message-resolver.md` names only Tailscale Serve, never Funnel.
+- [ ] `tests/test_task_message_broker.py` and `tests/test_task_message_broker_cli.py` prove exact duplicate-free JSON/NDJSON, full proof validation, and PEP 610-bound release SHA end to end.
+- [ ] `tests/test_task_message_broker_cli.py` proves fresh complete heartbeats outlive any total duration while partial-frame trickling cannot extend the 15-second inactivity deadline.
+- [ ] The packaged and source `phase-loop-task-message-broker.service` files are byte-identical; static assertions prove home/path confinement and loopback-only IP traffic, and `docs/task-message-resolver.md` names only Tailscale Serve, never Funnel.
 - [ ] The commands in `## Verification` record passing full-suite, build, roadmap, and diff-check results in `verification-SOURCEBROKER.md`.
 
 ## Spec Closeout Plan

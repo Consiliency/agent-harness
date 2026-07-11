@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import io
+import base64
+import hashlib
 import json
+import time
 from email.message import Message
 from contextlib import redirect_stdout
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
+import rfc8785
 
 from phase_loop_runtime.task_message_broker_client import TaskMessageBrokerClient
 from phase_loop_runtime.task_message_resolver import TaskMessageResolverError
@@ -15,6 +20,8 @@ from phase_loop_runtime.cli import main
 
 AUTHORITY = "codex-app-server://claw.test"
 SHA = "b" * 40
+SOURCE_BYTES = b"governed source"
+APPROVAL_BYTES = b'{"approved":true}'
 
 
 class _Response(io.BytesIO):
@@ -43,6 +50,41 @@ class _TimedResponse(_Response):
             raise TimeoutError
         self.total_elapsed += 5
         return super().readline(limit)
+
+
+class _RawResponse(_Response):
+    def __init__(self, raw: bytes) -> None:
+        super().__init__([])
+        self.write(raw)
+        self.seek(0)
+
+
+class _TrickleResponse(_Response):
+    def readline(self, limit: int = -1) -> bytes:
+        for _ in range(10):
+            time.sleep(0.01)
+        return super().readline(limit)
+
+
+def _resolved_payload() -> dict[str, object]:
+    return {
+        "status": "resolved",
+        "authority": AUTHORITY,
+        "thread_id": "thread-1",
+        "turn_id": "turn-1",
+        "approval_turn_id": "turn-2",
+        "message_id": "message-1",
+        "approval_message_id": "message-1-approval",
+        "source_item_id": "item-1",
+        "approval_item_id": "item-2",
+        "message_sha256": hashlib.sha256(SOURCE_BYTES).hexdigest(),
+        "approval_body_sha256": hashlib.sha256(APPROVAL_BYTES).hexdigest(),
+        "approval_canonical_sha256": hashlib.sha256(rfc8785.dumps(json.loads(APPROVAL_BYTES))).hexdigest(),
+        "source_started_at": 1,
+        "resolved_at": 2,
+        "message_bytes_b64": base64.b64encode(SOURCE_BYTES).decode(),
+        "approval_body_bytes_b64": base64.b64encode(APPROVAL_BYTES).decode(),
+    }
 
 
 def _client(frames: list[dict[str, object]]) -> TaskMessageBrokerClient:
@@ -138,6 +180,60 @@ def test_heartbeat_silence_fails_closed() -> None:
     assert exc.value.code == "source_task_unavailable"
 
 
+def test_partial_frame_trickle_cannot_extend_heartbeat_deadline() -> None:
+    response = _TrickleResponse([
+        {"type": "heartbeat", "sequence": 1},
+        {"type": "result", "agent_harness_sha": SHA, "payload": {"status": "ready", "authority": AUTHORITY}},
+    ])
+    client = TaskMessageBrokerClient(
+        broker_url="https://claw.test:8765",
+        bearer_token="token",
+        authority=AUTHORITY,
+        heartbeat_timeout_seconds=0.03,
+        opener=lambda _request, timeout: response,
+    )
+    with pytest.raises(TaskMessageResolverError) as exc:
+        client.probe()
+    assert exc.value.code == "source_task_unavailable"
+
+
+@pytest.mark.parametrize("raw", [b'{"type":"heartbeat","sequence":1,"sequence":2}\n', b'{"type":"heartbeat","sequence":NaN}\n'])
+def test_duplicate_and_non_finite_frame_json_is_rejected(raw: bytes) -> None:
+    client = TaskMessageBrokerClient(
+        broker_url="https://claw.test:8765",
+        bearer_token="token",
+        authority=AUTHORITY,
+        opener=lambda _request, timeout: _RawResponse(raw),
+    )
+    with pytest.raises(TaskMessageResolverError) as exc:
+        client.probe()
+    assert exc.value.code == "attestation_invalid"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("message_sha256", "0" * 64),
+        ("approval_body_bytes_b64", "***"),
+        ("source_item_id", 7),
+        ("resolved_at", "2"),
+    ],
+)
+def test_resolved_proof_fields_are_cryptographically_validated(field: str, value: object) -> None:
+    payload = _resolved_payload()
+    payload[field] = value
+    client = _client([{"type": "result", "agent_harness_sha": SHA, "payload": payload}])
+    with pytest.raises(TaskMessageResolverError) as exc:
+        client.resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
+    assert exc.value.code == "attestation_invalid"
+
+
+def test_valid_resolved_proof_is_accepted() -> None:
+    client = _client([{"type": "result", "agent_harness_sha": SHA, "payload": _resolved_payload()}])
+    result = client.resolve(thread_id="thread-1", message_id="message-1", max_source_age_seconds=900)
+    assert result["message_sha256"] == hashlib.sha256(SOURCE_BYTES).hexdigest()
+
+
 def test_oversized_frame_fails_closed() -> None:
     oversized = _Response([])
     oversized.write(b"{" + b"x" * 1_048_576 + b"}\n")
@@ -192,12 +288,23 @@ def test_cli_broker_mode_fails_closed_without_token(monkeypatch) -> None:
     assert json.loads(stdout.getvalue())["code"] == "attestation_invalid"
 
 
-@pytest.mark.dotfiles_integration
 def test_user_service_is_loopback_digest_only_and_does_not_manage_codex() -> None:
-    unit = (Path(__file__).resolve().parents[2] / "deploy" / "phase-loop-task-message-broker.service").read_text()
+    unit = files("phase_loop_runtime").joinpath("deploy/phase-loop-task-message-broker.service").read_text()
     assert "--host 127.0.0.1" in unit
     assert "--token-sha256 ${TASK_MESSAGE_TOKEN_SHA256}" in unit
     assert "${AGENT_HARNESS_SHA}" in unit
     assert "Bearer" not in unit
     assert "codex app-server" not in unit
     assert "tailscale" not in unit
+    assert "ProtectHome=tmpfs" in unit
+    assert "BindReadOnlyPaths=%h/.codex/app-server-control" in unit
+    assert "PrivateDevices=yes" in unit
+    assert "IPAddressDeny=any" in unit
+    assert "IPAddressAllow=localhost" in unit
+
+
+@pytest.mark.dotfiles_integration
+def test_packaged_user_service_matches_deploy_source() -> None:
+    packaged = files("phase_loop_runtime").joinpath("deploy/phase-loop-task-message-broker.service").read_text()
+    source = (Path(__file__).resolve().parents[2] / "deploy" / "phase-loop-task-message-broker.service").read_text()
+    assert packaged == source
