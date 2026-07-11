@@ -1386,16 +1386,153 @@ def _normalize_claude_agent_state(value: object) -> str:
     return "unknown"
 
 
-# Reason string used ONLY for the deferred-leg log line (auditability). It is
-# NEVER returned as the leg's review text — returning it as text would make
+# Reason strings used ONLY for the deferred-leg log line (auditability) and the
+# structured NativeAgentLegRequest below. They are NEVER returned as the leg's
+# review text — returning a reason as text would make
 # governed_review._findings_from_panel classify the leg `panel_nonconforming`
-# (a BLOCK), over-blocking every Claude-Code-hosted governed panel. See the
-# detailed plan (#92) A2/A4.
-_CLAUDE_LEG_DEFERRED_REASON = (
-    "claude leg not run by the runtime in this execution context "
-    "(under Claude Code / no controlling terminal); supply it as a NATIVE Agent "
-    "(Task tool) from the driving session — the runtime must not spawn a Claude TUI here."
+# (a BLOCK), over-blocking every deferred-host governed panel. See the detailed
+# plan (#92) A2/A4.
+#
+# #125 splits the single #92 reason into two machine-branchable codes so a
+# driving host can tell WHICH fulfillment path applies instead of parsing one
+# blended sentence:
+#
+#   under_claude_code       — we are INSIDE a Claude Code session; the driving
+#                             session supplies the leg as its own NATIVE Agent
+#                             (Task tool). Spawning a second Claude TUI here is
+#                             the wrong route.
+#   native_adapter_required — a headless / no-tty host (e.g. the Codex Desktop
+#                             tool shell: CLAUDECODE unset, stdin/stdout not a
+#                             tty) with no controlling terminal to drive a TUI.
+#                             The host fulfills the leg through its own native
+#                             sub-agent adapter (see native_agent_leg_request()).
+_CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE = "under_claude_code"
+_CLAUDE_LEG_DEFERRED_NATIVE_ADAPTER = "native_adapter_required"
+
+_CLAUDE_LEG_DEFERRED_REASONS: dict[str, str] = {
+    _CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE: (
+        "claude leg not run by the runtime under Claude Code; supply it as a "
+        "NATIVE Agent (Task tool) from the driving Claude Code session — the "
+        "runtime must not spawn a second Claude TUI here."
+    ),
+    _CLAUDE_LEG_DEFERRED_NATIVE_ADAPTER: (
+        "claude leg not run by the runtime in this headless / no-tty host (no "
+        "controlling terminal to drive a Claude TUI); the driving host (e.g. "
+        "Codex Desktop) must fulfill it via its native sub-agent adapter — see "
+        "native_agent_leg_request()."
+    ),
+}
+
+
+def _claude_leg_deferred_reason(env: Mapping[str, str] | None = None) -> tuple[str, str]:
+    """Return ``(reason_code, detail)`` for a deferred claude leg in this host.
+
+    The code is machine-branchable (#125): ``under_claude_code`` when we are
+    inside a Claude Code session (the driving session runs the native Agent
+    itself), else ``native_adapter_required`` for a headless / no-tty host such
+    as the Codex Desktop tool shell (the host fulfills the leg through its own
+    native sub-agent adapter). ``detail`` is the human-readable log/audit line.
+    """
+    code = (
+        _CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE
+        if _under_claude_code(env)
+        else _CLAUDE_LEG_DEFERRED_NATIVE_ADAPTER
+    )
+    return code, _CLAUDE_LEG_DEFERRED_REASONS[code]
+
+
+@dataclass(frozen=True)
+class NativeAgentLegRequest:
+    """Structured request the runtime cannot fulfill itself but a driving host can.
+
+    When the claude panel leg is deferred (#92: under Claude Code, or #125: a
+    headless / no-tty host like Codex Desktop), the runtime returns the existing
+    ``UNAVAILABLE`` status with empty text — it must NOT spawn a Claude TUI it
+    cannot drive. This descriptor packages what the *runtime* knows but the
+    *driver* does not, so the host can run the third leg through its OWN native
+    sub-agent tool (Codex ``multi_agent_v1.spawn_agent``, a Claude Code ``Task``,
+    …) instead of a human noticing ``UNAVAILABLE`` and improvising:
+
+    * ``instructions`` — the exact review/advisory brief the runtime would have
+      staged as ``review-instructions.md`` (``_mode_instructions(mode)``).
+    * ``verdict_contract`` / ``verdict_required`` — the terminal-verdict contract
+      the leg's output must satisfy to reconcile with the real legs.
+    * ``model`` — the intended seat model (Fable by default).
+    * ``reason`` / ``detail`` — WHY the runtime deferred (machine-branchable).
+
+    The driver already holds the review bundle/artifact it passed to the panel;
+    this descriptor is the rest of the contract. It is a PURE function of the
+    caller's inputs (:func:`native_agent_leg_request`) and is NEVER threaded
+    through the governed ``(status, text)`` spawn boundary — keeping the panel /
+    advisor-board golden byte-identical (#92 A4).
+    """
+
+    leg: str
+    model: str
+    mode: str
+    reason: str
+    detail: str
+    instructions: str
+    verdict_required: bool
+    verdict_contract: str
+
+    def to_dict(self) -> dict[str, object]:
+        """JSON-serializable form for a host driver to consume across a tool boundary."""
+        return {
+            "leg": self.leg,
+            "model": self.model,
+            "mode": self.mode,
+            "reason": self.reason,
+            "detail": self.detail,
+            "instructions": self.instructions,
+            "verdict_required": self.verdict_required,
+            "verdict_contract": self.verdict_contract,
+        }
+
+
+# The terminal-verdict contract a native-fulfilled review leg must satisfy so its
+# output reconciles with the real legs (mirrors ``terminal_verdict`` / the review
+# brief). Advisory mode requires substantial prose ending in a recommendation, no
+# AGREE/DISAGREE token — see ``_ADVISORY_INSTRUCTIONS``.
+_REVIEW_VERDICT_CONTRACT = (
+    "End with exactly one of: AGREE / PARTIALLY AGREE / DISAGREE as the final "
+    "line (use DISAGREE only when there is a blocking defect)."
 )
+_ADVISORY_VERDICT_CONTRACT = (
+    "End with a clear recommendation; no AGREE / PARTIALLY AGREE / DISAGREE "
+    "verdict is required."
+)
+
+
+def native_agent_leg_request(
+    *,
+    leg: str = "claude",
+    mode: str = "review",
+    env: Mapping[str, str] | None = None,
+    model: str | None = None,
+) -> NativeAgentLegRequest:
+    """Build the structured request a host driver fulfills for a deferred leg (#125).
+
+    Pure function of its inputs — reads no disk and spawns nothing, so it is
+    safe to call from any host (including one where the runtime just returned
+    ``UNAVAILABLE`` for this leg). ``mode`` selects the review vs advisory brief +
+    verdict contract; ``env`` selects the deferred-reason code (under Claude Code
+    vs native-adapter-required); ``model`` defaults to the seat's canonical model.
+    """
+    reason, detail = _claude_leg_deferred_reason(env)
+    verdict_required = mode != "advisory"
+    return NativeAgentLegRequest(
+        leg=leg,
+        model=model or DEFAULT_LEG_MODELS.get(leg, DEFAULT_LEG_MODELS["claude"]),
+        mode=mode,
+        reason=reason,
+        detail=detail,
+        instructions=_mode_instructions(mode),
+        verdict_required=verdict_required,
+        verdict_contract=(
+            _REVIEW_VERDICT_CONTRACT if verdict_required else _ADVISORY_VERDICT_CONTRACT
+        ),
+    )
 
 
 def _under_claude_code(env: Mapping[str, str] | None = None) -> bool:
@@ -1457,10 +1594,15 @@ def _exec_claude_tui_leg(
         # UNAVAILABLE status and EMPTY review text — the empty text is
         # load-bearing (A4): an UNAVAILABLE leg with empty text becomes a
         # non-gating `panel_leg_degraded` warn, never a block, and `usable`
-        # (status=="OK") never counts it as an AGREE. The driving session must
-        # supply this leg as a native Agent (Task tool).
+        # (status=="OK") never counts it as an AGREE. The driving session/host
+        # must supply this leg natively (Claude Code: a Task Agent; Codex Desktop
+        # / headless: its native sub-agent adapter — see native_agent_leg_request).
+        # #125: log the machine-branchable reason code so the distinction between
+        # "under Claude Code" and "native-adapter-required" is visible in the audit
+        # line, not just blended into one sentence.
+        reason_code, reason_detail = _claude_leg_deferred_reason(env)
         logging.getLogger(__name__).warning(
-            "advisor-panel claude leg deferred: %s", _CLAUDE_LEG_DEFERRED_REASON
+            "advisor-panel claude leg deferred [%s]: %s", reason_code, reason_detail
         )
         return "UNAVAILABLE", ""
 

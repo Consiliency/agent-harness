@@ -227,6 +227,79 @@ class ClaudeLegDeferredUnderClaudeCodeTest(unittest.TestCase):
         self.assertEqual([leg.leg for leg in panel.usable_legs], ["codex", "gemini"])
 
 
+class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
+    """#125 — the deferred claude leg distinguishes "under Claude Code" from a
+    headless / no-tty host (Codex Desktop) and exposes a structured, machine-
+    branchable request the driving host can fulfill via its native sub-agent
+    adapter. The returned ``("UNAVAILABLE", "")`` stays byte-identical (#92 A4);
+    only the AUDIT reason and the additive descriptor are new."""
+
+    def test_reason_code_distinguishes_codex_host_from_claude_code(self):
+        # Codex Desktop repro: CLAUDECODE unset, no tty → native_adapter_required
+        # (NOT the Claude-Code-specific reason).
+        code, detail = pi._claude_leg_deferred_reason({})
+        self.assertEqual(code, "native_adapter_required")
+        self.assertIn("native sub-agent adapter", detail)
+        self.assertNotIn("under Claude Code", detail)
+        # Inside a Claude Code session → the driving session runs the Task Agent.
+        code_cc, detail_cc = pi._claude_leg_deferred_reason({"CLAUDECODE": "1"})
+        self.assertEqual(code_cc, "under_claude_code")
+        self.assertIn("Task tool", detail_cc)
+
+    def test_headless_defer_logs_native_adapter_reason(self):
+        # The no-tty defer (Codex host) must not collapse to the Claude-Code reason.
+        with tempfile.TemporaryDirectory() as td:
+            review_dir = Path(td) / "review"
+            out_dir = Path(td) / "out"
+            review_dir.mkdir()
+            out_dir.mkdir()
+            with (
+                patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._run_claude_tui_session") as run_tui,
+                self.assertLogs("phase_loop_runtime.panel_invoker", level="WARNING") as logs,
+            ):
+                status, text = pi._exec_claude_tui_leg(
+                    review_dir, out_dir, 600, "bundle",
+                    env={"NO_TTY": "1"},  # CLAUDECODE unset ⇒ native_adapter_required
+                )
+        self.assertEqual((status, text), ("UNAVAILABLE", ""))  # byte-identical (#92 A4)
+        run_tui.assert_not_called()
+        self.assertTrue(any("native_adapter_required" in line for line in logs.output))
+
+    def test_native_agent_leg_request_review_shape(self):
+        req = pi.native_agent_leg_request(mode="review", env={})
+        self.assertEqual(req.leg, "claude")
+        self.assertEqual(req.model, pi.DEFAULT_LEG_MODELS["claude"])
+        self.assertEqual(req.reason, "native_adapter_required")
+        self.assertTrue(req.verdict_required)
+        self.assertIn("AGREE", req.verdict_contract)
+        # instructions carry the runtime's review brief (what the driver lacks).
+        self.assertEqual(req.instructions, pi._mode_instructions("review"))
+        # JSON-serializable across a host tool boundary.
+        self.assertEqual(
+            sorted(req.to_dict()),
+            ["detail", "instructions", "leg", "mode", "model", "reason",
+             "verdict_contract", "verdict_required"],
+        )
+
+    def test_native_agent_leg_request_advisory_has_no_verdict(self):
+        req = pi.native_agent_leg_request(mode="advisory", env={})
+        self.assertFalse(req.verdict_required)
+        self.assertIn("no AGREE", req.verdict_contract)
+        self.assertIn("recommendation", req.verdict_contract)
+        self.assertEqual(req.instructions, pi._mode_instructions("advisory"))
+
+    def test_native_agent_leg_request_reason_tracks_host(self):
+        self.assertEqual(
+            pi.native_agent_leg_request(env={"CLAUDECODE": "1"}).reason,
+            "under_claude_code",
+        )
+        self.assertEqual(
+            pi.native_agent_leg_request(env={}).reason,
+            "native_adapter_required",
+        )
+
+
 class StatusMappingTest(unittest.TestCase):
     def _spawn_with(self, rc, review_text, log_text):
         with patch.object(pi, "_exec_leg", return_value=(rc, review_text, log_text)):
