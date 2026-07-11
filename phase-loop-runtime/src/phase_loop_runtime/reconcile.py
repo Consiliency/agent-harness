@@ -69,8 +69,13 @@ def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSna
                     continue
                 if status == "unplanned":
                     continue
-                if not status_provenance_matches(status, snapshot.roadmap_sha256, snapshot.phase_sha256.get(phase), current_roadmap_sha, current_phase_sha.get(phase)):
-                    ledger_warnings.append(_ledger_warning("state", phase, status, provenance_mismatch_reason(status, snapshot.roadmap_sha256, snapshot.phase_sha256.get(phase), current_roadmap_sha, current_phase_sha.get(phase))))
+                entry_phase_sha = snapshot.phase_sha256.get(phase)
+                current_sha = current_phase_sha.get(phase)
+                if not status_provenance_matches(status, snapshot.roadmap_sha256, entry_phase_sha, current_roadmap_sha, current_sha):
+                    reason = provenance_mismatch_reason(status, snapshot.roadmap_sha256, entry_phase_sha, current_roadmap_sha, current_sha)
+                    warning = _ledger_warning("state", phase, status, reason)
+                    warning.update(_amendment_drift_fields(status, reason, entry_phase_sha, current_sha))
+                    ledger_warnings.append(warning)
                     continue
                 if status == "planned" and find_plan_artifact(repo, phase, roadmap=roadmap) is None:
                     continue
@@ -154,21 +159,20 @@ def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSna
             continue
         if phase in phases and status in RECONCILE_EVENT_STATUSES:
             if not _event_status_provenance_matches(event, str(status), current_roadmap_sha, current_phase_sha.get(phase)):
-                pending_event_warnings.setdefault(phase, []).append(
-                    _ledger_warning(
-                        "event",
-                        phase,
-                        str(status),
-                        provenance_mismatch_reason(
-                            str(status),
-                            event.get("roadmap_sha256"),
-                            event.get("phase_sha256"),
-                            current_roadmap_sha,
-                            current_phase_sha.get(phase),
-                        ),
-                        raw_event=event,
+                event_reason = provenance_mismatch_reason(
+                    str(status),
+                    event.get("roadmap_sha256"),
+                    event.get("phase_sha256"),
+                    current_roadmap_sha,
+                    current_phase_sha.get(phase),
+                )
+                event_warning = _ledger_warning("event", phase, str(status), event_reason, raw_event=event)
+                event_warning.update(
+                    _amendment_drift_fields(
+                        str(status), event_reason, event.get("phase_sha256"), current_phase_sha.get(phase)
                     )
                 )
+                pending_event_warnings.setdefault(phase, []).append(event_warning)
                 if status in {"blocked", "unknown", "executed", "awaiting_phase_closeout"}:
                     latest_untrusted_terminal_event[phase] = event
                 continue
@@ -1012,6 +1016,47 @@ def _ledger_warning(
     value: object | None = None,
 ) -> dict:
     return _ledger_warning_record(source, phase, status, reason, raw_event=raw_event, value=value)
+
+
+def _amendment_drift_fields(
+    status: str,
+    reason: str,
+    entry_phase_sha: str | None,
+    current_phase_sha: str | None,
+) -> dict[str, object]:
+    """#85: distinguish "a roadmap amendment changed a COMPLETED phase's hashes"
+    from "this phase was genuinely never planned".
+
+    When a phase's own roadmap block is amended in-flight its ``phase_sha256``
+    drifts, and — by the completion-invalidation invariant that
+    ``test_phase_block_edit_invalidates_complete_phase`` locks — the stored
+    completion is (correctly) no longer trusted, so the phase falls back to
+    ``unplanned``. That reclassification is right, but silent: the operator can't
+    tell it apart from a phase that never had any state. Stamp the
+    provenance-mismatch warning for a drifted terminal completion with a
+    repairable ``gold_record_amendment`` marker (the same vocabulary
+    ``invalidate_stale_downstream_plans`` uses for downstream plans) that names
+    the drifted vs current hash, so ``status`` can surface a repairable signal.
+
+    A genuinely-unplanned phase carries no ``complete``/``executed`` state or
+    event here, so it never receives the marker — that asymmetry is exactly the
+    "distinguish" the issue asks for."""
+    if reason != "phase_mismatch" or status not in {"complete", "executed"}:
+        return {}
+    return {
+        "blocker_class": "gold_record_amendment",
+        "repairable": True,
+        "amendment_drift": {
+            "phase_status": status,
+            "entry_phase_sha256": entry_phase_sha,
+            "current_phase_sha256": current_phase_sha,
+        },
+        "repair_hint": (
+            "A roadmap amendment changed this completed phase's section hash. "
+            "Restore the amended completed-phase wording, or re-attest the "
+            "completion against the amended roadmap, then rerun reconcile."
+        ),
+    }
 
 
 def _ledger_warning_record(
