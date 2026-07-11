@@ -227,23 +227,37 @@ else
   REPO_KEY="$(basename "$REPO_ROOT")-$(printf '%s' "$REPO_ROOT" | sha1sum | cut -c1-12)"
 fi
 ROADMAP_HANDOFF="$(python3 - <<'PYH'
-from importlib import util
 from pathlib import Path
 repo = Path.cwd().resolve()
-spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-mod = util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(mod.resolve_handoff_path(repo, "<harness>-phase-roadmap-builder"))
+skill = "<harness>-phase-roadmap-builder"
+try:
+    # Primary: the installed phase_loop_runtime.skill_paths resolver.
+    from phase_loop_runtime.skill_paths import resolve_handoff_root
+    print(resolve_handoff_root(repo) / skill / "latest.md")
+except Exception:
+    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
+    from importlib import util
+    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
+    mod = util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    print(mod.resolve_handoff_path(repo, skill))
 PYH
 )"
 EXECUTE_HANDOFF="$(python3 - <<'PYH'
-from importlib import util
 from pathlib import Path
 repo = Path.cwd().resolve()
-spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-mod = util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(mod.resolve_handoff_path(repo, "<harness>-execute-phase"))
+skill = "<harness>-execute-phase"
+try:
+    # Primary: the installed phase_loop_runtime.skill_paths resolver.
+    from phase_loop_runtime.skill_paths import resolve_handoff_root
+    print(resolve_handoff_root(repo) / skill / "latest.md")
+except Exception:
+    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
+    from importlib import util
+    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
+    mod = util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    print(mod.resolve_handoff_path(repo, skill))
 PYH
 )"
 ```
@@ -285,6 +299,8 @@ Fold the handoff's "Open items" and "Repo-specific gotchas" into the brief given
 **Output path**: `--output` override, else `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`.
 
 ### Step 2 — Parallel reconnaissance via Explore teammates
+
+**Skip this reconnaissance when the context is already in session.** If the files this phase touches have already been read, the architecture was just discussed, or the caller supplied the file map, do not spawn Explore teammates to re-gather what you already have — plan directly from it. Keep reconnaissance proportional: launch one focused Explore per genuinely-unknown area, not a full three-way fan-out for a one- or two-file change.
 
 Preflight: call `TeamDelete` defensively to flush any inherited team context from a predecessor skill run, then `TeamCreate` a fresh team named for this run before dispatching any `Agent` calls. Recognize these error signatures as benign on the `TeamDelete`: `Team X does not exist` or `already leading team X`.
 
@@ -634,13 +650,20 @@ After artifacts are staged or confirmed tracked, resolve paths. Treat `_shared/n
 REFLECTION_PATH=resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
-from importlib import util
 from pathlib import Path
 repo = Path.cwd().resolve()
-spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-mod = util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(mod.resolve_handoff_path(repo, "<harness>-plan-phase"))
+skill = "<harness>-plan-phase"
+try:
+    # Primary: the installed phase_loop_runtime.skill_paths resolver.
+    from phase_loop_runtime.skill_paths import resolve_handoff_root
+    print(resolve_handoff_root(repo) / skill / "latest.md")
+except Exception:
+    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
+    from importlib import util
+    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
+    mod = util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    print(mod.resolve_handoff_path(repo, skill))
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"

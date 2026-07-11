@@ -16,6 +16,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - When invoked outside Plan Mode for a planning request, still produce the plan and handoff artifacts, but do not begin implementation; tell the user Plan Mode was not active.
 - In planning-only runs, do not execute tests, builds, formatters, generators, or other verification commands. List the commands in the plan instead. Run verification only when the user explicitly asks for validation or execution.
 - Research first. Do not propose changes to files you have not located.
+- Skip reconnaissance you do not need: if the context required to plan is already in the current session — the relevant files have been read, the architecture was just discussed, or the caller supplied the file map — do not spawn Explore/reconnaissance subagents or re-run discovery to re-gather it; plan directly from what you already have. Keep reconnaissance proportional to the change: a one- or two-file bounded change needs targeted reads, not a full parallel Explore fan-out.
 - Use local tools by default: `rg`, `sed`, `find`, `git status`, and targeted file reads.
 - Use PMCP for current external docs only when the answer is not in the repo. Prefer Context7 for library/product documentation and only use Bright Data if PMCP exposes it.
 - Do not spawn subagents unless the user explicitly asks for agents, delegation, or parallel research.
@@ -110,7 +111,7 @@ Manifest write failures are non-fatal during the dual-mode window: emit a ledger
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/opencode-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `opencode-config/shared/runtime-state.md` and use OpenCode paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `opencode-config/shared/runtime-state.md` and use OpenCode paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/opencode-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/opencode-plan-detailed/<run_id>.md`

@@ -182,13 +182,20 @@ else
   REPO_KEY="$(basename "$REPO_ROOT")-$(printf '%s' "$REPO_ROOT" | sha1sum | cut -c1-12)"
 fi
 PREDECESSOR_HANDOFF="$(python3 - <<'PYH'
-from importlib import util
 from pathlib import Path
 repo = Path.cwd().resolve()
-spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-mod = util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(mod.resolve_handoff_path(repo, "<harness>-plan-phase"))
+skill = "<harness>-plan-phase"
+try:
+    # Primary: the installed phase_loop_runtime.skill_paths resolver.
+    from phase_loop_runtime.skill_paths import resolve_handoff_root
+    print(resolve_handoff_root(repo) / skill / "latest.md")
+except Exception:
+    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
+    from importlib import util
+    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
+    mod = util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    print(mod.resolve_handoff_path(repo, skill))
 PYH
 )"
 ```
@@ -512,13 +519,20 @@ Resolve paths, with an inline fallback for the reflection helper:
 REFLECTION_PATH=resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
-from importlib import util
 from pathlib import Path
 repo = Path.cwd().resolve()
-spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-mod = util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(mod.resolve_handoff_path(repo, "<harness>-execute-phase"))
+skill = "<harness>-execute-phase"
+try:
+    # Primary: the installed phase_loop_runtime.skill_paths resolver.
+    from phase_loop_runtime.skill_paths import resolve_handoff_root
+    print(resolve_handoff_root(repo) / skill / "latest.md")
+except Exception:
+    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
+    from importlib import util
+    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
+    mod = util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    print(mod.resolve_handoff_path(repo, skill))
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
@@ -765,3 +779,9 @@ This applies only to interactive (non-runner) completion; it never overrides
 hygiene (forced lane-worktree removal, `branch -D`, `sweep_stale_worktrees.sh`) is
 unchanged — the destructive-op ban targets publication branches/worktrees holding
 unmerged work.
+
+## Draft PR early — push on first commit (visibility)
+
+Do not let a phase branch accumulate commits only locally — that is how lanes drift 70–100 commits ahead of `origin` and in-flight work stays invisible. On the FIRST commit of a phase, push the branch to `origin` and open a DRAFT PR (`gh pr create --draft`); keep pushing as the phase progresses, and flip the PR to ready at closeout once verification is green. The early draft PR is the visibility contract, not a request to merge.
+
+Respect the publication ownership above: in runner-managed / governed mode the RUNNER owns publication, so the runner performs the early push and draft-PR — do not independently publish or bypass the governed pre-merge review panel. In the interactive-orchestrator path you perform the early push + draft PR yourself on the first commit.

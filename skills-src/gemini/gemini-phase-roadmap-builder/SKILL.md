@@ -32,6 +32,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - Optional spec path: markdown file to fold into the roadmap.
 - Optional output path: default `specs/phase-plans-v<N>.md`, choosing the highest existing version or `v1` if none exists.
 - Append mode: if the output roadmap exists, add phases without rewriting prior phases unless the user explicitly requests a replacement.
+- Multi-roadmap disambiguation: when several `specs/phase-plans-v*.md` exist, default to the highest version but confirm the intended target before writing. Each roadmap file is its own alias namespace — create mode starts a fresh namespace for a new version, and append mode must reuse the existing file's aliases without renumbering or colliding with them. Never fold a new initiative into an unrelated newer roadmap just because it is the latest version; a new initiative is a new roadmap (create mode), not an append.
 
 ## Workflow
 
@@ -66,6 +67,17 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
    - dependency graph is acyclic;
    - every produced gate has a producing phase;
    - append mode did not silently rewrite old phases.
+
+## Validator Format Contract
+
+`phase-loop validate-roadmap` (the `phase_loop_runtime.roadmap_lint` module) parses by regex on stable headings, not a full Markdown parser, so these formatting rules are load-bearing — a violation drops the phase, mis-parses a field, or trips a structural check rather than warning politely:
+
+- Phase heading shape is `### Phase N — <Name> (<ALIAS>)`. The alias must match `[A-Za-z0-9]+` — letters and digits only, no spaces, hyphens, underscores, or punctuation — and nothing may follow the closing `)` on that line. Trailing decoration after `(ALIAS)` makes the heading malformed. Use UPPERCASE aliases (`SKILLREF`, `P2A`), the convention every roadmap follows: a lowercase alias parses in the heading but its `Depends on` references will not resolve, because the dependency parser uppercases the tokens it reads while the phase's own alias is compared as written.
+- A malformed heading cascades — fix the heading first. A heading that fails the phase regex is not parsed as a phase at all, so its fields, alias, `Depends on`, and produced gates disappear and downstream checks (unknown-alias, IF-gate reconciliation, DAG acyclicity) light up with secondary errors. When a heading error appears, correct it and re-run before chasing the rest.
+- Each `**Field**` label sits on its own line, with the field body on the following lines. `**Objective** text on the same line` is not recognized and reads as a missing field.
+- Lists are bulleted: `Key files` uses `- ` bullets and `Exit criteria` uses `- [ ]` / `- [x]` checkboxes. Prose in place of bullets reads as empty.
+- Every implementation phase declares a lane hint in `Scope notes` (or a `**Lanes**` block): a literal such as `decompose into N lanes`, `Single lane` (with justification), or partition words (`disjoint`, `owns`, `partition`, `lane A`/`lane B`), unless the phase is marked preamble/interface-only.
+- Required top-level headings, unique aliases, non-decreasing phase numbers, `IF-0-<ALIAS>-<n>` gate IDs reconciled with `Produces`, `(none)` roots, and an acyclic DAG are enforced too. Run the validator and fix every reported issue before hand review.
 
 ## Artifact Contract
 
@@ -138,7 +150,7 @@ handoff as stale until it is regenerated.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/gemini-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `gemini-config/shared/runtime-state.md` and use Gemini paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `gemini-config/shared/runtime-state.md` and use Gemini paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/gemini-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/gemini-phase-roadmap-builder/<run_id>.md`

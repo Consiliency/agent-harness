@@ -161,7 +161,7 @@ Report:
 
 In every report, handoff, and closeout above — and in any PR/issue body or commit message this run writes — reference issues and PRs as `repo#N` (or `owner/repo#N`), never a bare `#N`; the fleet is multi-repo, so a lone number is ambiguous.
 
-Resolve closeout writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use OpenCode paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use OpenCode paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-execute-phase/<run_id>.md`
@@ -196,6 +196,12 @@ This applies only to interactive (non-runner) completion; it never overrides
 hygiene (forced lane-worktree removal, `branch -D`, `sweep_stale_worktrees.sh`) is
 unchanged — the destructive-op ban targets publication branches/worktrees holding
 unmerged work.
+
+## Draft PR early — push on first commit (visibility)
+
+Do not let a phase branch accumulate commits only locally — that is how lanes drift 70–100 commits ahead of `origin` and in-flight work stays invisible. On the FIRST commit of a phase, push the branch to `origin` and open a DRAFT PR (`gh pr create --draft`); keep pushing as the phase progresses, and flip the PR to ready at closeout once verification is green. The early draft PR is the visibility contract, not a request to merge.
+
+Respect the publication ownership above: in runner-managed / governed mode the RUNNER owns publication, so the runner performs the early push and draft-PR — do not independently publish or bypass the governed pre-merge review panel. In the interactive-orchestrator path you perform the early push + draft PR yourself on the first commit.
 
 ## Worktree lifecycle — prune after merge (standing rule)
 
