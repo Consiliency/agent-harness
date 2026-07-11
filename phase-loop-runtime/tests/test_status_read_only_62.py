@@ -254,6 +254,17 @@ class OrphanRenamedPlanParity162Test(unittest.TestCase):
         return sorted((w.get("reason"), w.get("phase")) for w in snapshot.ledger_warnings)
 
     def test_read_matches_write_across_statuses(self):
+        # The EXACT expected warning content per status (not just read==write list
+        # equality — CR item 7: a bare equality could silently lose the warning on both
+        # sides and still pass). The orphan-detection loop emits ONE
+        # manifest_plan_file_missing warning for a live-missing NON-terminal entry
+        # (committed/executing) in BOTH read and write mode; a `completed` entry is
+        # skipped by that loop, so NO such warning fires — on both sides.
+        expected_warns = {
+            "committed": [("manifest_plan_file_missing", "RUNNER")],
+            "executing": [("manifest_plan_file_missing", "RUNNER")],
+            "completed": [],
+        }
         for status in ("committed", "executing", "completed"):
             with tempfile.TemporaryDirectory() as td:
                 repo, roadmap = self._build(Path(td), status)
@@ -265,14 +276,21 @@ class OrphanRenamedPlanParity162Test(unittest.TestCase):
                 dict(read.phases), dict(write.phases),
                 f"[status={status}] read-mode phases must match the write path",
             )
+            # Assert the CONCRETE warning set on BOTH sides (non-vacuous): the write
+            # path is the source of truth and read must match it exactly.
             self.assertEqual(
-                self._warns(read), self._warns(write),
-                f"[status={status}] read-mode ledger_warnings must match the write path "
-                "(no duplicate manifest_plan_file_missing)",
+                self._warns(write), expected_warns[status],
+                f"[status={status}] write-mode warnings must be exactly {expected_warns[status]}",
+            )
+            self.assertEqual(
+                self._warns(read), expected_warns[status],
+                f"[status={status}] read-mode warnings must equal the write path (no duplicate, "
+                "no dropped manifest_plan_file_missing)",
             )
             # The concrete converged view: RUNNER resolves to planned (via the
             # regex-reachable renamed plan), not the classifier default.
             self.assertEqual(read.phases.get("RUNNER"), "planned")
+            self.assertEqual(write.phases.get("RUNNER"), "planned")
 
 
 if __name__ == "__main__":

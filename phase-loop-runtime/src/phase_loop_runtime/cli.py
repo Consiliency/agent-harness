@@ -1278,15 +1278,25 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     is the additive board surface. Function-local imports keep the advisor_board /
     panel_invoker graph off the bare ``import cli`` path and let tests patch the
     composition/dispatch seams without shelling out to real vendor CLIs."""
-    from .advisor_board.composition import board_independence, compose_review_board
+    import tempfile
+
+    from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
     from .panel_invoker import invoke_board
 
     artifact_path = Path(args.artifact)
+    # Accept ONLY a regular file: a directory passes exists() then tracebacks in the
+    # artifact resolver. Fail closed with a recoverable exit, never a traceback.
     if not artifact_path.is_file():
         print(f"advisor-board: artifact not found (not a file): {artifact_path}", file=sys.stderr)
         return 2
-    # Auth-aware production composition: only vendors that are BOTH on PATH and
-    # authenticated are seated; the rest are backfilled onto authed vendors.
+    # Auth-aware production composition (REVIEWGOV IF-0-REVIEWGOV-1): the BARE call is
+    # already auth-aware — with no args, ``compose_review_board`` defaults
+    # ``auth_ok`` to ``default_board_auth_ok``, so a vendor is seated only when it is
+    # BOTH on PATH and authenticated (a PATH-present-but-unauthed vendor is dropped at
+    # compose and backfilled). Do NOT pass a predicate here: the PATH-only
+    # pass-through is a test affordance that activates ONLY when ``is_available`` is
+    # injected alone. (Pinned by test: bare compose drops an unauthed vendor + the
+    # call takes no kwargs.)
     board = compose_review_board()
     if not board.seats:
         print(
@@ -1294,11 +1304,34 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    result = invoke_board(board, "", artifact_ref=str(artifact_path))
+    # Constrain the spawn cwd (write boundary): the native/claude route otherwise
+    # gets Write access to the process CWD. A dedicated scratch dir bounds the blast
+    # radius for this standalone entrypoint. The artifact is passed by ABSOLUTE ref so
+    # the constrained cwd never hides it.
+    try:
+        with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
+            result = invoke_board(
+                board, "", artifact_ref=str(artifact_path.resolve()), repo_dir=scratch
+            )
+    except (OSError, ValueError) as exc:
+        # Artifact staging / resolution failures fail closed with a recoverable exit,
+        # not a traceback.
+        print(f"advisor-board: could not stage the artifact: {exc}", file=sys.stderr)
+        return 2
     independence = board_independence(board)
+    usable_count = len(result.usable_legs)
+    # A runnable review command must signal when the result is NOT a usable review.
+    # Tie the exit code to the board's own contract: it targets 4 independent
+    # reviewers with a HARD FLOOR of ``FLOOR_SEATS`` (3). If fewer than the floor of
+    # legs returned an OK verdict with text (the rest DEGRADED / ERROR / TIMEOUT /
+    # EMPTY / UNAVAILABLE — e.g. the claude leg deferring under Claude Code is one
+    # expected non-OK), the board is below its independence floor → exit nonzero.
+    usable = usable_count >= FLOOR_SEATS
+    exit_code = 0 if usable else 1
     if bool(getattr(args, "json", False)):
         payload = {
             "board": board.name,
+            "usable": usable,
             "independence": {
                 "level": independence.level,
                 "distinct_vendors": independence.distinct_vendors,
@@ -1319,7 +1352,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             ],
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
+        return exit_code
     print(
         f"advisor-board: {board.name} — independence={independence.level} "
         f"({independence.distinct_vendors} distinct vendors / {independence.seats} seats)"
@@ -1333,7 +1366,16 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         if text:
             for line in text.splitlines():
                 print(f"      {line}")
-    return 0
+    # The statuses/verdicts are ADVISORY evidence — the operator reconciles them; a
+    # non-OK leg (DEGRADED/UNAVAILABLE/…) is a gap to fill, not a passed review.
+    print("advisor-board: verdicts are advisory — reconcile the legs; check each leg status.")
+    if not usable:
+        print(
+            f"advisor-board: only {usable_count} usable review leg(s) < floor {FLOOR_SEATS} "
+            "— below the board's independence floor, not a usable board.",
+            file=sys.stderr,
+        )
+    return exit_code
 
 
 def _outside_agent_preflight_command(args: argparse.Namespace) -> int:

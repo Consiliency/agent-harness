@@ -35,10 +35,15 @@ def _hermetic_board(*_a, **_k):
     return _REAL_COMPOSE(is_available=lambda v: v in {"codex", "gemini", "claude", "grok"})
 
 
+# A realistic composed-board result: 4 seats, 3 usable OK verdicts + the claude leg
+# deferring to a native Agent (UNAVAILABLE) — exactly the Claude-Code shape. Usable
+# count 3 == FLOOR_SEATS, so this is a usable board (exit 0).
 _CANNED = PanelResult(
     legs=(
-        PanelLegResult(leg="codex", status="OK", text="AGREE", seat_key="codex:adversarial"),
-        PanelLegResult(leg="gemini", status="OK", text="PARTIALLY AGREE", seat_key="gemini:alt"),
+        PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:adversarial"),
+        PanelLegResult(leg="codex", status="OK", text="PARTIALLY AGREE", seat_key="codex:red-team"),
+        PanelLegResult(leg="gemini", status="OK", text="AGREE", seat_key="gemini:alt"),
+        PanelLegResult(leg="claude", status="UNAVAILABLE", text="", detail="deferred to native Agent", seat_key="claude:corr"),
     )
 )
 
@@ -56,13 +61,54 @@ class AdvisorBoardCliTest(unittest.TestCase):
                 rc = cli_main(["advisor-board", str(artifact)])
             self.assertEqual(rc, 0)
             # The board path is the entry — availability-aware composition, then dispatch.
-            compose_spy.assert_called_once()
+            # No-kwargs pin (Fable nit): the CLI must call compose_review_board with NO
+            # arguments so it relies on the auth-aware production default
+            # (auth_ok=default_board_auth_ok). Passing a predicate here would silently
+            # opt into the PATH-only test-affordance. This guards that default.
+            compose_spy.assert_called_once_with()
             invoke_spy.assert_called_once()
-            # The artifact is staged BY REFERENCE into the board (not read into argv).
+            # The artifact is staged BY REFERENCE (absolute path) into the board.
             _pos, kwargs = invoke_spy.call_args
-            self.assertEqual(kwargs.get("artifact_ref"), str(artifact))
+            self.assertEqual(kwargs.get("artifact_ref"), str(artifact.resolve()))
+            # Write boundary (item 5): the spawn cwd is constrained to a scratch dir,
+            # not the process CWD.
+            self.assertIsNotNone(kwargs.get("repo_dir"))
+            self.assertNotEqual(Path(kwargs["repo_dir"]).resolve(), Path.cwd().resolve())
             # It dispatched the composed board (invoke_board's first positional).
             self.assertTrue(getattr(invoke_spy.call_args.args[0], "seats", None))
+
+    def test_compose_drops_unauthed_vendor_at_the_seam(self):
+        # Item 1: the auth-aware seam the CLI uses drops an on-PATH-but-UNAUTHED vendor
+        # at COMPOSE and backfills onto authed vendors (board stays 4 seats, all authed
+        # families). Exercises compose_review_board(auth_ok=...) directly (hermetic).
+        board = comp_mod.compose_review_board(
+            is_available=lambda v: True,  # every vendor on PATH
+            auth_ok=lambda v: v != "grok",  # ...but grok is NOT authenticated
+        )
+        families = {seat.harness for seat in board.seats}
+        self.assertNotIn("grok", families, "an unauthed on-PATH vendor must be dropped at compose")
+        self.assertEqual(len(board.seats), 4, "the freed seat must be backfilled to a full board")
+
+    def test_cli_below_floor_board_exits_nonzero(self):
+        # Item 4: a board with FEWER than FLOOR_SEATS (3) usable OK legs is below its
+        # independence floor → nonzero exit (pins floor semantics, not just zero-usable):
+        # here 2 OK + 2 failed = 2 usable < 3.
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("x\n")
+            below_floor = PanelResult(
+                legs=(
+                    PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:adv"),
+                    PanelLegResult(leg="codex", status="OK", text="DISAGREE", seat_key="codex:red"),
+                    PanelLegResult(leg="gemini", status="DEGRADED", text="", detail="capped", seat_key="gemini:alt"),
+                    PanelLegResult(leg="claude", status="UNAVAILABLE", text="", detail="deferred", seat_key="claude:corr"),
+                )
+            )
+            with unittest.mock.patch.object(
+                comp_mod, "compose_review_board", side_effect=_hermetic_board
+            ), unittest.mock.patch.object(pi_mod, "invoke_board", return_value=below_floor):
+                rc = cli_main(["advisor-board", str(artifact)])
+            self.assertEqual(rc, 1, "usable legs below the floor → nonzero exit")
 
     def test_cli_json_emits_independence_and_legs(self):
         import json
@@ -82,10 +128,16 @@ class AdvisorBoardCliTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             payload = json.loads(buf.getvalue())
             self.assertIn("independence", payload)
-            self.assertEqual([leg["status"] for leg in payload["legs"]], ["OK", "OK"])
+            # 3 OK legs == FLOOR_SEATS → usable (the 4th, claude, defers UNAVAILABLE).
+            self.assertTrue(payload["usable"])
+            self.assertEqual(
+                [leg["status"] for leg in payload["legs"]], ["OK", "OK", "OK", "UNAVAILABLE"]
+            )
             # The reviewer's actual verdict TEXT must be preserved (CR codex, major):
             # a board whose output drops the verdicts cannot be reconciled.
-            self.assertEqual([leg["text"] for leg in payload["legs"]], ["AGREE", "PARTIALLY AGREE"])
+            self.assertEqual(
+                [leg["text"] for leg in payload["legs"]], ["AGREE", "PARTIALLY AGREE", "AGREE", ""]
+            )
 
     def test_cli_human_output_includes_verdict_text(self):
         import contextlib
