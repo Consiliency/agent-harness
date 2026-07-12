@@ -64,7 +64,10 @@ do not use the fleet-wide `~/.local/bin/phase-loop` installation or a venv under
 the hidden user home:
 
 ```sh
-sudo -H /usr/bin/env -C / /bin/sh -eu -c '
+sudo /usr/bin/env -i -C / HOME=/root PATH=/usr/bin:/bin LANG=C.UTF-8 \
+  PIP_CONFIG_FILE=/dev/null /bin/sh -eu -c '
+  [ "${#1}" -eq 40 ]
+  case "$1" in *[!0-9a-f]*) exit 64 ;; esac
   test ! -e /opt/phase-loop-task-message-broker
   /usr/bin/python3 -I -m venv /opt/phase-loop-task-message-broker
   /opt/phase-loop-task-message-broker/bin/python -I -m pip install \
