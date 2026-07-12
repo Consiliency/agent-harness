@@ -1,11 +1,33 @@
 # Verification: SOURCEBROKER
 
-Summary: PASSED — focused suite 83 passed, 1 skipped; standalone suite 2,303 passed, 35 skipped, 593 deselected, 551 subtests; Gate A installed-wheel clean room 2,222 passed, 85 skipped, 593 deselected, 234 subtests; 0.7.0 sdist/wheel build, roadmap validation, plan validation, syntax checks, and git diff check passed.
+Summary: PASSED locally — focused broker/resolver suite 67 passed, 1 skipped;
+standalone Gate A 2,389 passed, 35 skipped, 593 deselected. Git diff checks
+passed. GitHub PR #180's seven checks passed before the procfs amendment and
+must pass again at the amended head before merge.
 
 - Redaction posture: metadata only.
-- Live deployment: deferred until the Agent Harness PR merges.
-- Runtime mutation: none.
-- Exact Git-install provenance: `uv pip install git+file://...@34ed29d4efd17c3534f1d77607b4402ebfc98e3f#subdirectory=phase-loop-runtime` and `verified_installed_agent_harness_sha(...)` returned the identical 40-hex commit.
-- Exact-socket confinement: a private read-only bind of only `app-server-control.sock` accepted an AF_UNIX connection (`readonly_exact_socket_bind_connect=ok`) without sending RPC bytes.
-- Plan-validator warning: release-shape heuristic only; this plan explicitly performs no release dispatch.
-- Review: prior findings are remediated. Proofs now carry source/approval turn and item positions plus approval time for caller-side order/freshness validation; the client requires bounded EOF after the single terminal result. Exact-SHA four-agent re-review is pending.
+- Permanent live deployment: deferred until the corrected Agent Harness PR
+  merges; no broker listener, environment, `/opt` venv, or Tailscale route was
+  created by these gates.
+- System-unit boundary: disposable claw root-manager transients ran as
+  `viperjuice:viperjuice` with zero permitted/effective/ambient capabilities and
+  `NoNewPrivileges=1`.
+- Mount confinement: `ProtectHome=tmpfs` created a distinct mount namespace;
+  only the exact owner socket was rebound read-only with host-matching device
+  and inode. Adjacent Codex and unrelated home content were hidden.
+- Runtime compatibility: Python thread start/join, exact owner-socket connect,
+  `PrivateDevices`, `ProtectKernelModules`, and deny-all/allow-localhost IP
+  policy passed together. `MemoryDenyWriteExecute` is omitted because an
+  isolated trace proved it denied the Python 3.13/glibc executable thread-stack
+  `mprotect` with `EPERM`.
+- Procfs confinement: a same-UID control proved both hidden-home escape paths
+  readable through `/proc/<pid>/root`. All supported `ProtectProc` modes remained
+  insufficient. `InaccessiblePaths=/proc` removed both escape paths while the
+  thread, socket-connect, capability, and no-new-privileges checks still passed.
+- User-manager rejection: claw systemd 249 accepted but did not enforce the
+  former user-unit mount controls (`PrivateMounts=no`), so the deployment
+  artifact is now a root-managed system unit with a root-owned immutable `/opt`
+  venv and root-owned digest-only `/etc` environment.
+- Review status: Grok and Gemini agreed on the initial PR #180 head. Sol's
+  same-UID procfs finding is remediated above. Exact amended-head four-seat
+  re-review remains required before merge.

@@ -83,7 +83,9 @@ user's home, and binds back only the exact `app-server-control.sock` inode
 read-only. The immutable broker venv stays outside the home under `/opt` and the
 system tree is read-only. Private devices, kernel-module protection, an
 address-family allowlist, and systemd's deny-all/allow-localhost IP policy are
-all active. `MemoryDenyWriteExecute` is intentionally absent: claw's Python
+all active. Procfs is entirely inaccessible inside the broker so another
+same-UID process cannot reopen the hidden home through `/proc/<pid>/root`;
+`ProtectProc` alone does not block that escape on claw. `MemoryDenyWriteExecute` is intentionally absent: claw's Python
 3.13/glibc thread path requests an executable thread stack and fails with
 `EPERM` when that directive is active. The broker command independently rejects
 every non-loopback bind, and Tailscale Serve is the only tailnet exposure. The

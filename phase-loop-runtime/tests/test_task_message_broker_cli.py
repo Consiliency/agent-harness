@@ -523,6 +523,9 @@ def test_system_service_is_loopback_digest_only_and_does_not_manage_codex() -> N
     assert "PrivateDevices=yes" in unit
     assert "ProtectKernelModules=yes" in unit
     assert "MemoryDenyWriteExecute=" not in unit
+    assert "InaccessiblePaths=/proc" in unit
+    assert "ProtectProc=" not in unit
+    assert "ProcSubset=" not in unit
     assert "IPAddressDeny=any" in unit
     assert "IPAddressAllow=localhost" in unit
     assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" in unit

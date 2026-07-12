@@ -18,6 +18,7 @@ PrivateTmp=yes
 ProtectHome=tmpfs
 BindReadOnlyPaths=/home/viperjuice/.codex/app-server-control/app-server-control.sock
 ProtectSystem=strict
+InaccessiblePaths=/proc
 ProtectControlGroups=yes
 ProtectKernelModules=yes
 ProtectKernelTunables=yes
