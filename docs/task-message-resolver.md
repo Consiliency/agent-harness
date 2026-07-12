@@ -64,10 +64,12 @@ do not use the fleet-wide `~/.local/bin/phase-loop` installation or a venv under
 the hidden user home:
 
 ```sh
-sudo /usr/bin/test ! -e /opt/phase-loop-task-message-broker
-sudo -H /usr/bin/env -C / /usr/bin/python3 -I -m venv /opt/phase-loop-task-message-broker
-sudo -H /usr/bin/env -C / /opt/phase-loop-task-message-broker/bin/python -I -m pip install \
-  "git+https://github.com/ViperJuice/agent-harness@${AGENT_HARNESS_SHA}#subdirectory=phase-loop-runtime"
+sudo -H /usr/bin/env -C / /bin/sh -eu -c '
+  test ! -e /opt/phase-loop-task-message-broker
+  /usr/bin/python3 -I -m venv /opt/phase-loop-task-message-broker
+  /opt/phase-loop-task-message-broker/bin/python -I -m pip install \
+    "git+https://github.com/ViperJuice/agent-harness@$1#subdirectory=phase-loop-runtime"
+' sourcebroker-provision "${AGENT_HARNESS_SHA}"
 ```
 
 The service binds `127.0.0.1:18765`. Expose that loopback endpoint only through

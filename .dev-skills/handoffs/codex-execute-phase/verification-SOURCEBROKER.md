@@ -33,10 +33,11 @@ and must pass again at the final head before merge.
   artifact is now a root-managed system unit with a root-owned immutable `/opt`
   venv and root-owned digest-only `/etc` environment.
 - Privileged provisioning: the operator procedure requires the `/opt`
-  destination to be absent, uses root-owned `/usr/bin/python3` and the resulting
-  root-owned venv Python with isolated mode (`-I`), changes to trusted `/`, and
-  uses root's home. System Python reports `ensurepip` available and `/usr/bin/env`
-  supports the required `-C` working-directory boundary.
+  destination to be absent inside one root-owned `sh -eu` transaction, uses
+  root-owned `/usr/bin/python3` and the resulting root-owned venv Python with
+  isolated mode (`-I`), changes to trusted `/`, and uses root's home. The SHA is
+  passed as one positional argument. System Python reports `ensurepip` available
+  and `/usr/bin/env` supports the required `-C` working-directory boundary.
 - Review status: Grok and Gemini agreed on the initial PR #180 head. Sol's
   same-UID procfs finding is remediated above. Exact amended-head four-seat
   re-review remains required before merge.
