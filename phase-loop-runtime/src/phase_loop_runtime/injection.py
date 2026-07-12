@@ -226,6 +226,23 @@ def _extract_plan_produces(plan: Path | None) -> tuple[str, ...]:
     return _extract_closeout_plan_produces(plan)
 
 
+def _extract_plan_owned_files(repo: Path, roadmap: Path, plan: Path | None) -> tuple[str, ...]:
+    """#58: the owned-file patterns the active plan declares across its writer
+    lanes, for the standalone (non-governed) closeout prompt's ``plan_owned_files``
+    section. ``build_lane_prompt_bundle`` already sources this from the governed
+    assignment; the standalone ``build_prompt_bundle`` path previously hardcoded
+    ``()``, so the executor saw a blank "Active plan owned files" section and
+    reported empty ``phase_owned_dirty_paths``, tripping the closeout
+    ``missing_phase_owned_dirty_paths`` refusal even for a plan with explicit
+    lane ownership. Sourced from the resolved plan via ``parse_plan_ownership``
+    (returns ``()`` for an unplanned or genuinely control-only phase)."""
+    if plan is None or not plan.exists():
+        return ()
+    from .discovery import parse_plan_ownership
+
+    return parse_plan_ownership(repo, roadmap, plan).owned_patterns
+
+
 def build_prompt_bundle(
     *,
     repo: Path,
@@ -248,7 +265,7 @@ def build_prompt_bundle(
     closeout_instruction = _render_baml_closeout_instruction(
         phase_alias=phase or "unknown",
         plan_produces=_extract_plan_produces(plan),
-        plan_owned_files=(),
+        plan_owned_files=_extract_plan_owned_files(repo, roadmap, plan),
         include_schema_description=action in {"execute", "repair", "review"},
     )
     bundle_body = "\n\n".join(part for part in (body.strip(), closeout_instruction) if part)

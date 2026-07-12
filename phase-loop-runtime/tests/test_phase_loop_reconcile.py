@@ -502,6 +502,36 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             snapshot = reconcile(repo, roadmap)
             self.assertEqual(snapshot.phases["ALPHA"], "unplanned")
             self.assertEqual(snapshot.ledger_warnings[-1]["reason"], "phase_mismatch")
+            # #85: the invalidation is (correctly) kept, but the drift is now flagged
+            # as a repairable gold_record_amendment so status can tell it apart from a
+            # genuinely-never-planned phase.
+            amendment_warnings = [
+                w for w in snapshot.ledger_warnings if w.get("diagnostic_class") == "gold_record_amendment"
+            ]
+            self.assertTrue(amendment_warnings)
+            self.assertTrue(all(w.get("repairable") for w in amendment_warnings))
+            self.assertTrue(all(w["phase"] == "ALPHA" for w in amendment_warnings))
+            self.assertTrue(all("amendment_drift" in w for w in amendment_warnings))
+
+    def test_amendment_drift_marker_only_on_completed_phase_not_genuinely_unplanned(self):
+        # #85 two-direction guard: a completed phase whose OWN block was amended in
+        # flight is flagged repairable (gold_record_amendment); a phase that was
+        # genuinely never planned gets NO such marker — that asymmetry is what lets
+        # status distinguish "amendment changed hashes" from "genuinely unplanned".
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_two_phase_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # ALPHA is completed; BETA is never planned (no state, no event).
+            write_state(repo, provenanced_state(repo, roadmap, {"ALPHA": "complete", "BETA": "unplanned"}))
+            append_event(repo, provenanced_event(repo, roadmap, "ALPHA", "complete", action="execute"))
+            roadmap.write_text(roadmap.read_text().replace("### Phase 0 - Alpha (ALPHA)", "### Phase 0 - Alpha Changed (ALPHA)"))
+            snapshot = reconcile(repo, roadmap)
+
+            self.assertEqual(snapshot.phases["ALPHA"], "unplanned")
+            self.assertEqual(snapshot.phases["BETA"], "unplanned")
+            marked = {w["phase"] for w in snapshot.ledger_warnings if w.get("diagnostic_class") == "gold_record_amendment"}
+            self.assertIn("ALPHA", marked)
+            self.assertNotIn("BETA", marked)
 
     def test_newer_untrusted_blocked_event_prevents_false_roadmap_complete(self):
         with tempfile.TemporaryDirectory() as td:

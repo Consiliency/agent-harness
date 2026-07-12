@@ -146,6 +146,45 @@ class LauncherLivenessTest(unittest.TestCase):
             self.assertFalse(result.timed_out)
             self.assertIsNone(result.cleanup_evidence)
 
+    def test_unobserved_child_still_stall_detected_via_ephemeral_monitor(self):
+        # #61/#86: a --no-observe executor child (log_path=None) must NOT fall to the
+        # bare subprocess.run path that hangs forever on an idle child. With
+        # ephemeral_monitor it is routed through the streaming + quiet-child detector,
+        # so an idle child is torn down and marked stalled — the flag the runner's
+        # _launch_contract_blocker turns into a stalled_child_observation blocker.
+        with patch("phase_loop_runtime.observability._process_cpu_percent", return_value=0.0):
+            result = launch(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                log_path=None,
+                ephemeral_monitor=True,
+                heartbeat_interval_seconds=0,
+                quiet_warning_seconds=0,
+                quiet_blocker_seconds=0,
+            )
+
+        self.assertTrue(result.stalled)
+        self.assertFalse(result.timed_out)
+        self.assertIsNotNone(result.cleanup_evidence)
+        self.assertEqual(result.cleanup_evidence["reason"], "stalled")
+        # The throwaway log dir is discarded — no dangling persisted artifacts.
+        self.assertIsNone(result.log_path)
+        self.assertIsNone(result.heartbeat_path)
+        self.assertIsNone(result.terminal_path)
+
+    def test_unobserved_child_without_ephemeral_monitor_uses_bare_run(self):
+        # Guard the opt-in boundary: default log_path=None (no ephemeral_monitor)
+        # still uses the bare subprocess.run path (probes / non-executor callers).
+        class Completed:
+            returncode = 0
+            stdout = "ok\n"
+            stderr = ""
+
+        with patch("phase_loop_runtime.launcher.subprocess.run", return_value=Completed()) as mocked:
+            result = launch(["example-cli"])
+
+        self.assertEqual(result.returncode, 0)
+        mocked.assert_called_once()
+
     def test_process_group_cpu_activity_prevents_stale_cleanup(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
