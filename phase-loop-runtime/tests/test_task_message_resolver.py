@@ -134,6 +134,23 @@ def test_exact_bytes_and_canonical_digest_are_proven() -> None:
     assert connection.closed is True
 
 
+@pytest.mark.parametrize(
+    "contract_version",
+    (
+        "embedding_provenance_deploy_approval.v2",
+        "embedding_provenance_bootstrap_approval.v3",
+    ),
+)
+def test_governed_deploy_and_bootstrap_contracts_are_accepted(contract_version: str) -> None:
+    source = "FM approves the governed action."
+    approval = _approval(source, contract_version=contract_version)
+    resolver, _ = _resolver(_thread(source, approval))
+
+    proof = resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert proof.approval_body_bytes == approval.encode("utf-8")
+
+
 def test_one_byte_semantic_changes_change_the_proof() -> None:
     first_source = "FM approves A"
     second_source = "FM approves B"
@@ -235,6 +252,28 @@ def test_resolution_failures_are_typed_and_metadata_only(
     serialized = json.dumps(exc.value.metadata())
     assert "FM approves" not in serialized
     assert "test-token" not in serialized
+
+
+@pytest.mark.parametrize(
+    "approval",
+    (
+        _approval("FM approves exact PROVDEPLOY body.").replace(
+            '"contract_version":"embedding_provenance_deploy_approval.v2"',
+            '"contract_version":"wrong","contract_version":"embedding_provenance_deploy_approval.v2"',
+        ),
+        _approval(
+            "FM approves exact PROVDEPLOY body.",
+            contract_version=["embedding_provenance_deploy_approval.v2"],
+        ),
+    ),
+)
+def test_duplicate_or_non_string_contract_version_fails_closed(approval: str) -> None:
+    resolver, _ = _resolver(_thread(approval=approval))
+
+    with pytest.raises(TaskMessageResolverError) as exc:
+        resolver.resolve(thread_id=THREAD_ID, message_id=MESSAGE_ID)
+
+    assert _code(exc) == "approval_body_unavailable"
 
 
 def test_unavailable_remote_authority_fails_closed() -> None:

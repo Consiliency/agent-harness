@@ -357,7 +357,8 @@ green.
 ### SOURCEBROKER — authenticated task-message source broker (agent-harness#167, agent-harness#168, agent-harness#176, agent-harness#178)
 
 - **Add the authenticated local task-message source broker.** A loopback-only
-  user service wraps the real Codex owner socket, authenticates capability
+  root-managed system service running as the unprivileged source owner wraps
+  the real Codex owner socket, authenticates capability
   tokens by pinned SHA-256 before socket access, and streams exact metadata-only
   heartbeats plus one release-SHA-bound resolver result. New `--broker-url`
   probe/resolve mode consumes this channel without a total wall-clock timeout

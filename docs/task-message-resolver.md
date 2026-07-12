@@ -11,7 +11,7 @@ Create two separate user messages in the same task, in this order:
 1. one text input containing the exact human/source approval message, with `clientUserMessageId=<source-message-id>`;
 2. one text input containing only the exact JSON approval record, with `clientUserMessageId=<source-message-id>-approval`.
 
-The JSON record must be an authorized approval containing `contract_version`, `source_thread_id`, `source_message_id`, and `source_message_sha256`. The thread claim and source `clientId` claim must match the requested app-server identities, and `source_message_sha256` must be the SHA-256 of the first message's exact UTF-8 bytes. The resolver requires unique source and approval client identities, unique app-server-assigned item IDs, source-before-approval ordering, one text item in each message, and fresh timestamps for both turns. This fixed pair separates the source bytes from the canonical approval body without a self-referential hash or concatenated parsing.
+The JSON record must be an authorized `embedding_provenance_deploy_approval.v2` or `embedding_provenance_bootstrap_approval.v3` approval containing `contract_version`, `source_thread_id`, `source_message_id`, and `source_message_sha256`. The thread claim and source `clientId` claim must match the requested app-server identities, and `source_message_sha256` must be the SHA-256 of the first message's exact UTF-8 bytes. The resolver requires unique source and approval client identities, unique app-server-assigned item IDs, source-before-approval ordering, one text item in each message, and fresh timestamps for both turns. This fixed pair separates the source bytes from the canonical approval body without a self-referential hash or concatenated parsing.
 
 The resolver returns the raw byte fields as base64 only after every identity, freshness, and digest check passes. It also returns SHA-256 of the source bytes, SHA-256 of the raw approval-body bytes, and SHA-256 of the RFC 8785-canonical approval object. The successful resolve payload is sensitive approval data and must be consumed directly, not copied into logs or ledger events.
 
@@ -45,7 +45,9 @@ with `source_task_unavailable`.
 The broker is a separate read-only wrapper around the local resolver, not an
 app-server proxy. Install the exact merged Agent Harness commit with an immutable
 VCS revision, then install `deploy/phase-loop-task-message-broker.service` as a
-user unit on the source host. The unit also ships inside the runtime wheel as
+root-managed system unit on the source host. It runs as `User=viperjuice` and
+`Group=viperjuice`; it never runs the broker as root. The unit also ships inside
+the runtime wheel as
 `phase_loop_runtime/deploy/phase-loop-task-message-broker.service`. Its
 environment file contains only the SHA-256 of the capability token and the
 merged 40-hex Agent Harness commit; it never contains the raw token. Source the
@@ -57,13 +59,20 @@ startup and requires both `requested_revision` and `commit_id` to exactly match
 from a moving branch/tag, or any supplied SHA mismatch fails before the broker
 binds a listener.
 
-Install the exact merged revision into the broker's dedicated venv; do not use
-the fleet-wide `~/.local/bin/phase-loop` installation:
+Install the exact merged revision into the broker's root-owned dedicated venv;
+do not use the fleet-wide `~/.local/bin/phase-loop` installation or a venv under
+the hidden user home:
 
 ```sh
-uv venv "$HOME/.local/share/phase-loop-task-message-broker"
-uv pip install --python "$HOME/.local/share/phase-loop-task-message-broker/bin/python" \
-  "git+https://github.com/ViperJuice/agent-harness@${AGENT_HARNESS_SHA}#subdirectory=phase-loop-runtime"
+sudo /usr/bin/env -i -C / HOME=/root PATH=/usr/bin:/bin LANG=C.UTF-8 \
+  PIP_CONFIG_FILE=/dev/null /bin/sh -eu -c '
+  [ "${#1}" -eq 40 ]
+  case "$1" in *[!0-9a-f]*) exit 64 ;; esac
+  test ! -e /opt/phase-loop-task-message-broker
+  /usr/bin/python3 -I -m venv /opt/phase-loop-task-message-broker
+  /opt/phase-loop-task-message-broker/bin/python -I -m pip install \
+    "git+https://github.com/ViperJuice/agent-harness@$1#subdirectory=phase-loop-runtime"
+' sourcebroker-provision "${AGENT_HARNESS_SHA}"
 ```
 
 The service binds `127.0.0.1:18765`. Expose that loopback endpoint only through
@@ -75,21 +84,24 @@ tailscale serve --service=svc:phase-loop-task-message-broker --bg --https=8765 h
 
 Never use Tailscale Funnel. Probe from the authenticated caller:
 
-The unit hides the user's home, binds back only the dedicated broker venv and
-the exact `app-server-control.sock` inode read-only, uses private temporary
-storage, and retains an address-family allowlist. The user service does not use
-systemd `IPAddressDeny`/`IPAddressAllow`, `PrivateDevices`, or
-`ProtectKernelModules`: on claw's user manager, each device/kernel-module
-directive independently requires a forbidden capability drop and fails before
-`ExecStart`, while the IP-firewall directives likewise require unavailable
-privilege. The broker command itself rejects every non-loopback bind, and Tailscale Serve is the
-only tailnet exposure. The unit does not expose the rest of
-`~/.local` or any adjacent Codex logs/sockets. Do not weaken those restrictions to make deployment succeed. The
+The root system manager gives the unit a private mount namespace, hides the
+user's home, and binds back only the exact `app-server-control.sock` inode
+read-only. The immutable broker venv stays outside the home under `/opt` and the
+system tree is read-only. Private devices, kernel-module protection, an
+address-family allowlist, and systemd's deny-all/allow-localhost IP policy are
+all active. Procfs is entirely inaccessible inside the broker so another
+same-UID process cannot reopen the hidden home through `/proc/<pid>/root`;
+`ProtectProc` alone does not block that escape on claw. `MemoryDenyWriteExecute` is intentionally absent: claw's Python
+3.13/glibc thread path requests an executable thread stack and fails with
+`EPERM` when that directive is active. The broker command independently rejects
+every non-loopback bind, and Tailscale Serve is the only tailnet exposure. The
+unit does not expose adjacent Codex logs/sockets or unrelated home content. Do
+not weaken those restrictions to make deployment succeed. The
 client rejects redirects rather than forwarding its bearer to another origin.
 
-The user-service environment file is `%h/.config/phase-loop/task-message-broker.env`
+The system-service environment file is `/etc/phase-loop/task-message-broker.env`
 and contains exactly `TASK_MESSAGE_TOKEN_SHA256=<64-hex>` plus
-`AGENT_HARNESS_SHA=<merged-40-hex>`. Restrict it to the owning user.
+`AGENT_HARNESS_SHA=<merged-40-hex>`. Install it root-owned at mode `0600`.
 
 ```sh
 phase-loop task-message-probe \
@@ -111,7 +123,7 @@ stop the broker unit:
 
 ```sh
 tailscale serve clear svc:phase-loop-task-message-broker
-systemctl --user disable --now phase-loop-task-message-broker.service
+sudo systemctl disable --now phase-loop-task-message-broker.service
 ```
 
 Resolve one exact source after the probe is ready:
