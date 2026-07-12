@@ -1,13 +1,13 @@
 # Verification: SOURCEBROKER
 
-Summary: PASSED locally — focused broker/resolver suite 67 passed, 1 skipped;
-standalone Gate A 2,389 passed, 35 skipped, 593 deselected. Git diff checks
-passed. The 0.7.0 sdist and wheel build passed, roadmap validation reported one
-valid phase, and the plan-phase validator reported three lanes against the exact
-amended roadmap hash. Its one release-shape heuristic warning is non-applicable:
-this plan explicitly dispatches no tag, release, or workflow.
-GitHub PR #180's seven checks passed before the latest documentation amendment
-and must pass again at the final head before merge.
+Summary: PASSED locally at `086b73feb2c1d00c7d5758d6097b3d430ab78b88`
+— focused broker/resolver suite 89 passed, 1 skipped; standalone Gate A 2,407
+passed, 35 skipped, 597 deselected. Git diff checks passed. The 0.7.1 sdist and
+wheel build passed, roadmap validation reported seven phases, and the plan-phase
+validator reported three lanes against the exact amended roadmap hash. Its one
+release-shape heuristic warning is non-applicable: this plan explicitly
+dispatches no tag, release, or workflow. All seven GitHub checks on
+ViperJuice/agent-harness#180 passed at the same exact head.
 
 - Redaction posture: metadata only.
 - Permanent live deployment: deferred until the corrected Agent Harness PR
@@ -41,6 +41,7 @@ and must pass again at the final head before merge.
   characters before pip can execute build code. System Python reports
   `ensurepip` available and `/usr/bin/env` supports the required `-C`
   working-directory boundary.
-- Review status: Grok and Gemini agreed on the initial PR #180 head. Sol's
-  same-UID procfs finding is remediated above. Exact amended-head four-seat
-  re-review remains required before merge.
+- Review status: prior Grok/Gemini findings and Sol's same-UID procfs,
+  deploy-v2/bootstrap-v3 compatibility, duplicate-key JSON, and untyped-version
+  findings are remediated. Exact final-head four-seat re-review remains required
+  before merge; an unavailable seat is not agreement.
