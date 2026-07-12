@@ -64,8 +64,9 @@ do not use the fleet-wide `~/.local/bin/phase-loop` installation or a venv under
 the hidden user home:
 
 ```sh
-sudo /usr/bin/python3 -m venv /opt/phase-loop-task-message-broker
-sudo /opt/phase-loop-task-message-broker/bin/python -m pip install \
+sudo /usr/bin/test ! -e /opt/phase-loop-task-message-broker
+sudo -H /usr/bin/env -C / /usr/bin/python3 -I -m venv /opt/phase-loop-task-message-broker
+sudo -H /usr/bin/env -C / /opt/phase-loop-task-message-broker/bin/python -I -m pip install \
   "git+https://github.com/ViperJuice/agent-harness@${AGENT_HARNESS_SHA}#subdirectory=phase-loop-runtime"
 ```
 
