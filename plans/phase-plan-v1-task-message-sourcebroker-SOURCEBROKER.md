@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: SOURCEBROKER
 roadmap: specs/phase-plans-v1-task-message-sourcebroker.md
-roadmap_sha256: f10d6ac70edf68627bd6b2476a418e88ff05901ab5dfa69149485f94005f3b3c
+roadmap_sha256: 5caf15bb4c2295b8492f331a72a838689ccc2ed1f705fd519ca73005de397a0d
 ---
 
 # SOURCEBROKER: Authenticated Task-Message Source Broker

@@ -3,7 +3,9 @@
 Summary: PASSED locally — focused broker/resolver suite 67 passed, 1 skipped;
 standalone Gate A 2,389 passed, 35 skipped, 593 deselected. Git diff checks
 passed. The 0.7.0 sdist and wheel build passed, roadmap validation reported one
-valid phase, and plan validation reported three lanes with zero warnings.
+valid phase, and the plan-phase validator reported three lanes against the exact
+amended roadmap hash. Its one release-shape heuristic warning is non-applicable:
+this plan explicitly dispatches no tag, release, or workflow.
 GitHub PR #180's seven checks passed before the latest documentation amendment
 and must pass again at the final head before merge.
 
