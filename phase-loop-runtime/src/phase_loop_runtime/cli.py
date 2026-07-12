@@ -1360,6 +1360,19 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     return _run_returncode(snapshot, results)
 
 
+def _native_agent_request_json(leg: object) -> dict | None:
+    """Serialize a leg's ``needs_native_agent`` request (ABDNATIVE / #183) to a
+    JSON-safe dict, or ``None`` when the seat is not deferred to a native Agent.
+
+    Structural (``getattr`` + ``to_dict``) so it does not force a ``panel_invoker``
+    import onto the bare CLI path."""
+    request = getattr(leg, "needs_native_agent", None)
+    if request is None:
+        return None
+    to_dict = getattr(request, "to_dict", None)
+    return to_dict() if callable(to_dict) else None
+
+
 def _advisor_board_command(*, args: argparse.Namespace) -> int:
     """LEGACY (CLEANSHIP P7): run the 4-vendor advisor board as the RUNNABLE
     agent-facing default. Composes availability-aware seats via
@@ -1419,10 +1432,39 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # expected non-OK), the board is below its independence floor → exit nonzero.
     usable = usable_count >= FLOOR_SEATS
     exit_code = 0 if usable else 1
+    # #183 / ABDNATIVE: LOUD requested-vs-delivered shortfall. A floor-satisfying
+    # board can still be SHORT an explicitly-requested seat (the claude/Fable seat
+    # deferred to a native Agent), and a bare `usable:true` masks that. Report
+    # requested (every composed seat), delivered (usable OK+text), and — the
+    # affordance — the seats a native harness can FILL itself (each carries the
+    # typed `needs_native_agent` request). Exit stays floor-based (unchanged): the
+    # shortfall is a REPORTING signal, not a gate flip.
+    requested_seats = len(board.seats)
+    usable_seat_keys = {leg.seat_key for leg in result.usable_legs}
+    unfilled_legs = [leg for leg in result.legs if leg.seat_key not in usable_seat_keys]
+    fillable_legs = [leg for leg in unfilled_legs if leg.needs_native_agent is not None]
+    shortfall = {
+        "requested_seats": requested_seats,
+        "delivered_seats": usable_count,
+        "unfilled_seats": [
+            {
+                "seat_key": leg.seat_key,
+                "leg": leg.leg,
+                "status": leg.status,
+                "needs_native_agent": _native_agent_request_json(leg),
+            }
+            for leg in unfilled_legs
+        ],
+        "natively_fillable_seats": len(fillable_legs),
+    }
     if bool(getattr(args, "json", False)):
         payload = {
             "board": board.name,
             "usable": usable,
+            # Requested-vs-delivered so a Bash-invoking harness sees a dropped seat.
+            "requested_seats": requested_seats,
+            "delivered_seats": usable_count,
+            "shortfall": shortfall,
             "independence": {
                 "level": independence.level,
                 "distinct_vendors": independence.distinct_vendors,
@@ -1438,6 +1480,9 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                     "status": leg.status,
                     "detail": leg.detail,
                     "text": leg.text,
+                    # ABDNATIVE (#183): a deferred claude/Fable seat carries the
+                    # typed native-fill request the harness must run; None otherwise.
+                    "needs_native_agent": _native_agent_request_json(leg),
                 }
                 for leg in result.legs
             ],
@@ -1460,6 +1505,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # The statuses/verdicts are ADVISORY evidence — the operator reconciles them; a
     # non-OK leg (DEGRADED/UNAVAILABLE/…) is a gap to fill, not a passed review.
     print("advisor-board: verdicts are advisory — reconcile the legs; check each leg status.")
+    # #183: surface the requested-vs-delivered shortfall LOUDLY (stderr) so a
+    # floor-satisfying board is never mistaken for the full requested board, and
+    # name the seats a native harness can fill itself.
+    if unfilled_legs:
+        print(
+            f"advisor-board: delivered {usable_count}/{requested_seats} requested seats — "
+            f"{len(unfilled_legs)} unfilled ({len(fillable_legs)} natively fillable):",
+            file=sys.stderr,
+        )
+        for leg in unfilled_legs:
+            fill = " → run a native Fable Agent to fill this seat" if leg.needs_native_agent else ""
+            print(f"advisor-board:   [{leg.status}] {leg.seat_key}{fill}", file=sys.stderr)
     if not usable:
         print(
             f"advisor-board: only {usable_count} usable review leg(s) < floor {FLOOR_SEATS} "

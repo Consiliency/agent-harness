@@ -196,6 +196,14 @@ class PanelLegResult:
     # default 3-leg board stay byte-for-byte identical (one seat per vendor ==
     # seat_key == leg). ABDHOME wires the per-seat spawn; this freezes the identity.
     seat_key: str | None = None
+    # ABDNATIVE (#183 companion, Bug 2): a typed native-fill request attached when
+    # this seat was DEFERRED for a driving host to fulfill natively (the claude/
+    # Fable seat under Claude Code, or a headless host). ``None`` for every
+    # non-deferred leg, so the default board's golden byte-identity is unchanged
+    # (the request is NEVER threaded through the (status, text) spawn boundary —
+    # it is a result-only affordance so a native harness sees "YOUR seat to fill",
+    # not just "UNAVAILABLE").
+    needs_native_agent: "NativeAgentLegRequest | None" = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", normalize_leg_status(self.status))
@@ -214,6 +222,16 @@ class PanelResult:
     @property
     def usable_legs(self) -> tuple[PanelLegResult, ...]:
         return tuple(leg for leg in self.legs if leg.usable)
+
+    @property
+    def native_fill_requests(self) -> tuple["NativeAgentLegRequest", ...]:
+        """ABDNATIVE (#183 companion): the deferred seats a driving host can fill
+        natively (each carries seat_key/model/effort/lens + the review contract).
+        A non-empty result means the board is SHORT those seats until they are
+        filled — the loud requested-vs-delivered signal the caller must not miss."""
+        return tuple(
+            leg.needs_native_agent for leg in self.legs if leg.needs_native_agent is not None
+        )
 
 
 def available_panel_legs(probe: Callable[[str], bool] | None = None) -> tuple[str, ...]:
@@ -1465,6 +1483,14 @@ class NativeAgentLegRequest:
     caller's inputs (:func:`native_agent_leg_request`) and is NEVER threaded
     through the governed ``(status, text)`` spawn boundary — keeping the panel /
     advisor-board golden byte-identical (#92 A4).
+
+    ABDNATIVE (#183 companion, Bug 2): when the board attaches this to a deferred
+    leg in the ``PanelResult`` (``PanelLegResult.needs_native_agent``), it carries
+    the SEAT cognition the driver must reproduce — ``seat_key`` / ``effort`` /
+    ``lens`` (the model is already here) — plus the ``artifact_ref`` the board was
+    given, so the native fill is a fully-specified action, not a prose hint. These
+    are optional (``None``) so the pure standalone builder and its existing callers
+    are byte-unchanged.
     """
 
     leg: str
@@ -1475,6 +1501,14 @@ class NativeAgentLegRequest:
     instructions: str
     verdict_required: bool
     verdict_contract: str
+    # ABDNATIVE seat cognition (set when surfaced on a board result; None for the
+    # pure standalone builder call). ``seat_key``/``effort``/``lens`` tell the
+    # driver exactly which cognition to reproduce; ``artifact_ref`` names the
+    # material the board reviewed (the driver usually already holds it).
+    seat_key: str | None = None
+    effort: str | None = None
+    lens: str | None = None
+    artifact_ref: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """JSON-serializable form for a host driver to consume across a tool boundary."""
@@ -1487,6 +1521,10 @@ class NativeAgentLegRequest:
             "instructions": self.instructions,
             "verdict_required": self.verdict_required,
             "verdict_contract": self.verdict_contract,
+            "seat_key": self.seat_key,
+            "effort": self.effort,
+            "lens": self.lens,
+            "artifact_ref": self.artifact_ref,
         }
 
 
@@ -1510,6 +1548,10 @@ def native_agent_leg_request(
     mode: str = "review",
     env: Mapping[str, str] | None = None,
     model: str | None = None,
+    seat_key: str | None = None,
+    effort: str | None = None,
+    lens: str | None = None,
+    artifact_ref: str | None = None,
 ) -> NativeAgentLegRequest:
     """Build the structured request a host driver fulfills for a deferred leg (#125).
 
@@ -1518,6 +1560,11 @@ def native_agent_leg_request(
     ``UNAVAILABLE`` for this leg). ``mode`` selects the review vs advisory brief +
     verdict contract; ``env`` selects the deferred-reason code (under Claude Code
     vs native-adapter-required); ``model`` defaults to the seat's canonical model.
+
+    ABDNATIVE (#183 companion): the board passes the deferred seat's cognition
+    (``seat_key`` / ``effort`` / ``lens``) and the reviewed ``artifact_ref`` so the
+    surfaced request fully specifies the native fill. All default ``None`` — the
+    bare standalone call is byte-unchanged (#125 callers/tests unaffected).
     """
     reason, detail = _claude_leg_deferred_reason(env)
     verdict_required = mode != "advisory"
@@ -1532,6 +1579,10 @@ def native_agent_leg_request(
         verdict_contract=(
             _REVIEW_VERDICT_CONTRACT if verdict_required else _ADVISORY_VERDICT_CONTRACT
         ),
+        seat_key=seat_key,
+        effort=effort,
+        lens=lens,
+        artifact_ref=artifact_ref,
     )
 
 
@@ -2701,7 +2752,34 @@ def invoke_board(
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
-        return PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key)
+        # ABDNATIVE (#183 companion, Bug 2): when the claude/Fable seat DEFERS (the
+        # runtime cannot drive the leg here: #92 under Claude Code, or a headless
+        # host), surface a typed native-fill request ON THE RESULT so a driving
+        # harness sees "YOUR seat to fill" — not a log line + a bare UNAVAILABLE.
+        # The deferral signature is UNAVAILABLE with EMPTY text (the #92 A4
+        # invariant); the support-missing UNAVAILABLE carries a non-empty detail and
+        # is a genuine "no claude here", not a fillable seat. Reuse the shipped #125
+        # builder; pass the seat cognition + reviewed artifact so the request fully
+        # specifies the fill. None for every other leg (golden byte-identity holds).
+        needs_native = None
+        if leg == "claude" and status == "UNAVAILABLE" and not str(text).strip():
+            needs_native = native_agent_leg_request(
+                leg=leg,
+                mode=mode,
+                env=env_source,
+                model=seat.model,
+                seat_key=seat.seat_key,
+                effort=seat.effort,
+                lens=seat.lens,
+                artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
+            )
+        return PanelLegResult(
+            leg=leg,
+            status=status,
+            text=str(text),
+            seat_key=seat.seat_key,
+            needs_native_agent=needs_native,
+        )
 
     # Fan the seats out concurrently (parallel by default; max_concurrency=1 →
     # sequential); results come back in SEAT ORDER (positional re-key + golden

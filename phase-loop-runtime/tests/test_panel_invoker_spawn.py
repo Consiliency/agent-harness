@@ -275,12 +275,17 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         self.assertIn("AGREE", req.verdict_contract)
         # instructions carry the runtime's review brief (what the driver lacks).
         self.assertEqual(req.instructions, pi._mode_instructions("review"))
-        # JSON-serializable across a host tool boundary.
+        # JSON-serializable across a host tool boundary. ABDNATIVE (#183) added the
+        # optional seat-cognition keys (seat_key/effort/lens/artifact_ref); they are
+        # None for the bare standalone builder call.
         self.assertEqual(
             sorted(req.to_dict()),
-            ["detail", "instructions", "leg", "mode", "model", "reason",
-             "verdict_contract", "verdict_required"],
+            ["artifact_ref", "detail", "effort", "instructions", "leg", "lens",
+             "mode", "model", "reason", "seat_key", "verdict_contract",
+             "verdict_required"],
         )
+        self.assertIsNone(req.to_dict()["seat_key"])
+        self.assertIsNone(req.to_dict()["artifact_ref"])
 
     def test_native_agent_leg_request_advisory_has_no_verdict(self):
         req = pi.native_agent_leg_request(mode="advisory", env={})
