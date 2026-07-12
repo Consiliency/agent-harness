@@ -4,6 +4,34 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### Advisor board — headless claude/Fable leg + native-fill affordance (agent-harness#183)
+
+Interim fix (ahead of the larger panel/board refactor), reconciled with the
+just-shipped `native_adapter_required` work (agent-harness#175 / agent-harness#125)
+per an explicit owner decision: run the self-PTY TUI by default, keep
+`NativeAgentLegRequest` as the native-fill affordance.
+
+- **Headless non-Claude callers now run the claude/Fable leg.** `_exec_claude_tui_leg`
+  gates on `_under_claude_code(env)` only, so a headless NON-Claude caller (e.g. Codex
+  Desktop) with valid Claude Max OAuth runs the leg through the self-allocated PTY in
+  `_run_claude_tui_session` instead of dropping the seat as `UNAVAILABLE`. The
+  under-Claude-Code deferral (agent-harness#92), PTY-EOF fail-closed (agent-harness#48),
+  and subscription-only auth-scrub are unchanged. `native_adapter_required` is now an
+  affordance/fallback (surfaced via `native_agent_leg_request()`), not the default that
+  silently dropped the seat.
+- **`phase-loop advisor-board --json` reports a requested-vs-delivered shortfall.** New
+  top-level `requested_seats` / `delivered_seats` and a `shortfall` block
+  (`natively_fillable_seats`, `unfilled_seats[]`), plus a per-leg `needs_native_agent`
+  request (`seat_key` / `model` / `effort` / `lens` / `artifact_ref` + review contract)
+  on a deferred claude/Fable seat, so a native harness fills the seat rather than
+  silently running a degraded board. Exit code stays floor-based.
+- **`claude-advisor-board` / `claude-advisor-panel` skills** now steer filling a
+  `needs_native_agent` seat with a native Fable Task Agent (or accepting the shortfall
+  with provenance); the `codex-advisor-board` skill reframes `native_adapter_required`
+  as the fallback affordance.
+
 ## [0.7.1] - 2026-07-12
 
 POST070FIX — a parallel 8-phase backlog closeout on top of 0.7.0: phase-loop authoring-skill refinements, push-after-merge visibility, the REVIEWGOV W3/W4 review-ratification architecture (parameterized ratification policy + unattended consensus-substitutes-for-human), per-vendor review-leg sandboxing, manifest robustness, and a runner/reconcile correctness batch. This tag also contains the authenticated local task-message source broker (agent-harness#167, agent-harness#168) that landed after 0.7.0 — see the SOURCEBROKER section below.

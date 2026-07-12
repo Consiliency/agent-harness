@@ -196,6 +196,15 @@ class PanelLegResult:
     # default 3-leg board stay byte-for-byte identical (one seat per vendor ==
     # seat_key == leg). ABDHOME wires the per-seat spawn; this freezes the identity.
     seat_key: str | None = None
+    # ABDNATIVE (#183 companion, Bug 2): the typed native-fill request is exposed by
+    # the ``needs_native_agent`` PROPERTY below and stored in the non-field
+    # ``_needs_native_agent`` attribute (attached via ``attach_native_agent_request``
+    # / ``object.__setattr__``). It is DELIBERATELY NOT a dataclass field (CR F2):
+    # ``dataclasses.asdict`` and any field-walking serializer (golden,
+    # AdvisorBoardEvent) enumerate ``fields()`` only, so the affordance is
+    # structurally UNABLE to leak into the (status, text) golden surface. The
+    # property reads a default of ``None`` so a plain leg (none attached) is never
+    # an AttributeError.
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", normalize_leg_status(self.status))
@@ -206,6 +215,21 @@ class PanelLegResult:
     def usable(self) -> bool:
         return self.status == "OK" and bool(self.text.strip())
 
+    @property
+    def needs_native_agent(self) -> "NativeAgentLegRequest | None":
+        return getattr(self, "_needs_native_agent", None)
+
+
+def attach_native_agent_request(
+    leg: PanelLegResult, request: "NativeAgentLegRequest"
+) -> PanelLegResult:
+    """Attach a native-fill request to a (frozen) ``PanelLegResult`` post-creation
+    (CR F2): stored in the NON-field ``_needs_native_agent`` so ``asdict``/golden
+    serializers never see it; read back via the ``needs_native_agent`` property.
+    Returns ``leg`` for call-site convenience."""
+    object.__setattr__(leg, "_needs_native_agent", request)
+    return leg
+
 
 @dataclass(frozen=True)
 class PanelResult:
@@ -214,6 +238,16 @@ class PanelResult:
     @property
     def usable_legs(self) -> tuple[PanelLegResult, ...]:
         return tuple(leg for leg in self.legs if leg.usable)
+
+    @property
+    def native_fill_requests(self) -> tuple["NativeAgentLegRequest", ...]:
+        """ABDNATIVE (#183 companion): the deferred seats a driving host can fill
+        natively (each carries seat_key/model/effort/lens + the review contract).
+        A non-empty result means the board is SHORT those seats until they are
+        filled — the loud requested-vs-delivered signal the caller must not miss."""
+        return tuple(
+            leg.needs_native_agent for leg in self.legs if leg.needs_native_agent is not None
+        )
 
 
 def available_panel_legs(probe: Callable[[str], bool] | None = None) -> tuple[str, ...]:
@@ -1400,12 +1434,18 @@ def _normalize_claude_agent_state(value: object) -> str:
 #   under_claude_code       — we are INSIDE a Claude Code session; the driving
 #                             session supplies the leg as its own NATIVE Agent
 #                             (Task tool). Spawning a second Claude TUI here is
-#                             the wrong route.
-#   native_adapter_required — a headless / no-tty host (e.g. the Codex Desktop
-#                             tool shell: CLAUDECODE unset, stdin/stdout not a
-#                             tty) with no controlling terminal to drive a TUI.
-#                             The host fulfills the leg through its own native
-#                             sub-agent adapter (see native_agent_leg_request()).
+#                             the wrong route. This is the RUNTIME-EMITTED defer
+#                             code (the only case `_exec_claude_tui_leg` defers).
+#   native_adapter_required — an AFFORDANCE/fallback for a host that fulfills the
+#                             leg via its OWN sub-agent adapter instead of the
+#                             runtime's self-PTY TUI (see native_agent_leg_request()).
+#                             #183: the runtime NO LONGER defers a headless / no-tty
+#                             NON-Claude host by default — `_run_claude_tui_session`
+#                             self-allocates its own PTY, so the leg RUNS there. This
+#                             code is produced only by a standalone
+#                             `native_agent_leg_request(env=<non-Claude>)` call, for
+#                             a host that cannot drive the TUI or prefers its own
+#                             agent (e.g. the Codex Desktop tool shell).
 _CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE = "under_claude_code"
 _CLAUDE_LEG_DEFERRED_NATIVE_ADAPTER = "native_adapter_required"
 
@@ -1416,10 +1456,10 @@ _CLAUDE_LEG_DEFERRED_REASONS: dict[str, str] = {
         "runtime must not spawn a second Claude TUI here."
     ),
     _CLAUDE_LEG_DEFERRED_NATIVE_ADAPTER: (
-        "claude leg not run by the runtime in this headless / no-tty host (no "
-        "controlling terminal to drive a Claude TUI); the driving host (e.g. "
-        "Codex Desktop) must fulfill it via its native sub-agent adapter — see "
-        "native_agent_leg_request()."
+        "claude leg available as an AFFORDANCE for this headless / no-tty host: "
+        "#183 the runtime runs the self-PTY TUI here by default, but a host that "
+        "cannot drive a TUI (or prefers its own agent) may fulfill the leg via its "
+        "native sub-agent adapter — see native_agent_leg_request()."
     ),
 }
 
@@ -1465,6 +1505,17 @@ class NativeAgentLegRequest:
     caller's inputs (:func:`native_agent_leg_request`) and is NEVER threaded
     through the governed ``(status, text)`` spawn boundary — keeping the panel /
     advisor-board golden byte-identical (#92 A4).
+
+    ABDNATIVE (#183 companion, Bug 2): when the board attaches this to a deferred
+    leg in the ``PanelResult`` (``PanelLegResult.needs_native_agent``), it carries
+    the SEAT cognition the driver must reproduce — ``seat_key`` / ``effort`` /
+    ``lens`` (the model is already here) — plus the ``artifact_ref`` the board was
+    given and the effective ``brief_ref`` (so the native fill reviews under the SAME
+    acceptance brief as the runtime legs — the ``instructions`` field already carries
+    the resolved brief text). These are optional (``None``) so the pure standalone
+    builder and its existing callers are byte-unchanged; ``to_dict`` OMITS every
+    ``None`` optional key, so a bare #125 builder call serializes to exactly the
+    original 8-key shape (byte-compat).
     """
 
     leg: str
@@ -1475,10 +1526,25 @@ class NativeAgentLegRequest:
     instructions: str
     verdict_required: bool
     verdict_contract: str
+    # ABDNATIVE seat cognition (set when surfaced on a board result; None for the
+    # pure standalone builder call). ``seat_key``/``effort``/``lens`` tell the
+    # driver exactly which cognition to reproduce; ``artifact_ref`` names the
+    # material the board reviewed; ``brief_ref`` names the effective review brief
+    # (the driver usually already holds artifact + brief).
+    seat_key: str | None = None
+    effort: str | None = None
+    lens: str | None = None
+    artifact_ref: str | None = None
+    brief_ref: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        """JSON-serializable form for a host driver to consume across a tool boundary."""
-        return {
+        """JSON-serializable form for a host driver to consume across a tool boundary.
+
+        Byte-compat (CR F1): the eight base keys are always present; each ADDITIVE
+        optional key is emitted ONLY when set, so a bare ``native_agent_leg_request``
+        call (all optionals ``None``) serializes to the exact original 8-key shape
+        that #125's callers depend on."""
+        out: dict[str, object] = {
             "leg": self.leg,
             "model": self.model,
             "mode": self.mode,
@@ -1488,6 +1554,11 @@ class NativeAgentLegRequest:
             "verdict_required": self.verdict_required,
             "verdict_contract": self.verdict_contract,
         }
+        for key in ("seat_key", "effort", "lens", "artifact_ref", "brief_ref"):
+            value = getattr(self, key)
+            if value is not None:
+                out[key] = value
+        return out
 
 
 # The terminal-verdict contract a native-fulfilled review leg must satisfy so its
@@ -1510,6 +1581,12 @@ def native_agent_leg_request(
     mode: str = "review",
     env: Mapping[str, str] | None = None,
     model: str | None = None,
+    seat_key: str | None = None,
+    effort: str | None = None,
+    lens: str | None = None,
+    artifact_ref: str | None = None,
+    brief_ref: str | None = None,
+    instructions: str | None = None,
 ) -> NativeAgentLegRequest:
     """Build the structured request a host driver fulfills for a deferred leg (#125).
 
@@ -1518,6 +1595,15 @@ def native_agent_leg_request(
     ``UNAVAILABLE`` for this leg). ``mode`` selects the review vs advisory brief +
     verdict contract; ``env`` selects the deferred-reason code (under Claude Code
     vs native-adapter-required); ``model`` defaults to the seat's canonical model.
+
+    ABDNATIVE (#183 companion): the board passes the deferred seat's cognition
+    (``seat_key`` / ``effort`` / ``lens``), the reviewed ``artifact_ref``, and the
+    effective ``brief_ref`` so the surfaced request fully specifies the native fill.
+    ``instructions`` (CR F5) OVERRIDES the default ``_mode_instructions(mode)`` with
+    the RESOLVED effective brief — so a board invoked with a custom ``brief_ref``
+    hands the native seat the SAME acceptance brief as the runtime legs, not the
+    default. All default ``None`` — the bare standalone call is byte-unchanged
+    (#125 callers/tests unaffected).
     """
     reason, detail = _claude_leg_deferred_reason(env)
     verdict_required = mode != "advisory"
@@ -1527,11 +1613,16 @@ def native_agent_leg_request(
         mode=mode,
         reason=reason,
         detail=detail,
-        instructions=_mode_instructions(mode),
+        instructions=instructions if instructions is not None else _mode_instructions(mode),
         verdict_required=verdict_required,
         verdict_contract=(
             _REVIEW_VERDICT_CONTRACT if verdict_required else _ADVISORY_VERDICT_CONTRACT
         ),
+        seat_key=seat_key,
+        effort=effort,
+        lens=lens,
+        artifact_ref=artifact_ref,
+        brief_ref=brief_ref,
     )
 
 
@@ -1547,8 +1638,12 @@ def _tui_capable(
     env: Mapping[str, str] | None = None,
     isatty: Callable[[], bool] | None = None,
 ) -> bool:
-    """The TUI leg needs a real controlling terminal. False under Claude Code OR
-    when stdin/stdout is not a tty (headless/detached)."""
+    """True iff the PARENT has a usable controlling terminal AND we are not under
+    Claude Code. Retained as a capability predicate, but as of #183 it is NO LONGER
+    the gate for running the claude TUI leg: ``_exec_claude_tui_leg`` gates on
+    ``_under_claude_code`` alone, because ``_run_claude_tui_session`` self-allocates
+    its own PTY and never needs the parent's tty. Kept for callers/tests that
+    genuinely want to know whether the parent is terminal-attached."""
     if _under_claude_code(env):
         return False
     check = isatty if isatty is not None else (lambda: sys.stdin.isatty() and sys.stdout.isatty())
@@ -1584,27 +1679,42 @@ def _exec_claude_tui_leg(
     ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
     real launch.
     """
-    supported, support_detail = _claude_code_support_status()
-    if not supported:
-        return "UNAVAILABLE", support_detail
-
-    if not _tui_capable(env):
-        # Under Claude Code / no controlling terminal: do NOT spawn a Claude TUI
-        # we cannot drive (issue #92). Degrade cleanly with the existing
-        # UNAVAILABLE status and EMPTY review text — the empty text is
-        # load-bearing (A4): an UNAVAILABLE leg with empty text becomes a
-        # non-gating `panel_leg_degraded` warn, never a block, and `usable`
-        # (status=="OK") never counts it as an AGREE. The driving session/host
-        # must supply this leg natively (Claude Code: a Task Agent; Codex Desktop
-        # / headless: its native sub-agent adapter — see native_agent_leg_request).
-        # #125: log the machine-branchable reason code so the distinction between
-        # "under Claude Code" and "native-adapter-required" is visible in the audit
-        # line, not just blended into one sentence.
+    # CR F4: the under-Claude-Code deferral MUST come BEFORE the local-CLI support
+    # check. Inside Claude Code the driving session fulfills the leg as its own
+    # native Task Agent (its authed session), which does NOT depend on a standalone
+    # `claude` CLI being installed/current on the host. Checking support first would
+    # return `UNAVAILABLE` + a NON-empty support detail on a Claude-Code host that
+    # lacks the local CLI — and `_run_seat`'s deferral signature is UNAVAILABLE +
+    # EMPTY text, so the native-fill request would never be attached: a silent drop.
+    # Defer first (empty text, native request emitted), THEN check local support for
+    # the run path.
+    if _under_claude_code(env):
+        # #92: INSIDE Claude Code, do NOT spawn a SECOND Claude TUI we cannot
+        # drive. Degrade cleanly with the existing UNAVAILABLE status and EMPTY
+        # review text — the empty text is load-bearing (A4): an UNAVAILABLE leg
+        # with empty text becomes a non-gating `panel_leg_degraded` warn, never a
+        # block, and `usable` (status=="OK") never counts it as an AGREE. The
+        # driving Claude Code session supplies this leg natively (a Task Agent) —
+        # see the `needs_native_agent` request the board attaches at the
+        # invoke_board layer (ABDNATIVE / #183).
+        #
+        # #183 (owner-confirmed reconciliation): a merely non-TTY parent is NOT a
+        # defer reason. `_run_claude_tui_session` SELF-ALLOCATES its own PTY
+        # (pty.openpty), so a headless NON-Claude caller (e.g. Codex Desktop) with
+        # valid Claude Max OAuth runs the leg RIGHT HERE — the old `_tui_capable`
+        # parent-tty gate over-blocked that case. `native_adapter_required` is now
+        # an AFFORDANCE/fallback (via native_agent_leg_request()) for a host that
+        # cannot drive the TUI or prefers its own sub-agent, NOT the default that
+        # silently dropped the seat.
         reason_code, reason_detail = _claude_leg_deferred_reason(env)
         logging.getLogger(__name__).warning(
             "advisor-panel claude leg deferred [%s]: %s", reason_code, reason_detail
         )
         return "UNAVAILABLE", ""
+
+    supported, support_detail = _claude_code_support_status()
+    if not supported:
+        return "UNAVAILABLE", support_detail
 
     env = _subscription_env() if env is None else dict(env)
     output_file = out_dir / "panel-claude.txt"
@@ -2701,7 +2811,40 @@ def invoke_board(
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
-        return PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key)
+        # ABDNATIVE (#183 companion, Bug 2): when the claude/Fable seat DEFERS (the
+        # runtime cannot drive the leg here: #92 under Claude Code, or a headless
+        # host), surface a typed native-fill request ON THE RESULT so a driving
+        # harness sees "YOUR seat to fill" — not a log line + a bare UNAVAILABLE.
+        # The deferral signature is UNAVAILABLE with EMPTY text (the #92 A4
+        # invariant); the support-missing UNAVAILABLE carries a non-empty detail and
+        # is a genuine "no claude here", not a fillable seat. Reuse the shipped #125
+        # builder; pass the seat cognition + reviewed artifact + the EFFECTIVE brief
+        # (CR F5: the native seat must review under the SAME acceptance contract as
+        # the runtime legs — `_resolve_brief` gives the exact `review-instructions.md`
+        # the other seats got). None for every other leg (golden byte-identity holds).
+        result = PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key)
+        if leg == "claude" and status == "UNAVAILABLE" and not str(text).strip():
+            try:
+                effective_instructions = _resolve_brief(mode, brief_ref)
+            except (ValueError, OSError):
+                # brief_ref was already validated on the run path that reached the
+                # defer; fall back to the mode brief rather than crash the seat.
+                effective_instructions = _mode_instructions(mode)
+            request = native_agent_leg_request(
+                leg=leg,
+                mode=mode,
+                env=env_source,
+                model=seat.model,
+                seat_key=seat.seat_key,
+                effort=seat.effort,
+                lens=seat.lens,
+                artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
+                brief_ref=str(brief_ref) if isinstance(brief_ref, str) else None,
+                instructions=effective_instructions,
+            )
+            # CR F2: attach post-creation (non-field) so asdict/golden can't see it.
+            attach_native_agent_request(result, request)
+        return result
 
     # Fan the seats out concurrently (parallel by default; max_concurrency=1 →
     # sequential); results come back in SEAT ORDER (positional re-key + golden
