@@ -94,25 +94,43 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
         self.assertIsNone(leg.needs_native_agent)
         self.assertEqual(result.native_fill_requests, ())
 
-    def test_support_missing_unavailable_is_not_a_fillable_seat(self):
-        # A genuine "no claude here" (support missing → UNAVAILABLE with NON-empty
-        # detail) is not a deferred seat and carries no native-fill request.
+    def _board_with_support(self, supported, base_env):
         with tempfile.TemporaryDirectory() as td:
             artifact = Path(td) / "bundle.md"
             artifact.write_text("review me\n")
             scratch = Path(td) / "scratch"
             scratch.mkdir()
             with unittest.mock.patch.object(
-                pi, "_claude_code_support_status",
-                return_value=(False, "claude_code_version_below_minimum:2.1.196"),
+                pi, "_claude_code_support_status", return_value=supported
             ):
-                result = pi.invoke_board(
-                    _claude_board(),
-                    "",
-                    artifact_ref=str(artifact.resolve()),
-                    repo_dir=str(scratch),
-                    base_env={"CLAUDECODE": "1", "PATH": os.environ.get("PATH", "")},
+                return pi.invoke_board(
+                    _claude_board(), "", artifact_ref=str(artifact.resolve()),
+                    repo_dir=str(scratch), base_env=base_env,
                 )
+
+    def test_under_claude_code_defers_even_without_local_cli(self):
+        # CR F4: under Claude Code, the leg DEFERS (native Task Agent fulfills via the
+        # authed session) BEFORE the local-CLI support check — so a Claude-Code host
+        # lacking the standalone `claude` CLI still gets a native-fill request, never
+        # a silent drop (UNAVAILABLE + non-empty detail + no request).
+        result = self._board_with_support(
+            (False, "claude_code_version_below_minimum:2.1.196"),
+            {"CLAUDECODE": "1", "PATH": os.environ.get("PATH", "")},
+        )
+        (leg,) = result.legs
+        self.assertEqual(leg.status, "UNAVAILABLE")
+        self.assertEqual(leg.text, "")  # deferred (empty), not the support detail
+        self.assertIsNotNone(leg.needs_native_agent)
+        self.assertEqual(leg.needs_native_agent.reason, "under_claude_code")
+
+    def test_non_claude_support_missing_is_not_a_fillable_seat(self):
+        # A genuine "no claude here" on a NON-Claude host (support missing →
+        # UNAVAILABLE with NON-empty detail) is not a deferred seat: no native-fill
+        # request (the runtime would have RUN it if the CLI were present).
+        result = self._board_with_support(
+            (False, "claude_code_version_below_minimum:2.1.196"),
+            {"PATH": os.environ.get("PATH", "")},  # no CLAUDECODE
+        )
         (leg,) = result.legs
         self.assertEqual(leg.status, "UNAVAILABLE")
         self.assertTrue(leg.text.strip())  # non-empty detail
@@ -173,15 +191,20 @@ class AdvisorBoardLoudShortfall(unittest.TestCase):
             model="claude-fable-5", seat_key="claude:claude-fable-5:max:correctness",
             effort="max", lens="correctness",
         )
+        # CR F2: attach the request post-creation (non-field), never a constructor kwarg.
+        claude = pi.attach_native_agent_request(
+            pi.PanelLegResult(
+                leg="claude", status="UNAVAILABLE", text="", detail="deferred",
+                seat_key="claude:claude-fable-5:max:correctness",
+            ),
+            req,
+        )
         return pi.PanelResult(
             legs=(
                 pi.PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:adversarial"),
                 pi.PanelLegResult(leg="codex", status="OK", text="PARTIALLY AGREE", seat_key="codex:red-team"),
                 pi.PanelLegResult(leg="gemini", status="OK", text="AGREE", seat_key="gemini:alt"),
-                pi.PanelLegResult(
-                    leg="claude", status="UNAVAILABLE", text="", detail="deferred",
-                    seat_key="claude:claude-fable-5:max:correctness", needs_native_agent=req,
-                ),
+                claude,
             )
         )
 
@@ -215,6 +238,89 @@ class AdvisorBoardLoudShortfall(unittest.TestCase):
         self.assertEqual(claude_leg["needs_native_agent"]["seat_key"], native["seat_key"])
         grok_leg = [leg for leg in payload["legs"] if leg["leg"] == "grok"][0]
         self.assertIsNone(grok_leg["needs_native_agent"])
+
+    def test_colliding_seat_keys_do_not_hide_a_failed_twin(self):
+        # CR F3: schema permits byte-identical seats with the SAME seat_key. A
+        # duplicate key where one seat is OK and its twin FAILED must still report
+        # the failed twin — deriving unfilled per-leg (`not usable`), never by key
+        # set (which would let the OK twin's key mask the failure = silent drop).
+        dup = "codex:gpt-5.6-sol:max:red-team"
+        collided = pi.PanelResult(
+            legs=(
+                pi.PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:adversarial"),
+                pi.PanelLegResult(leg="gemini", status="OK", text="AGREE", seat_key="gemini:alt"),
+                pi.PanelLegResult(leg="codex", status="OK", text="AGREE", seat_key=dup),
+                pi.PanelLegResult(leg="codex", status="TIMEOUT", text="", detail="capped", seat_key=dup),
+            )
+        )
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            with (
+                unittest.mock.patch.object(comp_mod, "compose_review_board", side_effect=_hermetic_board),
+                unittest.mock.patch.object(pi, "invoke_board", return_value=collided),
+            ):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    cli_main(["advisor-board", str(artifact), "--json"])
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["requested_seats"], 4)
+        self.assertEqual(payload["delivered_seats"], 3)
+        # The failed twin (same key as an OK seat) is NOT hidden.
+        self.assertEqual([s["status"] for s in payload["shortfall"]["unfilled_seats"]], ["TIMEOUT"])
+
+
+class NativeFillRequestSerializationSafety(unittest.TestCase):
+    """CR F2: the attached request is a non-field attribute → asdict / field-walking
+    serializers can NEVER include it."""
+
+    def test_asdict_does_not_leak_native_request(self):
+        import dataclasses
+        req = pi.native_agent_leg_request(leg="claude", mode="review", env={"CLAUDECODE": "1"})
+        leg = pi.attach_native_agent_request(
+            pi.PanelLegResult(leg="claude", status="UNAVAILABLE", text="", seat_key="claude:x"),
+            req,
+        )
+        self.assertIsNotNone(leg.needs_native_agent)  # readable via the property
+        d = dataclasses.asdict(leg)
+        self.assertNotIn("needs_native_agent", d)
+        self.assertNotIn("_needs_native_agent", d)
+        # A plain leg (none attached) reads None, never AttributeError.
+        self.assertIsNone(pi.PanelLegResult(leg="grok", status="OK", text="AGREE").needs_native_agent)
+
+
+class DeferredRequestCarriesEffectiveBrief(unittest.TestCase):
+    """CR F5: the native-fill request carries the caller's effective brief_ref and
+    the RESOLVED brief text, so the native seat reviews under the SAME acceptance
+    contract as the runtime legs."""
+
+    def test_brief_ref_flows_into_the_request(self):
+        session = unittest.mock.MagicMock()  # under Claude Code → never called
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            brief = Path(td) / "brief.md"
+            brief.write_text("CUSTOM ACCEPTANCE CONTRACT — be adversarial.\n")
+            scratch = Path(td) / "scratch"
+            scratch.mkdir()
+            with (
+                unittest.mock.patch.object(
+                    pi, "_claude_code_support_status", return_value=(True, "supported")
+                ),
+                unittest.mock.patch.object(pi, "_run_claude_tui_session", session),
+            ):
+                result = pi.invoke_board(
+                    _claude_board(), "", artifact_ref=str(artifact.resolve()),
+                    brief_ref=str(brief.resolve()), repo_dir=str(scratch),
+                    base_env={"CLAUDECODE": "1", "PATH": os.environ.get("PATH", "")},
+                )
+        (leg,) = result.legs
+        req = leg.needs_native_agent
+        self.assertIsNotNone(req)
+        self.assertEqual(req.brief_ref, str(brief.resolve()))
+        # instructions = the RESOLVED brief, not the default mode brief (F5).
+        self.assertIn("CUSTOM ACCEPTANCE CONTRACT", req.instructions)
+        self.assertNotEqual(req.instructions, pi._mode_instructions("review"))
 
 
 if __name__ == "__main__":

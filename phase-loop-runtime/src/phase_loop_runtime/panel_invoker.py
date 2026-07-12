@@ -196,14 +196,15 @@ class PanelLegResult:
     # default 3-leg board stay byte-for-byte identical (one seat per vendor ==
     # seat_key == leg). ABDHOME wires the per-seat spawn; this freezes the identity.
     seat_key: str | None = None
-    # ABDNATIVE (#183 companion, Bug 2): a typed native-fill request attached when
-    # this seat was DEFERRED for a driving host to fulfill natively (the claude/
-    # Fable seat under Claude Code, or a headless host). ``None`` for every
-    # non-deferred leg, so the default board's golden byte-identity is unchanged
-    # (the request is NEVER threaded through the (status, text) spawn boundary —
-    # it is a result-only affordance so a native harness sees "YOUR seat to fill",
-    # not just "UNAVAILABLE").
-    needs_native_agent: "NativeAgentLegRequest | None" = None
+    # ABDNATIVE (#183 companion, Bug 2): the typed native-fill request is exposed by
+    # the ``needs_native_agent`` PROPERTY below and stored in the non-field
+    # ``_needs_native_agent`` attribute (attached via ``attach_native_agent_request``
+    # / ``object.__setattr__``). It is DELIBERATELY NOT a dataclass field (CR F2):
+    # ``dataclasses.asdict`` and any field-walking serializer (golden,
+    # AdvisorBoardEvent) enumerate ``fields()`` only, so the affordance is
+    # structurally UNABLE to leak into the (status, text) golden surface. The
+    # property reads a default of ``None`` so a plain leg (none attached) is never
+    # an AttributeError.
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", normalize_leg_status(self.status))
@@ -213,6 +214,21 @@ class PanelLegResult:
     @property
     def usable(self) -> bool:
         return self.status == "OK" and bool(self.text.strip())
+
+    @property
+    def needs_native_agent(self) -> "NativeAgentLegRequest | None":
+        return getattr(self, "_needs_native_agent", None)
+
+
+def attach_native_agent_request(
+    leg: PanelLegResult, request: "NativeAgentLegRequest"
+) -> PanelLegResult:
+    """Attach a native-fill request to a (frozen) ``PanelLegResult`` post-creation
+    (CR F2): stored in the NON-field ``_needs_native_agent`` so ``asdict``/golden
+    serializers never see it; read back via the ``needs_native_agent`` property.
+    Returns ``leg`` for call-site convenience."""
+    object.__setattr__(leg, "_needs_native_agent", request)
+    return leg
 
 
 @dataclass(frozen=True)
@@ -1494,9 +1510,12 @@ class NativeAgentLegRequest:
     leg in the ``PanelResult`` (``PanelLegResult.needs_native_agent``), it carries
     the SEAT cognition the driver must reproduce — ``seat_key`` / ``effort`` /
     ``lens`` (the model is already here) — plus the ``artifact_ref`` the board was
-    given, so the native fill is a fully-specified action, not a prose hint. These
-    are optional (``None``) so the pure standalone builder and its existing callers
-    are byte-unchanged.
+    given and the effective ``brief_ref`` (so the native fill reviews under the SAME
+    acceptance brief as the runtime legs — the ``instructions`` field already carries
+    the resolved brief text). These are optional (``None``) so the pure standalone
+    builder and its existing callers are byte-unchanged; ``to_dict`` OMITS every
+    ``None`` optional key, so a bare #125 builder call serializes to exactly the
+    original 8-key shape (byte-compat).
     """
 
     leg: str
@@ -1510,15 +1529,22 @@ class NativeAgentLegRequest:
     # ABDNATIVE seat cognition (set when surfaced on a board result; None for the
     # pure standalone builder call). ``seat_key``/``effort``/``lens`` tell the
     # driver exactly which cognition to reproduce; ``artifact_ref`` names the
-    # material the board reviewed (the driver usually already holds it).
+    # material the board reviewed; ``brief_ref`` names the effective review brief
+    # (the driver usually already holds artifact + brief).
     seat_key: str | None = None
     effort: str | None = None
     lens: str | None = None
     artifact_ref: str | None = None
+    brief_ref: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        """JSON-serializable form for a host driver to consume across a tool boundary."""
-        return {
+        """JSON-serializable form for a host driver to consume across a tool boundary.
+
+        Byte-compat (CR F1): the eight base keys are always present; each ADDITIVE
+        optional key is emitted ONLY when set, so a bare ``native_agent_leg_request``
+        call (all optionals ``None``) serializes to the exact original 8-key shape
+        that #125's callers depend on."""
+        out: dict[str, object] = {
             "leg": self.leg,
             "model": self.model,
             "mode": self.mode,
@@ -1527,11 +1553,12 @@ class NativeAgentLegRequest:
             "instructions": self.instructions,
             "verdict_required": self.verdict_required,
             "verdict_contract": self.verdict_contract,
-            "seat_key": self.seat_key,
-            "effort": self.effort,
-            "lens": self.lens,
-            "artifact_ref": self.artifact_ref,
         }
+        for key in ("seat_key", "effort", "lens", "artifact_ref", "brief_ref"):
+            value = getattr(self, key)
+            if value is not None:
+                out[key] = value
+        return out
 
 
 # The terminal-verdict contract a native-fulfilled review leg must satisfy so its
@@ -1558,6 +1585,8 @@ def native_agent_leg_request(
     effort: str | None = None,
     lens: str | None = None,
     artifact_ref: str | None = None,
+    brief_ref: str | None = None,
+    instructions: str | None = None,
 ) -> NativeAgentLegRequest:
     """Build the structured request a host driver fulfills for a deferred leg (#125).
 
@@ -1568,9 +1597,13 @@ def native_agent_leg_request(
     vs native-adapter-required); ``model`` defaults to the seat's canonical model.
 
     ABDNATIVE (#183 companion): the board passes the deferred seat's cognition
-    (``seat_key`` / ``effort`` / ``lens``) and the reviewed ``artifact_ref`` so the
-    surfaced request fully specifies the native fill. All default ``None`` — the
-    bare standalone call is byte-unchanged (#125 callers/tests unaffected).
+    (``seat_key`` / ``effort`` / ``lens``), the reviewed ``artifact_ref``, and the
+    effective ``brief_ref`` so the surfaced request fully specifies the native fill.
+    ``instructions`` (CR F5) OVERRIDES the default ``_mode_instructions(mode)`` with
+    the RESOLVED effective brief — so a board invoked with a custom ``brief_ref``
+    hands the native seat the SAME acceptance brief as the runtime legs, not the
+    default. All default ``None`` — the bare standalone call is byte-unchanged
+    (#125 callers/tests unaffected).
     """
     reason, detail = _claude_leg_deferred_reason(env)
     verdict_required = mode != "advisory"
@@ -1580,7 +1613,7 @@ def native_agent_leg_request(
         mode=mode,
         reason=reason,
         detail=detail,
-        instructions=_mode_instructions(mode),
+        instructions=instructions if instructions is not None else _mode_instructions(mode),
         verdict_required=verdict_required,
         verdict_contract=(
             _REVIEW_VERDICT_CONTRACT if verdict_required else _ADVISORY_VERDICT_CONTRACT
@@ -1589,6 +1622,7 @@ def native_agent_leg_request(
         effort=effort,
         lens=lens,
         artifact_ref=artifact_ref,
+        brief_ref=brief_ref,
     )
 
 
@@ -1645,10 +1679,15 @@ def _exec_claude_tui_leg(
     ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
     real launch.
     """
-    supported, support_detail = _claude_code_support_status()
-    if not supported:
-        return "UNAVAILABLE", support_detail
-
+    # CR F4: the under-Claude-Code deferral MUST come BEFORE the local-CLI support
+    # check. Inside Claude Code the driving session fulfills the leg as its own
+    # native Task Agent (its authed session), which does NOT depend on a standalone
+    # `claude` CLI being installed/current on the host. Checking support first would
+    # return `UNAVAILABLE` + a NON-empty support detail on a Claude-Code host that
+    # lacks the local CLI — and `_run_seat`'s deferral signature is UNAVAILABLE +
+    # EMPTY text, so the native-fill request would never be attached: a silent drop.
+    # Defer first (empty text, native request emitted), THEN check local support for
+    # the run path.
     if _under_claude_code(env):
         # #92: INSIDE Claude Code, do NOT spawn a SECOND Claude TUI we cannot
         # drive. Degrade cleanly with the existing UNAVAILABLE status and EMPTY
@@ -1672,6 +1711,10 @@ def _exec_claude_tui_leg(
             "advisor-panel claude leg deferred [%s]: %s", reason_code, reason_detail
         )
         return "UNAVAILABLE", ""
+
+    supported, support_detail = _claude_code_support_status()
+    if not supported:
+        return "UNAVAILABLE", support_detail
 
     env = _subscription_env() if env is None else dict(env)
     output_file = out_dir / "panel-claude.txt"
@@ -2775,11 +2818,19 @@ def invoke_board(
         # The deferral signature is UNAVAILABLE with EMPTY text (the #92 A4
         # invariant); the support-missing UNAVAILABLE carries a non-empty detail and
         # is a genuine "no claude here", not a fillable seat. Reuse the shipped #125
-        # builder; pass the seat cognition + reviewed artifact so the request fully
-        # specifies the fill. None for every other leg (golden byte-identity holds).
-        needs_native = None
+        # builder; pass the seat cognition + reviewed artifact + the EFFECTIVE brief
+        # (CR F5: the native seat must review under the SAME acceptance contract as
+        # the runtime legs — `_resolve_brief` gives the exact `review-instructions.md`
+        # the other seats got). None for every other leg (golden byte-identity holds).
+        result = PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key)
         if leg == "claude" and status == "UNAVAILABLE" and not str(text).strip():
-            needs_native = native_agent_leg_request(
+            try:
+                effective_instructions = _resolve_brief(mode, brief_ref)
+            except (ValueError, OSError):
+                # brief_ref was already validated on the run path that reached the
+                # defer; fall back to the mode brief rather than crash the seat.
+                effective_instructions = _mode_instructions(mode)
+            request = native_agent_leg_request(
                 leg=leg,
                 mode=mode,
                 env=env_source,
@@ -2788,14 +2839,12 @@ def invoke_board(
                 effort=seat.effort,
                 lens=seat.lens,
                 artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
+                brief_ref=str(brief_ref) if isinstance(brief_ref, str) else None,
+                instructions=effective_instructions,
             )
-        return PanelLegResult(
-            leg=leg,
-            status=status,
-            text=str(text),
-            seat_key=seat.seat_key,
-            needs_native_agent=needs_native,
-        )
+            # CR F2: attach post-creation (non-field) so asdict/golden can't see it.
+            attach_native_agent_request(result, request)
+        return result
 
     # Fan the seats out concurrently (parallel by default; max_concurrency=1 →
     # sequential); results come back in SEAT ORDER (positional re-key + golden

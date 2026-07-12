@@ -1439,9 +1439,13 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # affordance — the seats a native harness can FILL itself (each carries the
     # typed `needs_native_agent` request). Exit stays floor-based (unchanged): the
     # shortfall is a REPORTING signal, not a gate flip.
+    # CR F3: derive unfilled seats PER-LEG (`not leg.usable`), never by seat_key
+    # membership. Seats are collision-aware LABELS (schema permits byte-identical
+    # seats with the SAME key), so a key-set difference would let a duplicate key —
+    # one seat OK, its twin failed — hide the failed twin: requested=2/delivered=1
+    # but zero unfilled reported = a silent drop. Per-leg is positional and exact.
     requested_seats = len(board.seats)
-    usable_seat_keys = {leg.seat_key for leg in result.usable_legs}
-    unfilled_legs = [leg for leg in result.legs if leg.seat_key not in usable_seat_keys]
+    unfilled_legs = [leg for leg in result.legs if not leg.usable]
     fillable_legs = [leg for leg in unfilled_legs if leg.needs_native_agent is not None]
     shortfall = {
         "requested_seats": requested_seats,

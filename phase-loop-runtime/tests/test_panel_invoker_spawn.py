@@ -123,7 +123,9 @@ class ClaudeTuiLegTest(unittest.TestCase):
                 ),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session") as run_tui,
             ):
-                status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle")
+                # env={} == a non-Claude host so the support check is reached (CR F4
+                # ordered the under-Claude-Code deferral BEFORE the support check).
+                status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle", env={})
 
         self.assertEqual(status, "UNAVAILABLE")
         self.assertIn("below_minimum", text)
@@ -280,17 +282,38 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         self.assertIn("AGREE", req.verdict_contract)
         # instructions carry the runtime's review brief (what the driver lacks).
         self.assertEqual(req.instructions, pi._mode_instructions("review"))
-        # JSON-serializable across a host tool boundary. ABDNATIVE (#183) added the
-        # optional seat-cognition keys (seat_key/effort/lens/artifact_ref); they are
-        # None for the bare standalone builder call.
+        # BYTE-COMPAT (CR F1): a BARE builder call (no seat cognition) serializes to
+        # the exact original 8-key shape — the additive optional keys are OMITTED
+        # when None, so #125's existing to_dict() consumers are unchanged.
         self.assertEqual(
             sorted(req.to_dict()),
-            ["artifact_ref", "detail", "effort", "instructions", "leg", "lens",
-             "mode", "model", "reason", "seat_key", "verdict_contract",
+            ["detail", "instructions", "leg", "mode", "model", "reason",
+             "verdict_contract", "verdict_required"],
+        )
+
+    def test_native_agent_leg_request_extended_shape_when_board_attached(self):
+        # ABDNATIVE (#183): when the board supplies the seat cognition, to_dict()
+        # ADDS exactly the set (non-None) optional keys — never a null placeholder.
+        req = pi.native_agent_leg_request(
+            mode="review", env={"CLAUDECODE": "1"}, model="claude-fable-5",
+            seat_key="claude:claude-fable-5:max:correctness", effort="max",
+            lens="correctness", artifact_ref="/tmp/bundle.md", brief_ref="/tmp/brief.md",
+            instructions="CUSTOM BRIEF BODY",
+        )
+        d = req.to_dict()
+        self.assertEqual(
+            sorted(d),
+            ["artifact_ref", "brief_ref", "detail", "effort", "instructions", "leg",
+             "lens", "mode", "model", "reason", "seat_key", "verdict_contract",
              "verdict_required"],
         )
-        self.assertIsNone(req.to_dict()["seat_key"])
-        self.assertIsNone(req.to_dict()["artifact_ref"])
+        self.assertEqual(d["seat_key"], "claude:claude-fable-5:max:correctness")
+        self.assertEqual(d["effort"], "max")
+        self.assertEqual(d["lens"], "correctness")
+        self.assertEqual(d["artifact_ref"], "/tmp/bundle.md")
+        self.assertEqual(d["brief_ref"], "/tmp/brief.md")
+        self.assertEqual(d["instructions"], "CUSTOM BRIEF BODY")  # F5: brief override
+        self.assertEqual(req.reason, "under_claude_code")
 
     def test_native_agent_leg_request_advisory_has_no_verdict(self):
         req = pi.native_agent_leg_request(mode="advisory", env={})
