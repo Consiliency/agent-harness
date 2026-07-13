@@ -72,6 +72,11 @@ from .train_roadmap import TrainEdge, TrainNode, TrainRoadmap
 ResolveWorkspace = Callable[[TrainNode], Path]
 ResolveOwnedPaths = Callable[[TrainNode], Sequence[str]]
 
+#: Default base branch a prebuilt node's committed work is measured against.
+#: Matches ``_check_base_branch_exists``'s default so the ahead-check and the
+#: existence-check agree on which ``origin/<base>`` to use.
+_DEFAULT_BASE = "main"
+
 
 @dataclass(frozen=True)
 class CoordinatorRuntime:
@@ -195,6 +200,60 @@ def _check_base_branch_exists(
     return None
 
 
+def _check_branch_ahead_of_base(
+    workspace: Path, node_id: str, base: str = _DEFAULT_BASE
+) -> Optional[str]:
+    """Return an error string if the branch is NOT strictly ahead of origin/<base>.
+
+    A prebuilt node must carry committed work — a clean-but-not-ahead workspace
+    has nothing to publish, which is a preflight error.  Uses the two-dot
+    ``origin/<base>..HEAD`` count (commits on HEAD not on base).
+    """
+    completed = subprocess.run(
+        ["git", "-C", str(workspace), "rev-list", "--count", f"origin/{base}..HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if completed.returncode != 0:
+        return (
+            f"[{node_id}] could not compute commits ahead of 'origin/{base}': "
+            f"{completed.stderr.strip() or 'rev-list failed'}"
+        )
+    try:
+        ahead = int(completed.stdout.strip() or "0")
+    except ValueError:
+        ahead = 0
+    if ahead <= 0:
+        return (
+            f"[{node_id}] prebuilt node workspace '{workspace}' is clean but not "
+            f"ahead of 'origin/{base}' — nothing to publish (a prebuilt node must "
+            f"carry committed work)"
+        )
+    return None
+
+
+def _prebuilt_owned_paths(
+    workspace: Path, base: str = _DEFAULT_BASE
+) -> List[str]:
+    """Return the paths a prebuilt branch changed vs origin/<base> (committed diff).
+
+    Uses the three-dot ``origin/<base>...HEAD`` diff (changes on HEAD since the
+    merge-base) so the published PR's owned-paths reflect exactly the committed
+    work.  Stubbable seam: inject ``_prebuilt_owned_paths_fn`` into
+    :func:`run_train`.
+    """
+    completed = subprocess.run(
+        ["git", "-C", str(workspace), "diff", "--name-only", f"origin/{base}...HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        return []
+    return [p.strip() for p in completed.stdout.splitlines() if p.strip()]
+
+
 def _default_preflight(
     nodes: List[TrainNode],
     resolve_workspace: ResolveWorkspace,
@@ -206,6 +265,11 @@ def _default_preflight(
     2. Per-repo: workspace clean (no uncommitted changes).
     3. Per-repo: remote ``origin`` is reachable.
     4. Per-repo: base branch ``origin/main`` exists.
+    5. Prebuilt nodes only: the branch is strictly AHEAD of ``origin/main``
+       (it carries the committed work).  A clean-but-not-ahead prebuilt node
+       is a preflight error — nothing to publish.
+
+    Execute-node checks (2–4) are unchanged; prebuilt adds check 5.
 
     A non-empty return means the entry gate is closed; zero PRs must be opened.
     """
@@ -218,11 +282,15 @@ def _default_preflight(
 
     for node in nodes:
         workspace = resolve_workspace(node)
-        for check_fn in (
+        checks = [
             _check_repo_clean,
             _check_remote_reachable,
             _check_base_branch_exists,
-        ):
+        ]
+        # Prebuilt nodes must additionally be strictly ahead of the base.
+        if getattr(node, "mode", "execute") == "prebuilt":
+            checks.append(_check_branch_ahead_of_base)
+        for check_fn in checks:
             err = check_fn(workspace, node.node_id)
             if err:
                 errors.append(err)
@@ -666,6 +734,9 @@ def run_train(
     _pr_is_open: Optional[Callable] = None,
     _live_pr_head_sha_fn: Optional[Callable] = None,
     _preflight_fn: Optional[Callable] = None,
+    # Prebuilt-node seam: derives a prebuilt branch's owned paths from its
+    # committed diff vs base.  Defaults to the live git implementation.
+    _prebuilt_owned_paths_fn: Optional[Callable] = None,
     # Broker admission builder (runtime, node, workspace, owned_paths) → AdmissionRequest.
     # Only invoked when a broker-authoritative coordinator_runtime is supplied.
     _admission_fn: Optional[Callable] = None,
@@ -753,6 +824,11 @@ def run_train(
         _live_pr_head_sha_fn if _live_pr_head_sha_fn is not None else _live_pr_head_sha
     )
     preflight_fn = _preflight_fn if _preflight_fn is not None else _default_preflight
+    prebuilt_owned_paths_fn = (
+        _prebuilt_owned_paths_fn
+        if _prebuilt_owned_paths_fn is not None
+        else _prebuilt_owned_paths
+    )
     admission_fn = _admission_fn if _admission_fn is not None else _default_build_admission
 
     # Track whether caller supplied an explicit owned-paths resolver so we know
@@ -774,6 +850,26 @@ def run_train(
 
     # --- Step 1: Topo-sort (raises ValueError on cycle) --------------------
     topo_order = roadmap.topo_order()
+
+    # Prebuilt nodes stop at drafts_open; P4 governed merge for prebuilt nodes
+    # is out of scope (the re-verify path expects per-repo phase-loop state a
+    # prebuilt node need not carry).  Fail loud BEFORE any PR opens rather than
+    # emit a misleading reverify failure mid-merge.  Follow-up: a prebuilt-aware
+    # P4 re-verify (verify the committed branch against the merged upstream pin).
+    if _merge_phase_enabled and run_mode == "governed":
+        prebuilt_ids = [
+            n.node_id for n in topo_order
+            if getattr(n, "mode", "execute") == "prebuilt"
+        ]
+        if prebuilt_ids:
+            return {
+                "status": "preflight_failed",
+                "errors": [
+                    "prebuilt node(s) are not supported under --governed (P4 merge): "
+                    f"{', '.join(prebuilt_ids)}; run without --governed to open draft "
+                    "PRs and stop at drafts_open, then merge the prebuilt PRs manually"
+                ],
+            }
 
     # --- Step 2: Train-level preflight — ALL repos, BEFORE any PR ----------
     # This is the structural guarantee that preflight failure → zero PRs:
@@ -930,138 +1026,171 @@ def run_train(
         append_record(ledger_path, LedgerRecord(node_id=nid, status="running"))
 
         try:
-            # (i) Inject upstream draft refs (IF-0-P2-2) BEFORE run_loop.
-            #     Collect injected paths to union into owned_paths after run_loop.
-            #
-            # The guard below is a defensive invariant.  It should be unreachable
-            # in a well-formed train: validate_train_loud (T-B) ensures every
-            # upstream is a declared node, and topo-sort guarantees we processed
-            # it before this node.  If the upstream failed/was blocked, run_train
-            # returns immediately and never reaches this downstream.  Kept here to
-            # make the "no silent skip" contract explicit and catch future refactors.
-            injected_channel_paths: List[str] = []
-            for edge in upstream_edges:
-                if edge.channel.kind == "order-only":
-                    # #47: an order-only edge enforces merge ORDER (via the topo
-                    # sort + sequential per-node execution) but carries no physical
-                    # channel — the downstream does not consume the upstream, so
-                    # there is nothing to inject. Skip; do not resolve a ref.
-                    continue
-                upstream_result = completed_nodes.get(edge.upstream.node_id)
-                if upstream_result is None:
-                    # Defensive: topo-order + T-B validation make this
-                    # unreachable; kept as an explicit fail-loud guard.
-                    raise RuntimeError(
-                        f"upstream ref for '{edge.upstream.node_id}' is not resolved "
-                        f"(not in completed_nodes) — cannot inject into "
-                        f"'{nid}'; the upstream must be built and published first"
-                    )
-                ref = upstream_result.get("head_sha")
-                if not ref:
-                    # Block: do NOT fall back to injecting a moving branch name.
-                    # A missing SHA means neither the live query nor the ledger
-                    # have a pinnable ref — injecting a branch name would build
-                    # the downstream against a moving target.
-                    raise RuntimeError(
-                        f"no resolvable SHA for upstream '{edge.upstream.node_id}' "
-                        f"(live head SHA query returned None and ledger head_sha is "
-                        f"None); cannot inject a moving branch name for channel "
-                        f"{edge.channel.kind!r} — resolve the upstream SHA and re-run"
-                    )
-                injected = set_upstream_ref_fn(workspace, edge.channel, ref)
-                if injected:
-                    injected_channel_paths.extend(injected)
-
-            # (ii) Invoke the unchanged per-repo run_loop.
-            #      The real run_loop returns (StateSnapshot, list[LaunchResult]).
-            result_tuple = run_loop_fn(
-                workspace, workspace / node.roadmap, run_mode=run_mode
-            )
-
-            # SHOULD-FIX 3: Guard against partial multi-phase nodes.
-            #
-            # run_loop defaults to max_phases=1, so a node with a >1-phase
-            # roadmap stops after the first phase.  If any phase is still
-            # "planned" the node is incomplete — publishing it ships a partial
-            # draft PR.  Block loudly instead.
-            #
-            # Use getattr so we're forward-compatible with test fixtures that
-            # return lightweight SimpleNamespace objects lacking a phases field.
-            _node_snapshot = result_tuple[0] if isinstance(result_tuple, tuple) else None
-            _node_phases = getattr(_node_snapshot, "phases", None)
-            if _node_phases is not None:
-                # A node may publish a draft PR only when EVERY phase reached a
-                # clean green terminal — "complete" or "awaiting_phase_closeout"
-                # (the post-run_loop success state under manual closeout).  ANY
-                # other state (planned/blocked/failed_verification/executing/
-                # human_required/unknown) means the node is incomplete or broken.
-                # Blocking only "planned" (the prior narrow guard) let a
-                # *failed*-phase node publish a draft that could later trivial-pass
-                # P4 re-verify on a no-verification plan — a combined false-green.
-                # Block loudly on any non-green phase instead.
-                _GREEN_PHASE_STATES = {"complete", "awaiting_phase_closeout"}
-                _not_green = sorted(
-                    ph for ph, st in _node_phases.items() if st not in _GREEN_PHASE_STATES
-                )
-                if _not_green:
-                    raise RuntimeError(
-                        f"node '{nid}' has phases not in a green state after run_loop "
-                        f"({', '.join(_not_green)}); refusing to publish a partial or "
-                        f"failed draft PR — every phase must reach complete/"
-                        f"awaiting_phase_closeout before publishing"
-                    )
-
-            # (iii) Determine owned paths (Finding #1).
-            #       If the caller supplied an explicit resolver, honour it.
-            #       Otherwise use the snapshot's produced/owned paths so the
-            #       published PR contains the actual implementation, not just
-            #       the roadmap file.
-            if _explicit_owned_paths:
-                owned_paths = list(resolve_owned_paths(node))  # type: ignore[arg-type]
-            else:
-                snapshot = result_tuple[0] if isinstance(result_tuple, tuple) else None
-                if snapshot is not None:
-                    produced = (
-                        getattr(snapshot, "phase_owned_dirty_paths", None)
-                        or getattr(snapshot, "dirty_paths", None)
-                        or ()
-                    )
-                    owned_paths = list(produced)
+            if getattr(node, "mode", "execute") == "prebuilt":
+                # Prebuilt node: land already-committed, independently-verified
+                # work.  NO upstream injection (it would dirty the clean tree and
+                # force a re-commit), NO run_loop (no executor dispatch), NO
+                # snapshot guard.  owned_paths come from the committed diff vs
+                # base (or an explicit resolver); publish pushes the existing
+                # branch WITHOUT a new commit (prebuilt=True).
+                if _explicit_owned_paths:
+                    owned_paths = list(resolve_owned_paths(node))  # type: ignore[arg-type]
                 else:
-                    owned_paths = []
-
-            # Union the coordinator-injected channel paths into owned_paths so
-            # the pin/submodule change always ships in the PR even if run_loop's
-            # snapshot doesn't include the injected file (Finding #6 / union fix).
-            # de-duplicate while preserving order (snapshot paths first).
-            if injected_channel_paths:
-                seen = set(owned_paths)
-                for p in injected_channel_paths:
-                    if p not in seen:
-                        owned_paths.append(p)
-                        seen.add(p)
-
-            # (iv) Publish as draft PR via the P1 runtime primitive.
-            #      draft=True is structural — P3 never merges.
-            pr_body = _build_pr_body(node, topo_order, completed_nodes, upstream_edges)
-            publish_kwargs: Dict[str, object] = {
-                "draft": True,  # P3 invariant: draft-only, never merge
-                "pr_body": pr_body,
-            }
-            # Route the publish through the broker's admission+verb path when a
-            # broker-authoritative runtime is supplied.  Past the line-699 guard,
-            # coordinator_runtime is not None ⟹ broker_client is not None.  Legacy
-            # callers (no runtime) publish exactly as before — no broker kwargs.
-            if coordinator_runtime is not None:
-                publish_kwargs["broker_client"] = coordinator_runtime.broker_client
-                publish_kwargs["admission"] = admission_fn(
-                    coordinator_runtime, node, workspace, owned_paths
+                    owned_paths = list(prebuilt_owned_paths_fn(workspace, _DEFAULT_BASE))
+                pr_body = _build_pr_body(node, topo_order, completed_nodes, upstream_edges)
+                publish_kwargs: Dict[str, object] = {
+                    "draft": True,  # P3 invariant: draft-only, never merge
+                    "pr_body": pr_body,
+                    "prebuilt": True,
+                }
+                # Route the prebuilt publish through the broker EXACTLY as the
+                # execute path does: a broker-authoritative coordinator_runtime
+                # supplies the client + a per-node admission.  Without a
+                # broker_client the publish primitive fails closed
+                # (broker_required) — a prebuilt node never does a direct push.
+                if coordinator_runtime is not None:
+                    publish_kwargs["broker_client"] = coordinator_runtime.broker_client
+                    publish_kwargs["admission"] = admission_fn(
+                        coordinator_runtime, node, workspace, owned_paths
+                    )
+                publish_result = publish_fn(
+                    workspace,
+                    owned_paths,
+                    **publish_kwargs,
                 )
-            publish_result = publish_fn(
-                workspace,
-                owned_paths,
-                **publish_kwargs,
-            )
+            else:
+                # (i) Inject upstream draft refs (IF-0-P2-2) BEFORE run_loop.
+                #     Collect injected paths to union into owned_paths after run_loop.
+                #
+                # The guard below is a defensive invariant.  It should be unreachable
+                # in a well-formed train: validate_train_loud (T-B) ensures every
+                # upstream is a declared node, and topo-sort guarantees we processed
+                # it before this node.  If the upstream failed/was blocked, run_train
+                # returns immediately and never reaches this downstream.  Kept here to
+                # make the "no silent skip" contract explicit and catch future refactors.
+                injected_channel_paths: List[str] = []
+                for edge in upstream_edges:
+                    if edge.channel.kind == "order-only":
+                        # #47: an order-only edge enforces merge ORDER (via the topo
+                        # sort + sequential per-node execution) but carries no physical
+                        # channel — the downstream does not consume the upstream, so
+                        # there is nothing to inject. Skip; do not resolve a ref.
+                        continue
+                    upstream_result = completed_nodes.get(edge.upstream.node_id)
+                    if upstream_result is None:
+                        # Defensive: topo-order + T-B validation make this
+                        # unreachable; kept as an explicit fail-loud guard.
+                        raise RuntimeError(
+                            f"upstream ref for '{edge.upstream.node_id}' is not resolved "
+                            f"(not in completed_nodes) — cannot inject into "
+                            f"'{nid}'; the upstream must be built and published first"
+                        )
+                    ref = upstream_result.get("head_sha")
+                    if not ref:
+                        # Block: do NOT fall back to injecting a moving branch name.
+                        # A missing SHA means neither the live query nor the ledger
+                        # have a pinnable ref — injecting a branch name would build
+                        # the downstream against a moving target.
+                        raise RuntimeError(
+                            f"no resolvable SHA for upstream '{edge.upstream.node_id}' "
+                            f"(live head SHA query returned None and ledger head_sha is "
+                            f"None); cannot inject a moving branch name for channel "
+                            f"{edge.channel.kind!r} — resolve the upstream SHA and re-run"
+                        )
+                    injected = set_upstream_ref_fn(workspace, edge.channel, ref)
+                    if injected:
+                        injected_channel_paths.extend(injected)
+
+                # (ii) Invoke the unchanged per-repo run_loop.
+                #      The real run_loop returns (StateSnapshot, list[LaunchResult]).
+                result_tuple = run_loop_fn(
+                    workspace, workspace / node.roadmap, run_mode=run_mode
+                )
+
+                # SHOULD-FIX 3: Guard against partial multi-phase nodes.
+                #
+                # run_loop defaults to max_phases=1, so a node with a >1-phase
+                # roadmap stops after the first phase.  If any phase is still
+                # "planned" the node is incomplete — publishing it ships a partial
+                # draft PR.  Block loudly instead.
+                #
+                # Use getattr so we're forward-compatible with test fixtures that
+                # return lightweight SimpleNamespace objects lacking a phases field.
+                _node_snapshot = result_tuple[0] if isinstance(result_tuple, tuple) else None
+                _node_phases = getattr(_node_snapshot, "phases", None)
+                if _node_phases is not None:
+                    # A node may publish a draft PR only when EVERY phase reached a
+                    # clean green terminal — "complete" or "awaiting_phase_closeout"
+                    # (the post-run_loop success state under manual closeout).  ANY
+                    # other state (planned/blocked/failed_verification/executing/
+                    # human_required/unknown) means the node is incomplete or broken.
+                    # Blocking only "planned" (the prior narrow guard) let a
+                    # *failed*-phase node publish a draft that could later trivial-pass
+                    # P4 re-verify on a no-verification plan — a combined false-green.
+                    # Block loudly on any non-green phase instead.
+                    _GREEN_PHASE_STATES = {"complete", "awaiting_phase_closeout"}
+                    _not_green = sorted(
+                        ph for ph, st in _node_phases.items() if st not in _GREEN_PHASE_STATES
+                    )
+                    if _not_green:
+                        raise RuntimeError(
+                            f"node '{nid}' has phases not in a green state after run_loop "
+                            f"({', '.join(_not_green)}); refusing to publish a partial or "
+                            f"failed draft PR — every phase must reach complete/"
+                            f"awaiting_phase_closeout before publishing"
+                        )
+
+                # (iii) Determine owned paths (Finding #1).
+                #       If the caller supplied an explicit resolver, honour it.
+                #       Otherwise use the snapshot's produced/owned paths so the
+                #       published PR contains the actual implementation, not just
+                #       the roadmap file.
+                if _explicit_owned_paths:
+                    owned_paths = list(resolve_owned_paths(node))  # type: ignore[arg-type]
+                else:
+                    snapshot = result_tuple[0] if isinstance(result_tuple, tuple) else None
+                    if snapshot is not None:
+                        produced = (
+                            getattr(snapshot, "phase_owned_dirty_paths", None)
+                            or getattr(snapshot, "dirty_paths", None)
+                            or ()
+                        )
+                        owned_paths = list(produced)
+                    else:
+                        owned_paths = []
+
+                # Union the coordinator-injected channel paths into owned_paths so
+                # the pin/submodule change always ships in the PR even if run_loop's
+                # snapshot doesn't include the injected file (Finding #6 / union fix).
+                # de-duplicate while preserving order (snapshot paths first).
+                if injected_channel_paths:
+                    seen = set(owned_paths)
+                    for p in injected_channel_paths:
+                        if p not in seen:
+                            owned_paths.append(p)
+                            seen.add(p)
+
+                # (iv) Publish as draft PR via the P1 runtime primitive.
+                #      draft=True is structural — P3 never merges.
+                pr_body = _build_pr_body(node, topo_order, completed_nodes, upstream_edges)
+                publish_kwargs: Dict[str, object] = {
+                    "draft": True,  # P3 invariant: draft-only, never merge
+                    "pr_body": pr_body,
+                }
+                # Route the publish through the broker's admission+verb path when a
+                # broker-authoritative runtime is supplied.  Past the line-699 guard,
+                # coordinator_runtime is not None ⟹ broker_client is not None.  Legacy
+                # callers (no runtime) publish exactly as before — no broker kwargs.
+                if coordinator_runtime is not None:
+                    publish_kwargs["broker_client"] = coordinator_runtime.broker_client
+                    publish_kwargs["admission"] = admission_fn(
+                        coordinator_runtime, node, workspace, owned_paths
+                    )
+                publish_result = publish_fn(
+                    workspace,
+                    owned_paths,
+                    **publish_kwargs,
+                )
 
         except Exception as exc:
             # Inject or run_loop or publish raised — mark blocked so the node

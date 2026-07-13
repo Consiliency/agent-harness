@@ -814,6 +814,81 @@ class TestUnsupportedChannelKindInTrain:
 
 
 # ---------------------------------------------------------------------------
+# Prebuilt-node mode + workspace attribute (feat/prebuilt-node-broker-dispatch)
+
+PREBUILT_TRAIN_MD = """\
+# Release Train: prebuilt-feature
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+**Mode:** prebuilt
+
+### Node: repo-b / specs/plan-b.md
+
+**Depends on:** repo-a / specs/plan-a.md
+**Channel:** submodule path=vendor/repo-a
+**Mode:** prebuilt
+"""
+
+UNKNOWN_MODE_TRAIN_MD = """\
+# Release Train: bad-mode
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+**Mode:** teleport
+"""
+
+WORKSPACE_ATTR_TRAIN_MD = """\
+# Release Train: workspace-attr
+
+## Nodes
+
+### Node: my-service / specs/plan.md
+
+**Depends on:** (none)
+**Channel:** (none)
+**Mode:** prebuilt
+**Workspace:** /mnt/vol/checkouts/my-service
+"""
+
+
+class TestNodeModeAndWorkspaceAttrs:
+    """``**Mode:**`` and ``**Workspace:**`` node attributes (prebuilt feature)."""
+
+    def test_default_mode_is_execute(self) -> None:
+        r = parse_train_roadmap(VALID_TRAIN_MD)
+        assert all(n.mode == "execute" for n in r.nodes)
+        assert all(n.workspace is None for n in r.nodes)
+
+    def test_mode_prebuilt_parses(self) -> None:
+        r = parse_train_roadmap(PREBUILT_TRAIN_MD)
+        assert [n.mode for n in r.nodes] == ["prebuilt", "prebuilt"]
+
+    def test_unknown_mode_coded_node_named_error(self) -> None:
+        # Coded (T-G) + names the offending node; not a generic parse error.
+        with pytest.raises(ValueError, match=r"\(T-G\).*repo-a/specs/plan-a\.md.*teleport"):
+            parse_train_roadmap(UNKNOWN_MODE_TRAIN_MD)
+
+    def test_workspace_attribute_parses(self) -> None:
+        r = parse_train_roadmap(WORKSPACE_ATTR_TRAIN_MD)
+        assert r.nodes[0].workspace == "/mnt/vol/checkouts/my-service"
+        assert r.nodes[0].mode == "prebuilt"
+
+    def test_prebuilt_train_validates_clean(self) -> None:
+        # Mode/Workspace attributes do not affect edge/channel validation.
+        r = parse_train_roadmap(PREBUILT_TRAIN_MD)
+        assert validate_train(r) == []
+
+
+# ---------------------------------------------------------------------------
 # agent-harness#60 — roadmap-format-handling half: opaque parse/validate
 # failures on authoring-guide-shaped input must become actionable diagnostics
 # that name the offending node (and, for duplicates, avoid a false T-D cycle).

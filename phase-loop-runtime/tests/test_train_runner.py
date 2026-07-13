@@ -1004,6 +1004,63 @@ class TestCLIRegistration:
         args = parser.parse_args(["run-train", "--train", "t.md", "--governed"])
         assert args.governed is True
 
+    def test_run_train_workspace_override_flag_repeatable(self):
+        """--workspace repo=PATH is repeatable and collected as a list."""
+        from phase_loop_runtime.cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args([
+            "run-train", "--train", "t.md",
+            "--workspace", "svc-a=/mnt/vol/svc-a",
+            "--workspace", "svc-b=/other/svc-b",
+        ])
+        assert args.workspace_overrides == ["svc-a=/mnt/vol/svc-a", "svc-b=/other/svc-b"]
+
+    def test_cli_workspace_override_resolves_arbitrary_path(self, tmp_path: Path):
+        """The CLI resolves a node to the --workspace override / **Workspace:** attr.
+
+        Precedence: --workspace flag > node.workspace attribute > <root>/<repo>.
+        We patch run_train to capture the resolve_workspace callable the CLI
+        builds, then exercise its precedence directly.
+        """
+        from phase_loop_runtime.cli import main
+        from phase_loop_runtime.train_roadmap import TrainNode
+
+        train_md = (
+            "# Release Train: ws-override\n\n## Nodes\n\n"
+            "### Node: svc-a / specs/a.md\n\n"
+            "**Depends on:** (none)\n**Channel:** (none)\n\n"
+            "### Node: svc-b / specs/b.md\n\n"
+            "**Depends on:** (none)\n**Channel:** (none)\n"
+            "**Workspace:** /attr/svc-b\n\n"
+            "### Node: svc-c / specs/c.md\n\n"
+            "**Depends on:** (none)\n**Channel:** (none)\n"
+        )
+        train_file = tmp_path / "ws-train.md"
+        train_file.write_text(train_md, encoding="utf-8")
+
+        captured: dict = {}
+
+        def _capture(roadmap, ledger_path, **kwargs):
+            captured["resolve"] = kwargs["resolve_workspace"]
+            return {"status": "completed", "nodes": {}}
+
+        with patch("phase_loop_runtime.train_runner.run_train", side_effect=_capture):
+            main([
+                "run-train", "--train", str(train_file),
+                "--workspace-root", "/root",
+                "--workspace", "svc-a=/mnt/vol/svc-a",
+                "--ledger-dir", str(tmp_path / "ledger"),
+            ])
+
+        resolve = captured["resolve"]
+        # 1. --workspace flag wins.
+        assert resolve(TrainNode(repo="svc-a", roadmap="specs/a.md")) == Path("/mnt/vol/svc-a")
+        # 2. **Workspace:** attribute used when no flag override.
+        assert resolve(TrainNode(repo="svc-b", roadmap="specs/b.md", workspace="/attr/svc-b")) == Path("/attr/svc-b")
+        # 3. Default <workspace-root>/<repo> otherwise.
+        assert resolve(TrainNode(repo="svc-c", roadmap="specs/c.md")) == Path("/root/svc-c")
+
     def test_run_train_requires_train_flag(self):
         """run-train without --train must exit with error."""
         from phase_loop_runtime.cli import build_parser

@@ -38,6 +38,62 @@ derives a topological execution order, and drives:
 One `### Node:` block per repo/plan pair. Node identifiers
 (`<repo> / <plan-path>`) must be unique within the train.
 
+### Optional node attributes
+
+| Attribute | Values | Default | Meaning |
+|-----------|--------|---------|---------|
+| `**Mode:**` | `execute` \| `prebuilt` | `execute` | `execute` runs the per-repo `run_loop` to build the node's phase, then publishes what it produced. `prebuilt` lands an **already-committed, independently-verified branch** WITHOUT re-executing the phase (no executor dispatch) — see below. |
+| `**Workspace:**` | absolute path | `<workspace-root>/<repo>` | Per-node checkout location, for nodes that live on arbitrary paths/volumes. Overridden by the `--workspace <repo>=<path>` CLI flag. |
+
+An unknown `**Mode:**` value is rejected at parse time with a coded, node-named
+error (`(T-G) node '<id>' declares unknown mode ...`) — zero PRs open.
+
+### Prebuilt nodes
+
+A `**Mode:** prebuilt` node publishes a branch that already carries the
+committed work. The coordinator:
+
+1. **Preflights** the workspace as CLEAN (no uncommitted changes) AND strictly
+   **ahead of `origin/main`** (it carries the committed work). A clean-but-not-ahead
+   prebuilt node is a preflight error — nothing to publish (zero PRs open).
+2. **Skips `run_loop`** entirely — no executor dispatch, no upstream injection
+   (injection would dirty the clean tree and force a re-commit).
+3. Derives the PR's owned paths from the **committed diff** vs base
+   (`git diff --name-only origin/main...HEAD`).
+4. **Publishes via the credential broker** — the same broker-mediated,
+   exact-head-verified path used by execute nodes. A prebuilt node run under a
+   broker-authoritative coordinator pushes the existing branch (by name, no
+   `--force`) and opens a **draft PR** with **no new commit**. Without a broker
+   the publish fails closed (`broker_required`); a prebuilt node never does a
+   direct push.
+
+Prebuilt nodes stop at `drafts_open` like execute nodes. **P4 governed merge for
+prebuilt nodes is not yet supported**: running a train that contains a prebuilt
+node with `--governed` is rejected up front (zero PRs). Open the drafts without
+`--governed`, then merge the prebuilt PRs manually. (Follow-up: a prebuilt-aware
+P4 re-verify that checks the committed branch against the merged upstream pin.)
+
+Example prebuilt train (each node's branch already carries verified commits):
+
+```markdown
+# Release Train: land-prebuilt-work
+
+## Nodes
+
+### Node: platform-lib / specs/feature-x.md
+
+**Depends on:** (none)
+**Channel:** (none)
+**Mode:** prebuilt
+
+### Node: app-service / specs/feature-x-consumer.md
+
+**Depends on:** platform-lib / specs/feature-x.md
+**Channel:** submodule path=vendor/platform-lib
+**Mode:** prebuilt
+**Workspace:** /mnt/workspace/checkouts/app-service
+```
+
 ## Channel types
 
 A channel tells the coordinator how to update the downstream workspace's
@@ -128,6 +184,11 @@ phase-loop run-train --train train.md --governed
 
 # Resume after a blocked node (re-run the same command):
 phase-loop run-train --train train.md --governed
+
+# Point a node at an arbitrary checkout path (repeatable; overrides
+# **Workspace:** and --workspace-root):
+phase-loop run-train --train train.md \
+    --workspace app-service=/mnt/workspace/checkouts/app-service
 ```
 
 The coordinator is crash-resumable: nodes already merged are skipped; blocked

@@ -654,6 +654,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_train_sub.add_argument(
+        "--workspace",
+        dest="workspace_overrides",
+        action="append",
+        default=None,
+        metavar="repo=PATH",
+        help=(
+            "Per-node workspace override: map a node's repo to an arbitrary "
+            "absolute checkout path (e.g. a different volume). Repeatable: "
+            "--workspace my-service=/mnt/vol/my-service. Takes precedence over "
+            "a node's **Workspace:** attribute and the --workspace-root default."
+        ),
+    )
+    run_train_sub.add_argument(
         "--ledger-dir",
         default=None,
         metavar="DIR",
@@ -2886,9 +2899,29 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
     # run_mode mirrors how 'run' handles --governed (cli.py:796)
     run_mode = "governed" if bool(getattr(args, "governed", False)) else "autonomous"
 
-    # Workspace resolution: <workspace-root>/<node.repo>
+    # Workspace resolution precedence (highest first):
+    #   1. --workspace <repo>=<path> CLI override (arbitrary absolute paths)
+    #   2. the node's **Workspace:** attribute (from the train roadmap)
+    #   3. <workspace-root>/<node.repo>  (the default)
     workspace_root = Path(getattr(args, "workspace_root", None) or ".")
+    workspace_overrides: dict = {}
+    for spec in getattr(args, "workspace_overrides", None) or []:
+        if "=" not in spec:
+            parser.error(f"--workspace expects 'repo=PATH', got {spec!r}")
+        repo_key, _, path_val = spec.partition("=")
+        repo_key = repo_key.strip()
+        path_val = path_val.strip()
+        if not repo_key or not path_val:
+            parser.error(f"--workspace expects a non-empty 'repo=PATH', got {spec!r}")
+        workspace_overrides[repo_key] = Path(path_val)
+
     def _resolve_workspace(node) -> Path:
+        override = workspace_overrides.get(node.repo)
+        if override is not None:
+            return override
+        node_ws = getattr(node, "workspace", None)
+        if node_ws:
+            return Path(node_ws)
         return workspace_root / node.repo
 
     # Ledger path — must not be inside any repo's .phase-loop/
