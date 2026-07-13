@@ -27,6 +27,17 @@ from phase_loop_runtime.train_ledger import (
     ConvergenceResultStatus,
     normalize_legacy_ledger_record,
 )
+from phase_loop_runtime.convergence.event_log import (
+    RecoveredTrainState,
+    default_convergence_event_log_path,
+    read_convergence_events,
+    record_intent,
+    record_outcome,
+    recover_train_state,
+)
+from phase_loop_runtime.convergence.reconcile import ExactStateProbes, ReconciliationVerdict, reconcile_train_state
+from phase_loop_runtime.convergence.status import TrainStatusSnapshot, build_train_status, render_train_status
+from phase_loop_runtime.convergence.adapters import AdapterExecutionRequest, run_claude_adapter, run_codex_adapter, run_outside_agent_adapter
 
 __all__ = [
     "AdmissionRequest",
@@ -50,4 +61,20 @@ __all__ = [
     "evaluate_resource_isolation",
     "normalize_legacy_ledger_record",
     "validate_terminal_transition",
+    "AdapterExecutionRequest",
+    "ExactStateProbes",
+    "RecoveredTrainState",
+    "ReconciliationVerdict",
+    "TrainStatusSnapshot",
+    "build_train_status",
+    "default_convergence_event_log_path",
+    "read_convergence_events",
+    "reconcile_train_state",
+    "record_intent",
+    "record_outcome",
+    "recover_train_state",
+    "render_train_status",
+    "run_claude_adapter",
+    "run_codex_adapter",
+    "run_outside_agent_adapter",
 ]
