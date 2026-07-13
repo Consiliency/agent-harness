@@ -4,6 +4,21 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### Convergence
+
+- Enable live `publish_committed_branch`/`github` verb (broker-mediated,
+  exact-head-verified, fail-closed); other verbs remain gated. Flip the single
+  `publish_committed_branch`/`github` provider contract to `SUPPORTED`
+  (`convergence/provider_contracts.py`) and add an opt-in
+  `convergence.broker.build_github_broker_client(repo_path, *, broker_root, run=…)`
+  helper that wires `LinearizableAdmissionStore` + `BrokerEvidenceStore` +
+  `GitHubBrokerAdapter` + `BrokerService` for a broker-authoritative
+  `CoordinatorRuntime`. Every other verb×provider (merge, release, package,
+  publish, and all non-github providers) stays `HUMAN_EXECUTED` and is refused
+  before start; legacy trains (no coordinator runtime) publish unchanged.
+
 ## [0.7.5] - 2026-07-13
 
 ### Convergence: crash-safe cross-repo coordinator + credential broker (verb-gated skeleton)

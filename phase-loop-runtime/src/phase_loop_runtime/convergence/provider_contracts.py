@@ -74,14 +74,41 @@ class ProviderCompletionContract:
                 raise ValueError("supported operations require terminal evidence")
 
 
-# Repository-derived mutation inventory: current GitHub CLI mutation paths have no
-# contractually sufficient terminal no-effect guarantee, so all remain human-executed.
+# Repository-derived mutation inventory.  The full pair-space stays enumerated so
+# inventory-completeness tests keep every verb×provider explicitly classified.
 AUTOMATED_PROVIDER_VERBS = frozenset(
     (verb, "github")
     for verb in ("publish", "merge", "release", "package", "publish_committed_branch")
 )
 
-PROVIDER_COMPLETION_CLASSIFICATIONS = tuple(
+# The ONE live-enabled verb.  ``publish_committed_branch``/``github`` is SUPPORTED
+# because ``GitHubBrokerAdapter`` supplies contractually-sufficient terminal
+# evidence: after a by-name (non-force) push it READS the remote and only reports
+# the effect terminally observed when the remote branch head equals the pushed
+# head_sha AND the PR's ``headRefOid`` equals it — resolving the real PR url.  Any
+# read-failure / mismatch / ambiguous push fails closed to
+# ``outcome_ambiguous_blocked`` (never inferred as no-effect, never fabricated as
+# success — v5 rule).  ``BrokerService`` de-dups on the canonical
+# ``(repo, branch, head_sha)`` triple with idempotent replay recovery.
+_SUPPORTED_GITHUB_PUBLISH = ProviderCompletionContract(
+    verb="publish_committed_branch",
+    provider="github",
+    classification=ProviderCompletionClassification.SUPPORTED,
+    disposition=ProviderAutomationDisposition.AUTOMATED,
+    status_endpoint="gh pr list --head <branch> --json headRefOid,url (+ git ls-remote origin refs/heads/<branch>)",
+    idempotency_key_supported="canonical (repo, branch, head_sha) triple; repeat under a fresh admission key replays the prior result",
+    terminal_success_evidence="remote branch head == pushed head_sha AND PR headRefOid == pushed head_sha -> effect_terminal_observed with the real PR url",
+    terminal_no_effect_evidence="ONLY a provider-confirmed rejection is no-effect; a failed/ambiguous push is NOT no-effect and fails closed to outcome_ambiguous_blocked (v5)",
+    non_late_commit_guarantee="by-name non-force push linearizes onto origin/<branch> or is rejected; there is no delayed/late apply after the ls-remote read",
+    guaranteed_processing_horizon="N/A — synchronous git push + gh reads; no asynchronous provider processing queue to drain",
+    expected_version_predicate="origin/<branch> head == pushed head_sha (exact-published-head match)",
+    revocation_affects_accepted="no — an accepted (linearized) push observed at head_sha is not revoked by the broker; only ambiguity fails closed",
+    stabilization_drain_interval="N/A — verification is synchronous; no stabilization/drain window",
+)
+
+# Every OTHER verb×provider stays HUMAN_EXECUTED (merge, release, package, publish
+# on github, and — by absence — all non-github providers) so the broker refuses it.
+_HUMAN_EXECUTED_VERBS = tuple(
     ProviderCompletionContract(
         verb=verb,
         provider=provider,
@@ -98,7 +125,10 @@ PROVIDER_COMPLETION_CLASSIFICATIONS = tuple(
         stabilization_drain_interval="N/A",
     )
     for verb, provider in sorted(AUTOMATED_PROVIDER_VERBS)
+    if (verb, provider) != ("publish_committed_branch", "github")
 )
+
+PROVIDER_COMPLETION_CLASSIFICATIONS = (_SUPPORTED_GITHUB_PUBLISH, *_HUMAN_EXECUTED_VERBS)
 
 
 def validate_terminal_transition(
