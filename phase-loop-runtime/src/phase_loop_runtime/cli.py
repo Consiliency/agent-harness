@@ -2934,11 +2934,42 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
 
     as_json = bool(getattr(args, "json", False))
 
+    # Build a broker-authoritative coordinator runtime so publish actually opens PRs.
+    # Without a broker_client, publish_from_worktree fail-closes `broker_required` and
+    # the train opens ZERO PRs.  The routing broker binds per BrokerRequest.repo (the
+    # node's resolved workspace) AND keeps a PER-REPO admission/evidence store, so one
+    # node's ambiguous outcome fail-closes only that repo.  The broker root is namespaced
+    # by the roadmap's RESOLVED PATH hash (not the bare filename stem): two distinct
+    # roadmap files — even same-stemmed, even under one explicit `--ledger-dir` — get
+    # distinct broker roots, so an ambiguous outcome in one train can never fail-close a
+    # different train.  Keying on the stable path (not the content digest) keeps a
+    # resumed train on its own epoch across roadmap edits.  It lives under the ledger dir,
+    # which the roadmap author keeps outside any repo's .phase-loop/ (INV-4); it is NOT
+    # machine-enforced to be outside every node worktree, so keep train roadmaps + their
+    # ledger dir out of the checkouts.
+    import hashlib
+
+    from .convergence.broker import build_routing_broker_client
+
+    train_key = hashlib.sha256(str(train_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    coordinator_root = ledger_dir / "broker" / train_key
+    coordinator_root.mkdir(parents=True, exist_ok=True)
+    roadmap_digest = hashlib.sha256(train_path.read_bytes()).hexdigest()
+    coordinator_runtime = train_runner.CoordinatorRuntime(
+        train_id=train_path.stem,
+        coordinator_root=coordinator_root,
+        roadmap_path=str(train_path),
+        roadmap_digest=roadmap_digest,
+        workspace_id=train_path.stem,
+        broker_client=build_routing_broker_client(broker_root=coordinator_root),
+    )
+
     result = train_runner.run_train(
         roadmap,
         ledger_path,
         run_mode=run_mode,
         resolve_workspace=_resolve_workspace,
+        coordinator_runtime=coordinator_runtime,
         _merge_phase_enabled=True,  # P4 gate: autonomous→drafts_open, governed→merge
     )
 

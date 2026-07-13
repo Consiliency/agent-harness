@@ -1097,6 +1097,67 @@ class TestCLIRegistration:
             f"call kwargs: {call_kwargs}"
         )
 
+    def test_cli_main_run_train_wires_a_routing_broker(self, tmp_path: Path):
+        """run-train must pass a broker-authoritative coordinator_runtime (routing broker).
+
+        Without a broker_client, publish_from_worktree fail-closes `broker_required`
+        and the train opens ZERO PRs — the shipped-CLI gap the SPECPKGMIN PILOT
+        surfaced (agent-harness#205/#206). The runtime must carry a routing broker
+        (one client serving every repo) whose durable state lives OUTSIDE any repo.
+        """
+        from phase_loop_runtime.cli import main
+
+        tmp_train = tmp_path / "smoke-train.md"
+        tmp_train.write_text(TRAIN_2NODE_MD, encoding="utf-8")
+
+        with patch("phase_loop_runtime.train_runner.run_train") as mock_run_train:
+            mock_run_train.return_value = {"status": "drafts_open", "nodes": {}}
+            exit_code = main(["run-train", "--train", str(tmp_train)])
+
+        assert exit_code == 0, f"Expected exit 0; got {exit_code}"
+        runtime = mock_run_train.call_args.kwargs.get("coordinator_runtime")
+        assert runtime is not None, "run-train must pass a coordinator_runtime"
+        assert runtime.broker_client is not None, (
+            "coordinator_runtime must carry a broker_client, else publish is broker_required"
+        )
+        assert type(runtime.broker_client).__name__ == "_RoutingBrokerService", (
+            "must be the per-request routing broker so ONE client serves a multi-repo train"
+        )
+        assert runtime.train_id and runtime.roadmap_digest
+        # Durable broker state lives under the ledger dir, namespaced PER TRAIN by the
+        # roadmap's resolved-path hash (NOT the bare stem) so two same-stemmed roadmaps
+        # sharing a ledger dir can't fail-close each other.
+        coord = Path(runtime.coordinator_root)
+        assert coord.parent == tmp_path / ".train-ledger" / "broker"
+        assert len(coord.name) == 16 and all(c in "0123456789abcdef" for c in coord.name)
+        import hashlib
+        expected = hashlib.sha256(str(tmp_train.resolve()).encode("utf-8")).hexdigest()[:16]
+        assert coord.name == expected
+
+    def test_cli_same_stem_trains_get_distinct_broker_roots(self, tmp_path: Path):
+        """Two same-stemmed roadmaps sharing an explicit --ledger-dir must get DISTINCT
+        broker roots. Otherwise one train's PERMANENT ambiguous epoch (durable in
+        evidence.jsonl) fail-closes the other — the exact cross-train poison the
+        per-repo/per-train isolation set out to prevent (agent-harness#208 re-CR).
+        """
+        from phase_loop_runtime.cli import main
+
+        shared_ledger = tmp_path / "shared-ledger"
+        roots = []
+        for sub in ("a", "b"):
+            directory = tmp_path / sub
+            directory.mkdir()
+            train = directory / "release.md"  # SAME stem, different path
+            train.write_text(TRAIN_2NODE_MD, encoding="utf-8")
+            with patch("phase_loop_runtime.train_runner.run_train") as mock_run_train:
+                mock_run_train.return_value = {"status": "drafts_open", "nodes": {}}
+                assert main(["run-train", "--train", str(train), "--ledger-dir", str(shared_ledger)]) == 0
+            roots.append(Path(mock_run_train.call_args.kwargs["coordinator_runtime"].coordinator_root))
+
+        assert roots[0] != roots[1], (
+            "same-stem trains sharing a ledger dir must NOT share a broker root (epoch poison)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 8. Finding #1: run_loop snapshot paths are used (real seam, not just called)

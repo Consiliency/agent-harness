@@ -4,6 +4,44 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### Convergence — the run-train live path now works from the shipped CLI
+
+Completes the broker live-path the SPECPKGMIN pilot surfaced as unusable from the
+shipped CLI. Together these make `phase-loop run-train` actually open draft PRs.
+
+- **`gh pr create` is now a complete non-interactive argv (fix).** The broker's
+  `GitHubBrokerAdapter` issued `gh pr create --draft` with no `--title`/`--body`,
+  which aborts when gh is not attached to a tty ("must provide --title and --body")
+  — the branch pushed but no PR opened (`outcome_ambiguous_blocked`). It now derives
+  a title from the branch HEAD commit subject, passes the request's `pr_body` as
+  `--body`, pins `--head <branch>`, and appends `--draft` for draft requests.
+  (agent-harness#207)
+- **`build_routing_broker_client` — one broker client serves a MULTI-repo train
+  (new).** `build_github_broker_client` binds one `repo_path` at construction, so a
+  single client could only serve one repo; a cross-repo `run_train` mis-bound
+  `git -C <wrong-repo>` on node 2+. The routing client binds a fresh
+  `GitHubBrokerAdapter` per `BrokerRequest.repo` (the node's resolved workspace) AND
+  keeps a **per-repo** admission + evidence store under `broker_root/<repo-slug>`.
+  Per-repo stores are load-bearing for safety, not just routing: `epoch_blocked` is a
+  global scan over a store and an ambiguous terminal is durable + permanent and can be
+  tripped by a benign transient (e.g. a one-off `ls-remote`/`gh` network hiccup →
+  `remote-read-failed`/`pr-unconfirmed`), so a shared store would let one repo's
+  transient permanently fail-close every other repo. Per-repo stores scope the
+  fail-closed epoch to exactly the repo whose mutation became ambiguous.
+  (agent-harness#206)
+- **`run-train` CLI now wires a broker-authoritative coordinator (fix).**
+  `_run_train_command` builds a `CoordinatorRuntime` carrying the routing broker and
+  passes it to `run_train`. Previously the CLI passed no runtime, so every publish
+  fail-closed `broker_required` and the train opened ZERO PRs. The broker root is
+  namespaced **per train by the roadmap's resolved-path hash**
+  (`<ledger-dir>/broker/<path-hash>`) — so two distinct roadmap files, even
+  same-stemmed and even under one explicit `--ledger-dir`, get distinct broker roots
+  and an ambiguous outcome in one train never fail-closes a different train. (Keying on
+  the stable path rather than the content digest keeps a resumed train on its own epoch
+  across roadmap edits.) (agent-harness#205)
+
 ## [0.7.7] - 2026-07-13
 
 ### run-train — prebuilt node publish mode (broker-mediated)
