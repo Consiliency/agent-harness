@@ -45,12 +45,27 @@ from .cross_repo_channel import ChannelDescriptor, parse_channel_line
 # ---------------------------------------------------------------------------
 # Data model — IF-0-P2-1
 
+#: Supported node modes.  ``execute`` (default) runs the per-repo run_loop to
+#: build the node's phase, then publishes what it produced.  ``prebuilt`` lands
+#: an already-committed, independently-verified branch WITHOUT re-executing the
+#: phase (no executor dispatch) — see ``train_runner`` for the prebuilt path.
+SUPPORTED_NODE_MODES = frozenset({"execute", "prebuilt"})
+
+
 @dataclass(frozen=True)
 class TrainNode:
-    """Identity of one node in the release train: a ``(repo, roadmap)`` pair."""
+    """Identity of one node in the release train: a ``(repo, roadmap)`` pair.
+
+    ``mode`` selects how the coordinator lands the node (``execute`` = run the
+    phase then publish; ``prebuilt`` = publish an already-committed branch with
+    no executor dispatch).  ``workspace`` optionally overrides where the node's
+    checkout lives on disk (an absolute path), for nodes on arbitrary volumes.
+    """
 
     repo: str
     roadmap: str
+    mode: str = "execute"
+    workspace: Optional[str] = None
 
     @property
     def node_id(self) -> str:
@@ -116,7 +131,7 @@ class TrainRoadmap:
 _TITLE_RE = re.compile(r"^#\s+Release Train:\s*(.+?)\s*$", re.MULTILINE)
 _NODE_HEADING_RE = re.compile(r"^###\s+Node:\s*(.+?)\s*$", re.MULTILINE)
 _FIELD_RE = re.compile(
-    r"^\*\*(?P<label>Depends on|Channel):\*\*\s*(?P<value>.+)$",
+    r"^\*\*(?P<label>Depends on|Channel|Mode|Workspace):\*\*\s*(?P<value>.+)$",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -180,12 +195,40 @@ def parse_train_roadmap(text: str) -> TrainRoadmap:
     raw_edges: List[Tuple[TrainNode, str, str]] = []  # (downstream, dep_id, channel_raw)
 
     for raw_id, body in node_bodies:
-        node = _parse_node_id(raw_id)
-        nodes.append(node)
+        base = _parse_node_id(raw_id)
 
         fields: Dict[str, str] = {}
         for m in _FIELD_RE.finditer(body):
             fields[m.group("label").lower()] = m.group("value").strip()
+
+        # Mode: default 'execute'; a bare (none) value also means the default.
+        # Reject any unknown mode with a coded, node-named parse error.  (T-A..
+        # T-F are taken by validate_train; (T-G) is the next free code and keeps
+        # the same coded-diagnostic style for the mode-grammar violation.)
+        mode_raw = fields.get("mode", "execute").strip().lower()
+        if mode_raw in _NONE_VALUES:
+            mode_raw = "execute"
+        if mode_raw not in SUPPORTED_NODE_MODES:
+            raise ValueError(
+                f"(T-G) node '{base.node_id}' declares unknown mode {mode_raw!r}; "
+                f"supported modes are 'execute' (default) and 'prebuilt'"
+            )
+
+        # Workspace: optional per-node absolute-path override for the checkout.
+        workspace_raw = fields.get("workspace")
+        workspace = (
+            workspace_raw.strip()
+            if workspace_raw and workspace_raw.strip().lower() not in _NONE_VALUES
+            else None
+        )
+
+        node = TrainNode(
+            repo=base.repo,
+            roadmap=base.roadmap,
+            mode=mode_raw,
+            workspace=workspace,
+        )
+        nodes.append(node)
 
         dep_raw = fields.get("depends on", "(none)")
         channel_raw = fields.get("channel", "(none)")

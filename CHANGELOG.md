@@ -4,6 +4,37 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### run-train — prebuilt node publish mode (broker-mediated)
+
+- **Land already-committed cross-repo branch work without re-executing the phase.**
+  Train roadmap nodes accept a new `**Mode:**` attribute: `execute` (default,
+  unchanged — runs the per-repo `run_loop` then publishes) or `prebuilt`, which
+  publishes an already-committed, independently-verified branch WITHOUT any
+  executor dispatch. A prebuilt node preflights as CLEAN **and** strictly ahead of
+  `origin/main` (clean-but-not-ahead is a preflight error → zero PRs), skips
+  `run_loop` and upstream injection entirely, and derives the PR's owned paths from
+  the committed diff (`git diff --name-only origin/main...HEAD`).
+- **The prebuilt publish is routed through the credential broker** — the same
+  broker-mediated, exact-head-verified `publish_committed_branch`/`github` path
+  execute nodes use (`prebuilt=True`, `broker_client`/`admission` from the
+  broker-authoritative `CoordinatorRuntime`). It pushes the existing branch (by
+  name, no `--force`) and opens a draft PR with **no new commit**. Without a
+  broker the publish fails closed (`broker_required`); a prebuilt node never does
+  a direct push.
+- **Per-node workspace override for arbitrary paths/volumes.** Nodes may declare a
+  `**Workspace:** <abs-path>` attribute, and `run-train` gains a repeatable
+  `--workspace <repo>=<path>` flag. Resolution precedence: `--workspace` flag >
+  `**Workspace:**` attribute > `<workspace-root>/<repo>` (the unchanged default).
+- **Guardrails.** An unknown `**Mode:**` value is rejected at parse time with a
+  coded, node-named `(T-G)` error (zero PRs). P4 governed merge for prebuilt nodes
+  is out of scope this release: a prebuilt node under `--governed` is rejected up
+  front (zero PRs) rather than emitting a misleading re-verify failure — open the
+  drafts without `--governed` and merge the prebuilt PRs manually. Execute-mode
+  behavior is byte-unchanged; all train invariants (INV-1..7 + merge-SHA
+  false-green killer) remain green.
+
 ## [0.7.6] - 2026-07-13
 
 ### Convergence
