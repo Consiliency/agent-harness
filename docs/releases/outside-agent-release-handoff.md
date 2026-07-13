@@ -8,15 +8,15 @@ enforcement is live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.7`
-- Runtime `phase_loop_runtime.__version__`: `0.7.7`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.7`
+- Version: `0.7.8`
+- Runtime `phase_loop_runtime.__version__`: `0.7.8`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.8`
 - Console scripts: `phase-loop`, `codex-phase-loop`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.7`
+- Validator version: `0.7.8`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -36,21 +36,21 @@ enforcement is live.
 
 ## Release-Check Evidence
 
-- `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_release_surface.py tests/test_outside_agent_contract_pin.py tests/test_outside_agent_real_output.py tests/test_outside_agent_advisory.py -q` passed with 14 tests.
+- `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_release_surface.py tests/test_outside_agent_contract_pin.py tests/test_outside_agent_real_output.py tests/test_outside_agent_advisory.py -q` passed with 16 tests.
 - `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v7.md` passed for 5 phases.
-- `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_release_surface.py tests/test_outside_agent_contract_pin.py tests/test_outside_agent_vectors.py tests/test_outside_agent_advisory.py tests/test_outside_agent_advisory_cli.py tests/test_outside_agent_real_runtime.py tests/test_outside_agent_real_output.py tests/test_outside_agent_real_cli.py tests/test_outside_agent_real_ci.py -q` passed with 39 tests.
-- `python -m pip install --upgrade build` completed and installed `build` 1.5.1 in the user environment.
+- `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_release_surface.py tests/test_outside_agent_contract_pin.py tests/test_outside_agent_vectors.py tests/test_outside_agent_advisory.py tests/test_outside_agent_advisory_cli.py tests/test_outside_agent_real_runtime.py tests/test_outside_agent_real_output.py tests/test_outside_agent_real_cli.py tests/test_outside_agent_real_ci.py -q` passed with 41 tests.
+- The `build` frontend was installed and used to produce the sdist + wheel below.
 - `python -m build --sdist --wheel --outdir /tmp/phase-loop-runtime-oarelease-dist phase-loop-runtime` succeeded.
 - `git status --short` after the release-check lane showed the new release-surface test file as the only tracked dirty path at that point.
 
 ## Package Surface Inventory
 
-- Wheel artifact: `phase_loop_runtime-0.7.7-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.7.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.7.data`, `phase_loop_runtime-0.7.7.dist-info`
-- Wheel file count: 402
+- Wheel artifact: `phase_loop_runtime-0.7.8-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.8.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.8.data`, `phase_loop_runtime-0.7.8.dist-info`
+- Wheel file count: 422
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: 852
+- Sdist file count: 900
 - Wheel entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
@@ -58,7 +58,7 @@ enforcement is live.
 
 Governed-pipeline should consume this runtime as an authoritative validator only
 after a maintainer publishes or pins it. Pin the released package
-`phase-loop-runtime==0.7.7`, then call:
+`phase-loop-runtime==0.7.8`, then call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
