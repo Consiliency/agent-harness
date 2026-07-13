@@ -93,9 +93,12 @@ def _default_build_admission(runtime: "CoordinatorRuntime", node, workspace: Pat
     """Build a per-node AdmissionRequest from the coordinator runtime's authority.
 
     Mirrors the fencing construction used by ``refresh.refresh_downstream_after_merge``.
-    The publish_committed_branch verb remains HUMAN_EXECUTED, so the broker rejects
-    this admission before start — the wiring is live-CAPABLE but live-DISABLED.  This
-    is the default seam; tests inject ``_admission_fn`` to avoid a live git read.
+    The publish_committed_branch/github verb is now SUPPORTED, so a broker-authoritative
+    runtime carrying a live ``broker_client`` (see
+    ``convergence.broker.build_github_broker_client``) will admit this request and
+    perform the real, exact-head-verified publish.  Every OTHER verb stays
+    HUMAN_EXECUTED and is refused before start.  This is the default seam; tests
+    inject ``_admission_fn`` to avoid a live git read.
     """
     import hashlib
 

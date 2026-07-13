@@ -2,5 +2,6 @@
 from .admission import AdmissionRecord, BrokerAdmissionPolicy, LinearizableAdmissionStore
 from .credsep import BrokerEnvironmentBoundary, GitHubBrokerAdapter
 from .evidence import BrokerEvidenceStore, EvidenceRecord
+from .live import build_github_broker_client
 from .verbs import BrokerClient, BrokerExecutionResult, BrokerProviderAdapter, BrokerService, publish_committed_branch_idempotency_key
-__all__ = ["AdmissionRecord", "BrokerAdmissionPolicy", "LinearizableAdmissionStore", "BrokerEnvironmentBoundary", "GitHubBrokerAdapter", "BrokerEvidenceStore", "EvidenceRecord", "BrokerClient", "BrokerExecutionResult", "BrokerProviderAdapter", "BrokerService", "publish_committed_branch_idempotency_key"]
+__all__ = ["AdmissionRecord", "BrokerAdmissionPolicy", "LinearizableAdmissionStore", "BrokerEnvironmentBoundary", "GitHubBrokerAdapter", "BrokerEvidenceStore", "EvidenceRecord", "BrokerClient", "BrokerExecutionResult", "BrokerProviderAdapter", "BrokerService", "build_github_broker_client", "publish_committed_branch_idempotency_key"]

@@ -8,11 +8,21 @@ from phase_loop_runtime.convergence.provider_contracts import (
 )
 
 
-def test_repository_inventory_has_one_explicit_non_automated_classification_per_pair():
+def test_repository_inventory_classifies_exactly_one_supported_verb_rest_human_executed():
+    # Inventory completeness: every enumerated verb×provider stays explicitly classified.
     pairs = {(item.verb, item.provider) for item in PROVIDER_COMPLETION_CLASSIFICATIONS}
     assert pairs == AUTOMATED_PROVIDER_VERBS
-    assert all(item.classification is ProviderCompletionClassification.HUMAN_EXECUTED for item in PROVIDER_COMPLETION_CLASSIFICATIONS)
-    assert all(item.disposition is ProviderAutomationDisposition.HUMAN_EXECUTED for item in PROVIDER_COMPLETION_CLASSIFICATIONS)
+    supported = [i for i in PROVIDER_COMPLETION_CLASSIFICATIONS if i.classification is ProviderCompletionClassification.SUPPORTED]
+    # EXACTLY one live verb: publish_committed_branch/github.  Everything else gated.
+    assert [(i.verb, i.provider) for i in supported] == [("publish_committed_branch", "github")]
+    assert supported[0].disposition is ProviderAutomationDisposition.AUTOMATED
+    others = [i for i in PROVIDER_COMPLETION_CLASSIFICATIONS if (i.verb, i.provider) != ("publish_committed_branch", "github")]
+    assert all(i.classification is ProviderCompletionClassification.HUMAN_EXECUTED for i in others)
+    assert all(i.disposition is ProviderAutomationDisposition.HUMAN_EXECUTED for i in others)
+    # The SUPPORTED contract carries real terminal evidence (no "N/A" placeholders).
+    assert "N/A" not in supported[0].status_endpoint
+    assert "N/A" not in supported[0].terminal_success_evidence
+    assert "N/A" not in supported[0].terminal_no_effect_evidence
     for item in PROVIDER_COMPLETION_CLASSIFICATIONS:
         assert all(getattr(item, field) for field in (
             "status_endpoint", "idempotency_key_supported", "terminal_success_evidence",
