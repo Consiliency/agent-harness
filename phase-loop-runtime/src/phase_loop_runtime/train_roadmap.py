@@ -134,7 +134,7 @@ def _parse_node_id(raw: str) -> TrainNode:
     elif "/" in original:
         repo, roadmap = original.split("/", 1)
     else:
-        raise ValueError(f"invalid node identifier (expected '<repo> / <roadmap>'): {original!r}")
+        raise ValueError(f"invalid node identifier (expected '<repo> / <plan-path>'): {original!r}")
     repo, roadmap = repo.strip(), roadmap.strip()
     # Both components are load-bearing: `repo` selects the workspace and
     # `roadmap` is joined onto it as the plan path. An empty half parses into a
