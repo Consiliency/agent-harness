@@ -66,6 +66,9 @@ exercises the broker's publish-committed path end to end.
 - No production enablement before the adversarial fault suite passes (this roadmap is
   roadmap-input readiness → implementation; production is gated at RELEASE).
 - Not re-implementing the spec-canonicalization domain (separate track/roadmap).
+- No standalone migration/rollback phase — the coordinator event log is greenfield. If
+  pre-roadmap durable ledger state is discovered at FREEZE, migrate it as a FREEZE lane-A
+  scope item, not a new phase (panel nit).
 
 ## Cross-Cutting Principles
 
@@ -96,7 +99,9 @@ exercises the broker's publish-committed path end to end.
   base_sha, head_sha, phase, action, owned_paths, executor, model, upstream_dep_shas[],
   verification_artifact, verification_digest, seat_outcomes[], pr_identity, merge_sha,
   release_identity, attempt_id, epoch, timestamp, blocker_reason}`. Append-only; intent
-  and outcome are separate records.
+  and outcome are separate records. Carries explicit `event_schema_version`,
+  `transition_model_version`, and `invalidation_model_version` so mixed-version records
+  are detectable and reconciled (D4).
 - **IF-0-FREEZE-2** — Structured **result envelope** enum `{completed, verified, blocked,
   needs_clarification, degraded, failed}` returned identically by Codex, Claude, and
   outside-agent adapters.
@@ -118,10 +123,17 @@ exercises the broker's publish-committed path end to end.
 - **IF-0-FREEZE-5** — **Exact-state reconciliation contract**: authority split (versioned
   roadmap = intent; event log = active op state; Git commit/PR head = impl; merged SHA =
   merged; registry/manifest = released; transcripts/`.phase-loop` = recovery evidence) +
-  the invalidation-trigger set.
+  the invalidation-trigger set as **normative enums** (not prose): `{effective_code_changed,
+  roadmap_changed, base_sha_changed, dependency_sha_changed, verification_plan_digest_changed}`,
+  each versioned (D4).
 - **IF-0-FREEZE-6** — **Resource-isolation contract**: the machine-checked predicate that
   proves two units may run concurrently (disjoint owned-paths + frozen shared interfaces),
   and the serialization rule for same-repo mutation / topo merges / release publication.
+- **IF-0-FREEZE-7** — **Shared admission-request / fencing binding** (D5): the ONE typed
+  request shape both RUNTIME and BROKER produce/consume — `{attempt_id, lease_epoch,
+  fence_token, approval_digest, expected_version_predicate, authority_domain_scope,
+  idempotency_key}`. Frozen here so the two parallel lanes cannot diverge into a hidden
+  serial dependency at INTEG.
 
 ## Phases
 
@@ -135,12 +147,19 @@ representative failing-session evidence and baseline convergence measures before
 coordinator behavior changes.
 
 **Exit criteria**
-- [ ] IF-0-FREEZE-1..6 are published as concrete typed schemas (dataclasses / JSON schema)
+- [ ] IF-0-FREEZE-1..7 are published as concrete typed schemas (dataclasses / JSON schema)
       with docstrings, committed, and importable — no behavior change yet.
+- [ ] **Provider Completion-Contract Classification committed (D1):** every automated
+      verb×provider pair is classified `supported | human-executed | unsupported`, with
+      `status_endpoint`, `idempotency_key`, `terminal_success/no_effect states`, and
+      `guaranteed_processing_horizon` filled or explicit `N/A`. This POPULATED classification
+      (not just the IF-3 schema) is what BROKER and FAULTS consume.
 - [ ] Failure taxonomy documented (crash, partition, stale-worker, delayed-commit,
-      mixed-version, exact-head, degraded-seat, ambiguous-outcome).
+      mixed-version, exact-head, degraded-seat, ambiguous-outcome, **outside-agent-adversarial**).
 - [ ] Representative session evidence + current heads/roadmap bindings from the motivating
-      trains are checkpointed as fixtures for the FAULTS suite.
+      trains are checkpointed as fixtures for the FAULTS suite, **including adversarial
+      outside-agent fixtures (D2):** forged completion evidence, malformed result envelope,
+      capability overclaim, stale/delayed seat write, mixed-version envelope, action-outside-bounds.
 - [ ] Baseline measures captured (time-to-converge, transcript-dependence) for later
       comparison.
 
@@ -169,6 +188,7 @@ No implementation of ledger reconciliation, broker, or adapters — contracts on
 - IF-0-FREEZE-4
 - IF-0-FREEZE-5
 - IF-0-FREEZE-6
+- IF-0-FREEZE-7
 
 ### Phase 1 — Runtime Substrate Lanes (RUNTIME)
 
@@ -231,6 +251,9 @@ evidence keyed by idempotency key; permanent fail-closed on `outcome_ambiguous_b
 - [ ] An in-flight op with neither terminal proof is recorded `outcome_ambiguous_blocked`
       and blocks all further privileged epoch progress; no timeout/override escape.
 - [ ] Providers lacking a completion contract are marked human-executed/unsupported.
+- [ ] **Broker refuses to automate any verb×provider not classified `supported` in the
+      FREEZE Provider Completion-Contract Classification (D1)** — fail-closed, no automated
+      side effect for `human-executed`/`unsupported`/unclassified operations.
 
 **Scope notes**
 Decompose into 4 disjoint lanes: **ADMISSION** (linearizable admission + policy-ordering + epoch);
@@ -240,6 +263,10 @@ ambiguity); **CREDSEP** (strip creds from worker/coordinator; broker-side non-fo
 protected-branch re-assertion). Parallel with RUNTIME (disjoint files); both consume only
 FREEZE. `publish_committed_branch` must NOT use `resolve_closeout_push_target` (a
 worktree-created branch has no upstream) — by-name push, remote rejects non-fast-forward.
+The 4 lanes map to distinct files `broker/{admission,verbs,evidence,credsep}.py`, so the
+single-writer rule here is **per-file** — the lanes stay genuinely parallel. `publishing.py`
+is WRITTEN in this phase (push+PR-create routed through the broker) and only CONSUMED/extended
+in INTEG (serial, no real collision).
 
 **Non-goals**
 No P4-for-prebuilt governed-merge re-verify (follow-up); coordinator DAG wiring is INTEG.
@@ -265,8 +292,14 @@ stale-review invalidation; verification-artifact binding.
 **Exit criteria**
 - [ ] `run_train` reconciles the event log against live state before dispatch/resume/
       publish/review/merge/release; every side effect flows through the broker.
-- [ ] Independent DAG nodes dispatch concurrently under per-repo locks; topo merges +
-      release publication are serialized.
+- [ ] Independent DAG nodes dispatch concurrently under per-repo locks; **every concurrent
+      unit-pair passes the IF-0-FREEZE-6 isolation predicate (disjoint owned-paths + frozen
+      interfaces) before admission, else is serialized — fail-closed on predicate-false, and
+      the decision is persisted to the event log (D3).** Topo merges + release publication
+      are always serialized.
+- [ ] **Supported-version reconciliation (D4):** records carrying a schema/transition/
+      invalidation version the coordinator does not support are rejected (not silently
+      coerced); mixed-version state is detected and reconciled, never accepted as-is.
 - [ ] After an upstream merge, each affected downstream branch is auto-refreshed (or a
       typed conflict is raised), re-verified against the merged SHA, republished, and its
       prior review invalidated.
@@ -310,12 +343,19 @@ MUST pass before any pilot or production enablement.
       permits progress only after horizon + drain + stable expected-version; an op without
       status/idempotency is unsupported from the outset.
 - [ ] Mixed-version + exact-head faults: no stale base/roadmap/dep/head/review/verification
-      artifact is ever accepted.
+      artifact is ever accepted; a record whose schema/transition/invalidation version is
+      unsupported is rejected (D4).
+- [ ] **Outside-agent adversarial faults (D2) pass BEFORE any pilot runs:** forged
+      completion evidence, malformed result envelope, capability overclaim, stale/delayed
+      seat write, mixed-version envelope, and action-outside-bounds are each detected and
+      fail-closed (not just the happy-path admission tested in PILOT).
 
 **Scope notes**
-Lanes by fault family: **CRASH-RESUME**; **PARTITION-STALE**; **DELAYED-COMMIT**;
-**MIXED-VERSION-EXACT-HEAD**. Uses the FREEZE-phase preserved fixtures. This is a HARD GATE
-— PILOT/RELEASE depend on it.
+Decompose into 5 fault-family lanes: **CRASH-RESUME**; **PARTITION-STALE**; **DELAYED-COMMIT**;
+**MIXED-VERSION-EXACT-HEAD**; **OUTSIDE-AGENT-ADVERSARIAL** (D2 — req 11 lists outside-agent
+as a fault family; it must be adversarially tested here, not only exercised as PILOT
+happy-path admission). Uses the FREEZE-phase preserved fixtures (incl. the adversarial
+outside-agent fixtures). This is a HARD GATE — PILOT/RELEASE depend on it.
 
 **Non-goals**
 No new coordinator features; tests + minimal fixes only.
@@ -412,7 +452,7 @@ Parallel after FREEZE:   RUNTIME ∥ BROKER   (disjoint files; both consume only
 Serial spine:            FREEZE → {RUNTIME,BROKER} → INTEG → FAULTS → PILOT → RELEASE
 Within phases:           FREEZE(3 lanes) · RUNTIME(4 lanes) · BROKER(4 lanes) ·
                          INTEG(4 lanes, single-writer-serialized on train_runner.py) ·
-                         FAULTS(4 fault-family lanes) · PILOT(3 pilot lanes) · RELEASE(1 lane)
+                         FAULTS(5 fault-family lanes) · PILOT(3 pilot lanes) · RELEASE(1 lane)
 ```
 
 ## Execution Notes
