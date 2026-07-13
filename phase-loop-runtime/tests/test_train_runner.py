@@ -1097,6 +1097,38 @@ class TestCLIRegistration:
             f"call kwargs: {call_kwargs}"
         )
 
+    def test_cli_main_run_train_wires_a_routing_broker(self, tmp_path: Path):
+        """run-train must pass a broker-authoritative coordinator_runtime (routing broker).
+
+        Without a broker_client, publish_from_worktree fail-closes `broker_required`
+        and the train opens ZERO PRs — the shipped-CLI gap the SPECPKGMIN PILOT
+        surfaced (agent-harness#205/#206). The runtime must carry a routing broker
+        (one client serving every repo) whose durable state lives OUTSIDE any repo.
+        """
+        from phase_loop_runtime.cli import main
+        from phase_loop_runtime.convergence.broker.verbs import BrokerService
+
+        tmp_train = tmp_path / "smoke-train.md"
+        tmp_train.write_text(TRAIN_2NODE_MD, encoding="utf-8")
+
+        with patch("phase_loop_runtime.train_runner.run_train") as mock_run_train:
+            mock_run_train.return_value = {"status": "drafts_open", "nodes": {}}
+            exit_code = main(["run-train", "--train", str(tmp_train)])
+
+        assert exit_code == 0, f"Expected exit 0; got {exit_code}"
+        runtime = mock_run_train.call_args.kwargs.get("coordinator_runtime")
+        assert runtime is not None, "run-train must pass a coordinator_runtime"
+        assert runtime.broker_client is not None, (
+            "coordinator_runtime must carry a broker_client, else publish is broker_required"
+        )
+        assert isinstance(runtime.broker_client, BrokerService)
+        assert type(runtime.broker_client.adapter).__name__ == "_RoutingGitHubAdapter", (
+            "must be the per-request routing adapter so ONE client serves a multi-repo train"
+        )
+        assert runtime.train_id and runtime.roadmap_digest
+        # Durable broker state must live outside any repo worktree (under the ledger dir).
+        assert Path(runtime.coordinator_root) == tmp_path / ".train-ledger" / "broker"
+
 
 # ---------------------------------------------------------------------------
 # 8. Finding #1: run_loop snapshot paths are used (real seam, not just called)
