@@ -133,21 +133,36 @@ import pytest
     ("https://github.com/owner/repo.git", "github.com/owner/repo"),
     ("https://github.com/owner/repo", "github.com/owner/repo"),
     ("git@github.com:owner/repo.git", "github.com/owner/repo"),
-    ("git@ghe.corp:team/svc.git", "ghe.corp/team/svc"),           # GHE scp-like → host-qualified
-    ("ssh://git@ghe.corp:2222/team/svc.git", "ghe.corp/team/svc"),# GHE ssh+port
-    ("https://ghe.corp/team/svc", "ghe.corp/team/svc"),
 ])
-def test_origin_repo_is_host_qualified(tmp_path, url, slug):
+def test_origin_repo_host_qualified_for_github(tmp_path, url, slug):
     run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0), (("get-url",), url, 0)])
     assert GitHubBrokerAdapter(tmp_path, run=run)._origin_repo() == slug
 
+
+# Class-closing origin-host invariant: any non-allow-listed host FAILS CLOSED by
+# default; a self-hosted/GHE fleet resolves only when it passes its own allow-list.
+@pytest.mark.parametrize("url", [
+    "git@ghe.corp:team/svc.git", "ssh://git@ghe.corp:2222/team/svc.git", "https://ghe.corp/team/svc",
+])
+def test_non_allowlisted_origin_host_fails_closed_by_default(tmp_path, url):
+    run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0), (("get-url",), url, 0)])
+    with pytest.raises(ValueError, match="allowed broker hosts"):
+        GitHubBrokerAdapter(tmp_path, run=run)._origin_repo()
+
+def test_ghe_origin_resolves_only_with_explicit_allowlist(tmp_path):
+    run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0),
+                    (("get-url",), "git@ghe.corp:team/svc.git", 0)])
+    adapter = GitHubBrokerAdapter(tmp_path, run=run, allowed_hosts=frozenset({"ghe.corp"}))
+    assert adapter._origin_repo() == "ghe.corp/team/svc"
+
 @pytest.mark.parametrize("bad", [
     "not-a-git-url", "https://github.com/onlyowner", "git@host:", "",
-    "https://ghe.corp:8443/team/svc.git",   # non-default https port -> can't pin -> fail-closed
-    "http://ghe.corp:8080/team/svc",         # non-default http port -> fail-closed
-    "https://[::1]/team/svc.git",             # IPv6 literal -> fail-closed
+    "https://github.com:8443/o/r.git",  # non-default https port -> fail-closed
+    "https://github.com:80/o/r",        # scheme-mismatched port (https+80) -> fail-closed
+    "http://github.com:443/o/r",        # scheme-mismatched port (http+443) -> fail-closed
+    "https://[::1]/team/svc.git",        # IPv6 literal -> fail-closed
 ])
-def test_origin_repo_fails_closed_on_garbage(tmp_path, bad):
+def test_origin_repo_fails_closed_on_garbage_or_unpinnable(tmp_path, bad):
     run = _FakeRun([(("branch", "--show-current"), _BRANCH, 0), (("rev-parse",), _HEAD, 0), (("get-url",), bad, 0)])
     with pytest.raises(ValueError):
         GitHubBrokerAdapter(tmp_path, run=run)._origin_repo()

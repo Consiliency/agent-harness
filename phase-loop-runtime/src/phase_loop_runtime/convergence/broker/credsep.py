@@ -27,8 +27,15 @@ class BrokerEnvironmentBoundary:
 def build_non_force_branch_ref(branch: str) -> str:
     if not branch or branch.startswith("-") or branch in {"main", "master", "develop", "release"}: raise ValueError("unsafe branch")
     return f"refs/heads/{branch}"
+# Origin-host invariant (fail-closed): the broker only publishes to an allow-listed
+# host, so a `gh --repo host/owner/repo` derived from the origin url can NEVER be
+# mis-bound to a look-alike host by any URL-text edge (custom port, IPv6, ssh alias,
+# twin instance).  Default is github.com-only; a self-hosted/GHE fleet passes its own
+# allow-list explicitly.  This retires the whole host-parse edge class at the boundary.
+ALLOWED_ORIGIN_HOSTS = frozenset({"github.com"})
 class GitHubBrokerAdapter:
-    def __init__(self, repo_path: Path, run=subprocess.run) -> None: self.repo_path, self.run = repo_path, run
+    def __init__(self, repo_path: Path, run=subprocess.run, allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS) -> None:
+        self.repo_path, self.run, self.allowed_hosts = repo_path, run, allowed_hosts
     def _output(self, *args: str) -> str:
         return self.run(["git", "-C", str(self.repo_path), *args], capture_output=True, text=True, check=True).stdout.strip()
     def _origin_repo(self) -> str:
@@ -49,7 +56,8 @@ class GitHubBrokerAdapter:
             if authority.startswith("[") or authority.count(":") > 1:
                 raise ValueError(f"unsupported IPv6/authority in origin {url!r}")
             host, _, port = authority.partition(":")
-            if scheme in ("http", "https") and port and port not in ("80", "443"):
+            default_port = {"https": "443", "http": "80"}.get(scheme)
+            if scheme in ("http", "https") and port and port != default_port:
                 raise ValueError(f"non-default {scheme} port in origin {url!r} cannot be pinned by --repo")
         else:  # scp-like: [user@]host:owner/repo(.git)
             hostpart, sep, path = url.partition(":")
@@ -62,6 +70,12 @@ class GitHubBrokerAdapter:
         parts = path.split("/")
         if not host or len(parts) != 2 or not all(parts):
             raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
+        if host not in self.allowed_hosts:
+            # Origin-host invariant: refuse to publish to a host outside the allow-list.
+            # This is the class-closing gate — no URL-text edge (port/IPv6/alias/twin)
+            # can mis-bind a gh call to a look-alike host, because a non-allow-listed
+            # host fails closed here (-> outcome_ambiguous_blocked), never a live PR.
+            raise ValueError(f"origin host {host!r} not in allowed broker hosts {sorted(self.allowed_hosts)}")
         return f"{host}/{path}"
     def _ambiguous(self, request: BrokerRequest, reference: str):
         # v5 rule: a failed/empty remote read is NEVER inferred as no_effect and
