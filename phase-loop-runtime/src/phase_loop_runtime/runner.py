@@ -96,6 +96,7 @@ from .discovery import (
     phase_source_bundle_diagnostic,
     plan_artifact_diagnostic,
     previous_phase_owned_dirty_paths,
+    resolve_python_pin,
     resolve_suite_command_doc,
     roadmap_closeout_evidence_audit_enabled,
     validate_plan_verification_commands_for_intake,
@@ -107,7 +108,7 @@ from .fleet_metrics import record_phase_fleet_metrics
 from .evidence_audit import run_tier3_runner_audit
 from .evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
 from .events import append_work_unit_event
-from .git_ops import pipeline_write_boundary_diagnostic
+from .git_ops import expand_dir_dirty_paths, pipeline_write_boundary_diagnostic
 from .git_topology import collect_git_topology, resolve_closeout_push_target
 from .handoff import tui_handoff_path, write_tui_handoff
 from .launcher import (
@@ -3512,11 +3513,7 @@ def run_loop(
                     )
                     if runner_verification and artifacts:
                         merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
-                    if (
-                        runner_verification
-                        and not runner_verification.get("ok", False)
-                        and _verification_enforcement_mode() == "hard"
-                    ):
+                    if _runner_verification_fails_closed(runner_verification):
                         status_after_launch = "blocked"
                         set_phase_status(
                             repo,
@@ -5912,6 +5909,23 @@ def _verification_enforcement_mode() -> str:
     return "hard" if value == "hard" else "warn"
 
 
+def _runner_verification_fails_closed(runner_verification: dict[str, object] | None) -> bool:
+    """Decide whether a runner-owned verification result must block closeout.
+
+    agent-harness#219(b-i): a NON-ZERO suite/command exit is authoritative and
+    fails closed even under the default ``warn`` mode — a red suite is never a
+    warning. Softer evidence-integrity findings (log-sha drift, malformed/missing
+    artifact) continue to respect ``PHASE_LOOP_VERIFY_ENFORCE``.
+    """
+    if not runner_verification or runner_verification.get("ok", False):
+        return False
+    validation = runner_verification.get("validation")
+    code = validation.get("code") if isinstance(validation, dict) else runner_verification.get("code")
+    if code == "nonzero_exit":
+        return True
+    return _verification_enforcement_mode() == "hard"
+
+
 def _execute_verification_preflight_blocker(repo: Path, roadmap: Path, plan: Path) -> dict[str, object] | None:
     if _verification_enforcement_mode() != "hard":
         return None
@@ -5985,6 +5999,7 @@ def _run_execute_verification(
         env_refresh,
         float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
         operational_exemptions=operational_exemptions,
+        python_pin=resolve_python_pin(roadmap, plan),
     )
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
     validation = validate_verification_artifact(artifact_path)
@@ -7551,6 +7566,68 @@ def _gitignored_paths(repo: Path, paths: list[str]) -> set[str]:
     return {line.strip().strip('"') for line in proc.stdout.splitlines() if line.strip()}
 
 
+def _tracked_paths(repo: Path, paths: list[str] | tuple[str, ...] | set[str]) -> set[str] | None:
+    """Return the subset of *paths* that are tracked in git's index/HEAD.
+
+    Uses ``git ls-files`` (which lists only tracked files matching the given
+    pathspecs). A path is "tracked" iff it appears in the output.
+
+    Returns ``None`` when the ``git ls-files`` probe itself FAILS (non-zero exit
+    or an exception) — deliberately distinct from an empty set (probe succeeded,
+    nothing tracked). Callers MUST fail closed on ``None`` (agent-harness#220
+    round-4, codex): a transient probe failure that silently collapsed to an
+    empty set would make a genuinely TRACKED file look untracked and be dropped
+    as a disposable byproduct — the #215 data-loss class under a probe failure.
+    """
+    path_list = list(dict.fromkeys(paths))
+    if not path_list:
+        return set()
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files", "-z", "--", *path_list],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    tracked = {entry.strip().strip('"') for entry in out.split("\0") if entry.strip()}
+    return {p for p in path_list if p in tracked}
+
+
+def _untracked_gitignored_paths(repo: Path, paths: list[str] | tuple[str, ...]) -> set[str]:
+    """Disposable byproducts: paths that are BOTH untracked AND gitignored.
+
+    agent-harness#186b: the executor's self-reported dirty set can over-report
+    build byproducts (``build/``, ``*.egg-info/``, ``.phase-loop/``,
+    ``.dev-skills/``) that the runtime's own ``git status`` would have hidden. Only
+    an untracked-AND-ignored path is safe to drop from the closeout dirty set — a
+    TRACKED file (even if ignored) is real committed work and is NEVER dropped
+    (the #215 data-loss guard). If in doubt, keep it.
+    """
+    path_list = list(dict.fromkeys(paths))
+    ignored = _gitignored_paths(repo, path_list)
+    if not ignored:
+        return set()
+    # Fail closed on a bare-directory entry (agent-harness#220 round-4): a
+    # collapsed "build/" reaches this filter only when `expand_dir_dirty_paths`
+    # could NOT expand it to member files — i.e. git_ops `_dir_member_paths`'
+    # subprocess probe failed and returned [] (git_ops.py:45). `git ls-files`
+    # lists member FILES, never the bare-directory string, so string membership
+    # can never prove the directory holds no modified tracked-then-ignored file.
+    # Classifying it disposable would drop such a file (the #215 class under a
+    # probe failure). Exclude bare dirs from the disposable set → they are kept
+    # and block rather than being silently dropped.
+    ignored_files = {p for p in ignored if not p.endswith("/")}
+    if not ignored_files:
+        return set()
+    tracked = _tracked_paths(repo, ignored_files)
+    if tracked is None:
+        # The tracked-status probe failed; drop NOTHING (fail closed) so a
+        # genuinely tracked file is never misclassified as a disposable byproduct.
+        return set()
+    return {p for p in ignored_files if p not in tracked}
+
+
 def _dirty_paths(repo: Path) -> list[str]:
     try:
         status = subprocess.check_output(
@@ -7568,6 +7645,30 @@ def _dirty_paths(repo: Path) -> list[str]:
         if path:
             paths.append(path)
     return sorted(dict.fromkeys(paths))
+
+
+def _worktree_clean_probe(repo: Path) -> bool | None:
+    """Probe the worktree cleanliness, distinguishing failure from clean.
+
+    Returns ``True`` when the tree is clean, ``False`` when it is dirty, and
+    ``None`` when the git probe itself FAILED (non-zero exit or exception).
+    Distinct from :func:`_dirty_paths`, which maps ANY git error to ``[]``
+    (indistinguishable from "clean") — a fail-closed caller must tell "couldn't
+    read the tree" apart from "genuinely clean" and never finalize on an
+    unreadable probe (CR codex#2).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return not proc.stdout.strip()
 
 
 def _detect_dirty_renames(repo: Path) -> dict[str, str]:
@@ -7670,10 +7771,30 @@ def _classify_dirty_paths(
         path for path in post_launch_dirty_paths if path in previous_evidence and (not pre_launch or path in pre_launch)
     ]
     previous_phase_owned_set = set(previous_phase_owned)
+    # Gitignored paths are the client repo's declared-disposable outputs (build/codegen
+    # artifacts the verification step regenerates — `__pycache__/`, `.pytest_cache/`, …).
+    # Compute this FIRST: a broad owned glob (e.g. `pkg/**`) matches them, but they must
+    # NEVER be claimed as phase-owned. `git add` will not stage an ignored file, so an
+    # "owned" gitignored path can never actually commit — it stays dirty and trips
+    # dirty_worktree_conflict at closeout (any governed phase that runs pytest hits this;
+    # agent-harness#186). Excluding them here routes them to `gitignored_dirty_paths` (the
+    # disposable bucket) instead, regardless of how broad the owned glob is. (`--no-index`
+    # so even *tracked*-then-ignored regenerated files match.)
+    gitignored = _gitignored_paths(repo, post_launch_dirty_paths)
+    # agent-harness#186b / #215: the gitignored exclusion belongs on the *unowned*
+    # classification only (below), NOT on phase_owned. An OWNED gitignored path
+    # must stay phase-owned so it commits — dropping it here is silent data loss
+    # (#215, reverted). In production only TRACKED-then-ignored paths reach this
+    # classifier (`git status --untracked-files=all` hides untracked-ignored), and
+    # `git add` stages a tracked-then-ignored file fine — so keeping owned
+    # gitignored paths here recovers real work without reintroducing the #186
+    # loop (untracked-ignored build byproducts never appear in `post_launch_dirty_paths`
+    # via git status; the fallback classifier handles the executor-self-report case).
     phase_owned = [
         path
         for path in post_launch_dirty_paths
-        if path not in previous_phase_owned_set and ownership.matches_dirty_output(path)
+        if path not in previous_phase_owned_set
+        and ownership.matches_dirty_output(path)
     ]
     phase_owned_set = set(phase_owned)
 
@@ -7682,7 +7803,7 @@ def _classify_dirty_paths(
     for src, dst in rename_map.items():
         if src in phase_owned_set:
             continue
-        if src not in post_launch_dirty_paths:
+        if src not in post_launch_dirty_paths or src in gitignored:
             continue
         if dst in phase_owned_set or ownership.matches_dirty_output(dst):
             phase_owned.append(src)
@@ -7698,14 +7819,10 @@ def _classify_dirty_paths(
         and path not in previous_phase_owned_set
         and not (allow_pre_existing_phase_owned and path in phase_owned_set)
     ]
-    # Issue #5: a path matching a gitignore pattern is the client repo's declared-disposable
-    # output (a codegen/build artifact the verification step regenerates). It must not count as
-    # un-owned spillover -> dirty_worktree_conflict, which the next repair turn would re-trigger
-    # by re-running the build (an infinite loop). It is NOT dropped from the dirty set: a
-    # gitignored path the plan OWNS still classifies as phase-owned and commits normally below,
-    # so no legitimately-owned work is lost. (`--no-index` so even *tracked*-then-ignored
-    # regenerated files are matched.)
-    gitignored = _gitignored_paths(repo, post_launch_dirty_paths)
+    # Issue #5: gitignored paths (computed above) must not count as un-owned spillover ->
+    # dirty_worktree_conflict, which the next repair turn would re-trigger by re-running the
+    # build (an infinite loop). They are also excluded from phase_owned above (#186), so they
+    # surface ONLY in `gitignored_dirty_paths` — never committed, never a conflict.
     unowned = [
         path
         for path in post_launch_dirty_paths
@@ -7957,8 +8074,16 @@ def _perform_phase_closeout(
             **event_provenance(roadmap, phase),
         )
 
+    # CR gemini#5/#1: expand collapsed owned directories on the TRUSTED path too
+    # (not only the fallback), so a collapsed owned dir's TRACKED members are
+    # force-added (`-f`) rather than plain-added and spuriously failing on a
+    # tracked-then-ignored member (#215 false block on the trusted path). File
+    # entries pass through unchanged. `-f` stays scoped to proven-tracked members.
     closeout_dirty_paths = tuple(
-        dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths))
+        expand_dir_dirty_paths(
+            repo,
+            tuple(dict.fromkeys((*snapshot.phase_owned_dirty_paths, *snapshot.previous_phase_owned_paths))),
+        )
     )
     # Fallback (regenesis v37 fix): when codex's classification left
     # phase_owned_dirty_paths empty but every dirty path matches the
@@ -7988,6 +8113,24 @@ def _perform_phase_closeout(
     if break_glass_reason and not fallback_dirty_paths:
         attested_remainder = _recorded_closeout_unowned_remainder(repo, phase)
         fallback_dirty_paths = tuple(p for p in _dirty_paths(repo) if p in attested_remainder)
+    # agent-harness#218: an executor may self-report a COLLAPSED bare directory
+    # (e.g. ``pkg/newmod/``) instead of its member files. A file-level owned glob
+    # (``pkg/newmod/*.py``) never matches a bare-directory string, so the entry
+    # would route to the unowned remainder and trip a spurious scope violation.
+    # Expand any directory entry to file granularity before ownership matching.
+    # File entries pass through unchanged, so this is a no-op for the git-derived
+    # (already file-level) break-glass remainder above.
+    fallback_dirty_paths = tuple(expand_dir_dirty_paths(repo, fallback_dirty_paths))
+    # agent-harness#186b: drop disposable byproducts the executor over-reports —
+    # paths that are BOTH untracked AND gitignored (build/, *.egg-info/,
+    # .phase-loop/, .dev-skills/). The runtime's own `git status` hides these, but
+    # the executor's self-report does not, and they were tripping a false
+    # dirty_worktree_conflict even when verification passed (the EXTRACT failure).
+    # A TRACKED file (even if ignored) is real work and is never dropped.
+    fallback_disposable = _untracked_gitignored_paths(repo, fallback_dirty_paths)
+    if fallback_disposable:
+        fallback_dirty_paths = tuple(p for p in fallback_dirty_paths if p not in fallback_disposable)
+        metadata["closeout"]["gitignored_dirty_paths"] = sorted(fallback_disposable)
     if (not snapshot.phase_owned_dirty or not closeout_dirty_paths) and fallback_dirty_paths:
         plan_for_fallback = find_plan_artifact(repo, phase, roadmap=roadmap)
         if plan_for_fallback is not None:
@@ -8063,6 +8206,35 @@ def _perform_phase_closeout(
                     unowned_remainder = unsafe_unowned
                     metadata["closeout"]["closeout_unowned_remainder"] = list(unsafe_unowned)
     if not snapshot.phase_owned_dirty or not closeout_dirty_paths:
+        # agent-harness#186b (EXTRACT): the executor over-reported disposable
+        # byproducts (untracked+ignored build/, *.egg-info/, .phase-loop/) as its
+        # only dirt. After filtering them (above) there is nothing left to commit,
+        # the real working tree is clean (`git status` hides them), and
+        # verification passed — so finalize as a no-op instead of a false
+        # dirty_worktree_conflict. Strictly gated: only when disposables were the
+        # thing filtered (`fallback_disposable`), the phase is `complete`, there is
+        # no unowned remainder, and the live tree is genuinely clean — so every
+        # other refuse path (real missing dirt, unowned spillover) is byte-identical.
+        # CR codex#2: REQUIRE a genuinely-clean probe (True). A probe FAILURE
+        # (None — git couldn't read the tree) must NOT read as clean and finalize;
+        # it falls through to the block below. `_dirty_paths` is unsafe here (it
+        # maps any git error to "[]" = clean).
+        if (
+            terminal_status == "complete"
+            and fallback_disposable
+            and not unowned_remainder
+            and _worktree_clean_probe(repo) is True
+        ):
+            status = "complete"
+            metadata["closeout"]["verification_status"] = "passed"
+            metadata["closeout"].update(
+                {
+                    "closeout_action": "noop_disposable_only",
+                    "closeout_commit": _git_output(repo, "rev-parse", "HEAD"),
+                    "gitignored_dirty_paths": sorted(fallback_disposable),
+                }
+            )
+            return status, _closeout_event()
         status = "blocked"
         # OWNFIX #17: an invalid Lane IR is the real reason classification failed and
         # the fallback could not fire — surface that contract_bug (naming the lane /
@@ -8178,13 +8350,42 @@ def _perform_phase_closeout(
                 stderr=reset_result.stderr or reset_result.stdout,
             )
             return status, _closeout_event()
-        add_result = _run_git_closeout(repo, "add", "--", *closeout_dirty_paths)
-        if add_result.returncode != 0:
+        # agent-harness#186b: force-add ONLY the TRACKED members of the vetted set.
+        # `git add` of an explicitly-named path matching a .gitignore pattern exits
+        # non-zero (ignore advice) EVEN when the file is tracked — yet it stages it;
+        # that spurious non-zero was mis-read as a commit failure and dropped a
+        # tracked-then-ignored OWNED file (#215 data loss). `-f` on the tracked
+        # subset stages it cleanly. Untracked paths get a PLAIN add, so an
+        # untracked+ignored path an executor wrongly reports as phase-owned still
+        # errors -> fail-closed block (never force-committed into history — e.g. a
+        # gitignored secret). On the trusted path the fallback disposable filter is
+        # skipped, so keeping `-f` scoped to tracked members preserves that
+        # fail-closed guarantee locally rather than relying on an upstream invariant.
+        # Index isolation above still guarantees only these paths are staged.
+        # agent-harness#220 round-4: on a probe failure `_tracked_paths` returns
+        # None — fail closed by treating nothing as tracked, so every path goes to
+        # a PLAIN add. A genuinely tracked-then-ignored file then fails the plain
+        # add (ignore advice) -> add_failure -> block, rather than being force-
+        # committed or dropped.
+        tracked_probe = _tracked_paths(repo, closeout_dirty_paths)
+        tracked_closeout = tracked_probe if tracked_probe is not None else set()
+        force_paths = tuple(p for p in closeout_dirty_paths if p in tracked_closeout)
+        plain_paths = tuple(p for p in closeout_dirty_paths if p not in tracked_closeout)
+        add_failure = None
+        if force_paths:
+            forced = _run_git_closeout(repo, "add", "-f", "--", *force_paths)
+            if forced.returncode != 0:
+                add_failure = forced
+        if add_failure is None and plain_paths:
+            plained = _run_git_closeout(repo, "add", "--", *plain_paths)
+            if plained.returncode != 0:
+                add_failure = plained
+        if add_failure is not None:
             status, blocker = _commit_failure_closeout(
                 metadata,
                 stage="add",
-                returncode=add_result.returncode,
-                stderr=add_result.stderr or add_result.stdout,
+                returncode=add_failure.returncode,
+                stderr=add_failure.stderr or add_failure.stdout,
             )
         elif terminal_status == "complete" and _closeout_nothing_staged(repo, closeout_dirty_paths):
             # Issue #6: the phase's verified work is already on the base branch (committed

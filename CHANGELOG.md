@@ -4,6 +4,105 @@ All notable changes to `agent-harness` (the `phase-loop-runtime` package + the
 `phase-loop-skills` bundle) are documented here. This project adheres to semantic
 versioning; the release tag, the package `version`, and this file are kept in lockstep.
 
+## [Unreleased]
+
+### Governed closeout & gate-integrity hardening (#218, #219)
+
+Three bounded fixes so a phase cannot be marked `complete`/`verification: passed`
+when its evidence does not support it. The wire contract (blocker-class enums,
+closeout JSON schema, IF-gate grammar) is unchanged — only derivation logic.
+
+- **Dir-aware ownership classification (fix).** When a phase's owned deliverable
+  is a brand-new directory and the executor self-reports the *collapsed* bare
+  directory (`pkg/newmod/`) instead of its member files, a file-level owned glob
+  (`pkg/newmod/*.py`) never matched the bare-directory string, so the path routed
+  to the unowned remainder and tripped a spurious `closeout_scope_violation`. A
+  new `git_ops.expand_dir_dirty_paths` normalizes a directory entry to its member
+  files (via `git status --porcelain --untracked-files=all -- <dir>`) before
+  ownership matching, applied in the closeout fallback classifier; the ownership
+  matcher also gained a directory-prefix guard as defense-in-depth. A new
+  all-owned directory now closes `complete` with the directory committed.
+  (agent-harness#218)
+- **Non-zero suite/command exit now fails closed (fix).** A VerificationResult
+  with any non-zero command/suite/env-refresh exit forces `verification_status` to
+  failed/blocked at closeout, overriding an executor's self-asserted `passed`, and
+  blocks the runner-owned verification reduction — always, irrespective of
+  `PHASE_LOOP_VERIFY_ENFORCE` (which continues to soften only evidence-integrity
+  findings like log-sha drift). The exit codes are read **directly from the
+  artifact's `exit_summary`**, not just the first-failing validation code, so a red
+  suite accompanied by a tampered/missing log (which reports `log_sha256_mismatch`/
+  `missing_log`) can no longer shadow the red suite into a warning. A red suite is
+  never a warning. Additionally, any governed phase whose plan declares an
+  `automation.suite_command` now requires a VerificationResult artifact, so a
+  self-asserted `passed` with no evidence can no longer close ungated.
+  (agent-harness#219) (An unparseable/`malformed_artifact` supplied with a
+  self-asserted `passed` still only warns under `warn` — a separate evidence-
+  integrity gap, tracked for a follow-up.)
+- **requires-python-aware suite interpreter (fix).** The verification suite now
+  runs under an interpreter satisfying the target repo's `requires-python`: an
+  optional `automation.python` plan pin wins **but is validated against
+  `requires-python`** (a pin below the floor fails closed), otherwise the lowest
+  satisfying host `pythonX.Y` is resolved and shimmed onto the suite subprocess
+  `PATH`. The shim covers bare `python` as well as `python3` — if either present on
+  `PATH` is below the floor, both names are shimmed onto a satisfying interpreter.
+  An `env_refresh` pip install runs under the **same** resolved interpreter as the
+  suite (not the host `sys.executable`), so deps are visible to the suite. When no
+  satisfying interpreter exists the suite fails closed with a named blocker
+  (recorded as a non-zero suite exit). The interpreter resolution (pin +
+  requires-python auto-resolve) is honored on **all three** verification paths —
+  execute, train-reverification, and hotfix. This removes the py3.10-vs-
+  `requires-python>=3.11` false failure that previously needed a manual shim.
+  *Known limitation:* the shim only redirects a bare `python`/`python3`; a suite or
+  verification command that **explicitly** names a versioned/absolute interpreter
+  (e.g. `python3.10`, `/usr/bin/python3.10`) below the floor is not caught and can
+  still run under an unsupported Python — tracked separately in agent-harness#221.
+  (agent-harness#219)
+- **Safe gitignore handling at closeout (fix).** The gitignored exclusion no
+  longer drops OWNED paths from `phase_owned_dirty_paths`: it applies to the
+  *unowned* classification only, so a tracked-then-ignored owned file (real work
+  that now also matches a `.gitignore` pattern) commits instead of being silently
+  dropped (the #215 data-loss trap). Separately, the closeout fallback classifier
+  now filters disposable byproducts the executor over-reports — paths that are
+  BOTH untracked AND gitignored (`build/`, `*.egg-info/`, `.phase-loop/`,
+  `.dev-skills/`) — so a disposable-only over-report with a genuinely-clean tree and
+  passing verification finalizes as a no-op instead of a false
+  `dirty_worktree_conflict` (the EXTRACT failure). The clean-tree check fails
+  closed on an unreadable git probe (a probe error never reads as "clean"). A
+  tracked file (even if ignored) is never treated as disposable. Collapsed owned
+  directories are expanded to member files on the trusted path as well as the
+  fallback, and the closeout `git add` force-adds only the **proven-tracked**
+  members of the vetted path set — so a tracked-then-ignored file stages without a
+  spurious non-zero exit, while an untracked+ignored path an executor wrongly
+  reports as owned still fails closed rather than being force-committed.
+  (agent-harness#186)
+
+#### Round-4 cross-vendor CR: two fail-open / data-loss closures (#220)
+
+- **Whole-verification interpreter fencing (fix).** When no host interpreter can
+  satisfy the target's `requires-python` (or an `automation.python` pin is below
+  the floor), `run_verification` now fences the **entire** verification, not just
+  the suite: env-refresh, the `commands`, and the suite are all skipped and a
+  non-zero (127) result is synthesized so the evidence gate hard-blocks.
+  Previously the blocker fenced only the suite, so a plan with `commands` but **no**
+  `suite_command` ran env-refresh + commands on the host default and a green exit
+  produced a `passed` artifact — silently bypassing the pin/`requires-python`.
+  (agent-harness#220)
+- **Closeout disposable filter fails closed on a git-probe failure (fix).** The
+  untracked-and-gitignored disposable filter no longer drops a path when it cannot
+  prove the path is untracked. `_tracked_paths` now returns `None` on a `git
+  ls-files` probe failure (distinct from an empty "nothing tracked" result) and
+  the disposable computation drops nothing on `None`, so a transient probe failure
+  can no longer misclassify a genuinely **tracked** file as a disposable byproduct
+  and drop it (the #215 data-loss class under a probe failure). A collapsed
+  bare-directory entry (`build/`) — which reaches the filter only when directory
+  expansion's own git probe failed — is also never classified disposable, since
+  string membership against `git ls-files` (which lists member files, never the
+  bare-dir string) cannot prove the directory holds no modified tracked file; it is
+  kept and blocks rather than being dropped. The closeout `git add` path likewise
+  fails closed on a `None` probe (all paths get a plain add → a tracked-then-ignored
+  file that fails the plain add blocks rather than being force-committed or dropped).
+  (agent-harness#220)
+
 ## [0.7.9] - 2026-07-14
 
 ### Planning — validator enforces the producer-dependency contract (fail-fast)

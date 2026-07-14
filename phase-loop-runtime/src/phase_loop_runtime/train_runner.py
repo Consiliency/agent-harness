@@ -514,7 +514,7 @@ def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
     """
     import os
 
-    from .discovery import find_plan_artifact, resolve_suite_command_doc, verification_commands_from_plan
+    from .discovery import find_plan_artifact, resolve_python_pin, resolve_suite_command_doc, verification_commands_from_plan
     from .reconcile import reconcile
     from .verification_evidence import (
         ARTIFACT_NAME,
@@ -602,6 +602,10 @@ def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
             env_refresh,
             timeout_s,
             operational_exemptions=operational_exemptions,
+            # CR round-2 (codex): honor an automation.python pin on the
+            # train-reverification path too (was execute-only). Auto requires-
+            # python resolution already runs inside run_verification regardless.
+            python_pin=resolve_python_pin(roadmap_path, plan),
         )
         artifact_path = run_dir / ARTIFACT_NAME
         validation = validate_verification_artifact(artifact_path)
