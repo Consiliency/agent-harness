@@ -7566,11 +7566,18 @@ def _gitignored_paths(repo: Path, paths: list[str]) -> set[str]:
     return {line.strip().strip('"') for line in proc.stdout.splitlines() if line.strip()}
 
 
-def _tracked_paths(repo: Path, paths: list[str] | tuple[str, ...] | set[str]) -> set[str]:
+def _tracked_paths(repo: Path, paths: list[str] | tuple[str, ...] | set[str]) -> set[str] | None:
     """Return the subset of *paths* that are tracked in git's index/HEAD.
 
     Uses ``git ls-files`` (which lists only tracked files matching the given
     pathspecs). A path is "tracked" iff it appears in the output.
+
+    Returns ``None`` when the ``git ls-files`` probe itself FAILS (non-zero exit
+    or an exception) — deliberately distinct from an empty set (probe succeeded,
+    nothing tracked). Callers MUST fail closed on ``None`` (agent-harness#220
+    round-4, codex): a transient probe failure that silently collapsed to an
+    empty set would make a genuinely TRACKED file look untracked and be dropped
+    as a disposable byproduct — the #215 data-loss class under a probe failure.
     """
     path_list = list(dict.fromkeys(paths))
     if not path_list:
@@ -7582,7 +7589,7 @@ def _tracked_paths(repo: Path, paths: list[str] | tuple[str, ...] | set[str]) ->
             stderr=subprocess.DEVNULL,
         )
     except Exception:
-        return set()
+        return None
     tracked = {entry.strip().strip('"') for entry in out.split("\0") if entry.strip()}
     return {p for p in path_list if p in tracked}
 
@@ -7601,8 +7608,24 @@ def _untracked_gitignored_paths(repo: Path, paths: list[str] | tuple[str, ...]) 
     ignored = _gitignored_paths(repo, path_list)
     if not ignored:
         return set()
-    tracked = _tracked_paths(repo, ignored)
-    return {p for p in ignored if p not in tracked}
+    # Fail closed on a bare-directory entry (agent-harness#220 round-4): a
+    # collapsed "build/" reaches this filter only when `expand_dir_dirty_paths`
+    # could NOT expand it to member files — i.e. git_ops `_dir_member_paths`'
+    # subprocess probe failed and returned [] (git_ops.py:45). `git ls-files`
+    # lists member FILES, never the bare-directory string, so string membership
+    # can never prove the directory holds no modified tracked-then-ignored file.
+    # Classifying it disposable would drop such a file (the #215 class under a
+    # probe failure). Exclude bare dirs from the disposable set → they are kept
+    # and block rather than being silently dropped.
+    ignored_files = {p for p in ignored if not p.endswith("/")}
+    if not ignored_files:
+        return set()
+    tracked = _tracked_paths(repo, ignored_files)
+    if tracked is None:
+        # The tracked-status probe failed; drop NOTHING (fail closed) so a
+        # genuinely tracked file is never misclassified as a disposable byproduct.
+        return set()
+    return {p for p in ignored_files if p not in tracked}
 
 
 def _dirty_paths(repo: Path) -> list[str]:
@@ -8339,7 +8362,13 @@ def _perform_phase_closeout(
         # skipped, so keeping `-f` scoped to tracked members preserves that
         # fail-closed guarantee locally rather than relying on an upstream invariant.
         # Index isolation above still guarantees only these paths are staged.
-        tracked_closeout = _tracked_paths(repo, closeout_dirty_paths)
+        # agent-harness#220 round-4: on a probe failure `_tracked_paths` returns
+        # None — fail closed by treating nothing as tracked, so every path goes to
+        # a PLAIN add. A genuinely tracked-then-ignored file then fails the plain
+        # add (ignore advice) -> add_failure -> block, rather than being force-
+        # committed or dropped.
+        tracked_probe = _tracked_paths(repo, closeout_dirty_paths)
+        tracked_closeout = tracked_probe if tracked_probe is not None else set()
         force_paths = tuple(p for p in closeout_dirty_paths if p in tracked_closeout)
         plain_paths = tuple(p for p in closeout_dirty_paths if p not in tracked_closeout)
         add_failure = None

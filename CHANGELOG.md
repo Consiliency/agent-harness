@@ -76,6 +76,33 @@ closeout JSON schema, IF-gate grammar) is unchanged — only derivation logic.
   reports as owned still fails closed rather than being force-committed.
   (agent-harness#186)
 
+#### Round-4 cross-vendor CR: two fail-open / data-loss closures (#220)
+
+- **Whole-verification interpreter fencing (fix).** When no host interpreter can
+  satisfy the target's `requires-python` (or an `automation.python` pin is below
+  the floor), `run_verification` now fences the **entire** verification, not just
+  the suite: env-refresh, the `commands`, and the suite are all skipped and a
+  non-zero (127) result is synthesized so the evidence gate hard-blocks.
+  Previously the blocker fenced only the suite, so a plan with `commands` but **no**
+  `suite_command` ran env-refresh + commands on the host default and a green exit
+  produced a `passed` artifact — silently bypassing the pin/`requires-python`.
+  (agent-harness#220)
+- **Closeout disposable filter fails closed on a git-probe failure (fix).** The
+  untracked-and-gitignored disposable filter no longer drops a path when it cannot
+  prove the path is untracked. `_tracked_paths` now returns `None` on a `git
+  ls-files` probe failure (distinct from an empty "nothing tracked" result) and
+  the disposable computation drops nothing on `None`, so a transient probe failure
+  can no longer misclassify a genuinely **tracked** file as a disposable byproduct
+  and drop it (the #215 data-loss class under a probe failure). A collapsed
+  bare-directory entry (`build/`) — which reaches the filter only when directory
+  expansion's own git probe failed — is also never classified disposable, since
+  string membership against `git ls-files` (which lists member files, never the
+  bare-dir string) cannot prove the directory holds no modified tracked file; it is
+  kept and blocks rather than being dropped. The closeout `git add` path likewise
+  fails closed on a `None` probe (all paths get a plain add → a tracked-then-ignored
+  file that fails the plain add blocks rather than being force-committed or dropped).
+  (agent-harness#220)
+
 ## [0.7.9] - 2026-07-14
 
 ### Planning — validator enforces the producer-dependency contract (fail-fast)

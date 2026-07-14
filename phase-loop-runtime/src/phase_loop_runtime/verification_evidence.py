@@ -328,37 +328,58 @@ def run_verification(
 
     with log_path.open("wb") as log_file:
         if interpreter.blocker:
+            # Fail closed for the WHOLE verification (agent-harness#220 round-4,
+            # gemini): the resolved interpreter cannot satisfy the target's
+            # requires-python (or a pin below the floor), so run NOTHING on the
+            # wrong interpreter — not env_refresh, not the commands, not the suite.
+            # A green host-default exit must never yield a `passed` artifact.
+            # Previously the blocker fenced ONLY the suite, so a plan with
+            # `commands` but NO `suite_command` still ran env_refresh + commands on
+            # the host default and could pass, bypassing the pin/requires-python.
+            # Synthesize a non-zero result so `_nonzero_exit_findings` hard-blocks
+            # the evidence gate even for a commands-only plan.
             log_file.write(f"suite interpreter unavailable: {interpreter.blocker}\n".encode("utf-8"))
             log_file.flush()
-        elif interpreter.interpreter is not None:
-            log_file.write(f"suite interpreter: {interpreter.interpreter}\n".encode("utf-8"))
-            log_file.flush()
-        env_result = _record_env_refresh(
-            repo_path,
-            log_file,
-            env_refresh,
-            timeout_s,
-            path_prepend=shim_dir,
-            # CR codex#4: install deps under the SAME interpreter the suite runs
-            # under (the resolved/shimmed one), not the host `sys.executable`.
-            suite_interpreter=interpreter.interpreter,
-        )
-        command_results = [
-            _run_process(repo_path, log_file, argv, timeout_s, path_prepend=shim_dir) for argv in commands
-        ]
-        suite_result = None
-        if suite_command is not None:
-            if interpreter.blocker:
-                # Fail closed: refuse to run the suite under an interpreter that
-                # cannot satisfy the target requires-python. Recorded as a
-                # non-zero suite exit so the evidence gate blocks (nonzero_exit is
-                # always fail-closed — agent-harness#219(b-i)).
+            env_result = None
+            if suite_command is not None:
+                command_results = []
                 suite_result = VerificationSuiteEvidence(
                     argv=list(suite_command),
                     exit_code=127,
                     duration_s=0.0,
                 )
             else:
+                # No suite to carry the non-zero exit — synthesize a 127 command so
+                # the exit_summary has a non-zero entry the gate blocks on.
+                command_results = [
+                    VerificationCommandEvidence(
+                        argv=["<interpreter-unavailable>"],
+                        cwd=str(repo_path),
+                        exit_code=127,
+                        duration_s=0.0,
+                        log_offset=log_file.tell(),
+                    )
+                ]
+                suite_result = None
+        else:
+            if interpreter.interpreter is not None:
+                log_file.write(f"suite interpreter: {interpreter.interpreter}\n".encode("utf-8"))
+                log_file.flush()
+            env_result = _record_env_refresh(
+                repo_path,
+                log_file,
+                env_refresh,
+                timeout_s,
+                path_prepend=shim_dir,
+                # CR codex#4: install deps under the SAME interpreter the suite runs
+                # under (the resolved/shimmed one), not the host `sys.executable`.
+                suite_interpreter=interpreter.interpreter,
+            )
+            command_results = [
+                _run_process(repo_path, log_file, argv, timeout_s, path_prepend=shim_dir) for argv in commands
+            ]
+            suite_result = None
+            if suite_command is not None:
                 suite_evidence = _run_process(repo_path, log_file, suite_command, timeout_s, path_prepend=shim_dir)
                 suite_result = VerificationSuiteEvidence(
                     argv=suite_evidence.argv,

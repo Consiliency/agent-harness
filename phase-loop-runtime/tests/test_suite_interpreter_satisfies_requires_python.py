@@ -26,6 +26,7 @@ import pytest
 from phase_loop_runtime.verification_evidence import (
     _resolve_suite_interpreter,
     run_verification,
+    validate_verification_artifact,
 )
 
 
@@ -109,6 +110,47 @@ def test_no_satisfying_interpreter_fails_closed(tmp_path):
     )
     assert result.suite is not None
     assert result.suite.exit_code != 0
+
+
+def test_commands_only_plan_fails_closed_on_unsatisfiable_interpreter(tmp_path):
+    """agent-harness#220 round-4 (gemini): a plan with `commands` but NO
+    `suite_command`, on a repo whose requires-python no host interpreter can
+    satisfy, must NOT run the commands on the host default and pass. The blocker
+    previously fenced only the suite, so a commands-only plan bypassed the pin.
+
+    Revert-verify: with the fix reverted, `run_verification` runs the (green)
+    command on the host default, produces an all-zero artifact, and the evidence
+    gate passes — silently bypassing requires-python.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_pyproject(repo, ">=3.99")  # impossible on any real host
+    run_dir = repo / ".phase-loop" / "run"
+
+    result = run_verification(
+        repo,
+        run_dir,
+        # A command that would exit 0 on the host default; it must NOT run.
+        commands=[["python3", "-c", "import sys; sys.exit(0)"]],
+        suite_command=None,
+        env_refresh=None,
+        timeout_s=60.0,
+    )
+
+    # The whole verification is fenced: env_refresh and the suite are absent, and
+    # the artifact carries at least one non-zero exit so the gate hard-blocks.
+    assert result.env_refresh is None
+    assert result.suite is None
+    assert any(cmd.exit_code != 0 for cmd in result.commands), (
+        "a commands-only plan on an unsatisfiable interpreter must synthesize a "
+        "non-zero command exit, not run the command on the host default"
+    )
+
+    # End-to-end: the persisted artifact fails the evidence gate (fail closed).
+    artifact = run_dir / "verification.json"
+    validation = validate_verification_artifact(artifact)
+    assert validation.ok is False
+    assert validation.code == "nonzero_exit"
 
 
 def test_suite_bash_lc_bare_python_runs_under_shim(tmp_path):

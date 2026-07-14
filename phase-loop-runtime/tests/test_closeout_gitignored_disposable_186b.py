@@ -23,7 +23,12 @@ import subprocess
 from phase_loop_runtime.models import StateSnapshot, utc_now
 from phase_loop_runtime.profiles import resolve_profile
 from phase_loop_runtime.provenance import snapshot_provenance
-from phase_loop_runtime.runner import _perform_phase_closeout, _untracked_gitignored_paths
+from phase_loop_runtime import runner as runner_mod
+from phase_loop_runtime.runner import (
+    _perform_phase_closeout,
+    _tracked_paths,
+    _untracked_gitignored_paths,
+)
 from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 
 
@@ -144,6 +149,61 @@ def test_disposable_filter_never_drops_tracked_even_if_ignored(tmp_path):
 
     disposable = _untracked_gitignored_paths(repo, ["tracked.log", "untracked.log", "src/main.py"])
     assert disposable == {"untracked.log"}
+
+
+def test_tracked_paths_returns_none_on_probe_failure(tmp_path):
+    # agent-harness#220 round-4 (codex): `_tracked_paths` must DISTINGUISH a
+    # probe failure (git ls-files errored) from "genuinely nothing tracked". A
+    # non-git directory makes `git ls-files` exit 128 -> None, not an empty set.
+    non_repo = tmp_path / "not-a-git-repo"
+    non_repo.mkdir()
+    assert _tracked_paths(non_repo, ["anything.py"]) is None
+
+
+def test_disposable_filter_fails_closed_on_tracked_probe_failure(tmp_path, monkeypatch):
+    # agent-harness#220 round-4 (codex): a TRANSIENT `git ls-files` failure must
+    # not make a genuinely untracked+ignored path look "not tracked" and get
+    # dropped — the tracked-status probe is unknown, so drop NOTHING (fail closed).
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-m", "ignore logs")
+    (repo / "untracked.log").write_text("byproduct\n", encoding="utf-8")
+
+    # Sanity: without a probe failure this path IS disposable.
+    assert _untracked_gitignored_paths(repo, ["untracked.log"]) == {"untracked.log"}
+
+    # Now fail the `git ls-files` probe (check_output) while `git check-ignore`
+    # (subprocess.run) still succeeds, so `_tracked_paths` returns None.
+    def _boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, args[0] if args else "git")
+
+    monkeypatch.setattr(runner_mod.subprocess, "check_output", _boom)
+    # Fail closed: drop nothing rather than misclassify a possibly-tracked file.
+    assert _untracked_gitignored_paths(repo, ["untracked.log"]) == set()
+
+
+def test_bare_directory_entry_never_dropped_as_disposable(tmp_path):
+    # agent-harness#220 round-4 (git_ops.py:45 defused at the filter): a collapsed
+    # bare "build/" reaches this filter only when `expand_dir_dirty_paths` could
+    # not expand it (its git probe failed). `git ls-files -- build/` lists MEMBER
+    # files, never the bare-dir string, so membership can't prove the directory
+    # holds no modified tracked-then-ignored file. It must be KEPT (blocks), never
+    # classified disposable and dropped (the #215 class under a probe failure).
+    repo = make_repo(tmp_path)
+    build = repo / "build"
+    build.mkdir()
+    (build / "keep.py").write_text("real committed work\n", encoding="utf-8")
+    _git(repo, "add", "-f", "build/keep.py")
+    _git(repo, "commit", "-m", "track build/keep.py")
+    (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-m", "ignore build/")
+
+    # The bare directory string is gitignored but holds a TRACKED file; it must
+    # not be dropped. (Revert-verify: without the bare-dir guard, `_tracked_paths`
+    # returns {"build/keep.py"}, the string "build/" is not in it -> dropped.)
+    assert _untracked_gitignored_paths(repo, ["build/"]) == set()
 
 
 def test_trusted_path_untracked_ignored_reported_owned_still_blocks(tmp_path):
