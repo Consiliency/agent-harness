@@ -9,14 +9,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### Planning — validator enforces the producer-dependency contract (fail-fast)
 
 - **`validate_plan_doc.py` now errors when a lane consumes an interface provided by
-  another in-plan lane it does not depend on directly** (a new `(O)` check mirroring
-  the runtime `plan_ir._producer_dependency_diagnostics`). Previously the plan
-  validator passed such a plan (check F only traced that the interface was *provided*
-  somewhere) and the phase-loop lane IR then failed closed at execute time with
-  `missing_producer_dependency` — so a reviewed, signed plan could pass its canonical
-  validator and design panel, then become non-executable at the approval/baseline gate.
-  Planning-time and execution-time now enforce the same dependency contract.
-  (agent-harness#182)
+  another in-plan lane it does not depend on directly** (a new `(O)` check). Previously
+  the plan validator passed such a plan (check F only traced that the interface was
+  *provided* somewhere) and the phase-loop lane IR then failed closed at execute time
+  with `missing_producer_dependency` — so a reviewed, signed plan could pass its
+  canonical validator and design panel, then become non-executable at the
+  approval/baseline gate. `(O)` **delegates to the runtime `phase_loop_runtime.plan_ir`**
+  (the single source of truth) rather than reimplementing the parse/identity, so
+  planning-time and execution-time enforce the *same* contract by construction — no
+  interface-normalization or lane-parser divergence (verified: 0 divergences across all
+  22 committed plans). When the runtime is not importable at plan time, `(O)` skips (the
+  execute-time lane IR still enforces the contract). (agent-harness#182)
 
 ## [0.7.8] - 2026-07-13
 

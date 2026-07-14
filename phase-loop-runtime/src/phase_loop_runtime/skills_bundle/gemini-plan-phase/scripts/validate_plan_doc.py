@@ -560,39 +560,33 @@ def _check_f_interfaces_trace(
     return out
 
 
-def _check_o_producer_dependency(
-    lanes: List[Lane],
-    lane_sections: Dict[str, dict],
-) -> Findings:
-    """(O) A lane consuming an interface PROVIDED by another in-plan lane must depend
-    on that lane directly. Mirrors the runtime lane-IR contract
-    (phase_loop_runtime.plan_ir._producer_dependency_diagnostics), which fails closed
-    with `missing_producer_dependency` at execute time. Enforce it at PLAN time so a
-    reviewed, signed plan cannot pass validation then become non-executable at the
-    approval/baseline gate (agent-harness#182). Emitted as an ERROR (no WARN) because a
-    transitive-only dependency path is a hard execution blocker, not advice."""
+def _check_o_producer_dependency(plan_path: Path) -> Findings:
+    """(O) A lane consuming an interface PROVIDED by another in-plan lane must depend on
+    that lane directly. Rather than REIMPLEMENT the parse + interface identity (which
+    reintroduces the very validator-vs-runtime divergence this closes — different lane
+    parsers and a normalized vs exact-string interface identity), DELEGATE to the runtime
+    lane IR (`phase_loop_runtime.plan_ir`) — the single source of truth the scheduler
+    fails closed on with `missing_producer_dependency`. Parity is then true by
+    construction. If the runtime is not importable at plan time, skip: the execute-time
+    lane IR still enforces the contract (no regression, and no divergent pre-warn).
+    agent-harness#182."""
+    try:
+        from phase_loop_runtime.plan_ir import parse_phase_plan_ir
+    except Exception:
+        return []
+    try:
+        ir = parse_phase_plan_ir(Path(plan_path))
+    except Exception:
+        # Parse/format errors are other checks' domain (A/B/C); (O) only speaks to the
+        # producer-dependency edge and stays silent when the plan cannot be parsed.
+        return []
     out: Findings = []
-    providers: Dict[str, str] = {}
-    for sl_id, parsed in lane_sections.items():
-        for sym in parsed["interfaces_provided"]:
-            norm = _normalize_interface(sym)
-            if norm:
-                providers.setdefault(norm, sl_id)
-    depends: Dict[str, Set[str]] = {lane.sl_id: set(lane.depends_on) for lane in lanes}
-    for sl_id, parsed in lane_sections.items():
-        for sym in parsed["interfaces_consumed"]:
-            if "pre-existing" in sym.lower():
-                continue
-            norm = _normalize_interface(sym)
-            if not norm:
-                continue
-            provider = providers.get(norm)
-            if provider and provider != sl_id and provider not in depends.get(sl_id, set()):
-                out.append(
-                    f"(O) {sl_id} consumes `{sym}` from {provider} without depending on it "
-                    f"— add {provider} to '{sl_id}' Depends on (lane IR fails closed with "
-                    f"missing_producer_dependency at execute time)"
-                )
+    for diag in getattr(ir, "diagnostics", ()):  # LaneIRDiagnostic
+        if getattr(diag, "kind", "") == "missing_producer_dependency":
+            out.append(
+                f"(O) {diag.message} — add the producer to the consumer's `Depends on` "
+                f"(the lane IR fails closed with missing_producer_dependency at execute time)"
+            )
     return out
 
 
@@ -1093,7 +1087,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_d_owned_files_disjoint(lane_sections_parsed, repo_root))
     findings.extend(_check_e_test_before_impl(lane_sections_parsed))
     findings.extend(_check_f_interfaces_trace(lane_sections_parsed, lane_sections_raw))
-    findings.extend(_check_o_producer_dependency(lanes, lane_sections_parsed))
+    findings.extend(_check_o_producer_dependency(path))
     findings.extend(_check_g_grep_paired_with_tests(src))
     findings.extend(_check_h_eager_reexport(src))
     findings.extend(_check_i_spec_closeout_plan(src))

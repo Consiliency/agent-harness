@@ -1,19 +1,24 @@
-"""agent-harness#182 — validate_plan_doc.py producer-dependency check.
+"""agent-harness#182 — validate_plan_doc.py (O) producer-dependency check == runtime.
 
-The runtime lane IR (phase_loop_runtime.plan_ir._producer_dependency_diagnostics) fails
-closed with `missing_producer_dependency` at execute time when a lane consumes an
-interface provided by another in-plan lane it does not depend on directly. The plan
-validator must enforce the SAME contract at plan time (fail-fast), so a reviewed, signed
-plan cannot pass validation then become non-executable at the approval/baseline gate.
+The runtime lane IR (`phase_loop_runtime.plan_ir`) fails closed with
+`missing_producer_dependency` at execute time when a lane consumes an interface provided
+by another in-plan lane it does not depend on directly. The plan validator's `(O)` check
+must enforce the SAME contract at plan time. To guarantee that — and to avoid re-creating
+the very validator-vs-runtime divergence #182 is about — `(O)` DELEGATES to `plan_ir`.
+These tests pin the behaviour AND the parity, including the exact-string interface
+identity (so `IFoo` vs `IFoo (v2)` does NOT false-positive the way a normalized
+reimplementation would).
 """
 import importlib.util
 import sys
+import textwrap
 import unittest
 from pathlib import Path
 
 import pytest
 
 from _dotfiles_tree import skills_bundle_present
+from phase_loop_runtime.plan_ir import parse_phase_plan_ir
 
 if not skills_bundle_present():
     pytest.skip(
@@ -33,58 +38,90 @@ def _load():
     return mod
 
 
-def _sections(provided_by, consumed_by):
-    """Build the lane_sections dict the check consumes: {sl_id: {provided, consumed}}."""
-    ids = set(provided_by) | set(consumed_by)
-    return {
-        sl: {
-            "interfaces_provided": list(provided_by.get(sl, [])),
-            "interfaces_consumed": list(consumed_by.get(sl, [])),
-        }
-        for sl in ids
-    }
+def _plan(consumed: str, sl2_depends: str) -> str:
+    """A 3-lane plan: SL-0 provides `IFoo`; SL-2 consumes `consumed` and depends on
+    `sl2_depends`. Empty interface lists are OMITTED (the runtime parses a literal
+    `(none)` as an interface token). The runtime tolerates the ASCII hyphen in the
+    SL heading."""
+    return textwrap.dedent(
+        f"""\
+        ## Lane Index
+
+        - SL-0 — Provider; Depends on: (none)
+        - SL-1 — Middle; Depends on: SL-0
+        - SL-2 — Consumer; Depends on: {sl2_depends}
+
+        ## Lanes
+
+        ### SL-0 - Provider
+
+        - **Owned files**: `src/foo.py`
+        - **Interfaces provided**: `IFoo`
+
+        ### SL-1 - Middle
+
+        - **Owned files**: `src/mid.py`
+
+        ### SL-2 - Consumer
+
+        - **Owned files**: `src/consumer.py`
+        - **Interfaces consumed**: {consumed}
+        """
+    )
 
 
-class ProducerDependencyCheckTest(unittest.TestCase):
+def _runtime_missing(path: Path):
+    return [d for d in parse_phase_plan_ir(path).diagnostics if d.kind == "missing_producer_dependency"]
+
+
+class ProducerDependencyParityTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.mod = _load()
 
-    def _lanes(self, deps):
-        return [self.mod.Lane(sl_id=sl, name=sl, depends_on=list(d)) for sl, d in deps.items()]
+    def _write(self, tmp: Path, text: str) -> Path:
+        p = tmp / "plan.md"
+        p.write_text(text, encoding="utf-8")
+        return p
 
-    def test_flags_consumer_missing_direct_producer_edge(self):
-        # SL-2 consumes ISchema (provided by SL-0) but depends only on SL-1 — the exact
-        # transitive-only case the runtime rejects with missing_producer_dependency.
-        lanes = self._lanes({"SL-0": [], "SL-1": ["SL-0"], "SL-2": ["SL-1"]})
-        sections = _sections({"SL-0": ["ISchema"]}, {"SL-2": ["ISchema"]})
-        findings = self.mod._check_o_producer_dependency(lanes, sections)
-        self.assertEqual(len(findings), 1, findings)
-        self.assertIn("SL-2", findings[0])
-        self.assertIn("SL-0", findings[0])
-        self.assertNotIn("WARN", findings[0])  # an ERROR, not advice — it blocks execution
+    def test_flags_missing_direct_producer_edge_matching_runtime(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(Path(d), _plan(consumed="`IFoo`", sl2_depends="SL-1"))
+            runtime = _runtime_missing(path)
+            self.assertTrue(runtime, "fixture must trigger the runtime diagnostic (self-check)")
+            findings = self.mod._check_o_producer_dependency(path)
+            self.assertEqual(len(findings), len(runtime), findings)
+            self.assertTrue(any("SL-2" in f for f in findings), findings)
+            self.assertTrue(all("WARN" not in f for f in findings))  # ERROR, not advice
 
-    def test_clean_when_direct_producer_edge_present(self):
-        lanes = self._lanes({"SL-0": [], "SL-2": ["SL-0"]})
-        sections = _sections({"SL-0": ["ISchema"]}, {"SL-2": ["ISchema"]})
-        self.assertEqual(self.mod._check_o_producer_dependency(lanes, sections), [])
+    def test_clean_when_direct_edge_present_matching_runtime(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(Path(d), _plan(consumed="`IFoo`", sl2_depends="SL-0"))
+            self.assertEqual(_runtime_missing(path), [], "runtime should accept the direct edge")
+            self.assertEqual(self.mod._check_o_producer_dependency(path), [])
 
-    def test_pre_existing_interface_needs_no_edge(self):
-        lanes = self._lanes({"SL-0": [], "SL-2": []})
-        sections = _sections({"SL-0": ["ISchema"]}, {"SL-2": ["ISchema (pre-existing)"]})
-        self.assertEqual(self.mod._check_o_producer_dependency(lanes, sections), [])
+    def test_annotated_interface_is_exact_string_not_normalized(self):
+        # The CR's false-positive case: provide `IFoo`, consume `IFoo (v2)` with NO direct
+        # edge. The runtime matches interfaces by EXACT string, so `IFoo` != `IFoo (v2)` →
+        # no in-plan producer → runtime ACCEPTS. A normalized reimplementation would strip
+        # `(v2)` and wrongly ERROR. (O) must match the runtime: no finding.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(Path(d), _plan(consumed="`IFoo (v2)`", sl2_depends="SL-1"))
+            self.assertEqual(_runtime_missing(path), [], "runtime treats IFoo and IFoo (v2) as distinct")
+            self.assertEqual(
+                self.mod._check_o_producer_dependency(path), [],
+                "(O) must not false-positive on an annotated interface (exact-string identity)",
+            )
 
-    def test_self_provided_interface_needs_no_edge(self):
-        lanes = self._lanes({"SL-0": []})
-        sections = _sections({"SL-0": ["ISchema"]}, {"SL-0": ["ISchema"]})
-        self.assertEqual(self.mod._check_o_producer_dependency(lanes, sections), [])
-
-    def test_external_interface_no_in_plan_provider_is_silent(self):
-        # No lane provides IExternal → no in-plan producer → the DAG-trace check (F)
-        # owns that WARN; this check stays silent (it only enforces the edge to a provider).
-        lanes = self._lanes({"SL-2": []})
-        sections = _sections({}, {"SL-2": ["IExternal"]})
-        self.assertEqual(self.mod._check_o_producer_dependency(lanes, sections), [])
+    def test_skips_gracefully_when_plan_unparseable(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(Path(d), "not a plan\n")
+            # No lanes → no producer edges → no (O) findings (A/B own the parse errors).
+            self.assertEqual(self.mod._check_o_producer_dependency(path), [])
 
 
 if __name__ == "__main__":
