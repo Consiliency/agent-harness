@@ -40,6 +40,19 @@ closeout JSON schema, IF-gate grammar) is unchanged — only derivation logic.
   with a named blocker (recorded as a non-zero suite exit). This removes the
   py3.10-vs-`requires-python>=3.11` false failure that previously needed a manual
   shim. (agent-harness#219)
+- **Safe gitignore handling at closeout (fix).** The gitignored exclusion no
+  longer drops OWNED paths from `phase_owned_dirty_paths`: it applies to the
+  *unowned* classification only, so a tracked-then-ignored owned file (real work
+  that now also matches a `.gitignore` pattern) commits instead of being silently
+  dropped (the #215 data-loss trap). Separately, the closeout fallback classifier
+  now filters disposable byproducts the executor over-reports — paths that are
+  BOTH untracked AND gitignored (`build/`, `*.egg-info/`, `.phase-loop/`,
+  `.dev-skills/`) — so a disposable-only over-report with a clean tree and passing
+  verification finalizes as a no-op instead of a false `dirty_worktree_conflict`
+  (the EXTRACT failure). A tracked file (even if ignored) is never treated as
+  disposable. The closeout `git add` now force-adds the vetted, ownership-approved
+  path set so a tracked-then-ignored file stages without a spurious non-zero exit.
+  (agent-harness#186)
 
 ## [0.7.9] - 2026-07-14
 
