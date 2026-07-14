@@ -16,7 +16,7 @@ from .consiliency_ingest import ingest
 from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
 from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
-from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_source_bundle_diagnostic, resolve_repo, resolve_suite_command, select_roadmap
+from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_source_bundle_diagnostic, resolve_python_pin, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
 from .roadmap_authority import RoadmapAuthorityError, assert_roadmap_authorized
 from .git_topology import collect_git_topology
@@ -2032,6 +2032,10 @@ def _hotfix_command(*, repo: Path, args: argparse.Namespace, as_json: bool) -> i
         suite_command,
         env_refresh,
         float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
+        # CR round-2 (codex): honor an automation.python pin on the hotfix path
+        # too (was execute-only). Auto requires-python resolution already runs
+        # inside run_verification regardless of the pin.
+        python_pin=resolve_python_pin(roadmap, plan_stub),
     )
     validation = validate_verification_artifact(artifacts["verification_artifact"])
     validation_json = validation.to_json()

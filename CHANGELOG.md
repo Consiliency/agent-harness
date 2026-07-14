@@ -48,7 +48,15 @@ closeout JSON schema, IF-gate grammar) is unchanged — only derivation logic.
   An `env_refresh` pip install runs under the **same** resolved interpreter as the
   suite (not the host `sys.executable`), so deps are visible to the suite. When no
   satisfying interpreter exists the suite fails closed with a named blocker
-  (recorded as a non-zero suite exit). This removes the py3.10-vs-
+  (recorded as a non-zero suite exit). The interpreter resolution (pin +
+  requires-python auto-resolve) is now honored on **all three** verification paths
+  — execute, train-reverification, and hotfix. If the suite argv **explicitly**
+  names a versioned/absolute interpreter below the floor (a bare `pythonX.Y` as the
+  executable, or inside a `bash -lc "… pythonX.Y …"` wrapper), it now fails closed
+  rather than bypassing the resolved interpreter and producing green evidence under
+  an unsupported Python. *Known limitation:* an interpreter reached indirectly
+  (`env pythonX.Y`, a shell `$VAR`, `uv run`, or an absolute path whose basename is
+  not `pythonX.Y`) is not detected. This removes the py3.10-vs-
   `requires-python>=3.11` false failure that previously needed a manual shim.
   (agent-harness#219)
 - **Safe gitignore handling at closeout (fix).** The gitignored exclusion no
