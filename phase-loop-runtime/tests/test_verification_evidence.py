@@ -50,6 +50,43 @@ class VerificationEvidenceTest(unittest.TestCase):
                 os.environ["PHASE_LOOP_PHASE_ALIAS"] = "ENVWINS"
                 self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "ENVWINS")     # env escape-hatch wins
 
+    def test_execute_verification_forwards_live_alias_into_artifact(self):
+        # ah#85(b) — cover the RUNNER forwarding hop (not just run_verification directly):
+        # _run_execute_verification must thread `phase_alias` into the written verification.json,
+        # so breaking the runner forwarding fails HERE. Uses a differing current_phase.
+        from phase_loop_runtime import runner
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, 'print(\"suite\")']\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{sys.executable} -c \"print('verify')\"`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            # state.json current_phase DIFFERS from the run's live alias (the drift scenario).
+            (repo / ".phase-loop").mkdir(parents=True, exist_ok=True)
+            (repo / ".phase-loop/state.json").write_text('{"current_phase": "OVERLAY"}', encoding="utf-8")
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            result = runner._run_execute_verification(
+                repo=repo, roadmap=roadmap, plan=plan,
+                artifacts={"root": run_dir}, phase_alias="VIRTUALDEV",
+            )
+            # sanity: verification actually ran and wrote the artifact (not an early return)
+            self.assertTrue(result.get("ok"), result)
+            payload = json.loads((run_dir / "verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["phase_alias"], "VIRTUALDEV")
+
     def test_all_pass_commands_write_artifact_and_log(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
