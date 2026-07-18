@@ -19,6 +19,7 @@ import os
 import shutil
 import urllib.parse
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -84,8 +85,29 @@ def test_grok_capability_record_present_and_bound():
 def test_grok_provider_policy_capability_present():
     capability = provider_policy_capabilities()["grok"]
     assert capability.executor == "grok"
-    # grok's CLI accepts the full normalized effort set — no clamp/aliases.
+    assert capability.effort_map == {
+        "minimal": "low",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "high",
+        "max": "high",
+    }
     assert not capability.model_aliases
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [("minimal", "low"), ("xhigh", "high"), ("max", "high")],
+)
+def test_grok_unsupported_efforts_are_clamped(requested, expected):
+    request = _request("execute")
+    request = replace(
+        request,
+        model_selection=replace(request.model_selection, effort=requested),
+    )
+    spec = build_launch_spec(request)
+    assert spec.command[spec.command.index("--reasoning-effort") + 1] == expected
 
 
 def test_grok_default_model_resolves_from_profiles():
@@ -105,7 +127,7 @@ def test_build_grok_launch_spec_write_action_argv():
     assert cmd[cmd.index("--output-format") + 1] == "plain"
     assert cmd[cmd.index("--cwd") + 1] == str(_REPO)
     assert cmd[cmd.index("-m") + 1] == GROK_DEFAULT_MODEL
-    # effort passes straight through to grok's --reasoning-effort (no clamp).
+    # Supported effort remains unchanged through the grok clamp.
     assert cmd[cmd.index("--reasoning-effort") + 1] == spec.selected_effort
     # write action auto-approves.
     assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"

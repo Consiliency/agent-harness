@@ -17,7 +17,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable
 
-from .capability_registry import capability_registry
+from .capability_registry import capability_registry, provider_policy_capabilities
 from .claude_agent_view import ClaudeAgentViewAdapter, AgentViewLifecycleResult, workspace_trust_state
 from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult, is_loopback_http_url
 from .discovery import classify_phase_team_eligibility
@@ -716,11 +716,8 @@ def build_grok_command(
     # (_prompt_bundle_with_closeout_schema, which now targets "grok") and parsed from
     # grok's `--output-format plain` output.
     #
-    # Effort passes straight through to grok's `--reasoning-effort` flag. grok's CLI
-    # accepts a superset of NORMALIZED_EFFORT_LEVELS (its own set adds `none`), so
-    # every normalized level (minimal/low/medium/high/xhigh/max) is valid and no
-    # mapping/clamp is needed (unlike codex's `max -> xhigh`). The model is passed
-    # verbatim via `-m`.
+    # Map normalized effort through the provider capability because grok's CLI only
+    # accepts low, medium, and high. The model is passed verbatim via `-m`.
     #
     # Permission posture (CR: verified empirically against grok 0.2.x). Headless
     # `grok -p` AUTO-APPROVES writes regardless of `--permission-mode`/`--sandbox`
@@ -746,7 +743,7 @@ def build_grok_command(
         "-m",
         selection.model,
         "--reasoning-effort",
-        selection.effort,
+        provider_policy_capabilities()["grok"].effort_map[selection.effort],
     ]
     if action == "review":
         command.extend(["--tools", GROK_REVIEW_READONLY_TOOLS])

@@ -494,9 +494,17 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         supported_efforts=_ALL_EFFORTS,
         unsupported_policy_behavior=_FAIL_CLOSED,
         default_effort="medium",
-        effort_map={effort: effort for effort in _ALL_EFFORTS},
+        effort_map={
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "high",
+            "max": "high",
+        },
         notes=(
-            "grok's `--reasoning-effort` CLI flag accepts a superset of NORMALIZED_EFFORT_LEVELS (its own set adds `none`), so every normalized effort passes through directly with no clamp.",
+            "grok's `--reasoning-effort` CLI flag accepts only low, medium, and high, "
+            "so normalized efforts are clamped to that subset.",
         ),
     ),
     "gemini-api": ProviderPolicyCapability(
