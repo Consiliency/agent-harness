@@ -44,8 +44,9 @@ Next-most load-bearing after review infra: these govern whether a phase can be m
   - #85: closeout/status drift when a roadmap amendment changes phase hashes.
   - #90: cannot rehydrate a completed roadmap from tracked closeout artifacts without
     re-verification.
-- **#84:** `phase-loop --phase ROOM` still repairs a blocked SEAL instead of dispatching
-  the explicit independent phase.
+- **#84: ✅ DONE — merged as #232.** Root cause was an argparse subparser clobber (not the
+  dispatcher): common opts before the subcommand were reset to defaults; added SUPPRESS.
+  Residual non-common-arg clobber class → #233 (fail-closed, low severity).
 - **#186:** concurrent lane scheduler permits monolithic dispatch with an empty
   owned-file contract. (Distinct from the already-fixed #186b gitignore-closeout piece.)
 
