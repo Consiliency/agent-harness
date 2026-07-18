@@ -1268,6 +1268,22 @@ def run_loop(
     # the latter. The CLI rejects an empty reason pre-run_loop; this preserves the
     # distinction for programmatic callers.
     require_literal(lane_scheduler_mode, ("off", "serialized", "concurrent"), "lane scheduler mode")
+    if lane_scheduler_mode in ("serialized", "concurrent") and not work_unit_mode and not dry_run:
+        # Footgun guard (#186): a lane scheduler records the ready wave but only the
+        # work-unit dispatch (`launch_harness_lane_work_unit`) carries the per-lane
+        # owned-file contract. Without --work-unit-mode the recorded wave is never
+        # dispatched, and the OUTER loop falls to the monolithic executor whose owned
+        # files (`_extract_plan_owned_files`) resolve to () for a lane-structured plan —
+        # an empty "Active plan owned files" contract that the executor rejects with
+        # dirty_worktree_conflict. Fail loudly at preflight for REAL execution; --dry-run
+        # is a valid wave PREVIEW (records units without dispatching) and is preserved.
+        raise ValueError(
+            "--lane-scheduler serialized/concurrent requires --work-unit-mode for real "
+            "execution: the ready lane wave is recorded but NOT dispatched without it, so a "
+            "single monolithic executor runs with an empty owned-file contract and fails "
+            "closed (dirty_worktree_conflict). Add --work-unit-mode to execute the lanes, or "
+            "use --dry-run to preview the wave."
+        )
     try:
         rotation_state = RotationState.from_csv(
             rotate_executors,

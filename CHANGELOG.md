@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Lane scheduler requires work-unit mode for real execution (#186)
+
+`--lane-scheduler serialized/concurrent` without `--work-unit-mode` used to parse the lane
+IR, record a ready wave, then dispatch one **monolithic** executor with an **empty**
+owned-file contract (the recorded lane work units are only dispatched via the work-unit
+path), which the executor rejected with `dirty_worktree_conflict`. The run-loop preflight
+now fails fast for **real** execution (`ValueError` naming both remedies: add
+`--work-unit-mode`, or use `--dry-run`), instead of starting an executor that can own no
+phase files. `--dry-run` is a valid wave **preview** (records units without dispatching) and
+is unchanged; `--lane-scheduler off` and `--work-unit-mode` runs are not affected.
+
 ### Common options before the subcommand no longer silently reset (#84)
 
 `phase-loop --phase ROOM run` (and any common option placed BEFORE the subcommand —
