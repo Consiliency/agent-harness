@@ -47,8 +47,11 @@ Next-most load-bearing after review infra: these govern whether a phase can be m
 - **#84: ✅ DONE — merged as #232.** Root cause was an argparse subparser clobber (not the
   dispatcher): common opts before the subcommand were reset to defaults; added SUPPRESS.
   Residual non-common-arg clobber class → #233 (fail-closed, low severity).
-- **#186:** concurrent lane scheduler permits monolithic dispatch with an empty
-  owned-file contract. (Distinct from the already-fixed #186b gitignore-closeout piece.)
+- **#186: ⚠️ LIKELY STALE — fix withdrawn (#234 closed).** The reported empty-owned-file
+  monolithic dispatch was already fixed by #58 (`_extract_plan_owned_files` now aggregates
+  lane ownership via `parse_plan_ownership`; verified non-empty on the real fixture). A
+  preflight-reject also breaks the DOCUMENTED `--lane-scheduler serialized` compat mode.
+  Re-verify against current main → likely close as resolved-by-#58.
 
 ## Batch 3 — Verification / governance hardening
 

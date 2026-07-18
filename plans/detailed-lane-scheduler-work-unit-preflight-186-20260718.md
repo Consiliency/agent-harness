@@ -1,5 +1,12 @@
 # Detailed plan: reject real-exec lane-scheduler without work-unit-mode (ah#186)
 
+> **WITHDRAWN (2026-07-18): premise stale.** The cross-vendor CR (codex) showed the #186
+> empty-owned-file-contract failure was already fixed by #58 — `injection._extract_plan_owned_files`
+> now aggregates writer-lane ownership via `parse_plan_ownership` (verified non-empty on the real
+> `dfparsoak_wave_plan.md` fixture), and `--lane-scheduler serialized` is a DOCUMENTED real-exec
+> compat mode (runtime-boundary.md / lane-scheduler.md) this plan's guard would have broken. PR #234
+> closed unmerged. #186 appears resolved by #58 — re-verify against current main before reworking.
+
 ## Task
 Consiliency/agent-harness#186 — `phase-loop --lane-scheduler concurrent` WITHOUT
 `--work-unit-mode` parses the lane IR and records a ready wave, but then dispatches ONE
