@@ -14,6 +14,120 @@ from phase_loop_runtime.verification_evidence import (
 
 
 class VerificationEvidenceTest(unittest.TestCase):
+    def test_threaded_phase_alias_wins_over_current_phase(self):
+        # ah#85(b): verification.json must record the LIVE run alias threaded by the caller,
+        # not re-derive from state.json:current_phase (which drifts after a mid-run roadmap
+        # amendment). Here current_phase is OVERLAY but the run's alias is VIRTUALDEV.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".phase-loop").mkdir()
+            (repo / ".phase-loop/state.json").write_text('{"current_phase": "OVERLAY"}', encoding="utf-8")
+            run_dir = repo / ".phase-loop/runs/test-run"
+
+            run_verification(
+                repo, run_dir, [[sys.executable, "-c", "print('ok')"]], None, None, 5,
+                phase_alias="VIRTUALDEV",
+            )
+            payload = json.loads((run_dir / "verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["phase_alias"], "VIRTUALDEV")
+
+    def test_phase_alias_precedence_env_over_threaded_over_current_phase(self):
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime.verification_evidence import _phase_alias
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".phase-loop").mkdir()
+            (repo / ".phase-loop/state.json").write_text('{"current_phase": "OVERLAY"}', encoding="utf-8")
+            # Clear any ambient alias env so the fallback/threaded asserts are hermetic.
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                self.assertEqual(_phase_alias(repo), "OVERLAY")                  # no alias -> current_phase
+                self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "VIRTUALDEV")  # threaded beats current_phase
+                os.environ["PHASE_LOOP_PHASE_ALIAS"] = "ENVWINS"
+                self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "ENVWINS")     # env escape-hatch wins
+
+    def test_execute_verification_forwards_live_alias_into_artifact(self):
+        # ah#85(b) — cover the helper->run_verification hop: _run_execute_verification must
+        # thread `phase_alias` into the written verification.json, so breaking that forwarding
+        # fails HERE. Uses a differing current_phase.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, 'print(\"suite\")']\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{sys.executable} -c \"print('verify')\"`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            # state.json current_phase DIFFERS from the run's live alias (the drift scenario).
+            (repo / ".phase-loop").mkdir(parents=True, exist_ok=True)
+            (repo / ".phase-loop/state.json").write_text('{"current_phase": "OVERLAY"}', encoding="utf-8")
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            # Hermetic: an ambient operator override would (correctly) outrank the threaded
+            # alias and mask the assertion, so clear both env vars for this check.
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="VIRTUALDEV",
+                )
+            # sanity: verification actually ran and wrote the artifact (not an early return)
+            self.assertTrue(result.get("ok"), result)
+            payload = json.loads((run_dir / "verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["phase_alias"], "VIRTUALDEV")
+
+    def test_run_loop_callsite_forwards_live_alias_to_execute_verification(self):
+        # ah#85(b) — pin the CALLSITE (runner.py:3508): run_loop must forward the LIVE run
+        # `alias` into _run_execute_verification, so verification.json is attributed to this
+        # run's phase (not re-derived from a drifted current_phase). Driving full run_loop at
+        # runtime requires the injected skill bundle, which is why the end-to-end verification
+        # test is dotfiles_integration-marked (excluded by CI's `-m "not dotfiles_integration"`).
+        # Pin the invariant STATICALLY instead: parse run_loop's AST and assert the call passes
+        # `phase_alias=alias`. Deleting the forwarding arg fails HERE — CI-visible, hermetic,
+        # bundle-free. Pairs with the helper->artifact behavioral test above.
+        import ast
+        import inspect
+
+        from phase_loop_runtime import runner
+
+        tree = ast.parse(inspect.getsource(runner.run_loop))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_run_execute_verification"
+        ]
+        self.assertTrue(calls, "run_loop must call _run_execute_verification")
+        for call in calls:
+            kwargs = {kw.arg: kw.value for kw in call.keywords}
+            self.assertIn(
+                "phase_alias", kwargs, "run_loop must forward phase_alias to _run_execute_verification"
+            )
+            self.assertIsInstance(kwargs["phase_alias"], ast.Name)
+            self.assertEqual(
+                kwargs["phase_alias"].id, "alias", "run_loop must forward the live run `alias`"
+            )
+
     def test_all_pass_commands_write_artifact_and_log(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
