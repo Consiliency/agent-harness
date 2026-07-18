@@ -51,9 +51,12 @@ class VerificationEvidenceTest(unittest.TestCase):
                 self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "ENVWINS")     # env escape-hatch wins
 
     def test_execute_verification_forwards_live_alias_into_artifact(self):
-        # ah#85(b) — cover the RUNNER forwarding hop (not just run_verification directly):
-        # _run_execute_verification must thread `phase_alias` into the written verification.json,
-        # so breaking the runner forwarding fails HERE. Uses a differing current_phase.
+        # ah#85(b) — cover the helper->run_verification hop: _run_execute_verification must
+        # thread `phase_alias` into the written verification.json, so breaking that forwarding
+        # fails HERE. Uses a differing current_phase.
+        import os
+        from unittest.mock import patch
+
         from phase_loop_runtime import runner
         from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 
@@ -78,14 +81,52 @@ class VerificationEvidenceTest(unittest.TestCase):
             run_dir = repo / ".phase-loop/runs/exec-test"
             run_dir.mkdir(parents=True, exist_ok=True)
 
-            result = runner._run_execute_verification(
-                repo=repo, roadmap=roadmap, plan=plan,
-                artifacts={"root": run_dir}, phase_alias="VIRTUALDEV",
-            )
+            # Hermetic: an ambient operator override would (correctly) outrank the threaded
+            # alias and mask the assertion, so clear both env vars for this check.
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="VIRTUALDEV",
+                )
             # sanity: verification actually ran and wrote the artifact (not an early return)
             self.assertTrue(result.get("ok"), result)
             payload = json.loads((run_dir / "verification.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["phase_alias"], "VIRTUALDEV")
+
+    def test_run_loop_callsite_forwards_live_alias_to_execute_verification(self):
+        # ah#85(b) — pin the CALLSITE (runner.py:3508): run_loop must forward the LIVE run
+        # `alias` into _run_execute_verification, so verification.json is attributed to this
+        # run's phase (not re-derived from a drifted current_phase). Driving full run_loop at
+        # runtime requires the injected skill bundle, which is why the end-to-end verification
+        # test is dotfiles_integration-marked (excluded by CI's `-m "not dotfiles_integration"`).
+        # Pin the invariant STATICALLY instead: parse run_loop's AST and assert the call passes
+        # `phase_alias=alias`. Deleting the forwarding arg fails HERE — CI-visible, hermetic,
+        # bundle-free. Pairs with the helper->artifact behavioral test above.
+        import ast
+        import inspect
+
+        from phase_loop_runtime import runner
+
+        tree = ast.parse(inspect.getsource(runner.run_loop))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_run_execute_verification"
+        ]
+        self.assertTrue(calls, "run_loop must call _run_execute_verification")
+        for call in calls:
+            kwargs = {kw.arg: kw.value for kw in call.keywords}
+            self.assertIn(
+                "phase_alias", kwargs, "run_loop must forward phase_alias to _run_execute_verification"
+            )
+            self.assertIsInstance(kwargs["phase_alias"], ast.Name)
+            self.assertEqual(
+                kwargs["phase_alias"].id, "alias", "run_loop must forward the live run `alias`"
+            )
 
     def test_all_pass_commands_write_artifact_and_log(self):
         with tempfile.TemporaryDirectory() as td:
