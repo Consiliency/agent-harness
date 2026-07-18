@@ -325,9 +325,10 @@ def available_panel_legs(probe: Callable[[str], bool] | None = None) -> tuple[st
     """Metadata-only liveness preflight: which panel legs have their CLI present.
 
     Considers all four vendors (codex, gemini, claude, grok) and returns those whose CLI
-    is installed — so a down vendor transparently backfills onto grok (ah#171) without a
-    hand-rolled CLI leg. Availability-aware: grok appears only when the grok CLI is
-    present, so a host without it still returns the frozen `PANEL_LEGS` 3-tuple.
+    is installed — so grok is available as a 4th independent vendor whenever its CLI is
+    present (which lets a caller whose gemini/agy leg is down still reach four vendors
+    without a hand-rolled grok CLI, ah#171). Availability-aware: grok appears only when the
+    grok CLI is present, so a host without it still returns the frozen `PANEL_LEGS` 3-tuple.
 
     `probe(cli) -> bool` is injectable for tests; the default checks PATH only
     (does not authenticate or spend tokens).
