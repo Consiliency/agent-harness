@@ -28,9 +28,10 @@ session's CRs. #222 (grok default effort) already landed. Remaining, by priority
 - **P2 — #171: ✅ DONE — merged as #229.** `available_panel_legs()` now exposes grok when
   its CLI is installed (availability-aware; frozen `PANEL_LEGS` untouched), so a down vendor
   reaches a 4th independent leg without a hand-roll. 3-vendor CR converged, CI green.
-- **P3 — #224:** grokexec/launcher grok `effort_map` is identity → explicit
-  `max`/`xhigh`/`minimal` rejected by the grok CLI. Low urgency (explicit-only; default
-  path is `medium` = valid). Sibling of #222; same clamp pattern.
+- **P3 — #224: ✅ DONE — merged as #230.** grokexec/launcher grok leg now clamps effort at
+  the CLI boundary (`_grok_cli_effort`: minimal→low, xhigh/max→high), mirroring codex. 3-vendor
+  CR converged, CI green. Follow-up filed: planner-eligibility asymmetry + panel `_GROK_EFFORT`
+  hardening.
 - **Defer (enhancement, not a bug):** #191 first-class delta review with reviewed-byte
   equivalence.
 
