@@ -9,7 +9,7 @@ description = "Dependency shim: installs the phase-loop-runtime orchestration pr
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
-authors = [{ name = "ViperJuice" }]
+authors = [{ name = "ViperJuice", email = "viperjuice@users.noreply.github.com" }]
 keywords = ["phase-loop", "agent-harness", "orchestration", "consiliency"]
 classifiers = [
     "Programming Language :: Python :: 3",
