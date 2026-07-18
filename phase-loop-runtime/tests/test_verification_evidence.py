@@ -32,18 +32,23 @@ class VerificationEvidenceTest(unittest.TestCase):
             self.assertEqual(payload["phase_alias"], "VIRTUALDEV")
 
     def test_phase_alias_precedence_env_over_threaded_over_current_phase(self):
+        import os
+        from unittest.mock import patch
+
         from phase_loop_runtime.verification_evidence import _phase_alias
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             (repo / ".phase-loop").mkdir()
             (repo / ".phase-loop/state.json").write_text('{"current_phase": "OVERLAY"}', encoding="utf-8")
-            self.assertEqual(_phase_alias(repo), "OVERLAY")                 # no alias -> current_phase
-            self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "VIRTUALDEV")  # threaded wins over current_phase
-            import os
-            from unittest.mock import patch
-            with patch.dict(os.environ, {"PHASE_LOOP_PHASE_ALIAS": "ENVWINS"}):
-                self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "ENVWINS")  # env escape-hatch wins
+            # Clear any ambient alias env so the fallback/threaded asserts are hermetic.
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                self.assertEqual(_phase_alias(repo), "OVERLAY")                  # no alias -> current_phase
+                self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "VIRTUALDEV")  # threaded beats current_phase
+                os.environ["PHASE_LOOP_PHASE_ALIAS"] = "ENVWINS"
+                self.assertEqual(_phase_alias(repo, "VIRTUALDEV"), "ENVWINS")     # env escape-hatch wins
 
     def test_all_pass_commands_write_artifact_and_log(self):
         with tempfile.TemporaryDirectory() as td:

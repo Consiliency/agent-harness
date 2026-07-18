@@ -2,7 +2,7 @@
 
 VC freezes the additive verification evidence artifact for future runner wiring. Until a later phase consumes it, the only producer is `phase_loop_runtime.verification_evidence.run_verification`.
 
-`run_verification(repo, run_dir, commands, suite_command, env_refresh, timeout_s, *, phase_alias=None) -> VerificationResult` writes two sibling files under the supplied run directory. The optional `phase_alias` is the LIVE run alias (ah#85): when supplied it is the authoritative `phase_alias` for `verification.json`; when omitted it falls back to `_phase_alias` (env `PHASE_LOOP_PHASE_ALIAS` override, else `.phase-loop/state.json:current_phase`), so the artifact no longer mis-attributes the phase after a mid-run roadmap amendment.
+`run_verification(repo, run_dir, commands, suite_command, env_refresh, timeout_s, operational_exemptions=None, python_pin=None, phase_alias=None) -> VerificationResult` writes two sibling files under the supplied run directory. The optional `phase_alias` is the LIVE run alias (ah#85). `verification.json`'s `phase_alias` resolves in strict precedence order: the operator env override (`PHASE_LOOP_PHASE_ALIAS` / `PHASE_ALIAS`) wins if set, else the supplied `phase_alias` (the live run alias) if provided, else `.phase-loop/state.json:current_phase`, else `"unknown"`. Threading the live alias on the execute path keeps the artifact from mis-attributing the phase after a mid-run roadmap amendment changes `current_phase`; the env override remains the highest-priority operator escape-hatch.
 
 - `verification.json`
 - `verification.log`
