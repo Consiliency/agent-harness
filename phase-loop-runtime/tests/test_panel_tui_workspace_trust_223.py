@@ -216,9 +216,10 @@ def test_modal_answered_but_editor_never_ready_is_editor_not_ready(tmp_path, mon
     assert status == "claude_tui_editor_not_ready", f"answered-but-unready must be editor_not_ready; got {status!r}"
 
 
-def test_non_typed_failure_also_carries_pty_tail(tmp_path, monkeypatch):
-    """CR F3/R3: the redacted tail must reach the leg result for EVERY non-OK failure,
-    not only the typed-degraded trio (a missing-canonical / eof / timeout too)."""
+def test_non_typed_failure_logs_pty_tail(tmp_path, monkeypatch, caplog):
+    """CR F3/R3: the redacted tail is preserved as diagnosable evidence for EVERY non-OK
+    failure — via a WARNING log, NOT stamped into ``text`` (which feeds verdict-conformance
+    and would turn an operational failure into a promotion-blocking nonconforming review)."""
     monkeypatch.setattr(pi, "_run_claude_tui_session",
                         lambda **kw: (1, "", "claude_tui_missing_canonical_output", "diag tail Z"))
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
@@ -227,9 +228,40 @@ def test_non_typed_failure_also_carries_pty_tail(tmp_path, monkeypatch):
     out_dir = tmp_path / "out"
     review_dir.mkdir(parents=True)
     out_dir.mkdir(parents=True)
-    status, text = _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING):
+        status, text = _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
     assert status != "OK"
-    assert "[pty-tail] diag tail Z" in text, "non-typed failure dropped the diagnostic tail"
+    assert "diag tail Z" in caplog.text, "the diagnostic tail must be logged for a non-OK leg"
+
+
+def test_operational_degraded_leg_is_governed_warn_not_block(tmp_path, monkeypatch):
+    """CR (codex, blocking): an operational DEGRADED leg (uncleared trust gate) must NOT
+    stamp a diagnostic into ``text`` — because the governed-review classifier turns a
+    non-empty-text unusable leg into a promotion-BLOCKING ``panel_nonconforming`` finding.
+    End-to-end: the leg's empty text records a non-gating ``panel_leg_degraded`` WARN."""
+    from phase_loop_runtime.governed_review import _findings_from_panel
+    from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
+
+    monkeypatch.setattr(pi, "_run_claude_tui_session",
+                        lambda **kw: (1, "", "claude_tui_workspace_trust_blocked", "redacted tail"))
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir(parents=True)
+    out_dir.mkdir(parents=True)
+    status, text = _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
+    assert status == "DEGRADED"
+    assert text == "", "an operational failure must carry EMPTY text (a diagnostic in text blocks promotion)"
+    # Feed it through the governed-review finding classifier: WARN, never a block.
+    leg = PanelLegResult(leg="claude", status=status, text=text, seat_key="claude")
+    findings = _findings_from_panel(PanelResult(legs=(leg,)))
+    codes = {f.code for f in findings}
+    severities = {f.severity for f in findings}
+    assert "panel_nonconforming" not in codes, "operational DEGRADED leg wrongly hard-blocks promotion"
+    assert "block" not in severities
+    assert "panel_leg_degraded" in codes and "warn" in severities
 
 
 def test_sanitized_pty_tail_redacts_strips_and_keeps_end(tmp_path):
@@ -263,19 +295,25 @@ def _degraded_mapping(monkeypatch, tmp_path, marker, tail):
     return _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
 
 
-def test_typed_reasons_map_to_degraded_with_pty_tail(tmp_path, monkeypatch):
-    """Both new typed reasons surface as DEGRADED with a named cause AND the redacted
-    tail folded into the propagating ``text`` (reaches PanelLegResult.text)."""
-    status, text = _degraded_mapping(
-        monkeypatch, tmp_path / "a", "claude_tui_workspace_trust_blocked", "redacted tail A"
-    )
+def test_typed_reasons_map_to_degraded_with_empty_text_and_logged_tail(tmp_path, monkeypatch, caplog):
+    """Both new typed operational reasons surface as DEGRADED with EMPTY text (so the
+    governed classifier records a WARN, never a promotion-blocking nonconforming review),
+    and the redacted tail is preserved via a WARNING log."""
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING):
+        status, text = _degraded_mapping(
+            monkeypatch, tmp_path / "a", "claude_tui_workspace_trust_blocked", "redacted tail A"
+        )
     assert status == "DEGRADED"
-    assert "workspace-trust gate not cleared" in text
-    assert "[pty-tail] redacted tail A" in text
+    assert text == ""  # empty ⇒ governed WARN, not a nonconforming block
+    assert "redacted tail A" in caplog.text
+    assert "claude_tui_workspace_trust_blocked" in caplog.text
 
-    status, text = _degraded_mapping(
-        monkeypatch, tmp_path / "b", "claude_tui_editor_not_ready", "redacted tail B"
-    )
+    caplog.clear()
+    with caplog.at_level(_logging.WARNING):
+        status, text = _degraded_mapping(
+            monkeypatch, tmp_path / "b", "claude_tui_editor_not_ready", "redacted tail B"
+        )
     assert status == "DEGRADED"
-    assert "editor never reached prompt-ready state" in text
-    assert "[pty-tail] redacted tail B" in text
+    assert text == ""
+    assert "redacted tail B" in caplog.text

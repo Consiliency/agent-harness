@@ -2061,21 +2061,31 @@ def _exec_claude_tui_leg(
     # diagnosable (``text`` propagates end-to-end to ``PanelLegResult``). A leg that
     # produced a conforming verdict before the reclaim still classifies OK (unchanged).
     status = _classify_leg(rc, review_text, log_text, mode)
-    _typed_degraded = {
-        "claude_tui_stalled": "no reviewer heartbeat (liveness reclaim)",
-        "claude_tui_workspace_trust_blocked": "workspace-trust gate not cleared",
-        "claude_tui_editor_not_ready": "editor never reached prompt-ready state",
+    # ah#196/#223 typed OPERATIONAL/liveness failures — the leg failed to run a review
+    # (wedge reclaim, uncleared workspace-trust gate, never-ready editor). These are
+    # "no review happened", NOT "a review that violated the verdict contract": surface
+    # DEGRADED and return the REAL review content ONLY (empty for a pure failure). The
+    # governed-review classifier keys on leg TEXT — a non-empty text for an unusable leg
+    # is treated as a nonconforming review and BLOCKS promotion, so we must NOT stamp a
+    # diagnostic marker/tail into ``text``; an empty text records the correct non-gating
+    # ``panel_leg_degraded`` WARN (availability-aware degrade), never a false block.
+    _typed_operational = {
+        "claude_tui_stalled",
+        "claude_tui_workspace_trust_blocked",
+        "claude_tui_editor_not_ready",
     }
-    if log_text in _typed_degraded and status != "OK":
+    if log_text in _typed_operational and status != "OK":
         status = "DEGRADED"
-        text = review_text or f"{log_text}: {_typed_degraded[log_text]}"
+        text = review_text  # real review content only (empty ⇒ governed WARN, not block)
     else:
         text = review_text or log_text
-    # R3: the bounded, redacted PTY tail must reach the leg result for EVERY non-OK
-    # failure (submit_failed / pty_eof / missing_canonical / timeout too), not just the
-    # typed-degraded trio — ``text`` propagates end-to-end to ``PanelLegResult``.
-    if status != "OK" and pty_tail and pty_tail not in text:
-        text = f"{text}\n[pty-tail] {pty_tail}" if text else f"[pty-tail] {pty_tail}"
+    # R3: preserve the bounded, redacted, control-stripped PTY tail as DIAGNOSABLE
+    # EVIDENCE for every non-OK failure — via a WARNING log, NOT ``text`` (which feeds
+    # verdict-conformance). The tail is already credential-scrubbed and bounded.
+    if status != "OK" and pty_tail:
+        logging.getLogger(__name__).warning(
+            "advisor-panel claude TUI leg %s [%s]: %s", status, log_text, pty_tail
+        )
     return status, text
 
 

@@ -30,10 +30,12 @@ modal/editor rendering were confirmed by a real PTY capture on Claude Code 2.1.2
 - **Typed, fail-closed diagnostics (fix).** An uncleared trust gate now yields a
   typed `claude_tui_workspace_trust_blocked`, and a never-ready editor yields
   `claude_tui_editor_not_ready` — both evaluated **before** the 180s generic stall
-  and surfaced as `DEGRADED` (not the misleading `claude_tui_stalled`). Every
-  non-OK leg return now carries a bounded, credential-redacted, control-stripped
-  PTY tail (the buffer *end*, where the failure context lives) folded into the
-  surfaced text for diagnosis.
+  and surfaced as `DEGRADED` (not the misleading `claude_tui_stalled`). These
+  operational failures carry **empty** review text so the governed-review classifier
+  records a non-gating `panel_leg_degraded` warning (availability-aware degrade) rather
+  than a promotion-blocking nonconforming review; the bounded, credential-redacted,
+  control-stripped PTY tail (the buffer *end*) is preserved as a `WARNING` log for
+  diagnosis.
 
 ### Governed closeout & gate-integrity hardening (#218, #219)
 
