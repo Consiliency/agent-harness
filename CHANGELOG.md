@@ -6,6 +6,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Reconcile can recover a completed phase from a tracked closeout artifact (#90)
+
+`phase-loop reconcile --verification-log <closeout.md>` rejected a tracked, committed closeout
+markdown as `malformed_artifact` because it validates the path as a runner-owned
+`verification.json`. Operators whose roadmap already reached CLOSEOUT with durable committed
+closeout artifacts — but no ephemeral `.phase-loop/runs/verification.json` (e.g. after an
+interrupted session) — could not rehydrate completed phase state and were stuck re-planning from
+the start. Reconcile now accepts a new **`--closeout-artifact <path>`** flag for artifact-backed
+recovery: it adopts a **git-tracked, committed** closeout markdown as recovery evidence
+(provenance `tracked_closeout_artifact`), requiring `--closeout-commit`, `--repair-summary`, and
+`--verification-status`. This is an **audit anchor + provenance label** for an explicit,
+operator-reasoned manual recovery — not a runner verification pass and not an authorization gate.
+The evidence is bound before acceptance: the `--closeout-commit` must resolve to a real commit
+reachable from `HEAD` (the index `:0`, tree-ish, and orphan commits are rejected), the path must
+be a **non-empty regular blob** at that commit (a directory, symlink, or gitlink is rejected), and
+the basename or content must reference the phase (an unrelated tracked file is rejected). It never
+satisfies a phase that hard-requires runner verification (RG / `IF-0-RG-1`), is mutually exclusive
+with `--verification-log`, and the existing runner-verification path is unchanged (still rejects a
+markdown as `malformed_artifact`). The provenance is surfaced at the status boundary
+(`Closeout verification: passed (recovery evidence: tracked_closeout_artifact)`), so consumers can
+tell a recovery apart from a runner pass. This is an audit anchor for an operator-reasoned
+recovery, not an authorization gate; ancestry is checked with grafts/replace-refs neutralized, so
+an active `.git/info/grafts` or a **shallow clone** is rejected (`closeout_commit_ancestry_untrusted`)
+— unshallow (`git fetch --unshallow`) before recovering in a shallow checkout.
+
 ### Reconcile/status survive a relocated repo root (#85)
 
 `.phase-loop/` state and events persist **absolute** repo/roadmap paths. When the directory

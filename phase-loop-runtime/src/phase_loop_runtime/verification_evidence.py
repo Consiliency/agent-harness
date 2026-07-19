@@ -19,6 +19,12 @@ SCHEMA_VERSION = 1
 ARTIFACT_NAME = "verification.json"
 LOG_NAME = "verification.log"
 
+# ah#90: evidence-provenance labels. Reconcile can adopt completion evidence from more than one
+# source; the label makes the provenance explicit so a committed prose closeout can never be read
+# as (or masquerade as) a fresh runner verification pass.
+EVIDENCE_PROVENANCE_RUNNER_JSON = "runner_verification_json"
+EVIDENCE_PROVENANCE_TRACKED_CLOSEOUT = "tracked_closeout_artifact"
+
 # agent-harness#219(a): directories that never carry a target package's own
 # requires-python (vendored / build / cache trees). Pruned when scanning for
 # pyproject.toml so a big repo scan stays cheap and does not pick up a
