@@ -18,9 +18,14 @@ plan never rewrites the goal.
 
 ## What this does and does NOT guarantee (honest scoping — read first)
 
-- **Guarantees COMPLETENESS (decidable):** every roadmap goal ID is referenced by
-  ≥1 plan acceptance item. A goal that is silently *dropped/forgotten* is caught
-  with certainty — the whole "dropped criterion" class is eliminated.
+- **Deterministically DETECTS a forgotten goal (decidable):** every roadmap goal
+  ID must be referenced by ≥1 plan acceptance item; an unreferenced goal ID is
+  reported with certainty (no word-matching). It **prevents** the omission only
+  under block enforcement (warn-default *detects and surfaces*). To make "no goal
+  silently dropped" hold, activation is **all-or-none per phase** — an opted-in
+  phase must carry an EC-ID on *every* exit-criterion (a mixed EC-ID + bare-prose
+  phase is a `roadmap_lint` error, `contract_bug`); otherwise a newly-added
+  bare-prose criterion is exactly the old dropped-goal hole (CR: all three seats).
 - **Does NOT guarantee ADEQUACY:** it does not verify that the referenced evidence
   actually discharges the goal. `EC-P1-1` ("publish **non-silent** audio")
   referenced by `proven by test_audio_track_exists` passes the completeness check
@@ -54,8 +59,18 @@ exception, not the norm.
 ### The `EC-<ALIAS>-<N>` scheme (mirrors the proven `IF-0-<ALIAS>-<N>` gates)
 
 Each roadmap phase exit-criterion gets a stable ID `EC-<ALIAS>-<N>` (alias = the
-phase alias, N = 1-based), mirroring the IF-gate scheme and its reconciliation
-invariant (`roadmap_lint.check_if_gates`): alias-scoped, unique, contiguous.
+phase alias, N = a positive int), mirroring the IF-gate scheme's alias-scoping +
+uniqueness. **IDs are stable identities, not positions: never reused or renumbered,
+and gaps are allowed** — deleting `EC-P1-2` must NOT renumber `EC-P1-3`, because a
+downstream plan already references `EC-P1-3` and renumbering would silently re-bind
+it to a different goal (CR Fable — the reason IF-gates get away with contiguity is
+they are append-mostly; exit-criteria get edited). So the reconciliation invariant
+is **alias-scoped + unique + never-reused**, NOT contiguous.
+
+**All-or-none activation:** within a phase, either *every* exit-criterion carries an
+`EC-<ALIAS>-<N>` ID (opted-in → coverage enforced) or *none* do (legacy → no gate).
+A phase mixing ID'd and bare-prose exit-criteria is a `roadmap_lint` error — this
+closes the mixed-mode hole where a bare criterion would be ungated.
 
 ```
 ### Phase 1 — Closeout gates (P1)
@@ -83,6 +98,16 @@ item (no EC-ref — plan-local done conditions). This reuses the existing "each
 acceptance criterion names the command that proves it" contract; the only change is
 the item cites a **goal ID** instead of a reworded assertion.
 
+**Reference grammar (hardened per CR — this is where fuzz could relocate):**
+- An EC-ID counts as a reference **only in item-leading position** of a
+  `## Acceptance Criteria` checklist item (`- [ ] EC-P1-1 — …`). A free-text prose
+  mention ("NOTE: EC-P1-2 deferred", "we skipped EC-P1-2") does **not** count as
+  coverage. Extraction is section- and position-scoped, never a global regex over
+  the plan file.
+- A reference to an EC-ID that does **not** exist in the anchored roadmap phase (a
+  typo/dangling ref, e.g. `EC-P1-11`) is a `contract_bug`, not a silently-ignored
+  plan-internal item.
+
 ### The decidable completeness check (replaces the fuzzy audit)
 
 Mirrors the IF-gate `Produces` closeout precedent
@@ -93,20 +118,46 @@ for the phase is **not referenced** by ≥1 plan acceptance item. 1:many is fine
 goal referenced by many items; an item referencing many goals). This is a set
 membership check — no word-matching.
 
-### Home: plan-time + preflight, NOT the frozen closeout schema
+### Home: plan-time + preflight + CLOSEOUT (three points; NOT the frozen payload)
 
-The `EmitPhaseCloseout` BAML contract is frozen (golden-hash + 5-harness parity), so
-the check does **not** enter the closeout payload. It runs where roadmap + plan are
-already in hand: a new `validate_plan_doc.py` check (plan-time) and the existing
-phase-loop preflight (`runner.py:3010`, which already receives `roadmap`). The
-preflight stays **warn-default, opt-in block** via `PHASE_LOOP_ACCEPTANCE_ENFORCE`
+The `EmitPhaseCloseout` BAML **payload** is frozen (golden-hash + 5-harness
+parity), so the check does not add a field to it. But the check itself runs in
+**pure Python** at three points where roadmap + plan are already in hand:
+
+- **Preflight** (`runner.py:3010`, already receives `roadmap`) — the plan-time gate.
+- **Closeout** — **required, not optional** (CR: all three seats). Plans get edited
+  *during* execution (retro-editing acceptance criteria is a known failure class),
+  so a reference can vanish between preflight and closeout. `closeout_validation.py`
+  is pure Python (the frozen thing is the BAML payload, not this validator) and
+  `extract_plan_produces` already **re-reads the plan on disk at closeout**; the
+  roadmap loads from the repo. So `check_goal_coverage` is called beside
+  `validate_produced_gates` at closeout with **no BAML/frozen-contract change** —
+  mirroring the IF-gate `Produces` precedent, which runs at closeout for exactly
+  this mutation-window reason. (This corrects the first draft, which wrongly claimed
+  CloseoutContext couldn't reach the roadmap.)
+- **Plan-time `validate_plan_doc.py` check** — deferred to Increment 2 (that file
+  lives in the parity-gated skill bundle). In Increment 1 the plan-time surface is
+  the standalone CLI; the *enforced* gates are the preflight + closeout (runtime).
+
+All stay **warn-default, opt-in block** via `PHASE_LOOP_ACCEPTANCE_ENFORCE`
 (autonomy-first, unchanged).
 
-### Opt-in per roadmap (migration-safe)
+### Opt-in per phase — untouched legacy is safe; *activating* IDs is a coordinated migration
 
-A roadmap that declares `EC-<ALIAS>-<N>` IDs opts into enforcement; a legacy roadmap
-with no EC-IDs keeps today's behavior untouched (no new gate). This is fully
-additive — existing roadmaps and plans (including downstream repos) do not break.
+A phase that declares `EC-<ALIAS>-<N>` IDs opts into enforcement; a legacy phase
+with no EC-IDs keeps today's behavior (no new gate). **Untouched** legacy roadmaps
+and their plans (including downstream repos) do not break.
+
+But **activating** IDs on an existing roadmap is *not* a silent edit (CR codex):
+adding IDs changes the roadmap bytes, and plans pin `roadmap_sha256`
+(`discovery.plan_artifact_diagnostic` rejects a mismatch), so activation **stales
+every affected plan** — which already requires a re-plan against the amended
+roadmap. Therefore ID activation is a **coordinated roadmap+plan migration** (add
+IDs and re-plan together), never a mid-flight roadmap edit under
+`PHASE_LOOP_ACCEPTANCE_ENFORCE=block`. Also acknowledged: retiring the fuzzy audit
+means legacy (un-migrated) roadmaps have **no** coverage checking until migrated — a
+temporary regression, accepted because the fuzzy audit was proven undecidable and
+often wrong.
 
 ## Increments (this is bigger than #211 — scoped as a decision gate)
 
@@ -121,23 +172,34 @@ Ships the full decidable capability on hand-authored fixtures, touching only run
 code (not the parity-gated skill bundle):
 
 - `roadmap_lint.py` — parse `EC-<ALIAS>-<N>` from `**Exit criteria**` items; add a
-  reconciliation check (alias-scoped, unique, contiguous) modeled on
-  `check_if_gates`; expose `Phase.exit_criteria` with parsed `(id, text)` (additive;
-  bare-prose criteria still parse, `id=None`).
+  reconciliation check (alias-scoped, unique, **never-reused (not contiguous)**,
+  **all-or-none per phase**) modeled on `check_if_gates`. **API-safe (CR gemini):**
+  keep `Phase.exit_criteria: list[str]` unchanged (downstream code iterates it as
+  strings); add an **additive** accessor `Phase.exit_criteria_ids` /
+  `parsed_exit_criteria` returning the `(id, text)` pairs. Do not change the existing
+  field's type.
 - A new `goal_coverage.py` module — `extract_plan_goal_refs(plan)` (scrape
-  `EC-<ALIAS>-<N>` refs from acceptance items) + `check_goal_coverage(repo, plan,
-  roadmap)` → the decidable completeness result (every declared EC-ID referenced).
-  Opt-in: if the roadmap phase declares no EC-IDs → `not_applicable` (no gate).
-- Wire it into the existing preflight (**replacing** the fuzzy
-  `run_acceptance_coverage_audit` call at `runner.py:3010`) and add a plan-time CLI
-  path (reuse/repurpose the `acceptance-coverage-audit` subcommand as a decidable
-  check, or a new `goal-coverage-audit`).
+  `EC-<ALIAS>-<N>` refs **only from item-leading position in the `## Acceptance
+  Criteria` section**, never a global regex) + `check_goal_coverage(repo, plan,
+  roadmap)` → the decidable completeness result: every declared EC-ID referenced;
+  any dangling ref (unknown ID) → `contract_bug`. Opt-in: a phase with no EC-IDs →
+  `not_applicable` (no gate).
+- Wire it into (i) the existing preflight (**replacing** the fuzzy
+  `run_acceptance_coverage_audit` call at `runner.py:3010`), (ii) a **closeout**
+  re-check beside `validate_produced_gates` in `closeout_validation.py` (pure Python,
+  plan-on-disk + repo-loaded roadmap; no BAML change), and (iii) a standalone CLI.
 - **Retire** `acceptance_coverage_audit.py` (the fuzzy tool) and abandon the
   unmerged `feat/acceptance-coverage-audit-211` branch — this redesign supersedes it.
-- Tests: all on fixtures — EC-ID parse + reconciliation; every-ID-referenced → clean;
-  a dropped EC-ID → `contract_bug`; 1:many (one ID, two items; one item, two IDs) →
-  clean; legacy roadmap (no IDs) → not_applicable; preflight warn-default vs
-  `PHASE_LOOP_ACCEPTANCE_ENFORCE=block`.
+  (Verified: no skill references the fuzzy audit surface, so retiring it forces no
+  skill edit into I1.)
+- Tests: all on fixtures — EC-ID parse + reconciliation; **mixed-mode phase →
+  `roadmap_lint` error**; every-ID-referenced → clean; a dropped EC-ID →
+  `contract_bug`; a **dangling ref** → `contract_bug`; a **prose-mention (not
+  item-leading) does NOT count** → still a gap; 1:many (one ID/two items; one
+  item/two IDs) → clean; legacy phase (no IDs) → not_applicable; **post-preflight
+  reference deletion caught at the closeout re-check**; preflight warn-default vs
+  `PHASE_LOOP_ACCEPTANCE_ENFORCE=block`; `Phase.exit_criteria` still `list[str]`
+  (API-compat regression).
 
 **Decision gate:** after I1, the user greenlights (or not) the fleet-wide skill
 change before any parity-gated edits. I1 delivers real value alone (dropped-goal
@@ -182,18 +244,36 @@ PYTHONPATH=src:tests python3 -m pytest tests/test_goal_coverage.py tests/test_ph
 
 ## Acceptance criteria (Increment 1)
 
-- [ ] `roadmap_lint` parses `EC-<ALIAS>-<N>` from exit-criteria and reconciles them
-  (alias-scoped, unique, contiguous), non-breaking on legacy bare-prose criteria.
+- [ ] `roadmap_lint` parses `EC-<ALIAS>-<N>` and reconciles them (alias-scoped,
+  unique, never-reused, **all-or-none per phase → mixed-mode is a `roadmap_lint`
+  error**); `Phase.exit_criteria` stays `list[str]` (API-compat), IDs via an additive
+  accessor.
 - [ ] `check_goal_coverage` blocks (`contract_bug`) when a declared roadmap EC-ID is
-  unreferenced by any plan acceptance item, passes when all are referenced (incl.
-  1:many), and returns `not_applicable` for a roadmap with no EC-IDs.
-- [ ] The check runs at plan-time (CLI) + phase-loop preflight (warn-default; opt-in
-  block via `PHASE_LOOP_ACCEPTANCE_ENFORCE`; never `human_required`), replacing the
-  fuzzy `run_acceptance_coverage_audit` call.
+  unreferenced, or on a **dangling** ref, or when a reference is only a **prose
+  mention** (not an item-leading acceptance line); passes on all-referenced (incl.
+  1:many); returns `not_applicable` for a phase with no EC-IDs.
+- [ ] The check runs at the phase-loop **preflight AND closeout** (pure Python, no
+  BAML change) + a standalone CLI, warn-default / opt-in block via
+  `PHASE_LOOP_ACCEPTANCE_ENFORCE`, never `human_required` — replacing the fuzzy
+  `run_acceptance_coverage_audit` call. A post-preflight reference deletion is caught
+  at closeout.
 - [ ] The fuzzy `acceptance_coverage_audit.py` is removed and the redesign explicitly
   supersedes the unmerged `feat/acceptance-coverage-audit-211` branch.
 - [ ] No frozen contract changed (roadmap format additive; `EmitPhaseCloseout` BAML
   untouched); full non-dotfiles suite green.
+
+## Plan-review outcome (cross-vendor)
+
+codex + gemini + Fable reviewed this plan. **Unanimous:** the redesign genuinely
+escapes the undecidability trap — the completeness check is decidable set membership,
+a "massive improvement over semantic diffs," no word-matching. All three flagged the
+same hardenings, now folded in above: (1) all-or-none activation (mixed-mode hole),
+(2) closeout re-check for the edit-during-execution window (and the first draft's
+"can't reach roadmap at closeout" reasoning was wrong — corrected), (3) reference
+grammar (item-leading only, dangling → block), (4) never-renumber ID stability,
+(5) additive `Phase.exit_criteria` accessor (API-compat), (6) activation = coordinated
+roadmap+plan migration, (7) I1 = CLI+preflight+closeout (runtime); `validate_plan_doc.py`
+is I2.
 
 ## Scale statement & go/no-go
 
