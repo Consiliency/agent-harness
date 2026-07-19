@@ -134,14 +134,14 @@ def _version_satisfies_simple(version: str, specs: list[str]) -> bool:
     ``!=X.Y.*`` wildcards are handled by prefix match. Any clause form this fallback does NOT model
     (``~=``, ``===``, epochs, pre/post/dev releases) — and an unparseable version — FAILS CLOSED
     (returns unsatisfied) rather than silently accepting an interpreter it cannot verify."""
-    if not re.search(r"\d", version):
-        return False  # unparseable version → fail closed
+    if not re.fullmatch(r"\d+(?:\.\d+)*", version.strip()):
+        return False  # not a plain dotted-numeric version (e.g. "garbage3.11.9") → fail closed
     target = _tuple3(version)
     for spec in specs:
         for clause in spec.split(","):
             clause = clause.strip()
             if not clause:
-                continue
+                continue  # empty clause (e.g. trailing comma) imposes no constraint
             wild = re.fullmatch(r"(==|!=)\s*(\d+(?:\.\d+)*)\.\*", clause)
             if wild:
                 prefix = tuple(int(p) for p in wild.group(2).split("."))
@@ -151,10 +151,12 @@ def _version_satisfies_simple(version: str, specs: list[str]) -> bool:
                 if wild.group(1) == "!=" and matches:
                     return False
                 continue
-            match = re.fullmatch(r"(>=|<=|==|!=|>|<)?\s*(\d+(?:\.\d+){0,2})", clause)
+            # An operator is REQUIRED — a bare version ("3.11") is not a valid PEP 440 specifier and
+            # must fail closed, not default to ">=".
+            match = re.fullmatch(r"(>=|<=|==|!=|>|<)\s*(\d+(?:\.\d+){0,2})", clause)
             if not match:
-                return False  # unsupported operator/form (~=, ===, epoch, …) → fail closed
-            op = match.group(1) or ">="
+                return False  # bare version, or unsupported form (~=, ===, epoch, …) → fail closed
+            op = match.group(1)
             bound = _tuple3(match.group(2))
             if op == ">=" and not target >= bound:
                 return False

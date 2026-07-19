@@ -220,6 +220,13 @@ class VersionSatisfiesSimpleFallbackTest(unittest.TestCase):
         self.assertFalse(_version_satisfies_simple("3.11.5", ["===3.11.5"]))
         self.assertFalse(_version_satisfies_simple("garbage", [">=3.9"]))  # unparseable → closed
 
+    def test_fallback_malformed_version_and_bare_spec_fail_closed(self):
+        # codex round-6: even in the fallback, a digit-bearing garbage version and an operatorless
+        # (bare) specifier must fail closed, not be leniently parsed.
+        self.assertFalse(_version_satisfies_simple("garbage3.11.9", [">=3.11.5"]))  # was fail-open
+        self.assertFalse(_version_satisfies_simple("3.11.9", ["3.11"]))  # bare spec → not ">=3.11"
+        self.assertFalse(_version_satisfies_simple("3.11.9pre", [">=3.11.5"]))  # suffix → fail closed
+
 
 class VersionedInterpreterEndToEndTest(unittest.TestCase):
     def test_versioned_interpreter_fails_closed_in_commands_and_suite(self):
