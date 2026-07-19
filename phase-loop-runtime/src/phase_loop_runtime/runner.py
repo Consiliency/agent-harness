@@ -8268,25 +8268,31 @@ def _goal_coverage_closeout_gate(
     except Exception:
         plan = None
     if plan is None:
-        opted_in = False
+        # Under warn-default nothing blocks. Under enforce, fail CLOSED on any UNCERTAINTY
+        # (CR codex/gemini round 7): a phase that opts into goal IDs — or whose opt-in
+        # status cannot be determined (roadmap unreadable/malformed) — is un-auditable and
+        # blocks; only a POSITIVELY-confirmed legacy phase skips.
+        if not enforce_block:
+            return None, None
         try:
             opted_in = phase_declares_goal_ids(roadmap, phase)
         except Exception:
-            opted_in = False
-        if opted_in and enforce_block:
-            print(
-                "phase-loop: goal-coverage closeout gate — plan artifact unresolvable for an "
-                "opted-in phase; failing closed under PHASE_LOOP_ACCEPTANCE_ENFORCE=block",
-                file=sys.stderr,
-            )
-            return None, {
-                "human_required": False,
-                "blocker_class": "contract_bug",
-                "blocker_summary": f"Goal-coverage un-auditable at closeout (plan artifact not resolvable for opted-in phase {phase}) under PHASE_LOOP_ACCEPTANCE_ENFORCE=block",
-                "required_human_inputs": (),
-                "access_attempts": (),
-            }
-        return None, None
+            opted_in = True  # can't determine -> treat as un-auditable -> fail closed
+        if not opted_in:
+            return None, None
+        print(
+            "phase-loop: goal-coverage closeout gate — plan artifact unresolvable / opt-in "
+            "undeterminable for an opted-in phase; failing closed under "
+            "PHASE_LOOP_ACCEPTANCE_ENFORCE=block",
+            file=sys.stderr,
+        )
+        return None, {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": f"Goal-coverage un-auditable at closeout (plan artifact not resolvable for opted-in phase {phase}) under PHASE_LOOP_ACCEPTANCE_ENFORCE=block",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
     return _goal_coverage_closeout_outcome(repo, roadmap, plan, True)
 
 

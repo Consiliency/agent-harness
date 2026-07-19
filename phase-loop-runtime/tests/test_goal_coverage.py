@@ -375,5 +375,62 @@ class GoalCoveragePerformCloseoutTest(unittest.TestCase):
         self.assertIn("goal_coverage", event.metadata)
 
 
+class GoalCoverageCloseoutGateTest(unittest.TestCase):
+    """CR codex/gemini round 7: the closeout gate must fail CLOSED under enforce when the
+    plan is unresolvable for an opted-in phase OR when opt-in cannot be determined."""
+
+    def _gate(self, exit_lines, enforce, *, patch_opt_in_exc=False):
+        import tempfile as _tf
+        from unittest.mock import patch as _patch
+
+        from phase_loop_test_utils import make_repo
+        from phase_loop_runtime.runner import _goal_coverage_closeout_gate
+
+        old = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE")
+        with _tf.TemporaryDirectory() as t:
+            repo = make_repo(Path(t))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            ec = "\n".join(f"- [ ] {c}" for c in exit_lines)
+            roadmap.write_text(
+                f"# Roadmap\n\n## Context\nx\n\n## Phases\n\n### Phase 1 — GC (GC)\n\n"
+                f"**Objective**\nx\n\n**Exit criteria**\n{ec}\n\n**Scope notes**\n1 lane\n\n"
+                f"**Key files**\n- `x.py`\n\n**Depends on**\n- (none)\n\n"
+                f"## Top Interface-Freeze Gates\n\n## Phase Dependency DAG\nGC\n\n## Execution Notes\nx\n\n## Verification\nx\n",
+                encoding="utf-8",
+            )
+            # NO plan committed for GC -> find_plan_artifact returns None.
+            try:
+                if enforce is None:
+                    os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+                else:
+                    os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = enforce
+                if patch_opt_in_exc:
+                    with _patch("phase_loop_runtime.goal_coverage.phase_declares_goal_ids", side_effect=RuntimeError("boom")):
+                        return _goal_coverage_closeout_gate(repo, roadmap, "GC")
+                return _goal_coverage_closeout_gate(repo, roadmap, "GC")
+            finally:
+                if old is None:
+                    os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+                else:
+                    os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
+
+    def test_unresolvable_plan_opted_in_blocks_under_enforce(self):
+        _ev, blk = self._gate(["EC-GC-1 — a"], "block")
+        self.assertIsNotNone(blk)
+        self.assertEqual(blk["blocker_class"], "contract_bug")
+
+    def test_unresolvable_plan_opt_in_exception_fails_closed_under_enforce(self):
+        _ev, blk = self._gate(["EC-GC-1 — a"], "block", patch_opt_in_exc=True)
+        self.assertIsNotNone(blk)  # can't determine opt-in -> fail closed
+
+    def test_unresolvable_plan_legacy_does_not_block(self):
+        _ev, blk = self._gate(["a bare goal"], "block")
+        self.assertIsNone(blk)
+
+    def test_unresolvable_plan_warn_default_does_not_block(self):
+        _ev, blk = self._gate(["EC-GC-1 — a"], None)
+        self.assertIsNone(blk)
+
+
 if __name__ == "__main__":
     unittest.main()
