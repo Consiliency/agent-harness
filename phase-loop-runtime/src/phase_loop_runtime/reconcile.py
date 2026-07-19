@@ -759,10 +759,13 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         # root (even with byte-identical roadmap content). Fail closed to the original path;
         # re-attestation is required in the new location.
         try:
+            event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
             event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
         except OSError:
             continue
-        if event_roadmap != roadmap.resolve():
+        # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
+        # path must not transfer the authorization to a different repo root.
+        if event_repo != repo.resolve() or event_roadmap != roadmap.resolve():
             continue
         metadata = event.get("metadata")
         payload = metadata.get("runner.lane_ir_override_invoked") if isinstance(metadata, dict) else None
@@ -808,10 +811,13 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         # a relocated `.phase-loop/` must NOT transfer it to a different root. Fail closed to the
         # original path; re-attestation is required in the new location.
         try:
+            event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
             event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
         except OSError:
             continue
-        if event_roadmap != roadmap.resolve():
+        # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
+        # path must not transfer the authorization to a different repo root.
+        if event_repo != repo.resolve() or event_roadmap != roadmap.resolve():
             continue
         metadata = event.get("metadata")
         payload = metadata.get("runner.closeout_allow_unowned_invoked") if isinstance(metadata, dict) else None

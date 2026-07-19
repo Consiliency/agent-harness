@@ -7,7 +7,11 @@ from phase_loop_runtime.classifier import classify_phase
 from phase_loop_runtime.events import append_event
 from phase_loop_runtime.models import LoopEvent, utc_now
 from phase_loop_runtime.provenance import event_provenance
-from phase_loop_runtime.reconcile import _closeout_allow_unowned_attested, reconcile
+from phase_loop_runtime.reconcile import (
+    _closeout_allow_unowned_attested,
+    _lane_ir_override,
+    reconcile,
+)
 from phase_loop_runtime.runtime_paths import roadmap_paths_match
 from phase_loop_runtime.state import write_state
 from phase_loop_test_utils import make_repo, provenanced_event, provenanced_state, write_phase_plan
@@ -161,6 +165,35 @@ class BreakglassRelocationTest(unittest.TestCase):
             **event_provenance(roadmap, phase),
         )
 
+    _ROADMAP_TEXT = (
+        "# Roadmap\n\n"
+        "### Phase 0 — Contract (CONTRACT)\n\n"
+        "### Phase 1 — Access (ACCESS)\n\n"
+        "### Phase 2 — Runner (RUNNER)\n"
+    )
+
+    def _lane_ir_event(self, repo, roadmap, phase):
+        return LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action="lane_ir_override",
+            status="planned",
+            model="operator",
+            reasoning_effort="manual",
+            source="cli",
+            override_reason="owner sign-off in #123",
+            metadata={
+                "runner.lane_ir_override_invoked": {
+                    "plan_path": None,
+                    "operator_reason": "owner sign-off in #123",
+                    "diagnostic_kinds_overridden": ["unowned_file"],
+                }
+            },
+            **event_provenance(roadmap, phase),
+        )
+
     def test_breakglass_attestation_does_not_relocate(self):
         # ah#85(C) round-2: operator SL-2 attestations are bound to the repo root they were granted
         # in; a relocated `.phase-loop/` must NOT transfer them (fail-closed to the original path).
@@ -173,6 +206,45 @@ class BreakglassRelocationTest(unittest.TestCase):
             # Relocated: NOT honored (fail-closed), even though roadmap content is identical.
             shutil.copytree(repo_a / ".phase-loop", repo_b / ".phase-loop")
             self.assertFalse(_closeout_allow_unowned_attested(repo_b, roadmap_b, "RUNNER"))
+
+    def test_closeout_allow_unowned_shared_external_roadmap_fails_closed_across_roots(self):
+        # ah#85(C) round-3 (codex): the gate binds to the repo ROOT, not just the roadmap path.
+        # With a SHARED EXTERNAL roadmap (identical absolute path for two repos), an attestation
+        # granted under root A must NOT be honored under root B. Isolates the repo-binding: the
+        # roadmap path is byte-identical across both scenarios, only the granting repo differs.
+        with tempfile.TemporaryDirectory() as tdext, tempfile.TemporaryDirectory() as tdb, tempfile.TemporaryDirectory() as tdc, tempfile.TemporaryDirectory() as tda:
+            external_roadmap = Path(tdext) / "shared-roadmap.md"
+            external_roadmap.write_text(self._ROADMAP_TEXT)
+            other_root = Path(tda)
+
+            repo_b = make_repo(Path(tdb))
+            append_event(repo_b, self._attestation_event(other_root, external_roadmap, "RUNNER"))
+            # Attestation granted under `other_root` but checked from repo_b → fail closed.
+            self.assertFalse(_closeout_allow_unowned_attested(repo_b, external_roadmap, "RUNNER"))
+
+            # Control: same event granted under repo_c's OWN root (same external roadmap) IS honored.
+            repo_c = make_repo(Path(tdc))
+            append_event(repo_c, self._attestation_event(repo_c, external_roadmap, "RUNNER"))
+            self.assertTrue(_closeout_allow_unowned_attested(repo_c, external_roadmap, "RUNNER"))
+
+    def test_lane_ir_override_shared_external_roadmap_fails_closed_across_roots(self):
+        # ah#85(C) round-3 (codex): same repo-root binding for the second SL-2 gate.
+        with tempfile.TemporaryDirectory() as tdext, tempfile.TemporaryDirectory() as tdb, tempfile.TemporaryDirectory() as tdc, tempfile.TemporaryDirectory() as tda:
+            external_roadmap = Path(tdext) / "shared-roadmap.md"
+            external_roadmap.write_text(self._ROADMAP_TEXT)
+            other_root = Path(tda)
+
+            repo_b = make_repo(Path(tdb))
+            plan_b = repo_b / "plans" / "phase-plan-v1-RUNNER.md"
+            append_event(repo_b, self._lane_ir_event(other_root, external_roadmap, "RUNNER"))
+            # Granted under `other_root`, checked from repo_b → no override kinds (fail closed).
+            self.assertEqual(_lane_ir_override(repo_b, external_roadmap, "RUNNER", plan_b), ())
+
+            # Control: granted under repo_c's own root → override kinds honored.
+            repo_c = make_repo(Path(tdc))
+            plan_c = repo_c / "plans" / "phase-plan-v1-RUNNER.md"
+            append_event(repo_c, self._lane_ir_event(repo_c, external_roadmap, "RUNNER"))
+            self.assertEqual(_lane_ir_override(repo_c, external_roadmap, "RUNNER", plan_c), ("unowned_file",))
 
 
 if __name__ == "__main__":
