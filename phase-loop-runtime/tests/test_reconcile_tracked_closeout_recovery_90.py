@@ -138,6 +138,19 @@ class ValidateTrackedCloseoutArtifactTest(unittest.TestCase):
                 self.assertFalse(result["ok"], name)
                 self.assertEqual(result["code"], "closeout_artifact_phase_mismatch", name)
 
+    def test_phase_prefixed_non_closeout_markdown_is_rejected(self):
+        # codex [REACHABLE]: a phase-named but non-closeout doc (e.g. RUNNER-design.md) must NOT be
+        # accepted as recovery evidence — the contract requires `<PHASE>-closeout.md`.
+        with tempfile.TemporaryDirectory() as td:
+            repo, _roadmap, _rel, _commit = _fixture(Path(td))
+            for name in ("RUNNER-design.md", "RUNNER-notes.md", "RUNNER.md"):
+                f = repo / name
+                f.write_text("# RUNNER design doc, not a closeout\n", encoding="utf-8")
+                commit_fixture_paths(repo, f"add {name}", f)
+                result = _validate_tracked_closeout_artifact(repo, name, _git(repo, "rev-parse", "HEAD"), "RUNNER")
+                self.assertFalse(result["ok"], name)
+                self.assertEqual(result["code"], "closeout_artifact_phase_mismatch", name)
+
     def test_phase_named_non_markdown_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             repo, _roadmap, _rel, _commit = _fixture(Path(td))

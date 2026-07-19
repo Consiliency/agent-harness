@@ -2728,17 +2728,17 @@ def _validate_tracked_closeout_artifact(
     size_text = size.stdout.strip()
     if size.returncode != 0 or not size_text.isdigit() or int(size_text) == 0:
         return {"ok": False, "code": "empty_closeout_artifact", "artifact_path": str(artifact_path)}
-    # Phase binding via a NAMING CONTRACT (mirrors the `<PHASE>-closeout.md` convention): the
-    # basename must be a Markdown file whose stem is the phase token as a leading word. This is
-    # stricter than a substring/content match — it rejects `runner.py` and `CHANGELOG.md` (which
-    # merely mention the token) — and needs NO content read, so there is no decode or OOM risk.
-    tok = phase.upper().lower()
+    # Phase binding via the `<PHASE>-closeout.md` NAMING CONTRACT (the form every tracked closeout
+    # artifact uses). Requiring the explicit `<phase><sep>closeout` prefix — not merely a
+    # phase-prefixed Markdown file — means an unrelated but phase-named doc (`RUNNER-design.md`,
+    # `RUNTIME-boundary.md`) cannot be mistaken for a closeout. Needs NO content read (no decode/OOM),
+    # and rejects `runner.py` / `CHANGELOG.md` (which merely mention the token).
+    tok = phase.strip().lower()
     lower_name = artifact_path.name.lower()
     stem_matches = lower_name.endswith(".md") and (
-        lower_name == f"{tok}.md"
-        or lower_name.startswith(f"{tok}-")
-        or lower_name.startswith(f"{tok}_")
-        or lower_name.startswith(f"{tok}.")
+        lower_name.startswith(f"{tok}-closeout")
+        or lower_name.startswith(f"{tok}_closeout")
+        or lower_name.startswith(f"{tok}.closeout")
     )
     if not stem_matches:
         return {"ok": False, "code": "closeout_artifact_phase_mismatch", "artifact_path": str(artifact_path)}
