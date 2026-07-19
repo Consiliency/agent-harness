@@ -121,7 +121,7 @@ class ResolveSuiteInterpreterShadowTest(unittest.TestCase):
             below = Path("/fake/python3.9")
             satisfying = Path("/fake/python3.11")
             with mock.patch.object(ve, "_interpreter_path", side_effect=lambda n: below if n in ("python", "python3") else None), \
-                 mock.patch.object(ve, "_interpreter_minor_version", return_value="3.9"), \
+                 mock.patch.object(ve, "_interpreter_full_version", return_value="3.9.0"), \
                  mock.patch.object(ve, "_lowest_satisfying_interpreter", return_value=satisfying), \
                  mock.patch.object(ve, "_nonsatisfying_shadow_names", return_value=("python3.10",)):
                 si = _resolve_suite_interpreter(repo, run_path, None)
@@ -129,6 +129,44 @@ class ResolveSuiteInterpreterShadowTest(unittest.TestCase):
             names = {p.name for p in si.shim_dir.iterdir()}
             self.assertIn("python3.10", names)  # shadow present on the auto-resolve path
             self.assertTrue((si.shim_dir / "python3").is_symlink())  # bare redirected to satisfying
+
+    def test_resolver_all_present_ok_uses_full_version(self):
+        # codex round-2: the host-default (all_present_ok) decision must use the FULL version.
+        # A host python3 == 3.11.9 does NOT satisfy `<3.11.5`, so it must NOT be treated as
+        # satisfying (which would leave bare python unredirected and run the suite green under it).
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _write_pyproject(repo, "<3.11.5")
+            run_path = repo / "run"
+            run_path.mkdir()
+            # Mock BOTH: minor-only ("3.11") would wrongly satisfy `<3.11.5`; full ("3.11.9") must not.
+            with mock.patch.object(ve, "_interpreter_path", side_effect=lambda n: Path("/fake/python3") if n in ("python", "python3") else None), \
+                 mock.patch.object(ve, "_interpreter_minor_version", return_value="3.11"), \
+                 mock.patch.object(ve, "_interpreter_full_version", return_value="3.11.9"), \
+                 mock.patch.object(ve, "_lowest_satisfying_interpreter", return_value=None):
+                si = _resolve_suite_interpreter(repo, run_path, None)
+            self.assertIsNotNone(si.blocker)  # 3.11.9 rejected → no satisfying interpreter → blocked
+
+    def test_resolver_pin_uses_full_version(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _write_pyproject(repo, "<3.11.5")
+            run_path = repo / "run"
+            run_path.mkdir()
+            with mock.patch.object(ve, "_interpreter_path", return_value=Path("/fake/python3.11")), \
+                 mock.patch.object(ve, "_interpreter_minor_version", return_value="3.11"), \
+                 mock.patch.object(ve, "_interpreter_full_version", return_value="3.11.9"):
+                si = _resolve_suite_interpreter(repo, run_path, python_pin="python3.11")
+            self.assertIsNotNone(si.blocker)
+            self.assertIn("does not satisfy", si.blocker)
+
+    def test_present_but_unprobeable_candidate_fails_closed(self):
+        # codex round-2: a PRESENT candidate whose version cannot be established must fail CLOSED
+        # (shadow), not fall back to the satisfying nominal minor.
+        with mock.patch.object(ve, "_interpreter_path", side_effect=lambda n: Path("/fake/python3.11") if n == "python3.11" else None), \
+             mock.patch.object(ve, "_interpreter_full_version", return_value=None):
+            names = set(_nonsatisfying_shadow_names([">=3.11"]))
+        self.assertIn("python3.11", names)  # nominally satisfies, but present+unprobeable → shadowed
 
 
 class VersionedInterpreterEndToEndTest(unittest.TestCase):

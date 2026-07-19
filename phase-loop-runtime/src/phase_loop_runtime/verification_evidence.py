@@ -169,7 +169,7 @@ def _lowest_satisfying_interpreter(specs: list[str]) -> Path | None:
         interpreter = _interpreter_path(f"python3.{minor}")
         if interpreter is None:
             continue
-        version = _interpreter_minor_version(interpreter)
+        version = _interpreter_full_version(interpreter)  # full version — patch-level exact
         if version and _version_satisfies(version, specs):
             return interpreter
     return None
@@ -192,6 +192,7 @@ def _interpreter_full_version(interpreter: Path) -> str | None:
             [str(interpreter), "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
             text=True,
             stderr=subprocess.DEVNULL,
+            timeout=10,  # a pathological python3.X must not stall guard construction
         )
     except Exception:
         return None
@@ -213,7 +214,14 @@ def _nonsatisfying_shadow_names(specs: list[str]) -> tuple[str, ...]:
     names: list[str] = []
     for name, nominal in _SHADOW_CANDIDATES:
         resolved = _interpreter_path(name)
-        version = (_interpreter_full_version(resolved) if resolved is not None else None) or nominal
+        if resolved is not None:
+            full = _interpreter_full_version(resolved)
+            if full is None:
+                names.append(name)  # present but unprobeable → fail CLOSED (do not trust nominal)
+                continue
+            version = full
+        else:
+            version = nominal  # absent: cannot be invoked via PATH anyway
         if not _version_satisfies(version, specs):
             names.append(name)
     return tuple(names)
@@ -292,7 +300,7 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
         if resolved is None:
             return SuiteInterpreter(None, f"automation.python pin '{python_pin}' not found on host", None)
         if specs:
-            version = _interpreter_minor_version(resolved)
+            version = _interpreter_full_version(resolved)  # full version — patch-level exact
             if not version or not _version_satisfies(version, specs):
                 return SuiteInterpreter(
                     None,
@@ -311,8 +319,11 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
     # present one is below the floor — but ALWAYS build a shim so the versioned-name shadows are
     # on PATH (a satisfying bare ``python`` does not protect against an explicit ``python3.10``).
     present = [p for p in (_interpreter_path("python3"), _interpreter_path("python")) if p is not None]
+    # Full version — a present bare interpreter whose PATCH version is unsupported (e.g. 3.11.9
+    # under <3.11.5), or that cannot be probed, must NOT count as satisfying (else the shadows-only
+    # branch would leave it unredirected and the suite would run green under it).
     all_present_ok = bool(present) and all(
-        (version := _interpreter_minor_version(candidate)) and _version_satisfies(version, specs)
+        (version := _interpreter_full_version(candidate)) and _version_satisfies(version, specs)
         for candidate in present
     )
     if all_present_ok:
