@@ -149,7 +149,7 @@ class VerificationEvidenceTest(unittest.TestCase):
             self.assertTrue(artifact_path.exists())
             self.assertTrue(log_path.exists())
             payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(payload["run_id"], "test-run")
             self.assertEqual(payload["phase_alias"], "VC")
             self.assertEqual(payload["env_refresh"], None)
@@ -262,6 +262,167 @@ class VerificationEvidenceTest(unittest.TestCase):
             appended = json.loads(data.splitlines()[-1])
             self.assertEqual(appended["entry"], {"kind": "operator_check", "status": "passed"})
             self.assertEqual(payload["entry"]["kind"], "operator_check")
+
+
+class VerificationFailureDiagnosticsTest(unittest.TestCase):
+    """agent-harness#209: the verdict must localize + preserve the raw diagnostic of
+    the stage that broke, with a runner-observed failure_kind, in declared order."""
+
+    def _validate(self, repo, commands, suite=None, env_refresh=None, timeout=30):
+        run_dir = repo / ".phase-loop/runs/test-run"
+        run_verification(repo, run_dir, commands, suite, env_refresh, timeout)
+        return validate_verification_artifact(run_dir / "verification.json")
+
+    def test_single_failing_command_preserves_stderr_and_kind(self):
+        # (a)
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(
+                Path(td),
+                [[sys.executable, "-c", "import sys; sys.stderr.write('DISTINCTIVE_REASON\\n'); sys.exit(1)"]],
+            )
+            self.assertFalse(v.ok)
+            diags = v.to_json()["diagnostics"]
+            self.assertEqual(len(diags), 1)
+            self.assertIn("DISTINCTIVE_REASON", diags[0]["raw_tail"])
+            self.assertEqual(diags[0]["failure_kind"], "nonzero_exit")
+            self.assertEqual(diags[0]["role"], "command")
+            self.assertTrue(diags[0]["argv"])
+
+    def test_failing_last_command_tail_excludes_passing_suite_output(self):
+        # (b) the decisive round-1 boundary bug: the command's tail must be the
+        # command's OWN output, never the trailing passing suite's.
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(
+                Path(td),
+                [[sys.executable, "-c", "import sys; sys.stderr.write('CMD_FAILURE_MARK\\n'); sys.exit(1)"]],
+                suite=[sys.executable, "-c", "print('SUITE_PASS_NOISE ' * 50)"],
+            )
+            self.assertFalse(v.ok)
+            cmd_diag = [d for d in v.diagnostics if d["role"] == "command"][0]
+            self.assertIn("CMD_FAILURE_MARK", cmd_diag["raw_tail"])
+            self.assertNotIn("SUITE_PASS_NOISE", cmd_diag["raw_tail"])
+
+    def test_two_step_chain_step1_fail_step2_pass_reduces_fail_closed_in_order(self):
+        # (c)
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(
+                Path(td),
+                [
+                    [sys.executable, "-c", "import sys; sys.stderr.write('STEP1\\n'); sys.exit(1)"],
+                    [sys.executable, "-c", "print('step2 ok')"],
+                ],
+            )
+            self.assertFalse(v.ok)
+            self.assertEqual(v.exit_summary["commands"], [1, 0])
+            diags = v.diagnostics
+            self.assertEqual(len(diags), 1)
+            self.assertEqual(diags[0]["index"], 0)
+            self.assertIn("STEP1", diags[0]["raw_tail"])
+
+    def test_env_refresh_failure_tail_comes_from_head_of_log(self):
+        # (d) env_refresh runs FIRST; a tail-of-whole-log would miss it.
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(
+                Path(td),
+                [[sys.executable, "-c", "print('later command ok')"]],
+                env_refresh={
+                    "triggered": True,
+                    "install_argv": [sys.executable, "-c", "import sys; sys.stderr.write('ENV_REFRESH_BROKE\\n'); sys.exit(3)"],
+                },
+            )
+            self.assertFalse(v.ok)
+            env_diag = [d for d in v.diagnostics if d["role"] == "env_refresh"][0]
+            self.assertIn("ENV_REFRESH_BROKE", env_diag["raw_tail"])
+
+    def test_failure_kind_runner_observed_not_derived_from_exit_code(self):
+        # (e) a real timeout is "timeout"; a child that ITSELF returns 124 is
+        # "nonzero_exit"; a missing executable is "error".
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(
+                Path(td),
+                [[sys.executable, "-c", "import time; time.sleep(30)"]],
+                timeout=1,
+            )
+            self.assertEqual(v.diagnostics[0]["failure_kind"], "timeout")
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(Path(td), [[sys.executable, "-c", "import sys; sys.exit(124)"]])
+            self.assertEqual(v.diagnostics[0]["failure_kind"], "nonzero_exit")
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(Path(td), [["/nonexistent/verify-binary-xyz"]])
+            self.assertEqual(v.diagnostics[0]["failure_kind"], "error")
+
+    def test_no_output_failure_is_flagged_missing_output_not_absent(self):
+        # (f) anti-scrubbing: a silent failure still carries typed context.
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(Path(td), [[sys.executable, "-c", "import sys; sys.exit(1)"]])
+            self.assertFalse(v.ok)
+            self.assertEqual(len(v.diagnostics), 1)
+            self.assertEqual(v.diagnostics[0]["diagnostic_status"], "missing_output")
+            self.assertEqual(v.diagnostics[0]["failure_kind"], "nonzero_exit")
+            self.assertEqual(v.diagnostics[0]["exit_code"], 1)
+
+    def test_raw_tail_is_bounded(self):
+        # (g)
+        from phase_loop_runtime.verification_evidence import DIAGNOSTIC_TAIL_BYTES
+
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(
+                Path(td),
+                [[sys.executable, "-c", f"import sys; sys.stdout.write('x' * {DIAGNOSTIC_TAIL_BYTES * 3}); sys.exit(1)"]],
+            )
+            self.assertLessEqual(len(v.diagnostics[0]["raw_tail"].encode("utf-8")), DIAGNOSTIC_TAIL_BYTES)
+            self.assertTrue(v.diagnostics[0]["truncated"])
+
+    def test_green_run_has_no_diagnostics(self):
+        # (h)
+        with tempfile.TemporaryDirectory() as td:
+            v = self._validate(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            self.assertTrue(v.ok)
+            self.assertEqual(v.diagnostics, ())
+            self.assertEqual(v.to_json()["diagnostics"], [])
+
+    def test_v1_artifact_still_loads(self):
+        # (i) back-compat: a v1 payload (no v2 stage fields) parses, fields default None.
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log = run_dir / "verification.log"
+            log.write_bytes(b"legacy log\n")
+            import hashlib as _h
+
+            payload = {
+                "schema_version": 1,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [{"argv": ["true"], "cwd": ".", "exit_code": 0, "duration_s": 0.1, "log_offset": 0}],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-19T00:00:00Z",
+                "finished_at": "2026-07-19T00:00:01Z",
+                "log_sha256": _h.sha256(b"legacy log\n").hexdigest(),
+            }
+            (run_dir / "verification.json").write_text(json.dumps(payload), encoding="utf-8")
+            result = load_verification_artifact(run_dir / "verification.json")
+            self.assertEqual(result.schema_version, 1)
+            self.assertIsNone(result.commands[0].log_end_offset)
+            self.assertIsNone(result.commands[0].failure_kind)
+
+    def test_interpreter_blocker_surfaces_reason_not_scrubbed(self):
+        # (j) a requires-python/pin mismatch synthesizes 127 evidence OUTSIDE
+        # _run_process; its diagnostic must surface the "unavailable" reason.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            # requires-python floor no local interpreter can satisfy -> blocker.
+            (repo / "pyproject.toml").write_text(
+                "[project]\nname='x'\nversion='0'\nrequires-python='>=99.0'\n", encoding="utf-8"
+            )
+            v = self._validate(repo, [[sys.executable, "-c", "print('never runs')"]])
+            self.assertFalse(v.ok)
+            self.assertTrue(v.diagnostics)
+            blocker_diag = v.diagnostics[0]
+            self.assertEqual(blocker_diag["failure_kind"], "error")
+            self.assertIn("interpreter", blocker_diag["raw_tail"].lower())
+            self.assertEqual(blocker_diag["diagnostic_status"], "present")
 
 
 if __name__ == "__main__":
