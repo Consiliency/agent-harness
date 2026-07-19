@@ -51,6 +51,12 @@ class RoadmapECIdTest(unittest.TestCase):
         errs = [e for e in lint_roadmap_text(_roadmap_text(["EC-P1-1 — a", "bare goal"])) if e.startswith("(H)")]
         self.assertTrue(any("mixed exit-criteria" in e for e in errs))
 
+    def test_uppercase_completed_checkbox_criterion_not_dropped(self):
+        # CR codex round 8 (core): a `- [X]` completed exit-criterion must not silently
+        # vanish (which would omit that goal from coverage entirely).
+        ph = _extract_phases(_roadmap_text(["EC-P1-1 — a"]).replace("- [ ] EC-P1-1 — a", "- [X] EC-P1-1 — a"))[0]
+        self.assertEqual(ph.declared_exit_criteria_ids, ["EC-P1-1"])
+
     def test_all_ids_or_all_bare_is_clean(self):
         for lines in (["EC-P1-1 — a", "EC-P1-2 — b"], ["bare a", "bare b"]):
             self.assertEqual([e for e in lint_roadmap_text(_roadmap_text(lines)) if e.startswith("(H)")], [])

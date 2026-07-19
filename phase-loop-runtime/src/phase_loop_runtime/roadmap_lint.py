@@ -133,12 +133,19 @@ def _field(body: str, label: str) -> str:
     return m.group("body").strip() if m else ""
 
 
+_CHECKBOX_ITEM_RE = re.compile(r"^- \[[ xX]\]\s*(?P<text>.*)$")
+
+
 def _checkbox_items(block: str) -> List[str]:
-    return [
-        line.strip()[6:].strip()
-        for line in block.splitlines()
-        if line.strip().startswith("- [ ]") or line.strip().startswith("- [x]")
-    ]
+    # agent-harness#211 (CR codex): accept an UPPERCASE ``[X]`` completed checkbox too —
+    # a `- [X] EC-P1-1` criterion must not silently vanish (which would omit that goal
+    # from coverage). Tolerant of a missing space after ``]``.
+    out: List[str] = []
+    for line in block.splitlines():
+        m = _CHECKBOX_ITEM_RE.match(line.strip())
+        if m:
+            out.append(m.group("text").strip())
+    return out
 
 
 def _bullet_items(block: str) -> List[str]:

@@ -60,12 +60,14 @@ exception, not the norm.
 
 Each roadmap phase exit-criterion gets a stable ID `EC-<ALIAS>-<N>` (alias = the
 phase alias, N = a positive int), mirroring the IF-gate scheme's alias-scoping +
-uniqueness. **IDs are stable identities, not positions: never reused or renumbered,
-and gaps are allowed** — deleting `EC-P1-2` must NOT renumber `EC-P1-3`, because a
-downstream plan already references `EC-P1-3` and renumbering would silently re-bind
-it to a different goal (CR Fable — the reason IF-gates get away with contiguity is
-they are append-mostly; exit-criteria get edited). So the reconciliation invariant
-is **alias-scoped + unique + never-reused**, NOT contiguous.
+uniqueness. **IDs are stable identities, not positions.** The lint statically
+enforces what a single snapshot can: **alias-scoped + unique + gaps-allowed** (NOT
+contiguous). Allowing gaps is what makes non-reuse *possible* — deleting `EC-P1-2`
+does not force renumbering `EC-P1-3`, so a downstream plan's `EC-P1-3` reference
+stays bound to the same goal. **"Never reuse a deleted ID for a different goal" is an
+authoring DISCIPLINE the static lint cannot verify** (it has no history of prior
+snapshots — CR codex round 8, honestly scoped). The tool removes the *pressure* to
+renumber; it cannot detect a malicious/careless historical rebind.
 
 **All-or-none activation:** within a phase, either *every* exit-criterion carries an
 `EC-<ALIAS>-<N>` ID (opted-in → coverage enforced) or *none* do (legacy → no gate).
