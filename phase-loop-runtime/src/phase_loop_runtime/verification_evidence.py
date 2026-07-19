@@ -320,13 +320,14 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
     wrapper, so a suite/``commands`` entry that explicitly names an unsupported versioned
     interpreter errors instead of running green below/above the floor. This is an
     executable-resolution guard (no command-string parsing of the interpreter), so a versioned
-    name inside a string literal or env path is unaffected. A login shell (``bash -lc``) that
-    re-sources a PATH-reordering profile is handled by re-prepending the shim inside the ``-c``
-    payload (``_relogin_shell_shim``), so the shim wins even against a profile that puts a
-    below-floor ``python3.X`` first. The one remaining escape hatch is an *absolute*-path
-    interpreter (``/usr/bin/python3.10``) — bypasses PATH entirely and is the author's explicit
-    declared choice. Returns a ``shim_dir`` to prepend to the suite ``PATH``, or a named
-    ``blocker`` when no satisfying interpreter exists.
+    name inside a string literal or env path is unaffected. A realistic login shell
+    (``bash -lc "cmd"``) that re-sources a PATH-reordering profile is handled by re-prepending the
+    shim inside the ``-c`` payload (``_relogin_shell_shim``), so the shim wins even against a profile
+    that puts a below-floor ``python3.X`` first. Escape hatches (operator's declared environment,
+    adversary-equivalent): an *absolute*-path interpreter (``/usr/bin/python3.10``); and — tracked
+    for hardening in ah#241 — exotic ``bash --login -O opt -c`` option forms and an interpreter
+    absent at resolve time but introduced by the profile under a patch-level constraint. Returns a
+    ``shim_dir`` to prepend to the suite ``PATH``, or a named ``blocker`` when none satisfies.
     """
     specs = _read_requires_python_specs(repo)
     # Non-satisfying versioned names to fail-close (only when a constraint exists).

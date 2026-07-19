@@ -31,9 +31,11 @@ preserved. The interpreter version is probed with `cwd=repo`, so a version-manag
 (pyenv/asdf) is measured under the same `.python-version` context the suite runs in. A **login
 shell** (`bash -lc`) that re-sources a PATH-reordering profile is handled by re-prepending the shim
 inside the `-c` payload (which runs after profile loading), so the shim wins even against a profile
-that puts a below-floor `python3.X` first. The one remaining escape hatch is an **absolute-path**
-interpreter (`/usr/bin/python3.10`), which bypasses PATH entirely and is the author's explicit
-declared choice (also the opt-out for a legitimate tox-style multi-version suite).
+that puts a below-floor `python3.X` first. Escape hatches (the operator's explicit declared
+environment, each strictly harder for an operator than the guard it evades): an **absolute-path**
+interpreter (`/usr/bin/python3.10`) which bypasses PATH entirely; and — deferred to #241 for
+hardening with proper planning — exotic `bash --login -O opt -c` option forms and an interpreter
+absent at resolve time but introduced by the login profile under a patch-level constraint.
 
 ### Reconcile can recover a completed phase from a tracked closeout artifact (#90)
 
