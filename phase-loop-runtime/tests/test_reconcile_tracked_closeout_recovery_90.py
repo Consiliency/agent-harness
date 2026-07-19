@@ -148,6 +148,28 @@ class ValidateTrackedCloseoutArtifactTest(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["code"], "closeout_artifact_phase_mismatch")
 
+    def test_blob_mode_pointing_at_non_blob_oid_is_rejected(self):
+        # codex/Fable: a hand-forged tree entry with a blob MODE but a TREE object id. ls-tree's
+        # type column is mode-derived (prints "blob") and `cat-file -s` sizes any object, so only
+        # `cat-file -t` on the OID catches it. `git mktree` refuses to build this, so we forge the
+        # raw tree object directly.
+        with tempfile.TemporaryDirectory() as td:
+            repo, _roadmap, _rel, _commit = _fixture(Path(td))
+            tree_oid = _git(repo, "rev-parse", "HEAD^{tree}")
+            entry = b"100644 RUNNER-closeout.md\x00" + bytes.fromhex(tree_oid)
+            malformed_tree = subprocess.run(
+                ["git", "-C", str(repo), "hash-object", "-t", "tree", "--literally", "-w", "--stdin"],
+                input=entry, capture_output=True, check=True,
+            ).stdout.decode().strip()
+            malformed_commit = subprocess.run(
+                ["git", "-C", str(repo), "commit-tree", malformed_tree, "-p", _git(repo, "rev-parse", "HEAD"), "-m", "forged"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            _git(repo, "update-ref", "HEAD", malformed_commit)  # make the forged commit reachable
+            result = _validate_tracked_closeout_artifact(repo, "RUNNER-closeout.md", malformed_commit, "RUNNER")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "closeout_artifact_not_a_file")
+
     def test_empty_phase_token_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             repo, _roadmap, rel, commit = _fixture(Path(td))
