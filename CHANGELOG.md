@@ -22,12 +22,14 @@ string), `python3.10&&pytest` is caught while `python3.12 -c 'print("python3.10"
 `PYTHONPATH=/opt/python3.10 pytest` are no longer false-blocked, and both the `suite_command` and
 `commands` paths are covered. The shadow set spans a wide fixed name range (`python3.0`–`python3.39`
 plus `python2*`), decoupled from the bounded host-probe list, so an old `python3.7` or a future
-`python3.15` cannot reopen the hole. When the host default already satisfies, the shim carries only
-the shadows and leaves bare `python`/`python3` untouched, so an active venv is preserved. An
-**absolute-path** interpreter (`/usr/bin/python3.10`) bypasses PATH and remains the author's explicit
-declared-interpreter escape hatch (also the opt-out for a legitimate tox-style multi-version suite).
-Known edge: a patch-level floor (`>=3.10.5`) shadows `python3.10` because the shadow predicate
-compares at minor granularity — use bare `python`/`python3` or an absolute path.
+`python3.15` cannot reopen the hole. Patch-level constraints are handled precisely: a candidate
+present on the host is compared at its **full** version, so `python3.11` is shadowed under
+`<3.11.5` when the host's is 3.11.9 (fail-closed, not fail-open) and is NOT shadowed under
+`>=3.11.5` when the host's is 3.11.9 (no false-block). When the host default already satisfies, the
+shim carries only the shadows and leaves bare `python`/`python3` untouched, so an active venv is
+preserved. An **absolute-path** interpreter (`/usr/bin/python3.10`) bypasses PATH and remains the
+author's explicit declared-interpreter escape hatch (also the opt-out for a legitimate tox-style
+multi-version suite).
 
 ### Reconcile can recover a completed phase from a tracked closeout artifact (#90)
 

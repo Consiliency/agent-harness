@@ -185,16 +185,38 @@ _SHADOW_CANDIDATES = tuple(
 )
 
 
+def _interpreter_full_version(interpreter: Path) -> str | None:
+    """``major.minor.micro`` of ``interpreter`` (for patch-level requires-python)."""
+    try:
+        out = subprocess.check_output(
+            [str(interpreter), "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    return out.strip() or None
+
+
 def _nonsatisfying_shadow_names(specs: list[str]) -> tuple[str, ...]:
     """Versioned python executable names that do NOT satisfy ``specs`` (empty when no constraint).
 
-    Uses the PEP 440 ``_version_satisfies`` predicate over ``_SHADOW_CANDIDATES``, so it covers
-    below-floor AND above a bounded upper bound, self-excludes any satisfying version, and is
-    independent of which interpreters the host happens to have.
+    For a candidate that RESOLVES on the host, the executable's FULL (patch-level) version is
+    compared, so a patch-bound constraint is handled precisely: ``python3.11`` is shadowed under
+    ``<3.11.5`` when the host's is 3.11.9 (fail-closed, not fail-open), and NOT shadowed under
+    ``>=3.11.5`` when the host's is 3.11.9 (no false-block). For a candidate not present on the
+    host, the nominal ``3.X`` version is used (it cannot be invoked via PATH anyway). Covers
+    below-floor AND above a bounded upper bound, and self-excludes any satisfying version.
     """
     if not specs:
         return ()
-    return tuple(name for name, version in _SHADOW_CANDIDATES if not _version_satisfies(version, specs))
+    names: list[str] = []
+    for name, nominal in _SHADOW_CANDIDATES:
+        resolved = _interpreter_path(name)
+        version = (_interpreter_full_version(resolved) if resolved is not None else None) or nominal
+        if not _version_satisfies(version, specs):
+            names.append(name)
+    return tuple(names)
 
 
 def _build_interpreter_shim(
@@ -232,8 +254,8 @@ def _build_interpreter_shim(
         if wrapper.exists() or wrapper.is_symlink():
             wrapper.unlink()
         message = (
-            f"phase-loop: {name} does not satisfy {reason}; use bare python/python3 "
-            "(shimmed to a satisfying interpreter) or an explicit absolute interpreter path."
+            f"phase-loop: {name} does not satisfy {reason}; use a satisfying interpreter "
+            "(bare python/python3, or an explicit absolute interpreter path)."
         )
         safe = message.replace("'", "'\\''")  # single-quote for /bin/sh, escape embedded quotes
         wrapper.write_text(f"#!/bin/sh\nprintf '%s\\n' '{safe}' >&2\nexit 1\n", encoding="utf-8")

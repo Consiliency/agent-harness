@@ -4,7 +4,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import phase_loop_runtime.verification_evidence as ve
 from phase_loop_runtime.verification_evidence import (
     _build_interpreter_shim,
     _nonsatisfying_shadow_names,
@@ -93,6 +95,41 @@ class ResolveSuiteInterpreterShadowTest(unittest.TestCase):
             self.assertIsNone(si.shim_dir)
             self.assertIsNone(si.blocker)
 
+    def test_patch_level_upper_bound_shadows_via_full_version(self):
+        # codex: a patch-level UPPER bound must not fail open. A present python3.11 == 3.11.9 does
+        # NOT satisfy `<3.11.5`, so it must be shadowed (the minor-only compare left it unshadowed).
+        with mock.patch.object(ve, "_interpreter_path", side_effect=lambda n: Path("/fake/python3.11") if n == "python3.11" else None), \
+             mock.patch.object(ve, "_interpreter_full_version", return_value="3.11.9"):
+            names = set(_nonsatisfying_shadow_names(["<3.11.5"]))
+        self.assertIn("python3.11", names)
+
+    def test_patch_level_lower_bound_keeps_satisfying_full_version(self):
+        # And it must not FALSE-block: a present python3.11 == 3.11.9 satisfies `>=3.11.5`.
+        with mock.patch.object(ve, "_interpreter_path", side_effect=lambda n: Path("/fake/python3.11") if n == "python3.11" else None), \
+             mock.patch.object(ve, "_interpreter_full_version", return_value="3.11.9"):
+            names = set(_nonsatisfying_shadow_names([">=3.11.5"]))
+        self.assertNotIn("python3.11", names)
+
+    def test_auto_resolve_branch_shadows(self):
+        # Deterministically force the auto-resolve branch: bare python/python3 are below the floor
+        # and a satisfying versioned interpreter exists.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _write_pyproject(repo, ">=3.11")
+            run_path = repo / "run"
+            run_path.mkdir()
+            below = Path("/fake/python3.9")
+            satisfying = Path("/fake/python3.11")
+            with mock.patch.object(ve, "_interpreter_path", side_effect=lambda n: below if n in ("python", "python3") else None), \
+                 mock.patch.object(ve, "_interpreter_minor_version", return_value="3.9"), \
+                 mock.patch.object(ve, "_lowest_satisfying_interpreter", return_value=satisfying), \
+                 mock.patch.object(ve, "_nonsatisfying_shadow_names", return_value=("python3.10",)):
+                si = _resolve_suite_interpreter(repo, run_path, None)
+            self.assertIsNotNone(si.shim_dir)
+            names = {p.name for p in si.shim_dir.iterdir()}
+            self.assertIn("python3.10", names)  # shadow present on the auto-resolve path
+            self.assertTrue((si.shim_dir / "python3").is_symlink())  # bare redirected to satisfying
+
 
 class VersionedInterpreterEndToEndTest(unittest.TestCase):
     def test_versioned_interpreter_fails_closed_in_commands_and_suite(self):
@@ -115,6 +152,24 @@ class VersionedInterpreterEndToEndTest(unittest.TestCase):
             # lost suite-side PATH prepend cannot pass vacuously via command-not-found.
             log = (run_dir / "verification.log").read_text(encoding="utf-8")
             self.assertGreaterEqual(log.count("does not satisfy"), 2)
+
+    def test_shim_wins_over_existing_below_floor_interpreter_on_path(self):
+        # codex: prove the shim BEATS an already-installed below-floor interpreter, not just a
+        # missing one. A fabricated python3.8 that would exit 0 is on PATH; the prepended shim
+        # wrapper must intercept it and fail closed.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _write_pyproject(repo, SATISFIED_SPEC)  # >=3.9 -> python3.8 shadowed
+            fakedir = repo / "fakebin"
+            fakedir.mkdir()
+            fake = fakedir / SHADOW
+            fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")  # would pass if it ran
+            fake.chmod(0o755)
+            run_dir = repo / ".phase-loop/runs/test"
+            with mock.patch.dict(os.environ, {"PATH": f"{fakedir}{os.pathsep}{os.environ.get('PATH', '')}"}):
+                result = run_verification(repo, run_dir, [[SHADOW, "-c", "print('x')"]], None, None, 15)
+            self.assertNotEqual(result.commands[0].exit_code, 0)  # shim wins, not the fake's exit 0
+            self.assertIn("does not satisfy", (run_dir / "verification.log").read_text(encoding="utf-8"))
 
     def test_string_literal_and_env_path_are_not_false_blocked(self):
         with tempfile.TemporaryDirectory() as td:
