@@ -196,12 +196,12 @@ def _interpreter_minor_version(interpreter: Path) -> str | None:
     return version or None
 
 
-def _lowest_satisfying_interpreter(specs: list[str]) -> Path | None:
+def _lowest_satisfying_interpreter(specs: list[str], repo: "Path | None" = None) -> Path | None:
     for minor in _CANDIDATE_MINORS:
         interpreter = _interpreter_path(f"python3.{minor}")
         if interpreter is None:
             continue
-        version = _interpreter_full_version(interpreter)  # full version — patch-level exact
+        version = _interpreter_full_version(interpreter, repo)  # full version, repo-context probe
         if version and _version_satisfies(version, specs):
             return interpreter
     return None
@@ -217,21 +217,27 @@ _SHADOW_CANDIDATES = tuple(
 )
 
 
-def _interpreter_full_version(interpreter: Path) -> str | None:
-    """``major.minor.micro`` of ``interpreter`` (for patch-level requires-python)."""
+def _interpreter_full_version(interpreter: Path, cwd: "Path | None" = None) -> str | None:
+    """``major.minor.micro`` of ``interpreter`` (for patch-level requires-python).
+
+    Probes with ``cwd`` (the target repo) so a version-manager shim (pyenv/asdf) reports the SAME
+    interpreter the suite will actually execute under ``cwd=repo`` — otherwise it could report a
+    satisfying global version at resolve time while selecting an unsupported one from the repo's
+    ``.python-version`` at run time (ah#221 CR)."""
     try:
         out = subprocess.check_output(
             [str(interpreter), "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
             text=True,
             stderr=subprocess.DEVNULL,
             timeout=10,  # a pathological python3.X must not stall guard construction
+            cwd=str(cwd) if cwd is not None else None,
         )
     except Exception:
         return None
     return out.strip() or None
 
 
-def _nonsatisfying_shadow_names(specs: list[str]) -> tuple[str, ...]:
+def _nonsatisfying_shadow_names(specs: list[str], repo: "Path | None" = None) -> tuple[str, ...]:
     """Versioned python executable names that do NOT satisfy ``specs`` (empty when no constraint).
 
     For a candidate that RESOLVES on the host, the executable's FULL (patch-level) version is
@@ -247,7 +253,7 @@ def _nonsatisfying_shadow_names(specs: list[str]) -> tuple[str, ...]:
     for name, nominal in _SHADOW_CANDIDATES:
         resolved = _interpreter_path(name)
         if resolved is not None:
-            full = _interpreter_full_version(resolved)
+            full = _interpreter_full_version(resolved, repo)
             if full is None:
                 names.append(name)  # present but unprobeable → fail CLOSED (do not trust nominal)
                 continue
@@ -314,16 +320,16 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
     wrapper, so a suite/``commands`` entry that explicitly names an unsupported versioned
     interpreter errors instead of running green below/above the floor. This is an
     executable-resolution guard (no command-string parsing), so a versioned name inside a
-    string literal or env path is unaffected. Two invocations bypass a PATH-prepend shim by
-    construction and are the author's/operator's explicit declared environment (out of scope,
-    like the issue's direction-3): an *absolute*-path interpreter (``/usr/bin/python3.10``), and a
-    *login* shell (``bash -lc``) whose profile deliberately prepends a below-floor ``python3.X``
-    AHEAD of the shim dir. Returns a ``shim_dir`` to prepend to the suite ``PATH``, or a named
-    ``blocker`` when no satisfying interpreter exists.
+    string literal or env path is unaffected. The shim survives a normal login shell
+    (``bash -lc`` — the dogfood form), but two invocations can still defeat a PATH-prepend by
+    construction and are the operator's explicit declared environment: an *absolute*-path
+    interpreter (``/usr/bin/python3.10``), and a login profile that DELIBERATELY prepends a
+    below-floor ``python3.X`` AHEAD of the shim dir. Returns a ``shim_dir`` to prepend to the suite
+    ``PATH``, or a named ``blocker`` when no satisfying interpreter exists.
     """
     specs = _read_requires_python_specs(repo)
     # Non-satisfying versioned names to fail-close (only when a constraint exists).
-    shadow_names = _nonsatisfying_shadow_names(specs)
+    shadow_names = _nonsatisfying_shadow_names(specs, repo)
 
     if python_pin:
         # The pin is the operator's explicit interpreter choice — but it must still
@@ -334,7 +340,7 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
         if resolved is None:
             return SuiteInterpreter(None, f"automation.python pin '{python_pin}' not found on host", None)
         if specs:
-            version = _interpreter_full_version(resolved)  # full version — patch-level exact
+            version = _interpreter_full_version(resolved, repo)  # full version, repo-context probe
             if not version or not _version_satisfies(version, specs):
                 return SuiteInterpreter(
                     None,
@@ -357,7 +363,7 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
     # under <3.11.5), or that cannot be probed, must NOT count as satisfying (else the shadows-only
     # branch would leave it unredirected and the suite would run green under it).
     all_present_ok = bool(present) and all(
-        (version := _interpreter_full_version(candidate)) and _version_satisfies(version, specs)
+        (version := _interpreter_full_version(candidate, repo)) and _version_satisfies(version, specs)
         for candidate in present
     )
     if all_present_ok:
@@ -367,7 +373,7 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
             _build_interpreter_shim(run_path, None, shadow_names, specs), None, str(present[0].resolve())
         )
 
-    candidate = _lowest_satisfying_interpreter(specs)
+    candidate = _lowest_satisfying_interpreter(specs, repo)
     if candidate is None:
         joined = ", ".join(specs)
         return SuiteInterpreter(None, f"no host interpreter satisfies requires-python ({joined})", None)
