@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -44,7 +45,7 @@ from .skill_install import actions_to_json, install_skills
 from .state import write_state
 from .state_degradation import clear as clear_degradation
 from .state_ops import archive_state, inspect_state
-from .verification_evidence import ARTIFACT_NAME, LOG_NAME, detect_changed_dependency_manifests, resolve_install_command, run_verification, validate_verification_artifact
+from .verification_evidence import ARTIFACT_NAME, EVIDENCE_PROVENANCE_TRACKED_CLOSEOUT, LOG_NAME, detect_changed_dependency_manifests, resolve_install_command, run_verification, validate_verification_artifact
 from . import __version__
 
 
@@ -540,6 +541,16 @@ def build_parser() -> argparse.ArgumentParser:
                 ),
             )
             sub.add_argument("--verification-log", help="Path to the runner-owned verification artifact required with --verification-status passed.")
+            sub.add_argument(
+                "--closeout-artifact",
+                help=(
+                    "ah#90 artifact-backed recovery: adopt a TRACKED, COMMITTED closeout markdown as "
+                    "recovery evidence (provenance=tracked_closeout_artifact) instead of a runner-owned "
+                    "verification.json. Requires --closeout-commit and --repair-summary; the artifact "
+                    "must exist at that commit. Recovery evidence, NOT a fresh runner pass. Mutually "
+                    "exclusive with --verification-log."
+                ),
+            )
             sub.add_argument("--reason", help="Required with --to-status planned. Recorded on manual_recovery.")
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
             sub.add_argument("--recovery-mode", action="store_true", help="Allow dirty recovery-state reconciliation with explicit audit fields.")
@@ -2442,9 +2453,46 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
             print(f"phase-loop reconcile: --recovery-mode requires {', '.join(missing)}", file=sys.stderr)
             return 2
 
+    closeout_artifact = getattr(args, "closeout_artifact", None)
+    verification_log = getattr(args, "verification_log", None)
+    if closeout_artifact and verification_log:
+        print(
+            "phase-loop reconcile: --closeout-artifact and --verification-log are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+
     verification_evidence = None
-    if getattr(args, "verification_status", None) == "passed":
-        verification_log = getattr(args, "verification_log", None)
+    if closeout_artifact:
+        # ah#90 artifact-backed recovery: adopt a TRACKED, COMMITTED closeout markdown as recovery
+        # evidence (provenance=tracked_closeout_artifact), NOT a fresh runner verification pass.
+        # Require explicit audit fields so prose cannot silently masquerade as passed verification.
+        missing = [
+            flag
+            for flag, present in (
+                ("--closeout-commit", getattr(args, "closeout_commit", None)),
+                ("--repair-summary", getattr(args, "repair_summary", None)),
+                ("--verification-status", getattr(args, "verification_status", None)),
+            )
+            if not present
+        ]
+        if missing:
+            print(
+                f"phase-loop reconcile: --closeout-artifact requires {', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 2
+        verification_evidence = _validate_tracked_closeout_artifact(
+            repo, closeout_artifact, getattr(args, "closeout_commit")
+        )
+        if not verification_evidence.get("ok"):
+            print(
+                "phase-loop reconcile: closeout artifact invalid "
+                f"(code={verification_evidence.get('code')}, artifact={verification_evidence.get('artifact_path')})",
+                file=sys.stderr,
+            )
+            return 2
+    elif getattr(args, "verification_status", None) == "passed":
         if verification_log or _reconcile_verification_log_required(repo, roadmap, phase):
             verification_evidence = _validate_reconcile_verification_log(repo, verification_log)
             if not verification_evidence.get("ok"):
@@ -2482,6 +2530,10 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
         manual_repair["repair_summary"] = repair_summary
     if verification_evidence is not None:
         manual_repair["verification_evidence"] = verification_evidence
+        if verification_evidence.get("provenance"):
+            # ah#90: surface evidence provenance on the audit record so status/downstream can tell
+            # a tracked-closeout recovery apart from a runner verification pass.
+            manual_repair["evidence_provenance"] = verification_evidence["provenance"]
     if recovery_mode:
         manual_repair["recovery_mode"] = True
 
@@ -2528,6 +2580,52 @@ def _validate_reconcile_verification_log(repo: Path, value: str | None) -> dict[
         return {"ok": False, "code": "artifact_outside_repo", "artifact_path": str(artifact_path)}
     validation = validate_verification_artifact(artifact_path).to_json()
     return validation
+
+
+def _validate_tracked_closeout_artifact(repo: Path, value: str | None, closeout_commit: str) -> dict[str, object]:
+    """ah#90: adopt a TRACKED, COMMITTED closeout markdown as recovery evidence.
+
+    Safety anchor: the artifact must exist in git at ``closeout_commit`` (not merely on disk),
+    so an untracked/hand-crafted prose file cannot masquerade as completion evidence. Returns a
+    provenance-labeled evidence dict; the distinct ``provenance``/``code`` ensure it can never be
+    read as a runner ``verification.json`` pass.
+    """
+    if not value:
+        return {"ok": False, "code": "missing_closeout_artifact", "artifact_path": None}
+    raw_path = Path(value)
+    artifact_path = (raw_path if raw_path.is_absolute() else repo / raw_path).resolve()
+    repo_path = repo.resolve()
+    try:
+        inside_repo = artifact_path.is_relative_to(repo_path)
+    except AttributeError:  # pragma: no cover - py3.8 compatibility for downstream packagers
+        inside_repo = str(artifact_path).startswith(str(repo_path) + "/")
+    if not inside_repo:
+        return {"ok": False, "code": "artifact_outside_repo", "artifact_path": str(artifact_path)}
+    rel_path = artifact_path.relative_to(repo_path).as_posix()
+    # Require the artifact to be tracked AND present at the closeout commit.
+    probe = subprocess.run(
+        ["git", "-C", str(repo_path), "cat-file", "-e", f"{closeout_commit}:{rel_path}"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        return {"ok": False, "code": "closeout_artifact_not_committed", "artifact_path": str(artifact_path)}
+    # Require non-empty content at that commit (guard a zero-byte prose file).
+    blob = subprocess.run(
+        ["git", "-C", str(repo_path), "cat-file", "-p", f"{closeout_commit}:{rel_path}"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode == 0 and not blob.stdout.strip():
+        return {"ok": False, "code": "empty_closeout_artifact", "artifact_path": str(artifact_path)}
+    return {
+        "ok": True,
+        "code": "recovered_from_tracked_closeout",
+        "provenance": EVIDENCE_PROVENANCE_TRACKED_CLOSEOUT,
+        "evidence": "recovery",
+        "artifact_path": str(artifact_path),
+        "closeout_commit": closeout_commit,
+    }
 
 
 def _reconcile_verification_log_required(repo: Path, roadmap: Path, phase: str) -> bool:

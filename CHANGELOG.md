@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Reconcile can recover a completed phase from a tracked closeout artifact (#90)
+
+`phase-loop reconcile --verification-log <closeout.md>` rejected a tracked, committed closeout
+markdown as `malformed_artifact` because it validates the path as a runner-owned
+`verification.json`. Operators whose roadmap already reached CLOSEOUT with durable committed
+closeout artifacts — but no ephemeral `.phase-loop/runs/verification.json` (e.g. after an
+interrupted session) — could not rehydrate completed phase state and were stuck re-planning from
+the start. Reconcile now accepts a new **`--closeout-artifact <path>`** flag for artifact-backed
+recovery: it adopts a **git-tracked, committed** closeout markdown as recovery evidence
+(provenance `tracked_closeout_artifact`), requiring `--closeout-commit`, `--repair-summary`, and
+`--verification-status`, and the artifact must exist at that commit. The safety posture is
+preserved: an untracked/hand-crafted prose file is rejected (`closeout_artifact_not_committed`),
+the evidence is explicitly labeled so it can never masquerade as a fresh runner pass, the flag is
+mutually exclusive with `--verification-log`, and the existing runner-verification path is
+unchanged (still rejects a markdown as `malformed_artifact`).
+
 ### Reconcile/status survive a relocated repo root (#85)
 
 `.phase-loop/` state and events persist **absolute** repo/roadmap paths. When the directory
