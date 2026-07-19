@@ -82,9 +82,15 @@ Next-most load-bearing after review infra: these govern whether a phase can be m
   malformed versions/specifiers (packaging + fallback); `cwd=repo` probe parity (pyenv/asdf);
   login-shell `bash -lc` payload re-prepend beats a reordering profile. Residual login-shell
   hardening (exotic option forms; profile-introduced patch versions) deferred to #241.
-- **#209:** preserve raw failure diagnostics on verification failure (localize the
-  failing stage in a multi-stage suite) — this was a named contributor to multi-day
-  thrash (see #213).
+- **#209: ✅ DONE — merged as #242** (5-round cross-vendor CR). The verification verdict
+  now carries a per-failing-stage `diagnostics` list (runner-observed `failure_kind` +
+  bounded `raw_tail` sliced from the stage's exact log region, declared order,
+  `diagnostic_status` present/missing_output) that persists into the closeout record;
+  `verification.json` bumped to additive schema v2 (per-stage `log_end_offset` +
+  `failure_kind`, `env_refresh`/`suite` `log_offset`), v1 still loads. CR surfaced +
+  closed real single-field tamper leaks each round (offset end/start, exit_code-flip,
+  schema_version-type). Whole-artifact signing (any-field JSON tamper) documented as
+  out-of-scope follow-up.
 - **#211:** static acceptance-coverage audit — catch silent loosening of roadmap
   exit-criteria at the planner hop. (Overlaps the deferred #219(b-ii)
   acceptance-criteria→command coverage.)
