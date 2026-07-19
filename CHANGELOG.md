@@ -27,9 +27,11 @@ present on the host is compared at its **full** version, so `python3.11` is shad
 `<3.11.5` when the host's is 3.11.9 (fail-closed, not fail-open) and is NOT shadowed under
 `>=3.11.5` when the host's is 3.11.9 (no false-block). When the host default already satisfies, the
 shim carries only the shadows and leaves bare `python`/`python3` untouched, so an active venv is
-preserved. An **absolute-path** interpreter (`/usr/bin/python3.10`) bypasses PATH and remains the
-author's explicit declared-interpreter escape hatch (also the opt-out for a legitimate tox-style
-multi-version suite).
+preserved. Two invocations bypass a PATH-prepend shim by construction and remain the
+author's/operator's explicit declared environment (documented escape hatches, also the opt-out for
+a legitimate tox-style multi-version suite): an **absolute-path** interpreter
+(`/usr/bin/python3.10`), and a **login shell** (`bash -lc`) whose profile deliberately prepends a
+below-floor `python3.X` ahead of the shim.
 
 ### Reconcile can recover a completed phase from a tracked closeout artifact (#90)
 

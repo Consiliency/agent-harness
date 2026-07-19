@@ -227,6 +227,12 @@ class VersionSatisfiesSimpleFallbackTest(unittest.TestCase):
         self.assertFalse(_version_satisfies_simple("3.11.9", ["3.11"]))  # bare spec → not ">=3.11"
         self.assertFalse(_version_satisfies_simple("3.11.9pre", [">=3.11.5"]))  # suffix → fail closed
 
+    def test_four_component_version_fails_closed(self):
+        # codex/gemini round-7: a 4+-component version that _tuple3 would truncate must fail closed.
+        self.assertFalse(_version_satisfies_simple("3.11.0.1", ["==3.11.0"]))  # was fail-open
+        self.assertFalse(_version_satisfies_simple("3.11.0.1", ["<=3.11.0"]))  # was fail-open
+        self.assertFalse(_version_satisfies_simple("3.11.0.1", ["!=3.11.0.1.*"]))  # was fail-open
+
 
 class VersionedInterpreterEndToEndTest(unittest.TestCase):
     def test_versioned_interpreter_fails_closed_in_commands_and_suite(self):

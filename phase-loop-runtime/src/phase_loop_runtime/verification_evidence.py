@@ -134,8 +134,10 @@ def _version_satisfies_simple(version: str, specs: list[str]) -> bool:
     ``!=X.Y.*`` wildcards are handled by prefix match. Any clause form this fallback does NOT model
     (``~=``, ``===``, epochs, pre/post/dev releases) — and an unparseable version — FAILS CLOSED
     (returns unsatisfied) rather than silently accepting an interpreter it cannot verify."""
-    if not re.fullmatch(r"\d+(?:\.\d+)*", version.strip()):
-        return False  # not a plain dotted-numeric version (e.g. "garbage3.11.9") → fail closed
+    if not re.fullmatch(r"\d+(?:\.\d+){0,2}", version.strip()):
+        # Not a plain 1-3 component dotted-numeric version ("garbage3.11.9", "3.11.9pre", or a
+        # 4+-component "3.11.0.1" that `_tuple3` would truncate) → fail closed.
+        return False
     target = _tuple3(version)
     for spec in specs:
         for clause in spec.split(","):
@@ -312,10 +314,12 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
     wrapper, so a suite/``commands`` entry that explicitly names an unsupported versioned
     interpreter errors instead of running green below/above the floor. This is an
     executable-resolution guard (no command-string parsing), so a versioned name inside a
-    string literal or env path is unaffected. An *absolute*-path interpreter bypasses PATH
-    and is the author's explicit declared choice (out of scope by design). Returns a
-    ``shim_dir`` to prepend to the suite ``PATH``, or a named ``blocker`` when no satisfying
-    interpreter exists.
+    string literal or env path is unaffected. Two invocations bypass a PATH-prepend shim by
+    construction and are the author's/operator's explicit declared environment (out of scope,
+    like the issue's direction-3): an *absolute*-path interpreter (``/usr/bin/python3.10``), and a
+    *login* shell (``bash -lc``) whose profile deliberately prepends a below-floor ``python3.X``
+    AHEAD of the shim dir. Returns a ``shim_dir`` to prepend to the suite ``PATH``, or a named
+    ``blocker`` when no satisfying interpreter exists.
     """
     specs = _read_requires_python_specs(repo)
     # Non-satisfying versioned names to fail-close (only when a constraint exists).
