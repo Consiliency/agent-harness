@@ -76,8 +76,12 @@ Next-most load-bearing after review infra: these govern whether a phase can be m
 
 ## Batch 3 — Verification / governance hardening
 
-- **#221:** robust versioned/absolute suite-interpreter guard (split out of #220; the
-  regex detector was unsound). Follow-up hardening of the #219 interpreter fix.
+- **#221: ✅ DONE — merged as #240** (9-round cross-vendor CR). Regex string-scan replaced by an
+  executable-resolution shim that shadows non-satisfying versioned `python3.X` names (fail-closed
+  wrappers) on commands + suite; full-version comparison at every satisfaction site; fail-closed on
+  malformed versions/specifiers (packaging + fallback); `cwd=repo` probe parity (pyenv/asdf);
+  login-shell `bash -lc` payload re-prepend beats a reordering profile. Residual login-shell
+  hardening (exotic option forms; profile-introduced patch versions) deferred to #241.
 - **#209:** preserve raw failure diagnostics on verification failure (localize the
   failing stage in a multi-stage suite) — this was a named contributor to multi-day
   thrash (see #213).
