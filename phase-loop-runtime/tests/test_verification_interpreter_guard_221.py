@@ -9,6 +9,7 @@ from unittest import mock
 import phase_loop_runtime.verification_evidence as ve
 from phase_loop_runtime.verification_evidence import (
     _build_interpreter_shim,
+    _relogin_shell_shim,
     _nonsatisfying_shadow_names,
     _resolve_suite_interpreter,
     _version_satisfies,
@@ -232,6 +233,39 @@ class VersionSatisfiesSimpleFallbackTest(unittest.TestCase):
         self.assertFalse(_version_satisfies_simple("3.11.0.1", ["==3.11.0"]))  # was fail-open
         self.assertFalse(_version_satisfies_simple("3.11.0.1", ["<=3.11.0"]))  # was fail-open
         self.assertFalse(_version_satisfies_simple("3.11.0.1", ["!=3.11.0.1.*"]))  # was fail-open
+
+
+class ReloginShellShimTest(unittest.TestCase):
+    SHIM = Path("/run/_interp_shim")
+
+    def _rewritten(self, argv):
+        return _relogin_shell_shim(argv, self.SHIM)
+
+    def test_login_c_forms_are_rewritten(self):
+        for argv in (
+            ["bash", "-lc", "python -m pytest"],
+            ["bash", "-l", "-c", "python -m pytest"],
+            ["bash", "--login", "-c", "python -m pytest"],
+            ["/bin/bash", "-lc", "python -m pytest"],
+            ["bash", "-il", "-c", "python -m pytest"],
+        ):
+            out = self._rewritten(argv)
+            self.assertNotEqual(out, argv, argv)
+            self.assertTrue(out[-1].startswith("export PATH='/run/_interp_shim':\"$PATH\"; "), argv)
+
+    def test_ambiguous_post_c_option_forms_not_rewritten(self):
+        # Fable: the command is the first NON-option arg after -c; don't corrupt an option/`--` slot.
+        for argv in (
+            ["bash", "-lc", "--", "echo hi"],
+            ["bash", "-lc", "-x", "echo hi"],
+        ):
+            self.assertEqual(self._rewritten(argv), argv, argv)
+
+    def test_non_login_and_direct_and_nonshell_untouched(self):
+        self.assertEqual(self._rewritten(["bash", "-c", "python -m pytest"]), ["bash", "-c", "python -m pytest"])
+        self.assertEqual(self._rewritten(["python3.8", "-c", "print(1)"]), ["python3.8", "-c", "print(1)"])
+        self.assertEqual(self._rewritten(["pytest", "-q"]), ["pytest", "-q"])
+        self.assertEqual(_relogin_shell_shim(["bash", "-lc", "python"], None), ["bash", "-lc", "python"])
 
 
 class VersionedInterpreterEndToEndTest(unittest.TestCase):

@@ -800,6 +800,11 @@ def _relogin_shell_shim(argv: list[str], shim_dir: "Path | None") -> list[str]:
         i += 1
     if not is_login or c_index is None or c_index >= len(argv):
         return argv
+    if argv[c_index].startswith("-"):
+        # The command string is the first NON-option arg after `-c`; an option or `--` may precede
+        # it (`bash -lc -- 'cmd'`, `bash -lc -x 'cmd'`). Don't rewrite an ambiguous form — fail
+        # open to the plain PATH prepend rather than corrupt the option slot.
+        return argv
     shim_q = "'" + str(shim_dir).replace("'", "'\\''") + "'"  # single-quote the literal path
     rewritten = list(argv)
     rewritten[c_index] = f'export PATH={shim_q}:"$PATH"; ' + rewritten[c_index]
