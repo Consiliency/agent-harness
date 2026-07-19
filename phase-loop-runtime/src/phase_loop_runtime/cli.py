@@ -2595,13 +2595,31 @@ def _validate_reconcile_verification_log(repo: Path, value: str | None) -> dict[
     return validation
 
 
+_GIT_LOCATION_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+
+
 def _git_capture(repo_path: Path, *args: str) -> subprocess.CompletedProcess:
+    # ah#90 hardening: strip GIT_* location/object overrides so a caller-set GIT_DIR /
+    # object-directory cannot redirect these trust checks to another repository, and
+    # `--no-replace-objects` so a local `refs/replace` graft cannot forge ancestry or object type.
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_ENV}
     try:
         return subprocess.run(
-            ["git", "-C", str(repo_path), *args],
+            ["git", "--no-replace-objects", "-C", str(repo_path), *args],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
+            env=env,
         )
     except FileNotFoundError:  # pragma: no cover - git absent
         return subprocess.CompletedProcess(args, returncode=127, stdout="", stderr="git not found")
@@ -2631,6 +2649,9 @@ def _validate_tracked_closeout_artifact(
         return {"ok": False, "code": "missing_closeout_artifact", "artifact_path": None}
     if not closeout_commit:
         return {"ok": False, "code": "closeout_commit_not_a_commit", "artifact_path": None}
+    if not phase or not phase.strip():
+        # Defense-in-depth: an empty phase token would degenerate the naming contract below.
+        return {"ok": False, "code": "closeout_artifact_phase_mismatch", "artifact_path": None}
     repo_path = repo.resolve()
     raw_path = Path(value)
     lexical = raw_path if raw_path.is_absolute() else (repo_path / raw_path)
@@ -2666,21 +2687,23 @@ def _validate_tracked_closeout_artifact(
     ls = _git_capture(repo_path, "ls-tree", "-z", resolved, "--", f":(literal){rel_path}")
     if ls.returncode != 0:
         return {"ok": False, "code": "closeout_artifact_not_committed", "artifact_path": str(artifact_path)}
-    mode = None
+    mode = obj_type = obj_id = None
     for record in ls.stdout.split("\0"):
         if not record:
             continue
         meta, _, entry_path = record.partition("\t")
         fields = meta.split()
-        if entry_path == rel_path and fields:
-            mode = fields[0]
+        if entry_path == rel_path and len(fields) >= 3:
+            mode, obj_type, obj_id = fields[0], fields[1], fields[2]
             break
-    if mode is None:
+    if obj_id is None:
         return {"ok": False, "code": "closeout_artifact_not_committed", "artifact_path": str(artifact_path)}
-    if mode not in {"100644", "100755"}:
+    # Prove it is a regular-file BLOB — check git's reported object type AND the file mode, so a
+    # crafted tree entry with a blob mode pointing at a non-blob object is rejected.
+    if obj_type != "blob" or mode not in {"100644", "100755"}:
         return {"ok": False, "code": "closeout_artifact_not_a_file", "artifact_path": str(artifact_path)}
-    # Non-empty, checked by BYTE SIZE — FAIL-CLOSED on any error (non-zero rc / non-numeric / 0).
-    size = _git_capture(repo_path, "cat-file", "-s", f"{resolved}:{rel_path}")
+    # Non-empty, checked by BYTE SIZE of the exact resolved OID — FAIL-CLOSED on any error.
+    size = _git_capture(repo_path, "cat-file", "-s", obj_id)
     size_text = size.stdout.strip()
     if size.returncode != 0 or not size_text.isdigit() or int(size_text) == 0:
         return {"ok": False, "code": "empty_closeout_artifact", "artifact_path": str(artifact_path)}

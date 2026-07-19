@@ -148,6 +148,13 @@ class ValidateTrackedCloseoutArtifactTest(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["code"], "closeout_artifact_phase_mismatch")
 
+    def test_empty_phase_token_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo, _roadmap, rel, commit = _fixture(Path(td))
+            result = _validate_tracked_closeout_artifact(repo, rel, commit, "   ")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "closeout_artifact_phase_mismatch")
+
     def test_repo_root_dot_is_rejected(self):
         # Fable: `--closeout-artifact .` must not be adopted as a (root-tree) blob.
         with tempfile.TemporaryDirectory() as td:
