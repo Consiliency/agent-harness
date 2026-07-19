@@ -189,6 +189,20 @@ class VersionSatisfiesSimpleFallbackTest(unittest.TestCase):
         self.assertTrue(_version_satisfies_simple("3.10.2", [">=3.9,<3.11"]))
         self.assertFalse(_version_satisfies_simple("3.11.0", [">=3.9,<3.11"]))
 
+    def test_wildcard_equality_prefix_match(self):
+        # codex/Fable: ==X.Y.* / !=X.Y.* must prefix-match, not degrade to ==(X,Y,0).
+        self.assertTrue(_version_satisfies_simple("3.11.9", ["==3.11.*"]))
+        self.assertFalse(_version_satisfies_simple("3.12.0", ["==3.11.*"]))
+        self.assertFalse(_version_satisfies_simple("3.11.4", ["!=3.11.*"]))  # was fail-open
+        self.assertTrue(_version_satisfies_simple("3.12.0", ["!=3.11.*"]))
+
+    def test_unsupported_operator_fails_closed(self):
+        # codex: ~= / === / epoch etc. this fallback can't model must fail CLOSED, not skip.
+        self.assertFalse(_version_satisfies_simple("3.10.9", ["~=3.11"]))  # was fail-open
+        self.assertFalse(_version_satisfies_simple("3.11.5", ["~=3.11"]))
+        self.assertFalse(_version_satisfies_simple("3.11.5", ["===3.11.5"]))
+        self.assertFalse(_version_satisfies_simple("garbage", [">=3.9"]))  # unparseable → closed
+
 
 class VersionedInterpreterEndToEndTest(unittest.TestCase):
     def test_versioned_interpreter_fails_closed_in_commands_and_suite(self):

@@ -123,21 +123,32 @@ def _tuple3(version: str) -> tuple[int, int, int]:
 
 
 def _version_satisfies_simple(version: str, specs: list[str]) -> bool:
-    """Fallback when ``packaging`` is unavailable: compare (major, minor, MICRO) tuples
-    against comma-separated ``>=``/``>``/``<=``/``<``/``==``/``!=`` constraints. Uses the full
-    three-component version so a patch-level bound (e.g. ``>=3.11.5``) is not fail-open. A ``.*``
-    wildcard is not modeled here (the ``packaging`` primary path handles it) and degrades
-    fail-closed."""
-    try:
-        target = _tuple3(version)
-    except ValueError:
-        return False
+    """Fallback when ``packaging`` (a hard dependency) is unavailable: compare full
+    ``(major, minor, micro)`` tuples against comma-separated constraints. Uses the full
+    three-component version so a patch-level bound (``>=3.11.5``) is not fail-open. ``==X.Y.*`` /
+    ``!=X.Y.*`` wildcards are handled by prefix match. Any clause form this fallback does NOT model
+    (``~=``, ``===``, epochs, pre/post/dev releases) — and an unparseable version — FAILS CLOSED
+    (returns unsatisfied) rather than silently accepting an interpreter it cannot verify."""
+    if not re.search(r"\d", version):
+        return False  # unparseable version → fail closed
+    target = _tuple3(version)
     for spec in specs:
         for clause in spec.split(","):
             clause = clause.strip()
-            match = re.match(r"(>=|<=|==|!=|>|<)?\s*(\d+(?:\.\d+){0,2})", clause)
-            if not match:
+            if not clause:
                 continue
+            wild = re.fullmatch(r"(==|!=)\s*(\d+(?:\.\d+)*)\.\*", clause)
+            if wild:
+                prefix = tuple(int(p) for p in wild.group(2).split("."))
+                matches = target[: len(prefix)] == prefix
+                if wild.group(1) == "==" and not matches:
+                    return False
+                if wild.group(1) == "!=" and matches:
+                    return False
+                continue
+            match = re.fullmatch(r"(>=|<=|==|!=|>|<)?\s*(\d+(?:\.\d+){0,2})", clause)
+            if not match:
+                return False  # unsupported operator/form (~=, ===, epoch, …) → fail closed
             op = match.group(1) or ">="
             bound = _tuple3(match.group(2))
             if op == ">=" and not target >= bound:
