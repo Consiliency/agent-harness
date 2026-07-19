@@ -3654,8 +3654,13 @@ def run_loop(
                         coverage = check_goal_coverage(repo, validation_plan, roadmap)
                     except Exception:
                         coverage = None
-                    if coverage is not None and coverage.applicable and coverage.has_gaps():
+                    # Record the re-check result (clean or not) as closeout evidence.
+                    if coverage is not None and not coverage.not_applicable():
                         child_automation["goal_coverage"] = coverage.to_json()
+                    # Gate on a gap OR a setup error (an un-auditable plan must not dodge
+                    # the closeout gate — CR codex/Fable). not_applicable (legacy, no IDs)
+                    # is the only pass-through.
+                    if coverage is not None and not coverage.not_applicable() and not coverage.is_clean():
                         enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
                         print(
                             "phase-loop: goal-coverage closeout re-check "
@@ -6054,7 +6059,11 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
                 "access_attempts": (),
             }
         return None
-    if not result.applicable or result.is_clean():
+    # A legacy phase with no EC-IDs (and no setup error) is not gated. But a SETUP
+    # ERROR (stale roadmap_sha256, unresolvable phase, un-auditable plan) is also
+    # applicable=False — it must NOT silently pass the gate (CR codex/Fable): an
+    # un-auditable plan under enforcement fails closed, matching the CLI's exit-2.
+    if result.not_applicable() or result.is_clean():
         return None
     gate = result.has_gaps() or result.has_setup_errors()
     print(

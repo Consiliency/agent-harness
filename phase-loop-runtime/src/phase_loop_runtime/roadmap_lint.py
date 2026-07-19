@@ -81,9 +81,8 @@ REQUIRED_TOP_HEADINGS = [
 
 IF_GATE_RE = re.compile(r"\bIF-0-([A-Za-z0-9]+)-(\d+)\b")
 # agent-harness#211: goal IDs on exit-criteria, mirroring the IF-gate scheme.
-# `EC_ID_LEADING_RE` matches only an item-LEADING id (a reference/declaration counts
+# `EC_ID_LEADING_RE` matches only an item-LEADING id (a declaration/reference counts
 # only at the start of a checkbox item, never a prose mention elsewhere).
-EC_ID_RE = re.compile(r"\bEC-([A-Za-z0-9]+)-(\d+)\b")
 EC_ID_LEADING_RE = re.compile(r"^EC-([A-Za-z0-9]+)-(\d+)\b")
 PREAMBLE_MARKER_RE = re.compile(r"preamble\s*/\s*interface-only|interface-freeze-only|preamble phase", re.IGNORECASE)
 

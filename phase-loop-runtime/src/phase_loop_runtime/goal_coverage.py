@@ -100,6 +100,9 @@ _ACCEPTANCE_SECTION_RE = re.compile(
     r"^##\s+Acceptance\s+Criteria\s*$\n(?P<body>.*?)(?=^##\s+\S|\Z)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
+# Checkbox item prefix — tolerant of a missing trailing space and an upper/lower `x`
+# (CR Fable: `- [ ]EC-P1-1` and `- [X]` must not be mis-stripped/ignored).
+_CHECKBOX_PREFIX_RE = re.compile(r"^- \[[ xX]\]\s*")
 
 
 def _leading_ec_ids(item_text: str) -> list[str]:
@@ -130,8 +133,9 @@ def extract_plan_goal_refs(plan: Path) -> set[str]:
     refs: set[str] = set()
     for line in match.group("body").splitlines():
         stripped = line.strip()
-        if stripped.startswith("- [ ]") or stripped.startswith("- [x]"):
-            refs.update(_leading_ec_ids(stripped[6:].strip()))
+        prefix = _CHECKBOX_PREFIX_RE.match(stripped)
+        if prefix:
+            refs.update(_leading_ec_ids(stripped[prefix.end():]))
     return refs
 
 

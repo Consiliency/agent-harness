@@ -105,6 +105,20 @@ class GoalCoverageTest(unittest.TestCase):
         r = self._cov(["EC-P1-1 — a"], ["EC-P1-1 — t"], alias="P1", plan_alias="NOPE")
         self.assertTrue(r.has_setup_errors())
 
+    def test_checkbox_prefix_tolerant_of_missing_space_and_uppercase(self):
+        # CR Fable: `- [ ]EC-P1-1` (no space) and `- [X]` must still parse the ref.
+        with tempfile.TemporaryDirectory() as t:
+            repo, plan = _build(Path(t), ["EC-P1-1 — a", "EC-P1-2 — b"], ["placeholder"])
+            plan.write_text(
+                plan.read_text().replace(
+                    "- [ ] placeholder",
+                    "- [ ]EC-P1-1 — proven by t1\n- [X] EC-P1-2 — proven by t2",
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(extract_plan_goal_refs(plan), {"EC-P1-1", "EC-P1-2"})
+            self.assertTrue(check_goal_coverage(repo, plan).is_clean())
+
     def test_extract_refs_only_from_acceptance_section(self):
         with tempfile.TemporaryDirectory() as t:
             repo, plan = _build(Path(t), ["EC-P1-1 — a"], ["EC-P1-1 — ok"])
@@ -151,6 +165,29 @@ class GoalCoveragePreflightTest(unittest.TestCase):
         self.assertIsNotNone(blocker)
         self.assertFalse(blocker["human_required"])
         self.assertEqual(blocker["blocker_class"], "contract_bug")
+
+    def test_setup_error_fails_closed_under_enforce(self):
+        # CR codex/Fable: an un-auditable plan (stale roadmap_sha256) must NOT silently
+        # pass the preflight gate under enforcement — it fails closed.
+        from phase_loop_runtime.runner import _execute_goal_coverage_preflight
+
+        old = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE")
+        try:
+            with tempfile.TemporaryDirectory() as t:
+                repo, plan = _build(Path(t), ["EC-P1-1 — a"], ["EC-P1-1 — proven by t"], break_sha=True)
+                roadmap = repo / "specs" / "phase-plans-v1.md"
+                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = "block"
+                blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
+                self.assertIsNotNone(blocker)  # setup error -> blocked under enforce
+                self.assertFalse(blocker["human_required"])
+                # warn-default: the same setup error does NOT block
+                os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+                self.assertIsNone(_execute_goal_coverage_preflight(repo, roadmap, plan))
+        finally:
+            if old is None:
+                os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+            else:
+                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
 
 
 if __name__ == "__main__":
