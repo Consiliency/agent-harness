@@ -171,33 +171,74 @@ def _lowest_satisfying_interpreter(specs: list[str]) -> Path | None:
     return None
 
 
-def _build_interpreter_shim(run_path: Path, interpreter: Path) -> Path:
+def _build_interpreter_shim(
+    run_path: Path,
+    interpreter: "Path | None",
+    shadow_names: "tuple[str, ...] | list[str]" = (),
+    specs: "list[str] | None" = None,
+) -> Path:
+    """Build the ``_interp_shim`` PATH dir (ah#219a / ah#221).
+
+    When ``interpreter`` is given, ``python``/``python3`` resolve to it. Each name in
+    ``shadow_names`` (e.g. ``python3.10``) is shadowed by a fail-closed wrapper so a suite or
+    ``commands`` entry that explicitly names a ``requires-python``-non-satisfying versioned
+    interpreter errors instead of running below the floor. Interception is at executable
+    resolution, so a string literal / env path mentioning the name is unaffected. An *absolute*
+    interpreter path bypasses PATH entirely and is the author's explicit declared choice.
+    """
     shim_dir = run_path / "_interp_shim"
     shim_dir.mkdir(parents=True, exist_ok=True)
-    target = interpreter.resolve()
-    for name in ("python", "python3"):
-        link = shim_dir / name
-        try:
-            if link.exists() or link.is_symlink():
-                link.unlink()
-            os.symlink(target, link)
-        except OSError:
-            # Fall back to a tiny exec wrapper if symlinks are unavailable.
-            link.write_text(f'#!/bin/sh\nexec "{target}" "$@"\n', encoding="utf-8")
-            link.chmod(0o755)
+    if interpreter is not None:
+        target = interpreter.resolve()
+        for name in ("python", "python3"):
+            link = shim_dir / name
+            try:
+                if link.exists() or link.is_symlink():
+                    link.unlink()
+                os.symlink(target, link)
+            except OSError:
+                # Fall back to a tiny exec wrapper if symlinks are unavailable.
+                link.write_text(f'#!/bin/sh\nexec "{target}" "$@"\n', encoding="utf-8")
+                link.chmod(0o755)
+    reason = f"requires-python ({', '.join(specs)})" if specs else "the target's requires-python"
+    for name in shadow_names:
+        wrapper = shim_dir / name
+        if wrapper.exists() or wrapper.is_symlink():
+            wrapper.unlink()
+        message = (
+            f"{name} does not satisfy {reason}; use bare python/python3 "
+            "(shimmed to a satisfying interpreter) or an explicit absolute interpreter path."
+        )
+        wrapper.write_text(f'#!/bin/sh\necho "phase-loop: {message}" >&2\nexit 1\n', encoding="utf-8")
+        wrapper.chmod(0o755)
     return shim_dir
 
 
 def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | None) -> SuiteInterpreter:
     """Resolve an interpreter satisfying the target repo's ``requires-python``.
 
-    Mechanism C (agent-harness#219(a)): an explicit ``automation.python`` pin
+    Mechanism C (agent-harness#219(a) + #221): an explicit ``automation.python`` pin
     wins when present; otherwise auto-resolve from ``requires-python`` and shim
-    ``python``/``python3`` onto the lowest satisfying host ``pythonX.Y``. Returns
-    a ``shim_dir`` to prepend to the suite ``PATH`` (or ``None`` when the host
-    default already satisfies), or a named ``blocker`` when none exists.
+    ``python``/``python3`` onto the lowest satisfying host ``pythonX.Y``. When a
+    ``requires-python`` constraint exists, the shim ALSO shadows every NON-satisfying
+    versioned ``python3.X`` name (below OR above a bounded specifier) with a fail-closed
+    wrapper, so a suite/``commands`` entry that explicitly names an unsupported versioned
+    interpreter errors instead of running green below/above the floor. This is an
+    executable-resolution guard (no command-string parsing), so a versioned name inside a
+    string literal or env path is unaffected. An *absolute*-path interpreter bypasses PATH
+    and is the author's explicit declared choice (out of scope by design). Returns a
+    ``shim_dir`` to prepend to the suite ``PATH``, or a named ``blocker`` when no satisfying
+    interpreter exists.
     """
     specs = _read_requires_python_specs(repo)
+    # Non-satisfying versioned names to fail-close (only when a constraint exists). Uses the PEP
+    # 440 satisfaction predicate, so it self-excludes the satisfying interpreter's own version and
+    # covers an upper bound (e.g. `<3.13` shadows 3.13/3.14 too).
+    shadow_names = tuple(
+        f"python3.{minor}"
+        for minor in _CANDIDATE_MINORS
+        if not _version_satisfies(f"3.{minor}", specs)
+    ) if specs else ()
 
     if python_pin:
         # The pin is the operator's explicit interpreter choice — but it must still
@@ -216,29 +257,35 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
                     f"does not satisfy requires-python ({', '.join(specs)})",
                     None,
                 )
-        return SuiteInterpreter(_build_interpreter_shim(run_path, resolved), None, str(resolved.resolve()))
+        return SuiteInterpreter(
+            _build_interpreter_shim(run_path, resolved, shadow_names, specs), None, str(resolved.resolve())
+        )
 
     if not specs:
         return SuiteInterpreter(None, None, None)  # no constraint → host default
 
-    # The suite may invoke bare ``python`` OR ``python3``. Skip the shim only when
-    # EVERY such interpreter present on PATH already satisfies requires-python; if
-    # ANY present one is below the floor — e.g. a bare ``python`` older than a
-    # satisfying ``python3`` (CR codex#3) — shim BOTH names onto a satisfying
-    # interpreter so a bare ``python`` in the suite can't silently be the old one.
+    # The suite may invoke bare ``python`` OR ``python3``. Only redirect the bare names when a
+    # present one is below the floor — but ALWAYS build a shim so the versioned-name shadows are
+    # on PATH (a satisfying bare ``python`` does not protect against an explicit ``python3.10``).
     present = [p for p in (_interpreter_path("python3"), _interpreter_path("python")) if p is not None]
     all_present_ok = bool(present) and all(
         (version := _interpreter_minor_version(candidate)) and _version_satisfies(version, specs)
         for candidate in present
     )
     if all_present_ok:
-        return SuiteInterpreter(None, None, str(present[0].resolve()))
+        # Bare names already satisfy: do not redirect them, but still shadow non-satisfying
+        # versioned names so a `python3.10` in the suite/commands fails closed.
+        return SuiteInterpreter(
+            _build_interpreter_shim(run_path, None, shadow_names, specs), None, str(present[0].resolve())
+        )
 
     candidate = _lowest_satisfying_interpreter(specs)
     if candidate is None:
         joined = ", ".join(specs)
         return SuiteInterpreter(None, f"no host interpreter satisfies requires-python ({joined})", None)
-    return SuiteInterpreter(_build_interpreter_shim(run_path, candidate), None, str(candidate.resolve()))
+    return SuiteInterpreter(
+        _build_interpreter_shim(run_path, candidate, shadow_names, specs), None, str(candidate.resolve())
+    )
 
 
 @dataclass(frozen=True)

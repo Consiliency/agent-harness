@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Versioned/absolute suite-interpreter guard, redone robustly (#221)
+
+`#219a`'s interpreter shim prepended a PATH dir whose bare `python`/`python3` resolve to a
+`requires-python`-satisfying interpreter, but a suite (or a plan-level `commands` verification
+bullet) that explicitly named a **versioned** interpreter — `python3.10` — bypassed the bare-name
+shim and could run GREEN under an unsupported interpreter. The regex string-scan detector #220
+shipped for this was removed as unsound (fail-open on shell metacharacters + wired only to
+`suite_command`; false-block on `pythonX.Y` string literals / env paths). It is now redone at
+**executable-resolution** level: whenever a `requires-python` constraint exists, the shim also
+shadows every **non-satisfying** `python3.X` name (below OR above a bounded specifier, via the
+PEP 440 predicate) with a **fail-closed wrapper**, on every path where the shim is built (pin,
+host-default-satisfies, and auto-resolve). Because it intercepts the executable name (not a command
+string), `python3.10&&pytest` is caught while `python3.12 -c 'print("python3.10")'` and
+`PYTHONPATH=/opt/python3.10 pytest` are no longer false-blocked, and both the `suite_command` and
+`commands` paths are covered. An **absolute-path** interpreter (`/usr/bin/python3.10`) bypasses PATH
+and remains the author's explicit declared-interpreter escape hatch.
+
 ### Reconcile can recover a completed phase from a tracked closeout artifact (#90)
 
 `phase-loop reconcile --verification-log <closeout.md>` rejected a tracked, committed closeout
