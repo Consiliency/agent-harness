@@ -650,8 +650,13 @@ def load_verification_artifact(path: Path) -> VerificationResult:
             "log_sha256",
         },
     )
-    if data["schema_version"] not in _SUPPORTED_SCHEMA_VERSIONS:
-        raise ValueError(f"unsupported verification evidence schema_version: {data['schema_version']}")
+    # CR codex#4 (round 4): validate the TYPE before the frozenset membership test — a
+    # tampered non-int (e.g. ``[]`` / ``{}``) is unhashable and ``x not in frozenset``
+    # would raise an UNCAUGHT TypeError (the validator catches only OSError/JSONDecodeError/
+    # ValueError), crashing closeout instead of returning a ``malformed_artifact`` verdict.
+    schema_version = _require_int(data["schema_version"], "schema_version")
+    if schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(f"unsupported verification evidence schema_version: {schema_version}")
     commands = [_command_from_payload(item) for item in _require_list(data["commands"], "commands")]
     env_refresh = None
     if data["env_refresh"] is not None:
@@ -659,9 +664,9 @@ def load_verification_artifact(path: Path) -> VerificationResult:
     suite = None
     if data["suite"] is not None:
         suite = _suite_from_payload(data["suite"])
-    _validate_v2_failure_kinds(int(data["schema_version"]), commands, suite, env_refresh)
+    _validate_v2_failure_kinds(schema_version, commands, suite, env_refresh)
     return VerificationResult(
-        schema_version=data["schema_version"],
+        schema_version=schema_version,
         run_id=_require_str(data["run_id"], "run_id"),
         phase_alias=_require_str(data["phase_alias"], "phase_alias"),
         commands=commands,
@@ -700,6 +705,13 @@ def _validate_v2_failure_kinds(
         stages.append(("env_refresh", env_refresh))
     for label, stage in stages:
         if stage.exit_code == 0:
+            # CR codex#4 (round 4): a PASSING v2 stage must carry NO failure origin. This
+            # closes a single-field pass/fail bypass — flipping a failed stage's exit_code
+            # 1->0 (log + failure_kind untouched) would otherwise read as green; the
+            # leftover non-null failure_kind now makes that single-field tamper fail closed
+            # (turning it green requires ALSO stripping failure_kind — a multi-field tamper).
+            if stage.failure_kind is not None:
+                raise ValueError(f"{label} passed (exit=0) but v2 evidence records failure_kind={stage.failure_kind}")
             continue
         if stage.failure_kind is None:
             raise ValueError(f"{label} failed (exit={stage.exit_code}) but v2 evidence omits failure_kind")

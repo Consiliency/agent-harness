@@ -565,6 +565,37 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             self.assertLessEqual(len(v.diagnostics[0]["raw_tail"].encode("utf-8")), DIAGNOSTIC_TAIL_BYTES)
             self.assertTrue(v.diagnostics[0]["truncated"])
 
+    def test_single_field_exit_code_flip_to_zero_is_rejected(self):
+        # CR codex#4 round 4: flipping a failed v2 stage's exit_code 1->0 (log +
+        # failure_kind untouched) must not read as green — the leftover failure_kind
+        # makes the single-field tamper fail closed.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "raise SystemExit(1)"]], None, None, 5)
+            artifact = run_dir / "verification.json"
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["commands"][0]["exit_code"] = 0  # lie: turn the red stage green
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)  # NOT a green pass
+            self.assertEqual(v.code, "malformed_artifact")
+
+    def test_malformed_schema_version_type_fails_closed_not_crash(self):
+        # CR codex#4 round 4: a non-int schema_version (unhashable) must yield a
+        # malformed_artifact verdict, not an uncaught TypeError.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(repo, run_dir, [[sys.executable, "-c", "print('ok')"]], None, None, 5)
+            artifact = run_dir / "verification.json"
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["schema_version"] = []  # unhashable -> would crash `x not in frozenset`
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)  # must not raise
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "malformed_artifact")
+
     def test_interpreter_blocker_surfaces_reason_not_scrubbed(self):
         # (j) a requires-python/pin mismatch synthesizes 127 evidence OUTSIDE
         # _run_process; its diagnostic must surface the "unavailable" reason.
