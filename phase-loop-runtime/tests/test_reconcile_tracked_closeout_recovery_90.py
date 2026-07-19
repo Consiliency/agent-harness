@@ -125,6 +125,45 @@ class ValidateTrackedCloseoutArtifactTest(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["code"], "closeout_artifact_phase_mismatch")
 
+    def test_file_mentioning_token_but_wrong_name_is_rejected(self):
+        # codex: a file whose CONTENT mentions the phase but whose basename does not follow the
+        # <PHASE>-closeout.md naming contract (e.g. runner.py / CHANGELOG.md) must be rejected.
+        with tempfile.TemporaryDirectory() as td:
+            repo, _roadmap, _rel, _commit = _fixture(Path(td))
+            for name in ("runner_module.py", "NOTES.md"):
+                f = repo / name
+                f.write_text("# mentions RUNNER phase but is not a RUNNER closeout\n", encoding="utf-8")
+                commit_fixture_paths(repo, f"add {name}", f)
+                result = _validate_tracked_closeout_artifact(repo, name, _git(repo, "rev-parse", "HEAD"), "RUNNER")
+                self.assertFalse(result["ok"], name)
+                self.assertEqual(result["code"], "closeout_artifact_phase_mismatch", name)
+
+    def test_phase_named_non_markdown_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo, _roadmap, _rel, _commit = _fixture(Path(td))
+            f = repo / "RUNNER-closeout.txt"  # right stem, wrong extension
+            f.write_text("RUNNER done\n", encoding="utf-8")
+            commit_fixture_paths(repo, "add txt", f)
+            result = _validate_tracked_closeout_artifact(repo, "RUNNER-closeout.txt", _git(repo, "rev-parse", "HEAD"), "RUNNER")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "closeout_artifact_phase_mismatch")
+
+    def test_repo_root_dot_is_rejected(self):
+        # Fable: `--closeout-artifact .` must not be adopted as a (root-tree) blob.
+        with tempfile.TemporaryDirectory() as td:
+            repo, _roadmap, _rel, commit = _fixture(Path(td))
+            result = _validate_tracked_closeout_artifact(repo, ".", commit, "RUNNER")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "closeout_artifact_not_a_file")
+
+    def test_glob_pathspec_is_rejected(self):
+        # Fable: a glob pathspec must not glob-match a different object than the name given.
+        with tempfile.TemporaryDirectory() as td:
+            repo, _roadmap, _rel, commit = _fixture(Path(td))
+            result = _validate_tracked_closeout_artifact(repo, "planning/phase-artifacts/RUNNER*", commit, "RUNNER")
+            self.assertFalse(result["ok"])
+            self.assertIn(result["code"], {"closeout_artifact_not_committed", "closeout_artifact_phase_mismatch"})
+
     def test_binary_without_phase_token_is_rejected_without_crash(self):
         # gemini: a binary blob must not crash the decode; here it lacks the phase token in name
         # and content, so it is cleanly rejected (content read uses errors="replace").

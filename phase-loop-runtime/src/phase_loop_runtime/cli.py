@@ -2621,9 +2621,11 @@ def _validate_tracked_closeout_artifact(
     - the path must resolve inside the repo (no traversal / outside-repo);
     - ``closeout_commit`` must be an ANCESTOR of HEAD (reject orphan/dangling commits — forging
       requires touching shared history);
-    - the object at ``closeout_commit:<relpath>`` must be a tracked, non-empty **blob** (a tree /
-      directory or absent path is rejected);
-    - the artifact must reference ``phase`` in its basename or content (reject an unrelated file).
+    - the entry at EXACTLY ``<relpath>`` in that commit must be a tracked, non-empty regular-file
+      **blob** (a tree / directory, symlink, gitlink, glob match, or absent path is rejected);
+    - the basename must follow the ``<PHASE>-closeout.md`` naming contract (a Markdown file whose
+      stem leads with the phase token), so an unrelated file that merely mentions the phase — e.g.
+      ``runner.py`` or ``CHANGELOG.md`` — is rejected without reading content.
     """
     if not value:
         return {"ok": False, "code": "missing_closeout_artifact", "artifact_path": None}
@@ -2641,9 +2643,12 @@ def _validate_tracked_closeout_artifact(
     # git rev-path is LEXICAL (not dereferenced), so a symlink entry is seen as a symlink
     # (mode 120000) by ls-tree below rather than silently followed to its target.
     rel = os.path.relpath(str(lexical), str(repo_path))
-    if rel.startswith(".."):
+    if rel == ".." or rel.startswith("../"):
         return {"ok": False, "code": "artifact_outside_repo", "artifact_path": str(artifact_path)}
     rel_path = Path(rel).as_posix()
+    if rel_path in {"", "."}:
+        # The repo root itself is a tree, not a closeout file.
+        return {"ok": False, "code": "closeout_artifact_not_a_file", "artifact_path": str(artifact_path)}
     # Resolve to a canonical COMMIT sha. `^{commit}` rejects the index (`:0`), tree-ish, and refs
     # that do not name a commit, so staged-but-uncommitted prose cannot drive completion.
     rev = _git_capture(repo_path, "rev-parse", "--verify", "--quiet", f"{closeout_commit}^{{commit}}")
@@ -2654,27 +2659,45 @@ def _validate_tracked_closeout_artifact(
     ancestor = _git_capture(repo_path, "merge-base", "--is-ancestor", resolved, "HEAD")
     if ancestor.returncode != 0:
         return {"ok": False, "code": "closeout_commit_not_in_history", "artifact_path": str(artifact_path)}
-    # Must be a regular-file blob at that commit — reject a tree (directory), symlink (120000),
-    # gitlink (160000), or absent path.
-    ls = _git_capture(repo_path, "ls-tree", resolved, "--", rel_path)
-    entry = ls.stdout.strip()
-    if ls.returncode != 0 or not entry:
+    # Must be a regular-file blob at EXACTLY rel_path. `:(literal)` disables pathspec globbing;
+    # `-z` gives unquoted NUL-terminated records "<mode> <type> <sha>\t<path>". Require an entry
+    # whose path equals rel_path, so a directory (`.`/tree), a glob match, or a quoted non-ASCII
+    # path cannot qualify as a different object than the one named.
+    ls = _git_capture(repo_path, "ls-tree", "-z", resolved, "--", f":(literal){rel_path}")
+    if ls.returncode != 0:
         return {"ok": False, "code": "closeout_artifact_not_committed", "artifact_path": str(artifact_path)}
-    mode = entry.split()[0]
+    mode = None
+    for record in ls.stdout.split("\0"):
+        if not record:
+            continue
+        meta, _, entry_path = record.partition("\t")
+        fields = meta.split()
+        if entry_path == rel_path and fields:
+            mode = fields[0]
+            break
+    if mode is None:
+        return {"ok": False, "code": "closeout_artifact_not_committed", "artifact_path": str(artifact_path)}
     if mode not in {"100644", "100755"}:
         return {"ok": False, "code": "closeout_artifact_not_a_file", "artifact_path": str(artifact_path)}
-    # Non-empty, checked by BYTE SIZE (no decode / no full-content buffering).
+    # Non-empty, checked by BYTE SIZE — FAIL-CLOSED on any error (non-zero rc / non-numeric / 0).
     size = _git_capture(repo_path, "cat-file", "-s", f"{resolved}:{rel_path}")
-    if size.returncode == 0 and size.stdout.strip() in {"0", ""}:
+    size_text = size.stdout.strip()
+    if size.returncode != 0 or not size_text.isdigit() or int(size_text) == 0:
         return {"ok": False, "code": "empty_closeout_artifact", "artifact_path": str(artifact_path)}
-    # Phase binding: the artifact must reference this phase, so an arbitrary tracked file (README,
-    # an unrelated phase's closeout) is rejected. Prefer the basename (the `<PHASE>-closeout.md`
-    # convention) and only read content as a fallback (errors="replace" avoids a binary crash).
-    token = phase.upper()
-    if token not in artifact_path.name.upper():
-        content = _git_capture(repo_path, "cat-file", "-p", f"{resolved}:{rel_path}")
-        if token not in content.stdout.upper():
-            return {"ok": False, "code": "closeout_artifact_phase_mismatch", "artifact_path": str(artifact_path)}
+    # Phase binding via a NAMING CONTRACT (mirrors the `<PHASE>-closeout.md` convention): the
+    # basename must be a Markdown file whose stem is the phase token as a leading word. This is
+    # stricter than a substring/content match — it rejects `runner.py` and `CHANGELOG.md` (which
+    # merely mention the token) — and needs NO content read, so there is no decode or OOM risk.
+    tok = phase.upper().lower()
+    lower_name = artifact_path.name.lower()
+    stem_matches = lower_name.endswith(".md") and (
+        lower_name == f"{tok}.md"
+        or lower_name.startswith(f"{tok}-")
+        or lower_name.startswith(f"{tok}_")
+        or lower_name.startswith(f"{tok}.")
+    )
+    if not stem_matches:
+        return {"ok": False, "code": "closeout_artifact_phase_mismatch", "artifact_path": str(artifact_path)}
     return {
         "ok": True,
         "code": "recovered_from_tracked_closeout",
