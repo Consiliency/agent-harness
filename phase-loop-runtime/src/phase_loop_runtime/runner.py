@@ -3005,6 +3005,70 @@ def run_loop(
                         pipeline_mode=effective_pipeline_mode,
                     )
                     return (_DispatchOutcome("break", None), None)
+                # agent-harness#211: goal-coverage preflight (warn-default; opt-in block via
+                # PHASE_LOOP_ACCEPTANCE_ENFORCE=block). Decidable check that the plan's
+                # acceptance items reference every EC-<ALIAS>-<N> goal ID of the phase.
+                goal_coverage_blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
+                if goal_coverage_blocker is not None:
+                    classifications[alias] = "blocked"
+                    terminal_summary = build_terminal_summary(
+                        terminal_status="blocked",
+                        terminal_blocker=goal_coverage_blocker,
+                        verification_status="blocked",
+                        next_action=str(goal_coverage_blocker["blocker_summary"]),
+                    )
+                    append_event(
+                        repo,
+                        LoopEvent(
+                            timestamp=utc_now(),
+                            repo=str(repo),
+                            roadmap=str(roadmap),
+                            phase=alias,
+                            action=action,
+                            status="blocked",
+                            model=selection.model,
+                            reasoning_effort=selection.effort,
+                            source=selection.source,
+                            override_reason=selection.override_reason,
+                            blocker=goal_coverage_blocker,
+                            metadata={
+                                "goal_coverage_preflight": {"status": "blocked", "enforcement": "block"},
+                                "terminal_summary": terminal_summary,
+                            },
+                            selected_executor=dispatch_decision.selected_executor,
+                            **event_provenance(roadmap, alias),
+                        ),
+                    )
+                    snapshot = StateSnapshot(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phases=classifications,
+                        current_phase=alias,
+                        last_action=action,
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        human_required=False,
+                        blocker_class=str(goal_coverage_blocker["blocker_class"]),
+                        blocker_summary=str(goal_coverage_blocker["blocker_summary"]),
+                        required_human_inputs=(),
+                        terminal_summary={"phase": alias, **terminal_summary},
+                        **snapshot_provenance(roadmap),
+                    )
+                    _write_state_and_handoff(
+                        repo,
+                        roadmap,
+                        snapshot,
+                        action=action,
+                        results=results,
+                        output_path=output_path,
+                        override_phase=selected,
+                        source_bundle_path=effective_source_bundle_path,
+                        pipeline_mode=effective_pipeline_mode,
+                    )
+                    return (_DispatchOutcome("break", None), None)
             prompt_bundle = build_prompt(
                 launch_action,
                 roadmap=roadmap,
@@ -3577,6 +3641,27 @@ def run_loop(
                             "required_human_inputs": (),
                             "access_attempts": (),
                         }
+                        automation_status = status_after_launch
+                # agent-harness#211: closeout re-check of goal coverage. Mirrors the
+                # produced-gates precedent (re-reads the live plan on disk) and closes the
+                # mutation window — a plan can lose an EC-ID reference DURING execution, after
+                # the plan-time preflight passed. Warn-default; blocks only under
+                # PHASE_LOOP_ACCEPTANCE_ENFORCE=block. Guarded so it can never break closeout.
+                if event_blocker is None and validation_plan is not None and child_automation:
+                    _cov_evidence, _cov_blocker = _goal_coverage_closeout_outcome(
+                        repo, roadmap, validation_plan,
+                        _phase_status_literal(automation_status) == "complete",
+                    )
+                    if _cov_evidence is not None:
+                        child_automation["goal_coverage"] = _cov_evidence
+                    if _cov_blocker is not None:
+                        status_after_launch = "blocked"
+                        set_phase_status(
+                            repo, roadmap, alias, classifications, status_after_launch,
+                            reason="goal_coverage_gap", trigger=launch_action,
+                            selection=selection, action=action,
+                        )
+                        event_blocker = _cov_blocker
                         automation_status = status_after_launch
                 if (
                     event_blocker is None
@@ -5928,6 +6013,102 @@ def _runner_verification_fails_closed(runner_verification: dict[str, object] | N
     return _verification_enforcement_mode() == "hard"
 
 
+def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> dict[str, object] | None:
+    """agent-harness#211: warn-default goal-coverage preflight.
+
+    Decidably checks that the plan's ``## Acceptance Criteria`` items reference every
+    ``EC-<ALIAS>-<N>`` goal ID declared by the anchored roadmap phase. A gap (a
+    forgotten goal or a dangling ref) is a non-blocking stderr advisory by default
+    (autonomy-first); it BLOCKS only under ``PHASE_LOOP_ACCEPTANCE_ENFORCE=block``
+    (``contract_bug``, never ``human_required``). A phase with no EC-IDs is
+    ``not_applicable`` (legacy, no gate). Guarded so it can never take down run_loop.
+    An audit crash fails CLOSED under enforcement, open otherwise."""
+    enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
+    try:
+        from .goal_coverage import check_goal_coverage
+
+        result = check_goal_coverage(repo, plan, roadmap)
+    except Exception as exc:
+        print(f"phase-loop: goal-coverage audit errored ({exc})", file=sys.stderr)
+        if enforce_block:
+            return {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": f"Goal-coverage audit failed under PHASE_LOOP_ACCEPTANCE_ENFORCE=block: {exc}",
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+        return None
+    # A legacy phase with no EC-IDs (and no setup error) is not gated. But a SETUP
+    # ERROR (stale roadmap_sha256, unresolvable phase, un-auditable plan) is also
+    # applicable=False — it must NOT silently pass the gate (CR codex/Fable): an
+    # un-auditable plan under enforcement fails closed, matching the CLI's exit-2.
+    if result.not_applicable() or result.is_clean():
+        return None
+    gate = result.has_gaps() or result.has_setup_errors()
+    print(
+        "phase-loop: goal-coverage preflight "
+        f"({'BLOCKED' if (enforce_block and gate) else 'advisory; non-blocking'}; "
+        f"set PHASE_LOOP_ACCEPTANCE_ENFORCE=block to gate) — {result.blocker_summary()}",
+        file=sys.stderr,
+    )
+    if enforce_block and gate:
+        return {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": f"Goal-coverage gate (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): {result.blocker_summary()}",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+    return None
+
+
+def _goal_coverage_closeout_outcome(
+    repo: Path, roadmap: Path, plan: Path, is_complete: bool
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """agent-harness#211: closeout re-check of goal coverage. Returns
+    ``(evidence_json_or_None, blocker_or_None)``. Mirrors the preflight semantics at
+    closeout (the mutation window): a gap OR a setup error warns by default and FAILS
+    CLOSED under ``PHASE_LOOP_ACCEPTANCE_ENFORCE=block`` for a ``complete`` phase; an
+    audit EXCEPTION likewise fails closed under enforcement (CR codex round 2 — the
+    inline try/except previously swallowed it to a silent pass). ``not_applicable``
+    (legacy, no IDs) is the only pass-through. Never ``human_required``."""
+    enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
+
+    def _blocker(summary: str) -> dict[str, object]:
+        return {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": summary,
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+
+    try:
+        from .goal_coverage import check_goal_coverage
+
+        coverage = check_goal_coverage(repo, plan, roadmap)
+    except Exception as exc:
+        print(f"phase-loop: goal-coverage closeout re-check errored ({exc})", file=sys.stderr)
+        if enforce_block and is_complete:
+            return None, _blocker(f"Goal-coverage closeout audit failed under PHASE_LOOP_ACCEPTANCE_ENFORCE=block: {exc}")
+        return None, None
+    if coverage.not_applicable():
+        return None, None
+    evidence = coverage.to_json()
+    if coverage.is_clean():
+        return evidence, None  # record a passing re-check as evidence
+    print(
+        "phase-loop: goal-coverage closeout re-check "
+        f"({'BLOCKED' if (enforce_block and is_complete) else 'advisory; non-blocking'}; "
+        f"set PHASE_LOOP_ACCEPTANCE_ENFORCE=block to gate) — {coverage.blocker_summary()}",
+        file=sys.stderr,
+    )
+    if enforce_block and is_complete:
+        return evidence, _blocker(f"Goal-coverage gap at closeout (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): {coverage.blocker_summary()}")
+    return evidence, None
+
+
 def _execute_verification_preflight_blocker(repo: Path, roadmap: Path, plan: Path) -> dict[str, object] | None:
     if _verification_enforcement_mode() != "hard":
         return None
@@ -8035,6 +8216,87 @@ def _recorded_closeout_unowned_remainder(repo: Path, phase: str) -> frozenset[st
 
 
 def _perform_phase_closeout(
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    snapshot: StateSnapshot,
+    selection,
+    *,
+    action: str,
+    closeout_mode: str,
+    allow_unowned_reason: str | None = None,
+    run_mode: str = "autonomous",
+) -> tuple[str, LoopEvent]:
+    """agent-harness#211: wrap the canonical closeout with the goal-coverage gate as the
+    FINAL word. The gate must run AFTER the inner closeout decides the terminal status —
+    injecting it early is overwritten by the downstream commit/no-op paths (CR codex round
+    6). Every completion path (standard execute, delegated child, resume) funnels through
+    here, so this covers the delegated/resume completions the post-launch site misses.
+    Warn-default = behavioral no-op unless PHASE_LOOP_ACCEPTANCE_ENFORCE=block."""
+    status, event = _perform_phase_closeout_impl(
+        repo, roadmap, phase, snapshot, selection,
+        action=action, closeout_mode=closeout_mode,
+        allow_unowned_reason=allow_unowned_reason, run_mode=run_mode,
+    )
+    if status != "complete":
+        return status, event
+    evidence, blocker = _goal_coverage_closeout_gate(repo, roadmap, phase)
+    if evidence is None and blocker is None:
+        return status, event
+    new_metadata = {**(event.metadata or {})}
+    if evidence is not None:
+        new_metadata["goal_coverage"] = evidence
+    if blocker is not None:
+        return "blocked", replace(
+            event, status="blocked", blocker=blocker, metadata=new_metadata
+        )
+    return status, replace(event, metadata=new_metadata)
+
+
+def _goal_coverage_closeout_gate(
+    repo: Path, roadmap: Path, phase: str
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """Resolve the phase's plan and run the goal-coverage re-check for a COMPLETE closeout.
+    Returns (evidence, blocker). If the plan cannot be resolved (missing/manifest conflict)
+    AND the phase opted into goal IDs, the closeout is un-auditable -> fails CLOSED under
+    enforcement (CR codex round 6, #2); a non-opted-in phase with no resolvable plan skips."""
+    from .goal_coverage import check_goal_coverage, phase_declares_goal_ids
+
+    enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
+    try:
+        plan = find_plan_artifact(repo, phase, roadmap=roadmap)
+    except Exception:
+        plan = None
+    if plan is None:
+        # Under warn-default nothing blocks. Under enforce, fail CLOSED on any UNCERTAINTY
+        # (CR codex/gemini round 7): a phase that opts into goal IDs — or whose opt-in
+        # status cannot be determined (roadmap unreadable/malformed) — is un-auditable and
+        # blocks; only a POSITIVELY-confirmed legacy phase skips.
+        if not enforce_block:
+            return None, None
+        try:
+            opted_in = phase_declares_goal_ids(roadmap, phase)
+        except Exception:
+            opted_in = True  # can't determine -> treat as un-auditable -> fail closed
+        if not opted_in:
+            return None, None
+        print(
+            "phase-loop: goal-coverage closeout gate — plan artifact unresolvable / opt-in "
+            "undeterminable for an opted-in phase; failing closed under "
+            "PHASE_LOOP_ACCEPTANCE_ENFORCE=block",
+            file=sys.stderr,
+        )
+        return None, {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": f"Goal-coverage un-auditable at closeout (plan artifact not resolvable for opted-in phase {phase}) under PHASE_LOOP_ACCEPTANCE_ENFORCE=block",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+    return _goal_coverage_closeout_outcome(repo, roadmap, plan, True)
+
+
+def _perform_phase_closeout_impl(
     repo: Path,
     roadmap: Path,
     phase: str,
