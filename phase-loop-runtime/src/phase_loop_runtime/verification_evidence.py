@@ -1267,7 +1267,8 @@ def _phase_alias(repo: Path, provided: str | None = None) -> str:
     # from state.json. Threading ``provided`` stops verification.json from mis-attributing
     # the phase after a mid-run roadmap amendment changes ``current_phase`` (the env
     # escape-hatch still wins; the state.json read remains the last-resort fallback for
-    # callers with no live run alias, e.g. hotfix / train re-verify).
+    # callers with no live run alias, e.g. a hotfix (the train re-verify path now threads
+    # its resolved alias explicitly — agent-harness#236)).
     for key in ("PHASE_LOOP_PHASE_ALIAS", "PHASE_ALIAS"):
         value = os.environ.get(key)
         if value:

@@ -906,6 +906,101 @@ class TestInvariant6LiveReverifyRunsVerification:
 
 
 # ---------------------------------------------------------------------------
+# agent-harness#236: phase alias threaded into the train re-verify
+# run_verification call
+
+class TestTrainReverifyPhaseAlias236:
+    """_live_reverify must thread its resolved ``phase`` into run_verification's
+    ``phase_alias`` parameter, so verification.json records the actual phase
+    that was verified instead of falling back to 'unknown'.
+
+    Follow-up from agent-harness#85(b) (agent-harness#235), which threaded the
+    live run alias on the execute path (runner.py). agent-harness#236 is the
+    same fix on the train re-verify path: ``_live_reverify`` resolves
+    ``phase = snapshot.current_phase`` and uses it for ``find_plan_artifact`` --
+    but pre-fix, that resolved phase was never passed on to
+    ``run_verification``, so verification.json's ``_phase_alias()`` fell back
+    to its LAST-RESORT re-read of ``state.json``'s persisted ``current_phase``.
+
+    This test persists state.json with ``current_phase=None`` (while ``P1`` is
+    at ``awaiting_phase_closeout``) so that last-resort fallback would read
+    'unknown' if the fix under test were absent. reconcile() -- called fresh
+    inside ``_live_reverify`` -- recomputes ``current_phase="P1"`` from the
+    persisted ``phases`` dict regardless of the stale persisted
+    ``current_phase`` (verified directly: reconcile() on this fixture returns
+    ``current_phase="P1"``), so the two diverge and the discrimination is
+    genuine: pre-fix 'unknown', post-fix 'P1'.
+    """
+
+    def test_reverify_records_resolved_phase_not_unknown(self, tmp_path: Path):
+        import json
+        import subprocess
+
+        from phase_loop_test_utils import make_repo, write_phase_plan
+        from phase_loop_runtime import train_runner
+        from phase_loop_runtime.models import utc_now
+        from phase_loop_runtime.provenance import snapshot_provenance
+        from phase_loop_runtime.state import write_state
+
+        repo = make_repo(tmp_path)
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text("# Roadmap\n\n### Phase 0 — P1 (P1)\n\n")
+        subprocess.run(["git", "add", "specs/phase-plans-v1.md"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "single-phase roadmap"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+
+        body = (
+            "# P1\n\n"
+            "## Lanes\n\n"
+            "### SL-0 - P1\n"
+            "- **Owned files**: `work.md`\n\n"
+            "## Verification\n\n"
+            '- `python3 -c "import sys; sys.exit(0)"`\n'
+        )
+        plan = write_phase_plan(repo, "P1", roadmap, body=body)
+        subprocess.run(
+            ["git", "add", str(plan.relative_to(repo))],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "add plan"],
+            cwd=repo, check=True, stdout=subprocess.DEVNULL,
+        )
+
+        # Persist state with current_phase=None (but P1 at awaiting_phase_closeout)
+        # so verification_evidence._phase_alias's LAST-RESORT state.json read
+        # would produce 'unknown' if phase_alias were not threaded -- while
+        # reconcile() itself recomputes current_phase="P1" from the persisted
+        # phases dict (see class docstring), so _live_reverify's own
+        # ``phase = snapshot.current_phase`` resolves "P1" correctly and the
+        # only question is whether that resolved value reaches verification.json.
+        state = StateSnapshot(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phases={"P1": "awaiting_phase_closeout"},
+            current_phase=None,
+            **snapshot_provenance(roadmap),
+        )
+        write_state(repo, state)
+
+        result = train_runner._live_reverify(repo, roadmap, "governed")
+        assert result is True, "setup regression: verification command should have passed"
+
+        reverify_dirs = sorted((repo / ".phase-loop" / "runs").glob("*-reverify"))
+        assert reverify_dirs, "expected _live_reverify to write a run directory"
+        artifact = json.loads((reverify_dirs[-1] / "verification.json").read_text())
+        assert artifact["phase_alias"] == "P1", (
+            "agent-harness#236 VIOLATED: verification.json recorded "
+            f"{artifact['phase_alias']!r} instead of 'P1' -- the phase resolved "
+            "by _live_reverify (snapshot.current_phase) was not threaded into "
+            "the run_verification call as phase_alias"
+        )
+
+
+# ---------------------------------------------------------------------------
 # BLOCK 2: End-to-end reverify — real post-P3 workspace, real verification
 
 class TestBlock2ReverifyEndToEnd:
