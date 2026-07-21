@@ -57,6 +57,17 @@ Coverage:
        completed_nodes the same way `base` is threaded) via
        `--match-head-commit`, so a post-admission push cannot land unchecked
        content — GitHub itself refuses the merge on a mismatch.
+  CR recheck (agent-harness#250, symmetry fix): finding 3's base check and
+       finding 4's head-pinning covered the live MERGE path, but the
+       ALREADY-MERGED / recovery paths (the same idempotent short-circuit in
+       _live_merge_pr, plus the Step-3 crash-window recovery and the P4
+       post-review cross-check) never validated the HEAD — only the base.
+       `_live_pr_merged_sha` now also queries `headRefOid` and, when a
+       `head_sha` is supplied, fails closed on a mismatch
+       (`pr-merged-wrong-head`), symmetric to `pr-merged-wrong-base`. See
+       TestLivePrMergedShaHeadChecked, the head-mismatch tests in
+       TestLiveMergePrBaseRetargetGuard, and TestResumeRecoveryHeadChecked
+       (which mirrors TestResumeRecoveryBaseChecked for the head).
 """
 from __future__ import annotations
 
@@ -231,7 +242,7 @@ class TestTrainReviewNonApproval:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "review_halted", (
@@ -265,7 +276,7 @@ class TestTrainReviewNonApproval:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # Ledger: both nodes must still be pr_open (no merged or reverted entries)
@@ -306,7 +317,7 @@ class TestSequentialMerge:
             _merge_pr_fn=_make_merge_pr_stub(merge_order),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merged"
@@ -336,7 +347,7 @@ class TestSequentialMerge:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         state = read_ledger(ledger)
@@ -404,7 +415,7 @@ class TestOOBResumeAdmittedHeadPin:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merged", f"expected a clean merge, got {result!r}"
@@ -464,7 +475,7 @@ class TestOOBResumeAdmittedHeadPin:
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merge_halted"
@@ -501,7 +512,7 @@ class TestReverifyFalseGreenGuard:
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             _reverify_fn=_reverify_fail_for_b,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merge_halted"
@@ -536,7 +547,7 @@ class TestReverifyFalseGreenGuard:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_fail_for_b,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         state = read_ledger(ledger)
@@ -610,7 +621,7 @@ class TestMergedShaResolution:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_logging,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merged"
@@ -731,7 +742,7 @@ class TestIdempotentResume:
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merged"
@@ -801,7 +812,7 @@ class TestIdempotentResume:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         state = read_ledger(ledger)
@@ -961,7 +972,7 @@ class TestCrashBetweenMergeAndLedgerWrite:
                 re_injection_refs.append(ref)
             return []
 
-        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None) -> Optional[str]:
+        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None, head_sha: Optional[str] = None) -> Optional[str]:
             # Simulate GitHub: repo-a is merged, repo-b is not
             if workspace.name == "repo-a":
                 return "sha-merged-a"
@@ -1016,7 +1027,7 @@ class TestCrashBetweenMergeAndLedgerWrite:
             review_calls.append("called")
             return _approval_review_fn(artifact, run_mode)
 
-        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None) -> Optional[str]:
+        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None, head_sha: Optional[str] = None) -> Optional[str]:
             if workspace.name == "repo-a":
                 return "sha-merged-a"
             return None
@@ -1216,7 +1227,7 @@ class TestLiveReverifySignals:
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             # NOTE: _reverify_fn NOT injected — uses live _live_reverify default
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merge_halted", (
@@ -1283,7 +1294,7 @@ class TestNotOpenMergedPrOpenResume:
             # All PRs show as not-open (merged PR state).
             return False
 
-        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None) -> Optional[str]:
+        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None, head_sha: Optional[str] = None) -> Optional[str]:
             # repo-a is merged on GitHub; repo-b is still pending (not merged).
             if workspace.name == "repo-a":
                 return "sha-merged-a"
@@ -1383,7 +1394,7 @@ class TestNotOpenMergedPrOpenResume:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             # No merged SHA for any node.
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         # repo-a is not open and not merged → dropped → rebuilt.
@@ -1409,7 +1420,7 @@ class TestResumeRecoveryBaseChecked:
     the train (fail closed), never be swallowed into a false recovery."""
 
     def _wrong_base_stub(self, target_workspace_name: str):
-        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None) -> Optional[str]:
+        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None, head_sha: Optional[str] = None) -> Optional[str]:
             if workspace.name == target_workspace_name:
                 raise RuntimeError(
                     f"pr-merged-wrong-base: branch '{branch}' in '{workspace}' is "
@@ -1510,10 +1521,169 @@ class TestResumeRecoveryBaseChecked:
             f"a wrong-base already-merged PR discovered by the P4 cross-check "
             f"must halt the train, got {result['status']!r}: {result!r}"
         )
-        assert result.get("reason") == "pr_merged_wrong_base"
+        # agent-harness#250 CR recheck: the P4 cross-check exception path now
+        # covers both base- and head-mismatch (TestResumeRecoveryHeadChecked
+        # below), so its reason tag was generalized accordingly.
+        assert result.get("reason") == "pr_merged_wrong_base_or_head"
         assert result.get("node_id") == "repo-a/specs/plan-a.md"
         assert merge_calls == [], (
             f"no merge may be issued once the base mismatch is detected; "
+            f"got {merge_calls!r}"
+        )
+        state = read_ledger(ledger)
+        assert state["repo-a/specs/plan-a.md"].status == "blocked", (
+            "the ledger must record repo-a as blocked, never as merged"
+        )
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#250 CR recheck: the base validation added to the already-
+# merged short-circuit (TestResumeRecoveryBaseChecked above) and the merge-
+# time head-pinning (TestLiveMergePrHeadPinned above) were NOT symmetric — the
+# ALREADY-MERGED / recovery paths never validated the HEAD at all. Reachable
+# sequence: admit head A → out-of-band push B → the PR is merged (externally)
+# before resume → the recovery path accepted B's merge commit as a landed
+# success WITHOUT ever reaching the divergence pre-check or
+# --match-head-commit. These tests mirror TestResumeRecoveryBaseChecked
+# exactly, but for the head, at both recovery call sites.
+
+
+class TestResumeRecoveryHeadChecked:
+    """A `_pr_merged_sha_fn` that raises 'merged with an unadmitted head' must
+    halt the train (fail closed), never be swallowed into a false recovery.
+
+    The stub below deliberately mirrors the REAL `_live_pr_merged_sha`'s
+    behavior with respect to `head_sha`, not just an unconditional raise:
+    when the caller omits `head_sha` (i.e. the defect under test — the
+    recovery call site never threads the admitted head through), the head
+    check cannot happen and the (real) already-merged PR is silently
+    returned as a success — reproducing the false-recovery defect. Only when
+    `head_sha` IS supplied (post-fix) does it perform the mismatch check and
+    raise. This makes the regression genuinely FAIL at HEAD dd2a9d3 (where
+    `head_sha` is never threaded to either recovery call site) rather than
+    incidentally failing on an unrelated assertion (e.g. a reason-string
+    diff)."""
+
+    def _wrong_head_stub(self, target_workspace_name: str):
+        def _pr_merged_sha(
+            workspace: Path, branch: str, base: Optional[str] = None, head_sha: Optional[str] = None
+        ) -> Optional[str]:
+            if workspace.name == target_workspace_name:
+                if head_sha is None:
+                    # Pre-fix: the caller never threaded the admitted head to
+                    # this call, so the real live implementation could not
+                    # have detected the out-of-band push either — it would
+                    # silently return the merge-commit SHA of the UNADMITTED
+                    # head as a landed success.
+                    return "sha-unadmitted-oob-merge"
+                raise RuntimeError(
+                    f"pr-merged-wrong-head: branch '{branch}' in '{workspace}' is "
+                    f"MERGED, but its headRefOid is 'sha-unadmitted-oob-push', not "
+                    f"the admitted '{head_sha}'"
+                )
+            return None
+        return _pr_merged_sha
+
+    def test_step3_recovery_wrong_head_fails_closed(self, tmp_path: Path):
+        """Step-3 crash-window recovery (not-open pr_open node): a
+        _pr_merged_sha_fn raising a head-mismatch must produce status=blocked,
+        never a silent recovery-as-merged. FAILS at HEAD dd2a9d3, where Step 3
+        calls `_step3_merged_sha_fn(workspace, rec.branch, base=_DEFAULT_BASE)`
+        without threading `rec.head_sha` at all."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        for rec in [
+            LedgerRecord(
+                node_id="repo-a/specs/plan-a.md", status="pr_open",
+                branch="feat/train-a", head_sha="sha-draft-a",
+                pr_url="https://gh.com/repo-a/1", merge_order=0,
+            ),
+            LedgerRecord(
+                node_id="repo-b/specs/plan-b.md", status="pr_open",
+                branch="feat/train-b", head_sha="sha-draft-b",
+                pr_url="https://gh.com/repo-b/1", merge_order=1,
+            ),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+        ]:
+            append_record(ledger, rec)
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        merge_calls: List[str] = []
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            # repo-a's PR shows not-open at Step 3 (crash-window shape).
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub(merge_calls),
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=self._wrong_head_stub("repo-a"),
+        )
+
+        assert result["status"] == "blocked", (
+            f"a wrong-head already-merged PR at Step-3 recovery must halt the "
+            f"train (status=blocked), got {result['status']!r}: {result!r}"
+        )
+        assert result.get("node_id") == "repo-a/specs/plan-a.md"
+        assert merge_calls == [], (
+            f"no merge may be issued once the head mismatch is detected; "
+            f"got {merge_calls!r}"
+        )
+        state = read_ledger(ledger)
+        assert state["repo-a/specs/plan-a.md"].status == "blocked", (
+            "the ledger must record repo-a as blocked, never as merged"
+        )
+
+    def test_p4_crosscheck_wrong_head_fails_closed(self, tmp_path: Path):
+        """The P4 post-review cross-check loop: a _pr_merged_sha_fn raising a
+        head-mismatch for a node whose PR is still reported open at Step 3
+        (so Step 3 does not intercept it) must produce merge_halted, not a
+        silent recovery. FAILS at HEAD dd2a9d3, where the cross-check calls
+        `pr_merged_sha_fn(_ws_r, _pr_branch_r, base=_DEFAULT_BASE)` without a
+        head_sha at all."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        merge_calls: List[str] = []
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            # Both PRs report open at Step 3 — Step 3 does not intercept.
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub(merge_calls),
+            _train_review_fn=_approval_review_fn,
+            # Only invoked by the P4 cross-check loop (Step 3 never calls it
+            # here, since both PRs show open); repo-a is "merged elsewhere"
+            # with an unadmitted head.
+            _pr_merged_sha_fn=self._wrong_head_stub("repo-a"),
+        )
+
+        assert result["status"] == "merge_halted", (
+            f"a wrong-head already-merged PR discovered by the P4 cross-check "
+            f"must halt the train, got {result['status']!r}: {result!r}"
+        )
+        assert result.get("reason") == "pr_merged_wrong_base_or_head"
+        assert result.get("node_id") == "repo-a/specs/plan-a.md"
+        assert merge_calls == [], (
+            f"no merge may be issued once the head mismatch is detected; "
             f"got {merge_calls!r}"
         )
         state = read_ledger(ledger)
@@ -1560,7 +1730,7 @@ class TestMergeFailureHalted:
             _merge_pr_fn=_merge_raises,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merge_halted", (
@@ -1602,7 +1772,7 @@ class TestMergeFailureHalted:
             _merge_pr_fn=_merge_raises,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         state = read_ledger(ledger)
@@ -1640,7 +1810,7 @@ class TestMergeFailureHalted:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merge_halted"
@@ -1705,7 +1875,7 @@ class TestInjectReverifyExceptionHalted:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merge_halted", (
@@ -1766,7 +1936,7 @@ class TestInjectReverifyExceptionHalted:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_raises,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
         assert result["status"] == "merge_halted", (
@@ -1819,7 +1989,7 @@ class TestPostMergeHook:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
             _post_merge_hook=_spy_hook,
         )
 
@@ -1854,7 +2024,7 @@ class TestPostMergeHook:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
             _post_merge_hook=_boom,
         )
 
@@ -1943,10 +2113,21 @@ def _gh_subcommand(cmd: List[str]) -> str:
     return "other:" + " ".join(cmd)
 
 
-def _merged_sha_json(state: str, base: str, sha: Optional[str] = None) -> str:
-    """Build the JSON payload _live_pr_merged_sha's `gh pr view` call parses."""
+def _merged_sha_json(
+    state: str, base: str, sha: Optional[str] = None, head: Optional[str] = None
+) -> str:
+    """Build the JSON payload _live_pr_merged_sha's `gh pr view` call parses.
+
+    ``head`` is the PR's CURRENT ``headRefOid`` (agent-harness#250 CR recheck:
+    the already-merged recovery path now queries this field symmetrically with
+    ``baseRefName``). Omitted (``None``) when a test doesn't care about the
+    head check.
+    """
     merge_commit = {"oid": sha} if sha else None
-    return json.dumps({"state": state, "mergeCommit": merge_commit, "baseRefName": base})
+    payload = {"state": state, "mergeCommit": merge_commit, "baseRefName": base}
+    if head is not None:
+        payload["headRefOid"] = head
+    return json.dumps(payload)
 
 
 def _premerge_json(is_draft: bool, base: str, head: str = "sha-head-1") -> str:
@@ -2097,6 +2278,74 @@ class TestLiveMergePrBaseRetargetGuard:
             f"gh pr merge must never be invoked for an already-merged-wrong-base PR; "
             f"got {merge_calls!r}"
         )
+
+    def test_already_merged_wrong_head_fails_closed(self, tmp_path: Path):
+        """agent-harness#250 CR recheck: symmetric to finding 3 (base) but for
+        the HEAD. A PR that is MERGED, with a matching base, but whose
+        headRefOid does NOT match the broker-admitted head_sha (an
+        out-of-band push landed unchecked content, and the PR merged
+        externally before the coordinator's own merge-time
+        --match-head-commit pin could ever run — e.g. during the
+        crash-between-merge-and-ledger-write window) must NOT be recorded as
+        a successful merge — _live_merge_pr's idempotent already-merged guard
+        must fail closed and `gh pr merge` must never be invoked.
+
+        This is the exact defect the cross-vendor recheck found: the MERGE
+        path (--match-head-commit, TestLiveMergePrHeadPinned above) was
+        fixed, but this ALREADY-MERGED short-circuit passed no head_sha to
+        _live_pr_merged_sha at all, so it never even queried headRefOid."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-unadmitted-merge", head="sha-unadmitted-head"
+                    ),
+                )
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="pr-merged-wrong-head"):
+                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls == [], (
+            f"gh pr merge must never be invoked for an already-merged-wrong-head PR; "
+            f"got {merge_calls!r}"
+        )
+
+    def test_already_merged_matching_head_returns_existing_sha(self, tmp_path: Path):
+        """An already-merged PR whose headRefOid matches the admitted head_sha
+        (and whose base matches too) still short-circuits to the existing SHA
+        — the new head check must not reject a genuinely-admitted merge."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-already-merged", head="sha-admitted-head"
+                    ),
+                )
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+
+        assert sha == "sha-already-merged"
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls == [], "a matching-head already-merged PR must not trigger a new merge"
 
 
 class TestLiveMergePrNoYesFlag:
@@ -2382,6 +2631,74 @@ class TestLiveMergePrHeadPinned:
             f"gh pr merge must NEVER be invoked when our own headRefOid read already "
             f"diverges from the admitted head_sha; got {merge_calls!r}"
         )
+
+
+class TestLivePrMergedShaHeadChecked:
+    """agent-harness#250 CR recheck: unit-level coverage of
+    `_live_pr_merged_sha`'s new `head_sha` parameter directly (independent of
+    the `_live_merge_pr` call sites exercised above), mirroring the
+    pre-existing base-check unit coverage."""
+
+    def test_head_mismatch_raises_wrong_head(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-x", head="sha-unadmitted"
+                    ),
+                )
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="pr-merged-wrong-head"):
+                _live_pr_merged_sha(ws, "feat/train-a", base="main", head_sha="sha-admitted")
+
+    def test_head_match_returns_sha(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-x", head="sha-admitted"
+                    ),
+                )
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_pr_merged_sha(ws, "feat/train-a", base="main", head_sha="sha-admitted")
+
+        assert sha == "sha-x"
+
+    def test_head_sha_none_skips_head_check(self, tmp_path: Path):
+        """Backward compatibility: callers with no admitted head_sha (head_sha
+        omitted/None) get the old head-agnostic lookup, not a spurious raise."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-x", head="sha-whatever"
+                    ),
+                )
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_pr_merged_sha(ws, "feat/train-a", base="main")
+
+        assert sha == "sha-x"
 
 
 # ---------------------------------------------------------------------------
