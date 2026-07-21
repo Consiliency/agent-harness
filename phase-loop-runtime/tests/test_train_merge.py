@@ -74,6 +74,8 @@ from phase_loop_runtime.train_roadmap import parse_train_roadmap
 from phase_loop_runtime.train_runner import (
     _TRAIN_REVIEW_NODE_ID,
     _live_merge_pr,
+    _live_pr_head_sha,
+    _live_pr_merged_sha,
     _live_reverify,
     run_train,
 )
@@ -346,6 +348,128 @@ class TestSequentialMerge:
         # Train-level approval recorded
         assert _TRAIN_REVIEW_NODE_ID in state
         assert state[_TRAIN_REVIEW_NODE_ID].status == "approved"
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#250 CR follow-up (codex+grok corroborated, defect 1): on a P3
+# resume, --match-head-commit must be pinned to the broker-ADMITTED head_sha
+# (the ledger record written at pr_open publish time), NEVER the live-
+# preferring resume value. A push landing on a branch AFTER its draft PR was
+# admitted (out-of-band) must not let the coordinator pin --match-head-commit
+# to that unchecked tip: the node itself is left `pr_open` and proceeds
+# straight to P4 merge (out_of_band_upstreams only blocks DOWNSTREAM
+# dependents, never the OOB node's own merge), so the merge-time pin is the
+# only remaining guard.
+
+class TestOOBResumeAdmittedHeadPin:
+    def test_oob_push_after_admission_merge_pinned_to_admitted_not_live(self, tmp_path: Path):
+        """repo-b's branch received a push after its draft PR was admitted
+        (ledger head_sha='sha-admitted-b'); the live PR head now reads
+        'sha-live-oob-b'. repo-b has no downstream dependent, so
+        out_of_band_upstreams (which only blocks a STALE DOWNSTREAM) never
+        blocks repo-b's own merge — it proceeds straight to P4 merge. The
+        merge call for repo-b must receive head_sha='sha-admitted-b' — NEVER
+        the live OOB tip. FAILS at HEAD 1fc23ea (currently threads the live
+        value via completed_nodes[...]['head_sha'])."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(
+            tmp_path, roadmap, ws_map,
+            sha_a="sha-admitted-a", sha_b="sha-admitted-b",
+        )
+
+        merge_head_shas: Dict[str, Optional[str]] = {}
+
+        def _merge_pr(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
+            merge_head_shas[workspace.name] = head_sha
+            return f"sha-merged-{workspace.name}"
+
+        def _live_head_sha(ws: Path, branch: str) -> Optional[str]:
+            if branch == "feat/train-b":
+                return "sha-live-oob-b"  # out-of-band push after admission
+            return None  # repo-a: no override, falls back to the ledger value
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=_live_head_sha,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_merge_pr,
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+        )
+
+        assert result["status"] == "merged", f"expected a clean merge, got {result!r}"
+        assert merge_head_shas.get("repo-a") == "sha-admitted-a"
+        assert merge_head_shas.get("repo-b") == "sha-admitted-b", (
+            f"--match-head-commit must be pinned to the broker-ADMITTED head_sha "
+            f"('sha-admitted-b'), never the live out-of-band tip "
+            f"('sha-live-oob-b'); merge_pr_fn received "
+            f"{merge_head_shas.get('repo-b')!r}"
+        )
+
+    def test_missing_admitted_head_sha_fails_closed(self, tmp_path: Path):
+        """A governed node reaching the P4 merge loop always carries an
+        admitted_head_sha (set at publish time or Step-3 resume). If it is
+        somehow missing, run_train must fail closed (merge_halted) rather than
+        silently degrade to an unpinned merge_pr_fn call."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        # repo-a (merges FIRST in topo order): a record with branch/pr_url but
+        # a falsy head_sha simulates a legacy/corrupted ledger entry with no
+        # admitted SHA recorded.
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md",
+            status="pr_open",
+            branch="feat/train-a",
+            head_sha=None,
+            pr_url="https://gh.com/repo-a/1",
+            merge_order=0,
+        ))
+        # repo-b: a normal, fully-admitted pr_open record — unreached (repo-a's
+        # missing-admitted-sha halt fires first), included only so Step 3/4
+        # resume for repo-b doesn't take the "no ledger record" execute path.
+        append_record(ledger, LedgerRecord(
+            node_id="repo-b/specs/plan-b.md",
+            status="pr_open",
+            branch="feat/train-b",
+            head_sha="sha-draft-b",
+            pr_url="https://gh.com/repo-b/1",
+            merge_order=1,
+        ))
+
+        merge_calls: List[str] = []
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub(merge_calls),
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
+        )
+
+        assert result["status"] == "merge_halted"
+        assert result.get("reason") == "missing_admitted_head_sha"
+        assert merge_calls == [], "merge_pr_fn must never be called without an admitted head_sha"
 
 
 # ---------------------------------------------------------------------------
@@ -1903,17 +2027,26 @@ class TestLiveMergePrBaseRetargetGuard:
 
     def test_already_merged_matching_base_returns_existing_sha_in_one_call(self, tmp_path: Path):
         """The idempotent already-merged guard short-circuits: an already-merged
-        PR on the EXPECTED base returns its existing SHA in a single combined
-        `gh pr view` call (state+mergeCommit+baseRefName), without a separate
-        base-check call or a new merge call."""
+        PR on the EXPECTED base returns its existing SHA after exactly ONE `gh`
+        call (the combined `gh pr view` state+mergeCommit+baseRefName check) —
+        preceded only by the repo-identity resolution read (agent-harness#250
+        defect 2: `git remote get-url origin`, used to bind the `gh` call to
+        the broker-validated repo via `--repo`) — without a separate base-check
+        call or a new merge call."""
         ws = tmp_path / "repo-a"
         ws.mkdir()
         calls: List[List[str]] = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            if cmd[0] == "git" and cmd[3:5] == ["remote", "get-url"]:
+                return _FakeCompletedProcess(returncode=0, stdout="https://github.com/owner/repo.git\n")
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
+                assert "--repo" in cmd and "github.com/owner/repo" in cmd, (
+                    f"gh pr view must be bound to the resolved repo identity via "
+                    f"--repo (agent-harness#250 defect 2); got {cmd!r}"
+                )
                 return _FakeCompletedProcess(
                     returncode=0,
                     stdout=_merged_sha_json("MERGED", "main", sha="sha-already-merged"),
@@ -1927,10 +2060,11 @@ class TestLiveMergePrBaseRetargetGuard:
             sha = _live_merge_pr(ws, "feat/train-a", base="main")
 
         assert sha == "sha-already-merged"
-        assert len(calls) == 1, (
+        gh_calls = [c for c in calls if c[0] == "gh"]
+        assert len(gh_calls) == 1, (
             f"already-merged guard must short-circuit after ONE gh call (the combined "
             f"state+mergeCommit+baseRefName check); no premerge or merge call should "
-            f"follow. Got {len(calls)} calls: {calls!r}"
+            f"follow. Got {len(gh_calls)} gh calls: {gh_calls!r} (all calls: {calls!r})"
         )
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], "already-merged guard must not perform a merge call"
@@ -2114,7 +2248,13 @@ class TestLiveMergePrHeadPinned:
             if label == "view-merged-sha":
                 return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
             if label == "view-premerge":
-                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
+                # headRefOid matches the admitted head_sha: the N7 CR follow-up
+                # pre-check (defect 1 hardening) must NOT trip here — this test
+                # exercises --match-head-commit flag construction, not the
+                # earlier fail-closed headRefOid comparison.
+                return _FakeCompletedProcess(
+                    returncode=0, stdout=_premerge_json(False, "main", head="sha-admitted-head")
+                )
             if label == "merge":
                 merge_cmds.append(cmd)
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
@@ -2162,10 +2302,11 @@ class TestLiveMergePrHeadPinned:
         assert "--match-head-commit" not in merge_cmds[0]
 
     def test_head_mismatch_gh_pr_merge_failure_fails_closed(self, tmp_path: Path):
-        """GitHub refuses the merge (non-zero exit) when the pinned head_sha
-        no longer matches the PR's actual head — _live_merge_pr must let the
-        real subprocess CalledProcessError propagate (fail closed), never
-        swallow it into a false success."""
+        """GitHub's own atomic --match-head-commit check can still reject the
+        merge (a race between our pre-merge headRefOid read and the actual
+        merge attempt) even when our own read matched the admitted head_sha —
+        _live_merge_pr must let the real subprocess CalledProcessError
+        propagate (fail closed), never swallow it into a false success."""
         ws = tmp_path / "repo-a"
         ws.mkdir()
         calls: List[List[str]] = []
@@ -2176,7 +2317,13 @@ class TestLiveMergePrHeadPinned:
             if label == "view-merged-sha":
                 return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
             if label == "view-premerge":
-                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
+                # Our own headRefOid read matches the admitted SHA (passes the
+                # N7 CR follow-up pre-check below); gh's own merge-time atomic
+                # check still rejects — the residual race the flag alone guards.
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_premerge_json(False, "main", head="sha-stale-admitted-head"),
+                )
             if label == "merge":
                 # gh pr merge --match-head-commit <sha> exits non-zero when the
                 # PR's actual head no longer matches; check=True in the live
@@ -2201,3 +2348,175 @@ class TestLiveMergePrHeadPinned:
         assert len(merge_calls) == 1
         assert "--match-head-commit" in merge_calls[0]
         assert "sha-stale-admitted-head" in merge_calls[0]
+
+    def test_headrefoid_mismatch_fails_closed_before_merge_call(self, tmp_path: Path):
+        """agent-harness#250 N7 CR follow-up hardening (defect 1, corroborated by
+        codex+grok): when our own pre-merge read of headRefOid ALREADY diverges
+        from the admitted head_sha, fail closed BEFORE issuing `gh pr merge` at
+        all — defense-in-depth on top of --match-head-commit (finding 4), for
+        gh versions/edge-cases where that flag alone might not be trusted."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_premerge_json(False, "main", head="sha-live-oob-advanced"),
+                )
+            raise AssertionError(
+                f"gh pr merge must never be reached on a headRefOid mismatch: {cmd!r}"
+            )
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="pr-head-advanced"):
+                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls == [], (
+            f"gh pr merge must NEVER be invoked when our own headRefOid read already "
+            f"diverges from the admitted head_sha; got {merge_calls!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#250 CR follow-up (defect 2): GH_REPO overrides gh's cwd-based
+# repo selection — a stray GH_REPO in the environment could redirect the
+# coordinator's merge/recovery gh calls (view/ready/merge, plus the
+# _live_pr_head_sha/_live_pr_merged_sha recovery reads) to a DIFFERENT
+# repository than the one the broker actually pushed to. Every such call must
+# be bound to the broker-validated repo via an explicit host-qualified --repo
+# (derived from the workspace's own origin, the SAME identity credsep.py's
+# GitHubBrokerAdapter uses), or fall back to a GH_REPO-neutralized environment
+# when that identity cannot be resolved.
+
+def _origin_url_response(url: str = "https://github.com/owner/repo.git"):
+    return _FakeCompletedProcess(returncode=0, stdout=url + "\n")
+
+
+class TestGhCallsRepoIdentityBound:
+    def test_live_pr_head_sha_binds_to_resolved_repo(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("GH_REPO", "attacker/evil-repo")
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+        seen_envs: List[Optional[dict]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "git" and cmd[3:5] == ["remote", "get-url"]:
+                return _origin_url_response()
+            if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
+                seen_envs.append(kwargs.get("env"))
+                return _FakeCompletedProcess(returncode=0, stdout="sha-live-head\n")
+            raise AssertionError(f"unexpected call: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_pr_head_sha(ws, "feat/train-a")
+
+        assert sha == "sha-live-head"
+        gh_calls = [c for c in calls if c[0] == "gh"]
+        assert len(gh_calls) == 1
+        assert "--repo" in gh_calls[0] and "github.com/owner/repo" in gh_calls[0], (
+            f"gh pr list must be bound to the resolved repo via --repo; got {gh_calls[0]!r}"
+        )
+        # Belt-and-suspenders (mirrors credsep's BrokerEnvironmentBoundary, which
+        # both strips GH_REPO AND passes --repo): GH_REPO must be stripped from the
+        # env even when --repo is present, not relied on solely for precedence.
+        assert seen_envs and seen_envs[0] is not None and "GH_REPO" not in seen_envs[0], (
+            f"GH_REPO must be stripped even when --repo is resolvable; got {seen_envs!r}"
+        )
+
+    def test_live_pr_merged_sha_binds_to_resolved_repo(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "git" and cmd[3:5] == ["remote", "get-url"]:
+                return _origin_url_response()
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return _FakeCompletedProcess(
+                    returncode=0, stdout=_merged_sha_json("MERGED", "main", sha="sha-x")
+                )
+            raise AssertionError(f"unexpected call: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_pr_merged_sha(ws, "feat/train-a", base="main")
+
+        assert sha == "sha-x"
+        gh_calls = [c for c in calls if c[0] == "gh"]
+        assert len(gh_calls) == 1
+        assert "--repo" in gh_calls[0] and "github.com/owner/repo" in gh_calls[0], (
+            f"gh pr view must be bound to the resolved repo via --repo; got {gh_calls[0]!r}"
+        )
+
+    def test_live_merge_pr_binds_every_gh_call_to_resolved_repo(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        gh_calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[3:5] == ["remote", "get-url"]:
+                return _origin_url_response()
+            gh_calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(
+                    returncode=0, stdout=_premerge_json(True, "main", head="sha-admitted")
+                )
+            if label == "ready":
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if label == "merge":
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if label == "view-mergecommit":
+                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge\n")
+            raise AssertionError(f"unexpected gh call: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted")
+
+        assert sha == "sha-realmerge"
+        assert len(gh_calls) == 5, f"expected 5 gh calls, got {len(gh_calls)}: {gh_calls!r}"
+        for c in gh_calls:
+            assert "--repo" in c and "github.com/owner/repo" in c, (
+                f"every gh call issued by _live_merge_pr must carry --repo "
+                f"(agent-harness#250 defect 2); got {c!r}"
+            )
+
+    def test_unresolvable_origin_neutralizes_gh_repo_env_instead(self, tmp_path: Path, monkeypatch):
+        """When the origin cannot be resolved to an allow-listed host, no
+        --repo flag is added — but GH_REPO must be stripped from the env passed
+        to the gh subprocess, so a stray GH_REPO cannot redirect the call
+        (fail-closed fallback per agent-harness#250 defect 2)."""
+        monkeypatch.setenv("GH_REPO", "attacker/evil-repo")
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        seen: List[tuple] = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[3:5] == ["remote", "get-url"]:
+                # A non-allow-listed host: resolution fails closed inside
+                # _gh_repo_binding, which must fall back to env-neutralization.
+                return _FakeCompletedProcess(returncode=0, stdout="https://ghe.internal/owner/repo.git\n")
+            seen.append((cmd, kwargs.get("env")))
+            return _FakeCompletedProcess(returncode=0, stdout="sha-live-head\n")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            _live_pr_head_sha(ws, "feat/train-a")
+
+        assert len(seen) == 1
+        gh_cmd, env = seen[0]
+        assert "--repo" not in gh_cmd, (
+            f"no --repo should be added when the origin cannot be resolved; got {gh_cmd!r}"
+        )
+        assert env is not None, "GH_REPO must be explicitly neutralized when --repo cannot be pinned"
+        assert "GH_REPO" not in env, f"GH_REPO must be stripped from the fallback env; got {env!r}"

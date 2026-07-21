@@ -33,57 +33,91 @@ def build_non_force_branch_ref(branch: str) -> str:
 # twin instance).  Default is github.com-only; a self-hosted/GHE fleet passes its own
 # allow-list explicitly.  This retires the whole host-parse edge class at the boundary.
 ALLOWED_ORIGIN_HOSTS = frozenset({"github.com"})
+# agent-harness#250 (N7 CR follow-up, defect 2): the URL->slug resolution used to be a
+# GitHubBrokerAdapter-only method. Extracted to module-level functions (taking `run`
+# explicitly, never defaulted at import time so test/production monkeypatching of a
+# module's own `subprocess.run` reaches it) so non-broker callers — specifically
+# train_runner.py's merge/recovery `gh` calls — can bind to the IDENTICAL
+# host-qualified repo identity the broker already validated and pushed to, instead of
+# duplicating/re-implementing this parsing (which would risk silent drift between the
+# two copies). GitHubBrokerAdapter's own methods below now delegate to these.
+def resolve_git_origin_url(repo_path: Path, run=subprocess.run) -> str:
+    """Read `repo_path`'s `origin` remote FETCH url via `git remote get-url origin`.
+
+    The single canonical origin URL the broker validates AND operates through
+    explicitly (push + ls-remote), so the mutation can never be redirected by the
+    `origin` alias (remote.origin.pushurl / url.*.pushInsteadOf) to an unvalidated
+    target.
+    """
+    return run(["git", "-C", str(repo_path), "remote", "get-url", "origin"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def resolve_host_qualified_repo_slug(url: str, allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS) -> str:
+    # Resolve a git URL to a HOST-QUALIFIED `host/owner/repo` slug so `gh` is bound
+    # with `--repo host/owner/repo` (highest precedence — beats a stray
+    # GH_REPO/GH_HOST/cwd/gh-config), pinning the PR to the SAME host AND repo the
+    # push targets.  Fail-closed if the URL cannot be resolved or is not allow-listed.
+    if "://" in url:  # scheme://[user@]host[:port]/owner/repo(.git)
+        scheme = url.split("://", 1)[0].lower()
+        rest = url.split("://", 1)[1].split("@", 1)[-1]
+        authority, _, path = rest.partition("/")
+        # Fail-closed on authorities --repo cannot faithfully pin: an IPv6 literal
+        # (mis-split below) or a non-default http(s) API port (silently dropped →
+        # gh would hit the default-port host, a twin-host risk).  ssh transport
+        # ports are irrelevant to the gh API host, so they are allowed.
+        if authority.startswith("[") or authority.count(":") > 1:
+            raise ValueError(f"unsupported IPv6/authority in origin {url!r}")
+        host, _, port = authority.partition(":")
+        default_port = {"https": "443", "http": "80"}.get(scheme)
+        if scheme in ("http", "https") and port and port != default_port:
+            raise ValueError(f"non-default {scheme} port in origin {url!r} cannot be pinned by --repo")
+    else:  # scp-like: [user@]host:owner/repo(.git)
+        hostpart, sep, path = url.partition(":")
+        host = hostpart.split("@", 1)[-1]
+        if not sep:
+            raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
+    if path.endswith(".git"):
+        path = path[:-4]
+    path = path.strip("/")
+    parts = path.split("/")
+    if not host or len(parts) != 2 or not all(parts):
+        raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
+    if host not in allowed_hosts:
+        # Origin-host invariant: refuse to publish to a host outside the allow-list.
+        # This is the class-closing gate — no URL-text edge (port/IPv6/alias/twin)
+        # can mis-bind a gh call to a look-alike host, because a non-allow-listed
+        # host fails closed here (-> outcome_ambiguous_blocked), never a live PR.
+        raise ValueError(f"origin host {host!r} not in allowed broker hosts {sorted(allowed_hosts)}")
+    return f"{host}/{path}"
+
+
+def resolve_broker_repo_identity(repo_path: Path, run=subprocess.run, allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS) -> str:
+    """Resolve `repo_path`'s origin to the SAME host-qualified `host/owner/repo` slug
+    `GitHubBrokerAdapter` binds its own `gh` calls to (`--repo host/owner/repo`).
+
+    For non-broker callers that need to bind subsequent `gh` calls to the identical
+    repository the broker already validated and pushed to (agent-harness#250 CR
+    follow-up, defect 2: `GH_REPO`, if set in the environment, overrides `gh`'s cwd-based
+    repo selection — a stray `GH_REPO` could redirect train_runner.py's merge/recovery
+    `gh pr view/ready/merge` calls to a DIFFERENT repository than the one actually
+    pushed to, letting a wrong-repo PR pass base/head checks and get recorded as this
+    train node's merge). Fail-closed: raises on an unresolvable, garbled, or
+    non-allow-listed origin — same posture as `GitHubBrokerAdapter._origin_repo()`.
+    """
+    return resolve_host_qualified_repo_slug(resolve_git_origin_url(repo_path, run=run), allowed_hosts=allowed_hosts)
+
+
 class GitHubBrokerAdapter:
     def __init__(self, repo_path: Path, run=subprocess.run, allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS) -> None:
         self.repo_path, self.run, self.allowed_hosts = repo_path, run, allowed_hosts
     def _output(self, *args: str) -> str:
         return self.run(["git", "-C", str(self.repo_path), *args], capture_output=True, text=True, check=True).stdout.strip()
     def _origin_url(self) -> str:
-        # The single canonical origin URL the broker validates AND operates through
-        # explicitly (push + ls-remote), so the mutation can never be redirected by the
-        # `origin` alias (remote.origin.pushurl / url.*.pushInsteadOf) to an unvalidated
-        # target.  This is git's FETCH url; the broker deliberately publishes to the
-        # canonical repo it validated, not a local triangular pushurl.
-        return self._output("remote", "get-url", "origin")
+        return resolve_git_origin_url(self.repo_path, run=self.run)
     def _origin_repo(self) -> str:
         return self._slug_for(self._origin_url())
     def _slug_for(self, url: str) -> str:
-        # Resolve a git URL to a HOST-QUALIFIED `host/owner/repo` slug so `gh` is bound
-        # with `--repo host/owner/repo` (highest precedence — beats a stray
-        # GH_REPO/GH_HOST/cwd/gh-config), pinning the PR to the SAME host AND repo the
-        # push targets.  Fail-closed if the URL cannot be resolved or is not allow-listed.
-        if "://" in url:  # scheme://[user@]host[:port]/owner/repo(.git)
-            scheme = url.split("://", 1)[0].lower()
-            rest = url.split("://", 1)[1].split("@", 1)[-1]
-            authority, _, path = rest.partition("/")
-            # Fail-closed on authorities --repo cannot faithfully pin: an IPv6 literal
-            # (mis-split below) or a non-default http(s) API port (silently dropped →
-            # gh would hit the default-port host, a twin-host risk).  ssh transport
-            # ports are irrelevant to the gh API host, so they are allowed.
-            if authority.startswith("[") or authority.count(":") > 1:
-                raise ValueError(f"unsupported IPv6/authority in origin {url!r}")
-            host, _, port = authority.partition(":")
-            default_port = {"https": "443", "http": "80"}.get(scheme)
-            if scheme in ("http", "https") and port and port != default_port:
-                raise ValueError(f"non-default {scheme} port in origin {url!r} cannot be pinned by --repo")
-        else:  # scp-like: [user@]host:owner/repo(.git)
-            hostpart, sep, path = url.partition(":")
-            host = hostpart.split("@", 1)[-1]
-            if not sep:
-                raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
-        if path.endswith(".git"):
-            path = path[:-4]
-        path = path.strip("/")
-        parts = path.split("/")
-        if not host or len(parts) != 2 or not all(parts):
-            raise ValueError(f"cannot resolve origin host/owner/repo from {url!r}")
-        if host not in self.allowed_hosts:
-            # Origin-host invariant: refuse to publish to a host outside the allow-list.
-            # This is the class-closing gate — no URL-text edge (port/IPv6/alias/twin)
-            # can mis-bind a gh call to a look-alike host, because a non-allow-listed
-            # host fails closed here (-> outcome_ambiguous_blocked), never a live PR.
-            raise ValueError(f"origin host {host!r} not in allowed broker hosts {sorted(self.allowed_hosts)}")
-        return f"{host}/{path}"
+        return resolve_host_qualified_repo_slug(url, allowed_hosts=self.allowed_hosts)
     def _ambiguous(self, request: BrokerRequest, reference: str):
         # v5 rule: a failed/empty remote read is NEVER inferred as no_effect and
         # NEVER fabricated as success — it is a permanent ambiguous block.
