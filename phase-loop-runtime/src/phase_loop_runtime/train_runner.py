@@ -464,7 +464,7 @@ def _live_merge_pr(
     ``base``; a PR merged into a different base fails closed instead (see
     ``_live_pr_merged_sha``).
 
-    Cross-vendor CR follow-up to N6/N7 (agent-harness#250), four findings,
+    Cross-vendor CR follow-up to N6/N7 (agent-harness#250), five findings,
     all fixed here:
 
     1. **No bare ``--yes``.**  ``gh pr merge`` (gh >= 2.x) has no ``--yes``
@@ -521,6 +521,24 @@ def _live_merge_pr(
     resolved) — see ``_gh_repo_binding`` — so a stray ``GH_REPO`` cannot
     redirect the merge to a different repository than the one actually pushed
     to.
+
+    5. **Precheck->merge TOCTOU on the post-merge SHA read (agent-harness#250
+       CR recheck).** There is a window between the head/base precheck above
+       and the ``gh pr merge`` call itself: an external actor can push a
+       different head B and merge it in that window. ``gh`` CLI (>= 2.96.0)
+       returns SUCCESS from ``gh pr merge`` when its refreshed state finds
+       the PR ALREADY MERGED — it short-circuits BEFORE constructing the
+       merge mutation that carries ``expectedHeadOid``, so
+       ``--match-head-commit`` is NOT enforced in that case. A bare
+       post-merge ``mergeCommit.oid`` read would then silently record B's
+       merge SHA as this run's success. Instead, the post-merge SHA is
+       resolved by RE-RUNNING the already-hardened, head/base-validated
+       ``_live_pr_merged_sha`` (with the same ``base``/``head_sha`` this call
+       was given) — it fails CLOSED (``pr-merged-wrong-base`` /
+       ``pr-merged-wrong-head``) if the PR that actually ended up MERGED does
+       not match what was admitted, instead of recording an
+       externally-merged, unadmitted head as a success. ``--match-head-commit``
+       is kept as defense-in-depth for the ordinary (non-already-merged) path.
 
     Stubbable seam: inject ``_merge_pr_fn`` into :func:`run_train`.
     """
@@ -621,23 +639,27 @@ def _live_merge_pr(
         timeout=120,
         env=env_override,
     )
-    result = subprocess.run(
-        [
-            "gh", "pr", "view", branch, *repo_args,
-            "--json", "mergeCommit",
-            "--jq", ".mergeCommit.oid",
-        ],
-        cwd=str(workspace),
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env=env_override,
-    )
-    sha = result.stdout.strip()
-    if not sha or sha == "null":
+
+    # Post-merge resolution (agent-harness#250 CR recheck: precheck->merge
+    # TOCTOU close). Do NOT trust a bare `mergeCommit.oid` read here: gh CLI
+    # (>= 2.96.0) returns SUCCESS from `gh pr merge` when its refreshed state
+    # finds the PR is ALREADY MERGED — e.g. an external actor pushed a
+    # different head B and merged it in the window between the head/base
+    # precheck above and this `gh pr merge` invocation. In that short-circuit
+    # path gh returns before ever constructing the merge mutation that
+    # carries `expectedHeadOid`, so `--match-head-commit` is NOT enforced for
+    # it. Re-running the already-hardened, head/base-validated
+    # `_live_pr_merged_sha` here (instead of a bare mergeCommit.oid read)
+    # closes that gap: it fails CLOSED (`pr-merged-wrong-base` /
+    # `pr-merged-wrong-head`) if the PR that actually ended up MERGED does
+    # not match the base/head admitted for this run, instead of recording an
+    # externally-merged, unadmitted head as a success.
+    sha = _live_pr_merged_sha(workspace, branch, base=base, head_sha=head_sha)
+    if not sha:
         raise RuntimeError(
             f"could not determine merge commit SHA for branch '{branch}' in "
-            f"'{workspace}'; gh pr view returned no mergeCommit.oid after merge"
+            f"'{workspace}' after gh pr merge reported success — the "
+            f"post-merge state was not resolvable as a validated MERGED PR"
         )
     return sha
 

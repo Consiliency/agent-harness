@@ -2107,9 +2107,11 @@ def _gh_subcommand(cmd: List[str]) -> str:
             if "isDraft" in joined:
                 return "view-premerge"  # isDraft,baseRefName,headRefOid (combined)
             if "state" in joined and "mergeCommit" in joined:
-                return "view-merged-sha"  # state,mergeCommit,baseRefName (idempotent guard)
-            if "mergeCommit" in joined:
-                return "view-mergecommit"  # post-merge SHA read
+                # state,mergeCommit,baseRefName,headRefOid (_live_pr_merged_sha) —
+                # used BOTH for the idempotent pre-merge guard AND (agent-harness#250
+                # CR recheck) the post-merge resolution, which re-runs the same
+                # validated lookup instead of a bare mergeCommit.oid read.
+                return "view-merged-sha"
     return "other:" + " ".join(cmd)
 
 
@@ -2180,18 +2182,23 @@ class TestLiveMergePrBaseRetargetGuard:
         ws = tmp_path / "repo-a"
         ws.mkdir()
         calls: List[List[str]] = []
+        merged = {"done": False}
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                if not merged["done"]:
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json("MERGED", "main", sha="sha-realmerge-123"),
+                )
             if label == "view-premerge":
                 return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
             if label == "merge":
+                merged["done"] = True
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
-            if label == "view-mergecommit":
-                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
@@ -2367,18 +2374,23 @@ class TestLiveMergePrNoYesFlag:
         ws = tmp_path / "repo-a"
         ws.mkdir()
         merge_cmds: List[List[str]] = []
+        merged = {"done": False}
 
         def fake_run(cmd, **kwargs):
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                if not merged["done"]:
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json("MERGED", "main", sha="sha-realmerge-123"),
+                )
             if label == "view-premerge":
                 return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
             if label == "merge":
                 merge_cmds.append(cmd)
+                merged["done"] = True
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
-            if label == "view-mergecommit":
-                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
@@ -2407,20 +2419,25 @@ class TestLiveMergePrDraftReadied:
         ws = tmp_path / "repo-a"
         ws.mkdir()
         calls: List[List[str]] = []
+        merged = {"done": False}
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                if not merged["done"]:
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json("MERGED", "main", sha="sha-realmerge-123"),
+                )
             if label == "view-premerge":
                 return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(True, "main"))
             if label == "ready":
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
             if label == "merge":
+                merged["done"] = True
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
-            if label == "view-mergecommit":
-                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
@@ -2435,18 +2452,23 @@ class TestLiveMergePrDraftReadied:
         ws = tmp_path / "repo-a"
         ws.mkdir()
         calls: List[List[str]] = []
+        merged = {"done": False}
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                if not merged["done"]:
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json("MERGED", "main", sha="sha-realmerge-123"),
+                )
             if label == "view-premerge":
                 return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
             if label == "merge":
+                merged["done"] = True
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
-            if label == "view-mergecommit":
-                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
@@ -2491,11 +2513,19 @@ class TestLiveMergePrHeadPinned:
         ws = tmp_path / "repo-a"
         ws.mkdir()
         merge_cmds: List[List[str]] = []
+        merged = {"done": False}
 
         def fake_run(cmd, **kwargs):
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                if not merged["done"]:
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-realmerge-123", head="sha-admitted-head"
+                    ),
+                )
             if label == "view-premerge":
                 # headRefOid matches the admitted head_sha: the N7 CR follow-up
                 # pre-check (defect 1 hardening) must NOT trip here — this test
@@ -2506,9 +2536,8 @@ class TestLiveMergePrHeadPinned:
                 )
             if label == "merge":
                 merge_cmds.append(cmd)
+                merged["done"] = True
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
-            if label == "view-mergecommit":
-                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
@@ -2531,18 +2560,23 @@ class TestLiveMergePrHeadPinned:
         ws = tmp_path / "repo-a"
         ws.mkdir()
         merge_cmds: List[List[str]] = []
+        merged = {"done": False}
 
         def fake_run(cmd, **kwargs):
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                if not merged["done"]:
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json("MERGED", "main", sha="sha-realmerge-123"),
+                )
             if label == "view-premerge":
                 return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
             if label == "merge":
                 merge_cmds.append(cmd)
+                merged["done"] = True
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
-            if label == "view-mergecommit":
-                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
@@ -2631,6 +2665,131 @@ class TestLiveMergePrHeadPinned:
             f"gh pr merge must NEVER be invoked when our own headRefOid read already "
             f"diverges from the admitted head_sha; got {merge_calls!r}"
         )
+
+
+class TestLiveMergePrPostMergeToctou:
+    """agent-harness#250 cross-vendor CR recheck: closes the TOCTOU window
+    between the head/base precheck and the `gh pr merge` invocation itself.
+
+    Prior to this fix, the post-merge SHA was read via a bare
+    `gh pr view --json mergeCommit --jq .mergeCommit.oid` — unvalidated
+    against head/base. `gh` CLI (>= 2.96.0) returns SUCCESS from
+    `gh pr merge` when its refreshed state finds the PR ALREADY MERGED (it
+    short-circuits before constructing the merge mutation that carries
+    `expectedHeadOid`, so `--match-head-commit` is NOT enforced in that
+    path). So an external actor who pushes a different head B and merges it
+    in the window between our precheck (PR OPEN, head/base matching
+    admitted) and the `gh pr merge` call would have B's merge SHA silently
+    recorded as this run's success.
+
+    The fix re-runs the already-hardened, head/base-validated
+    `_live_pr_merged_sha` (with the SAME admitted `base`/`head_sha` this
+    call was given) to resolve the post-merge SHA instead — it fails CLOSED
+    (`pr-merged-wrong-head`) on the externally-merged, unadmitted head."""
+
+    def test_external_merge_in_toctou_window_fails_closed(self, tmp_path: Path):
+        """PR is OPEN at precheck (head/base match admitted) -> `gh pr merge`
+        exits 0 (simulating gh's own already-merged short-circuit, which does
+        NOT enforce --match-head-commit) -> the post-merge state is MERGED,
+        but with headRefOid = an UNADMITTED head B (an external actor pushed
+        and merged B in the TOCTOU window). The node must fail CLOSED and
+        must NOT record B's merge SHA as success."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+        merged = {"done": False}
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                if not merged["done"]:
+                    # Precheck idempotent guard: not yet merged.
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                # Post-merge resolution: MERGED, but to an UNADMITTED head B —
+                # an external actor's merge landed in the TOCTOU window.
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-external-B-merge", head="sha-external-B"
+                    ),
+                )
+            if label == "view-premerge":
+                # Precheck: PR is OPEN, head/base match what was admitted.
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_premerge_json(False, "main", head="sha-admitted-head"),
+                )
+            if label == "merge":
+                # `gh pr merge` "succeeds" (returncode 0): this models gh's own
+                # already-merged short-circuit, which does not raise even
+                # though --match-head-commit was not actually enforced against
+                # the externally-merged head B.
+                merged["done"] = True
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if cmd[:3] == ["gh", "pr", "view"] and "--jq" in cmd and ".mergeCommit.oid" in cmd:
+                # PRE-FIX code path only: the bare, unvalidated post-merge read
+                # (`gh pr view --json mergeCommit --jq .mergeCommit.oid`). This
+                # is the exact defect being closed — it happily hands back the
+                # externally-merged head B's SHA with no head/base check at
+                # all. The fixed code never issues this call (it re-runs the
+                # validated `_live_pr_merged_sha` above instead), so this
+                # branch is unreachable against the patched implementation.
+                return _FakeCompletedProcess(returncode=0, stdout="sha-external-B-merge\n")
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="pr-merged-wrong-head"):
+                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+
+        # The externally-merged head's SHA must never have been treated as a
+        # recorded success anywhere the caller could observe.
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert len(merge_calls) == 1, (
+            f"gh pr merge is expected to be invoked once (and 'succeed' per gh's "
+            f"already-merged short-circuit); got {merge_calls!r}"
+        )
+
+    def test_post_merge_matching_head_and_base_records_sha(self, tmp_path: Path):
+        """Positive case: post-merge state is MERGED with headRefOid/baseRefName
+        matching the admitted head_sha/base -> the merge commit SHA is
+        recorded as success (the re-validated lookup is not a regression for
+        the ordinary, non-TOCTOU path)."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        merged = {"done": False}
+
+        def fake_run(cmd, **kwargs):
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                if not merged["done"]:
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-realmerge-good", head="sha-admitted-head"
+                    ),
+                )
+            if label == "view-premerge":
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_premerge_json(False, "main", head="sha-admitted-head"),
+                )
+            if label == "merge":
+                merged["done"] = True
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if cmd[:3] == ["gh", "pr", "view"] and "--jq" in cmd and ".mergeCommit.oid" in cmd:
+                # PRE-FIX code path only (see sibling test's comment); the
+                # bare read agrees with the validated lookup in this matching
+                # (non-TOCTOU) case, so this test passes both before and
+                # after the fix — it is the negative-case control.
+                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-good\n")
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+
+        assert sha == "sha-realmerge-good"
 
 
 class TestLivePrMergedShaHeadChecked:
@@ -2778,6 +2937,7 @@ class TestGhCallsRepoIdentityBound:
         ws = tmp_path / "repo-a"
         ws.mkdir()
         gh_calls: List[List[str]] = []
+        merged = {"done": False}
 
         def fake_run(cmd, **kwargs):
             if cmd[0] == "git" and cmd[3:5] == ["remote", "get-url"]:
@@ -2785,7 +2945,14 @@ class TestGhCallsRepoIdentityBound:
             gh_calls.append(cmd)
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                if not merged["done"]:
+                    return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json(
+                        "MERGED", "main", sha="sha-realmerge", head="sha-admitted"
+                    ),
+                )
             if label == "view-premerge":
                 return _FakeCompletedProcess(
                     returncode=0, stdout=_premerge_json(True, "main", head="sha-admitted")
@@ -2793,9 +2960,8 @@ class TestGhCallsRepoIdentityBound:
             if label == "ready":
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
             if label == "merge":
+                merged["done"] = True
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
-            if label == "view-mergecommit":
-                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge\n")
             raise AssertionError(f"unexpected gh call: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
