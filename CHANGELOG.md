@@ -298,6 +298,15 @@ common subparser arg now carries `SUPPRESS` (matching `--closeout-mode`/`--pipel
 `--phase` reaches the dispatcher and the requested phase runs. The dispatcher was correct;
 this is a CLI-only fix.
 
+### Panel/CR grok leg no longer errors on default runs — effort clamped to grok's CLI ceiling (#222)
+
+The panel / advisor-board grok leg hard-coded `--reasoning-effort max` on the default
+path, but grok's CLI accepts only `high | medium | low` and rejects `max`, so the grok
+leg **errored on every default panel/CR run** (it never contributed a review). The
+panel-path effort is now clamped to grok's ceiling (`max → high`), so the grok leg runs
+at its real maximum instead of failing. Sibling of the grokexec-path clamp in #224.
+(Consiliency/agent-harness#222)
+
 ### grokexec leg clamps `--reasoning-effort` to grok's CLI subset (#224)
 
 The grokexec/launcher grok leg passed the requested effort **raw** to
