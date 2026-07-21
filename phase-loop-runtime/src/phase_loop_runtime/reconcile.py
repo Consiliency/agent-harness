@@ -758,10 +758,39 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         # root it was granted in; a relocated `.phase-loop/` must NOT transfer it to a different
         # root (even with byte-identical roadmap content). Fail closed to the original path;
         # re-attestation is required in the new location.
+        # ah#238: a missing/empty `repo` or `roadmap` field must NOT resolve to the current
+        # working directory (`Path("").resolve()` == CWD). Reject those events explicitly,
+        # BEFORE the Path(...) construction, so the fail-closed posture is CWD-independent —
+        # never let an under-specified attestation spuriously match just because reconcile
+        # happens to be invoked from the repo root.
+        event_repo_raw = event.get("repo")
+        event_roadmap_raw = event.get("roadmap")
+        if not event_repo_raw or not event_roadmap_raw:
+            continue
+        # ah#238 (codex CR follow-up): a non-empty RELATIVE path (e.g. repo=".") is just as
+        # CWD-dependent as an empty one — Path(".").resolve() still resolves against the
+        # CURRENT working directory, not the original grant site. Normal writers always store
+        # absolute paths (LoopEvent.repo/roadmap are str(Path) of absolute paths), so reject
+        # any event whose repo/roadmap is not an absolute path string, CWD-independently,
+        # BEFORE the Path(...).resolve() construction below.
+        # ah#238 (codex CR re-follow-up): check is_absolute() on the RAW string — never
+        # expanduser() first, or a relative "~/repo" would expand to an absolute path under
+        # the CURRENT user's $HOME and spuriously pass, rebinding the authorization through
+        # $HOME rather than rejecting it as the relative path it is. A leading "~" path is
+        # relative here, full stop. expanduser() is also dropped from resolution below:
+        # normal writers store fully-resolved absolute paths, so no tilde expansion is ever
+        # needed for a legitimate event, and Path("~baduser").expanduser() can raise
+        # RuntimeError for a nonexistent user — guard the whole construction so a malformed
+        # event is rejected, not a reconciliation crash.
         try:
-            event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
-            event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
-        except OSError:
+            if not (
+                Path(str(event_repo_raw)).is_absolute()
+                and Path(str(event_roadmap_raw)).is_absolute()
+            ):
+                continue
+            event_repo = Path(str(event_repo_raw)).resolve()
+            event_roadmap = Path(str(event_roadmap_raw)).resolve()
+        except (OSError, ValueError, RuntimeError, TypeError):
             continue
         # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
         # path must not transfer the authorization to a different repo root.
@@ -776,9 +805,24 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         event_plan = payload.get("plan_path")
         if event_plan:
             try:
+                # ah#238 (codex CR follow-up): apply the SAME raw-string is_absolute() check
+                # used for repo/roadmap above to plan_path — a relative plan_path (e.g.
+                # "plans/x.md") is just as CWD-dependent, and a "~/x.md" plan_path would
+                # rebind through the current user's $HOME rather than being rejected as
+                # relative. Check on the RAW string, BEFORE expanduser()/resolve(), so a
+                # leading "~" is treated as relative here, full stop.
+                if not Path(str(event_plan)).is_absolute():
+                    continue
+                # Defense-in-depth (same crash class as the repo/roadmap guard above):
+                # expanduser() can raise RuntimeError for a "~baduser"-style plan_path, and
+                # ValueError for an otherwise-well-typed string containing an embedded null
+                # byte (e.g. plan_path: " "), which Path.resolve() rejects at the OS layer.
+                # TypeError is included in case a malformed event ever smuggles a non-str/
+                # non-PathLike JSON value (list/dict/etc.) into this field. Any of these must
+                # SKIP the event (fail closed), never crash reconciliation.
                 if Path(str(event_plan)).expanduser().resolve() != plan_path:
                     continue
-            except OSError:
+            except (OSError, ValueError, RuntimeError, TypeError):
                 continue
         kinds = payload.get("diagnostic_kinds_overridden")
         if not isinstance(kinds, list):
@@ -810,10 +854,39 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         # An `closeout_allow_unowned` authorization is bound to the repo root it was granted in;
         # a relocated `.phase-loop/` must NOT transfer it to a different root. Fail closed to the
         # original path; re-attestation is required in the new location.
+        # ah#238: a missing/empty `repo` or `roadmap` field must NOT resolve to the current
+        # working directory (`Path("").resolve()` == CWD). Reject those events explicitly,
+        # BEFORE the Path(...) construction, so the fail-closed posture is CWD-independent —
+        # never let an under-specified attestation spuriously match just because reconcile
+        # happens to be invoked from the repo root.
+        event_repo_raw = event.get("repo")
+        event_roadmap_raw = event.get("roadmap")
+        if not event_repo_raw or not event_roadmap_raw:
+            continue
+        # ah#238 (codex CR follow-up): a non-empty RELATIVE path (e.g. repo=".") is just as
+        # CWD-dependent as an empty one — Path(".").resolve() still resolves against the
+        # CURRENT working directory, not the original grant site. Normal writers always store
+        # absolute paths (LoopEvent.repo/roadmap are str(Path) of absolute paths), so reject
+        # any event whose repo/roadmap is not an absolute path string, CWD-independently,
+        # BEFORE the Path(...).resolve() construction below.
+        # ah#238 (codex CR re-follow-up): check is_absolute() on the RAW string — never
+        # expanduser() first, or a relative "~/repo" would expand to an absolute path under
+        # the CURRENT user's $HOME and spuriously pass, rebinding the authorization through
+        # $HOME rather than rejecting it as the relative path it is. A leading "~" path is
+        # relative here, full stop. expanduser() is also dropped from resolution below:
+        # normal writers store fully-resolved absolute paths, so no tilde expansion is ever
+        # needed for a legitimate event, and Path("~baduser").expanduser() can raise
+        # RuntimeError for a nonexistent user — guard the whole construction so a malformed
+        # event is rejected, not a reconciliation crash.
         try:
-            event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
-            event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
-        except OSError:
+            if not (
+                Path(str(event_repo_raw)).is_absolute()
+                and Path(str(event_roadmap_raw)).is_absolute()
+            ):
+                continue
+            event_repo = Path(str(event_repo_raw)).resolve()
+            event_roadmap = Path(str(event_roadmap_raw)).resolve()
+        except (OSError, ValueError, RuntimeError, TypeError):
             continue
         # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
         # path must not transfer the authorization to a different repo root.
@@ -826,11 +899,39 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         if not str(payload.get("operator_reason") or "").strip():
             continue
         event_plan = payload.get("plan_path")
-        if event_plan and plan_path is not None:
+        # ah#238 (codex CR residual-bypass follow-up): the RAW-string is_absolute()
+        # rejection below must run whenever the EVENT carries a plan_path value, fully
+        # INDEPENDENT of whether the CALLER discovered a current plan (`plan_path is not
+        # None`, i.e. `find_plan_artifact` found something for this phase). The previous
+        # `if event_plan and plan_path is not None:` gated the absoluteness check on the
+        # current-plan branch, so when reconcile ran with NO discovered current plan (the
+        # production recovery caller has no plan-existence precondition), a relative or
+        # tilde EVENT plan_path skipped validation entirely and fell through to
+        # `return True` below — a forged event could grant BREAKGLASS SL-2 just by
+        # omitting a real plan artifact. Split the check: absoluteness is unconditional;
+        # the resolved-path MATCH against the current plan only applies when a current
+        # plan actually exists to compare against.
+        if event_plan:
             try:
-                if Path(str(event_plan)).expanduser().resolve() != plan_path:
+                # ah#238 (codex CR follow-up): apply the SAME raw-string is_absolute() check
+                # used for repo/roadmap above to plan_path — a relative plan_path (e.g.
+                # "plans/x.md") is just as CWD-dependent, and a "~/x.md" plan_path would
+                # rebind through the current user's $HOME rather than being rejected as
+                # relative. Check on the RAW string, BEFORE expanduser()/resolve(), so a
+                # leading "~" is treated as relative here, full stop.
+                if not Path(str(event_plan)).is_absolute():
                     continue
-            except OSError:
+                # Defense-in-depth (same crash class as the repo/roadmap guard above):
+                # expanduser() can raise RuntimeError for a "~baduser"-style plan_path, and
+                # ValueError for an otherwise-well-typed string containing an embedded null
+                # byte (e.g. plan_path: " "), which Path.resolve() rejects at the OS layer.
+                # TypeError is included in case a malformed event ever smuggles a non-str/
+                # non-PathLike JSON value (list/dict/etc.) into this field. Any of these must
+                # SKIP the event (fail closed), never crash reconciliation.
+                resolved_event_plan = Path(str(event_plan)).expanduser().resolve()
+            except (OSError, ValueError, RuntimeError, TypeError):
+                continue
+            if plan_path is not None and resolved_event_plan != plan_path:
                 continue
         return True
     return False
@@ -1326,7 +1427,16 @@ def _normalize_automation_event(repo: Path, roadmap: Path, event: dict, current_
     if status not in RECONCILE_EVENT_STATUSES or not artifact:
         return event
 
-    artifact_path = Path(str(artifact)).expanduser().resolve()
+    # ah#238 (comprehensive follow-up): `artifact` is an untrusted ledger event field
+    # (event["automation"]["artifact"]), reachable from the MAIN reconcile() event loop for
+    # every event — not just the BREAKGLASS SL-2 gates. A malformed value (embedded null
+    # byte -> ValueError, "~baduser" -> RuntimeError, unreadable path -> OSError, or a
+    # non-str/non-PathLike JSON type slipping past str() -> TypeError) must not crash
+    # reconciliation; treat it as "does not normalize" and fall through to the raw event.
+    try:
+        artifact_path = Path(str(artifact)).expanduser().resolve()
+    except (OSError, ValueError, RuntimeError, TypeError):
+        return event
     try:
         artifact_path.relative_to(repo.resolve())
     except ValueError:
