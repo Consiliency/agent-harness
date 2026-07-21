@@ -762,5 +762,31 @@ class RoadmapPathsMatchNullByteTest(unittest.TestCase):
         self.assertEqual(roadmap_paths_match(stored_repo, stored_roadmap, repo, roadmap), (False, False))
 
 
+class RoadmapPathsMatchNonStrStoredRoadmapTest(unittest.TestCase):
+    """gemini CR (fix/breakglass-empty-repo-failclosed-238): the fast-path try/except
+    guarding ``Path(stored_roadmap_str).expanduser().resolve()`` caught only
+    ``(OSError, ValueError, RuntimeError)``, omitting ``TypeError`` even though the
+    later portable-path except in the same function already includes it. A non-str/
+    non-PathLike ``stored_roadmap`` (e.g. a nested object from malformed ledger JSON)
+    reaching ``Path(...)`` with that type would raise an uncaught ``TypeError``. Added
+    ``TypeError`` to the fast-path except for parity. Must fail closed to
+    ``(False, False)`` without raising for non-str stored_roadmap values.
+    """
+
+    def test_stored_roadmap_none_fails_closed_without_raising(self):
+        stored_repo = "/a/repo"
+        stored_roadmap = None
+        repo = Path("/b/repo")
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        self.assertEqual(roadmap_paths_match(stored_repo, stored_roadmap, repo, roadmap), (False, False))
+
+    def test_stored_roadmap_non_str_object_fails_closed_without_raising(self):
+        stored_repo = "/a/repo"
+        stored_roadmap = {"nested": "object"}
+        repo = Path("/b/repo")
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        self.assertEqual(roadmap_paths_match(stored_repo, stored_roadmap, repo, roadmap), (False, False))
+
+
 if __name__ == "__main__":
     unittest.main()

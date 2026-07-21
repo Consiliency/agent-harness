@@ -50,7 +50,7 @@ def roadmap_paths_match(
     try:
         if Path(stored_roadmap_str).expanduser().resolve() == current:
             return (True, False)
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError, TypeError):
         pass
     # Portable path: compare repo-relative subpaths. ``relative_to`` is lexical, so a
     # stale stored root that no longer exists on this host still relativizes.
