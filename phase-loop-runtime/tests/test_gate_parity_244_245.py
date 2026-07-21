@@ -282,6 +282,10 @@ class DelegatedChildCloseoutGateParityTest(unittest.TestCase):
 
         with patch("phase_loop_runtime.runner.build_prompt", side_effect=self._fake_build_prompt), \
              patch(
+                 "phase_loop_runtime.runner.run_auth_preflight",
+                 return_value=type("Preflight", (), {"ok": True, "metadata": {"probes": []}})(),
+             ), \
+             patch(
                  "phase_loop_runtime.runner.launch_with_spec",
                  return_value=LaunchResult(command=["codex", "exec"], returncode=0, output="", executor="codex"),
              ), \
