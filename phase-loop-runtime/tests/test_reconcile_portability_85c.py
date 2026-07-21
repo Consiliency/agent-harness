@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from phase_loop_runtime.classifier import classify_phase
 from phase_loop_runtime.events import append_event, append_payload
@@ -488,6 +489,140 @@ class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
             relative_roadmap = str(roadmap.relative_to(repo))
             payload = self._raw_lane_ir_payload(
                 repo, roadmap, "RUNNER", event_repo=str(repo), event_roadmap=relative_roadmap
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
+    # --- codex CR follow-up round 3 (ah#238): expanduser() applied BEFORE the absoluteness
+    # check let a RELATIVE "~/repo" path expand to an absolute path under the current $HOME
+    # and spuriously pass, and let "~nonexistent-user/..." raise an uncaught RuntimeError
+    # (the expanduser() call sat outside the try/except). The fix checks is_absolute() on the
+    # RAW string with no expanduser() at all. These tests pin: (1) a relative "repo" alone
+    # (with a correct absolute roadmap) fails closed, proving repo-rejection independently of
+    # roadmap; (2) a tilde "repo" is rejected as relative, not silently honored via $HOME;
+    # (3) a tilde path for a nonexistent user fails closed WITHOUT crashing reconciliation.
+
+    def test_closeout_allow_unowned_relative_repo_dot_with_absolute_roadmap_fails_closed(self):
+        # Isolates repo-rejection: roadmap is absolute AND correct, only `repo` is relative.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            payload = self._raw_attestation_payload(
+                repo, roadmap, "RUNNER", event_repo=".", event_roadmap=str(roadmap)
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_relative_repo_dot_with_absolute_roadmap_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            payload = self._raw_lane_ir_payload(
+                repo, roadmap, "RUNNER", event_repo=".", event_roadmap=str(roadmap)
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
+    def test_closeout_allow_unowned_tilde_repo_not_honored_via_home(self):
+        # `repo="~/repo"` is a RELATIVE path string (leading "~"), even though it happens to
+        # expand to the real repo root under this $HOME. Pre-fix, expanduser() ran before the
+        # absoluteness check, so this event spuriously matched — rebinding the authorization
+        # through $HOME. Must fail closed.
+        with tempfile.TemporaryDirectory() as home_td:
+            home_dir = Path(home_td)
+            repo = make_repo(home_dir)
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            payload = self._raw_attestation_payload(
+                repo, roadmap, "RUNNER", event_repo="~/repo", event_roadmap=str(roadmap)
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                with mock.patch.dict(os.environ, {"HOME": str(home_dir)}):
+                    self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_tilde_repo_not_honored_via_home(self):
+        with tempfile.TemporaryDirectory() as home_td:
+            home_dir = Path(home_td)
+            repo = make_repo(home_dir)
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            payload = self._raw_lane_ir_payload(
+                repo, roadmap, "RUNNER", event_repo="~/repo", event_roadmap=str(roadmap)
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                with mock.patch.dict(os.environ, {"HOME": str(home_dir)}):
+                    self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
+    def test_closeout_allow_unowned_tilde_nonexistent_user_fails_closed_without_raising(self):
+        # `Path("~nonexistent-user-xyz/repo").expanduser()` raises RuntimeError (no such user).
+        # Pre-fix, that call sat OUTSIDE the try/except in the absoluteness guard, so this event
+        # crashed reconciliation instead of being rejected. Must fail closed without raising.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            payload = self._raw_attestation_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo="~nonexistent-user-xyz/repo",
+                event_roadmap=str(roadmap),
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_tilde_nonexistent_user_fails_closed_without_raising(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            payload = self._raw_lane_ir_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo="~nonexistent-user-xyz/repo",
+                event_roadmap=str(roadmap),
             )
             append_payload(repo, payload, roadmap=roadmap)
 

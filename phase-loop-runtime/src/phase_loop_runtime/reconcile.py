@@ -773,15 +773,24 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         # absolute paths (LoopEvent.repo/roadmap are str(Path) of absolute paths), so reject
         # any event whose repo/roadmap is not an absolute path string, CWD-independently,
         # BEFORE the Path(...).resolve() construction below.
-        if not (
-            Path(str(event_repo_raw)).expanduser().is_absolute()
-            and Path(str(event_roadmap_raw)).expanduser().is_absolute()
-        ):
-            continue
+        # ah#238 (codex CR re-follow-up): check is_absolute() on the RAW string — never
+        # expanduser() first, or a relative "~/repo" would expand to an absolute path under
+        # the CURRENT user's $HOME and spuriously pass, rebinding the authorization through
+        # $HOME rather than rejecting it as the relative path it is. A leading "~" path is
+        # relative here, full stop. expanduser() is also dropped from resolution below:
+        # normal writers store fully-resolved absolute paths, so no tilde expansion is ever
+        # needed for a legitimate event, and Path("~baduser").expanduser() can raise
+        # RuntimeError for a nonexistent user — guard the whole construction so a malformed
+        # event is rejected, not a reconciliation crash.
         try:
-            event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
-            event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
-        except (OSError, ValueError):
+            if not (
+                Path(str(event_repo_raw)).is_absolute()
+                and Path(str(event_roadmap_raw)).is_absolute()
+            ):
+                continue
+            event_repo = Path(str(event_repo_raw)).resolve()
+            event_roadmap = Path(str(event_roadmap_raw)).resolve()
+        except (OSError, ValueError, RuntimeError):
             continue
         # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
         # path must not transfer the authorization to a different repo root.
@@ -796,9 +805,11 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         event_plan = payload.get("plan_path")
         if event_plan:
             try:
+                # Defense-in-depth (same crash class as the repo/roadmap guard above):
+                # expanduser() can raise RuntimeError for a "~baduser"-style plan_path.
                 if Path(str(event_plan)).expanduser().resolve() != plan_path:
                     continue
-            except OSError:
+            except (OSError, RuntimeError):
                 continue
         kinds = payload.get("diagnostic_kinds_overridden")
         if not isinstance(kinds, list):
@@ -845,15 +856,24 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         # absolute paths (LoopEvent.repo/roadmap are str(Path) of absolute paths), so reject
         # any event whose repo/roadmap is not an absolute path string, CWD-independently,
         # BEFORE the Path(...).resolve() construction below.
-        if not (
-            Path(str(event_repo_raw)).expanduser().is_absolute()
-            and Path(str(event_roadmap_raw)).expanduser().is_absolute()
-        ):
-            continue
+        # ah#238 (codex CR re-follow-up): check is_absolute() on the RAW string — never
+        # expanduser() first, or a relative "~/repo" would expand to an absolute path under
+        # the CURRENT user's $HOME and spuriously pass, rebinding the authorization through
+        # $HOME rather than rejecting it as the relative path it is. A leading "~" path is
+        # relative here, full stop. expanduser() is also dropped from resolution below:
+        # normal writers store fully-resolved absolute paths, so no tilde expansion is ever
+        # needed for a legitimate event, and Path("~baduser").expanduser() can raise
+        # RuntimeError for a nonexistent user — guard the whole construction so a malformed
+        # event is rejected, not a reconciliation crash.
         try:
-            event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
-            event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
-        except (OSError, ValueError):
+            if not (
+                Path(str(event_repo_raw)).is_absolute()
+                and Path(str(event_roadmap_raw)).is_absolute()
+            ):
+                continue
+            event_repo = Path(str(event_repo_raw)).resolve()
+            event_roadmap = Path(str(event_roadmap_raw)).resolve()
+        except (OSError, ValueError, RuntimeError):
             continue
         # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
         # path must not transfer the authorization to a different repo root.
@@ -868,9 +888,11 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         event_plan = payload.get("plan_path")
         if event_plan and plan_path is not None:
             try:
+                # Defense-in-depth (same crash class as the repo/roadmap guard above):
+                # expanduser() can raise RuntimeError for a "~baduser"-style plan_path.
                 if Path(str(event_plan)).expanduser().resolve() != plan_path:
                     continue
-            except OSError:
+            except (OSError, RuntimeError):
                 continue
         return True
     return False
