@@ -606,6 +606,13 @@ def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:
             # train-reverification path too (was execute-only). Auto requires-
             # python resolution already runs inside run_verification regardless.
             python_pin=resolve_python_pin(roadmap_path, plan),
+            # agent-harness#236: thread the phase alias already resolved above
+            # (either snapshot.current_phase or the awaiting_phase_closeout
+            # scan) so verification.json records the actual phase instead of
+            # falling back to 'unknown' via _phase_alias. Mirrors
+            # agent-harness#235 (agent-harness#85b) on the execute path in
+            # runner.py.
+            phase_alias=phase,
         )
         artifact_path = run_dir / ARTIFACT_NAME
         validation = validate_verification_artifact(artifact_path)
