@@ -261,7 +261,9 @@ class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
     closed against a hand-edited/corrupted ledger line, independent of CWD.
     """
 
-    def _raw_attestation_payload(self, repo, roadmap, phase, *, event_repo, event_roadmap, reason="owner sign-off in #238"):
+    def _raw_attestation_payload(
+        self, repo, roadmap, phase, *, event_repo, event_roadmap, reason="owner sign-off in #238", plan_path=None
+    ):
         event = LoopEvent(
             timestamp=utc_now(),
             repo=str(repo),
@@ -273,7 +275,7 @@ class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
             reasoning_effort="manual",
             source="cli",
             override_reason=reason,
-            metadata={"runner.closeout_allow_unowned_invoked": {"plan_path": None, "operator_reason": reason}},
+            metadata={"runner.closeout_allow_unowned_invoked": {"plan_path": plan_path, "operator_reason": reason}},
             **event_provenance(roadmap, phase),
         )
         payload = event.to_json()
@@ -285,7 +287,9 @@ class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
         payload["roadmap"] = event_roadmap
         return payload
 
-    def _raw_lane_ir_payload(self, repo, roadmap, phase, *, event_repo, event_roadmap, reason="owner sign-off in #238"):
+    def _raw_lane_ir_payload(
+        self, repo, roadmap, phase, *, event_repo, event_roadmap, reason="owner sign-off in #238", plan_path=None
+    ):
         event = LoopEvent(
             timestamp=utc_now(),
             repo=str(repo),
@@ -299,7 +303,7 @@ class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
             override_reason=reason,
             metadata={
                 "runner.lane_ir_override_invoked": {
-                    "plan_path": None,
+                    "plan_path": plan_path,
                     "operator_reason": reason,
                     "diagnostic_kinds_overridden": ["unowned_file"],
                 }
@@ -632,6 +636,130 @@ class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
                 self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
             finally:
                 os.chdir(cwd)
+
+    # ah#238 (codex CR round-3, comprehensive hardening): `Path(...).expanduser().resolve()`
+    # raises ValueError("embedded null byte") for a string containing a null byte (e.g.
+    # `plan_path: " "` / `"\x00"`). Pre-fix, the `plan_path` guard in both gates caught only
+    # `(OSError, RuntimeError)`, so a `plan_path` with an embedded null byte propagated the
+    # ValueError and CRASHED reconciliation instead of safely skipping the event. Everything
+    # else about the event (repo/roadmap/phase/sha/operator_reason) matches, isolating the
+    # crash to the plan_path parsing specifically.
+
+    def test_closeout_allow_unowned_plan_path_embedded_null_byte_fails_closed_without_raising(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            payload = self._raw_attestation_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo=str(repo),
+                event_roadmap=str(roadmap),
+                plan_path="plan\x00.md",
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_plan_path_embedded_null_byte_fails_closed_without_raising(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            payload = self._raw_lane_ir_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo=str(repo),
+                event_roadmap=str(roadmap),
+                plan_path="plan\x00.md",
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
+    # Same crash class in the earlier `repo`/`roadmap` guard: confirm a null byte there (not
+    # just an empty/relative/tilde value) also fails closed without raising, now that the
+    # guard's except clause covers ValueError explicitly.
+
+    def test_closeout_allow_unowned_repo_embedded_null_byte_fails_closed_without_raising(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            payload = self._raw_attestation_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo=str(repo) + "\x00",
+                event_roadmap=str(roadmap),
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_roadmap_embedded_null_byte_fails_closed_without_raising(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            payload = self._raw_lane_ir_payload(
+                repo,
+                roadmap,
+                "RUNNER",
+                event_repo=str(repo),
+                event_roadmap=str(roadmap) + "\x00",
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
+
+class RoadmapPathsMatchNullByteTest(unittest.TestCase):
+    """ah#238 (comprehensive hardening follow-up): ``roadmap_paths_match`` is called from the
+    MAIN ``reconcile()`` event loop for EVERY event's ``repo``/``roadmap`` fields, not just the
+    BREAKGLASS SL-2 gates. Pre-fix, its ``expanduser().resolve()`` calls caught only ``OSError``,
+    so an embedded null byte in a stored repo/roadmap string raised an uncaught ``ValueError``
+    and crashed reconciliation for ANY event, breakglass or not. Must fail closed to
+    ``(False, False)`` without raising.
+    """
+
+    def test_stored_roadmap_embedded_null_byte_fails_closed_without_raising(self):
+        stored_repo = "/a/repo"
+        stored_roadmap = "/a/repo/specs/phase-plans\x00-v1.md"
+        repo = Path("/b/repo")
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        self.assertEqual(roadmap_paths_match(stored_repo, stored_roadmap, repo, roadmap), (False, False))
+
+    def test_stored_repo_embedded_null_byte_fails_closed_without_raising(self):
+        stored_repo = "/a/re\x00po"
+        stored_roadmap = "/a/repo/specs/phase-plans-v1.md"
+        repo = Path("/b/repo")
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        self.assertEqual(roadmap_paths_match(stored_repo, stored_roadmap, repo, roadmap), (False, False))
 
 
 if __name__ == "__main__":

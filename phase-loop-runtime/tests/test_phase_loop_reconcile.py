@@ -892,6 +892,38 @@ class PhaseLoopReconcileTest(unittest.TestCase):
             self.assertTrue(snapshot.human_required)
             self.assertEqual(snapshot.blocker_class, "dirty_worktree_conflict")
 
+    def test_automation_artifact_embedded_null_byte_does_not_crash_reconcile(self):
+        # ah#238 (comprehensive hardening follow-up): `_normalize_automation_event` runs on
+        # EVERY event in the MAIN reconcile() loop (not gated behind BREAKGLASS SL-2), and
+        # pre-fix called `Path(str(artifact)).expanduser().resolve()` with NO try/except at
+        # all. A hand-edited/corrupted ledger line with an embedded null byte in
+        # `automation.artifact` (a JSON-escaped NUL codepoint) raised an uncaught ValueError and crashed
+        # reconciliation for the WHOLE repo, not just an operator breakglass path. Must
+        # fail closed (skip normalization, fall through to the raw event) without raising.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_two_phase_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "ALPHA", roadmap)
+            events_path = repo / ".phase-loop" / "events.jsonl"
+            events_path.parent.mkdir(parents=True)
+            events_path.write_text(
+                (
+                    '{"timestamp":"2026-04-24T00:00:00Z","source":"manual","automation":'
+                    '{"status":"blocked","artifact":"plan\\u0000path.md","human_required":true,'
+                    '"blocker_class":"dirty_worktree_conflict","blocker_summary":"Clean worktree required.",'
+                    '"required_human_inputs":["clean worktree"]}}\n'
+                ),
+                encoding="utf-8",
+            )
+            # Must not raise.
+            snapshot = reconcile(repo, roadmap)
+            # The malformed automation-only event fails to normalize (no `phase` field, so it
+            # is never bound to ALPHA/BETA); reconcile() falls back to the plan-artifact-derived
+            # "planned" status for ALPHA, exactly as if the malformed event were absent — proof
+            # it was safely SKIPPED rather than crashing or corrupting reconciliation.
+            self.assertEqual(snapshot.phases.get("ALPHA"), "planned")
+            self.assertFalse(snapshot.human_required)
+
     def test_verified_dirty_closeout_recovery_completes_stale_nonhuman_blocker(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_two_phase_repo(Path(td))

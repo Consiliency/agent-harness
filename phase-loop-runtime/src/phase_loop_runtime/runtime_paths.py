@@ -38,13 +38,19 @@ def roadmap_paths_match(
         return (False, False)
     try:
         current = roadmap.resolve()
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
         current = roadmap
     # Fast path: identical absolute roadmap (existing same-root state matches here).
+    # ah#238 (comprehensive follow-up): ``stored_roadmap``/``stored_repo`` are untrusted
+    # ledger event fields (``event.get("repo")``/``event.get("roadmap")``), reachable from
+    # the MAIN reconcile() event loop for EVERY event, not just the BREAKGLASS SL-2 gates.
+    # A malformed value (embedded null byte -> ValueError, "~baduser" -> RuntimeError,
+    # unreadable path -> OSError) must fall through to "does not match" rather than crash
+    # reconciliation.
     try:
         if Path(stored_roadmap_str).expanduser().resolve() == current:
             return (True, False)
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
         pass
     # Portable path: compare repo-relative subpaths. ``relative_to`` is lexical, so a
     # stale stored root that no longer exists on this host still relativizes.
@@ -56,7 +62,7 @@ def roadmap_paths_match(
             Path(stored_repo_str).expanduser().resolve()
         )
         current_rel = current.relative_to(repo.resolve())
-    except (ValueError, OSError, TypeError):
+    except (ValueError, OSError, RuntimeError, TypeError):
         return (False, False)
     if stored_rel == current_rel:
         return (True, True)

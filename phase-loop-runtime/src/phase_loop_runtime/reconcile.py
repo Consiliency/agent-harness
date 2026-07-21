@@ -806,10 +806,15 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         if event_plan:
             try:
                 # Defense-in-depth (same crash class as the repo/roadmap guard above):
-                # expanduser() can raise RuntimeError for a "~baduser"-style plan_path.
+                # expanduser() can raise RuntimeError for a "~baduser"-style plan_path, and
+                # ValueError for an otherwise-well-typed string containing an embedded null
+                # byte (e.g. plan_path: " "), which Path.resolve() rejects at the OS layer.
+                # TypeError is included in case a malformed event ever smuggles a non-str/
+                # non-PathLike JSON value (list/dict/etc.) into this field. Any of these must
+                # SKIP the event (fail closed), never crash reconciliation.
                 if Path(str(event_plan)).expanduser().resolve() != plan_path:
                     continue
-            except (OSError, RuntimeError):
+            except (OSError, ValueError, RuntimeError, TypeError):
                 continue
         kinds = payload.get("diagnostic_kinds_overridden")
         if not isinstance(kinds, list):
@@ -889,10 +894,15 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         if event_plan and plan_path is not None:
             try:
                 # Defense-in-depth (same crash class as the repo/roadmap guard above):
-                # expanduser() can raise RuntimeError for a "~baduser"-style plan_path.
+                # expanduser() can raise RuntimeError for a "~baduser"-style plan_path, and
+                # ValueError for an otherwise-well-typed string containing an embedded null
+                # byte (e.g. plan_path: " "), which Path.resolve() rejects at the OS layer.
+                # TypeError is included in case a malformed event ever smuggles a non-str/
+                # non-PathLike JSON value (list/dict/etc.) into this field. Any of these must
+                # SKIP the event (fail closed), never crash reconciliation.
                 if Path(str(event_plan)).expanduser().resolve() != plan_path:
                     continue
-            except (OSError, RuntimeError):
+            except (OSError, ValueError, RuntimeError, TypeError):
                 continue
         return True
     return False
@@ -1388,7 +1398,16 @@ def _normalize_automation_event(repo: Path, roadmap: Path, event: dict, current_
     if status not in RECONCILE_EVENT_STATUSES or not artifact:
         return event
 
-    artifact_path = Path(str(artifact)).expanduser().resolve()
+    # ah#238 (comprehensive follow-up): `artifact` is an untrusted ledger event field
+    # (event["automation"]["artifact"]), reachable from the MAIN reconcile() event loop for
+    # every event — not just the BREAKGLASS SL-2 gates. A malformed value (embedded null
+    # byte -> ValueError, "~baduser" -> RuntimeError, unreadable path -> OSError, or a
+    # non-str/non-PathLike JSON type slipping past str() -> TypeError) must not crash
+    # reconciliation; treat it as "does not normalize" and fall through to the raw event.
+    try:
+        artifact_path = Path(str(artifact)).expanduser().resolve()
+    except (OSError, ValueError, RuntimeError, TypeError):
+        return event
     try:
         artifact_path.relative_to(repo.resolve())
     except ValueError:
