@@ -1,0 +1,390 @@
+# agent-harness post-0.7.10 backlog — Phase Plan v9
+
+> How to use this document: save to `specs/phase-plans-v9.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v9-<alias>.md`), then `/claude-execute-phase <alias>` to build it.
+
+---
+
+## Context
+
+Release 0.7.10 shipped the goal-ID single-source-of-truth work (#211 Inc-1/Inc-2), the
+broker owned-scope reconciliation (#202), the codex staged-copy review leg (#177), and a
+batch of CR/CLI hardening. This roadmap covers the **remaining open backlog** — the
+follow-up issues those changes spawned plus two deferred features. The work is
+*heterogeneous and mostly independent*: several bounded, single-subsystem hardening fixes
+(each sonnet-dispatchable), two coupled correctness fixes with real internal structure, and
+two lower-priority features. There is no single interface-freeze spine; the roadmap's value
+is to (a) group the coupled work so it lands coherently, (b) express the priority ordering
+(hardening before features), and (c) make the backlog executable through the phase-loop
+pipeline instead of hand-driven. Every phase's work items are already tracked as GitHub
+issues in `Consiliency/agent-harness`; phases reference issues rather than restating them.
+
+---
+
+## Assumptions (fail-loud if wrong)
+
+1. Release 0.7.10 is published and on `main`; this roadmap starts from that baseline.
+2. The bounded hardening items (#238, #243, #231) have no shared files or freeze
+   dependencies — they can be built as fully parallel lanes.
+3. The broker #250 hardening genuinely requires changing the broker AND #201's
+   `_prebuilt_owned_paths` coordinator together (the `-z`/rename fixes must agree on path
+   format across both), so they are a single coordinated phase, not two.
+4. The live uncommitted advisor-board work in the `feat/advisor-board-abdreg` and
+   `phase/abdresolve` worktrees is still wanted; it is reconciled (finish / commit-park /
+   discard) before or as the first lane of the advisor-board feature phase.
+5. The public-repo cross-vendor-CR + green-CI merge gate is available for every phase.
+
+---
+
+## Non-Goals
+
+- **#246 goal-coverage enforce-mode** (`PHASE_LOOP_ACCEPTANCE_ENFORCE=block` fail-closed
+  completeness) — deferred: no production roadmap declares `EC-<ALIAS>-<N>` IDs yet, so the
+  enforce path has no production inputs. Revisit when a real roadmap adopts goal IDs.
+- **#248 fleet-wide IF-0-SANDBOX-1 external isolation** (spawn-cwd, live paths in prompts,
+  symlink-in-copy) — deferred: a large cross-vendor redesign (bwrap/container-level
+  isolation) defending a bar *no* vendor's review leg currently meets. Not driven by a
+  demonstrated threat.
+- Bulk-migrating the existing `specs/phase-plans-v1..v8` roadmaps to goal IDs — opt-in per
+  roadmap by design; not a backlog item.
+- No new human-required gates: all new gates stay warn-default / opt-in-to-block.
+
+---
+
+## Cross-Cutting Principles
+
+1. **Cross-vendor CR + green CI before every admin-merge.** This is a public repo: each
+   phase's lanes merge only after a completed cross-vendor code review (codex + gemini +
+   claude/Fable; backfill the third seat with grok when gemini is subscription-contended)
+   and green CI.
+2. **Bounded lanes are sonnet-dispatchable** in isolated git worktrees (implement + test +
+   push a branch; the orchestrator runs the CR + merge).
+3. **Hardening stays fail-closed.** No fix may convert a fail-closed gate into a fail-open
+   one; a purely-local read failure must not poison a shared epoch.
+4. **Autonomy-first:** new checks are warn-default and opt-in-to-block; never add a
+   `human_required` gate.
+5. **Match-the-runtime for any validator that must agree with a runtime check** — reuse the
+   authoritative runtime functions, never re-implement a parser.
+
+---
+
+## Phase Dependency DAG
+
+```
+  P1   Bounded hardening        (root)
+  PAR  Goal-coverage gate parity (root — parallel to P1)
+  BRK  Broker #250 hardening    (root — parallel to P1/PAR)
+   │
+   ▼   (after all hardening lands — priority ordering, not a freeze)
+  FAB  Advisor-board delta review   parallel after P1+PAR+BRK
+  FAV  Avatar closeout evidence     parallel after P1+PAR+BRK
+
+  P1, PAR, BRK have no shared ancestor -> plan + execute all three concurrently.
+  FAB and FAV have no shared ancestor with each other -> concurrent once hardening lands.
+```
+
+---
+
+## Top Interface-Freeze Gates
+
+These gates are the narrowest contracts that unblock downstream lanes/phases.
+`/claude-plan-phase` concretizes each (exact signature/format) when it plans the owning phase.
+
+1. **IF-0-BRK-1** — the NUL-delimited (`-z`) changed-path format shared by the broker
+   `GitHubBrokerAdapter._branch_diff_paths` and the coordinator
+   `train_runner._prebuilt_owned_paths`: both must emit/parse paths identically (with
+   `--no-renames` so a rename surfaces both endpoints) so the broker's coverage check and
+   the coordinator's owned-paths derivation cannot desync.
+2. **IF-0-PAR-1** — the shared re-check helper the delegated-child closeout path invokes so
+   the produced-gates + goal-coverage gates run at delegated completion exactly as on the
+   direct path (one function both callers use).
+
+---
+
+## Phases
+
+### Phase 1 — Bounded hardening (P1)
+
+**Objective**
+Land the independent, single-subsystem hardening follow-ups (#238, #243, #231) as parallel
+lanes, each fail-closed and CR-gated. #241 is a deferred lowest-priority lane.
+
+**Exit criteria**
+- [ ] #238: the breakglass gates fail closed on an empty event repo/roadmap independent of
+  CWD — a regression test drives an empty/missing event store and asserts the gate blocks.
+- [ ] #243: verification-evidence hardening beyond #209 — whole-artifact integrity check +
+  closeout-diagnostic redaction, with a test proving a tampered/oversized artifact is
+  rejected and diagnostics are redacted to metadata-only.
+- [ ] #231: grok is NOT `max_effort_planner_eligible` (narrow-reject, matching gemini/pi);
+  a test asserts grok is excluded from max-effort planner-of-record selection while still
+  usable as a panel/reviewer leg and as a non-max planner; the panel `_GROK_EFFORT` lookup
+  is hardened; a plain-English rationale note for reviewers/planners is added at the registry.
+- [ ] Full non-dotfiles suite green; each lane merged via cross-vendor CR + green CI.
+
+**Scope notes**
+- Decompose into 3 concurrent lanes owning disjoint files: (a) `#238` — convergence
+  breakglass gate module; (b) `#243` — `verification_evidence.py`; (c) `#231` —
+  `profiles.py` registry + `panel_invoker.py`/`harness_mapping.py`. No shared files → no
+  single-writer serialization; no intra-phase freeze.
+- Deferred lane (d) `#241` (login-shell shim exotic bash forms) is lowest priority /
+  adversary-equivalent to an already-accepted escape hatch — plan it last or skip this round.
+- Each lane is sonnet-dispatchable in an isolated worktree.
+
+**Non-goals**
+- Any change that converts a fail-closed gate to fail-open.
+- #231 does NOT reduce any vendor's own maximum effort — it only bars grok from being
+  selected as the max-effort *planner-of-record* (where it would silently downgrade to `high`).
+
+**Key files**
+- phase-loop-runtime/src/phase_loop_runtime/convergence/ (breakglass gates)
+- phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py
+- phase-loop-runtime/src/phase_loop_runtime/profiles.py
+- phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
+- phase-loop-runtime/src/phase_loop_runtime/advisor_board/harness_mapping.py
+
+**Depends on**
+- (none)
+
+**Produces**
+- IF-0-P1-1
+
+**Spec closeout policy**
+- schema: `spec_delta_closeout.v1`
+- decision: `no_spec_delta`
+- target surfaces: `phase-loop-runtime/src/phase_loop_runtime/**`
+- evidence paths: `phase-loop-runtime/tests/**`
+- redaction posture: `metadata_only`
+
+---
+
+### Phase 2 — Goal-coverage gate parity (PAR)
+
+**Objective**
+Close the two gate-parity gaps the goal-ID work surfaced: preflight gates bypass the
+lane-scheduler + work-unit path (#244), and closeout gates are not re-checked at delegated
+-child completion (#245). Make both gate families run identically on every path.
+
+**Exit criteria**
+- [ ] #244: the verification-evidence + acceptance-coverage preflight gates run on the
+  lane-scheduler and work-unit paths (not only the direct path); a test drives a
+  lane-scheduler/work-unit run and asserts the preflight gate fires.
+- [ ] #245: the produced-gates + goal-coverage closeout gates are re-checked when a
+  delegated child completes; a test drives a delegated-child completion and asserts both
+  gates evaluate (a missing gate → the same block as on the direct path).
+- [ ] The re-check is a single shared helper both the direct and delegated/scheduler paths
+  invoke (IF-0-PAR-1); no path-specific duplication that could drift.
+- [ ] Full non-dotfiles suite green; merged via cross-vendor CR + green CI.
+
+**Scope notes**
+- Decompose into 2 lanes: (a) `#244` preflight-parity on the lane-scheduler/work-unit
+  dispatch path; (b) `#245` delegated-child closeout re-check. They share the gate helpers,
+  so publish IF-0-PAR-1 (the shared re-check entry point) on day 1 so lane (a) and lane (b)
+  build against the same contract rather than each re-plumbing the gates.
+- Single-writer file: whichever module owns the shared gate-invocation helper — assign it
+  to lane (b) and have lane (a) consume it.
+
+**Non-goals**
+- #246 enforce-mode (parked — see Non-Goals).
+
+**Key files**
+- phase-loop-runtime/src/phase_loop_runtime/runner.py
+- phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py
+- phase-loop-runtime/src/phase_loop_runtime/ (lane-scheduler / work-unit dispatch + delegated-child closeout)
+
+**Depends on**
+- (none)
+
+**Produces**
+- IF-0-PAR-1
+
+**Spec closeout policy**
+- schema: `spec_delta_closeout.v1`
+- decision: `no_spec_delta`
+- target surfaces: `phase-loop-runtime/src/phase_loop_runtime/**`
+- evidence paths: `phase-loop-runtime/tests/**`
+- redaction posture: `metadata_only`
+
+---
+
+### Phase 3 — Broker #202 hardening (BRK)
+
+**Objective**
+Land the #250 broker-hardening cluster: `-z` path-quoting, `--no-renames` rename-escape
+close, base revision-syntax guard, empty-owned+empty-diff push guard, `head_sha`-pinned
+push, and `--base` on `gh pr create` — coordinated across the broker and the #201
+coordinator so the two never desync on path format.
+
+**Exit criteria**
+- [ ] Broker `_branch_diff_paths` and coordinator `_prebuilt_owned_paths` both use
+  `git diff --name-only -z --no-renames`, parse NUL-delimited, and agree on format
+  (IF-0-BRK-1); a rename of an unowned file into owned space is now caught (both endpoints
+  surface); a test proves the rename escape is closed.
+- [ ] `head_sha`-pinned push (`git push <url> <head_sha>:refs/heads/<branch>`) — a test
+  proves a ref advancing between validation and push cannot publish unverified content.
+- [ ] `gh pr create` passes `--base <request.base>`; base revision-syntax is guarded
+  (reject `~ ^ @{ ..` / base==branch); empty-owned + empty-diff no longer reaches push.
+- [ ] Full non-dotfiles suite green; merged via cross-vendor CR + green CI.
+
+**Scope notes**
+- Decompose into 2 lanes that SHARE the IF-0-BRK-1 path-format freeze: (a) broker-side
+  (`convergence/broker/credsep.py` — `_branch_diff_paths`, push pinning, `gh pr create
+  --base`, base guard); (b) coordinator-side (`train_runner.py` — `_prebuilt_owned_paths`
+  `-z`/`--no-renames`). Publish IF-0-BRK-1 (the exact `-z --no-renames` command + NUL-split)
+  before either lane implements, so both adopt it simultaneously — a broker-only change
+  would desync from the coordinator and false-reject legitimate renames.
+- Single-writer: the shared path-format helper (if extracted) is owned by lane (a).
+
+**Non-goals**
+- #248 external filesystem isolation (parked — different subsystem, see Non-Goals).
+
+**Key files**
+- phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py
+- phase-loop-runtime/src/phase_loop_runtime/train_runner.py
+
+**Depends on**
+- (none)
+
+**Produces**
+- IF-0-BRK-1
+
+**Spec closeout policy**
+- schema: `spec_delta_closeout.v1`
+- decision: `no_spec_delta`
+- target surfaces: `phase-loop-runtime/src/phase_loop_runtime/convergence/**`
+- evidence paths: `phase-loop-runtime/tests/**`
+- redaction posture: `metadata_only`
+
+---
+
+### Phase 4A — Advisor-board first-class delta review (FAB)
+
+**Objective**
+Deliver #191 (advisor-board first-class delta review with reviewed-byte equivalence), after
+first reconciling the live uncommitted advisor-board work stranded in the
+`feat/advisor-board-abdreg` and `phase/abdresolve` worktrees.
+
+**Exit criteria**
+- [ ] The uncommitted advisor-board work (abdreg config/matrix + abdresolve refactor) is
+  reconciled: either landed on a branch, committed-and-parked, or explicitly discarded with
+  a recorded decision — no silent loss, and the working tree state is documented.
+- [ ] #191: the advisor board supports a first-class delta review where the reviewed bytes
+  are equivalent to the full-artifact review (reviewed-byte equivalence), with a test.
+- [ ] Full non-dotfiles suite green; merged via cross-vendor CR + green CI.
+
+**Scope notes**
+- Decompose into 2 lanes: (a) **prerequisite** — reconcile the abdreg/abdresolve worktree
+  work (a single-writer, must complete before lane (b) touches `advisor_board/`); (b) the
+  #191 delta-review feature on top of the reconciled base. Lane (b) depends on lane (a).
+- This is a FEATURE (on-demand), scheduled after the hardening phases land.
+
+**Non-goals**
+- Any advisor-board change that would strand more uncommitted worktree state.
+
+**Key files**
+- phase-loop-runtime/src/phase_loop_runtime/advisor_board/
+- phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
+
+**Depends on**
+- P1
+- PAR
+- BRK
+
+**Produces**
+- IF-0-FAB-1
+
+**Spec closeout policy**
+- schema: `spec_delta_closeout.v1`
+- decision: `no_spec_delta`
+- target surfaces: `phase-loop-runtime/src/phase_loop_runtime/advisor_board/**`
+- evidence paths: `phase-loop-runtime/tests/**`
+- redaction posture: `metadata_only`
+
+---
+
+### Phase 4B — Avatar/browser-media closeout evidence (FAV)
+
+**Objective**
+Deliver #91 (require blocking visual-avatar evidence for phase-loop avatar/browser media
+closeout) as an opt-in-to-block gate, autonomy-first.
+
+**Exit criteria**
+- [ ] A phase whose closeout produces avatar/browser media requires blocking visual-avatar
+  evidence; absent evidence → the gate blocks only when opted in (warn-default otherwise),
+  with a test covering both the warn and opt-in-block paths.
+- [ ] Legacy phases with no avatar/browser media surface get no finding.
+- [ ] Full non-dotfiles suite green; merged via cross-vendor CR + green CI.
+
+**Scope notes**
+- Single lane: this is one bounded gate addition in the closeout-evidence path; it shares no
+  files with FAB and has no internal freeze, so it runs as its own leaf phase concurrently
+  with FAB. Justified single lane (one cohesive gate, no disjoint partition).
+- FEATURE (on-demand), scheduled after the hardening phases land.
+
+**Non-goals**
+- No new human-required gate; the block is opt-in.
+
+**Key files**
+- phase-loop-runtime/src/phase_loop_runtime/ (closeout evidence gate)
+
+**Depends on**
+- P1
+- PAR
+- BRK
+
+**Produces**
+- IF-0-FAV-1
+
+**Spec closeout policy**
+- schema: `spec_delta_closeout.v1`
+- decision: `no_spec_delta`
+- target surfaces: `phase-loop-runtime/src/phase_loop_runtime/**`
+- evidence paths: `phase-loop-runtime/tests/**`
+- redaction posture: `metadata_only`
+
+---
+
+## Execution Notes
+
+- **Planning**: `/claude-plan-phase P1`, `/claude-plan-phase PAR`, and `/claude-plan-phase
+  BRK` can be planned concurrently (no shared DAG ancestor). Plan `FAB` and `FAV` after the
+  three hardening phases land (they carry a priority dependency, not a freeze).
+- **Execution**: `/claude-execute-phase p1`, `/claude-execute-phase par`,
+  `/claude-execute-phase brk` in parallel; then `/claude-execute-phase fab` and
+  `/claude-execute-phase fav` in parallel.
+- **Critical path**: `P1|PAR|BRK → FAB` (FAB's reconcile-then-feature lane chain is the
+  longest) — wall-clock minimum is the hardening round plus the advisor-board chain.
+- **Parallel branches**: the three hardening phases are fully concurrent; the two feature
+  phases are concurrent with each other once hardening lands.
+- **Single-writer files across phases**: none — the phases own disjoint files (P1 gates,
+  PAR runner/goal_coverage, BRK broker+train_runner, FAB advisor_board, FAV closeout gate).
+  Within BRK, the broker/coordinator lanes share the IF-0-BRK-1 path-format freeze; within
+  PAR, the two lanes share IF-0-PAR-1.
+
+---
+
+## Acceptance Criteria
+
+- [ ] All open bounded-hardening issues (#238, #243, #231) are closed via merged PRs (with
+  #241 either done or explicitly deferred), each cross-vendor CR'd.
+- [ ] The gate-parity gaps (#244, #245) are closed with a single shared re-check helper.
+- [ ] The broker #250 hardening cluster is closed with the broker + #201 coordinator in
+  sync on the `-z --no-renames` path format.
+- [ ] The two features (#191, #91) are delivered, with the abdreg/abdresolve worktree work
+  reconciled and no silent loss.
+- [ ] Parked items (#246, #248) remain explicitly out of scope; no enforce-mode / external
+  isolation work was pulled in.
+
+## Verification
+
+```bash
+# Every open backlog issue targeted by this roadmap is closed:
+for n in 238 243 231 244 245 250 191 91; do
+  gh issue view $n --repo Consiliency/agent-harness --json state -q .state
+done   # expect: all CLOSED (or #241 explicitly deferred)
+
+# Full runtime suite green after the roadmap lands:
+cd phase-loop-runtime && PYTHONPATH=src:tests python3 -m pytest tests/ -q -m "not dotfiles_integration"
+
+# Parked items stayed open (not silently pulled in):
+gh issue view 246 --repo Consiliency/agent-harness --json state -q .state  # OPEN
+gh issue view 248 --repo Consiliency/agent-harness --json state -q .state  # OPEN
+```
