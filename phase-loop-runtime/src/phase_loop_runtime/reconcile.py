@@ -763,7 +763,20 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         # BEFORE the Path(...) construction, so the fail-closed posture is CWD-independent —
         # never let an under-specified attestation spuriously match just because reconcile
         # happens to be invoked from the repo root.
-        if not event.get("repo") or not event.get("roadmap"):
+        event_repo_raw = event.get("repo")
+        event_roadmap_raw = event.get("roadmap")
+        if not event_repo_raw or not event_roadmap_raw:
+            continue
+        # ah#238 (codex CR follow-up): a non-empty RELATIVE path (e.g. repo=".") is just as
+        # CWD-dependent as an empty one — Path(".").resolve() still resolves against the
+        # CURRENT working directory, not the original grant site. Normal writers always store
+        # absolute paths (LoopEvent.repo/roadmap are str(Path) of absolute paths), so reject
+        # any event whose repo/roadmap is not an absolute path string, CWD-independently,
+        # BEFORE the Path(...).resolve() construction below.
+        if not (
+            Path(str(event_repo_raw)).expanduser().is_absolute()
+            and Path(str(event_roadmap_raw)).expanduser().is_absolute()
+        ):
             continue
         try:
             event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
@@ -822,7 +835,20 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         # BEFORE the Path(...) construction, so the fail-closed posture is CWD-independent —
         # never let an under-specified attestation spuriously match just because reconcile
         # happens to be invoked from the repo root.
-        if not event.get("repo") or not event.get("roadmap"):
+        event_repo_raw = event.get("repo")
+        event_roadmap_raw = event.get("roadmap")
+        if not event_repo_raw or not event_roadmap_raw:
+            continue
+        # ah#238 (codex CR follow-up): a non-empty RELATIVE path (e.g. repo=".") is just as
+        # CWD-dependent as an empty one — Path(".").resolve() still resolves against the
+        # CURRENT working directory, not the original grant site. Normal writers always store
+        # absolute paths (LoopEvent.repo/roadmap are str(Path) of absolute paths), so reject
+        # any event whose repo/roadmap is not an absolute path string, CWD-independently,
+        # BEFORE the Path(...).resolve() construction below.
+        if not (
+            Path(str(event_repo_raw)).expanduser().is_absolute()
+            and Path(str(event_roadmap_raw)).expanduser().is_absolute()
+        ):
             continue
         try:
             event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()

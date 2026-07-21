@@ -405,6 +405,99 @@ class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    # --- codex CR follow-up (ah#238): non-empty RELATIVE repo/roadmap fields ---
+    #
+    # The falsy-only guard (`not event.get("repo")`) rejects an absent/empty field but lets a
+    # non-empty RELATIVE path through unchanged. `Path(".").resolve()` is exactly as
+    # CWD-dependent as `Path("").resolve()` — both resolve against the current working
+    # directory rather than the site the attestation was actually granted at. codex's
+    # read-only probe confirmed both gates fail OPEN on `repo="."` at the exact branch HEAD
+    # that introduced the falsy-only guard. These tests pin the fail-closed fix: any event
+    # whose `repo` or `roadmap` is not an ABSOLUTE path string must be rejected, independent
+    # of the falsy check.
+
+    def test_closeout_allow_unowned_relative_repo_dot_fails_closed_at_repo_root_cwd(self):
+        # The exact shape codex's probe used: repo="." (non-empty, relative), roadmap relative
+        # too, CWD == the actual repo root. Pre-fix, Path(".").resolve() == CWD == repo.resolve()
+        # → spurious match (codex observed True here on branch HEAD).
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            relative_roadmap = str(roadmap.relative_to(repo))
+            payload = self._raw_attestation_payload(
+                repo, roadmap, "RUNNER", event_repo=".", event_roadmap=relative_roadmap
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_closeout_allow_unowned_relative_roadmap_with_absolute_repo_fails_closed(self):
+        # Symmetric case: repo is absolute and correct, but roadmap is a RELATIVE path that
+        # happens to resolve (CWD-dependently) to the correct absolute roadmap when CWD == repo
+        # root. Must still fail closed regardless of which field carries the relative path.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            relative_roadmap = str(roadmap.relative_to(repo))
+            payload = self._raw_attestation_payload(
+                repo, roadmap, "RUNNER", event_repo=str(repo), event_roadmap=relative_roadmap
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_relative_repo_dot_fails_closed_at_repo_root_cwd(self):
+        # Mirrors the closeout_allow_unowned relative-`repo="."` case for the second BREAKGLASS
+        # SL-2 gate. codex's probe observed `('unowned_file',)` (a live override) here pre-fix.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            relative_roadmap = str(roadmap.relative_to(repo))
+            payload = self._raw_lane_ir_payload(
+                repo, roadmap, "RUNNER", event_repo=".", event_roadmap=relative_roadmap
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_relative_roadmap_with_absolute_repo_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            relative_roadmap = str(roadmap.relative_to(repo))
+            payload = self._raw_lane_ir_payload(
+                repo, roadmap, "RUNNER", event_repo=str(repo), event_roadmap=relative_roadmap
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
 
 if __name__ == "__main__":
     unittest.main()
