@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 from typing import Any, Mapping, Sequence
@@ -26,6 +26,20 @@ LOG_NAME = "verification.log"
 # it is NOT a secret-leak mitigation (a secret is tiny) — closeout-diagnostic
 # redaction is a separate follow-up. See the verification-evidence contract doc.
 DIAGNOSTIC_TAIL_BYTES = 4096
+
+# agent-harness#243 (whole-artifact integrity): a verification.json is normally well under
+# 100 KiB. An artifact past this bound is a tampered/runaway payload and is rejected FAIL
+# CLOSED before it is parsed or trusted (bounds a DoS / oversized-tamper vector that the
+# per-stage #209 byte-offset checks do not cover).
+MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
+
+# agent-harness#243 (whole-artifact integrity): the whole-artifact seal — a canonical digest
+# of verification.json (minus the derived log_sha256) — is embedded as this trailer line in
+# verification.log, so log_sha256 (which seals the log) also seals the artifact digest. A later
+# field/structural edit of verification.json (e.g. deleting a failed commands[] entry to forge a
+# pass) then no longer matches the sealed digest and fails closed. See the verification-evidence
+# contract doc's threat-model paragraph.
+_ARTIFACT_SEAL_PREFIX = "verification-artifact-sha256:"
 
 # agent-harness#209: typed failure origins, observed by the runner at execution time
 # (not re-derived from exit_code — a child that itself returns 124/127 must NOT be
@@ -586,8 +600,16 @@ def run_verification(
                 )
 
     finished_at = _utc_now()
-    log_sha256 = hashlib.sha256(log_path.read_bytes()).hexdigest()
-    result = VerificationResult(
+    # agent-harness#243 (whole-artifact integrity): seal the ENTIRE verification.json by
+    # embedding a canonical digest of its payload (minus the derived ``log_sha256``) as a
+    # trailer line in verification.log, THEN sha the log. Because ``log_sha256`` seals the
+    # log — including this trailer — any later field/structural edit of verification.json
+    # is detected at validate time (the recomputed payload digest no longer matches the
+    # sealed trailer). This closes the #209-documented gap where a multi-field / structural
+    # edit (e.g. deleting a failed ``commands[]`` entry) was undetected. Additive +
+    # backward-compatible: an artifact whose log carries NO seal trailer (a v1/older run, or
+    # an externally-built log) simply skips the seal check at validate time.
+    unsealed = VerificationResult(
         schema_version=SCHEMA_VERSION,
         run_id=run_path.name,
         phase_alias=_phase_alias(repo_path, phase_alias),
@@ -596,9 +618,14 @@ def run_verification(
         suite=suite_result,
         started_at=started_at,
         finished_at=finished_at,
-        log_sha256=log_sha256,
+        log_sha256="",  # placeholder; excluded from the seal digest, replaced below
         operational_exemptions=[dict(item) for item in operational_exemptions or []],
     )
+    seal = _canonical_artifact_digest(_result_to_payload(unsealed))
+    with log_path.open("ab") as log_file:
+        log_file.write(f"\n{_ARTIFACT_SEAL_PREFIX}{seal}\n".encode("utf-8"))
+    log_sha256 = hashlib.sha256(log_path.read_bytes()).hexdigest()
+    result = replace(unsealed, log_sha256=log_sha256)
     _write_artifact_atomic(artifact_path, _result_to_payload(result))
     return result
 
@@ -635,7 +662,15 @@ def validate_verification_commands(repo: Path, commands: list[list[str]]) -> lis
 
 
 def load_verification_artifact(path: Path) -> VerificationResult:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    artifact_path = Path(path)
+    # agent-harness#243: refuse to parse an oversized artifact (tampered/runaway). A missing
+    # file (stat OSError) falls through to ``read_text`` which raises the canonical OSError.
+    try:
+        if artifact_path.stat().st_size > MAX_ARTIFACT_BYTES:
+            raise ValueError(f"verification artifact exceeds max size {MAX_ARTIFACT_BYTES} bytes")
+    except OSError:
+        pass
+    data = json.loads(artifact_path.read_text(encoding="utf-8"))
     _require_keys(
         data,
         {
@@ -724,6 +759,26 @@ def _validate_v2_failure_kinds(
 def validate_verification_artifact(path: Path) -> VerificationArtifactValidation:
     artifact_path = Path(path)
     log_path = artifact_path.parent / LOG_NAME
+    # agent-harness#243 (whole-artifact integrity): reject an OVERSIZED artifact fail-closed
+    # BEFORE parsing it — a tampered/runaway verification.json must not be loaded or trusted.
+    try:
+        artifact_size = artifact_path.stat().st_size
+    except OSError as exc:
+        return VerificationArtifactValidation(
+            ok=False,
+            code="malformed_artifact",
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            findings=(str(exc),),
+        )
+    if artifact_size > MAX_ARTIFACT_BYTES:
+        return VerificationArtifactValidation(
+            ok=False,
+            code="oversized_artifact",
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            findings=(f"verification.json is {artifact_size} bytes, exceeds max {MAX_ARTIFACT_BYTES}",),
+        )
     try:
         result = load_verification_artifact(artifact_path)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -784,6 +839,24 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             findings=tuple(nonzero),
             diagnostics=diagnostics,
         )
+    # agent-harness#243 (whole-artifact integrity): this is the would-be PASS path. A
+    # verdict-flipping edit that removes the failing stage (e.g. deleting a failed
+    # ``commands[]`` entry, or a multi-field internally-consistent edit) leaves no nonzero
+    # exit and reaches HERE, having passed every #209 per-stage check. Verify the
+    # whole-artifact seal before declaring a pass — the recomputed payload digest must match
+    # the digest sealed in the (sha-authenticated) log trailer. Placed on the OK path only,
+    # AFTER the nonzero/integrity branches, so an already-failing/tampered artifact keeps its
+    # more-specific verdict; an UNSEALED artifact (v1/older) skips this check (back-compat).
+    seal_finding = _artifact_seal_finding(artifact_path, log_bytes)
+    if seal_finding is not None:
+        return VerificationArtifactValidation(
+            ok=False,
+            code="artifact_seal_mismatch",
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            exit_summary=_exit_summary(result),
+            findings=(seal_finding,),
+        )
     return VerificationArtifactValidation(
         ok=True,
         code="ok",
@@ -791,6 +864,50 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
         log_path=str(log_path),
         exit_summary=_exit_summary(result),
     )
+
+
+def _canonical_artifact_digest(payload: Mapping[str, Any]) -> str:
+    """agent-harness#243: SHA-256 over the artifact payload MINUS the derived ``log_sha256``
+    field, canonically serialized (sorted keys, tight separators). ``log_sha256`` is excluded
+    to break the seal<->log circular reference (the seal lives inside the log that
+    ``log_sha256`` covers). Deterministic, so the writer and the validator agree byte-for-byte
+    over a JSON round-trip."""
+    material = {key: value for key, value in payload.items() if key != "log_sha256"}
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _extract_artifact_seal(log_bytes: bytes) -> str | None:
+    """Return the sealed artifact digest embedded in verification.log's trailer (the LAST
+    line carrying ``_ARTIFACT_SEAL_PREFIX``), or None when the log carries no seal (a v1/older
+    run or an externally-built log). The runner always writes the seal as the final line, so
+    taking the last match ignores any earlier lookalike in captured subprocess output."""
+    marker = _ARTIFACT_SEAL_PREFIX.encode("utf-8")
+    for line in reversed(log_bytes.split(b"\n")):
+        if line.startswith(marker):
+            try:
+                return line[len(marker):].decode("ascii").strip()
+            except UnicodeDecodeError:
+                return None
+    return None
+
+
+def _artifact_seal_finding(artifact_path: Path, log_bytes: bytes) -> str | None:
+    """agent-harness#243: whole-artifact integrity check. Returns a finding string when the
+    artifact's sealed digest (embedded in the sha-authenticated log trailer) does not match a
+    fresh canonical digest of verification.json — i.e. a field/structural edit the per-stage
+    #209 checks do not cover. Returns None when the artifact is UNSEALED (v1/older / an
+    externally-built log) so those still validate (backward-compatible), or when it matches."""
+    sealed = _extract_artifact_seal(log_bytes)
+    if sealed is None:
+        return None  # unsealed artifact: skip (backward compatible)
+    try:
+        data = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "verification.json unreadable during artifact-seal verification"
+    if _canonical_artifact_digest(data) != sealed:
+        return "verification.json artifact seal does not match the sealed digest in verification.log"
+    return None
 
 
 def append_evidence_entry(doc_path: Path, entry: Mapping[str, Any]) -> dict[str, Any]:

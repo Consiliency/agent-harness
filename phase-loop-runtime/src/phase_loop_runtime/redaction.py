@@ -120,6 +120,61 @@ def build_source_truth_impact(
     )
 
 
+def redact_diagnostics_metadata_only(
+    diagnostics: Any,
+    *,
+    force_all: bool = False,
+) -> list[dict[str, Any]]:
+    """agent-harness#243 (closeout-diagnostic redaction).
+
+    A verification failure diagnostic's ``raw_tail`` is a bounded excerpt of
+    ``verification.log`` bytes surfaced into the PERSISTED closeout record (which downstream
+    prompts may read) — a real egress widening from disk log to closeout/ledger/prompt. Where
+    that excerpt (or any diagnostic field, e.g. an ``argv`` token) carries a secret/PII-shaped
+    value, redact that diagnostic to METADATA-ONLY: drop ``raw_tail`` and ``argv`` and keep only
+    safe structural metadata (role/index/exit_code/failure_kind/truncated) plus counts and the
+    matched reason. The on-disk ``verification.log`` is left FULL — only the closeout egress is
+    narrowed. Detection reuses the SAME ``_FORBIDDEN_METADATA_PATTERNS`` the closeout malformed-
+    metadata gate enforces, so a diagnostic that would trip that gate is instead redacted (this
+    also removes a latent false ``malformed_closeout`` block when a red suite dumps a secret into
+    the log). ``force_all`` (operator flag) redacts every diagnostic regardless of a match.
+    """
+    if not isinstance(diagnostics, (list, tuple)):
+        return []
+    redacted: list[dict[str, Any]] = []
+    for item in diagnostics:
+        if not isinstance(item, Mapping):
+            continue
+        reason = "operator_forced" if force_all else _forbidden_metadata_kind(item)
+        if reason is None:
+            redacted.append(dict(item))
+            continue
+        raw_tail = item.get("raw_tail")
+        redacted.append(
+            {
+                "role": item.get("role"),
+                "index": item.get("index"),
+                "exit_code": item.get("exit_code"),
+                "failure_kind": item.get("failure_kind"),
+                "truncated": bool(item.get("truncated")),
+                "diagnostic_status": "redacted",
+                "redacted": True,
+                "redaction_reason": reason,
+                "raw_tail_bytes": len(raw_tail.encode("utf-8")) if isinstance(raw_tail, str) else 0,
+                "argv_len": len(item["argv"]) if isinstance(item.get("argv"), (list, tuple)) else 0,
+            }
+        )
+    return redacted
+
+
+def _forbidden_metadata_kind(payload: Mapping[str, Any]) -> str | None:
+    serialized = json.dumps(payload, sort_keys=True, default=str)
+    for kind, pattern in _FORBIDDEN_METADATA_PATTERNS:
+        if pattern.search(serialized):
+            return kind
+    return None
+
+
 def metadata_redaction_diagnostic(payload: Mapping[str, Any] | None) -> dict[str, str] | None:
     if payload is None:
         return None

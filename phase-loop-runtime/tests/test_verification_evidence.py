@@ -614,5 +614,147 @@ class VerificationFailureDiagnosticsTest(unittest.TestCase):
             self.assertEqual(blocker_diag["diagnostic_status"], "present")
 
 
+class VerificationEvidenceHardening243Test(unittest.TestCase):
+    # agent-harness#243: whole-artifact integrity (seal + size bound) and closeout-diagnostic
+    # redaction. Mirrors the #209 tamper tests in VerificationEvidenceTest above.
+
+    def _run(self, repo, commands, env_refresh=None, suite=None, timeout=30):
+        run_dir = repo / ".phase-loop/runs/test-run"
+        run_verification(repo, run_dir, commands, suite, env_refresh, timeout)
+        return run_dir / "verification.json"
+
+    def test_normal_sealed_artifact_still_passes(self):
+        # Round-trip: a freshly-sealed GREEN artifact validates ok=True (proves the writer
+        # digest and the validator's recomputed digest agree byte-for-byte after JSON).
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            v = validate_verification_artifact(artifact)
+            self.assertTrue(v.ok)
+            self.assertEqual(v.code, "ok")
+
+    def test_seal_line_present_in_log_and_after_stage_regions(self):
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            log = (artifact.parent / "verification.log").read_bytes()
+            self.assertIn(b"verification-artifact-sha256:", log)
+            # The seal is the LAST line.
+            self.assertTrue(log.rstrip(b"\n").split(b"\n")[-1].startswith(b"verification-artifact-sha256:"))
+
+    def test_structural_edit_deleting_failed_command_is_caught_fail_closed(self):
+        # THE headline #243 case: a run with a failing cmd0 + passing cmd1; deleting the
+        # failed commands[] entry would forge a PASS under #209 (log_sha256 still matches, no
+        # nonzero remains). The whole-artifact seal detects the mutated payload.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            artifact = self._run(
+                repo,
+                [
+                    [sys.executable, "-c", "import sys; sys.exit(1)"],
+                    [sys.executable, "-c", "print('cmd1 ok')"],
+                ],
+            )
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            del payload["commands"][0]  # forge: drop the only failing stage
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)  # NOT a forged green pass
+            self.assertEqual(v.code, "artifact_seal_mismatch")
+
+    def test_consistent_field_edit_on_pass_path_is_caught(self):
+        # A single/multi-field internally-consistent edit that does not touch pass/fail (e.g.
+        # rewriting phase_alias) still changes the sealed payload digest -> fail closed.
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            payload["phase_alias"] = "FORGED-PHASE"
+            artifact.write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "artifact_seal_mismatch")
+
+    def test_unsealed_legacy_artifact_still_validates(self):
+        # Back-compat: an artifact whose log carries NO seal trailer (v1/older, or an
+        # externally-built log) skips the seal check and still passes.
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log_bytes = b"legacy stage output\n"
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            payload = {
+                "schema_version": 1,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [{"argv": ["true"], "cwd": ".", "exit_code": 0, "duration_s": 0.1, "log_offset": 0}],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            (run_dir / "verification.json").write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(run_dir / "verification.json")
+            self.assertTrue(v.ok)
+            self.assertEqual(v.code, "ok")
+
+    def test_oversized_artifact_rejected_before_parse(self):
+        from unittest.mock import patch
+
+        from phase_loop_runtime import verification_evidence as ve
+
+        with tempfile.TemporaryDirectory() as td:
+            artifact = self._run(Path(td), [[sys.executable, "-c", "print('ok')"]])
+            # Patch the bound below the (normal, valid) artifact's size so the size gate fires.
+            with patch.object(ve, "MAX_ARTIFACT_BYTES", 10):
+                v = validate_verification_artifact(artifact)
+            self.assertFalse(v.ok)
+            self.assertEqual(v.code, "oversized_artifact")
+
+    def test_redact_diagnostics_metadata_only_scrubs_secret_shaped_tail(self):
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "api_key='AKIAIOSFODNN7EXAMPLEKEY'\ntest failed\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+            {
+                "role": "suite", "index": None, "argv": ["pytest"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "3 failed, 1 passed\n",  # no secret
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        # Secret-bearing diagnostic -> metadata-only (no raw_tail / argv).
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("argv", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertGreater(out[0]["raw_tail_bytes"], 0)
+        # Clean diagnostic passes through untouched.
+        self.assertNotIn("redacted", out[1])
+        self.assertEqual(out[1]["raw_tail"], "3 failed, 1 passed\n")
+        # No forbidden token survives in the serialized output.
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+
+    def test_redact_diagnostics_force_all_suppresses_every_tail(self):
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [{
+            "role": "command", "index": 0, "argv": ["x"], "exit_code": 1,
+            "failure_kind": "nonzero_exit", "raw_tail": "totally benign output\n",
+            "truncated": False, "diagnostic_status": "present",
+        }]
+        out = redact_diagnostics_metadata_only(diagnostics, force_all=True)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "operator_forced")
+        self.assertNotIn("raw_tail", out[0])
+
+
 if __name__ == "__main__":
     unittest.main()
