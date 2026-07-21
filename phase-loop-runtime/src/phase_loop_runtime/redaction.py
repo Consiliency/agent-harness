@@ -100,6 +100,39 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.I,
         ),
     ),
+    # agent-harness#243 CR (cross-vendor codex, follow-up): the structural split-argv
+    # composite (see ``_iter_leaf_strings`` point 3 below) only fires for LIST/tuple
+    # elements. But operational verification commands are frequently stored as a single raw
+    # STRING (e.g. ``{"command": "curl --token AKIAIOSFODNN7EXAMPLEKEY"}``, as produced by
+    # ``discovery.py``), not a pre-split argv list. A space-separated ``--token VALUE`` inside
+    # such a string matched NEITHER the strict ``secret_like_value`` pattern above (no
+    # ``[:=]`` between keyword and value) NOR the list-only composite (there is no list to
+    # walk) -- so it passed both the redaction path and the fatal closeout gate unredacted.
+    #
+    # This is still an ENUMERATED, dash-anchored CLI-flag shape, not a loosening of
+    # ``secret_like_value``'s separator: the earlier attempt to fix this by widening
+    # ``secret_like_value`` to accept bare whitespace as a separator caused the ordinary-prose
+    # regression documented above (``token configuration`` etc.), because a bare keyword has
+    # no way to distinguish "CLI flag" from "English sentence". A LEADING DASH does: only a
+    # genuine CLI flag is spelled ``--token``/``-token``; prose never prefixes a word with a
+    # dash. Requiring ``-{1,2}`` immediately before the keyword lets this SECOND, separate
+    # pattern safely accept EITHER whitespace or ``=`` as the separator (covering both
+    # ``--token VALUE`` and ``--token=VALUE``) without reopening the prose false-positive --
+    # ``token configuration`` / ``password authentication documentation`` still have no dash
+    # and so still do not match this pattern (see the regression-guard tests). Anchored at a
+    # word boundary (``(?:^|\s)``) so the dash must genuinely start the flag token, not appear
+    # mid-word. Kept as its own entry in the SAME shared ``_FORBIDDEN_METADATA_PATTERNS`` tuple
+    # (SSOT) so both the redaction path and the fatal closeout gate see it identically; runs
+    # over the same leaf strings as every other pattern here (``_iter_leaf_strings`` already
+    # yields raw command/raw_tail string leaves), so no separate wiring is needed to cover the
+    # string-command and ``raw_tail`` cases this closes.
+    (
+        "secret_like_value",
+        re.compile(
+            r"(?:^|\s)-{1,2}(?:api[_-]?key|secret|token|password)[\s=]+['\"\\]*[A-Za-z0-9_\-]{12,}",
+            re.I,
+        ),
+    ),
     ("absolute_private_path", re.compile(r"/(?:home|users|mnt/(?:private|evidence|secure|raw|HC_Volume_[^/\s]+))/(?:[^\"'\s]+)", re.I)),
     ("provider_payload", re.compile(r"raw provider payload|provider payload|anthropic[_-]?payload|openai[_-]?payload", re.I)),
     ("credential_payload", re.compile(r"credential payload|private key|-----begin [a-z ]*private key-----", re.I)),
