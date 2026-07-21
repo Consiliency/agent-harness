@@ -70,12 +70,34 @@ _CODEX_EFFORT: dict[str, str] = {
 # CLAMPS to grok's own ``high`` ceiling — the panel's grok seat runs at grok-4.5's maximum
 # reasoning. (ah#222: a prior literal ``max`` made the grok leg ERROR on every default panel
 # run.) The grokexec/launcher grok effort path is separate (capability_registry) — not fixed here.
-_GROK_EFFORT: dict[str, str] = {
-    "low": "low",
-    "medium": "medium",
-    "high": "high",
+#
+# ah#231: kept as an OVERRIDES map (only the entries that don't pass through unchanged) plus a
+# ``.get``-with-clamp lookup below, matching ``launcher._GROK_CLI_EFFORT_OVERRIDES`` /
+# ``_grok_cli_effort`` VERBATIM (same keys, same values) for parity: the panel and the launcher
+# must clamp the same canonical effort to the same grok CLI token. Direct ``_GROK_EFFORT[effort]``
+# indexing (the prior form) would ``KeyError`` on any effort outside its literal 4-key set (e.g.
+# if the panel effort vocabulary ever grows past today's ``EFFORT_LEVELS`` to include
+# ``minimal``/``xhigh``, which ``NORMALIZED_EFFORT_LEVELS`` already knows about); the ``.get`` form
+# instead clamps a recognized-but-unsupported token to a valid one (and passes a genuinely unknown
+# token through unchanged) so the grok leg never KeyErrors and never emits an invalid CLI token.
+_GROK_EFFORT_OVERRIDES: dict[str, str] = {
+    "minimal": "low",   # matches launcher._GROK_CLI_EFFORT_OVERRIDES verbatim
+    "xhigh": "high",
     "max": "high",  # grok has no 'max'/'xhigh'; its ceiling is 'high'
 }
+
+
+def _grok_panel_effort(effort: str) -> str:
+    """Map a canonical panel effort to a grok-CLI-supported token (ah#231, robust lookup).
+
+    Low/medium/high pass through unchanged. minimal/xhigh/max clamp to a valid grok CLI
+    token via ``_GROK_EFFORT_OVERRIDES`` (identical to ``launcher._grok_cli_effort``'s
+    map, for panel/launcher parity). Any other, genuinely unrecognized effort passes
+    through unchanged via the ``.get`` default, so this can never ``KeyError`` — unlike
+    the direct-index form it replaces.
+    """
+    return _GROK_EFFORT_OVERRIDES.get(effort, effort)
+
 
 # canonical effort -> the ``(Word)`` token agy/gemini bakes into the model name
 # (panel_invoker.py:1016 uses ``(High)``).
@@ -137,7 +159,7 @@ def render_seat_invocation(harness: str, model: str, effort: str) -> SeatInvocat
     if lane == "grok":
         # grok headless -> ``--reasoning-effort <token>`` (alias ``--effort``); the
         # model is passed verbatim via ``-m``. Same flag mechanism as claude.
-        token = _GROK_EFFORT[effort]
+        token = _grok_panel_effort(effort)
         return SeatInvocation(lane, model, ("--reasoning-effort", token), MECH_FLAG)
     raise EffortMappingError(
         f"effort mapping for harness {harness!r} is populated in ABDREG/ABDHOME/ABDOMNI"

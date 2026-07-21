@@ -392,9 +392,14 @@ def _codex_cli_effort(effort: str) -> str:
 # in ah#222: 'max' -> "unknown effort level 'max'; use one of: high, medium, low"). The
 # internal `minimal`/`xhigh`/`max` tiers (in NORMALIZED_EFFORT_LEVELS) crash grok if emitted
 # verbatim, so translate them to grok's floor/ceiling HERE at the CLI boundary — same pattern
-# as `_codex_cli_effort` (max->xhigh) and the panel path's `_GROK_EFFORT` (max->high). This
-# keeps grok effort-eligible in the policy/tier layer: a 'max' request is honored at grok's
-# real ceiling ('high') rather than rejected.
+# as `_codex_cli_effort` (max->xhigh) and the panel path's `_grok_panel_effort`/
+# `_GROK_EFFORT_OVERRIDES` (max->high, kept verbatim-identical to this map for parity, ah#231).
+# This keeps a 'max' request for grok honored at its real ceiling ('high') at the CLI-emit
+# boundary rather than rejected — deliberately independent of ah#231's eligibility decoupling
+# (`profiles.max_effort_planner_eligible` / the `planner_max_class` capability flag), which
+# governs only whether grok is represented as the max-effort PLANNER OF RECORD, not whether a
+# 'max' request reaching this layer gets clamped. grok keeps a broad `supported_efforts` so a
+# 'max' request stays valid at the policy layer and is clamped HERE, exactly as before ah#231.
 _GROK_CLI_EFFORT_OVERRIDES = {"minimal": "low", "xhigh": "high", "max": "high"}
 
 
