@@ -758,10 +758,17 @@ def _lane_ir_override(repo: Path, roadmap: Path, phase: str, plan: Path) -> tupl
         # root it was granted in; a relocated `.phase-loop/` must NOT transfer it to a different
         # root (even with byte-identical roadmap content). Fail closed to the original path;
         # re-attestation is required in the new location.
+        # ah#238: a missing/empty `repo` or `roadmap` field must NOT resolve to the current
+        # working directory (`Path("").resolve()` == CWD). Reject those events explicitly,
+        # BEFORE the Path(...) construction, so the fail-closed posture is CWD-independent —
+        # never let an under-specified attestation spuriously match just because reconcile
+        # happens to be invoked from the repo root.
+        if not event.get("repo") or not event.get("roadmap"):
+            continue
         try:
             event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
             event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
-        except OSError:
+        except (OSError, ValueError):
             continue
         # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
         # path must not transfer the authorization to a different repo root.
@@ -810,10 +817,17 @@ def _closeout_allow_unowned_attested(repo: Path, roadmap: Path, phase: str) -> b
         # An `closeout_allow_unowned` authorization is bound to the repo root it was granted in;
         # a relocated `.phase-loop/` must NOT transfer it to a different root. Fail closed to the
         # original path; re-attestation is required in the new location.
+        # ah#238: a missing/empty `repo` or `roadmap` field must NOT resolve to the current
+        # working directory (`Path("").resolve()` == CWD). Reject those events explicitly,
+        # BEFORE the Path(...) construction, so the fail-closed posture is CWD-independent —
+        # never let an under-specified attestation spuriously match just because reconcile
+        # happens to be invoked from the repo root.
+        if not event.get("repo") or not event.get("roadmap"):
+            continue
         try:
             event_repo = Path(str(event.get("repo", ""))).expanduser().resolve()
             event_roadmap = Path(str(event.get("roadmap", ""))).expanduser().resolve()
-        except OSError:
+        except (OSError, ValueError):
             continue
         # Bind to the ORIGINAL repo ROOT (compare repo AND roadmap): a shared/external roadmap
         # path must not transfer the authorization to a different repo root.

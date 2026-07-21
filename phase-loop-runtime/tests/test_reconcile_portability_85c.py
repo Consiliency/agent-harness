@@ -1,10 +1,11 @@
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from phase_loop_runtime.classifier import classify_phase
-from phase_loop_runtime.events import append_event
+from phase_loop_runtime.events import append_event, append_payload
 from phase_loop_runtime.models import LoopEvent, utc_now
 from phase_loop_runtime.provenance import event_provenance
 from phase_loop_runtime.reconcile import (
@@ -245,6 +246,164 @@ class BreakglassRelocationTest(unittest.TestCase):
             plan_c = repo_c / "plans" / "phase-plan-v1-RUNNER.md"
             append_event(repo_c, self._lane_ir_event(repo_c, external_roadmap, "RUNNER"))
             self.assertEqual(_lane_ir_override(repo_c, external_roadmap, "RUNNER", plan_c), ("unowned_file",))
+
+
+class BreakglassEmptyRepoFailClosedTest(unittest.TestCase):
+    """ah#238 (fast-follow from #237/ah#85(C) round-3, Fable seat): a BREAKGLASS SL-2
+    attestation event with a missing/empty `repo` or `roadmap` field must NOT be honored.
+    Pre-fix, `Path(str(event.get("repo", "")))` turns an absent `repo` into `Path("")`, and
+    `.resolve()` on that resolves to the CURRENT WORKING DIRECTORY — so an under-specified,
+    potentially hand-edited event line would spuriously match whenever reconcile happens to
+    run with CWD at the repo root. The fix rejects such events explicitly before the
+    `Path(...)` construction, so the block below is unreachable through normal writers
+    (`LoopEvent.repo`/`roadmap` are required `str` fields) but the gate must still fail
+    closed against a hand-edited/corrupted ledger line, independent of CWD.
+    """
+
+    def _raw_attestation_payload(self, repo, roadmap, phase, *, event_repo, event_roadmap, reason="owner sign-off in #238"):
+        event = LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action="closeout_allow_unowned",
+            status="planned",
+            model="operator",
+            reasoning_effort="manual",
+            source="cli",
+            override_reason=reason,
+            metadata={"runner.closeout_allow_unowned_invoked": {"plan_path": None, "operator_reason": reason}},
+            **event_provenance(roadmap, phase),
+        )
+        payload = event.to_json()
+        # Simulate a hand-edited/corrupted ledger line: `repo`/`roadmap` are blank rather
+        # than the (normally-required) real values. `read_events` parses raw JSON, so this
+        # bypasses `LoopEvent.__post_init__` entirely, matching the append-only-log-content
+        # trust boundary the gate must defend.
+        payload["repo"] = event_repo
+        payload["roadmap"] = event_roadmap
+        return payload
+
+    def _raw_lane_ir_payload(self, repo, roadmap, phase, *, event_repo, event_roadmap, reason="owner sign-off in #238"):
+        event = LoopEvent(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phase=phase,
+            action="lane_ir_override",
+            status="planned",
+            model="operator",
+            reasoning_effort="manual",
+            source="cli",
+            override_reason=reason,
+            metadata={
+                "runner.lane_ir_override_invoked": {
+                    "plan_path": None,
+                    "operator_reason": reason,
+                    "diagnostic_kinds_overridden": ["unowned_file"],
+                }
+            },
+            **event_provenance(roadmap, phase),
+        )
+        payload = event.to_json()
+        payload["repo"] = event_repo
+        payload["roadmap"] = event_roadmap
+        return payload
+
+    def test_closeout_allow_unowned_empty_repo_field_fails_closed_at_repo_root_cwd(self):
+        # The exact fail-open shape named in ah#238: `repo` absent/empty, `roadmap` present
+        # and CORRECT, CWD == the actual repo root (the common case for reconcile). Pre-fix,
+        # `Path("").resolve()` == CWD == repo.resolve() → spurious match.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            payload = self._raw_attestation_payload(
+                repo, roadmap, "RUNNER", event_repo="", event_roadmap=str(roadmap)
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_closeout_allow_unowned_missing_roadmap_field_fails_closed(self):
+        # Symmetric case: `roadmap` absent/empty, `repo` present and correct.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            payload = self._raw_attestation_payload(
+                repo, roadmap, "RUNNER", event_repo=str(repo), event_roadmap=""
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_closeout_allow_unowned_empty_repo_field_fails_closed_regardless_of_cwd(self):
+        # CWD-independence: fails closed even from a THIRD, unrelated directory (not the
+        # repo root, not empty-string-adjacent). Guards against a fix that only special-cases
+        # the repo-root CWD instead of rejecting the malformed event outright.
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as other:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            payload = self._raw_attestation_payload(
+                repo, roadmap, "RUNNER", event_repo="", event_roadmap=str(roadmap)
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(other)
+                self.assertFalse(_closeout_allow_unowned_attested(repo, roadmap, "RUNNER"))
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_empty_repo_field_fails_closed_at_repo_root_cwd(self):
+        # Mirrors the closeout_allow_unowned case for the second BREAKGLASS SL-2 gate.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            payload = self._raw_lane_ir_payload(
+                repo, roadmap, "RUNNER", event_repo="", event_roadmap=str(roadmap)
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
+
+    def test_lane_ir_override_empty_roadmap_field_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            write_phase_plan(repo, "RUNNER", roadmap)
+            plan = repo / "plans" / "phase-plan-v1-RUNNER.md"
+            payload = self._raw_lane_ir_payload(
+                repo, roadmap, "RUNNER", event_repo=str(repo), event_roadmap=""
+            )
+            append_payload(repo, payload, roadmap=roadmap)
+
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                self.assertEqual(_lane_ir_override(repo, roadmap, "RUNNER", plan), ())
+            finally:
+                os.chdir(cwd)
 
 
 if __name__ == "__main__":
