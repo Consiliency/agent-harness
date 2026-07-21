@@ -501,8 +501,25 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         # translated at emit time). This map is defense-in-depth for the policy-layer
         # fallback path; it is kept accurate (not identity) rather than lying.
         effort_map={"minimal": "low", "xhigh": "high", "max": "high"},
+        # ah#231 (REPRESENTATIONAL honesty, DECIDED — decouple eligibility from effort
+        # translation): grok's real reasoning ceiling is `high` (its `--reasoning-effort`
+        # CLI rejects `max`, ah#222/#224), so it must NOT be represented as a max-effort
+        # PLANNER OF RECORD — the same stance gemini/pi take. But UNLIKE gemini/pi we do
+        # NOT narrow `supported_efforts` to express that: grok deliberately keeps the broad
+        # set so an explicit `max` request stays a VALID request that the CLI-emit layer
+        # translates to grok's `high` ceiling (`launcher._grok_cli_effort`), rather than
+        # tripping the policy-layer fallback. `planner_max_class=False` carries the
+        # eligibility signal on its own, keeping `max_effort_planner_eligible("grok")` False
+        # without touching run-level effort translation. Plain-English rule for future
+        # reviewers/planners: this does NOT reduce grok's effort anywhere — every vendor
+        # still runs at its own real max. grok stays fully usable as a panel/CR reviewer leg
+        # (that path never consults eligibility) and as a planner for non-max efforts at
+        # `high`; this flag only stops grok from being represented as THE max-effort
+        # planner-of-record, a role it is never AUTOSEL-selected for anyway (ah#231).
+        planner_max_class=False,
         notes=(
             "grok's `--reasoning-effort` CLI flag accepts ONLY high/medium/low (a subset of NORMALIZED_EFFORT_LEVELS); minimal/xhigh/max are clamped to a valid token at the CLI boundary by launcher._grok_cli_effort (like codex's max->xhigh).",
+            "grok is NOT max-effort planner-of-record eligible (ah#231, planner_max_class=False, matching gemini/pi's stance) — but unlike them it keeps the broad supported_efforts so an explicit `max` stays a valid, CLI-clamped request; the flag decouples eligibility from run-level effort translation and does not reduce grok's effort anywhere.",
         ),
     ),
     "gemini-api": ProviderPolicyCapability(

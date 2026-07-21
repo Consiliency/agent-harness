@@ -633,6 +633,14 @@ class ProviderPolicyCapability:
     effort_map: dict[str, str] = field(default_factory=dict)
     model_aliases: dict[str, str] = field(default_factory=dict)
     requires_run_local_user_scope: bool = False
+    # ah#231: eligibility to be the max-effort PLANNER OF RECORD, decoupled from run-level
+    # effort translation. `None` (the default) means "derive from supported_efforts" —
+    # i.e. `"max" in supported_efforts` — preserving the historical behavior for every
+    # provider that does not set it. A provider sets this explicitly to break that coupling:
+    # grok keeps a broad `supported_efforts` (so an explicit `max` stays a valid, CLI-clamped
+    # request) yet declares `planner_max_class=False` so it is not represented as a max-effort
+    # planner. See `profiles.max_effort_planner_eligible`.
+    planner_max_class: bool | None = None
     notes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:

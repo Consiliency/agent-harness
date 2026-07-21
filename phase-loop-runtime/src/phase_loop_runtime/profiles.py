@@ -154,18 +154,37 @@ PATCH_AUTHORING_ACTIONS: tuple[str, ...] = ("execute", "repair")
 
 
 def max_effort_planner_eligible(executor: str) -> bool:
-    """True iff `executor`'s planner-class model can actually run at `max` effort.
+    """True iff `executor` may be represented as the max-effort PLANNER OF RECORD.
 
     The "planner of record" for a max-effort planning action must deliver max
-    reasoning. Gemini ceilings at `high` (its `effort_map` clamps `max -> high`),
-    so it is NOT eligible as the max-effort planner of record — it serves as a
-    panel member instead, never the authoritative planner. This is the
-    dispatch-selection guard the effort clamp alone does not provide: the clamp
-    keeps gemini from *running* at max, but only this guard keeps it from being
-    *selected* as the max-effort planner.
+    reasoning. Gemini and pi both ceiling at `high` (their `effort_map`s clamp
+    `max -> high`) and express that by declaring a narrow `supported_efforts`
+    (no `"max"`), so neither is eligible — each serves as a panel member instead,
+    never the authoritative planner.
+
+    ah#231 decouples this eligibility signal from run-level effort translation via
+    the dedicated `planner_max_class` capability field. When a provider leaves it
+    unset (`None`), eligibility DERIVES from `supported_efforts` exactly as before
+    (`"max" in supported_efforts`), so gemini/pi/codex/claude/... are unchanged.
+    A provider sets it explicitly to break the coupling: grok keeps a broad
+    `supported_efforts` — so an explicit `max` request stays VALID and is clamped
+    to grok's real `high` ceiling only at the CLI-emit boundary
+    (`launcher._grok_cli_effort`, ah#224), never at the policy layer — yet declares
+    `planner_max_class=False` so it is not represented as a max-effort planner.
+
+    None of this reduces any provider's effort where it actually runs: grok (like
+    gemini/pi) still runs fully at its own real ceiling as a panel/CR reviewer leg
+    and as a planner for non-max efforts. This is a representational guard, not a
+    selection gate — grok is never AUTOSEL-selected as the planner of record anyway
+    (`resolve_dispatch_decision` does not consult eligibility); the only live reader
+    is the effort max->high fallback in `resolve_execution_policy`.
     """
     capability = provider_policy_capabilities().get(executor)
-    return bool(capability and "max" in capability.supported_efforts)
+    if capability is None:
+        return False
+    if capability.planner_max_class is not None:
+        return capability.planner_max_class
+    return "max" in capability.supported_efforts
 
 
 # The repo's SHIPPED model_policy. THIS repo's default: planning at max,
