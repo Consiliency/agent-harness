@@ -28,9 +28,13 @@ issues in `Consiliency/agent-harness`; phases reference issues rather than resta
 3. The broker #250 hardening genuinely requires changing the broker AND #201's
    `_prebuilt_owned_paths` coordinator together (the `-z`/rename fixes must agree on path
    format across both), so they are a single coordinated phase, not two.
-4. The live uncommitted advisor-board work in the `feat/advisor-board-abdreg` and
-   `phase/abdresolve` worktrees is still wanted; it is reconciled (finish / commit-park /
-   discard) before or as the first lane of the advisor-board feature phase.
+4. The live uncommitted advisor-board work is still wanted. It is spread across **FOUR**
+   worktrees carrying uncommitted state — `agent-harness-abdreg`, `ah-abdreg-pkg`, and
+   `ah-abdreg-rebase` (all on `feat/advisor-board-abdreg`, with *divergent* uncommitted
+   mods to the same files — config.py/matrix.py/tests/MANIFEST.in), plus
+   `agent-harness-abdresolve` (`phase/abdresolve`, incl. a deleted config.py). All four are
+   reconciled (finish / commit-park / discard) before or as the first lane of the
+   advisor-board feature phase; "reconcile abdreg/abdresolve" means all four, not two.
 5. The public-repo cross-vendor-CR + green-CI merge gate is available for every phase.
 
 ---
@@ -46,6 +50,11 @@ issues in `Consiliency/agent-harness`; phases reference issues rather than resta
   demonstrated threat.
 - Bulk-migrating the existing `specs/phase-plans-v1..v8` roadmaps to goal IDs — opt-in per
   roadmap by design; not a backlog item.
+- **This roadmap (v9) also opts OUT of `EC-<ALIAS>-<N>` goal IDs** — a conscious decision, not
+  an omission. Adopting them here would hand parked #246 its first production input while its
+  enforce-mode is still undecided (see the #246 bullet); the phases below are hardening/parity
+  lanes whose Exit criteria are already testable without goal-ID coverage. Revisit only if a
+  future append introduces work whose completeness genuinely needs goal-ID tracking.
 - No new human-required gates: all new gates stay warn-default / opt-in-to-block.
 
 ---
@@ -98,6 +107,12 @@ These gates are the narrowest contracts that unblock downstream lanes/phases.
    the produced-gates + goal-coverage gates run at delegated completion exactly as on the
    direct path (one function both callers use).
 
+> IF-0-BRK-1 and IF-0-PAR-1 are the only *real* freezes (intra-phase, published day-1 so a
+> phase's lanes build against the same contract). The `IF-0-P1-1`, `IF-0-FAB-1`, and
+> `IF-0-FAV-1` tokens in those phases' `Produces` blocks are **synthetic phase-completion
+> tokens** — they satisfy the roadmap's Produces↔gates reconciliation but freeze nothing and
+> have no downstream consumers (those phases' work is independent, no cross-phase freeze).
+
 ---
 
 ## Phases
@@ -121,10 +136,12 @@ lanes, each fail-closed and CR-gated. #241 is a deferred lowest-priority lane.
 - [ ] Full non-dotfiles suite green; each lane merged via cross-vendor CR + green CI.
 
 **Scope notes**
-- Decompose into 3 concurrent lanes owning disjoint files: (a) `#238` — convergence
-  breakglass gate module; (b) `#243` — `verification_evidence.py`; (c) `#231` —
-  `profiles.py` registry + `panel_invoker.py`/`harness_mapping.py`. No shared files → no
-  single-writer serialization; no intra-phase freeze.
+- Decompose into 3 concurrent lanes owning disjoint files: (a) `#238` — the two SL-2
+  breakglass gates (`_lane_ir_override`, `_closeout_allow_unowned_attested`) in TOP-LEVEL
+  `reconcile.py` (NOT `convergence/reconcile.py`); (b) `#243` — `verification_evidence.py`;
+  (c) `#231` — `profiles.py` registry + `panel_invoker.py`/`harness_mapping.py` + the
+  `launcher.py` clamp site. No shared files → no single-writer serialization; no
+  intra-phase freeze.
 - Deferred lane (d) `#241` (login-shell shim exotic bash forms) is lowest priority /
   adversary-equivalent to an already-accepted escape hatch — plan it last or skip this round.
 - Each lane is sonnet-dispatchable in an isolated worktree.
@@ -135,11 +152,12 @@ lanes, each fail-closed and CR-gated. #241 is a deferred lowest-priority lane.
   selected as the max-effort *planner-of-record* (where it would silently downgrade to `high`).
 
 **Key files**
-- phase-loop-runtime/src/phase_loop_runtime/convergence/ (breakglass gates)
+- phase-loop-runtime/src/phase_loop_runtime/reconcile.py (the two SL-2 breakglass gates — #238; NOT convergence/reconcile.py)
 - phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py
 - phase-loop-runtime/src/phase_loop_runtime/profiles.py
 - phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
 - phase-loop-runtime/src/phase_loop_runtime/advisor_board/harness_mapping.py
+- phase-loop-runtime/src/phase_loop_runtime/launcher.py (#231 run-level effort clamp site)
 
 **Depends on**
 - (none)
@@ -263,17 +281,22 @@ first reconciling the live uncommitted advisor-board work stranded in the
 `feat/advisor-board-abdreg` and `phase/abdresolve` worktrees.
 
 **Exit criteria**
-- [ ] The uncommitted advisor-board work (abdreg config/matrix + abdresolve refactor) is
-  reconciled: either landed on a branch, committed-and-parked, or explicitly discarded with
-  a recorded decision — no silent loss, and the working tree state is documented.
+- [ ] ALL FOUR worktrees carrying uncommitted advisor-board state are reconciled —
+  `agent-harness-abdreg`, `ah-abdreg-pkg`, `ah-abdreg-rebase` (divergent copies on
+  `feat/advisor-board-abdreg`), and `agent-harness-abdresolve` (`phase/abdresolve`): each
+  landed on a branch, committed-and-parked, or explicitly discarded with a recorded
+  decision — no silent loss (including the divergent copies), working-tree state documented.
 - [ ] #191: the advisor board supports a first-class delta review where the reviewed bytes
   are equivalent to the full-artifact review (reviewed-byte equivalence), with a test.
 - [ ] Full non-dotfiles suite green; merged via cross-vendor CR + green CI.
 
 **Scope notes**
-- Decompose into 2 lanes: (a) **prerequisite** — reconcile the abdreg/abdresolve worktree
-  work (a single-writer, must complete before lane (b) touches `advisor_board/`); (b) the
-  #191 delta-review feature on top of the reconciled base. Lane (b) depends on lane (a).
+- Decompose into 2 lanes: (a) **prerequisite** — reconcile ALL FOUR worktrees carrying
+  uncommitted advisor-board state (the three `feat/advisor-board-abdreg` copies +
+  `phase/abdresolve`), scoped BY BRANCH not by a fixed count so a divergent copy can't be
+  dropped silently (a single-writer that must complete before lane (b) touches
+  `advisor_board/`); (b) the #191 delta-review feature on the reconciled base. Lane (b)
+  depends on lane (a).
 - This is a FEATURE (on-demand), scheduled after the hardening phases land.
 
 **Non-goals**
