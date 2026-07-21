@@ -1629,6 +1629,83 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             summary = inspect_state(repo, roadmap=None)
             self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
 
+    def test_run_execute_verification_redacts_early_return_malformed_suite_command_at_source(self):
+        # agent-harness#243 CR recheck (codex, verified by grok): the prior source-redaction
+        # rounds (agent-harness#266 / #243) applied ``apply_diagnostics_redaction`` only on
+        # ``_run_execute_verification``'s MAIN return path, right before the final
+        # ``return summary``. The malformed-``suite_command`` EARLY return (resolve_suite_command
+        # fails to parse ``automation.suite_command`` -> ``suite_findings`` is non-empty) exits
+        # the function *before* that call, still carrying the RAW, unparsed
+        # ``operational_exemptions[].command`` string discovery.py stores verbatim (a plan
+        # verification line marked ``evidence: operational``). If that command is secret-shaped,
+        # the secret egresses through the same launch.json / child_automation / `state --json`
+        # paths the main-path tests above cover. The fix routes EVERY return of
+        # ``_run_execute_verification`` (regardless of internal branch) through
+        # ``apply_diagnostics_redaction`` via a thin wrapper, closing this branch and any other
+        # early-return path at once instead of patching this one call site.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            # Malformed automation.suite_command (unbalanced quote) -> shlex.split raises ->
+            # resolve_suite_command_doc returns a non-empty suite_findings tuple, driving
+            # _run_execute_verification down the EARLY-return branch (before the main-path
+            # redaction call at the end of the function).
+            roadmap.write_text(
+                "---\n"
+                "automation:\n  suite_command: 'echo \"unterminated'\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = f"curl -H 'X-Api-Key: {secret}' https://example.com --data api_key={secret}"
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}` evidence: operational\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            # Confirm this genuinely takes the EARLY-return branch, not the main path.
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["code"], "malformed_suite_command")
+            self.assertIsNone(result.get("suite_command"))
+
+            exemptions = result.get("operational_exemptions")
+            self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
 
 if __name__ == "__main__":
     unittest.main()

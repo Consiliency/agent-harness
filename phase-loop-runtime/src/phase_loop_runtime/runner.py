@@ -6152,6 +6152,36 @@ def _run_execute_verification(
     artifacts: dict[str, Path],
     phase_alias: str | None = None,
 ) -> dict[str, object]:
+    """Thin redaction-guaranteeing wrapper around :func:`_run_execute_verification_impl`.
+
+    agent-harness#243 CR recheck (codex, verified by grok): the prior source-redaction round
+    (agent-harness#266 / #243) applied ``apply_diagnostics_redaction`` only on the impl's MAIN
+    return path, right before the final ``return summary``. That left every EARLY return --
+    e.g. the malformed-``suite_command`` branch, which still carries the full, unparsed
+    ``operational_exemptions[].command`` string discovery.py stores verbatim -- exiting the
+    function unredacted. Branch-by-branch redaction is exactly the failure mode that keeps
+    recurring here (a future early return would trivially reintroduce the same gap), so this
+    wrapper makes it structurally impossible: EVERY return value of the impl, regardless of
+    which internal branch produced it, is routed through ``apply_diagnostics_redaction`` here,
+    at the single point callers actually observe. ``apply_diagnostics_redaction`` mutates and
+    returns its argument in place and is idempotent, so redacting an already-redacted summary
+    (the impl's main-path branch, which still redacts internally for clarity/tests) is a no-op.
+    """
+    return apply_diagnostics_redaction(
+        _run_execute_verification_impl(
+            repo=repo, roadmap=roadmap, plan=plan, artifacts=artifacts, phase_alias=phase_alias,
+        )
+    )
+
+
+def _run_execute_verification_impl(
+    *,
+    repo: Path,
+    roadmap: Path,
+    plan: Path,
+    artifacts: dict[str, Path],
+    phase_alias: str | None = None,
+) -> dict[str, object]:
     run_dir = artifacts.get("root")
     if run_dir is None:
         return {
