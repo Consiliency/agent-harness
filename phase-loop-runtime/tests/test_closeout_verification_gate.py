@@ -176,6 +176,40 @@ class CloseoutVerificationGateTest(unittest.TestCase):
             # The secret must not appear anywhere in the serialized closeout record.
             self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
 
+    def test_closeout_diagnostic_with_double_quoted_secret_is_redacted_to_metadata_only(self):
+        # agent-harness#243 CR (defect 1): a DOUBLE-quoted secret must be redacted too. The
+        # pre-fix matcher ran against a json.dumps(...) blob, which backslash-escapes an
+        # embedded double quote and broke the secret_like_value pattern (single-quoted secrets
+        # were unaffected -- see test_closeout_diagnostic_with_secret_is_redacted_to_metadata_only
+        # above -- which is why this case slipped through).
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            plan = self._plan(repo)
+            run_dir = repo / ".phase-loop/runs/test-run"
+            run_verification(
+                repo,
+                run_dir,
+                [[sys.executable, "-c",
+                  'import sys; print("api_key=\\"AKIAIOSFODNN7EXAMPLEKEY\\""); sys.exit(1)']],
+                None,
+                None,
+                5,
+            )
+
+            closeout = self._closeout(plan, run_dir)
+
+            self.assertEqual(closeout["verification"]["status"], "blocked")  # nonzero still blocks
+            result = closeout["verification"]["results"][0]
+            self.assertEqual(result["code"], "nonzero_exit")
+            diag = result["diagnostics"][0]
+            self.assertTrue(diag["redacted"])
+            self.assertEqual(diag["diagnostic_status"], "redacted")
+            self.assertNotIn("raw_tail", diag)
+            # The secret must not appear anywhere in the serialized closeout record.
+            self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", _json.dumps(closeout))
+
     def test_closeout_force_all_redaction_suppresses_benign_tail(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)

@@ -41,6 +41,17 @@ MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
 # contract doc's threat-model paragraph.
 _ARTIFACT_SEAL_PREFIX = "verification-artifact-sha256:"
 
+# agent-harness#243 CR: the seal must be read ONLY from the log's actual final non-empty
+# line, and that line must be an EXACT trailer match (prefix + a full 64-hex-char digest, no
+# trailing junk). A legacy/unsealed log whose captured command output happens to contain a
+# marker-shaped line (e.g. a test that echoes "verification-artifact-sha256:deadbeef...")
+# followed by further output must NOT be misread as sealed just because some earlier line
+# looks like a trailer — anchoring to the last non-empty line plus a strict digest shape
+# closes that misclassification.
+_ARTIFACT_SEAL_LINE_RE = re.compile(
+    r"^" + re.escape(_ARTIFACT_SEAL_PREFIX) + r"([0-9a-f]{64})$"
+)
+
 # agent-harness#209: typed failure origins, observed by the runner at execution time
 # (not re-derived from exit_code — a child that itself returns 124/127 must NOT be
 # mislabeled timeout/error).
@@ -878,18 +889,35 @@ def _canonical_artifact_digest(payload: Mapping[str, Any]) -> str:
 
 
 def _extract_artifact_seal(log_bytes: bytes) -> str | None:
-    """Return the sealed artifact digest embedded in verification.log's trailer (the LAST
-    line carrying ``_ARTIFACT_SEAL_PREFIX``), or None when the log carries no seal (a v1/older
-    run or an externally-built log). The runner always writes the seal as the final line, so
-    taking the last match ignores any earlier lookalike in captured subprocess output."""
-    marker = _ARTIFACT_SEAL_PREFIX.encode("utf-8")
-    for line in reversed(log_bytes.split(b"\n")):
-        if line.startswith(marker):
-            try:
-                return line[len(marker):].decode("ascii").strip()
-            except UnicodeDecodeError:
-                return None
-    return None
+    """Return the sealed artifact digest embedded in verification.log's trailer, or None when
+    the log carries no seal (a v1/older run, an externally-built log, or a legacy log that is
+    simply unsealed).
+
+    agent-harness#243 CR: the runner always writes the seal as the log's FINAL line, so only
+    the LAST NON-EMPTY line is inspected — and it must be an EXACT match of the trailer form
+    (prefix + a full 64-hex-char digest). Searching every line for a marker-shaped prefix (the
+    original approach) let an unsealed legacy log whose captured command output happens to
+    contain a marker-shaped line (e.g. a test that echoes
+    ``verification-artifact-sha256:deadbeef...``) get misclassified as SEALED, which then fails
+    the seal-mismatch check and breaks the promised "unsealed legacy log -> skip seal check,
+    still validates" back-compat. Anchoring to the true final line plus a strict digest shape
+    closes that."""
+    lines = log_bytes.split(b"\n")
+    last_non_empty: bytes | None = None
+    for line in reversed(lines):
+        if line.strip(b"\r") != b"":
+            last_non_empty = line
+            break
+    if last_non_empty is None:
+        return None
+    try:
+        decoded = last_non_empty.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    match = _ARTIFACT_SEAL_LINE_RE.match(decoded)
+    if match is None:
+        return None
+    return match.group(1)
 
 
 def _artifact_seal_finding(artifact_path: Path, log_bytes: bytes) -> str | None:

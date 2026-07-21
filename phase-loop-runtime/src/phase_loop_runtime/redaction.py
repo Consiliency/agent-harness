@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from .models import CHANGED_PATH_CATEGORIES, SourceTruthImpact
 
@@ -167,21 +166,48 @@ def redact_diagnostics_metadata_only(
     return redacted
 
 
+def _iter_leaf_strings(value: Any) -> Iterator[str]:
+    """Depth-first yield of every leaf ``str`` value inside a nested dict/list/tuple
+    structure (e.g. a diagnostic's nested ``argv`` list, or a closeout payload's nested
+    ``evidence_refs``).
+
+    agent-harness#243 CR: forbidden-metadata matching used to run against a
+    ``json.dumps(...)`` serialization of the whole structure. ``json.dumps`` backslash-escapes
+    an embedded double quote (``"`` -> ``\\"``), which breaks ``secret_like_value`` for a
+    double-quoted secret like ``api_key="SECRETVALUE12"`` — the serialized blob becomes
+    ``api_key=\\"SECRETVALUE12\\"``, the injected backslash sits between ``=`` and the quote,
+    so the pattern's optional ``['\"]?`` matches zero quotes and the following
+    ``[A-Za-z0-9_\\-]{12,}`` starts at the backslash and fails to match. Walking the RAW,
+    unescaped leaf strings and matching each one directly closes that blind spot while
+    remaining a superset of what the serialized-blob approach caught (every case that matched
+    a substring of the escaped blob matches at least as well against the raw leaf it came
+    from).
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _iter_leaf_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_leaf_strings(item)
+
+
 def _forbidden_metadata_kind(payload: Mapping[str, Any]) -> str | None:
-    serialized = json.dumps(payload, sort_keys=True, default=str)
+    leaves = list(_iter_leaf_strings(payload))
     for kind, pattern in _FORBIDDEN_METADATA_PATTERNS:
-        if pattern.search(serialized):
-            return kind
+        for leaf in leaves:
+            if pattern.search(leaf):
+                return kind
     return None
 
 
 def metadata_redaction_diagnostic(payload: Mapping[str, Any] | None) -> dict[str, str] | None:
     if payload is None:
         return None
-    serialized = json.dumps(payload, sort_keys=True)
-    for kind, pattern in _FORBIDDEN_METADATA_PATTERNS:
-        if pattern.search(serialized):
-            return {"kind": "malformed_closeout", "message": f"closeout contains forbidden metadata token: {kind}"}
+    kind = _forbidden_metadata_kind(payload)
+    if kind is not None:
+        return {"kind": "malformed_closeout", "message": f"closeout contains forbidden metadata token: {kind}"}
     return None
 
 

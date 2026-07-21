@@ -755,6 +755,134 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         self.assertEqual(out[0]["redaction_reason"], "operator_forced")
         self.assertNotIn("raw_tail", out[0])
 
+    def test_redact_diagnostics_metadata_only_scrubs_double_quoted_secret(self):
+        # agent-harness#243 CR (defect 1): the pre-fix matcher tested a json.dumps(...)
+        # serialization of the diagnostic. json.dumps backslash-escapes an embedded double
+        # quote (api_key="X" -> api_key=\"X\" in the serialized blob), which put the escape
+        # backslash between "=" and the quote and broke secret_like_value for a DOUBLE-quoted
+        # secret (single-quoted secrets were unaffected, since JSON doesn't escape '). The fix
+        # walks raw, unescaped leaf strings instead, so a double-quoted secret must now be
+        # caught -- both by the redaction path and by the fatal closeout metadata gate, which
+        # share the corrected matcher.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": 'api_key="AKIAIOSFODNN7EXAMPLEKEY"\ntest failed\n',
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("raw_tail", out[0])
+        self.assertNotIn("argv", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        # The fatal closeout metadata gate must independently catch the SAME unredacted
+        # diagnostic (agent-harness#243: both paths reuse the corrected leaf-walk matcher, not
+        # a forked/re-implemented pattern parser).
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_redact_diagnostics_metadata_only_scrubs_secret_in_nested_argv(self):
+        # agent-harness#243 CR: a secret embedded inside a nested argv list ELEMENT (not just
+        # a top-level raw_tail string) must be caught -- the leaf-walk must recurse into lists.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": [sys.executable, "-c", "print(1)", '--token="AKIAIOSFODNN7EXAMPLEKEY"'],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "ordinary failing output, no secret text here\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_value")
+        self.assertNotIn("argv", out[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+        gate = metadata_redaction_diagnostic({"verification": {"results": [{"diagnostics": diagnostics}]}})
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+
+    def test_metadata_redaction_diagnostic_catches_secret_json_embedded_in_closeout_payload(self):
+        # agent-harness#243 CR: a double-quoted secret buried deep inside the JSON-shaped
+        # closeout payload (as `metadata_redaction_diagnostic` is actually invoked in
+        # closeout.py, over the FULL closeout record, not just one diagnostic) must be caught.
+        # This mirrors how a redacted diagnostic would reach closeout.py's fatal metadata gate
+        # if redaction were ever bypassed.
+        from phase_loop_runtime.redaction import metadata_redaction_diagnostic, redact_diagnostics_metadata_only
+
+        closeout_shaped_payload = {
+            "schema": "phase_loop_closeout.v1",
+            "verification": {
+                "status": "blocked",
+                "results": [
+                    {
+                        "code": "nonzero_exit",
+                        "diagnostics": [
+                            {
+                                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                                "exit_code": 1, "failure_kind": "nonzero_exit",
+                                "raw_tail": 'api_key="AKIAIOSFODNN7EXAMPLEKEY"\ntest failed\n',
+                                "truncated": False, "diagnostic_status": "present",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+        gate = metadata_redaction_diagnostic(closeout_shaped_payload)
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertEqual(gate["kind"], "malformed_closeout")
+        # Once redacted, the same payload must clear the gate.
+        diagnostics = closeout_shaped_payload["verification"]["results"][0]["diagnostics"]
+        closeout_shaped_payload["verification"]["results"][0]["diagnostics"] = redact_diagnostics_metadata_only(diagnostics)
+        self.assertIsNone(metadata_redaction_diagnostic(closeout_shaped_payload))
+
+    def test_legacy_lookalike_seal_marker_not_final_line_still_validates(self):
+        # agent-harness#243 CR (defect 2): the seal is written as the FINAL trailer line of
+        # verification.log. An UNSEALED legacy log whose captured command output happens to
+        # contain a marker-shaped line (e.g. a test that echoes a fake seal marker) followed
+        # by MORE output must still be treated as unsealed (skip the seal check, legacy-
+        # compatible) -- not misclassified as sealed from an earlier lookalike line and
+        # rejected with a seal mismatch.
+        import hashlib as _h
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir(parents=True)
+            log_bytes = (
+                b"test output line 1\n"
+                b"verification-artifact-sha256:" + b"d" * 64 + b"\n"
+                b"more ordinary test output printed AFTER the lookalike marker line\n"
+            )
+            (run_dir / "verification.log").write_bytes(log_bytes)
+            payload = {
+                "schema_version": 1,
+                "run_id": "run",
+                "phase_alias": "VC",
+                "commands": [{"argv": ["true"], "cwd": ".", "exit_code": 0, "duration_s": 0.1, "log_offset": 0}],
+                "env_refresh": None,
+                "suite": None,
+                "started_at": "2026-07-21T00:00:00Z",
+                "finished_at": "2026-07-21T00:00:01Z",
+                "log_sha256": _h.sha256(log_bytes).hexdigest(),
+            }
+            (run_dir / "verification.json").write_text(json.dumps(payload), encoding="utf-8")
+            v = validate_verification_artifact(run_dir / "verification.json")
+            self.assertTrue(v.ok)
+            self.assertEqual(v.code, "ok")
+
 
 if __name__ == "__main__":
     unittest.main()
