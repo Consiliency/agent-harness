@@ -41,12 +41,26 @@ Coverage:
          _live_merge_pr re-reads the PR's CURRENT baseRefName via `gh pr view`
          immediately before `gh pr merge` and fails closed (no merge issued)
          when it no longer matches the base the broker's owned-scope check
-         validated at publish time. A matching base merges normally. The
-         idempotent already-merged guard short-circuits before the base
-         check — an already-merged PR is returned without re-checking.
+         validated at publish time. A matching base merges normally.
+  N7-CR (cross-vendor CR round on _live_merge_pr, four findings, all covered):
+    1. No bare `--yes` — gh >= 2.x has no such flag; every real merge was
+       aborting. `--merge` alone already makes gh non-interactive headless.
+    2. Draft PRs (the governed publish path always opens drafts) are readied
+       via `gh pr ready` before merging; a ready failure fails closed.
+    3. The idempotent already-merged short-circuit is now ALSO base-checked
+       (in the SAME combined `gh pr view` call): a matching-base already-
+       merged PR still returns its SHA in one call; a wrong-base already-
+       merged PR fails closed instead of being recorded as a success. Applied
+       at both _live_merge_pr's guard and the Step-3/P4 resume cross-checks
+       (see TestResumeRecoveryBaseChecked below).
+    4. The merge is pinned to the broker-admitted `head_sha` (threaded from
+       completed_nodes the same way `base` is threaded) via
+       `--match-head-commit`, so a post-admission push cannot land unchecked
+       content — GitHub itself refuses the merge on a mismatch.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, List, Optional
 from unittest.mock import patch
@@ -181,7 +195,7 @@ def _setup_p3_done(
 
 def _make_merge_pr_stub(merge_order: List[str]):
     """Merge PR stub that records the workspace name and returns a deterministic merged SHA."""
-    def _merge_pr(workspace: Path, branch: str, base: str = "main") -> str:
+    def _merge_pr(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
         merge_order.append(workspace.name)
         return f"sha-merged-{workspace.name}"
     return _merge_pr
@@ -215,7 +229,7 @@ class TestTrainReviewNonApproval:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "review_halted", (
@@ -249,7 +263,7 @@ class TestTrainReviewNonApproval:
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _train_review_fn=_rejection_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         # Ledger: both nodes must still be pr_open (no merged or reverted entries)
@@ -290,7 +304,7 @@ class TestSequentialMerge:
             _merge_pr_fn=_make_merge_pr_stub(merge_order),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merged"
@@ -320,7 +334,7 @@ class TestSequentialMerge:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         state = read_ledger(ledger)
@@ -363,7 +377,7 @@ class TestReverifyFalseGreenGuard:
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             _reverify_fn=_reverify_fail_for_b,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merge_halted"
@@ -398,7 +412,7 @@ class TestReverifyFalseGreenGuard:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_fail_for_b,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         state = read_ledger(ledger)
@@ -440,7 +454,7 @@ class TestMergedShaResolution:
         # Shared call log: captures set_upstream_ref + reverify + merge_pr in order.
         call_log: List[dict] = []
 
-        def _merge_pr(workspace: Path, branch: str, base: str = "main") -> str:
+        def _merge_pr(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
             sha = f"sha-merged-{workspace.name}"  # repo-a → "sha-merged-repo-a"
             call_log.append({"type": "merge_pr", "workspace": workspace.name, "sha": sha})
             return sha
@@ -472,7 +486,7 @@ class TestMergedShaResolution:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_logging,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merged"
@@ -593,7 +607,7 @@ class TestIdempotentResume:
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merged"
@@ -663,7 +677,7 @@ class TestIdempotentResume:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         state = read_ledger(ledger)
@@ -823,7 +837,7 @@ class TestCrashBetweenMergeAndLedgerWrite:
                 re_injection_refs.append(ref)
             return []
 
-        def _pr_merged_sha(workspace: Path, branch: str) -> Optional[str]:
+        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None) -> Optional[str]:
             # Simulate GitHub: repo-a is merged, repo-b is not
             if workspace.name == "repo-a":
                 return "sha-merged-a"
@@ -878,7 +892,7 @@ class TestCrashBetweenMergeAndLedgerWrite:
             review_calls.append("called")
             return _approval_review_fn(artifact, run_mode)
 
-        def _pr_merged_sha(workspace: Path, branch: str) -> Optional[str]:
+        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None) -> Optional[str]:
             if workspace.name == "repo-a":
                 return "sha-merged-a"
             return None
@@ -1078,7 +1092,7 @@ class TestLiveReverifySignals:
             _merge_pr_fn=_make_merge_pr_stub(merge_calls),
             # NOTE: _reverify_fn NOT injected — uses live _live_reverify default
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merge_halted", (
@@ -1145,7 +1159,7 @@ class TestNotOpenMergedPrOpenResume:
             # All PRs show as not-open (merged PR state).
             return False
 
-        def _pr_merged_sha(workspace: Path, branch: str) -> Optional[str]:
+        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None) -> Optional[str]:
             # repo-a is merged on GitHub; repo-b is still pending (not merged).
             if workspace.name == "repo-a":
                 return "sha-merged-a"
@@ -1245,12 +1259,142 @@ class TestNotOpenMergedPrOpenResume:
             _live_pr_head_sha_fn=lambda ws, br: None,
             _merge_phase_enabled=True,
             # No merged SHA for any node.
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         # repo-a is not open and not merged → dropped → rebuilt.
         assert "repo-a" in run_loop_calls, (
             f"repo-a must be rebuilt when closed-unmerged; run_loop_calls={run_loop_calls!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# N7-CR finding 3 (agent-harness#250 follow-up): the resume/recovery paths
+# that treat a live `state == MERGED` read as a landed success must ALSO be
+# base-checked, not just _live_merge_pr's own idempotent guard. There are two
+# such call sites in run_train, both exercised here in isolation:
+#   (a) Step 3's not-open-pr_open crash-window recovery (the same code path
+#       TestNotOpenMergedPrOpenResume drives, here with a base-mismatch stub).
+#   (b) The P4 cross-check loop ("crash-between-merge-and-ledger-write") that
+#       runs AFTER train review, for nodes not already resolved via the ledger
+#       or Step 3 (i.e. their PR was still reported open at Step 3 time).
+
+
+class TestResumeRecoveryBaseChecked:
+    """A `_pr_merged_sha_fn` that raises 'merged to the wrong base' must halt
+    the train (fail closed), never be swallowed into a false recovery."""
+
+    def _wrong_base_stub(self, target_workspace_name: str):
+        def _pr_merged_sha(workspace: Path, branch: str, base: Optional[str] = None) -> Optional[str]:
+            if workspace.name == target_workspace_name:
+                raise RuntimeError(
+                    f"pr-merged-wrong-base: branch '{branch}' in '{workspace}' is "
+                    f"MERGED, but its baseRefName is 'release/2.0', not the "
+                    f"expected '{base}'"
+                )
+            return None
+        return _pr_merged_sha
+
+    def test_step3_recovery_wrong_base_fails_closed(self, tmp_path: Path):
+        """Step-3 crash-window recovery (not-open pr_open node): a
+        _pr_merged_sha_fn raising a base-mismatch must produce status=blocked,
+        never a silent recovery-as-merged."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        for rec in [
+            LedgerRecord(
+                node_id="repo-a/specs/plan-a.md", status="pr_open",
+                branch="feat/train-a", head_sha="sha-draft-a",
+                pr_url="https://gh.com/repo-a/1", merge_order=0,
+            ),
+            LedgerRecord(
+                node_id="repo-b/specs/plan-b.md", status="pr_open",
+                branch="feat/train-b", head_sha="sha-draft-b",
+                pr_url="https://gh.com/repo-b/1", merge_order=1,
+            ),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+        ]:
+            append_record(ledger, rec)
+
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        merge_calls: List[str] = []
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            # repo-a's PR shows not-open at Step 3 (crash-window shape).
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub(merge_calls),
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=self._wrong_base_stub("repo-a"),
+        )
+
+        assert result["status"] == "blocked", (
+            f"a wrong-base already-merged PR at Step-3 recovery must halt the "
+            f"train (status=blocked), got {result['status']!r}: {result!r}"
+        )
+        assert result.get("node_id") == "repo-a/specs/plan-a.md"
+        assert merge_calls == [], (
+            f"no merge may be issued once the base mismatch is detected; "
+            f"got {merge_calls!r}"
+        )
+        state = read_ledger(ledger)
+        assert state["repo-a/specs/plan-a.md"].status == "blocked", (
+            "the ledger must record repo-a as blocked, never as merged"
+        )
+
+    def test_p4_crosscheck_wrong_base_fails_closed(self, tmp_path: Path):
+        """The P4 post-review cross-check loop: a _pr_merged_sha_fn raising a
+        base-mismatch for a node whose PR is still reported open at Step 3
+        (so Step 3 does not intercept it) must produce merge_halted, not a
+        silent recovery."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        merge_calls: List[str] = []
+
+        result = run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            # Both PRs report open at Step 3 — Step 3 does not intercept.
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub(merge_calls),
+            _train_review_fn=_approval_review_fn,
+            # Only invoked by the P4 cross-check loop (Step 3 never calls it
+            # here, since both PRs show open); repo-a is "merged elsewhere".
+            _pr_merged_sha_fn=self._wrong_base_stub("repo-a"),
+        )
+
+        assert result["status"] == "merge_halted", (
+            f"a wrong-base already-merged PR discovered by the P4 cross-check "
+            f"must halt the train, got {result['status']!r}: {result!r}"
+        )
+        assert result.get("reason") == "pr_merged_wrong_base"
+        assert result.get("node_id") == "repo-a/specs/plan-a.md"
+        assert merge_calls == [], (
+            f"no merge may be issued once the base mismatch is detected; "
+            f"got {merge_calls!r}"
+        )
+        state = read_ledger(ledger)
+        assert state["repo-a/specs/plan-a.md"].status == "blocked", (
+            "the ledger must record repo-a as blocked, never as merged"
         )
 
 
@@ -1271,7 +1415,7 @@ class TestMergeFailureHalted:
         ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
         ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
 
-        def _merge_raises(workspace: Path, branch: str, base: str = "main") -> str:
+        def _merge_raises(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
             import subprocess
             raise subprocess.CalledProcessError(
                 returncode=1, cmd=["gh", "pr", "merge"], stderr="branch protection rule"
@@ -1292,7 +1436,7 @@ class TestMergeFailureHalted:
             _merge_pr_fn=_merge_raises,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merge_halted", (
@@ -1316,7 +1460,7 @@ class TestMergeFailureHalted:
         ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
         ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
 
-        def _merge_raises(workspace: Path, branch: str, base: str = "main") -> str:
+        def _merge_raises(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
             raise RuntimeError("merge conflict")
 
         run_train(
@@ -1334,7 +1478,7 @@ class TestMergeFailureHalted:
             _merge_pr_fn=_merge_raises,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         state = read_ledger(ledger)
@@ -1351,7 +1495,7 @@ class TestMergeFailureHalted:
 
         merge_calls: List[str] = []
 
-        def _merge_pr(workspace: Path, branch: str, base: str = "main") -> str:
+        def _merge_pr(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
             merge_calls.append(workspace.name)
             if workspace.name == "repo-b":
                 raise RuntimeError("required status checks not passed")
@@ -1372,7 +1516,7 @@ class TestMergeFailureHalted:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merge_halted"
@@ -1413,7 +1557,7 @@ class TestInjectReverifyExceptionHalted:
 
         merge_calls: List[str] = []
 
-        def _merge_pr(workspace: Path, branch: str, base: str = "main") -> str:
+        def _merge_pr(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
             merge_calls.append(workspace.name)
             return f"sha-merged-{workspace.name}"
 
@@ -1437,7 +1581,7 @@ class TestInjectReverifyExceptionHalted:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merge_halted", (
@@ -1476,7 +1620,7 @@ class TestInjectReverifyExceptionHalted:
 
         merge_calls: List[str] = []
 
-        def _merge_pr(workspace: Path, branch: str, base: str = "main") -> str:
+        def _merge_pr(workspace: Path, branch: str, base: str = "main", head_sha: Optional[str] = None) -> str:
             merge_calls.append(workspace.name)
             return f"sha-merged-{workspace.name}"
 
@@ -1498,7 +1642,7 @@ class TestInjectReverifyExceptionHalted:
             _merge_pr_fn=_merge_pr,
             _reverify_fn=_reverify_raises,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
         )
 
         assert result["status"] == "merge_halted", (
@@ -1551,7 +1695,7 @@ class TestPostMergeHook:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
             _post_merge_hook=_spy_hook,
         )
 
@@ -1586,7 +1730,7 @@ class TestPostMergeHook:
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
-            _pr_merged_sha_fn=lambda ws, br: None,
+            _pr_merged_sha_fn=lambda ws, br, base=None: None,
             _post_merge_hook=_boom,
         )
 
@@ -1628,17 +1772,26 @@ class TestPostMergeHook:
 
 
 # ---------------------------------------------------------------------------
-# N7 (agent-harness#250 follow-up): merge-time base-retarget TOCTOU guard
+# N7 (agent-harness#250 follow-up) + cross-vendor CR round on the same
+# function (four findings, all covered below):
 #
-# The broker's admission check (N6, GitHubBrokerAdapter in
-# convergence/broker/credsep.py) validates a PR's baseRefName against
-# request.base at PUBLISH time.  GitHub allows a PR's base to be RETARGETED
-# after creation, and the coordinator's branch-based `gh pr merge` (P4) ran
-# with no re-check — the same TOCTOU class as the existing N5 head_sha pin.
-# These tests exercise _live_merge_pr directly (patching subprocess.run,
-# mirroring the launcher-module pattern in test_launcher_liveness.py /
-# test_phase_loop_launcher.py) since it is the LIVE implementation the
-# _merge_pr_fn seam resolves to by default and no prior test drove it.
+#   1. `gh pr merge` must never be invoked with `--yes` (gh >= 2.x has no such
+#      flag; every real merge aborted with `unknown flag: --yes`).
+#   2. A DRAFT PR (the governed publish path always opens drafts) must be
+#      readied (`gh pr ready`) before merging; a ready failure fails closed.
+#   3. The idempotent already-merged short-circuit (`_live_pr_merged_sha`)
+#      must ALSO check baseRefName — an already-merged PR on the WRONG base
+#      (retargeted + merged elsewhere) must fail closed, not be recorded as a
+#      successful merge to the expected base.
+#   4. The merge must be pinned to the broker-admitted `head_sha` via
+#      `--match-head-commit`, closing the same TOCTOU gap as the base check
+#      but for the PR's head.
+#
+# These tests exercise _live_merge_pr (and, for finding 3's read-path,
+# _live_pr_merged_sha) directly by patching subprocess.run, mirroring the
+# launcher-module pattern in test_launcher_liveness.py /
+# test_phase_loop_launcher.py — _live_merge_pr is the LIVE implementation the
+# _merge_pr_fn seam resolves to by default.
 
 
 class _FakeCompletedProcess:
@@ -1653,13 +1806,28 @@ def _gh_subcommand(cmd: List[str]) -> str:
     if cmd[:2] == ["gh", "pr"] and len(cmd) > 2:
         if cmd[2] == "merge":
             return "merge"
-        if cmd[2] == "view" and "baseRefName" in cmd:
-            return "view-base"
-        if cmd[2] == "view" and "mergeCommit" in " ".join(cmd) and "state" not in " ".join(cmd):
-            return "view-mergecommit"
+        if cmd[2] == "ready":
+            return "ready"
         if cmd[2] == "view":
-            return "view-merged-sha"  # state,mergeCommit jq (idempotent guard)
+            joined = " ".join(cmd)
+            if "isDraft" in joined:
+                return "view-premerge"  # isDraft,baseRefName,headRefOid (combined)
+            if "state" in joined and "mergeCommit" in joined:
+                return "view-merged-sha"  # state,mergeCommit,baseRefName (idempotent guard)
+            if "mergeCommit" in joined:
+                return "view-mergecommit"  # post-merge SHA read
     return "other:" + " ".join(cmd)
+
+
+def _merged_sha_json(state: str, base: str, sha: Optional[str] = None) -> str:
+    """Build the JSON payload _live_pr_merged_sha's `gh pr view` call parses."""
+    merge_commit = {"oid": sha} if sha else None
+    return json.dumps({"state": state, "mergeCommit": merge_commit, "baseRefName": base})
+
+
+def _premerge_json(is_draft: bool, base: str, head: str = "sha-head-1") -> str:
+    """Build the JSON payload _live_merge_pr's combined pre-merge view parses."""
+    return json.dumps({"isDraft": is_draft, "baseRefName": base, "headRefOid": head})
 
 
 class TestLiveMergePrBaseRetargetGuard:
@@ -1680,10 +1848,12 @@ class TestLiveMergePrBaseRetargetGuard:
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
                 # Not yet merged.
-                return _FakeCompletedProcess(returncode=0, stdout="null\n")
-            if label == "view-base":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
                 # Retargeted: PR now points at a different base than expected.
-                return _FakeCompletedProcess(returncode=0, stdout="release/2.0\n")
+                return _FakeCompletedProcess(
+                    returncode=0, stdout=_premerge_json(False, "release/2.0")
+                )
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
@@ -1694,8 +1864,8 @@ class TestLiveMergePrBaseRetargetGuard:
         assert merge_calls == [], (
             f"gh pr merge must NEVER be invoked on a base mismatch; got {merge_calls!r}"
         )
-        base_calls = [c for c in calls if _gh_subcommand(c) == "view-base"]
-        assert len(base_calls) == 1, (
+        premerge_calls = [c for c in calls if _gh_subcommand(c) == "view-premerge"]
+        assert len(premerge_calls) == 1, (
             "the current base must be read exactly once before the merge decision"
         )
 
@@ -1710,9 +1880,9 @@ class TestLiveMergePrBaseRetargetGuard:
             calls.append(cmd)
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                return _FakeCompletedProcess(returncode=0, stdout="null\n")
-            if label == "view-base":
-                return _FakeCompletedProcess(returncode=0, stdout="main\n")
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
             if label == "merge":
                 return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
             if label == "view-mergecommit":
@@ -1725,16 +1895,17 @@ class TestLiveMergePrBaseRetargetGuard:
         assert sha == "sha-realmerge-123"
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert len(merge_calls) == 1, f"gh pr merge must be invoked exactly once; got {merge_calls!r}"
-        base_idx = next(i for i, c in enumerate(calls) if _gh_subcommand(c) == "view-base")
+        premerge_idx = next(i for i, c in enumerate(calls) if _gh_subcommand(c) == "view-premerge")
         merge_idx = next(i for i, c in enumerate(calls) if _gh_subcommand(c) == "merge")
-        assert base_idx < merge_idx, (
+        assert premerge_idx < merge_idx, (
             "the base must be revalidated BEFORE gh pr merge is issued, not after"
         )
 
-    def test_already_merged_returns_existing_sha_without_base_check(self, tmp_path: Path):
-        """The idempotent already-merged guard short-circuits BEFORE the base
-        check: an already-merged PR returns its existing SHA without a
-        base-mismatch error and without issuing a new merge."""
+    def test_already_merged_matching_base_returns_existing_sha_in_one_call(self, tmp_path: Path):
+        """The idempotent already-merged guard short-circuits: an already-merged
+        PR on the EXPECTED base returns its existing SHA in a single combined
+        `gh pr view` call (state+mergeCommit+baseRefName), without a separate
+        base-check call or a new merge call."""
         ws = tmp_path / "repo-a"
         ws.mkdir()
         calls: List[List[str]] = []
@@ -1743,10 +1914,13 @@ class TestLiveMergePrBaseRetargetGuard:
             calls.append(cmd)
             label = _gh_subcommand(cmd)
             if label == "view-merged-sha":
-                # Already merged, on some base — irrelevant, must not be re-checked.
-                return _FakeCompletedProcess(returncode=0, stdout="sha-already-merged\n")
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json("MERGED", "main", sha="sha-already-merged"),
+                )
             raise AssertionError(
-                f"already-merged PR must short-circuit before any further gh call: {cmd!r}"
+                f"already-merged-on-expected-base PR must short-circuit before any "
+                f"further gh call: {cmd!r}"
             )
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
@@ -1754,11 +1928,276 @@ class TestLiveMergePrBaseRetargetGuard:
 
         assert sha == "sha-already-merged"
         assert len(calls) == 1, (
-            f"already-merged guard must short-circuit after ONE gh call (the merged-sha "
-            f"check); no base-check or merge call should follow. Got {len(calls)} calls: {calls!r}"
+            f"already-merged guard must short-circuit after ONE gh call (the combined "
+            f"state+mergeCommit+baseRefName check); no premerge or merge call should "
+            f"follow. Got {len(calls)} calls: {calls!r}"
         )
-        base_calls = [c for c in calls if _gh_subcommand(c) == "view-base"]
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
-        assert base_calls == [] and merge_calls == [], (
-            "already-merged guard must not perform a base check or a merge call"
+        assert merge_calls == [], "already-merged guard must not perform a merge call"
+
+    def test_already_merged_wrong_base_fails_closed(self, tmp_path: Path):
+        """CR finding 3: a PR that is MERGED but on a DIFFERENT base than
+        expected (retargeted after admission, then merged elsewhere) must NOT
+        be recorded as a successful merge — _live_merge_pr fails closed and
+        `gh pr merge` is never invoked."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json("MERGED", "release/2.0", sha="sha-wrong-base-merge"),
+                )
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="pr-merged-wrong-base"):
+                _live_merge_pr(ws, "feat/train-a", base="main")
+
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls == [], (
+            f"gh pr merge must never be invoked for an already-merged-wrong-base PR; "
+            f"got {merge_calls!r}"
         )
+
+
+class TestLiveMergePrNoYesFlag:
+    """Finding 1: `gh pr merge` (gh >= 2.x) has no `--yes` flag; supplying one
+    aborted every live merge with `unknown flag: --yes`. `--merge` alone
+    already makes it non-interactive in a headless context."""
+
+    # The exact flag set `gh 2.96.0 pr merge --help` accepts (verified live in
+    # the execution environment) — used to assert every flag _live_merge_pr
+    # emits is one gh actually understands.
+    _GH_PR_MERGE_ACCEPTED_FLAGS = {
+        "--admin", "-A", "--author-email", "--auto", "-b", "--body",
+        "-F", "--body-file", "-d", "--delete-branch", "--disable-auto",
+        "--match-head-commit", "-m", "--merge", "-r", "--rebase",
+        "-s", "--squash", "-t", "--subject", "--help", "-R", "--repo",
+    }
+
+    def test_merge_command_has_no_yes_flag_and_only_accepted_flags(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        merge_cmds: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
+            if label == "merge":
+                merge_cmds.append(cmd)
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if label == "view-mergecommit":
+                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            _live_merge_pr(ws, "feat/train-a", base="main")
+
+        assert len(merge_cmds) == 1
+        merge_cmd = merge_cmds[0]
+        assert "--yes" not in merge_cmd, (
+            f"gh pr merge must never be invoked with --yes (no such flag on gh >= 2.x, "
+            f"aborts every live merge); got {merge_cmd!r}"
+        )
+        flags = [tok for tok in merge_cmd if tok.startswith("-")]
+        unknown = [f for f in flags if f not in self._GH_PR_MERGE_ACCEPTED_FLAGS]
+        assert unknown == [], (
+            f"gh pr merge command contains flag(s) gh 2.96.0 does not accept: {unknown!r} "
+            f"(full command: {merge_cmd!r})"
+        )
+
+
+class TestLiveMergePrDraftReadied:
+    """Finding 2: the governed publish path always opens DRAFT PRs; GitHub
+    refuses to merge a draft. _live_merge_pr must ready it first, and fail
+    closed (no merge issued) if `gh pr ready` itself fails."""
+
+    def test_draft_pr_is_readied_before_merge(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(True, "main"))
+            if label == "ready":
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if label == "merge":
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if label == "view-mergecommit":
+                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_merge_pr(ws, "feat/train-a", base="main")
+
+        assert sha == "sha-realmerge-123"
+        ready_idx = next(i for i, c in enumerate(calls) if _gh_subcommand(c) == "ready")
+        merge_idx = next(i for i, c in enumerate(calls) if _gh_subcommand(c) == "merge")
+        assert ready_idx < merge_idx, "gh pr ready must be called BEFORE gh pr merge for a draft PR"
+
+    def test_non_draft_pr_is_not_readied(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
+            if label == "merge":
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if label == "view-mergecommit":
+                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            _live_merge_pr(ws, "feat/train-a", base="main")
+
+        ready_calls = [c for c in calls if _gh_subcommand(c) == "ready"]
+        assert ready_calls == [], "a non-draft PR must not trigger gh pr ready"
+
+    def test_ready_failure_fails_closed_no_merge_issued(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(True, "main"))
+            if label == "ready":
+                return _FakeCompletedProcess(returncode=1, stdout="", stderr="pull request is not a draft")
+            raise AssertionError(f"unexpected gh call reached fake_run (merge must never be reached): {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="gh pr ready failed"):
+                _live_merge_pr(ws, "feat/train-a", base="main")
+
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls == [], (
+            f"a gh pr ready failure must fail closed — gh pr merge must never be "
+            f"invoked; got {merge_calls!r}"
+        )
+
+
+class TestLiveMergePrHeadPinned:
+    """Finding 4: the merge must be pinned to the broker-admitted head_sha via
+    --match-head-commit, so a post-admission push cannot land unchecked
+    content — GitHub itself refuses the merge (non-zero exit) on a mismatch."""
+
+    def test_match_head_commit_passed_when_head_sha_supplied(self, tmp_path: Path):
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        merge_cmds: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
+            if label == "merge":
+                merge_cmds.append(cmd)
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if label == "view-mergecommit":
+                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+
+        assert sha == "sha-realmerge-123"
+        assert len(merge_cmds) == 1
+        merge_cmd = merge_cmds[0]
+        assert "--match-head-commit" in merge_cmd, (
+            f"--match-head-commit must be passed when head_sha is supplied; got {merge_cmd!r}"
+        )
+        idx = merge_cmd.index("--match-head-commit")
+        assert merge_cmd[idx + 1] == "sha-admitted-head", (
+            f"--match-head-commit must carry the admitted head_sha; got {merge_cmd!r}"
+        )
+
+    def test_no_match_head_commit_when_head_sha_not_supplied(self, tmp_path: Path):
+        """Degrade safely: a caller with no admitted head_sha gets an unpinned
+        merge (pre-N7-finding-4 behavior), not an error."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        merge_cmds: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
+            if label == "merge":
+                merge_cmds.append(cmd)
+                return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+            if label == "view-mergecommit":
+                return _FakeCompletedProcess(returncode=0, stdout="sha-realmerge-123\n")
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            _live_merge_pr(ws, "feat/train-a", base="main")
+
+        assert "--match-head-commit" not in merge_cmds[0]
+
+    def test_head_mismatch_gh_pr_merge_failure_fails_closed(self, tmp_path: Path):
+        """GitHub refuses the merge (non-zero exit) when the pinned head_sha
+        no longer matches the PR's actual head — _live_merge_pr must let the
+        real subprocess CalledProcessError propagate (fail closed), never
+        swallow it into a false success."""
+        ws = tmp_path / "repo-a"
+        ws.mkdir()
+        calls: List[List[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = _gh_subcommand(cmd)
+            if label == "view-merged-sha":
+                return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", "main"))
+            if label == "view-premerge":
+                return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, "main"))
+            if label == "merge":
+                # gh pr merge --match-head-commit <sha> exits non-zero when the
+                # PR's actual head no longer matches; check=True in the live
+                # code converts this to CalledProcessError.
+                import subprocess as _subprocess
+                raise _subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=cmd,
+                    stderr="the head branch was modified after the merge check",
+                )
+            raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
+            with pytest.raises(Exception) as exc_info:
+                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-stale-admitted-head")
+
+        import subprocess as _subprocess
+        assert isinstance(exc_info.value, _subprocess.CalledProcessError), (
+            f"expected the real gh pr merge failure to propagate; got {exc_info.value!r}"
+        )
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert len(merge_calls) == 1
+        assert "--match-head-commit" in merge_calls[0]
+        assert "sha-stale-admitted-head" in merge_calls[0]
