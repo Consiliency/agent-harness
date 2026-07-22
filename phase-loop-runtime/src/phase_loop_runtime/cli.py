@@ -24,7 +24,7 @@ from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
 from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, avatar_media_surface_touched, avatar_visual_evidence_required, derive_visual_observation_or_error, resolve_visual_evidence_artifact, utc_now
-from .closeout_validators import resolve_review_mode
+from .closeout_validators import resolve_review_mode, visual_evidence_decoder_absent_is_silent
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import append_work_unit_metric, build_notification_payload, build_terminal_summary, build_work_unit_metric, hotfix_run_artifacts, run_notification_command
@@ -2809,8 +2809,20 @@ def _reconcile_visual_evidence_guard(
     inability to even EVALUATE the contract, not a detected-and-exempted
     shortfall -- so it refuses unconditionally, regardless of posture.
 
+    Fix (round-7 CR): a decoder-ABSENT derivation failure
+    (``visual_evidence_cannot_verify`` -- no image decoder/Pillow installed)
+    is SILENT under warn-default, exactly like the closeout validator --
+    ``manual_repair_fields`` is ``None`` and no finding is recorded, matching
+    the ``closeout_validators.visual_evidence_decoder_absent_is_silent``
+    predicate this function reuses so the two enforcement points can never
+    diverge. Under the opt-in ``block`` posture a decoder-absent
+    result still refuses (``ok=False``) with ``visual_evidence_cannot_verify``
+    recorded. A genuinely UNDECODABLE artifact (decoder present, decode
+    failed) is unaffected and still recorded under warn as before.
+
     Returns ``(ok, manual_repair_fields)``. ``manual_repair_fields`` is
-    ``None`` when the FAV contract doesn't apply to this phase at all.
+    ``None`` when the FAV contract doesn't apply to this phase at all, or
+    when the sole finding is the silenced decoder-absent case above.
     """
     changed_paths = _resolve_changed_paths_at_commit(repo, closeout_commit)
     if changed_paths is _CHANGED_PATHS_RESOLUTION_FAILED:
@@ -2856,9 +2868,19 @@ def _reconcile_visual_evidence_guard(
     if resolved_artifact is not None:
         derived, derivation_error = derive_visual_observation_or_error(resolved_artifact)
         if derivation_error is not None:
-            # Cannot authoritatively verify the artifact (undecodable, or no
-            # decoder available in this environment) -- fail CLOSED. Never
-            # silently accept the self-reported numbers as a substitute.
+            # round-7 CR: decoder-ABSENT (visual_evidence_cannot_verify) under
+            # warn-default must be SILENT here too, exactly like the closeout
+            # validator -- a standard install without the optional `visual`
+            # extra (Pillow) must not get spammed with a manual_repair finding
+            # purely because an optional dependency isn't installed. Reuses
+            # the closeout validator's EXACT predicate so the two enforcement
+            # points can never diverge.
+            if visual_evidence_decoder_absent_is_silent(derivation_error):
+                return True, None
+            # Cannot authoritatively verify the artifact (undecodable, or the
+            # opt-in `block` posture is active with the decoder unavailable)
+            # -- fail CLOSED. Never silently accept the self-reported numbers
+            # as a substitute.
             fields = {"visual_evidence_missing_or_blank": True, derivation_error: True}
             if resolve_review_mode() != "block":
                 return True, fields

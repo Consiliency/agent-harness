@@ -250,6 +250,35 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         self.assertTrue(manual_repair.get("visual_evidence_undecodable"))
         self.assertTrue(manual_repair.get("visual_evidence_missing_or_blank"))
 
+    def test_matching_phase_decoder_unavailable_promotes_silently_under_warn_default(self):
+        # round-7 CR: decoder-ABSENT (Pillow not installed) under warn-default
+        # must be SILENT here too, exactly like the closeout validator -- no
+        # visual_evidence_cannot_verify / visual_evidence_missing_or_blank
+        # finding recorded at all, not merely non-blocking. A standard install
+        # without the optional `visual` extra must not get spammed on the
+        # reconcile path purely because an optional dependency isn't
+        # installed. CORE-ONLY fail-closed smoke, mirrors the opt-in test
+        # below: Pillow import itself raises, before ever touching the
+        # artifact's bytes, so a plain placeholder file is enough.
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        artifact = repo / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"placeholder, never decoded: decoder is what's missing")
+        with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
+            code, _, stderr = _run(
+                self._args(
+                    repo, roadmap, "RUNNER",
+                    "--verification-status", "passed",
+                    "--allow-dirty",
+                    "--visual-evidence-path", "shots/frame.png",
+                    "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}',
+                )
+            )
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertNotIn("visual_evidence_cannot_verify", manual_repair)
+        self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
+
     def test_matching_phase_decoder_unavailable_fails_closed_on_opt_in(self):
         # A decoder-unavailable environment (Pillow import raises) must fail
         # CLOSED -- never fabricate a pass because derivation could not run.

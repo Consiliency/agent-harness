@@ -147,6 +147,31 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
   spammed purely because an optional dependency isn't installed. Only the opt-in `block`
   posture turns a missing decoder into a hard block; an `visual_evidence_undecodable` (Pillow
   present, decode genuinely failed) finding is unaffected and still recorded under warn.
+- **Fix 11 (round 7) — the BAML/live closeout prompt still advertised video evidence.** Fix
+  10 narrowed the CLI help text and gate-generated messages to "screenshot/frame image", but
+  missed the canonical runtime prompt: `emit_phase_closeout.baml`'s field comment and its
+  rendered required-contract line still told executors to attach a "screenshot/video
+  artifact" -- a `build_baml_request` probe confirmed that wording reaches the LIVE prompt an
+  executor actually sees, while the gate only ever decodes an image. Both spots now say
+  "screenshot/frame IMAGE artifact (PNG, JPEG, GIF, BMP, or WEBP -- NOT a video container;
+  the gate decodes image pixel data only, decoding a frame out of a video is a tracked
+  follow-up)", matching the CLI wording exactly. There is no generated `baml_client` to
+  regenerate (`export_function_schema` regex-parses the `.baml` source text directly at
+  request-build time), so the edit alone is live; the `launchspec_golden.json` fixture, which
+  embeds the rendered prompt text verbatim, was regenerated
+  (`PHASE_LOOP_REGEN_LAUNCHSPEC_GOLDEN=1`) to match.
+- **Fix 12 (round 7) — reconcile still recorded a finding on decoder-absence under
+  warn-default.** Fix 10's "decoder-absent + warn-default -> SILENT" rule was applied only to
+  the closeout validator; `cli._reconcile_visual_evidence_guard` still recorded
+  `visual_evidence_missing_or_blank` + `visual_evidence_cannot_verify` on the manual_repair
+  audit trail even though it didn't refuse the promotion, so a standard install without the
+  `visual` extra was still spammed on the reconcile path. The predicate is now shared
+  (`closeout_validators.visual_evidence_decoder_absent_is_silent`, called from both
+  `visual_avatar_evidence_validator` and `cli._reconcile_visual_evidence_guard`) so the two
+  paths can never diverge again: decoder-absent + warn-default records no finding at all
+  (`manual_repair_fields=None`); decoder-absent + opt-in-block still refuses with
+  `visual_evidence_cannot_verify`; a genuinely missing/blank evidence artifact with a working
+  decoder still records under warn exactly as before.
 
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 

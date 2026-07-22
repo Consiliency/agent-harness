@@ -48,7 +48,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
-from .closeout_validators import CloseoutContext, ReviewFinding, register_closeout_validator, resolve_review_mode
+from .closeout_validators import (
+    CloseoutContext,
+    ReviewFinding,
+    register_closeout_validator,
+    visual_evidence_decoder_absent_is_silent,
+)
 from .models import (
     VISUAL_EVIDENCE_OPT_OUT_REASONS,
     avatar_visual_evidence_required,
@@ -141,8 +146,10 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
         # a missing decoder into a hard block. An UNDECODABLE artifact
         # (Pillow present, decode failed) is a genuine, actionable finding
         # and is unaffected -- it is recorded under warn like any other
-        # finding, exactly as before.
-        if derivation_error == "visual_evidence_cannot_verify" and resolve_review_mode() != "block":
+        # finding, exactly as before. Shared with the reconcile guard
+        # (round-7 CR) via `visual_evidence_decoder_absent_is_silent` so the
+        # two enforcement points can never diverge.
+        if visual_evidence_decoder_absent_is_silent(derivation_error):
             return []
         return [
             ReviewFinding(
