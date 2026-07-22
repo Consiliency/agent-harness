@@ -1557,18 +1557,22 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         # pattern): a space-separated ``--token VALUE`` inside a free-text command STRING
         # (e.g. ``{"command": "curl --token AKIA..."}``, per ``discovery.py``) matches neither
         # the strict ``[:=]``-required pattern (no separator) nor the structural split-argv
-        # composite (there is no list to walk) -- and a follow-up round proved it CANNOT
-        # safely be made to: ``--token AKIAIOSFODNN7EXAMPLEKEY`` (a real secret) and ``--token
-        # configuration`` (ordinary prose, e.g. "Document the --token configuration
-        # behavior.") are BOTH exactly ``-{1,2}keyword`` + whitespace + a 12+ char alnum run,
-        # so a pattern cannot distinguish a high-entropy secret from a benign following word.
-        # A dash-anchored pattern attempting to close this WAS added and then reverted for
-        # exactly that reason (it reintroduced the ordinary-prose false positive on the fatal
-        # ``metadata_redaction_diagnostic`` closeout gate). This is now a documented
-        # best-effort limit (see the contract doc), not a bug: assert the free-text
-        # space-separated shape stays UNMATCHED, and that the structural split-argv LIST
-        # composite (a genuinely safe, unambiguous shape -- flag and value are separate
-        # structured elements, not words in a sentence) still matches.
+        # composite (there is no list to walk). A dash-anchored pattern attempting to close
+        # this by widening the SHARED ``_forbidden_metadata_kind`` corpus WAS added and then
+        # reverted: run over every leaf including prose, it cannot distinguish
+        # ``--token AKIAIOSFODNN7EXAMPLEKEY`` (a real secret) from ``--token configuration``
+        # (ordinary prose, e.g. "Document the --token configuration behavior.") -- both are
+        # exactly ``-{1,2}keyword`` + whitespace + a 12+ char alnum run -- and reintroduced the
+        # ordinary-prose false positive on the fatal ``metadata_redaction_diagnostic`` closeout
+        # gate. This function (`_forbidden_metadata_kind`, the generic/prose-facing matcher
+        # shared with that fatal gate) therefore stays permanently prose-safe and does NOT
+        # attempt this shape -- assert it stays UNMATCHED here, and that the structural
+        # split-argv LIST composite (a genuinely safe, unambiguous shape -- flag and value are
+        # separate structured elements, not words in a sentence) still matches. agent-harness#269
+        # (follow-up, resolved) closes the underlying free-text-COMMAND-FIELD gap a DIFFERENT
+        # way -- a separate matcher (``_command_context_flag_kind``) scoped ONLY to fields
+        # already identified by name as command-context, never wired into this generic
+        # function -- see the command-context tests further down this file.
         from phase_loop_runtime.redaction import _forbidden_metadata_kind
 
         free_text_cases = [
@@ -1985,26 +1989,29 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             summary = inspect_state(repo, roadmap=None)
             self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
 
-    def test_run_execute_verification_does_not_redact_free_text_space_separated_flag_operational_command(self):
-        # agent-harness#243 CR (cross-vendor, codex): documents a real, accepted best-effort
-        # limit rather than asserting coverage that was proven unsafe. A prior round added a
-        # dash-anchored pattern to catch a space-separated CLI flag (``curl --token SECRET``,
-        # no ``:``/``=`` anywhere) embedded in a free-text ``operational_exemptions[].command``
-        # STRING (as ``discovery.py`` stores it) -- closing the SAME early-return
-        # (malformed suite_command) egress path exercised by the two tests above. That pattern
-        # was reverted (see ``test_forbidden_metadata_kind_does_not_match_free_text_string_cli_flag``):
-        # it could not distinguish a real secret from ordinary prose using the same
-        # ``flag + whitespace + 12+ alnum chars`` shape, and reintroduced a fatal false
-        # positive on legitimate closeout text. This test now asserts the (unfortunate but
-        # honest) consequence: a free-text space-separated flag command is left UNREDACTED
-        # through this egress path -- operators must not embed secrets in free-text command
-        # strings surfaced to diagnostics (see the contract doc's best-effort section);
-        # ``verification.log`` (local, full) remains the debugging source of truth.
+    def test_run_execute_verification_redacts_free_text_space_separated_flag_operational_command(self):
+        # agent-harness#269 (follow-up to #243, resolved via cross-vendor codex CR): a prior
+        # round added a dash-anchored pattern to catch a space-separated CLI flag (``curl
+        # --token SECRET``, no ``:``/``=`` anywhere) to the SHARED, prose-facing
+        # ``_FORBIDDEN_METADATA_PATTERNS`` corpus, and it was reverted -- run over EVERY leaf
+        # including free-text closeout prose, it could not distinguish a real secret from an
+        # ordinary sentence mentioning a flag name, and reintroduced a fatal false positive
+        # on legitimate closeout text (``metadata_redaction_diagnostic``). The codex CR that
+        # did the reverting also showed the underlying free-text-COMMAND-FIELD gap is NOT
+        # inherent -- it is resolvable by scoping a SEPARATE flag-aware matcher to fields
+        # already identified BY NAME as command-context (``_looks_like_command_field`` --
+        # ``suite_command``, ``operational_exemptions[].command``, ``argv``), where a value
+        # can never legitimately be prose. This test exercises exactly that: the SAME
+        # early-return (malformed suite_command) egress path as the two tests above, with a
+        # free-text ``operational_exemptions[].command`` string carrying a space-separated
+        # ``--token SECRET`` flag. Must FAIL (secret present) at agent-harness#243 HEAD
+        # (68f1b60) and PASS once the command-context-scoped flag matcher lands.
         import os
         from unittest.mock import patch
 
         from phase_loop_runtime import runner
         from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
         from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 
         secret = "AKIAIOSFODNN7EXAMPLEKEY"
@@ -2041,17 +2048,136 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
 
             exemptions = result.get("operational_exemptions")
             self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
-            # Documented limit: NOT redacted -- a free-text space-separated flag command
-            # cannot safely be pattern-matched (see the reverted-pattern test above).
-            self.assertEqual(exemptions[0]["command"], secret_command)
-            self.assertIn(secret, json.dumps(result))
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
 
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
             launch_path = run_dir / "launch.json"
             launch_path.write_text("{}", encoding="utf-8")
             merge_launch_metadata(launch_path, {"runner_verification": result})
 
             on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
-            self.assertIn(secret, json.dumps(on_disk_launch))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
+    def test_run_execute_verification_redacts_short_flag_operational_command(self):
+        # agent-harness#269: companion to the long-flag test above, covering the short-flag
+        # form (``-t VALUE``) within the same command-context field / egress path.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                "automation:\n  suite_command: 'echo \"unterminated'\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = f"curl -t {secret}"
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}` evidence: operational\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            exemptions = result.get("operational_exemptions")
+            self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
+
+    def test_apply_diagnostics_redaction_scrubs_command_context_quoted_flag(self):
+        # agent-harness#269: quoted-flag form (``'--token' 'VALUE'`` / ``"--token" "VALUE"``)
+        # within a command-context field, exercised directly through the redaction entry
+        # point (not the full runner path, to isolate the matcher from suite-command parsing).
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        for quote in ("'", '"'):
+            payload = {
+                "ok": False,
+                "code": "malformed_suite_command",
+                "suite_command": f"curl {quote}--token{quote} {quote}{secret}{quote}",
+            }
+            out = apply_diagnostics_redaction(payload)
+            self.assertEqual(out["suite_command"], "<redacted:suite_command>", f"quote={quote!r}")
+            self.assertNotIn(secret, json.dumps(out))
+
+    def test_command_context_flag_kind_matches_long_short_and_quoted_flags(self):
+        # agent-harness#269: unit-level coverage of the command-context-scoped matcher
+        # itself, independent of the runner/egress plumbing above.
+        from phase_loop_runtime.redaction import _command_context_flag_kind
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        positive_cases = [
+            f"curl --token {secret}",
+            f"curl -t {secret}",
+            f"curl '--token' '{secret}'",
+            f'curl "--token" "{secret}"',
+            f"curl --token={secret}",
+            f"some-tool --api-key {secret} --verbose",
+            f"some-tool --secret {secret}",
+            f"some-tool --password {secret}",
+        ]
+        for case in positive_cases:
+            self.assertEqual(
+                _command_context_flag_kind(case), "secret_like_command_flag", f"expected match: {case!r}"
+            )
+
+    def test_command_field_forbidden_kind_still_catches_strict_assignment_forms(self):
+        # agent-harness#269: the union helper wired into the command-field branch must not
+        # regress the pre-existing strict `[:=]`-assignment / structural split-argv coverage
+        # -- it is additive (OR), not a replacement.
+        from phase_loop_runtime.redaction import _command_field_forbidden_kind
+
+        self.assertEqual(
+            _command_field_forbidden_kind("curl --token=AKIAIOSFODNN7EXAMPLEKEY"), "secret_like_value"
+        )
+        self.assertEqual(
+            _command_field_forbidden_kind(["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]), "secret_like_value"
+        )
+        self.assertIsNone(_command_field_forbidden_kind([sys.executable, "-m", "pytest", "-q"]))
+
+    def test_prose_fields_stay_unredacted_by_command_context_flag_matcher_regression_guard(self):
+        # agent-harness#269: the CRITICAL invariant this whole follow-up depends on -- the
+        # command-context-scoped flag matcher must NEVER reach a prose field. Exercise this
+        # through the actual field-routing entry point (`apply_diagnostics_redaction`), using
+        # a field NAME that is prose (`blocker_summary`, `next_action`), not command-context,
+        # holding text that WOULD match `_command_context_flag_kind` if it were (wrongly)
+        # applied there.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction, metadata_redaction_diagnostic
+
+        prose_texts = [
+            "Document the --token configuration behavior.",
+            "the --secret handling documentation",
+        ]
+        for text in prose_texts:
+            payload = {"ok": True, "code": "ok", "blocker_summary": text, "next_action": text}
+            out = apply_diagnostics_redaction(dict(payload))
+            self.assertEqual(out["blocker_summary"], text, f"prose field wrongly redacted: {text!r}")
+            self.assertEqual(out["next_action"], text, f"prose field wrongly redacted: {text!r}")
+            # And the fatal closeout gate must still not block on it.
+            self.assertIsNone(metadata_redaction_diagnostic(payload))
 
 
 if __name__ == "__main__":

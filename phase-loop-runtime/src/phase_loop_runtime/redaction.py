@@ -107,22 +107,34 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # ``secret_like_value`` pattern above (no ``[:=]`` between keyword and value) nor the
     # structural split-argv composite below (there is no list to walk).
     #
-    # A further cross-vendor CR round (codex) proved that pattern cannot be made safe: a
-    # genuine secret (``--token AKIAIOSFODNN7EXAMPLEKEY``) and ordinary prose (``--token
-    # configuration``, from a sentence like "Document the --token configuration behavior.")
-    # are BOTH exactly ``-{1,2}keyword`` + whitespace + a 12+ char alnum run -- a regex cannot
-    # tell a high-entropy secret from a benign following word by shape alone. The dash anchor
+    # A further cross-vendor CR round (codex) proved that pattern cannot be made safe AS A
+    # SHARED PATTERN applied to every leaf, including prose: a genuine secret (``--token
+    # AKIAIOSFODNN7EXAMPLEKEY``) and ordinary prose (``--token configuration``, from a
+    # sentence like "Document the --token configuration behavior.") are BOTH exactly
+    # ``-{1,2}keyword`` + whitespace + a 12+ char alnum run -- a regex cannot tell a
+    # high-entropy secret from a benign following word by shape alone. The dash anchor
     # (meant to distinguish "CLI flag" from "English sentence") does not help here: prose
     # regularly reads a CLI flag NAME (``--token``, ``--secret``) followed by an ordinary
     # word, exactly as it would read any other technical term, and this matcher runs as a
     # FATAL gate (``metadata_redaction_diagnostic``) over closeout free text, so that
     # collision is a real, reachable false positive (a legitimate closeout blocker_summary /
     # finding sentence rejected as ``malformed_closeout``, blocking persistence) -- not a
-    # theoretical one. The pattern is reverted; a space-separated flag inside a free-text
-    # command STRING is a documented best-effort limit (see the contract doc), not something
-    # this matcher attempts. The STRUCTURAL split-argv composite immediately below remains:
-    # a pre-split ``["--token", "VALUE"]`` list has no such ambiguity, because the flag and
-    # value are already separate structured elements rather than words in a sentence.
+    # theoretical one. The pattern is reverted HERE (the SHARED ``_FORBIDDEN_METADATA_PATTERNS``
+    # corpus every leaf -- prose included -- is matched against) and stays reverted: this
+    # tuple, and the generic ``_forbidden_metadata_kind`` that walks it, remain prose-safe
+    # forever. The STRUCTURAL split-argv composite immediately below remains: a pre-split
+    # ``["--token", "VALUE"]`` list has no such ambiguity, because the flag and value are
+    # already separate structured elements rather than words in a sentence.
+    #
+    # agent-harness#269 (follow-up, resolved): the CR that reverted the pattern above also
+    # showed the free-text-command gap it was trying to close is NOT inherent -- it is
+    # resolvable by scoping a flag-aware matcher to fields already identified BY NAME as
+    # command-context (``suite_command``, ``operational_exemptions[].command``, ``argv`` --
+    # see ``_looks_like_command_field``), where a value can never legitimately be prose.
+    # See ``_COMMAND_CONTEXT_FLAG_RE`` / ``_command_context_flag_kind`` below: a SEPARATE
+    # matcher, wired ONLY into the command-field branch of
+    # ``_redact_validation_payload_in_place``, never into this shared prose-facing tuple or
+    # the fatal gate.
     ("absolute_private_path", re.compile(r"/(?:home|users|mnt/(?:private|evidence|secure|raw|HC_Volume_[^/\s]+))/(?:[^\"'\s]+)", re.I)),
     ("provider_payload", re.compile(r"raw provider payload|provider payload|anthropic[_-]?payload|openai[_-]?payload", re.I)),
     ("credential_payload", re.compile(r"credential payload|private key|-----begin [a-z ]*private key-----", re.I)),
@@ -145,6 +157,36 @@ _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # Every real split-argv shape this composite needs to catch (``--token``, ``-t`` style flags)
 # is dash-prefixed in practice, so requiring the dash costs no genuine coverage.
 _SECRET_FLAG_RE = re.compile(r"^-{1,2}(?:api[_-]?key|secret|token|password)$", re.I)
+
+# agent-harness#269 (follow-up to #243): cross-vendor CR (codex) showed the "free-text
+# command-flag limit" documented above was NOT inherent to a bare regex over arbitrary
+# text -- it was inherent to running that regex over PROSE. ``--token AKIA...SECRET`` (a
+# real secret) and ``--token configuration`` (an ordinary sentence fragment) are
+# genuinely indistinguishable BY SHAPE ALONE when the surrounding text could be either a
+# command or a sentence -- that ambiguity is real and this pattern still does not attempt
+# to resolve it in general. What IS resolvable: a field already known BY NAME to hold a
+# command/argv value (``_looks_like_command_field`` -- ``suite_command``,
+# ``operational_exemptions[].command``, an ``argv`` element) can never legitimately
+# contain prose -- its value IS a command, so a dash-flag followed by a plausible value
+# is unambiguously a flag+value pair there, never a sentence mentioning a flag name. This
+# pattern is therefore matched ONLY against command-context field values (see
+# ``_command_context_flag_kind``, wired into the command-field branch of
+# ``_redact_validation_payload_in_place``) -- NEVER against the generic leaf corpus
+# ``_forbidden_metadata_kind`` feeds the fatal ``metadata_redaction_diagnostic`` closeout
+# gate or the free-text redaction path, so a legitimate blocker_summary/next_action/
+# finding sentence mentioning a flag name in prose still cannot trip it. Covers, within
+# that command-context scope: long flags (``--token VALUE``), short flags (``-t VALUE``),
+# ``=``-separated (``--token=VALUE``), and quoted flags/values (``'--token' 'VALUE'``,
+# ``"--token" "VALUE"``). The single-letter short-flag class is intentionally narrow
+# (``t``/``k``/``s``/``p`` -- the conventional shorthand for token/(api-)key/secret/
+# password) rather than every letter, to keep the command-context scrub itself narrowly
+# targeted even though it never runs over prose.
+_COMMAND_CONTEXT_FLAG_RE = re.compile(
+    r"['\"]?-{1,2}(?:api[_-]?key|secret|token|password|[tksp])['\"]?"
+    r"(?:\s+['\"]?|=['\"]?)"
+    r"[A-Za-z0-9_\-]{12,}",
+    re.I,
+)
 
 
 def classify_changed_path(path: str, protected_source_roles: Mapping[str, str] | None = None) -> str:
@@ -352,8 +394,35 @@ def _redact_validation_payload_in_place(payload: Any, *, force_all: bool) -> Non
         elif isinstance(value, (list, tuple)) and any(isinstance(item, dict) for item in value):
             for item in value:
                 _redact_validation_payload_in_place(item, force_all=force_all)
-        elif _looks_like_command_field(key) and _forbidden_metadata_kind(value) is not None:
+        elif _looks_like_command_field(key) and _command_field_forbidden_kind(value) is not None:
             payload[key] = f"<redacted:{key}>"
+
+
+def _command_context_flag_kind(value: Any) -> str | None:
+    """agent-harness#269: flag-aware scrub scoped STRICTLY to command-context field values
+    (``suite_command`` / ``operational_exemptions[].command`` / ``argv`` -- see
+    ``_looks_like_command_field``). Never call this against a prose field or the fatal
+    ``metadata_redaction_diagnostic`` gate's generic corpus -- see the ``_COMMAND_CONTEXT_FLAG_RE``
+    docstring above for why command-context scoping is what makes this safe where a
+    general-purpose free-text pattern was proven unsafe.
+    """
+    for leaf in _iter_leaf_strings(value):
+        if _COMMAND_CONTEXT_FLAG_RE.search(leaf):
+            return "secret_like_command_flag"
+    return None
+
+
+def _command_field_forbidden_kind(value: Any) -> str | None:
+    """Union of the existing strict ``[:=]``-assignment/structural matcher
+    (``_forbidden_metadata_kind``, shared with the fatal closeout gate) and the
+    command-context-scoped flag-aware matcher (``_command_context_flag_kind``, agent-harness#269).
+    Only used for fields already identified as command-context by
+    ``_looks_like_command_field`` -- see ``_redact_validation_payload_in_place``.
+    """
+    kind = _forbidden_metadata_kind(value)
+    if kind is not None:
+        return kind
+    return _command_context_flag_kind(value)
 
 
 def _scalar_text(value: Any) -> str | None:
