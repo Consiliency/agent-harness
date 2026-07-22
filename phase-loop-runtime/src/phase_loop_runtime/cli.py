@@ -23,7 +23,7 @@ from .roadmap_authority import RoadmapAuthorityError, assert_roadmap_authorized
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
-from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, VisualEvidenceObservation, avatar_media_surface_touched, avatar_visual_evidence_required, resolve_visual_evidence_artifact, utc_now
+from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, avatar_media_surface_touched, avatar_visual_evidence_required, derive_visual_observation_or_error, resolve_visual_evidence_artifact, utc_now
 from .closeout_validators import resolve_review_mode
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
@@ -572,17 +572,18 @@ def build_parser() -> argparse.ArgumentParser:
                 help=(
                     "FAV (issue #91): path to a runner-owned screenshot/video artifact for a phase "
                     "whose plan claims a visible avatar/browser-media rendering deliverable. Required "
-                    "(with --visual-evidence-observed) to promote such a phase to complete under the "
-                    "opt-in-to-block posture; ignored for phases that don't match the FAV detection "
-                    "contract."
+                    "to promote such a phase to complete under the opt-in-to-block posture; the gate "
+                    "DECODES this artifact and derives non_black_pixels/pixel_min/pixel_max from its "
+                    "actual pixels (round-3 CR) -- ignored for phases that don't match the FAV "
+                    "detection contract."
                 ),
             )
             sub.add_argument(
                 "--visual-evidence-observed",
                 help=(
-                    "FAV (issue #91): JSON object of pixel observations for --visual-evidence-path, "
-                    "e.g. '{\"nonBlackPixels\": 19200, \"pixelMin\": 0, \"pixelMax\": 255}'. Must show "
-                    "non_black_pixels>0 and pixel_min!=pixel_max (rejects black/blank/uniform frames)."
+                    "FAV (issue #91): accepted for backward compatibility, but NOT authoritative -- "
+                    "pixel stats are DERIVED from decoding --visual-evidence-path (round-3 CR), so a "
+                    "self-reported value here can never override a failing derived result."
                 ),
             )
             sub.add_argument(
@@ -2620,8 +2621,9 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
         print(
             "phase-loop reconcile: this phase requires blocking visual-avatar evidence "
             "(FAV/issue #91: owned avatar/browser-media surface + explicit visible-render claim) "
-            "under PHASE_LOOP_REVIEW=block -- pass --visual-evidence-path with "
-            "--visual-evidence-observed (non_black_pixels>0, pixel_min!=pixel_max), or "
+            "under PHASE_LOOP_REVIEW=block -- pass --visual-evidence-path to a genuinely decodable, "
+            "non-blank screenshot/video (pixel stats are DERIVED from the decoded image, round-3 "
+            "CR -- a self-reported --visual-evidence-observed can never substitute for one), or "
             f"--visual-evidence-opt-out ({', '.join(VISUAL_EVIDENCE_OPT_OUT_REASONS)}).",
             file=sys.stderr,
         )
@@ -2812,20 +2814,38 @@ def _reconcile_visual_evidence_guard(
     if visual_evidence_opt_out:
         return True, {"visual_evidence_opt_out": visual_evidence_opt_out}
 
-    observation = None
-    if visual_evidence_observed_raw:
-        try:
-            observation = VisualEvidenceObservation.from_mapping(json.loads(visual_evidence_observed_raw))
-        except (ValueError, TypeError):
-            observation = None
     # Fix 4: the artifact must EXIST inside the repo -- an out-of-repo/absolute
     # escape or nonexistent path is rejected, not accepted as an assertion.
-    artifact_ok = bool(visual_evidence_path) and resolve_visual_evidence_artifact(repo, visual_evidence_path) is not None
-    if artifact_ok and observation is not None and observation.is_valid():
-        return True, {
-            "visual_evidence_path": visual_evidence_path,
-            "visual_evidence_observed": observation.to_json(),
-        }
+    resolved_artifact = (
+        resolve_visual_evidence_artifact(repo, visual_evidence_path) if visual_evidence_path else None
+    )
+
+    # round-3 (codex CR): self-reported observations (``--visual-evidence-
+    # observed``) are NEVER authoritative for the pass/fail decision -- a
+    # valid-header artifact whose numbers are fabricated must not pass. The
+    # gate DERIVES non_black_pixels/pixel_min/pixel_max from the DECODED
+    # artifact and gates on THAT; ``visual_evidence_observed_raw`` is
+    # accepted on the CLI for backward compatibility but is never read here
+    # -- ``VisualEvidenceObservation.__post_init__``'s own in-range/
+    # min<=max validation remains belt-and-suspenders for any OTHER caller
+    # that still constructs an observation from a self-report.
+    if resolved_artifact is not None:
+        derived, derivation_error = derive_visual_observation_or_error(resolved_artifact)
+        if derivation_error is not None:
+            # Cannot authoritatively verify the artifact (undecodable, or no
+            # decoder available in this environment) -- fail CLOSED. Never
+            # silently accept the self-reported numbers as a substitute.
+            fields = {"visual_evidence_missing_or_blank": True, derivation_error: True}
+            if resolve_review_mode() != "block":
+                return True, fields
+            return False, fields
+        if derived.is_valid():
+            return True, {
+                "visual_evidence_path": visual_evidence_path,
+                "visual_evidence_observed": derived.to_json(),
+            }
+        # A genuinely blank/uniform DECODED image -- fails even if the agent
+        # supplied fabricated "good" self-reported numbers.
 
     # Missing or blank visual evidence for a phase that requires it.
     fields = {"visual_evidence_missing_or_blank": True}

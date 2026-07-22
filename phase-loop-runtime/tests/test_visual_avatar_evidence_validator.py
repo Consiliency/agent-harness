@@ -8,6 +8,7 @@ avoid (incidental keyword mentions with no owned media surface / no explicit
 claim must stay silent, exactly like legacy non-media phases).
 """
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ from phase_loop_runtime.closeout_validators import (
 )
 from phase_loop_runtime.models import VisualEvidenceObservation
 from phase_loop_runtime.visual_avatar_evidence_validator import visual_avatar_evidence_validator
+from phase_loop_test_utils import write_blank_png, write_varied_png
 
 VISIBLE_AVATAR_PLAN = (
     "# FAV\n\n"
@@ -193,6 +195,30 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
 
     def test_varied_frame_evidence_is_clean(self):
+        # round-3 (codex CR): a repo_root=None caller can prove neither
+        # containment nor decode the artifact, so it now fails closed (see
+        # test_missing_repo_root_still_finds_even_with_good_self_report below)
+        # -- this test supplies a real repo_root + a REAL, varied, decodable
+        # PNG so the DERIVED observation (not the self-report) makes it clean.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        write_varied_png(artifact)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+
+    def test_missing_repo_root_still_finds_even_with_good_self_report(self):
+        # round-3 (codex CR): repo_root=None can never prove containment or
+        # decode the artifact -- it must fail closed rather than fall back to
+        # trusting a self-reported observation (that fallback WAS the hole).
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         ctx = _ctx(
             plan,
@@ -203,13 +229,16 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
                 "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
             },
         )
-        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+        self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
 
     def test_nested_artifact_paths_is_clean(self):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "runs" / "x" / "frame.png"
+        write_varied_png(artifact)
         ctx = _ctx(
             plan,
             changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
             terminal={
                 "verification_status": "passed",
                 "artifact_paths": {
@@ -261,10 +290,10 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
     def test_repo_root_valid_artifact_is_clean(self):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        # agent-harness#91 round-2 (codex Finding 3): a real PNG magic-number
-        # header is now required -- a plain-text file renamed to .png is rejected.
-        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        # agent-harness#91 round-3 (codex CR): the gate now DERIVES pixel stats
+        # from the DECODED image, so this must be a REAL, varied (non-blank)
+        # PNG -- a magic-header-only fake is now UNDECODABLE and fails closed.
+        write_varied_png(artifact)
         ctx = _ctx(
             plan,
             changed_paths=["tests/fixtures/avatar_call.html"],
@@ -310,10 +339,10 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         # folded onto the terminal summary is accepted equivalently.
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        # agent-harness#91 round-2 (codex Finding 3): a real PNG magic-number
-        # header is now required -- a plain-text file renamed to .png is rejected.
-        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        # agent-harness#91 round-3 (codex CR): the gate now DERIVES pixel stats
+        # from the DECODED image, so this must be a REAL, varied (non-blank)
+        # PNG -- a magic-header-only fake is now UNDECODABLE and fails closed.
+        write_varied_png(artifact)
         ctx = _ctx(
             plan,
             changed_paths=["tests/fixtures/avatar_call.html"],
@@ -368,8 +397,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
     def test_valid_png_header_artifact_is_clean(self):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        write_varied_png(artifact)
         ctx = _ctx(
             plan,
             changed_paths=["tests/fixtures/avatar_call.html"],
@@ -384,8 +412,10 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
 
     def test_pixel_min_greater_than_max_still_finds(self):
         # codex probe: {"nonBlackPixels": 1, "pixelMin": 0, "pixelMax": ...} with
-        # min > max describes no real frame -- must be REJECTED even with a
-        # genuinely valid image artifact.
+        # min > max describes no real frame -- self-report is now never
+        # authoritative anyway, but the artifact here is still the
+        # magic-header-only fake, which is UNDECODABLE, so this still finds
+        # (for the derivation-failure reason, not the self-report shape).
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -406,6 +436,93 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertIsNone(VisualEvidenceObservation.from_mapping({"nonBlackPixels": 1, "pixelMin": 200, "pixelMax": 10}))
         with self.assertRaises(ValueError):
             VisualEvidenceObservation(non_black_pixels=1, pixel_min=200, pixel_max=10)
+
+    # --- round-3 (codex CR): the gate DERIVES pixel stats from the DECODED
+    # image; self-reported observations can never override a failing derived
+    # result, and derivation itself must fail CLOSED when it cannot run. ---
+
+    def test_blank_decoded_image_still_finds_despite_fabricated_self_report(self):
+        # Core round-3 repro: a REAL, DECODABLE, but genuinely BLANK (uniform)
+        # image, paired with FABRICATED "good" self-reported numbers, must
+        # still find -- the derived observation is authoritative.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        write_blank_png(artifact)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_missing_or_blank")
+
+    def test_undecodable_artifact_finds_with_undecodable_code(self):
+        # Core round-3 repro: a valid-header but UNDECODABLE (corrupt/
+        # truncated) artifact, paired with fabricated "good" self-reported
+        # numbers, must find with a distinct undecodable code -- self-reported
+        # pixel observations are never accepted as a substitute.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_undecodable")
+        self.assertEqual(findings[0].severity, "block")
+
+    def test_decoder_unavailable_finds_with_cannot_verify_code(self):
+        # A decoder-unavailable environment (Pillow import raises) must fail
+        # CLOSED -- never fabricate a pass because derivation could not run.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        write_varied_png(artifact)  # genuinely valid image; decoder is what's missing
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
+            findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_cannot_verify")
+        self.assertEqual(findings[0].severity, "block")
+
+    def test_varied_real_image_is_clean(self):
+        # A real VARIED decoded image genuinely passes.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        write_varied_png(artifact)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+            },
+        )
+        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
 
     # --- end-to-end through closeout: warn-default / opt-in-block / no human_required ---
 

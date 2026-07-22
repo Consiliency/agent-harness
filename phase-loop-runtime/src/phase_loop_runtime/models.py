@@ -1206,6 +1206,111 @@ def resolve_visual_evidence_artifact(repo_root: "str | Path | None", path_str: "
     return resolved
 
 
+# agent-harness#91 round-3 (codex CR): the magic-header check above is a
+# FLOOR (rejects a directory / empty file / text-renamed-.png), not a full
+# decode -- it does NOT prove the referenced artifact is a genuine,
+# non-blank image. Pairing that floor with SELF-REPORTED pixel observations
+# (`VisualEvidenceObservation` taken verbatim from the agent's terminal
+# summary/CLI flags) reopens the exact hole #91 exists to close: a
+# valid-header 24-byte "PNG signature + zeros" file, paired with a
+# fabricated `{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}`,
+# passes the gate with no relationship to the actual pixel data (codex's
+# round-3 probe). `derive_visual_observation` below closes that hole by
+# DECODING the artifact and computing the observation from the real pixels;
+# it is the AUTHORITATIVE source of truth wherever it can run at all --
+# callers must never let a self-reported observation override a derived
+# one, and must FAIL CLOSED (never silently accept self-reported numbers)
+# when derivation itself is impossible.
+_DERIVED_NON_BLACK_LUMINANCE_THRESHOLD = 8  # 0..255 grayscale; tolerates lossy-compression noise near true black
+
+
+class VisualEvidenceDerivationError(Exception):
+    """Base class: raised by `derive_visual_observation` when the referenced
+    artifact cannot be authoritatively verified. Callers MUST treat this as
+    a hard failure of the evidence contract -- never catch it and quietly
+    fall back to trusting the agent-supplied `visual_evidence_observed`,
+    which would reopen the #91 hole this exception exists to surface."""
+
+    #: stable finding code a caller can attach to a ReviewFinding/manual_repair
+    #: field without re-deriving it from the exception message.
+    code = "visual_evidence_undecodable"
+
+
+class VisualEvidenceDecoderUnavailable(VisualEvidenceDerivationError):
+    """Pillow is not installed in this environment -- derivation cannot run
+    at all, so the artifact can NEVER be authoritatively verified here."""
+
+    code = "visual_evidence_cannot_verify"
+
+
+class VisualEvidenceUndecodable(VisualEvidenceDerivationError):
+    """Pillow is available but the file at `path` could not be decoded as an
+    image (corrupt/truncated body, zero dimensions, unrecognized format)."""
+
+    code = "visual_evidence_undecodable"
+
+
+def derive_visual_observation(path: "str | Path") -> VisualEvidenceObservation:
+    """FAV (agent-harness#91 round-3 CR): decode the image at `path` and
+    compute `non_black_pixels`/`pixel_min`/`pixel_max` from its ACTUAL
+    pixels (grayscale/luminance), rather than trusting the agent's
+    self-report. This is the AUTHORITATIVE observation -- a genuinely
+    blank/uniform/all-black decoded image fails `VisualEvidenceObservation.
+    is_valid()` even if the agent supplied fabricated "good" numbers.
+
+    Uses Pillow (`PIL.Image`), imported LAZILY here -- Pillow is an OPTIONAL
+    dependency (the `visual` extra in pyproject.toml), never a hard core
+    dependency of phase-loop-runtime.
+
+    Raises `VisualEvidenceDerivationError` (never returns `None`) when:
+    - Pillow is not installed in this environment, or
+    - the file at `path` cannot be opened/decoded as an image (corrupt,
+      truncated, zero-dimension, or a format Pillow doesn't recognize).
+
+    Callers decide how to fail closed for their posture (opt-in ``block`` ->
+    BLOCK with a decoder-unavailable/undecodable finding code; warn-default
+    -> record the finding, never silently treat it as "gate does not
+    apply"). This function itself never silently passes.
+    """
+    try:
+        from PIL import Image  # lazy import: optional `visual` extra (Pillow)
+    except ImportError as exc:
+        raise VisualEvidenceDecoderUnavailable(f"Pillow is not available to decode visual evidence: {exc}") from exc
+    try:
+        with Image.open(path) as img:
+            img.load()  # force full decode now (Image.open is lazy) so a truncated/corrupt body raises here
+            grayscale = img.convert("L")
+            width, height = grayscale.size
+            if width <= 0 or height <= 0:
+                raise VisualEvidenceUndecodable(f"decoded image has zero dimensions: {path}")
+            pixel_min, pixel_max = grayscale.getextrema()
+            histogram = grayscale.histogram()  # 256-bucket luminance histogram
+            non_black_pixels = sum(histogram[_DERIVED_NON_BLACK_LUMINANCE_THRESHOLD + 1 :])
+    except VisualEvidenceDerivationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- Pillow raises varied types (UnidentifiedImageError/OSError/...)
+        raise VisualEvidenceUndecodable(f"failed to decode visual evidence artifact at {path}: {exc}") from exc
+    return VisualEvidenceObservation(
+        non_black_pixels=int(non_black_pixels),
+        pixel_min=int(pixel_min),
+        pixel_max=int(pixel_max),
+    )
+
+
+def derive_visual_observation_or_error(path: "str | Path") -> "tuple[VisualEvidenceObservation | None, str | None]":
+    """Convenience wrapper the three call sites (closeout validator, live
+    runner, reconcile guard) share: `(observation, None)` on a successful
+    decode, or `(None, error_code)` when derivation failed --
+    ``"visual_evidence_cannot_verify"`` (Pillow unavailable) or
+    ``"visual_evidence_undecodable"`` (image present but not decodable).
+    Never raises -- centralizes the try/except so every caller applies the
+    SAME fail-closed contract instead of re-implementing it."""
+    try:
+        return derive_visual_observation(path), None
+    except VisualEvidenceDerivationError as exc:
+        return None, exc.code
+
+
 def visual_evidence_terminal_fields(payload: Any) -> dict[str, Any]:
     """FAV (issue #91) Fix 1: reconstruct the ``ctx.terminal``-shaped visual
     evidence view (``visual_evidence_path`` / ``visual_evidence_observed`` /

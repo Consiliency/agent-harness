@@ -76,6 +76,27 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
   now scans only AFFIRMATIVE deliverable/objective/exit-criteria/acceptance sections and
   rejects negation, so a Non-goals line like "must not render a visible avatar" no longer
   produces an opt-in FALSE BLOCK.
+- **Fix 6 (round 3) — pixel observations are now DERIVED from the decoded image, never
+  self-reported.** Fix 4 validated only the artifact's magic-number header, not its pixel
+  content; `VisualEvidenceObservation` (`non_black_pixels`/`pixel_min`/`pixel_max`) was still
+  taken verbatim from the agent's terminal-summary/CLI flags, so a valid-header 24-byte "PNG
+  signature + zero bytes" file paired with a fabricated `{"nonBlackPixels": 19200, "pixelMin":
+  0, "pixelMax": 255}` passed the gate with no relationship to the actual pixel data — the
+  same self-reported/metadata-evidence gap #91 exists to close. `models.
+  derive_visual_observation` now DECODES the referenced artifact (Pillow, `PIL.Image`, a
+  LAZY import — the new `visual` optional-dependencies extra, never a hard core dependency)
+  and computes the observation from its real pixels (grayscale luminance; `non_black_pixels`
+  = pixels above a small threshold, `pixel_min`/`pixel_max` from the decoded extrema). This
+  DERIVED observation is now AUTHORITATIVE in all three enforcement points (closeout
+  validator, live runner, reconcile guard): a genuinely blank/uniform decoded image fails
+  `is_valid()` even when the agent supplies fabricated "good" numbers, and the self-reported
+  `visual_evidence_observed` can never override a failing derived result. Derivation itself
+  fails CLOSED — never silently accepts self-reported numbers as a substitute — when the
+  artifact can't be decoded (`visual_evidence_undecodable`) or no image decoder is available
+  in the environment (`visual_evidence_cannot_verify`); under the opt-in `block` posture this
+  blocks, under warn-default the shortfall is still recorded, never silently treated as clean.
+  The magic-number/regular-file/in-repo-containment pre-filter and the self-report's own
+  `pixel_min<=pixel_max` validation are kept as belt-and-suspenders.
 
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 

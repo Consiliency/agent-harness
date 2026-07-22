@@ -45,10 +45,9 @@ from typing import Mapping
 from .closeout_validators import CloseoutContext, ReviewFinding, register_closeout_validator
 from .models import (
     VISUAL_EVIDENCE_OPT_OUT_REASONS,
-    VisualEvidenceObservation,
     avatar_visual_evidence_required,
+    derive_visual_observation_or_error,
     resolve_visual_evidence_artifact,
-    visual_evidence_terminal_fields,
 )
 
 
@@ -74,38 +73,40 @@ def _artifact_path(terminal: Mapping) -> str | None:
     return None
 
 
-def _observation(terminal: Mapping) -> "VisualEvidenceObservation | None":
-    observed = terminal.get("visual_evidence_observed")
-    if not isinstance(observed, Mapping):
-        # Also accept the flat BAML encoding folded onto the terminal summary.
-        flat = visual_evidence_terminal_fields(terminal).get("visual_evidence_observed")
-        if isinstance(flat, Mapping):
-            observed = flat
-    if not isinstance(observed, Mapping):
-        artifact_paths = terminal.get("artifact_paths")
-        if isinstance(artifact_paths, Mapping):
-            observed = artifact_paths.get("visual_evidence_observed")
-    return VisualEvidenceObservation.from_mapping(observed) if isinstance(observed, Mapping) else None
+def _visual_evidence_status(terminal: Mapping, repo_root: str | None) -> "tuple[bool, str | None]":
+    """FAV round-3 (codex CR): ``(is_valid, derivation_error_code)``. The
+    referenced path must EXIST and be CONTAINED inside the repo (requires a
+    real ``repo_root`` -- see below), and the pass/fail decision is made
+    from the DERIVED pixel stats (``models.derive_visual_observation``),
+    computed from the DECODED artifact -- never from the agent-supplied
+    ``visual_evidence_observed``. A self-reported observation can no longer
+    override a failing derived result; belt-and-suspenders, its own
+    in-range/min<=max validation in ``VisualEvidenceObservation.
+    __post_init__`` still applies wherever it's parsed at all.
 
+    ``derivation_error_code`` is populated (``"visual_evidence_undecodable"``
+    or ``"visual_evidence_cannot_verify"``) only when derivation itself could
+    not run at all (undecodable file, or no image decoder available in this
+    environment) -- distinct from the generic "no artifact attached" case,
+    so the caller can surface a more specific, non-silently-passing finding.
 
-def _has_valid_visual_evidence(terminal: Mapping, repo_root: str | None) -> bool:
-    """Fix 4: the evidence is a VALIDATED runner-owned artifact, not an
-    assertion. The referenced path must EXIST and be CONTAINED inside the repo
-    (when a repo root is available), and the observations must be a well-formed,
-    in-range ``VisualEvidenceObservation`` that rejects black/blank frames.
-
-    When ``repo_root`` is None (legacy/test callers that cannot supply a root)
-    existence/containment cannot be proven, so we fall back to the pre-existing
-    path-present + valid-observation check rather than fail-open on nothing.
-    Every LIVE path (runner + reconcile) threads a real repo root, so the
-    assertion-only hole (nonexistent / out-of-repo path) is closed there."""
+    ``repo_root=None`` (legacy/test callers that cannot supply a root) can
+    prove neither containment NOR let us decode the artifact, so this fails
+    closed rather than falling back to trusting the self-reported
+    observation -- that fallback WAS the round-3 hole (a valid-header blank
+    image + fabricated numbers passing because nothing ever looked at the
+    actual pixels). Every LIVE path (runner + reconcile) threads a real repo
+    root, so this only affects callers that genuinely cannot resolve one."""
     path = _artifact_path(terminal)
-    if not path:
-        return False
-    if repo_root is not None and resolve_visual_evidence_artifact(repo_root, path) is None:
-        return False  # nonexistent, or an out-of-repo/absolute-escape path
-    observation = _observation(terminal)
-    return observation is not None and observation.is_valid()
+    if not path or repo_root is None:
+        return False, None
+    resolved = resolve_visual_evidence_artifact(repo_root, path)
+    if resolved is None:
+        return False, None  # nonexistent, or an out-of-repo/absolute-escape path
+    derived, derivation_error = derive_visual_observation_or_error(resolved)
+    if derivation_error is not None:
+        return False, derivation_error
+    return derived.is_valid(), None
 
 
 @register_closeout_validator
@@ -115,20 +116,43 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
         return []
     if not avatar_visual_evidence_required(ctx.changed_paths, _plan_text(ctx.plan_path)):
         return []  # no owned avatar/browser-media surface + explicit visible-render claim
-    if _has_valid_visual_evidence(ctx.terminal, ctx.repo_root):
-        return []  # a validated, non-blank runner-owned visual artifact is attached
+    is_valid, derivation_error = _visual_evidence_status(ctx.terminal, ctx.repo_root)
+    if is_valid:
+        return []  # a validated, non-blank, DECODED runner-owned visual artifact is attached
     opt_out = str(ctx.terminal.get("visual_evidence_opt_out") or "").strip()
     if opt_out in VISUAL_EVIDENCE_OPT_OUT_REASONS:
         return []  # declined with a typed reason
+    if derivation_error is not None:
+        return [
+            ReviewFinding(
+                code=derivation_error,
+                reason=(
+                    "phase owns an avatar/browser-media surface and claims a visible rendering "
+                    "deliverable, reported verification_status=passed, and attached a "
+                    "visual_evidence_path, but the referenced artifact could not be "
+                    "authoritatively verified ("
+                    + (
+                        "no image decoder (Pillow) is available in this environment"
+                        if derivation_error == "visual_evidence_cannot_verify"
+                        else "the artifact could not be decoded as an image"
+                    )
+                    + "); self-reported pixel observations are never accepted as a substitute -- "
+                    "attach a genuinely decodable screenshot/video or record a "
+                    f"visual_evidence_opt_out reason ({', '.join(VISUAL_EVIDENCE_OPT_OUT_REASONS)})"
+                ),
+                severity="block",
+                blocker_class="review_gate_block",
+            )
+        ]
     return [
         ReviewFinding(
             code="visual_evidence_missing_or_blank",
             reason=(
                 "phase owns an avatar/browser-media surface and claims a visible rendering "
                 "deliverable, reported verification_status=passed, but attached no valid "
-                "visual_evidence_path + visual_evidence_observed (non_black_pixels>0 and "
-                "pixel_min!=pixel_max); attach a runner-owned screenshot/video with pixel "
-                "observations or record a visual_evidence_opt_out reason "
+                "visual_evidence_path + a DECODED image whose derived pixel stats show "
+                "real content (non_black_pixels>0 and pixel_min!=pixel_max); attach a "
+                "runner-owned screenshot/video or record a visual_evidence_opt_out reason "
                 f"({', '.join(VISUAL_EVIDENCE_OPT_OUT_REASONS)})"
             ),
             severity="block",

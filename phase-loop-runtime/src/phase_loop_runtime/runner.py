@@ -142,8 +142,8 @@ from .models import (
     PRODUCT_LOOP_ACTIONS,
     StateSnapshot,
     VISUAL_EVIDENCE_OPT_OUT_REASONS,
-    VisualEvidenceObservation,
     avatar_visual_evidence_required,
+    derive_visual_observation_or_error,
     resolve_visual_evidence_artifact,
     visual_evidence_terminal_fields,
     WorkUnitCloseout,
@@ -6320,20 +6320,27 @@ def _execute_dispatch_preflight_gates(repo: Path, roadmap: Path, plan: Path) -> 
     return None
 
 
-def _visual_evidence_view_is_valid(repo: Path, terminal_view: Mapping[str, object]) -> bool:
-    """FAV (issue #91) Fix 4: a runner-owned visual artifact is valid only when
-    its path EXISTS inside the repo AND the observations are a well-formed,
-    in-range, non-blank ``VisualEvidenceObservation``. Mirrors the closeout
-    validator's ``_has_valid_visual_evidence`` for the authoritative reduction
-    path."""
+def _visual_evidence_view_status(repo: Path, terminal_view: Mapping[str, object]) -> "tuple[bool, str | None]":
+    """FAV round-3 (codex CR): ``(is_valid, derivation_error_code)``. A
+    runner-owned visual artifact is valid only when its path EXISTS inside
+    the repo AND the observation DERIVED from the DECODED image (never the
+    agent-supplied ``visual_evidence_observed``) is non-blank/non-uniform.
+    Mirrors the closeout validator's ``_visual_evidence_status`` for the
+    authoritative reduction path. ``derivation_error_code`` is populated
+    (``"visual_evidence_undecodable"``/``"visual_evidence_cannot_verify"``)
+    only when derivation itself could not run at all -- this function is
+    ALWAYS called under the opt-in ``block`` posture (see the caller), so
+    that must never be silently treated as a pass."""
     path = terminal_view.get("visual_evidence_path")
     if not path:
-        return False
-    if resolve_visual_evidence_artifact(repo, str(path)) is None:
-        return False
-    observed = terminal_view.get("visual_evidence_observed")
-    obs = VisualEvidenceObservation.from_mapping(observed) if isinstance(observed, Mapping) else None
-    return obs is not None and obs.is_valid()
+        return False, None
+    resolved = resolve_visual_evidence_artifact(repo, str(path))
+    if resolved is None:
+        return False, None
+    derived, derivation_error = derive_visual_observation_or_error(resolved)
+    if derivation_error is not None:
+        return False, derivation_error
+    return derived.is_valid(), None
 
 
 def _visual_evidence_closeout_outcome(
@@ -6383,8 +6390,31 @@ def _visual_evidence_closeout_outcome(
     opt_out = str(terminal_view.get("visual_evidence_opt_out") or "").strip()
     if opt_out in VISUAL_EVIDENCE_OPT_OUT_REASONS:
         return None
-    if _visual_evidence_view_is_valid(repo, terminal_view):
+    is_valid, derivation_error = _visual_evidence_view_status(repo, terminal_view)
+    if is_valid:
         return None
+    if derivation_error is not None:
+        # round-3 (codex CR): derivation itself could not run (undecodable
+        # artifact, or no decoder available) -- this function only executes
+        # under the opt-in `block` posture (checked above), so this MUST
+        # fail closed rather than silently accept self-reported numbers.
+        detail = (
+            "no image decoder (Pillow) is available in this environment"
+            if derivation_error == "visual_evidence_cannot_verify"
+            else "the referenced artifact could not be decoded as an image"
+        )
+        return {
+            "human_required": False,
+            "blocker_class": "review_gate_block",
+            "blocker_summary": (
+                f"Review gate blocked closeout: {derivation_error} -- phase owns an "
+                "avatar/browser-media surface and claims a visible-render deliverable, "
+                f"reported verification_status=passed, but {detail}; self-reported pixel "
+                "observations are never accepted as a substitute for a decoded artifact."
+            ),
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
     return {
         "human_required": False,
         "blocker_class": "review_gate_block",
@@ -6392,8 +6422,9 @@ def _visual_evidence_closeout_outcome(
             "Review gate blocked closeout: visual_evidence_missing_or_blank -- phase owns "
             "an avatar/browser-media surface and claims a visible-render deliverable, "
             "reported verification_status=passed, but attached no valid runner-owned "
-            "visual_evidence_path + visual_evidence_observed (non_black_pixels>0, "
-            "pixel_min!=pixel_max) and no typed visual_evidence_opt_out."
+            "visual_evidence_path + a DECODED image whose derived pixel stats show real "
+            "content (non_black_pixels>0, pixel_min!=pixel_max) and no typed "
+            "visual_evidence_opt_out."
         ),
         "required_human_inputs": (),
         "access_attempts": (),

@@ -19,7 +19,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+from phase_loop_test_utils import (
+    commit_fixture_paths,
+    make_repo,
+    write_blank_png,
+    write_phase_plan,
+    write_varied_png,
+)
 from phase_loop_runtime.cli import main
 from phase_loop_runtime.events import read_events
 
@@ -101,11 +107,13 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         # (_resolve_changed_paths_at_commit) would then correctly NOT flag --
         # that's Fix 2 working as intended, but it would make this fixture
         # helper name-misleading, so the artifact stays uncommitted instead.
+        #
+        # agent-harness#91 round-3 (codex CR): the gate now DERIVES pixel stats
+        # from the DECODED image, so this must be a REAL, varied (non-blank)
+        # PNG -- a magic-header-only fake is now UNDECODABLE and fails closed
+        # rather than passing on a self-reported observation.
         target = repo / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # agent-harness#91 round-2 (codex Finding 3): a real PNG magic-number
-        # header is now required -- a plain-text file renamed to .png is rejected.
-        target.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        write_varied_png(target)
         return rel
 
     # --- warn-default: missing evidence records the shortfall but doesn't block ---
@@ -151,16 +159,102 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
 
     def test_matching_phase_blank_evidence_blocks_on_opt_in(self):
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
-        artifact = self._write_committed_artifact(repo, "shots/frame.png")
+        artifact = repo / "shots" / "frame.png"
+        # uniform gray frame -- a REAL, DECODABLE, but genuinely blank image.
+        write_blank_png(artifact)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(
                     repo, roadmap, "RUNNER",
                     "--verification-status", "passed",
                     "--allow-dirty",
-                    "--visual-evidence-path", artifact,
-                    # uniform gray frame -- pixelMin == pixelMax
+                    "--visual-evidence-path", "shots/frame.png",
                     "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 243, "pixelMax": 243}',
+                )
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    def test_matching_phase_blank_evidence_blocks_despite_fabricated_self_report_on_opt_in(self):
+        # round-3 (codex CR) core repro: a genuinely blank/uniform DECODED
+        # image, paired with FABRICATED "good" self-reported numbers, must
+        # still BLOCK -- the derived observation is authoritative and the
+        # self-report can never override it.
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        artifact = repo / "shots" / "frame.png"
+        write_blank_png(artifact)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(
+                    repo, roadmap, "RUNNER",
+                    "--verification-status", "passed",
+                    "--allow-dirty",
+                    "--visual-evidence-path", "shots/frame.png",
+                    "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}',
+                )
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    def test_matching_phase_undecodable_artifact_fails_closed_on_opt_in(self):
+        # round-3 (codex CR) core repro: a valid-header but UNDECODABLE
+        # (corrupt/truncated) artifact, paired with fabricated "good"
+        # self-reported numbers, must fail CLOSED -- never silently pass on
+        # the self-report because derivation itself could not run.
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        artifact = repo / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(
+                    repo, roadmap, "RUNNER",
+                    "--verification-status", "passed",
+                    "--allow-dirty",
+                    "--visual-evidence-path", "shots/frame.png",
+                    "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}',
+                )
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    def test_matching_phase_undecodable_artifact_promotes_with_recorded_finding_under_warn_default(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        artifact = repo / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        code, _, stderr = _run(
+            self._args(
+                repo, roadmap, "RUNNER",
+                "--verification-status", "passed",
+                "--allow-dirty",
+                "--visual-evidence-path", "shots/frame.png",
+                "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}',
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        # never silently clean -- the undecodable shortfall is recorded even
+        # though warn-default lets the promotion proceed.
+        self.assertTrue(manual_repair.get("visual_evidence_undecodable"))
+        self.assertTrue(manual_repair.get("visual_evidence_missing_or_blank"))
+
+    def test_matching_phase_decoder_unavailable_fails_closed_on_opt_in(self):
+        # A decoder-unavailable environment (Pillow import raises) must fail
+        # CLOSED -- never fabricate a pass because derivation could not run.
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        artifact = repo / "shots" / "frame.png"
+        write_varied_png(artifact)  # genuinely valid image; decoder is what's missing
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}), patch.dict(
+            sys.modules, {"PIL": None, "PIL.Image": None}
+        ):
+            code, _, stderr = _run(
+                self._args(
+                    repo, roadmap, "RUNNER",
+                    "--verification-status", "passed",
+                    "--allow-dirty",
+                    "--visual-evidence-path", "shots/frame.png",
+                    "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}',
                 )
             )
         self.assertEqual(code, 2)

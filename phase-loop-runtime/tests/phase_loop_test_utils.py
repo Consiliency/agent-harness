@@ -327,6 +327,42 @@ def write_named_roadmap(repo: Path, phases: tuple[tuple[str, str], ...], version
     return roadmap
 
 
+def write_varied_png(path: Path, size: tuple[int, int] = (2, 2)) -> Path:
+    """FAV (agent-harness#91 round-3 CR): write a REAL, DECODABLE image with
+    genuine pixel variance (distinct light/dark pixels) at `path`, for tests
+    that must exercise the derived-pixel-stats gate's PASS path. Unlike the
+    pre-round-3 fixture (a 24-byte "PNG signature + zero bytes" fake that
+    Pillow cannot decode at all), this round-trips through Pillow so
+    `derive_visual_observation` computes a genuinely non_black_pixels>0,
+    pixel_min!=pixel_max observation from the actual pixel data."""
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = size
+    img = Image.new("RGB", (width, height), color=(0, 0, 0))
+    # Light diagonal + at least one bright corner -- guarantees variance
+    # regardless of grayscale-conversion weighting.
+    img.putpixel((0, 0), (255, 255, 255))
+    if width > 1 and height > 1:
+        img.putpixel((width - 1, height - 1), (200, 200, 200))
+    img.save(path, format="PNG")
+    return path
+
+
+def write_blank_png(path: Path, size: tuple[int, int] = (2, 2), color: tuple[int, int, int] = (0, 0, 0)) -> Path:
+    """FAV (agent-harness#91 round-3 CR): write a REAL, DECODABLE, but
+    genuinely UNIFORM image (every pixel the same color) at `path`. Used to
+    prove the derived observation is AUTHORITATIVE: even paired with
+    fabricated "good" self-reported numbers, a genuinely blank/uniform
+    decoded image must still fail the gate."""
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.new("RGB", size, color=color)
+    img.save(path, format="PNG")
+    return path
+
+
 def commit_fixture_paths(repo: Path, message: str, *paths: Path) -> None:
     relpaths = [str(path.relative_to(repo)) for path in paths]
     subprocess.run(["git", "add", *relpaths], cwd=repo, check=True)

@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+from phase_loop_test_utils import commit_fixture_paths, make_repo, write_blank_png, write_phase_plan, write_varied_png
 from phase_loop_runtime import runner as runner_mod
 from phase_loop_runtime.observability import build_terminal_summary
 
@@ -133,10 +133,10 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
 
     def test_valid_evidence_does_not_visual_block_on_opt_in(self):
         artifact = self.repo / "shots" / "frame.png"
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        # agent-harness#91 round-2 (codex Finding 3): a real PNG magic-number
-        # header is now required -- a plain-text file renamed to .png is rejected.
-        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        # round-3 (codex CR): the gate now DERIVES pixel stats from the decoded
+        # image -- a magic-header-only fake no longer suffices, the artifact
+        # must be a REAL, varied (non-blank) PNG.
+        write_varied_png(artifact)
         child = self._child({
             "terminal_status": "complete",
             "verification_status": "passed",
@@ -150,6 +150,75 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             outcome = self._recheck(child)
         self.assertNotEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
+
+    def test_blank_decoded_image_blocks_despite_fabricated_self_report_on_opt_in(self):
+        # round-3 (codex CR) core repro: a valid-header, REAL, but genuinely
+        # BLANK (uniform) decoded image, paired with FABRICATED "good"
+        # self-reported numbers, must still BLOCK -- the derived observation
+        # is authoritative and the self-report can never override it.
+        artifact = self.repo / "shots" / "frame.png"
+        write_blank_png(artifact)
+        child = self._child({
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "produced_if_gates": [],
+            "dirty_paths": [],
+            "visual_evidence_path": "shots/frame.png",
+            "visual_evidence_non_black_pixels": 19200,
+            "visual_evidence_pixel_min": 0,
+            "visual_evidence_pixel_max": 255,
+        })
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            outcome = self._recheck(child)
+        self.assertEqual(outcome.blocked_reason, "visual_evidence_missing_or_blank")
+        self.assertEqual(outcome.automation_status, "blocked")
+
+    def test_undecodable_artifact_fails_closed_on_opt_in(self):
+        # round-3 (codex CR) core repro: a valid-header but UNDECODABLE
+        # (corrupt/truncated) artifact, paired with fabricated "good"
+        # self-reported numbers, must BLOCK -- never silently pass on the
+        # self-report because derivation itself could not run.
+        artifact = self.repo / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        child = self._child({
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "produced_if_gates": [],
+            "dirty_paths": [],
+            "visual_evidence_path": "shots/frame.png",
+            "visual_evidence_non_black_pixels": 19200,
+            "visual_evidence_pixel_min": 0,
+            "visual_evidence_pixel_max": 255,
+        })
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            outcome = self._recheck(child)
+        self.assertIsNotNone(outcome.event_blocker)
+        self.assertIn("visual_evidence_undecodable", outcome.event_blocker["blocker_summary"])
+        self.assertEqual(outcome.automation_status, "blocked")
+
+    def test_decoder_unavailable_fails_closed_on_opt_in(self):
+        # A decoder-unavailable environment (Pillow import raises) must fail
+        # CLOSED -- never fabricate a pass because derivation could not run.
+        artifact = self.repo / "shots" / "frame.png"
+        write_varied_png(artifact)  # genuinely valid image; decoder is what's missing
+        child = self._child({
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "produced_if_gates": [],
+            "dirty_paths": [],
+            "visual_evidence_path": "shots/frame.png",
+            "visual_evidence_non_black_pixels": 19200,
+            "visual_evidence_pixel_min": 0,
+            "visual_evidence_pixel_max": 255,
+        })
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}), patch.dict(
+            sys.modules, {"PIL": None, "PIL.Image": None}
+        ):
+            outcome = self._recheck(child)
+        self.assertIsNotNone(outcome.event_blocker)
+        self.assertIn("visual_evidence_cannot_verify", outcome.event_blocker["blocker_summary"])
+        self.assertEqual(outcome.automation_status, "blocked")
 
     def test_out_of_repo_artifact_still_blocks_on_opt_in(self):
         child = self._child({

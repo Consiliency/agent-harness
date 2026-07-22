@@ -38,7 +38,13 @@ from phase_loop_runtime.runner import (
     _parse_native_closeout_status,
     launch_delegated_child,
 )
-from phase_loop_test_utils import build_fake_delegation_request, commit_fixture_paths, make_repo, write_phase_plan
+from phase_loop_test_utils import (
+    build_fake_delegation_request,
+    commit_fixture_paths,
+    make_repo,
+    write_phase_plan,
+    write_varied_png,
+)
 
 VISIBLE_AVATAR_BODY = (
     "# RUNNER\n\n"
@@ -114,8 +120,10 @@ class DelegatedVisualEvidenceTest(unittest.TestCase):
 
     def test_delegated_valid_evidence_survives_serializer_and_is_clean(self):
         artifact = self.repo / "shots" / "frame.png"
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        # round-3 (codex CR): the gate now DERIVES pixel stats from the decoded
+        # image, so the artifact must be a REAL, varied (non-blank) PNG -- a
+        # magic-header-only fake no longer suffices.
+        write_varied_png(artifact)
         native_json = _native_closeout_json(
             visual_evidence_path="shots/frame.png",
             visual_evidence_non_black_pixels=19200,
@@ -218,8 +226,10 @@ class RealLaunchDelegatedChildVisualEvidenceTest(unittest.TestCase):
 
     def test_valid_evidence_survives_real_launch_metadata_round_trip(self):
         artifact = self.repo / "shots" / "frame.png"
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        # round-3 (codex CR): the gate now DERIVES pixel stats from the decoded
+        # image, so the artifact must be a REAL, varied (non-blank) PNG -- a
+        # magic-header-only fake no longer suffices.
+        write_varied_png(artifact)
         native_json = _native_closeout_json(
             visual_evidence_path="shots/frame.png",
             visual_evidence_non_black_pixels=19200,
