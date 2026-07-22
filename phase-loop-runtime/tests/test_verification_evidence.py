@@ -1253,6 +1253,51 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         self.assertNotIn("argv", out_long[0])
         self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out_long))
 
+    def test_redact_diagnostics_metadata_only_scrubs_backslash_escaped_quoted_argv_secret(self):
+        # agent-harness#243 CR (cross-vendor codex, escaped-quote gap): ``_COMMAND_CONTEXT_FLAG_RE``
+        # only allowed a SINGLE optional quote-or-backslash character at each boundary
+        # (``['\"\\]?``), so a backslash-ESCAPED quote -- two characters, ``\`` then ``"`` --
+        # exceeded that allowance and the pattern failed to match. Reproduces the gap with a
+        # diagnostic ``argv`` element that IS the whole backslash-escaped-quoted flag/value
+        # pair as one string (e.g. as produced when a command-context string is itself
+        # JSON/shell-escaped before being embedded in argv). Must FAIL (secret present,
+        # diagnostic NOT redacted) at agent-harness#243 HEAD (37992c5) and PASS once the
+        # boundary classes are widened to a run.
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": ["curl", f'\\"--token\\" \\"{secret}\\"'],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "connection refused\n",  # benign -- no secret shape here
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("argv", out[0])
+        self.assertNotIn("raw_tail", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_command_flag")
+        self.assertNotIn(secret, json.dumps(out))
+
+        # `=`-assignment form with backslash-escaped quotes around the value.
+        assignment_diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": ["curl", f'--token=\\"{secret}\\"'],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "connection refused\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out_assignment = redact_diagnostics_metadata_only(assignment_diagnostics)
+        self.assertTrue(out_assignment[0]["redacted"])
+        self.assertNotIn("argv", out_assignment[0])
+        self.assertNotIn(secret, json.dumps(out_assignment))
+
     def test_redact_diagnostics_metadata_only_does_not_over_redact_pytest_dash_k_argv(self):
         # agent-harness#269 regression guard, extended to the diagnostics ``argv`` LIST path:
         # the command-context flag matcher's short-flag vocabulary is deliberately narrow
@@ -2158,6 +2203,75 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             summary = inspect_state(repo, roadmap=None)
             self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
 
+    def test_run_execute_verification_redacts_backslash_escaped_quoted_flag_operational_command(self):
+        # agent-harness#243 CR (cross-vendor codex, escaped-quote gap): full end-to-end
+        # reproduction of the defect codex found at HEAD 37992c5 -- unlike
+        # ``test_run_execute_verification_redacts_shell_escaped_quoted_secret_end_to_end``
+        # above (which uses a colon-separated ``"X-Api-Key: \"SECRET\""`` value already caught
+        # by the OLDER strict ``[:=]``-assignment matcher), this uses a bare, no-colon/equals
+        # ``--token`` FLAG whose quotes are BACKSLASH-ESCAPED (``\"--token\" \"SECRET\"``,
+        # two-character ``\"`` sequences) -- the shape only ``_COMMAND_CONTEXT_FLAG_RE``
+        # covers, and whose boundary classes previously allowed only a single optional
+        # quote-or-backslash character. Must FAIL (secret reaches launch.json / `state
+        # --json`) at agent-harness#243 HEAD (37992c5) and PASS once the boundary classes are
+        # widened to a run.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                "automation:\n  suite_command: 'echo \"unterminated'\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            secret_command = f'curl \\"--token\\" \\"{secret}\\"'
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}` evidence: operational\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["code"], "malformed_suite_command")
+
+            exemptions = result.get("operational_exemptions")
+            self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
+            self.assertEqual(exemptions[0]["command"], "<redacted:command>")
+            self.assertNotIn(secret, json.dumps(result))
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
+
     def test_run_execute_verification_redacts_short_flag_operational_command(self):
         # agent-harness#269: companion to the long-flag test above, covering the short-flag
         # form (``-t VALUE``) within the same command-context field / egress path.
@@ -2295,6 +2409,37 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             self.assertEqual(out["suite_command"], "<redacted:suite_command>", f"quote={quote!r}")
             self.assertNotIn(secret, json.dumps(out))
 
+    def test_apply_diagnostics_redaction_scrubs_command_context_backslash_escaped_quoted_flag(self):
+        # agent-harness#243 CR (cross-vendor codex, escaped-quote gap, follow-up to #269): the
+        # sibling to the quoted-flag test above, but for a BACKSLASH-ESCAPED quote (``\"``,
+        # two characters) rather than a bare quote (``"``, one character) around each of the
+        # flag and the value -- the shape codex reproduced at HEAD 37992c5 in
+        # ``operational_exemptions[].command``. ``_COMMAND_CONTEXT_FLAG_RE``'s boundary classes
+        # previously allowed only ONE optional quote-or-backslash character, which a two-
+        # character escaped quote exceeds. Must FAIL (secret present, field NOT redacted) at
+        # HEAD 37992c5 and PASS once the boundary classes are widened to a run.
+        from phase_loop_runtime.redaction import apply_diagnostics_redaction
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        payload = {
+            "ok": False,
+            "code": "malformed_suite_command",
+            "suite_command": f'curl \\"--token\\" \\"{secret}\\"',
+        }
+        out = apply_diagnostics_redaction(payload)
+        self.assertEqual(out["suite_command"], "<redacted:suite_command>")
+        self.assertNotIn(secret, json.dumps(out))
+
+        # `--token="VALUE"` with a backslash-escaped quote around the value only.
+        assignment_payload = {
+            "ok": False,
+            "code": "malformed_suite_command",
+            "suite_command": f'curl --token=\\"{secret}\\"',
+        }
+        out_assignment = apply_diagnostics_redaction(assignment_payload)
+        self.assertEqual(out_assignment["suite_command"], "<redacted:suite_command>")
+        self.assertNotIn(secret, json.dumps(out_assignment))
+
     def test_command_context_flag_kind_matches_long_short_and_quoted_flags(self):
         # agent-harness#269: unit-level coverage of the command-context-scoped matcher
         # itself, independent of the runner/egress plumbing above.
@@ -2310,6 +2455,29 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             f"some-tool --api-key {secret} --verbose",
             f"some-tool --secret {secret}",
             f"some-tool --password {secret}",
+        ]
+        for case in positive_cases:
+            self.assertEqual(
+                _command_context_flag_kind(case), "secret_like_command_flag", f"expected match: {case!r}"
+            )
+
+    def test_command_context_flag_kind_matches_backslash_escaped_quoted_flags(self):
+        # agent-harness#243 CR (cross-vendor codex, escaped-quote gap): unit-level coverage of
+        # the matcher itself for a BACKSLASH-ESCAPED quote (``\"``, two characters) around the
+        # flag and/or value, distinct from the bare-quote case already covered above (``"``,
+        # one character). The pre-fix boundary classes (``['\"\\]?``, a single optional
+        # quote-or-backslash) could not absorb the two-character ``\"`` sequence. Covers the
+        # command-string shape, the `=`-assignment shape, and an argv-list ELEMENT that is
+        # itself the whole escaped-quoted flag/value pair.
+        from phase_loop_runtime.redaction import _command_context_flag_kind
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        positive_cases = [
+            f'curl \\"--token\\" \\"{secret}\\"',
+            f'curl \\"-t\\" \\"{secret}\\"',
+            f'--token=\\"{secret}\\"',
+            f'curl --token=\\"{secret}\\"',
+            [sys.executable, "-c", "x", f'\\"--token\\" \\"{secret}\\"'],
         ]
         for case in positive_cases:
             self.assertEqual(

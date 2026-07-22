@@ -188,9 +188,26 @@ _SECRET_FLAG_RE = re.compile(r"^-{1,2}(?:api[_-]?key|secret|token|password)$", r
 # ``docker build -t <tag>`` shape is an accepted, explicitly-sanctioned trade-off (a
 # 12+-char image tag/reference is redacted as a false positive, which is safe -- it just
 # drops the field -- not a correctness hazard).
+#
+# agent-harness#243 CR (cross-vendor codex, escaped-quote gap, follow-up to #269): each
+# boundary above allowed only a SINGLE optional quote-or-backslash character
+# (``['\"\\]?``). A backslash-ESCAPED quote is TWO characters (``\`` then ``"``), so a
+# backslash-escaped-quoted flag/value -- e.g. ``curl \"--token\" \"AKIA...KEY\"``, the shape
+# produced when a command-context string is itself JSON- or shell-escaped before being
+# embedded in a diagnostic/exemption field -- exceeded the single-char allowance at BOTH the
+# post-keyword boundary (``\"`` before the separator) and the pre-value boundary (``\"``
+# after the separator), so the pattern failed to match and the secret reached the persisted
+# payload unredacted. Widened each single-char optional class to a RUN
+# (``[\s'\"\\]*``, zero-or-more) so any number of interleaved whitespace/quote/backslash
+# characters -- one escaped quote, several, or none -- are absorbed at each boundary. This
+# does not touch the DASH anchor (``-{1,2}``) or the required flag-keyword alternation, which
+# is what keeps the pattern command-context-safe; it also does not touch the short-flag
+# vocabulary (still ``t`` alone, never ``k``/``s``/``p``), so ``pytest -k <expr>`` remains
+# unaffected. See ``_command_context_flag_kind`` below and the ``_looks_like_command_field``
+# scoping that keeps this matcher out of prose fields entirely.
 _COMMAND_CONTEXT_FLAG_RE = re.compile(
-    r"['\"\\]?-{1,2}(?:api[_-]?key|secret|token|password|t)['\"\\]?"
-    r"(?:\s+['\"\\]?|=['\"\\]?)"
+    r"[\s'\"\\]*-{1,2}(?:api[_-]?key|secret|token|password|t)[\s'\"\\]*"
+    r"(?:\s+[\s'\"\\]*|=[\s'\"\\]*)"
     r"[A-Za-z0-9_\-]{12,}",
     re.I,
 )
