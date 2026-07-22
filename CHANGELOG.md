@@ -253,6 +253,27 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
       block message still described the retired "owns an avatar/browser-media surface and
       claims a visible-render deliverable" heuristic contract; both now describe the actual
       declared-only trigger (`visual_render_declared=true`).
+  - **Round-2 CR closure (codex Finding 3a residual, lone-DISAGREE):** the round-8 roadmap-identity
+    scoping above uses `runtime_paths.roadmap_paths_match`, which returns `(matched, via_relative)`
+    -- `via_relative=True` means the match was made ONLY via the repo-relative roadmap subpath
+    because the stored absolute roots differ (the #85 sub-fix C moved/copied-repo portability
+    fallback). That branch also matches a genuinely DIFFERENT repository that merely shares the
+    same relative roadmap path (e.g. every repo has `specs/roadmap.md`), which could let a foreign
+    repo's event supply or retract this phase's declaration -- reachable only via a shared/copied
+    `.phase-loop` ledger (breakglass-class; a normal per-repo ledger never mixes events across
+    repos), but the acceptance criterion "a different repo's same-alias phase cannot supply the
+    declaration" was genuinely unmet. `_persisted_visual_render_declared` now applies the
+    content-SHA backstop `roadmap_paths_match`'s own docstring already promises on exactly this
+    branch: on a roots-differ match, the event's persisted `roadmap_sha256` must be present and
+    equal the CURRENT roadmap's content hash (`provenance.roadmap_sha256`) or the event is
+    excluded. The common same-root absolute-path match (`via_relative=False`) is intentionally
+    NOT gated on content-SHA -- doing so would make the gate go inert the moment a legitimate
+    roadmap edit lands between declaration and reconcile, the same fail-open class this gate
+    exists to prevent. **Known-scoped residual:** a repo that is BOTH moved/copied (roots differ)
+    AND whose roadmap content changed between the declaring event and this reconcile (SHA drift),
+    or whose declaring event predates the `roadmap_sha256` field (legacy event, field absent), has
+    its declaration treated as NOT supplied -- warn-default, no block, consistent with #85C's
+    content-drift semantics (SHA drift == not-corroborated, not an error).
 
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 

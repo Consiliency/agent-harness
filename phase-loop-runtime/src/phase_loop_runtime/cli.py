@@ -30,7 +30,7 @@ from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import append_work_unit_metric, build_notification_payload, build_terminal_summary, build_work_unit_metric, hotfix_run_artifacts, run_notification_command
 from .pipeline_adapter.flag import allow_lane_ir_override_enabled, dispatch_lock_enabled, parallel_dispatch_enabled
 from .profiles import DEFAULT_PROFILES
-from .provenance import ValidationFinding, event_provenance, snapshot_provenance, validate_roadmap_phase_headings
+from .provenance import ValidationFinding, event_provenance, roadmap_sha256, snapshot_provenance, validate_roadmap_phase_headings
 from .reconcile import reconcile
 from .redaction import apply_diagnostics_redaction
 from . import repo_validation
@@ -2794,13 +2794,55 @@ def _persisted_visual_render_declared(repo: Path, roadmap: Path, phase: str) -> 
     pair's event history (a later run can re-declare, including retracting
     an earlier declaration), or ``False`` when no persisted event for this
     roadmap+phase ever carried the field at all -- consistent with the
-    field's own runtime default (absent == not declared == never blocks)."""
+    field's own runtime default (absent == not declared == never blocks).
+
+    Fix (round-2 CR, codex Finding 3a residual): ``roadmap_paths_match``
+    returns ``(matched, via_relative)``. When ``via_relative`` is True the
+    match was made ONLY via the repo-relative roadmap subpath because the
+    stored absolute roots differ (the ah#85 sub-fix C moved/copied-repo
+    portability fallback) -- that also matches a genuinely DIFFERENT
+    repository that merely happens to share the same relative roadmap path
+    (e.g. every repo has ``specs/roadmap.md``), which would let a foreign
+    repo's event supply or retract this phase's declaration. Per
+    ``roadmap_paths_match``'s own docstring, "content-SHA provenance
+    remains the integrity backstop" for exactly this branch, so on the
+    roots-differ match this reducer additionally requires the event's
+    persisted ``roadmap_sha256`` to equal the CURRENT roadmap's content
+    hash before accepting the event's declaration. The absolute-path match
+    (``via_relative`` False, the common same-root case) is NOT gated on
+    content-SHA -- gating it would make the gate go inert the moment a
+    legitimate roadmap edit lands between declaration and reconcile, which
+    is the same class of fail-open this gate exists to prevent (see the
+    "Deliberately NOT also scoped by roadmap_sha256" note above, which
+    still applies to the absolute-path branch).
+
+    Known-scoped residual: a repo that is BOTH moved/copied (roots differ)
+    AND whose roadmap content changed between the declaring event and this
+    reconcile (SHA drift), or whose declaring event predates the
+    ``roadmap_sha256`` field (legacy event, field absent), has its
+    declaration treated as NOT supplied here -- warn-default, no block,
+    consistent with ah#85C's content-drift semantics (SHA drift ==
+    not-corroborated, not an error)."""
+    try:
+        current_sha = roadmap_sha256(roadmap)
+    except OSError:
+        # An unreadable/missing roadmap must not crash reconcile. Absolute-
+        # path (via_relative=False) matches still supply as before; a
+        # roots-differ match can never be corroborated without a current
+        # hash to compare against, so it is excluded -- this only ever
+        # narrows acceptance, never widens it.
+        current_sha = None
     declared = False
     for event in read_events(repo):
         if str(event.get("phase") or "") != phase:
             continue
-        if not roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)[0]:
+        matched, via_relative = roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)
+        if not matched:
             continue
+        if via_relative:
+            event_sha = event.get("roadmap_sha256")
+            if not event_sha or current_sha is None or event_sha != current_sha:
+                continue
         metadata = event.get("metadata")
         if not isinstance(metadata, dict):
             continue

@@ -33,6 +33,7 @@ from phase_loop_runtime.cli import _reconcile_visual_evidence_guard, main
 from phase_loop_runtime.events import append_event, read_events
 from phase_loop_runtime.models import LoopEvent, utc_now
 from phase_loop_runtime.observability import build_terminal_summary
+from phase_loop_runtime.provenance import roadmap_sha256 as compute_roadmap_sha256
 
 VISIBLE_AVATAR_BODY = (
     "# RUNNER\n\n"
@@ -121,6 +122,52 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
                 reasoning_effort="test",
                 source="test",
                 metadata={"terminal_summary": terminal_summary},
+            ),
+        )
+
+    def _declare_foreign(
+        self,
+        repo: Path,
+        *,
+        foreign_repo: Path,
+        foreign_roadmap: Path,
+        phase: str,
+        declared: bool,
+        roadmap_sha256: str | None,
+    ) -> None:
+        # Round-2 CR (codex Finding 3a residual): simulate a FOREIGN repo's
+        # event landing in THIS repo's ledger (only reachable via a
+        # copied/shared ``.phase-loop`` directory -- breakglass-class, but
+        # the acceptance criterion "a different repo's same-relative-path
+        # phase cannot supply the declaration" must hold regardless). The
+        # event's ``repo``/``roadmap`` identity is the FOREIGN root, so
+        # ``roadmap_paths_match`` can only match it via the repo-relative
+        # subpath (roots differ) -- exactly the branch the content-SHA
+        # backstop gates. ``roadmap_sha256`` is set explicitly (including
+        # ``None`` to simulate a legacy pre-SHA event) rather than derived
+        # from ``event_provenance`` so each test can drive matching vs.
+        # mismatched vs. absent content-SHA independently.
+        terminal_summary = build_terminal_summary(
+            terminal_status="blocked",
+            terminal_blocker=None,
+            verification_status="blocked",
+            next_action="",
+            child_baml_closeout={"visual_render_declared": declared},
+        )
+        append_event(
+            repo,
+            LoopEvent(
+                timestamp=utc_now(),
+                repo=str(foreign_repo),
+                roadmap=str(foreign_roadmap),
+                phase=phase,
+                action="execute",
+                status="blocked",
+                model="test",
+                reasoning_effort="test",
+                source="test",
+                metadata={"terminal_summary": terminal_summary},
+                roadmap_sha256=roadmap_sha256,
             ),
         )
 
@@ -727,6 +774,111 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
         self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
         self.assertTrue(manual_repair.get("visual_render_undeclared_surface"))
+
+    # --- round-2 CR (codex Finding 3a residual): a roots-differ match (the
+    # ah#85 sub-fix C moved/copied-repo relative-path fallback) also matches
+    # a genuinely DIFFERENT repo sharing the same relative roadmap path --
+    # the content-SHA backstop must reject an uncorroborated cross-repo
+    # supply while still honoring a genuinely moved repo (matching SHA). ---
+
+    def _foreign_identity(self) -> tuple[Path, Path]:
+        # A repo/roadmap identity with the SAME repo-relative roadmap
+        # subpath ("specs/phase-plans-v1.md") as `_setup`'s repo, but a
+        # DIFFERENT absolute root -- so roadmap_paths_match can only match
+        # it via the roots-differ (relative-only) branch, never the
+        # absolute fast path. Reachable here only because the test appends
+        # the foreign event directly into THIS repo's ledger (simulating a
+        # copied/shared `.phase-loop` directory -- breakglass-class; a real
+        # per-repo ledger never mixes events from two repos).
+        foreign_td = tempfile.TemporaryDirectory()
+        self.addCleanup(foreign_td.cleanup)
+        foreign_repo = Path(foreign_td.name) / "repo"
+        foreign_roadmap = foreign_repo / "specs" / "phase-plans-v1.md"
+        return foreign_repo, foreign_roadmap
+
+    def test_roots_differ_foreign_roadmap_sha256_does_not_supply_declaration(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        foreign_repo, foreign_roadmap = self._foreign_identity()
+        # Deliberately WRONG content-SHA -- a different repo's event, not a
+        # moved copy of this one.
+        self._declare_foreign(
+            repo,
+            foreign_repo=foreign_repo,
+            foreign_roadmap=foreign_roadmap,
+            phase="RUNNER",
+            declared=True,
+            roadmap_sha256="deadbeef" * 8,
+        )
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        # The foreign declaration=True is NOT accepted, so this phase is
+        # treated as undeclared -- warn-default, no block (the guard never
+        # blocks an undeclared phase, only a declared-but-unevidenced one).
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
+        self.assertTrue(manual_repair.get("visual_render_undeclared_surface"))
+
+    def test_roots_differ_matching_roadmap_sha256_still_supplies_declaration(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        foreign_repo, foreign_roadmap = self._foreign_identity()
+        # Genuinely moved/copied repo: same roadmap CONTENT, different root.
+        current_sha = compute_roadmap_sha256(roadmap)
+        self._declare_foreign(
+            repo,
+            foreign_repo=foreign_repo,
+            foreign_roadmap=foreign_roadmap,
+            phase="RUNNER",
+            declared=True,
+            roadmap_sha256=current_sha,
+        )
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        # Declaration IS honored (portability preserved), so the missing
+        # real evidence now blocks under opt-in, same as the same-root case.
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    def test_roots_differ_absent_roadmap_sha256_does_not_supply_declaration(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        foreign_repo, foreign_roadmap = self._foreign_identity()
+        # Legacy event predating the roadmap_sha256 field -- documented
+        # residual: treated as NOT supplied, not a crash or a false-positive
+        # block.
+        self._declare_foreign(
+            repo,
+            foreign_repo=foreign_repo,
+            foreign_roadmap=foreign_roadmap,
+            phase="RUNNER",
+            declared=True,
+            roadmap_sha256=None,
+        )
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
+        self.assertTrue(manual_repair.get("visual_render_undeclared_surface"))
+
+    def test_same_root_absolute_match_unaffected_by_sha_backstop(self):
+        # The common case: identical absolute roadmap path (via_relative ==
+        # False) -- must remain gated purely on declared=True, with NO SHA
+        # check, even though nothing here supplies a roadmap_sha256 on the
+        # declaring event (mirrors _declare, which never sets it).
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        self._declare(repo, roadmap, "RUNNER", True)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
 
 
 if __name__ == "__main__":
