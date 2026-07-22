@@ -262,7 +262,9 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_text("png", encoding="utf-8")
+        # agent-harness#91 round-2 (codex Finding 3): a real PNG magic-number
+        # header is now required -- a plain-text file renamed to .png is rejected.
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         ctx = _ctx(
             plan,
             changed_paths=["tests/fixtures/avatar_call.html"],
@@ -309,7 +311,9 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_text("png", encoding="utf-8")
+        # agent-harness#91 round-2 (codex Finding 3): a real PNG magic-number
+        # header is now required -- a plain-text file renamed to .png is rejected.
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         ctx = _ctx(
             plan,
             changed_paths=["tests/fixtures/avatar_call.html"],
@@ -323,6 +327,85 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
             },
         )
         self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+
+    # --- Fix 3 round 2 (codex): evidence must be a real, decodable image file ---
+
+    def test_repo_root_directory_path_still_finds(self):
+        # codex probe: visual_evidence_path="." (the repo directory itself)
+        # must be REJECTED -- exists() alone is not "a valid artifact".
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": ".",
+                "visual_evidence_observed": {"nonBlackPixels": 1, "pixelMin": 0, "pixelMax": 1},
+            },
+        )
+        self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
+
+    def test_text_renamed_to_png_still_finds(self):
+        # A plain-text file merely renamed to .png must be REJECTED -- it has no
+        # valid image magic-number header.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("this is not an image\n", encoding="utf-8")
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
+
+    def test_valid_png_header_artifact_is_clean(self):
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+
+    def test_pixel_min_greater_than_max_still_finds(self):
+        # codex probe: {"nonBlackPixels": 1, "pixelMin": 0, "pixelMax": ...} with
+        # min > max describes no real frame -- must be REJECTED even with a
+        # genuinely valid image artifact.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 1, "pixelMin": 200, "pixelMax": 10},
+            },
+        )
+        self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
+
+    def test_pixel_min_greater_than_max_rejected_at_the_model(self):
+        self.assertIsNone(VisualEvidenceObservation.from_mapping({"nonBlackPixels": 1, "pixelMin": 200, "pixelMax": 10}))
+        with self.assertRaises(ValueError):
+            VisualEvidenceObservation(non_black_pixels=1, pixel_min=200, pixel_max=10)
 
     # --- end-to-end through closeout: warn-default / opt-in-block / no human_required ---
 

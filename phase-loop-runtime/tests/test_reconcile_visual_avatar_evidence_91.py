@@ -91,10 +91,21 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         return repo, roadmap
 
     def _write_committed_artifact(self, repo: Path, rel: str) -> str:
+        # agent-harness#91 round-2 (Fix 2): deliberately left UNCOMMITTED (every
+        # caller already passes --allow-dirty). resolve_visual_evidence_artifact
+        # only requires the file to EXIST inside the repo, not that it's
+        # committed -- and committing it as a separate later commit would move
+        # HEAD (the tests' defaulted --closeout-commit) past the commit that
+        # actually touched the owned avatar/browser-media surface, which the
+        # new diff-tree-of-the-closeout-commit structural check
+        # (_resolve_changed_paths_at_commit) would then correctly NOT flag --
+        # that's Fix 2 working as intended, but it would make this fixture
+        # helper name-misleading, so the artifact stays uncommitted instead.
         target = repo / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("PNGDATA\n", encoding="utf-8")
-        commit_fixture_paths(repo, "add visual evidence artifact", target)
+        # agent-harness#91 round-2 (codex Finding 3): a real PNG magic-number
+        # header is now required -- a plain-text file renamed to .png is rejected.
+        target.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         return rel
 
     # --- warn-default: missing evidence records the shortfall but doesn't block ---
@@ -229,6 +240,64 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
         self.assertEqual(manual_repair["visual_evidence_opt_out"], "no_visible_media_surface")
+
+    # --- Fix 2 round 2 (gemini over-block): only OWNING a pre-existing media
+    # file, without CHANGING it at the closeout commit, must not block -- this
+    # is what the live runner would do (it has no ownership filter at all). ---
+
+    def test_owning_but_not_changing_media_file_is_not_blocked(self):
+        # `src/**` owns `src/avatar_renderer.py`, committed in an EARLIER commit.
+        # The closeout commit (HEAD, defaulted) only changes a non-media file --
+        # reconcile must evaluate THAT commit's actual changed paths, not the
+        # whole owned tree, so this must NOT be blocked (matches the runner).
+        repo, roadmap = self._setup(GLOB_AVATAR_BODY, owned_files=("src/avatar_renderer.py",))
+        util = repo / "src" / "utils.py"
+        util.write_text("def helper():\n    return 1\n", encoding="utf-8")
+        commit_fixture_paths(repo, "change only a non-media file", util)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 0, stderr)
+        manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
+        self.assertNotIn("visual_evidence_missing_or_blank", manual_repair)
+
+    # --- Fix 2 round 2 (codex fail-open): resolution failures must fail CLOSED,
+    # never silently read as "gate does not apply". ---
+
+    def test_invalid_closeout_commit_fails_closed(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        before = len(read_events(repo))
+        code, _, stderr = _run(
+            self._args(
+                repo, roadmap, "RUNNER",
+                "--verification-status", "passed",
+                "--allow-dirty",
+                "--closeout-commit", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("closeout-commit", stderr)
+        # No manual_repair event was recorded -- the phase was NOT promoted.
+        self.assertEqual(len(read_events(repo)), before)
+
+    def test_unreadable_plan_fails_closed_unconditionally(self):
+        # A plan path that RESOLVES but fails to read (here: it resolves to a
+        # directory) is a resolution FAILURE distinct from "no plan artifact
+        # exists at all" -- it must fail closed, not silently read as "no
+        # explicit claim" (which would be the same fail-open class as an
+        # invalid --closeout-commit). Deliberately run under the DEFAULT
+        # (warn) posture, unset here, to prove this is NOT posture-gated the
+        # way a genuinely-detected missing-evidence shortfall is -- a
+        # resolution failure can't evaluate the contract at all, so it always
+        # refuses, warn or block.
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        fake_plan_dir = repo / "plans" / "phase-plan-v1-RUNNER.md"
+        with patch("phase_loop_runtime.cli.find_plan_artifact", return_value=fake_plan_dir.parent):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
+            )
+        self.assertEqual(code, 2)
 
     # --- non-matching phase: guard is inert ---
 

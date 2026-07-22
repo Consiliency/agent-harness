@@ -307,6 +307,35 @@ def _delegated_child_produced_if_gates(child_automation: dict[str, object]) -> o
     return _MISSING
 
 
+def _delegated_child_visual_evidence_fields(child_automation: dict[str, object]) -> dict[str, object]:
+    """agent-harness#91 round-2 (codex Finding 1): recover the delegated
+    child's visual-evidence signal the SAME way
+    ``_delegated_child_produced_if_gates`` recovers ``produced_if_gates`` --
+    prefer the raw ``native_closeout_payload`` (the BAML-validated
+    ``EmitPhaseCloseout`` doc, which carries either the nested
+    ``visual_evidence_observed`` mapping or the flat
+    ``visual_evidence_non_black_pixels``/``visual_evidence_pixel_min``/
+    ``visual_evidence_pixel_max`` encoding), then fall back to whatever
+    flattened top-level keys ``_parse_native_closeout_status`` copied onto
+    ``child_automation`` itself. Without this, the authoritative visual gate
+    (``_visual_evidence_closeout_outcome`` -> ``visual_evidence_terminal_fields``)
+    reads only the terse ``_delegated_child_closeout_result`` dict, finds no
+    visual fields at all, and false-blocks a delegated phase that attached
+    VALID evidence or a typed opt-out -- the exact #245 ``produced_if_gates``
+    drop class, for visual evidence instead of gates. Returns only the keys
+    ``visual_evidence_terminal_fields`` can actually populate (``{}`` when
+    the child carries no visual-evidence signal at all -- a genuine
+    legacy/plain-text closeout, or a non-visual phase), so callers never
+    clobber with placeholder ``None``s.
+    """
+    payload = child_automation.get("native_closeout_payload")
+    if isinstance(payload, dict):
+        fields = visual_evidence_terminal_fields(payload)
+        if fields:
+            return fields
+    return visual_evidence_terminal_fields(child_automation)
+
+
 def _delegated_child_closeout_result(
     *,
     decision: DelegationDecision,
@@ -344,6 +373,12 @@ def _delegated_child_closeout_result(
         produced_if_gates = _delegated_child_produced_if_gates(child_automation)
         if produced_if_gates is not _MISSING:
             result["produced_if_gates"] = produced_if_gates
+        # agent-harness#91 round-2 (codex Finding 1): propagate the visual-evidence
+        # fields the same way, so the authoritative visual gate
+        # (_visual_evidence_closeout_outcome, reached via _closeout_gate_recheck for
+        # the delegated child's own completion) sees the REAL evidence/opt-out
+        # instead of degrading to "no evidence attached" for every delegated phase.
+        result.update(_delegated_child_visual_evidence_fields(child_automation))
         return {key: value for key, value in result.items() if value is not None}
     if terminal_summary:
         result["status"] = terminal_summary.get("terminal_status")

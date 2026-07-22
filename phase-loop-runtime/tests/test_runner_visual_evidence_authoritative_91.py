@@ -134,7 +134,9 @@ class VisualGateAuthoritativeBlockTest(unittest.TestCase):
     def test_valid_evidence_does_not_visual_block_on_opt_in(self):
         artifact = self.repo / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_text("png", encoding="utf-8")
+        # agent-harness#91 round-2 (codex Finding 3): a real PNG magic-number
+        # header is now required -- a plain-text file renamed to .png is rejected.
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
         child = self._child({
             "terminal_status": "complete",
             "verification_status": "passed",

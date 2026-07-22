@@ -1080,6 +1080,17 @@ class VisualEvidenceObservation:
             raise ValueError(f"invalid pixel_min (must be 0..255): {self.pixel_min}")
         if not (0 <= self.pixel_max <= 255):
             raise ValueError(f"invalid pixel_max (must be 0..255): {self.pixel_max}")
+        # agent-harness#91 round-2 (codex Finding 3): an impossible observation
+        # (pixel_min > pixel_max) is malformed the same way an out-of-range value
+        # is -- e.g. {"nonBlackPixels": 1, "pixelMin": 0, "pixelMax": ...} with the
+        # min/max swapped can't describe any real frame. Reject it here so
+        # `from_mapping`'s catch-all treats it identically to "no evidence
+        # attached", instead of `is_valid()` silently accepting a self-inconsistent
+        # observation because `pixel_min != pixel_max` still (accidentally) holds.
+        if self.pixel_min > self.pixel_max:
+            raise ValueError(
+                f"invalid pixel_min/pixel_max (min must be <= max): {self.pixel_min} > {self.pixel_max}"
+            )
 
     def is_valid(self) -> bool:
         """True iff the frame shows real, non-uniform content (not black/blank)."""
@@ -1113,12 +1124,54 @@ class VisualEvidenceObservation:
             return None
 
 
+
+# agent-harness#91 round-2 (codex Finding 3): magic-number headers for the
+# image formats a visual-evidence screenshot/frame artifact is realistically
+# encoded as. This is a FLOOR, not full pixel-decoding (no image-library
+# dependency is available here) -- it rejects a directory, an empty file, and
+# a plain-text file merely renamed to ``.png`` (the exact codex probe:
+# ``write_text("png")`` at a ``.png`` path), which the pre-existing
+# exists()-only check accepted as valid evidence. True decode/derive
+# (verifying the observation actually matches the pixel data) is a follow-up;
+# tracked as a known gap, not silently claimed here.
+_IMAGE_MAGIC_HEADERS: tuple[bytes, ...] = (
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF87a",  # GIF
+    b"GIF89a",  # GIF
+    b"BM",  # BMP
+    # WEBP: RIFF????WEBP -- checked specially below (variable-length RIFF size).
+)
+
+
+def _has_valid_image_header(path: Path) -> bool:
+    """True iff ``path`` starts with a recognized image magic-number header."""
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(12)
+    except OSError:
+        return False
+    if not header:
+        return False
+    if any(header.startswith(magic) for magic in _IMAGE_MAGIC_HEADERS):
+        return True
+    # WEBP: 4-byte "RIFF", 4-byte little-endian chunk size, then "WEBP".
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return True
+    return False
+
+
 def resolve_visual_evidence_artifact(repo_root: "str | Path | None", path_str: "str | None") -> "Path | None":
-    """Fix 4 (agent-harness#91 CR): a runner-owned visual-evidence artifact
-    must EXIST and be CONTAINED inside the repo -- mirrors the #238
-    breakglass path-safety posture (``cli._validate_reconcile_verification_log``):
-    fail closed on anything that can't be proven both inside the repo and
-    present on disk.
+    """Fix 4 (agent-harness#91 CR) + Fix 3 round-2 (codex): a runner-owned
+    visual-evidence artifact must EXIST, be CONTAINED inside the repo,
+    resolve to a REGULAR FILE (not a directory/symlink-to-dir/etc.), be
+    non-empty, and start with a recognized image magic-number header --
+    mirrors the #238 breakglass path-safety posture
+    (``cli._validate_reconcile_verification_log``): fail closed on anything
+    that can't be proven both inside the repo and a genuine image file on
+    disk. Without the regular-file + magic-number checks, ``visual_evidence_
+    path="."`` (the repo directory itself) or a plain-text file renamed to
+    ``.png`` both passed as "valid" evidence -- codex's Finding 3 probe.
 
     ``repo_root=None`` means the caller could not determine a repo root at
     all -- containment can never be proven, so every candidate fails closed.
@@ -1141,7 +1194,16 @@ def resolve_visual_evidence_artifact(repo_root: "str | Path | None", path_str: "
         inside = str(resolved).startswith(str(root) + os.sep)
     if not inside:
         return None
-    return resolved if resolved.exists() else None
+    try:
+        if not resolved.is_file():
+            return None  # rejects a directory (e.g. path="."), symlink-to-dir, etc.
+        if resolved.stat().st_size <= 0:
+            return None  # rejects an empty file
+    except OSError:
+        return None
+    if not _has_valid_image_header(resolved):
+        return None  # rejects a non-image / text-renamed-.png
+    return resolved
 
 
 def visual_evidence_terminal_fields(payload: Any) -> dict[str, Any]:
@@ -1366,9 +1428,11 @@ def avatar_visual_evidence_required(changed_paths: Iterable[str], plan_text: str
 
     Deliberately the SINGLE implementation of the contract -- both the
     closeout validator (``changed_paths`` = the run's actual dirty paths) and
-    the ``reconcile`` CLI guard (``changed_paths`` = the phase's declared
-    ``**Owned files**`` lane patterns, via ``discovery.phase_owned_files``)
-    call this same function, so the two enforcement points can never
+    the ``reconcile`` CLI guard (``changed_paths`` = the files the phase's
+    blocked/closeout commit actually changed, via
+    ``cli._resolve_changed_paths_at_commit``, agent-harness#91 round-2) call
+    this same function with the SAME structural surface -- no ownership-glob
+    filtering on either side -- so the two enforcement points can never
     structurally diverge."""
     return avatar_media_surface_touched(changed_paths) and avatar_visible_render_claimed(plan_text)
 

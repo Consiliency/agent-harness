@@ -17,13 +17,13 @@ from .consiliency_ingest import ingest
 from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
 from .consiliency_scaffold import ScaffoldError, scaffold
 from .docs_freshness import scan_docs_freshness
-from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_owned_files, phase_source_bundle_diagnostic, resolve_python_pin, resolve_repo, resolve_suite_command, select_roadmap
+from .discovery import AmbiguousRoadmapError, find_plan_artifact, phase_source_bundle_diagnostic, resolve_python_pin, resolve_repo, resolve_suite_command, select_roadmap
 from .events import append_event, read_events
 from .roadmap_authority import RoadmapAuthorityError, assert_roadmap_authorized
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
-from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, VisualEvidenceObservation, avatar_visual_evidence_required, glob_match_paths, resolve_visual_evidence_artifact, utc_now
+from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, VisualEvidenceObservation, avatar_media_surface_touched, avatar_visual_evidence_required, resolve_visual_evidence_artifact, utc_now
 from .closeout_validators import resolve_review_mode
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
@@ -2572,6 +2572,23 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     if not isinstance(closeout_commit, str) or not closeout_commit:
         print("phase-loop reconcile: cannot resolve closeout commit SHA", file=sys.stderr)
         return 2
+    if not (closeout_artifact and isinstance(verification_evidence, dict) and verification_evidence.get("closeout_commit")):
+        # agent-harness#91 round-2 (codex Finding 2): the --closeout-artifact path
+        # already validates closeout_commit resolves to a real, in-history commit
+        # (_validate_tracked_closeout_artifact's ancestry check below). The plain
+        # --closeout-commit / defaulted-to-HEAD path did NOT -- this block only
+        # checked for NONEMPTY, so an invalid/stale/unresolvable SHA sailed through
+        # into the visual-evidence guard, where a git failure resolving its changed
+        # paths silently read as "gate does not apply" (fail-open). Validate
+        # resolvability here, for every reconcile call, not just the artifact path.
+        commit_check = _git_capture(repo, "rev-parse", "--verify", "--quiet", f"{closeout_commit}^{{commit}}")
+        if commit_check.returncode != 0:
+            print(
+                f"phase-loop reconcile: --closeout-commit {closeout_commit!r} does not resolve to a "
+                "commit in this repository",
+                file=sys.stderr,
+            )
+            return 2
 
     snapshot_before = reconcile(repo, roadmap)
     if phase not in snapshot_before.phases:
@@ -2588,6 +2605,18 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
         visual_evidence_opt_out=getattr(args, "visual_evidence_opt_out", None),
     )
     if not visual_ok:
+        if isinstance(visual_fields, dict) and visual_fields.get("visual_evidence_resolution_failed"):
+            # agent-harness#91 round-2 (codex Finding 2): could not EVALUATE the
+            # visual-avatar evidence contract at all (unresolvable --closeout-commit,
+            # a git failure, or an unreadable plan) -- fail closed unconditionally,
+            # never silently promote as though the gate does not apply.
+            print(
+                "phase-loop reconcile: could not resolve inputs for the visual-avatar evidence "
+                "contract (FAV/issue #91) -- unresolvable --closeout-commit or an unreadable "
+                "phase plan. Refusing to promote; re-run with a valid --closeout-commit.",
+                file=sys.stderr,
+            )
+            return 2
         print(
             "phase-loop reconcile: this phase requires blocking visual-avatar evidence "
             "(FAV/issue #91: owned avatar/browser-media surface + explicit visible-render claim) "
@@ -2650,25 +2679,46 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     return 0
 
 
-def _resolve_owned_paths_at_commit(
-    repo: Path, owned_globs: tuple[str, ...], commit: str | None
-) -> tuple[str, ...]:
-    """Fix 3 (agent-harness#91 CR): resolve the phase's declared owned GLOB
-    patterns against the ACTUAL tree of the blocked/closeout commit, returning
-    the real files the globs match at that commit. Feeding these resolved paths
-    (not raw patterns like ``src/**``) into the media-render filename heuristic
-    is what makes the reconcile guard evaluate the SAME resolved-path surface
-    the closeout validator sees. Returns ``()`` when git is unavailable or the
-    commit's tree matches no owned file."""
-    if not owned_globs or not commit:
-        return ()
-    from .git_topology import _git
+_CHANGED_PATHS_RESOLUTION_FAILED = None
 
-    listing = _git(repo, "ls-tree", "-r", "--name-only", commit)
-    if not listing:
-        return ()
-    tree_files = [line.strip() for line in listing.splitlines() if line.strip()]
-    return tuple(glob_match_paths(tree_files, owned_globs))
+
+def _resolve_changed_paths_at_commit(repo: Path, commit: str | None) -> tuple[str, ...] | None:
+    """agent-harness#91 round-2 (codex Finding 2 + gemini over-block): resolve the
+    files the phase's blocked/closeout COMMIT actually CHANGED, via
+    ``git diff-tree --no-commit-id --name-only -r --root <commit>`` -- NOT the
+    whole owned-glob TREE at that commit (the prior ``ls-tree`` approach, which
+    returned every tracked file the phase's owned globs matched, i.e. every
+    ``src/**`` file the phase has EVER owned, not the files this run touched).
+
+    This matches the live runner's structural input to the SAME detection
+    contract: the runner's own visual-evidence check
+    (``_visual_evidence_closeout_outcome`` in ``runner.py``) feeds
+    ``avatar_visual_evidence_required`` the run's actual dirty paths
+    (``_dirty_paths``), with no owned-glob filtering at all. A phase that only
+    changed a non-media file (``src/utils.py``) but happens to OWN a
+    pre-existing media file (``src/avatar_renderer.py``) it never touched is
+    therefore correctly NOT flagged -- closing gemini's over-block, where
+    reconcile was more aggressive than the live runner it's supposed to mirror.
+
+    Returns ``()`` for a commit that resolves cleanly but genuinely changed no
+    files (e.g. an empty commit) -- a legitimate "no match", distinct from
+    ``None`` (module-level alias ``_CHANGED_PATHS_RESOLUTION_FAILED``), the
+    FAIL-CLOSED sentinel returned when ``commit`` doesn't resolve to a real
+    commit object in this repo or the ``diff-tree`` invocation itself errors.
+    Callers must never conflate the two: that conflation (both read as "no
+    owned paths matched" -> "gate does not apply") was codex's fail-open
+    finding -- an invalid/unresolvable ``--closeout-commit`` silently promoting
+    a phase that never had its visual evidence checked at all.
+    """
+    if not commit:
+        return _CHANGED_PATHS_RESOLUTION_FAILED
+    verify = _git_capture(repo, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
+    if verify.returncode != 0:
+        return _CHANGED_PATHS_RESOLUTION_FAILED
+    diff = _git_capture(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit)
+    if diff.returncode != 0:
+        return _CHANGED_PATHS_RESOLUTION_FAILED
+    return tuple(sorted({line.strip() for line in diff.stdout.splitlines() if line.strip()}))
 
 
 def _reconcile_visual_evidence_guard(
@@ -2697,35 +2747,66 @@ def _reconcile_visual_evidence_guard(
     must satisfy the visual contract regardless of whether that flag was passed
     -- omitting an optional flag must never bypass the gate.
 
-    Fix 3: the phase's declared ``**Owned files**`` lane GLOBS are RESOLVED
-    against the blocked commit's actual tree (``_resolve_owned_paths_at_commit``)
-    into the real files they match, so the structural signal is symmetric with
-    the closeout's actual-changed-paths evaluation (a raw ``src/**`` pattern
-    fed to a filename heuristic would never match the real
-    ``src/avatar_renderer.py`` that a closeout blocks on).
+    Fix 2 (round 2, codex fail-open + gemini over-block): the structural
+    signal is the phase's ACTUAL CHANGED paths at the blocked commit
+    (``_resolve_changed_paths_at_commit``, a ``git diff-tree`` of that one
+    commit) -- NOT its declared owned-file globs resolved against the whole
+    tree. That matches the live runner's own structural input exactly (the
+    runner feeds ``avatar_visual_evidence_required`` its run's dirty paths,
+    with no ownership filtering at all): a phase that only changed a
+    non-media file but happens to OWN a pre-existing, untouched media file is
+    correctly NOT flagged (closes gemini's over-block, where reconcile was
+    more aggressive than the runner it mirrors). Resolution FAILURE --
+    ``closeout_commit`` doesn't resolve to a real commit in this repo, or the
+    ``diff-tree``/``rev-parse`` invocation itself errors -- is a distinct,
+    unconditional fail-CLOSED path (``visual_evidence_resolution_failed``),
+    never silently read as "gate does not apply" the way an empty/no-match
+    result legitimately is (closes codex's fail-open).
+
+    Fix 2 also fail-closes when the plan resolves to a real path but reading
+    it raises ``OSError`` (a resolution failure, distinct from a phase
+    genuinely having no plan artifact at all, which is a legitimate "no
+    explicit claim" -- consistent with the closeout validator's own
+    plan-text handling).
 
     Fix 4: the referenced ``--visual-evidence-path`` is VALIDATED
     (``resolve_visual_evidence_artifact``) -- it must EXIST inside the repo and
     not escape it -- not merely asserted; observation validity reuses
     ``models.VisualEvidenceObservation`` (schema + in-range + non-blank).
 
-    Warn-default still applies (autonomy-first): this only REFUSES
-    (``ok=False``) when the opt-in-to-block posture (``PHASE_LOOP_REVIEW=
-    block``) is active. Under ``warn``/``off`` the shortfall is recorded on the
-    manual_repair audit trail but the promotion proceeds; no human_required gate
-    is ever set.
+    Warn-default still applies (autonomy-first) for a genuinely DETECTED
+    missing/blank-evidence shortfall: this only REFUSES (``ok=False``) for
+    that case when the opt-in-to-block posture (``PHASE_LOOP_REVIEW=block``)
+    is active; under ``warn``/``off`` the shortfall is recorded on the
+    manual_repair audit trail but the promotion proceeds, no human_required
+    gate is ever set. A resolution FAILURE is different in kind -- an
+    inability to even EVALUATE the contract, not a detected-and-exempted
+    shortfall -- so it refuses unconditionally, regardless of posture.
 
     Returns ``(ok, manual_repair_fields)``. ``manual_repair_fields`` is
     ``None`` when the FAV contract doesn't apply to this phase at all.
     """
+    changed_paths = _resolve_changed_paths_at_commit(repo, closeout_commit)
+    if changed_paths is _CHANGED_PATHS_RESOLUTION_FAILED:
+        return False, {"visual_evidence_resolution_failed": True, "visual_evidence_missing_or_blank": True}
+
     plan = find_plan_artifact(repo, phase, roadmap=roadmap)
-    try:
-        plan_text = plan.read_text(encoding="utf-8") if plan else ""
-    except OSError:
-        plan_text = ""
-    owned_globs = phase_owned_files(repo, roadmap, phase)
-    resolved_paths = _resolve_owned_paths_at_commit(repo, owned_globs, closeout_commit)
-    if not avatar_visual_evidence_required(resolved_paths, plan_text):
+    plan_text = ""
+    plan_read_failed = False
+    if plan is not None:
+        try:
+            plan_text = plan.read_text(encoding="utf-8")
+        except OSError:
+            plan_read_failed = True
+
+    if not avatar_media_surface_touched(changed_paths):
+        # No changed avatar/browser-media surface at all -- the contract's
+        # STRUCTURAL half can't be satisfied regardless of the plan text, so a
+        # plan-read failure is moot (nothing this phase's commit could gate on).
+        return True, None
+    if plan_read_failed:
+        return False, {"visual_evidence_resolution_failed": True, "visual_evidence_missing_or_blank": True}
+    if not avatar_visual_evidence_required(changed_paths, plan_text):
         return True, None
 
     if visual_evidence_opt_out:
