@@ -6,6 +6,275 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
+
+New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
+`verification_evidence_validator` pattern: registered via `@register_closeout_validator`,
+`block`-severity, force-downgraded to `warn` (recorded, non-blocking) under the default
+`PHASE_LOOP_REVIEW=warn` posture, blocking only when opted in.
+
+- **Detection contract** (`models.avatar_visual_evidence_required` /
+  `avatar_visual_evidence_required_for_plan`): a phase requires blocking visual evidence only
+  when BOTH a STRUCTURAL signal (the phase owns/touches a browser HTML fixture or a file
+  named for media rendering — `getUserMedia`, `MediaStreamTrack`, `getDisplayMedia`, a
+  canvas/video/camera/session/track renderer, an avatar renderer) AND an EXPLICIT CLAIM
+  signal (the plan text makes an explicit user-visible rendering claim as a deliverable, e.g.
+  "visible avatar", "renders in the browser/meeting UI", "browser call-in", "synthetic
+  media"/"MediaStream target", "getUserMedia target") hold. A bare keyword hit on only one
+  axis — e.g. a plan that just "tests video parsing" or "runs in a browser" — stays silent,
+  same false-positive scoping discipline as #243. Legacy phases with no media surface get no
+  finding.
+- **Visual-evidence schema** (`models.VisualEvidenceObservation`, schema
+  `visual_evidence_observed.v1`): pixel-level observations (`non_black_pixels`, `pixel_min`,
+  `pixel_max`, `total_pixels`, tolerant of the camelCase `nonBlackPixels`/`pixelMin`/
+  `pixelMax`/`totalPixels` a browser tool emits) attached alongside a `visual_evidence_path`
+  screenshot/frame-image artifact. `is_valid()` rejects an all-black frame
+  (`non_black_pixels == 0`) and a uniform/blank frame (`pixel_min == pixel_max`, e.g. a solid
+  `#f3f3f3` gray).
+- **Typed opt-out**: a `visual_evidence_opt_out` reason (`no_visible_media_surface`,
+  `visual_deferred_to_later_phase`, `operator_attested_manual`) suppresses the finding,
+  mirroring `verification_evidence_opt_out`.
+- **Reconcile/manual-repair guard**: `phase-loop reconcile` now re-applies the same
+  detection + evidence contract before promoting a matching phase to `complete`
+  (`--visual-evidence-path` / `--visual-evidence-observed` / `--visual-evidence-opt-out`),
+  feeding the phase's declared `**Owned files**` lane patterns
+  (`discovery.phase_owned_files`) into the exact SAME `avatar_visual_evidence_required`
+  function and pixel-validity check the closeout validator uses, so the structural signal
+  and evidence check can never diverge between the two enforcement points. Warn-default
+  still applies: under
+  `PHASE_LOOP_REVIEW=warn` (default) a missing/blank shortfall is recorded on the
+  `manual_repair` audit trail but the promotion proceeds; only `PHASE_LOOP_REVIEW=block`
+  refuses it. Never sets `human_required`.
+
+#### Cross-vendor CR fixes (5 findings)
+
+- **Fix 1 — the gate is now WIRED into the live runner (was inert).** The native closeout
+  schema (`emit_phase_closeout.baml` / `baml_modular.PhaseLoopCloseoutV1`) gained optional
+  `visual_evidence_path` + flat pixel fields (`visual_evidence_non_black_pixels`/`_pixel_min`/
+  `_pixel_max`) + `visual_evidence_opt_out`, and `TERMINAL_SUMMARY_FIELDS` was extended with
+  `visual_evidence_path`/`visual_evidence_observed`/`visual_evidence_opt_out`, so the
+  executor's attached evidence survives into the terminal summary the validator inspects
+  instead of being silently discarded. A visual-gate BLOCK under opt-in now propagates into
+  the AUTHORITATIVE runner reduction via `_visual_evidence_closeout_outcome`, routed through
+  the same `_closeout_gate_recheck` helper as the produced-gates/#243 path (direct AND
+  delegated completion), so the reducer can no longer COMPLETE a phase the visual gate
+  blocked — the block is no longer merely nested under a successful outer status.
+- **Fix 2 — reconcile guard runs independent of `--verification-status`.** Omitting that
+  optional flag no longer bypasses the gate (reconcile always promotes to `complete`).
+- **Fix 3 — reconcile/closeout path symmetry.** The reconcile guard now resolves the phase's
+  owned GLOB patterns against the blocked commit's actual tree
+  (`_resolve_owned_paths_at_commit` + `models.glob_match_paths`) into the real files they
+  match, feeding those RESOLVED paths (e.g. `src/avatar_renderer.py` that `src/**` covers)
+  into `avatar_visual_evidence_required` — matching the closeout's actual-changed-paths
+  evaluation instead of feeding a raw glob into a filename heuristic.
+- **Fix 4 — evidence is VALIDATED, not asserted.** `VisualEvidenceObservation` now rejects
+  out-of-range pixel values (`pixel_min`/`pixel_max` must be 0..255, `non_black_pixels >= 0`),
+  and the referenced `visual_evidence_path` must EXIST inside the repo
+  (`models.resolve_visual_evidence_artifact`, reusing the #238 os.path-containment posture) —
+  a nonexistent or out-of-repo/absolute-escape path is rejected in the runner and reconcile
+  paths (both thread a real repo root).
+- **Fix 5 — deliverable detector anchored + negation-aware.** `avatar_visible_render_claimed`
+  now scans only AFFIRMATIVE deliverable/objective/exit-criteria/acceptance sections and
+  rejects negation, so a Non-goals line like "must not render a visible avatar" no longer
+  produces an opt-in FALSE BLOCK.
+- **Fix 6 (round 3) — pixel observations are now DERIVED from the decoded image, never
+  self-reported.** Fix 4 validated only the artifact's magic-number header, not its pixel
+  content; `VisualEvidenceObservation` (`non_black_pixels`/`pixel_min`/`pixel_max`) was still
+  taken verbatim from the agent's terminal-summary/CLI flags, so a valid-header 24-byte "PNG
+  signature + zero bytes" file paired with a fabricated `{"nonBlackPixels": 19200, "pixelMin":
+  0, "pixelMax": 255}` passed the gate with no relationship to the actual pixel data — the
+  same self-reported/metadata-evidence gap #91 exists to close. `models.
+  derive_visual_observation` now DECODES the referenced artifact (Pillow, `PIL.Image`, a
+  LAZY import — the new `visual` optional-dependencies extra, never a hard core dependency)
+  and computes the observation from its real pixels (grayscale luminance; `non_black_pixels`
+  = pixels above a small threshold, `pixel_min`/`pixel_max` from the decoded extrema). This
+  DERIVED observation is now AUTHORITATIVE in all three enforcement points (closeout
+  validator, live runner, reconcile guard): a genuinely blank/uniform decoded image fails
+  `is_valid()` even when the agent supplies fabricated "good" numbers, and the self-reported
+  `visual_evidence_observed` can never override a failing derived result. Derivation itself
+  fails CLOSED — never silently accepts self-reported numbers as a substitute — when the
+  artifact can't be decoded (`visual_evidence_undecodable`) or no image decoder is available
+  in the environment (`visual_evidence_cannot_verify`); under the opt-in `block` posture this
+  blocks, under warn-default the shortfall is still recorded, never silently treated as clean.
+  The magic-number/regular-file/in-repo-containment pre-filter and the self-report's own
+  `pixel_min<=pixel_max` validation are kept as belt-and-suspenders.
+- **Fix 7 (round 6) — detector section-scope regression + claim-local negation.** Round 5's
+  scope-toggle had a redundant `if/else` that both branches set `in_scope = True`, so an
+  unrecognized/nested heading — e.g. a `### Rationale` subheading NESTED under `## Non-goals`
+  — turned scanning back ON and resurfaced the exact Non-goals false-positive Fix 5 exists to
+  close. `avatar_visible_render_claimed` now tracks scope with a DEPTH-AWARE stack of
+  `(depth, in_scope)` frames: a new heading pops every frame at depth ≥ its own, then pushes a
+  frame whose scope is `False` for a Non-goals/out-of-scope heading, `True` for a known-
+  affirmative heading, and otherwise INHERITED from the enclosing section — an unknown heading
+  no longer flips scope in either direction. Round 5 had also stripped `without` globally from
+  the negation regex to fix a trailing-qualifier false-negative ("renders a visible avatar
+  without operator intervention" is a claim), which broke the opposite case ("validate without
+  rendering a visible avatar" wrongly counted as a claim). Negation is now CLAIM-SPAN-LOCAL: a
+  negation cue (including `without`) only suppresses a claim match that comes AFTER it on the
+  same line/heading, so a preceding "without" still negates while a trailing one doesn't.
+- **Fix 8 (round 6) — reconcile's changed-paths resolution is now merge-aware.**
+  `cli._resolve_changed_paths_at_commit` fed a bare `git diff-tree --root <commit>` (no
+  explicit parent) — for a MERGE commit this is git's COMBINED diff, which suppresses any path
+  that doesn't conflict across parents, i.e. every path in an ordinary clean merge, returning
+  ZERO paths. That was silently read as "genuinely no files changed" → gate bypassed
+  (fail-open): a merge closeout commit whose merged content included a real media file was
+  never evaluated. Now diffs explicitly against the FIRST PARENT using the two-tree form
+  (`git diff-tree <commit>^1 <commit>`, gated by `rev-parse --verify <commit>^1` with a
+  fallback to the original `--root` form for a root/initial commit that has no parent at all)
+  — NOT `-m --first-parent`, which was tried first but empirically still emits the UNION of
+  every parent's diff rather than just parent #1's, which would have traded the fail-open for a
+  different over-inclusion bug (attributing a sibling branch's changes to the merge). A merge's
+  real first-parent changed paths are now always evaluated, exactly like a non-merge commit
+  (whose sole parent makes the two-tree form identical to the pre-fix single-arg diff).
+- **Fix 9 (round 6) — evidence coverage floor.** `is_valid()` accepted a single non-black pixel
+  in an arbitrarily large frame (e.g. a 1000×1000 image with ONE opaque white pixel:
+  `non_black_pixels=1 > 0` and differing extrema both trivially held) — a near-blank frame
+  could pass. `VisualEvidenceObservation` gained a `total_pixels` field (threaded from the
+  decode as `width * height` in `derive_visual_observation`; defaults to `0`/"unknown" for
+  self-reported observations that never carried it, which keeps the pre-existing semantics).
+  When `total_pixels` is known, `is_valid()` now additionally requires (a) a minimum
+  total-pixel-count floor and (b) `non_black_pixels` to be at least a small meaningful fraction
+  of `total_pixels` (not merely `> 0`) — one floor, no further thresholds.
+- **Fix 10 (round 6) — contract honesty (image-only) + adoption-default silence.** The CLI
+  help text and gate-generated messages said "screenshot/video", implying video evidence is
+  verified; `derive_visual_observation` only ever decoded IMAGE headers/pixel data (PNG, JPEG,
+  GIF, BMP, WEBP). Wording now says "screenshot/frame image" throughout and notes that
+  decoding a representative frame out of a video container is a tracked follow-up, not claimed
+  today. Separately: when the decoder (Pillow, the optional `visual` extra) is UNAVAILABLE and
+  enforcement is NOT opted in (default warn posture), the closeout validator is now SILENT
+  (no finding at all) instead of raising `visual_evidence_cannot_verify` on every passing
+  visual/avatar phase closeout — a standard install without the `visual` extra no longer gets
+  spammed purely because an optional dependency isn't installed. Only the opt-in `block`
+  posture turns a missing decoder into a hard block; an `visual_evidence_undecodable` (Pillow
+  present, decode genuinely failed) finding is unaffected and still recorded under warn.
+- **Fix 11 (round 7) — the BAML/live closeout prompt still advertised video evidence.** Fix
+  10 narrowed the CLI help text and gate-generated messages to "screenshot/frame image", but
+  missed the canonical runtime prompt: `emit_phase_closeout.baml`'s field comment and its
+  rendered required-contract line still told executors to attach a "screenshot/video
+  artifact" -- a `build_baml_request` probe confirmed that wording reaches the LIVE prompt an
+  executor actually sees, while the gate only ever decodes an image. Both spots now say
+  "screenshot/frame IMAGE artifact (PNG, JPEG, GIF, BMP, or WEBP -- NOT a video container;
+  the gate decodes image pixel data only, decoding a frame out of a video is a tracked
+  follow-up)", matching the CLI wording exactly. There is no generated `baml_client` to
+  regenerate (`export_function_schema` regex-parses the `.baml` source text directly at
+  request-build time), so the edit alone is live; the `launchspec_golden.json` fixture, which
+  embeds the rendered prompt text verbatim, was regenerated
+  (`PHASE_LOOP_REGEN_LAUNCHSPEC_GOLDEN=1`) to match.
+- **Fix 12 (round 7) — reconcile still recorded a finding on decoder-absence under
+  warn-default.** Fix 10's "decoder-absent + warn-default -> SILENT" rule was applied only to
+  the closeout validator; `cli._reconcile_visual_evidence_guard` still recorded
+  `visual_evidence_missing_or_blank` + `visual_evidence_cannot_verify` on the manual_repair
+  audit trail even though it didn't refuse the promotion, so a standard install without the
+  `visual` extra was still spammed on the reconcile path. The predicate is now shared
+  (`closeout_validators.visual_evidence_decoder_absent_is_silent`, called from both
+  `visual_avatar_evidence_validator` and `cli._reconcile_visual_evidence_guard`) so the two
+  paths can never diverge again: decoder-absent + warn-default records no finding at all
+  (`manual_repair_fields=None`); decoder-absent + opt-in-block still refuses with
+  `visual_evidence_cannot_verify`; a genuinely missing/blank evidence artifact with a working
+  decoder still records under warn exactly as before.
+- **Declared-only trigger redesign (Consiliency/agent-harness#272) — the BLOCK decision is now
+  decidable by construction.** Round 7 CR flagged two more NL-claim-parser edges (a negation
+  clause-scoping fail-open, an affirmative-heading-under-`## Non-goals` false-positive) —
+  the same heuristic-bottomless class every prior round already worked around. Rather than
+  another regex round, the trigger itself is replaced: a new closeout field,
+  `visual_render_declared: bool` (added to `emit_phase_closeout.baml`, the `PhaseLoopCloseoutV1`
+  pydantic mirror, and `TERMINAL_SUMMARY_FIELDS`), is the executor's explicit assertion "this
+  phase's deliverable is a visible avatar/media render" — a statement about intent/deliverable,
+  independent of whether evidence is attached yet (see the round-8 CR fix below). The BLOCK
+  decision in all three enforcement points (`visual_avatar_evidence_validator`, the runner's
+  authoritative `_visual_evidence_closeout_outcome`, and the reconcile guard
+  `_reconcile_visual_evidence_guard`) now reads ONLY `visual_render_declared` + evidence
+  validity — the structural (`avatar_media_surface_touched`) and NL-claim
+  (`avatar_visible_render_claimed`) heuristics no longer feed the block path anywhere, so their
+  two known edges can no longer gate a merge. The evidence-validation machinery itself (derived
+  pixels, alpha-compositing, coverage floor, fail-closed decode, decoder-absent silence) is
+  unchanged — only the trigger moved.
+  - The heuristic is demoted to a HARD non-blocking advisory (`visual_render_undeclared_surface`,
+    severity `warn`, via the shared `models.avatar_visual_evidence_advisory_applies` predicate —
+    an OR of the two heuristics, evaluated only when `visual_render_declared` is false/absent):
+    "phase touched an avatar media surface / prose claims a visible render but did not declare
+    visual_render_declared=true; the visual-evidence gate did not enforce. Declare it to
+    enforce." This is posture-INDEPENDENT: `run_closeout_validators` forces every finding to
+    `warn` under the default `PHASE_LOOP_REVIEW=warn`, and under `PHASE_LOOP_REVIEW=block` a
+    finding's severity passes through unchanged — a finding that is always emitted at `warn`
+    severity can therefore never escalate to a block under either posture.
+  - **Delegated-child propagation** (the #245 recurrence class): `visual_render_declared`
+    threads through `_delegated_child_visual_evidence_fields` /
+    `models.visual_evidence_terminal_fields` the same way the evidence fields already did, so a
+    delegated child's declaration survives to the authoritative gate instead of going silently
+    inert on the delegated completion path.
+  - **Reconcile reads the PERSISTED declaration, never a CLI flag or the git diff.** A new
+    `cli._persisted_visual_render_declared` helper reads `visual_render_declared` from the
+    phase's own event ledger (`metadata.terminal_summary`, the same shape the live runner
+    writes via `observability.build_terminal_summary`) — reconcile cannot re-derive a declared
+    bool from a git diff, and letting an operator assert one via a flag would reopen the exact
+    self-assertion hole this issue closes. The heuristic still computes the non-blocking
+    advisory in reconcile (it has the changed paths from `_resolve_changed_paths_at_commit`),
+    but never blocks.
+  - Out of scope (tracked separately, #211-style planner-skill follow-up): grounding the
+    declaration in the PLAN (a frozen visual-evidence marker in acceptance criteria). This
+    change is closeout-surface only.
+  - **Round-8 CR fixes (three confirmed cross-vendor findings against the declared-only
+    design above; codex disagreed with all three, gemini corroborated the third — all three
+    verified reachable against source and fixed):**
+    - **Prompt-semantics crux (fail-open):** the BAML prompt instructed the executor to set
+      `visual_render_declared=true` "only when ... backed by an attached image artifact" —
+      coupling the declaration to evidence *already existing*, which defined away the exact
+      failure the gate exists to catch (a compliant executor that renders a visible avatar but
+      fails/forgets to attach evidence was instructed to leave the field false, so the block
+      never fired). `emit_phase_closeout.baml` now decouples the declaration from
+      evidence-attachment: set it whenever the phase's *deliverable* is a visible render,
+      regardless of whether evidence is attached yet; when true, a valid
+      `visual_evidence_path` or a typed `visual_evidence_opt_out` is required or the closeout
+      BLOCKS. Image-only wording (no video) preserved.
+    - **Reconcile ordering (advisory input could block before the declared read):**
+      `cli._reconcile_visual_evidence_guard` resolved `changed_paths` (which feeds only the
+      non-blocking advisory) *before* reading the persisted `visual_render_declared` bool, and
+      refused (`ok=False`) unconditionally on a `_CHANGED_PATHS_RESOLUTION_FAILED` — so an
+      *undeclared* phase could be blocked purely because `--closeout-commit` didn't resolve,
+      violating the declared-only-blocks invariant. The guard now reads the declared bool
+      FIRST; `changed_paths` is resolved lazily, only inside the not-declared branch, and a
+      resolution failure there means "no advisory signal" (same as a plan-read failure) —
+      never a refusal. `changed_paths` no longer appears on any path that returns `ok=False`.
+    - **Ledger-reduction bugs in `cli._persisted_visual_render_declared`:** (a) the scan
+      filtered by phase-alias string only, so a *prior roadmap's* same-named phase could
+      supply the current closeout's declaration — now also scoped by roadmap identity via the
+      existing `runtime_paths.roadmap_paths_match` idiom (tolerates a relocated repo root,
+      #85 sub-fix C), matching how `reconcile.py` already scopes ledger scans. (b) the
+      serializer (`models.visual_evidence_terminal_fields`) persisted the declared bool
+      truthy-only, so an explicit `false` was stripped and indistinguishable from the field
+      being absent — a later `false` correction could never overwrite an earlier `true` in the
+      ledger ("sticky-True": once wrongly declared, a phase was permanently un-retractable).
+      The serializer now persists the real bool for both `true` and `false` whenever the
+      payload actually carries the key; the reducer already took the last explicitly-recorded
+      value, so a `true`-then-`false` sequence now correctly ends not-declared. Single-run
+      validator/runner/delegated-child paths are unaffected (`absent == False` unchanged there).
+    - **Wording nit:** the runner's block-path `blocker_summary` text and the reconcile CLI's
+      block message still described the retired "owns an avatar/browser-media surface and
+      claims a visible-render deliverable" heuristic contract; both now describe the actual
+      declared-only trigger (`visual_render_declared=true`).
+  - **Round-2 CR closure (codex Finding 3a residual, lone-DISAGREE):** the round-8 roadmap-identity
+    scoping above uses `runtime_paths.roadmap_paths_match`, which returns `(matched, via_relative)`
+    -- `via_relative=True` means the match was made ONLY via the repo-relative roadmap subpath
+    because the stored absolute roots differ (the #85 sub-fix C moved/copied-repo portability
+    fallback). That branch also matches a genuinely DIFFERENT repository that merely shares the
+    same relative roadmap path (e.g. every repo has `specs/roadmap.md`), which could let a foreign
+    repo's event supply or retract this phase's declaration -- reachable only via a shared/copied
+    `.phase-loop` ledger (breakglass-class; a normal per-repo ledger never mixes events across
+    repos), but the acceptance criterion "a different repo's same-alias phase cannot supply the
+    declaration" was genuinely unmet. `_persisted_visual_render_declared` now applies the
+    content-SHA backstop `roadmap_paths_match`'s own docstring already promises on exactly this
+    branch: on a roots-differ match, the event's persisted `roadmap_sha256` must be present and
+    equal the CURRENT roadmap's content hash (`provenance.roadmap_sha256`) or the event is
+    excluded. The common same-root absolute-path match (`via_relative=False`) is intentionally
+    NOT gated on content-SHA -- doing so would make the gate go inert the moment a legitimate
+    roadmap edit lands between declaration and reconcile, the same fail-open class this gate
+    exists to prevent. **Known-scoped residual:** a repo that is BOTH moved/copied (roots differ)
+    AND whose roadmap content changed between the declaring event and this reconcile (SHA drift),
+    or whose declaring event predates the `roadmap_sha256` field (legacy event, field absent), has
+    its declaration treated as NOT supplied -- warn-default, no block, consistent with #85C's
+    content-drift semantics (SHA drift == not-corroborated, not an error).
+
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 
 Follow-up to #242 (#209), which preserved per-failing-stage raw diagnostics via a

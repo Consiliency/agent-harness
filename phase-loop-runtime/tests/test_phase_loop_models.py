@@ -222,6 +222,13 @@ class PhaseLoopModelsTest(unittest.TestCase):
                 "unowned_dirty_paths",
                 "pre_existing_dirty_paths",
                 "artifact_paths",
+                # FAV (issue #91) Fix 1: visual-avatar evidence survives the
+                # native closeout into the terminal summary.
+                "visual_evidence_path",
+                "visual_evidence_observed",
+                "visual_evidence_opt_out",
+                # FAV #272: the DECLARED trigger the block decision reads.
+                "visual_render_declared",
             ),
         )
         self.assertEqual(

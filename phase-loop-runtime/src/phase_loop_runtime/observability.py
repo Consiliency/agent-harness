@@ -18,6 +18,7 @@ from .models import (
     WorkUnitMetric,
     metadata_command,
     utc_now,
+    visual_evidence_terminal_fields,
 )
 from .runtime_paths import (
     ensure_phase_loop_excluded,
@@ -811,7 +812,11 @@ def build_terminal_summary(
     )
     return {
         **({"metric_id": metric_id} if metric_id else {}),
-        **{field: summary[field] for field in TERMINAL_SUMMARY_FIELDS},
+        # FAV (issue #91) Fix 1: project the whitelist tolerantly -- the optional
+        # visual-evidence keys are present only when the native closeout carried
+        # them (via apply_child_terminal_summary_overlay), so `if field in summary`
+        # keeps them out of ordinary summaries while letting them SURVIVE when set.
+        **{field: summary[field] for field in TERMINAL_SUMMARY_FIELDS if field in summary},
         **({"produced_if_gates": summary["produced_if_gates"]} if "produced_if_gates" in summary else {}),
         **({"extraction_failure": summary["extraction_failure"]} if "extraction_failure" in summary else {}),
         **({"evidence_refs": list(evidence_refs)} if evidence_refs else {}),
@@ -875,6 +880,18 @@ def apply_child_terminal_summary_overlay(
                 }
             elif updated.get("terminal_blocker") is None:
                 updated["terminal_blocker"] = None
+
+    # FAV (issue #91) Fix 1: lift the native closeout's visual-evidence fields
+    # (the flat BAML encoding visual_evidence_non_black_pixels/pixel_min/pixel_max
+    # or a nested visual_evidence_observed, plus visual_evidence_path /
+    # visual_evidence_opt_out) into the terminal-summary shape the closeout
+    # validator inspects. Without this, the executor's attached evidence (or a
+    # typed opt-out) is silently discarded and the gate is inert in the live
+    # runner. Runner-authoritative BLOCK propagation is handled separately at the
+    # reduction site (see runner._visual_evidence_closeout_outcome).
+    if isinstance(child_baml_closeout, dict):
+        for key, value in visual_evidence_terminal_fields(child_baml_closeout).items():
+            updated[key] = value
 
     sanitized_failure = _sanitize_extraction_failure(extraction_failure)
     if sanitized_failure is not None:

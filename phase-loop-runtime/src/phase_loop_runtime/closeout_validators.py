@@ -98,6 +98,13 @@ class CloseoutContext:
     # doing repo IO itself (validators stay pure). None => no corroboration
     # available => the validator must not newly-fail on its absence.
     docs_freshness: Mapping[str, Any] | None = None
+    # FAV (issue #91) Fix 4: repo root for validating that a referenced
+    # runner-owned artifact (e.g. visual_evidence_path) EXISTS and is CONTAINED
+    # inside the repo. None => the caller could not supply a root (legacy/test
+    # callers); a validator that needs containment must then fall back to a
+    # posture that does not depend on repo IO rather than fail-open on an
+    # unvalidated assertion.
+    repo_root: str | None = None
 
 
 # A validator receives the context and returns zero or more findings.
@@ -126,6 +133,34 @@ def resolve_review_mode(env: Mapping[str, str] | None = None) -> str:
     env = os.environ if env is None else env
     value = str(env.get(REVIEW_MODE_ENV) or "").strip().lower()
     return value if value in REVIEW_MODES else DEFAULT_REVIEW_MODE
+
+
+#: FAV (agent-harness#91) derivation-error code raised when no image decoder
+#: (Pillow, the optional ``visual`` extra) is installed in this environment --
+#: distinct from ``visual_evidence_undecodable`` (decoder present, decode
+#: genuinely failed), which is always a real, actionable finding.
+VISUAL_EVIDENCE_DECODER_UNAVAILABLE_CODE = "visual_evidence_cannot_verify"
+
+
+def visual_evidence_decoder_absent_is_silent(derivation_error: str | None) -> bool:
+    """FAV (agent-harness#91, round-7 CR): decoder-ABSENT under warn-default
+    is an ADOPTION-DEFAULT concern, not an actionable finding -- a standard
+    install without the optional ``visual`` extra (Pillow) would otherwise get
+    spammed with a ``visual_evidence_cannot_verify`` finding on every passing
+    visual/avatar phase closeout purely because an optional dependency isn't
+    installed, not because anything is actually wrong.
+
+    The closeout validator (``visual_avatar_evidence_validator``) and the
+    reconcile guard (``cli._reconcile_visual_evidence_guard``) share this
+    EXACT predicate so the two enforcement points can never diverge: SILENT
+    (no finding at all) only when derivation failed specifically because the
+    decoder is unavailable AND the opt-in ``block`` posture is not active.
+    ``visual_evidence_undecodable`` (decoder present, decode genuinely
+    failed) is unaffected and always recorded under warn; the opt-in
+    ``block`` posture always turns a missing decoder into a hard
+    block/refuse regardless of this predicate.
+    """
+    return derivation_error == VISUAL_EVIDENCE_DECODER_UNAVAILABLE_CODE and resolve_review_mode() != "block"
 
 
 def run_closeout_validators(
@@ -274,6 +309,10 @@ def load_builtin_closeout_validators() -> None:
         pass
     try:
         from . import visual_evidence_validator  # noqa: F401  (P6)
+    except Exception:
+        pass
+    try:
+        from . import visual_avatar_evidence_validator  # noqa: F401  (FAV, issue #91)
     except Exception:
         pass
     return None

@@ -60,6 +60,17 @@ dependencies = [
     "tomli>=2,<3; python_version < '3.11'",
 ]
 
+[project.optional-dependencies]
+# FAV visual-evidence gate (agent-harness#91, round-3 CR): the runner-side
+# `derive_visual_observation` decodes the referenced image artifact and
+# computes pixel stats FROM THE ACTUAL PIXELS, so self-reported
+# non_black_pixels/pixel_min/pixel_max can never override a real decode.
+# Pillow is imported LAZILY inside the derivation (models.py) -- it is NOT a
+# hard core dependency; an install without the `visual` extra still runs
+# every other command, and the visual-evidence gate itself fails CLOSED
+# (never silently passes on self-reported numbers) when Pillow is absent.
+visual = ["Pillow>=10,<13"]
+
 [project.urls]
 Homepage = "https://github.com/ViperJuice/agent-harness"
 Repository = "https://github.com/ViperJuice/agent-harness"

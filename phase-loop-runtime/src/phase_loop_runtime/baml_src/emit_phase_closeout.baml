@@ -31,6 +31,39 @@ class PhaseLoopCloseoutV1 {
   blocker_summary string?
   human_required bool?
   required_human_inputs string[]
+  // FAV (issue #91): visual-avatar/browser-media closeout evidence. Optional --
+  // only populated when the phase owns a visible-media-rendering surface and the
+  // plan claims a visible-render deliverable. visual_evidence_path is a
+  // repo-relative screenshot/frame IMAGE artifact (PNG, JPEG, GIF, BMP, or
+  // WEBP -- NOT a video container; the gate decodes image pixel data only,
+  // decoding a frame out of a video is a tracked follow-up); the three pixel
+  // fields are a flat (BAML-schema-friendly) encoding of the runtime's
+  // VisualEvidenceObservation (non_black_pixels, pixel_min, pixel_max).
+  // visual_evidence_opt_out carries a typed reason instead of evidence.
+  visual_evidence_path string?
+  visual_evidence_non_black_pixels int?
+  visual_evidence_pixel_min int?
+  visual_evidence_pixel_max int?
+  visual_evidence_opt_out string?
+  // FAV (issue #272): the DECLARED visual-render signal. Set true whenever
+  // this phase's DELIVERABLE is a visible avatar/media render -- its
+  // acceptance criteria or purpose includes producing a visible render --
+  // REGARDLESS of whether evidence is attached yet. This is a statement
+  // about the phase's intent/deliverable, not about what's attached; it
+  // must never be conditioned on visual_evidence_path already being set
+  // (doing so defines away the exact failure this gate exists to catch: an
+  // executor that renders a visible avatar but fails or forgets to attach
+  // evidence). When true, a valid visual_evidence_path (a decodable,
+  // non-blank screenshot/frame IMAGE) or a typed visual_evidence_opt_out is
+  // REQUIRED, or the closeout BLOCKS. This is the ONLY signal that triggers
+  // the gate's BLOCK decision -- an owned avatar/browser-media surface or an
+  // explicit visible-render claim in the plan text is never sufficient on
+  // its own; those only raise a non-blocking advisory when this field is
+  // left false/absent. Leave it false/absent only for phases whose
+  // deliverable is not a visible render (merely touching a media-adjacent
+  // file or mentioning rendering in passing is not a visible-render
+  // deliverable). Defaults false.
+  visual_render_declared bool?
 }
 
 function EmitPhaseCloseout(
@@ -54,6 +87,8 @@ Required contract:
 - blocker_summary must be non-secret and null when there is no blocker.
 - human_required must be true only for a true human decision or access blocker, false for repairable automation blockers, and null when not blocked.
 - required_human_inputs must contain only non-secret inputs needed from a human.
+- visual_evidence_path, visual_evidence_non_black_pixels, visual_evidence_pixel_min, and visual_evidence_pixel_max are optional; populate them together with a runner-owned screenshot/frame IMAGE artifact (PNG, JPEG, GIF, BMP, or WEBP -- NOT a video container; decoding a frame out of a video is a tracked follow-up) when the phase rendered a visible avatar/browser-media surface, or set visual_evidence_opt_out to a typed reason instead of attaching evidence.
+- visual_render_declared must be set true whenever this phase's deliverable IS a visible avatar/media render -- its acceptance criteria or purpose includes producing a visible render -- REGARDLESS of whether you have attached evidence yet; it is a statement about the deliverable, never conditioned on visual_evidence_path already being populated. When true, you MUST also attach a valid visual_evidence_path (a decodable, non-blank screenshot/frame IMAGE) or record a typed visual_evidence_opt_out reason, or the closeout will BLOCK. Leave it false/absent only for phases whose deliverable is not a visible render -- merely touching a media-adjacent file or mentioning rendering in passing is not a visible-render deliverable.
 
 Terminal-status decision tree:
 - Use complete only when the phase work met acceptance, required verification passed, and every active-plan IF gate is listed in produced_if_gates.

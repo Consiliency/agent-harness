@@ -31,6 +31,12 @@ class PhaseLoopCloseoutV1(BaseModel):
     blocker_summary: str | None = None
     human_required: bool | None = None
     required_human_inputs: list[str]
+    visual_evidence_path: str | None = None
+    visual_evidence_non_black_pixels: int | None = None
+    visual_evidence_pixel_min: int | None = None
+    visual_evidence_pixel_max: int | None = None
+    visual_evidence_opt_out: str | None = None
+    visual_render_declared: bool | None = None
 
     @field_validator("terminal_status")
     @classmethod

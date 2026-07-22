@@ -4,8 +4,10 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
+import os
+import re
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Iterable
+from typing import Any, Callable, ClassVar, Iterable, Mapping
 
 
 PHASE_STATUSES = (
@@ -331,6 +333,17 @@ UI_GLOBS = (
     "**/components/**",
 )
 
+# FAV (issue #91): visual-avatar/browser-media closeout evidence. OFF by
+# default (warn-only) to preserve autonomy, opt-in promotes a missing/blank
+# visual-evidence finding to `block`. Declining evidence when opted in
+# records one of these typed reason codes -- mirrors
+# VERIFICATION_EVIDENCE_OPT_OUT_REASONS above.
+VISUAL_EVIDENCE_OPT_OUT_REASONS = (
+    "no_visible_media_surface",
+    "visual_deferred_to_later_phase",
+    "operator_attested_manual",
+)
+
 TERMINAL_SUMMARY_FIELDS = (
     "terminal_status",
     "terminal_blocker",
@@ -343,6 +356,19 @@ TERMINAL_SUMMARY_FIELDS = (
     "unowned_dirty_paths",
     "pre_existing_dirty_paths",
     "artifact_paths",
+    # FAV (issue #91) Fix 1: visual-avatar evidence must SURVIVE from the native
+    # closeout into the terminal summary the closeout validator inspects.
+    # Whitelisted here (and emitted only when populated -- see
+    # observability.build_terminal_summary) so they are no longer silently
+    # discarded in the real runner flow.
+    "visual_evidence_path",
+    "visual_evidence_observed",
+    "visual_evidence_opt_out",
+    # FAV #272: the DECLARED trigger the visual-evidence gate's BLOCK decision
+    # reads -- must survive the same whitelist projection or the gate goes
+    # inert (see visual_evidence_terminal_fields / avatar_visual_evidence_
+    # advisory_applies below).
+    "visual_render_declared",
 )
 
 from .baml_modular import export_function_schema
@@ -1021,6 +1047,438 @@ class SpecDeltaCloseout:
         return clean_dict(asdict(self))
 
 
+VISUAL_EVIDENCE_OBSERVED_SCHEMA = "visual_evidence_observed.v1"
+
+
+# Fix 3 (agent-harness#91 CR round-6): coverage floor thresholds. A single
+# opaque pixel in an otherwise-blank 1000x1000 frame previously PASSED
+# (non_black_pixels=1 > 0, and differing extrema from that one non-black
+# pixel satisfied pixel_min != pixel_max) -- non_black_pixels>0 alone is not
+# a meaningful floor once the frame can be arbitrarily large. Two checks,
+# both gated on ``total_pixels`` being known (threaded only from an
+# AUTHORITATIVE decode, see ``derive_visual_observation`` below):
+#   (a) a minimum total-pixel-count floor (proxy for "reject smaller than a
+#       16x16 image" without needing separate width/height fields), and
+#   (b) non_black_pixels must be a meaningful FRACTION of total_pixels, not
+#       merely > 0.
+# This is deliberately the ONLY floor added -- no further thresholds.
+_MIN_EVIDENCE_TOTAL_PIXELS = 16 * 16  # reject smaller than a 16x16 frame
+_MIN_EVIDENCE_NON_BLACK_FRACTION = 0.01  # >= 1% of the frame must be non-black
+
+
+@dataclass(frozen=True)
+class VisualEvidenceObservation:
+    """``visual_evidence_observed.v1`` (FAV, issue #91) -- automated pixel-level
+    observations attached to a runner-owned visual artifact (screenshot/frame
+    path, recorded separately as ``visual_evidence_path``) for an
+    avatar/browser-media phase. Strong enough to reject a black or
+    uniform-gray frame masquerading as passing visual evidence: a genuine
+    frame has at least one non-black pixel AND some pixel variance (min !=
+    max). An all-black frame (``non_black_pixels == 0``) or a uniform frame
+    (``pixel_min == pixel_max``, e.g. a solid ``#f3f3f3`` gray with
+    ``pixelMin == pixelMax == 243``) both FAIL ``is_valid()``.
+
+    ``total_pixels`` (Fix 3, round-6 CR) is the frame's ``width * height``,
+    threaded from the decode so ``is_valid()`` can additionally enforce a
+    minimum-size + minimum-non-black-fraction coverage floor -- rejecting a
+    single opaque pixel in an otherwise-blank huge frame, which the bare
+    ``non_black_pixels > 0`` check let through. Defaults to ``0`` ("unknown")
+    for self-reported/legacy observations that never carried it; the
+    coverage-floor checks are skipped when unknown, preserving pre-existing
+    behavior for callers that can't supply it.
+    """
+
+    non_black_pixels: int
+    pixel_min: int
+    pixel_max: int
+    total_pixels: int = 0
+    schema: str = VISUAL_EVIDENCE_OBSERVED_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema != VISUAL_EVIDENCE_OBSERVED_SCHEMA:
+            raise ValueError(f"invalid visual evidence observation schema: {self.schema}")
+        # Fix 4 (agent-harness#91 CR): a well-formed observation must carry
+        # IN-RANGE integer pixel values -- non_black_pixels is a non-negative
+        # PIXEL COUNT (no fixed upper bound), pixel_min/pixel_max are 8-bit
+        # channel intensities (0..255). Out-of-range values (e.g. a negative
+        # count or pixel_max=300) are malformed, not merely a black/blank
+        # frame, so they raise here and `from_mapping` treats them identically
+        # to "no evidence attached" (its except clause already catches
+        # ValueError).
+        if self.non_black_pixels < 0:
+            raise ValueError(f"invalid non_black_pixels (must be >= 0): {self.non_black_pixels}")
+        if not (0 <= self.pixel_min <= 255):
+            raise ValueError(f"invalid pixel_min (must be 0..255): {self.pixel_min}")
+        if not (0 <= self.pixel_max <= 255):
+            raise ValueError(f"invalid pixel_max (must be 0..255): {self.pixel_max}")
+        # agent-harness#91 round-2 (codex Finding 3): an impossible observation
+        # (pixel_min > pixel_max) is malformed the same way an out-of-range value
+        # is -- e.g. {"nonBlackPixels": 1, "pixelMin": 0, "pixelMax": ...} with the
+        # min/max swapped can't describe any real frame. Reject it here so
+        # `from_mapping`'s catch-all treats it identically to "no evidence
+        # attached", instead of `is_valid()` silently accepting a self-inconsistent
+        # observation because `pixel_min != pixel_max` still (accidentally) holds.
+        if self.pixel_min > self.pixel_max:
+            raise ValueError(
+                f"invalid pixel_min/pixel_max (min must be <= max): {self.pixel_min} > {self.pixel_max}"
+            )
+        # Fix 3 (round-6 CR): total_pixels must be a non-negative count, and an
+        # observation claiming MORE non-black pixels than the frame has total
+        # is impossible -- malformed the same way pixel_min > pixel_max is.
+        if self.total_pixels < 0:
+            raise ValueError(f"invalid total_pixels (must be >= 0): {self.total_pixels}")
+        if self.total_pixels > 0 and self.non_black_pixels > self.total_pixels:
+            raise ValueError(
+                f"invalid non_black_pixels/total_pixels (non_black_pixels must be <= total_pixels): "
+                f"{self.non_black_pixels} > {self.total_pixels}"
+            )
+
+    def is_valid(self) -> bool:
+        """True iff the frame shows real, non-uniform content (not black/blank)."""
+        if self.non_black_pixels is None or self.non_black_pixels <= 0:
+            return False
+        if self.pixel_min == self.pixel_max:
+            return False
+        # Fix 3 (round-6 CR): coverage floor, only enforceable when
+        # total_pixels is known (an authoritative decode threads it; a bare
+        # self-report without it keeps the pre-existing semantics).
+        if self.total_pixels > 0:
+            if self.total_pixels < _MIN_EVIDENCE_TOTAL_PIXELS:
+                return False
+            if (self.non_black_pixels / self.total_pixels) < _MIN_EVIDENCE_NON_BLACK_FRACTION:
+                return False
+        return True
+
+    def to_json(self) -> dict[str, Any]:
+        return clean_dict(asdict(self))
+
+    @classmethod
+    def from_mapping(cls, data: Any) -> "VisualEvidenceObservation | None":
+        """Tolerant parse: accepts either the runtime's snake_case keys
+        (``non_black_pixels``/``pixel_min``/``pixel_max``/``total_pixels``) or
+        the camelCase keys a browser-automation tool naturally emits
+        (``nonBlackPixels``/``pixelMin``/``pixelMax``/``totalPixels``).
+        Returns ``None`` (never raises) on anything malformed or absent -- the
+        caller treats that identically to "no evidence attached". ``total_
+        pixels`` is OPTIONAL (defaults to ``0``/"unknown") -- a self-report
+        that never carried it still parses, it just skips the coverage-floor
+        checks in ``is_valid()``, same as before this field existed."""
+        if not isinstance(data, Mapping):
+            return None
+        non_black = data.get("non_black_pixels", data.get("nonBlackPixels"))
+        pixel_min = data.get("pixel_min", data.get("pixelMin"))
+        pixel_max = data.get("pixel_max", data.get("pixelMax"))
+        total_pixels = data.get("total_pixels", data.get("totalPixels"))
+        if non_black is None or pixel_min is None or pixel_max is None:
+            return None
+        try:
+            return cls(
+                non_black_pixels=int(non_black),
+                pixel_min=int(pixel_min),
+                pixel_max=int(pixel_max),
+                total_pixels=int(total_pixels) if total_pixels is not None else 0,
+            )
+        except (TypeError, ValueError):
+            return None
+
+
+
+# agent-harness#91 round-2 (codex Finding 3): magic-number headers for the
+# image formats a visual-evidence screenshot/frame artifact is realistically
+# encoded as. This is a FLOOR, not full pixel-decoding (no image-library
+# dependency is available here) -- it rejects a directory, an empty file, and
+# a plain-text file merely renamed to ``.png`` (the exact codex probe:
+# ``write_text("png")`` at a ``.png`` path), which the pre-existing
+# exists()-only check accepted as valid evidence. True decode/derive
+# (verifying the observation actually matches the pixel data) is a follow-up;
+# tracked as a known gap, not silently claimed here.
+_IMAGE_MAGIC_HEADERS: tuple[bytes, ...] = (
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF87a",  # GIF
+    b"GIF89a",  # GIF
+    b"BM",  # BMP
+    # WEBP: RIFF????WEBP -- checked specially below (variable-length RIFF size).
+)
+
+
+def _has_valid_image_header(path: Path) -> bool:
+    """True iff ``path`` starts with a recognized image magic-number header."""
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(12)
+    except OSError:
+        return False
+    if not header:
+        return False
+    if any(header.startswith(magic) for magic in _IMAGE_MAGIC_HEADERS):
+        return True
+    # WEBP: 4-byte "RIFF", 4-byte little-endian chunk size, then "WEBP".
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return True
+    return False
+
+
+def resolve_visual_evidence_artifact(repo_root: "str | Path | None", path_str: "str | None") -> "Path | None":
+    """Fix 4 (agent-harness#91 CR) + Fix 3 round-2 (codex): a runner-owned
+    visual-evidence artifact must EXIST, be CONTAINED inside the repo,
+    resolve to a REGULAR FILE (not a directory/symlink-to-dir/etc.), be
+    non-empty, and start with a recognized image magic-number header --
+    mirrors the #238 breakglass path-safety posture
+    (``cli._validate_reconcile_verification_log``): fail closed on anything
+    that can't be proven both inside the repo and a genuine image file on
+    disk. Without the regular-file + magic-number checks, ``visual_evidence_
+    path="."`` (the repo directory itself) or a plain-text file renamed to
+    ``.png`` both passed as "valid" evidence -- codex's Finding 3 probe.
+
+    ``repo_root=None`` means the caller could not determine a repo root at
+    all -- containment can never be proven, so every candidate fails closed.
+    An absolute path is resolved as-is (still must land inside ``repo_root``);
+    a relative path is resolved against ``repo_root``. Returns the resolved
+    ``Path`` when valid, else ``None`` -- callers treat ``None`` identically
+    to "no evidence attached"."""
+    if not path_str or repo_root is None:
+        return None
+    root = Path(repo_root).resolve()
+    candidate = Path(path_str)
+    resolved = candidate if candidate.is_absolute() else root / candidate
+    try:
+        resolved = resolved.resolve()
+    except OSError:
+        return None
+    try:
+        inside = resolved.is_relative_to(root)
+    except AttributeError:  # pragma: no cover - py3.8 compatibility fallback
+        inside = str(resolved).startswith(str(root) + os.sep)
+    if not inside:
+        return None
+    try:
+        if not resolved.is_file():
+            return None  # rejects a directory (e.g. path="."), symlink-to-dir, etc.
+        if resolved.stat().st_size <= 0:
+            return None  # rejects an empty file
+    except OSError:
+        return None
+    if not _has_valid_image_header(resolved):
+        return None  # rejects a non-image / text-renamed-.png
+    return resolved
+
+
+# agent-harness#91 round-3 (codex CR): the magic-header check above is a
+# FLOOR (rejects a directory / empty file / text-renamed-.png), not a full
+# decode -- it does NOT prove the referenced artifact is a genuine,
+# non-blank image. Pairing that floor with SELF-REPORTED pixel observations
+# (`VisualEvidenceObservation` taken verbatim from the agent's terminal
+# summary/CLI flags) reopens the exact hole #91 exists to close: a
+# valid-header 24-byte "PNG signature + zeros" file, paired with a
+# fabricated `{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}`,
+# passes the gate with no relationship to the actual pixel data (codex's
+# round-3 probe). `derive_visual_observation` below closes that hole by
+# DECODING the artifact and computing the observation from the real pixels;
+# it is the AUTHORITATIVE source of truth wherever it can run at all --
+# callers must never let a self-reported observation override a derived
+# one, and must FAIL CLOSED (never silently accept self-reported numbers)
+# when derivation itself is impossible.
+_DERIVED_NON_BLACK_LUMINANCE_THRESHOLD = 8  # 0..255 grayscale; tolerates lossy-compression noise near true black
+
+
+class VisualEvidenceDerivationError(Exception):
+    """Base class: raised by `derive_visual_observation` when the referenced
+    artifact cannot be authoritatively verified. Callers MUST treat this as
+    a hard failure of the evidence contract -- never catch it and quietly
+    fall back to trusting the agent-supplied `visual_evidence_observed`,
+    which would reopen the #91 hole this exception exists to surface."""
+
+    #: stable finding code a caller can attach to a ReviewFinding/manual_repair
+    #: field without re-deriving it from the exception message.
+    code = "visual_evidence_undecodable"
+
+
+class VisualEvidenceDecoderUnavailable(VisualEvidenceDerivationError):
+    """Pillow is not installed in this environment -- derivation cannot run
+    at all, so the artifact can NEVER be authoritatively verified here."""
+
+    code = "visual_evidence_cannot_verify"
+
+
+class VisualEvidenceUndecodable(VisualEvidenceDerivationError):
+    """Pillow is available but the file at `path` could not be decoded as an
+    image (corrupt/truncated body, zero dimensions, unrecognized format)."""
+
+    code = "visual_evidence_undecodable"
+
+
+def derive_visual_observation(path: "str | Path") -> VisualEvidenceObservation:
+    """FAV (agent-harness#91 round-3 CR): decode the image at `path` and
+    compute `non_black_pixels`/`pixel_min`/`pixel_max` from its ACTUAL
+    pixels (grayscale/luminance), rather than trusting the agent's
+    self-report. This is the AUTHORITATIVE observation -- a genuinely
+    blank/uniform/all-black decoded image fails `VisualEvidenceObservation.
+    is_valid()` even if the agent supplied fabricated "good" numbers.
+
+    Uses Pillow (`PIL.Image`), imported LAZILY here -- Pillow is an OPTIONAL
+    dependency (the `visual` extra in pyproject.toml), never a hard core
+    dependency of phase-loop-runtime.
+
+    Raises `VisualEvidenceDerivationError` (never returns `None`) when:
+    - Pillow is not installed in this environment, or
+    - the file at `path` cannot be opened/decoded as an image (corrupt,
+      truncated, zero-dimension, or a format Pillow doesn't recognize).
+
+    Callers decide how to fail closed for their posture (opt-in ``block`` ->
+    BLOCK with a decoder-unavailable/undecodable finding code; warn-default
+    -> record the finding, never silently treat it as "gate does not
+    apply"). This function itself never silently passes.
+    """
+    try:
+        from PIL import Image  # lazy import: optional `visual` extra (Pillow)
+    except ImportError as exc:
+        raise VisualEvidenceDecoderUnavailable(f"Pillow is not available to decode visual evidence: {exc}") from exc
+    try:
+        with Image.open(path) as img:
+            img.load()  # force full decode now (Image.open is lazy) so a truncated/corrupt body raises here
+            # Fix (agent-harness#91 round-4 CR / codex): converting straight to
+            # grayscale IGNORES alpha, so a fully-transparent RGBA/LA/P-with-
+            # transparency image with varied *hidden* RGB decodes as if those
+            # hidden colors were visible -- non_black_pixels>0 and pixel_min !=
+            # pixel_max, so is_valid() wrongly PASSES a visually blank frame
+            # (fail-open). Composite onto a DETERMINISTIC opaque black RGBA
+            # canvas first so the derived stats reflect what a viewer actually
+            # SEES: fully-transparent pixels become black (matching the
+            # existing "black == blank" rejection), partially-transparent
+            # pixels blend toward black, and fully-opaque pixels are
+            # unaffected.
+            #
+            # Fix (agent-harness#91 round-5 CR / codex): the round-4 check only
+            # covered modes that carry an explicit alpha CHANNEL (RGBA/LA) or
+            # palette transparency on mode P. Pillow also decodes a grayscale
+            # or RGB PNG that carries a ``tRNS`` chunk as plain mode L/RGB,
+            # surfacing the transparency purely via ``img.info["transparency"]``
+            # -- no alpha channel at all. That bypassed compositing entirely: a
+            # 1x1-visible / 1x1-"transparent-but-decoded-white" L/RGB tRNS image
+            # read non_black_pixels>0 and passed is_valid() even though a viewer
+            # sees only the opaque (black) pixels. Treat ANY mode carrying
+            # ``img.info["transparency"]`` (L, RGB, or P) the SAME as an
+            # explicit alpha channel: ``img.convert("RGBA")`` applies
+            # palette/tRNS transparency into a real alpha channel for every one
+            # of these modes, so routing them through the same composite path
+            # is correct and uniform. Modes with neither an alpha channel NOR
+            # transparency info (opaque RGB/L/...) are unaffected --
+            # convert("RGBA") on those is already fully opaque.
+            if img.mode in ("RGBA", "LA", "PA") or img.info.get("transparency") is not None:
+                rgba = img.convert("RGBA")
+                black_background = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+                composited = Image.alpha_composite(black_background, rgba)
+                grayscale = composited.convert("L")
+            else:
+                grayscale = img.convert("L")
+            width, height = grayscale.size
+            if width <= 0 or height <= 0:
+                raise VisualEvidenceUndecodable(f"decoded image has zero dimensions: {path}")
+            pixel_min, pixel_max = grayscale.getextrema()
+            histogram = grayscale.histogram()  # 256-bucket luminance histogram
+            non_black_pixels = sum(histogram[_DERIVED_NON_BLACK_LUMINANCE_THRESHOLD + 1 :])
+            total_pixels = width * height
+    except VisualEvidenceDerivationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- Pillow raises varied types (UnidentifiedImageError/OSError/...)
+        raise VisualEvidenceUndecodable(f"failed to decode visual evidence artifact at {path}: {exc}") from exc
+    return VisualEvidenceObservation(
+        non_black_pixels=int(non_black_pixels),
+        pixel_min=int(pixel_min),
+        pixel_max=int(pixel_max),
+        # Fix 3 (round-6 CR): thread the decoded frame's total pixel count so
+        # is_valid() can enforce the coverage floor -- this is the
+        # AUTHORITATIVE decode path, the only source that can know it.
+        total_pixels=int(total_pixels),
+    )
+
+
+def derive_visual_observation_or_error(path: "str | Path") -> "tuple[VisualEvidenceObservation | None, str | None]":
+    """Convenience wrapper the three call sites (closeout validator, live
+    runner, reconcile guard) share: `(observation, None)` on a successful
+    decode, or `(None, error_code)` when derivation failed --
+    ``"visual_evidence_cannot_verify"`` (Pillow unavailable) or
+    ``"visual_evidence_undecodable"`` (image present but not decodable).
+    Never raises -- centralizes the try/except so every caller applies the
+    SAME fail-closed contract instead of re-implementing it."""
+    try:
+        return derive_visual_observation(path), None
+    except VisualEvidenceDerivationError as exc:
+        return None, exc.code
+
+
+def visual_evidence_terminal_fields(payload: Any) -> dict[str, Any]:
+    """FAV (issue #91) Fix 1: reconstruct the ``ctx.terminal``-shaped visual
+    evidence view (``visual_evidence_path`` / ``visual_evidence_observed`` /
+    ``visual_evidence_opt_out``) from a closeout payload that may carry the
+    BAML-schema-friendly FLAT encoding
+    (``visual_evidence_non_black_pixels``/``visual_evidence_pixel_min``/
+    ``visual_evidence_pixel_max``) instead of a nested
+    ``visual_evidence_observed`` mapping. Idempotent -- a payload that
+    already carries the nested/short-form keys is returned unchanged for
+    those keys, so this is safe to layer on top of any terminal-summary
+    shape. Returns only the keys it can actually populate (never clobbers
+    with ``None``)."""
+    if not isinstance(payload, Mapping):
+        return {}
+    fields: dict[str, Any] = {}
+    path = payload.get("visual_evidence_path")
+    if path:
+        fields["visual_evidence_path"] = path
+    observed = payload.get("visual_evidence_observed")
+    if isinstance(observed, Mapping):
+        fields["visual_evidence_observed"] = dict(observed)
+    else:
+        non_black = payload.get("visual_evidence_non_black_pixels")
+        pixel_min = payload.get("visual_evidence_pixel_min")
+        pixel_max = payload.get("visual_evidence_pixel_max")
+        if non_black is not None and pixel_min is not None and pixel_max is not None:
+            fields["visual_evidence_observed"] = {
+                "non_black_pixels": non_black,
+                "pixel_min": pixel_min,
+                "pixel_max": pixel_max,
+            }
+    opt_out = payload.get("visual_evidence_opt_out")
+    if opt_out:
+        fields["visual_evidence_opt_out"] = opt_out
+    # FAV #272: lift the executor's DECLARED visual-render signal.
+    #
+    # Fix (round-8 CR, codex+gemini Finding 3b -- "sticky-True trap"): this
+    # USED to persist truthy-only (``if payload.get(...): fields[...] =
+    # True``), which meant an explicit ``False`` was indistinguishable from
+    # the key being absent -- BOTH were dropped from the returned dict. That
+    # silently discarded a real re-declaration: an executor that
+    # legitimately RETRACTS an earlier ``true`` declaration with an explicit
+    # ``false`` at a later closeout had that ``false`` vanish before it ever
+    # reached the event ledger, so the reconcile reducer
+    # (``cli._persisted_visual_render_declared``, which takes the LAST
+    # explicitly-recorded value) could only ever latch to ``True`` -- once
+    # declared, a phase was permanently stuck, un-retractable.
+    #
+    # Now: persist the REAL bool whenever the raw payload actually carries
+    # the key with a non-null value (``True`` or ``False`` both survive),
+    # and leave the field OUT of ``fields`` only when the payload never
+    # mentions it at all (key absent, or explicitly ``null`` -- a legacy/
+    # plain-text closeout, or one that simply never populated the field).
+    # That "absent" case is unchanged: every caller reads it via
+    # ``bool(terminal_view.get("visual_render_declared"))`` (validator,
+    # runner, delegated-child overlay), where a missing key already
+    # defaults to ``False`` == not declared == never blocks -- so omitting
+    # the key for a genuinely silent payload is still the correct
+    # "no signal" representation, not a regression.
+    if "visual_render_declared" in payload and payload.get("visual_render_declared") is not None:
+        fields["visual_render_declared"] = bool(payload.get("visual_render_declared"))
+    return fields
+
+
+def _path_matches_glob(path: str, pattern: str) -> bool:
+    if fnmatch.fnmatchcase(path, pattern):
+        return True
+    # `**/x` should also match a top-level `x`.
+    return pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:])
+
+
 def _glob_touched(paths: Iterable[str], globs: Iterable[str]) -> bool:
     """True if any path matches any glob (POSIX, case-sensitive)."""
     pats = tuple(globs)
@@ -1028,13 +1486,32 @@ def _glob_touched(paths: Iterable[str], globs: Iterable[str]) -> bool:
         path = str(raw).strip()
         if not path:
             continue
-        for pattern in pats:
-            if fnmatch.fnmatchcase(path, pattern):
-                return True
-            # `**/x` should also match a top-level `x`.
-            if pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:]):
-                return True
+        if any(_path_matches_glob(path, pattern) for pattern in pats):
+            return True
     return False
+
+
+def glob_match_paths(paths: Iterable[str], patterns: Iterable[str]) -> list[str]:
+    """Fix 3 (agent-harness#91 CR): resolve owned GLOB patterns to the REAL
+    paths they match, using the same matching semantics as ``_glob_touched``.
+
+    The reconcile guard feeds these RESOLVED paths (e.g. the real
+    ``src/avatar_renderer.py`` that ``src/**`` covers) into the filename
+    media-render heuristic -- which expects real paths, not raw glob patterns --
+    so it evaluates the SAME resolved-path surface the closeout validator sees
+    (which operates on the run's actual changed paths). Preserves input order,
+    de-duplicated."""
+    pats = tuple(patterns)
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        path = str(raw).strip()
+        if not path or path in seen:
+            continue
+        if any(_path_matches_glob(path, pattern) for pattern in pats):
+            out.append(path)
+            seen.add(path)
+    return out
 
 
 def public_surface_touched(changed_paths: Iterable[str]) -> bool:
@@ -1045,6 +1522,248 @@ def public_surface_touched(changed_paths: Iterable[str]) -> bool:
 def ui_change_detected(changed_paths: Iterable[str]) -> bool:
     """True if a changed path is a UI/visual surface (rigor-v1 P1/P6)."""
     return _glob_touched(changed_paths, UI_GLOBS)
+
+
+# --- FAV (issue #91): visual-avatar/browser-media detection contract ------
+#
+# A phase requires BLOCKING visual evidence only when BOTH hold (mirrored in
+# ``visual_avatar_evidence_validator.py``'s module docstring; a bare keyword
+# hit on only ONE axis is NOT enough -- exactly like #243's command-context
+# scoping avoids prose false positives):
+#
+#   1. STRUCTURAL -- the phase owns/touches a visible-media-rendering
+#      surface: a browser HTML fixture (e.g. ``tests/fixtures/*.html``), or a
+#      file whose name indicates media rendering (``getUserMedia``,
+#      ``MediaStreamTrack``, ``getDisplayMedia``, a
+#      canvas/video/camera/session/track renderer, an avatar renderer).
+#   2. EXPLICIT CLAIM -- the phase's plan text (title, objective, exit
+#      criteria, IF-gate, lane scope, acceptance criteria) makes an explicit
+#      USER-VISIBLE rendering claim as a DELIVERABLE, not an incidental
+#      mention -- e.g. "visible avatar", "renders in the browser/meeting UI",
+#      "browser call-in", "synthetic media"/"MediaStream target",
+#      "getUserMedia target", "avatar/browser media".
+#
+# A phase with NO owned media surface, or that only mentions these words in
+# passing with no visible-render deliverable claim, gets NO finding: e.g. a
+# plan that merely says "tests video parsing" (no owned media file) or "runs
+# in a browser" (no explicit render claim) is silent, and so is any legacy
+# phase with no avatar/browser-media surface at all.
+
+AVATAR_MEDIA_SURFACE_GLOBS = ("**/*.html",)
+
+_AVATAR_MEDIA_SEP = r"[\s_\-]?"
+_AVATAR_MEDIA_SURFACE_MARKERS = (
+    r"getusermedia",
+    r"mediastreamtrack",
+    r"getdisplaymedia",
+    rf"avatar{_AVATAR_MEDIA_SEP}renderer",
+    rf"canvas{_AVATAR_MEDIA_SEP}renderer",
+    rf"video{_AVATAR_MEDIA_SEP}renderer",
+    rf"camera{_AVATAR_MEDIA_SEP}renderer",
+    rf"media{_AVATAR_MEDIA_SEP}session",
+    rf"media{_AVATAR_MEDIA_SEP}track",
+    rf"avatar{_AVATAR_MEDIA_SEP}session",
+    rf"session{_AVATAR_MEDIA_SEP}track",
+)
+_AVATAR_MEDIA_SURFACE_MARKER_RE = re.compile("|".join(_AVATAR_MEDIA_SURFACE_MARKERS), re.IGNORECASE)
+
+_AVATAR_VISIBLE_CLAIM_PATTERNS = (
+    r"visible\s+avatar",
+    rf"avatar{_AVATAR_MEDIA_SEP}render(?:er|ing|s)?",
+    r"renders?\s+(?:in|to|within)\s+(?:the\s+)?(?:browser|meeting)",
+    r"browser\s+call-?in",
+    r"synthetic\s+media",
+    r"mediastream\s+target",
+    r"getusermedia\s+target",
+    r"avatar[/\s]+browser[\s-]+media",
+    r"visual-avatar",
+    r"user-visible\s+rendering",
+)
+_AVATAR_VISIBLE_CLAIM_RE = re.compile("|".join(_AVATAR_VISIBLE_CLAIM_PATTERNS), re.IGNORECASE)
+
+# Fix 5 (agent-harness#91 CR): anchor the explicit-claim scan to AFFIRMATIVE
+# deliverable/objective/exit-criteria/acceptance sections and reject NEGATION,
+# so a Non-goals line like "must not render a visible avatar" does NOT match
+# (which previously produced an opt-in FALSE BLOCK, contrary to the detection
+# contract). A section heading that names a non-goal / out-of-scope block turns
+# scanning OFF; an affirmative deliverable heading turns it back ON; and a
+# negated claim on an in-scope line is skipped.
+_AFFIRMATIVE_SECTION_RE = re.compile(
+    r"objective|exit\s+criteria|acceptance|deliverable|definition\s+of\s+done|"
+    r"requirement|scope|lane|summary|description|\bgoal",
+    re.IGNORECASE,
+)
+_NONGOAL_SECTION_RE = re.compile(
+    r"non[-\s]?goal|out[-\s]?of[-\s]?scope|explicitly\s+not|will\s+not|excluded",
+    re.IGNORECASE,
+)
+_CLAIM_NEGATION_RE = re.compile(
+    r"\b(?:must\s+not|must\s+never|shall\s+not|should\s+not|shouldn'?t|"
+    r"does\s+not|doesn'?t|do\s+not|don'?t|cannot|can'?t|won'?t|will\s+not|"
+    r"never|no\s+longer|non[-\s]?goal|not\s+render|no\s+visible|without)\b",
+    re.IGNORECASE,
+)
+_MARKDOWN_HEADING_RE = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<title>.+?)\s*$")
+
+
+def avatar_media_surface_touched(changed_paths: Iterable[str]) -> bool:
+    """STRUCTURAL signal (detection contract #1): an owned/changed path is a
+    browser HTML fixture, or its filename indicates media rendering."""
+    paths = tuple(changed_paths or ())
+    if _glob_touched(paths, AVATAR_MEDIA_SURFACE_GLOBS):
+        return True
+    return any(_AVATAR_MEDIA_SURFACE_MARKER_RE.search(str(p)) for p in paths)
+
+
+def _line_has_unnegated_claim(text: str) -> bool:
+    """True iff ``text`` contains an avatar-visible-render claim that is NOT
+    negated. Negation is CLAIM-SPAN-LOCAL: a negation cue only suppresses a
+    claim match when the cue appears BEFORE that match starts (i.e. it
+    grammatically qualifies the render verb/claim itself, e.g. "validate
+    WITHOUT rendering a visible avatar"). A negation cue appearing AFTER the
+    claim match (a trailing qualifier, e.g. "renders a visible avatar
+    WITHOUT operator intervention") does not suppress it -- the claim stands.
+    Checks every claim occurrence on the line/title independently, so one
+    negated occurrence never hides a second, unnegated one."""
+    for claim in _AVATAR_VISIBLE_CLAIM_RE.finditer(text):
+        prefix = text[: claim.start()]
+        if _CLAIM_NEGATION_RE.search(prefix):
+            continue
+        return True
+    return False
+
+
+def avatar_visible_render_claimed(text: str) -> bool:
+    """EXPLICIT CLAIM signal (detection contract #2): the plan text makes an
+    explicit user-visible rendering claim as a DELIVERABLE.
+
+    Fix 5: the claim must appear in an AFFIRMATIVE section (objective / exit
+    criteria / acceptance / deliverable / scope / lanes / preamble) and must
+    NOT be negated. A ``Non-goals`` / ``Out of scope`` section is scanned OFF,
+    and a claim carrying a claim-local negation cue ("must not", "does not",
+    "non-goal", "no visible", a preceding "without", ...) never counts -- so
+    "must not render a visible avatar" yields NO claim. A plan with no
+    markdown headings at all is scanned whole (back-compat), still with the
+    per-line negation filter.
+
+    Fix (agent-harness#91 round-5 CR / codex): the phase TITLE (the ``# ``
+    heading) and IF-gate / exit-gate headings (e.g. ``## IF-AV-1-1``, ``##
+    Exit gate``) are evaluated for a claim too -- a heading's own title text
+    is scanned the same way a body line is (subject to the same claim-local
+    negation check), so the claim can live IN the heading itself.
+
+    Fix (agent-harness#91 round-6 CR): round-5 introduced a regression --
+    an unrecognized/nested heading UNCONDITIONALLY set ``in_scope = True``
+    (a redundant if/else both assigning ``True``), so a subheading NESTED
+    under a Non-goals section (e.g. ``### Rationale`` under ``## Non-
+    goals``) turned scanning back ON, resurfacing the exact false-positive
+    Fix 5 was meant to close. Scope is now tracked with a DEPTH-AWARE stack
+    of ``(depth, in_scope)`` frames: on a new heading of depth ``d`` the
+    stack pops every frame at depth >= d, then pushes ``(d, scope)`` where
+    ``scope`` is FALSE for a Non-goals/out-of-scope heading, TRUE for a
+    known-affirmative heading, and otherwise INHERITED from the parent
+    frame (the new top of stack after popping) -- an UNKNOWN heading no
+    longer flips scope in either direction, it just continues whatever its
+    enclosing section was. A heading's own title is only checked for a claim
+    when the frame it just pushed is in scope (mirrors the pre-round-6
+    behavior of skipping the title check entirely for a Non-goals heading).
+
+    Round-6 also restores ``without`` to ``_CLAIM_NEGATION_RE`` (round-5 had
+    stripped it globally, so "validate without rendering a visible avatar"
+    wrongly counted as a claim) but scopes it via ``_line_has_unnegated_
+    claim``'s claim-local positional check: a negation cue -- including
+    "without" -- only suppresses a claim match that comes AFTER it on the
+    same line/title, so a trailing "without <X>" qualifier on an otherwise-
+    affirmative claim ("renders a visible avatar without operator
+    intervention") still counts, exactly like round-5 intended.
+    """
+    body = text or ""
+    # Stack of (depth, in_scope) frames. depth=0 is the root/preamble frame
+    # (in scope before the first heading, matching the pre-round-6 default).
+    stack: list[tuple[int, bool]] = [(0, True)]
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        heading = _MARKDOWN_HEADING_RE.match(line)
+        if heading:
+            depth = len(heading.group("hashes"))
+            title = heading.group("title")
+            while len(stack) > 1 and stack[-1][0] >= depth:
+                stack.pop()
+            parent_scope = stack[-1][1]
+            if _NONGOAL_SECTION_RE.search(title):
+                scope = False
+            elif _AFFIRMATIVE_SECTION_RE.search(title):
+                scope = True
+            else:
+                # An unrecognized heading (phase title, IF-gate, exit-gate,
+                # or any other unnamed section) INHERITS its enclosing
+                # section's scope -- it neither turns scanning on nor off.
+                scope = parent_scope
+            stack.append((depth, scope))
+            # The heading's own title text can itself carry the claim (e.g.
+            # the phase TITLE "# AV-1 -- Visible Avatar", or a claim written
+            # directly into a gate heading) -- but only when this heading is
+            # actually in scope (a Non-goals heading's own title, or one
+            # nested under an out-of-scope ancestor, is never scanned).
+            if scope and _line_has_unnegated_claim(title):
+                return True
+            continue
+        if not stack[-1][1]:
+            continue
+        if _line_has_unnegated_claim(line):
+            return True
+    return False
+
+
+def avatar_visual_evidence_required(changed_paths: Iterable[str], plan_text: str) -> bool:
+    """Full FAV detection contract: STRUCTURAL (``changed_paths``) AND
+    EXPLICIT CLAIM (``plan_text``).
+
+    HISTORICAL NOTE (agent-harness#272): this AND-contract was the gate's
+    original BLOCK trigger. It is retained, callable, and unit-testable, but
+    since #272 it no longer feeds ANY block-class decision anywhere in the
+    runtime -- the closeout validator, the runner's authoritative reduction,
+    and the reconcile guard all gate the BLOCK decision on the executor's
+    DECLARED ``visual_render_declared`` bool alone (plus evidence validity).
+    See ``avatar_visual_evidence_advisory_applies`` below for the (OR, not
+    AND) heuristic that now feeds only the non-blocking advisory.
+
+    Deliberately the SINGLE implementation of the contract -- both the
+    closeout validator (``changed_paths`` = the run's actual dirty paths) and
+    the ``reconcile`` CLI guard (``changed_paths`` = the files the phase's
+    blocked/closeout commit actually changed, via
+    ``cli._resolve_changed_paths_at_commit``, agent-harness#91 round-2) call
+    this same function with the SAME structural surface -- no ownership-glob
+    filtering on either side -- so the two enforcement points can never
+    structurally diverge."""
+    return avatar_media_surface_touched(changed_paths) and avatar_visible_render_claimed(plan_text)
+
+
+def avatar_visual_evidence_advisory_applies(
+    changed_paths: Iterable[str], plan_text: str, declared: bool
+) -> bool:
+    """FAV #272: True iff the visual-evidence HEURISTIC fires -- an owned
+    avatar/browser-media surface was touched (``avatar_media_surface_
+    touched``) OR the plan text makes an explicit visible-render claim
+    (``avatar_visible_render_claimed``), evaluated as an OR (not the retired
+    AND contract in ``avatar_visual_evidence_required``) -- while the
+    executor did NOT declare ``visual_render_declared``. This is the sole
+    remaining purpose of the heuristic: feeding the non-blocking
+    ``visual_render_undeclared_surface`` advisory finding. It is
+    deliberately shared by the closeout validator
+    (``visual_avatar_evidence_validator``) and the ``reconcile`` CLI guard
+    (``cli._reconcile_visual_evidence_guard``) so the two can never diverge
+    on when the advisory fires -- the same pattern
+    ``avatar_visual_evidence_required`` and
+    ``visual_evidence_decoder_absent_is_silent`` already use for their own
+    shared predicates. Once ``declared`` is true this always returns
+    False -- the advisory only exists to catch an UNDECLARED surface; a
+    declared phase is evaluated purely on evidence validity instead."""
+    if declared:
+        return False
+    return avatar_media_surface_touched(changed_paths) or avatar_visible_render_claimed(plan_text)
 
 
 @dataclass(frozen=True)
