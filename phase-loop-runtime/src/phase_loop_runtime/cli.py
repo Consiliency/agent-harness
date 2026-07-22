@@ -570,12 +570,14 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--visual-evidence-path",
                 help=(
-                    "FAV (issue #91): path to a runner-owned screenshot/video artifact for a phase "
+                    "FAV (issue #91): path to a runner-owned screenshot/frame IMAGE artifact (PNG, "
+                    "JPEG, GIF, BMP, or WEBP -- NOT a video container; the gate decodes image pixel "
+                    "data only, decoding a frame out of a video is a tracked follow-up) for a phase "
                     "whose plan claims a visible avatar/browser-media rendering deliverable. Required "
                     "to promote such a phase to complete under the opt-in-to-block posture; the gate "
-                    "DECODES this artifact and derives non_black_pixels/pixel_min/pixel_max from its "
-                    "actual pixels (round-3 CR) -- ignored for phases that don't match the FAV "
-                    "detection contract."
+                    "DECODES this artifact and derives non_black_pixels/pixel_min/pixel_max/"
+                    "total_pixels from its actual pixels (round-3/round-6 CR) -- ignored for phases "
+                    "that don't match the FAV detection contract."
                 ),
             )
             sub.add_argument(
@@ -2622,8 +2624,8 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
             "phase-loop reconcile: this phase requires blocking visual-avatar evidence "
             "(FAV/issue #91: owned avatar/browser-media surface + explicit visible-render claim) "
             "under PHASE_LOOP_REVIEW=block -- pass --visual-evidence-path to a genuinely decodable, "
-            "non-blank screenshot/video (pixel stats are DERIVED from the decoded image, round-3 "
-            "CR -- a self-reported --visual-evidence-observed can never substitute for one), or "
+            "non-blank screenshot/frame image (pixel stats are DERIVED from the decoded image, "
+            "round-3 CR -- a self-reported --visual-evidence-observed can never substitute for one), or "
             f"--visual-evidence-opt-out ({', '.join(VISUAL_EVIDENCE_OPT_OUT_REASONS)}).",
             file=sys.stderr,
         )
@@ -2711,13 +2713,35 @@ def _resolve_changed_paths_at_commit(repo: Path, commit: str | None) -> tuple[st
     owned paths matched" -> "gate does not apply") was codex's fail-open
     finding -- an invalid/unresolvable ``--closeout-commit`` silently promoting
     a phase that never had its visual evidence checked at all.
+
+    Fix 2 (agent-harness#91 round-6 CR): a bare ``git diff-tree --root
+    <commit>`` (no explicit parent) is the COMBINED diff for a MERGE commit --
+    git suppresses any path that doesn't conflict across all parents, which
+    for an ordinary clean merge is EVERY path, so it returns ZERO paths. That
+    was silently read as "genuinely no files changed" -> gate bypassed
+    (fail-open): a merge closeout commit whose merged content includes a real
+    media file was never evaluated at all. Diff explicitly against the FIRST
+    PARENT instead, using the two-tree form (``git diff-tree <commit>^1
+    <commit>``) -- NOT ``-m --first-parent`` (empirically verified to still
+    emit the UNION of every parent's diff, not just parent #1, so it would
+    trade one bug for a different over-inclusion one: attributing a sibling
+    branch's changes to this merge). A root/initial commit has no ``^1`` to
+    resolve, so ``rev-parse --verify --quiet <commit>^1`` gates a fallback to
+    the original ``--root`` form (diff against the empty tree), its
+    pre-existing behavior. Non-merge commits are unaffected -- ``<commit>^1``
+    is just their sole parent, so the two-tree diff is identical to the old
+    single-arg ``--root`` diff for them.
     """
     if not commit:
         return _CHANGED_PATHS_RESOLUTION_FAILED
     verify = _git_capture(repo, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
     if verify.returncode != 0:
         return _CHANGED_PATHS_RESOLUTION_FAILED
-    diff = _git_capture(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit)
+    has_parent = _git_capture(repo, "rev-parse", "--verify", "--quiet", f"{commit}^1")
+    if has_parent.returncode == 0:
+        diff = _git_capture(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", f"{commit}^1", commit)
+    else:
+        diff = _git_capture(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit)
     if diff.returncode != 0:
         return _CHANGED_PATHS_RESOLUTION_FAILED
     return tuple(sorted({line.strip() for line in diff.stdout.splitlines() if line.strip()}))

@@ -26,10 +26,11 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
   finding.
 - **Visual-evidence schema** (`models.VisualEvidenceObservation`, schema
   `visual_evidence_observed.v1`): pixel-level observations (`non_black_pixels`, `pixel_min`,
-  `pixel_max`, tolerant of the camelCase `nonBlackPixels`/`pixelMin`/`pixelMax` a browser tool
-  emits) attached alongside a `visual_evidence_path` screenshot/video artifact. `is_valid()`
-  rejects an all-black frame (`non_black_pixels == 0`) and a uniform/blank frame
-  (`pixel_min == pixel_max`, e.g. a solid `#f3f3f3` gray).
+  `pixel_max`, `total_pixels`, tolerant of the camelCase `nonBlackPixels`/`pixelMin`/
+  `pixelMax`/`totalPixels` a browser tool emits) attached alongside a `visual_evidence_path`
+  screenshot/frame-image artifact. `is_valid()` rejects an all-black frame
+  (`non_black_pixels == 0`) and a uniform/blank frame (`pixel_min == pixel_max`, e.g. a solid
+  `#f3f3f3` gray).
 - **Typed opt-out**: a `visual_evidence_opt_out` reason (`no_visible_media_surface`,
   `visual_deferred_to_later_phase`, `operator_attested_manual`) suppresses the finding,
   mirroring `verification_evidence_opt_out`.
@@ -97,6 +98,55 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
   blocks, under warn-default the shortfall is still recorded, never silently treated as clean.
   The magic-number/regular-file/in-repo-containment pre-filter and the self-report's own
   `pixel_min<=pixel_max` validation are kept as belt-and-suspenders.
+- **Fix 7 (round 6) — detector section-scope regression + claim-local negation.** Round 5's
+  scope-toggle had a redundant `if/else` that both branches set `in_scope = True`, so an
+  unrecognized/nested heading — e.g. a `### Rationale` subheading NESTED under `## Non-goals`
+  — turned scanning back ON and resurfaced the exact Non-goals false-positive Fix 5 exists to
+  close. `avatar_visible_render_claimed` now tracks scope with a DEPTH-AWARE stack of
+  `(depth, in_scope)` frames: a new heading pops every frame at depth ≥ its own, then pushes a
+  frame whose scope is `False` for a Non-goals/out-of-scope heading, `True` for a known-
+  affirmative heading, and otherwise INHERITED from the enclosing section — an unknown heading
+  no longer flips scope in either direction. Round 5 had also stripped `without` globally from
+  the negation regex to fix a trailing-qualifier false-negative ("renders a visible avatar
+  without operator intervention" is a claim), which broke the opposite case ("validate without
+  rendering a visible avatar" wrongly counted as a claim). Negation is now CLAIM-SPAN-LOCAL: a
+  negation cue (including `without`) only suppresses a claim match that comes AFTER it on the
+  same line/heading, so a preceding "without" still negates while a trailing one doesn't.
+- **Fix 8 (round 6) — reconcile's changed-paths resolution is now merge-aware.**
+  `cli._resolve_changed_paths_at_commit` fed a bare `git diff-tree --root <commit>` (no
+  explicit parent) — for a MERGE commit this is git's COMBINED diff, which suppresses any path
+  that doesn't conflict across parents, i.e. every path in an ordinary clean merge, returning
+  ZERO paths. That was silently read as "genuinely no files changed" → gate bypassed
+  (fail-open): a merge closeout commit whose merged content included a real media file was
+  never evaluated. Now diffs explicitly against the FIRST PARENT using the two-tree form
+  (`git diff-tree <commit>^1 <commit>`, gated by `rev-parse --verify <commit>^1` with a
+  fallback to the original `--root` form for a root/initial commit that has no parent at all)
+  — NOT `-m --first-parent`, which was tried first but empirically still emits the UNION of
+  every parent's diff rather than just parent #1's, which would have traded the fail-open for a
+  different over-inclusion bug (attributing a sibling branch's changes to the merge). A merge's
+  real first-parent changed paths are now always evaluated, exactly like a non-merge commit
+  (whose sole parent makes the two-tree form identical to the pre-fix single-arg diff).
+- **Fix 9 (round 6) — evidence coverage floor.** `is_valid()` accepted a single non-black pixel
+  in an arbitrarily large frame (e.g. a 1000×1000 image with ONE opaque white pixel:
+  `non_black_pixels=1 > 0` and differing extrema both trivially held) — a near-blank frame
+  could pass. `VisualEvidenceObservation` gained a `total_pixels` field (threaded from the
+  decode as `width * height` in `derive_visual_observation`; defaults to `0`/"unknown" for
+  self-reported observations that never carried it, which keeps the pre-existing semantics).
+  When `total_pixels` is known, `is_valid()` now additionally requires (a) a minimum
+  total-pixel-count floor and (b) `non_black_pixels` to be at least a small meaningful fraction
+  of `total_pixels` (not merely `> 0`) — one floor, no further thresholds.
+- **Fix 10 (round 6) — contract honesty (image-only) + adoption-default silence.** The CLI
+  help text and gate-generated messages said "screenshot/video", implying video evidence is
+  verified; `derive_visual_observation` only ever decoded IMAGE headers/pixel data (PNG, JPEG,
+  GIF, BMP, WEBP). Wording now says "screenshot/frame image" throughout and notes that
+  decoding a representative frame out of a video container is a tracked follow-up, not claimed
+  today. Separately: when the decoder (Pillow, the optional `visual` extra) is UNAVAILABLE and
+  enforcement is NOT opted in (default warn posture), the closeout validator is now SILENT
+  (no finding at all) instead of raising `visual_evidence_cannot_verify` on every passing
+  visual/avatar phase closeout — a standard install without the `visual` extra no longer gets
+  spammed purely because an optional dependency isn't installed. Only the opt-in `block`
+  posture turns a missing decoder into a hard block; an `visual_evidence_undecodable` (Pillow
+  present, decode genuinely failed) finding is unaffected and still recorded under warn.
 
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 

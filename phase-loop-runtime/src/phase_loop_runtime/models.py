@@ -1045,10 +1045,26 @@ class SpecDeltaCloseout:
 VISUAL_EVIDENCE_OBSERVED_SCHEMA = "visual_evidence_observed.v1"
 
 
+# Fix 3 (agent-harness#91 CR round-6): coverage floor thresholds. A single
+# opaque pixel in an otherwise-blank 1000x1000 frame previously PASSED
+# (non_black_pixels=1 > 0, and differing extrema from that one non-black
+# pixel satisfied pixel_min != pixel_max) -- non_black_pixels>0 alone is not
+# a meaningful floor once the frame can be arbitrarily large. Two checks,
+# both gated on ``total_pixels`` being known (threaded only from an
+# AUTHORITATIVE decode, see ``derive_visual_observation`` below):
+#   (a) a minimum total-pixel-count floor (proxy for "reject smaller than a
+#       16x16 image" without needing separate width/height fields), and
+#   (b) non_black_pixels must be a meaningful FRACTION of total_pixels, not
+#       merely > 0.
+# This is deliberately the ONLY floor added -- no further thresholds.
+_MIN_EVIDENCE_TOTAL_PIXELS = 16 * 16  # reject smaller than a 16x16 frame
+_MIN_EVIDENCE_NON_BLACK_FRACTION = 0.01  # >= 1% of the frame must be non-black
+
+
 @dataclass(frozen=True)
 class VisualEvidenceObservation:
     """``visual_evidence_observed.v1`` (FAV, issue #91) -- automated pixel-level
-    observations attached to a runner-owned visual artifact (screenshot/video
+    observations attached to a runner-owned visual artifact (screenshot/frame
     path, recorded separately as ``visual_evidence_path``) for an
     avatar/browser-media phase. Strong enough to reject a black or
     uniform-gray frame masquerading as passing visual evidence: a genuine
@@ -1056,11 +1072,21 @@ class VisualEvidenceObservation:
     max). An all-black frame (``non_black_pixels == 0``) or a uniform frame
     (``pixel_min == pixel_max``, e.g. a solid ``#f3f3f3`` gray with
     ``pixelMin == pixelMax == 243``) both FAIL ``is_valid()``.
+
+    ``total_pixels`` (Fix 3, round-6 CR) is the frame's ``width * height``,
+    threaded from the decode so ``is_valid()`` can additionally enforce a
+    minimum-size + minimum-non-black-fraction coverage floor -- rejecting a
+    single opaque pixel in an otherwise-blank huge frame, which the bare
+    ``non_black_pixels > 0`` check let through. Defaults to ``0`` ("unknown")
+    for self-reported/legacy observations that never carried it; the
+    coverage-floor checks are skipped when unknown, preserving pre-existing
+    behavior for callers that can't supply it.
     """
 
     non_black_pixels: int
     pixel_min: int
     pixel_max: int
+    total_pixels: int = 0
     schema: str = VISUAL_EVIDENCE_OBSERVED_SCHEMA
 
     def __post_init__(self) -> None:
@@ -1091,6 +1117,16 @@ class VisualEvidenceObservation:
             raise ValueError(
                 f"invalid pixel_min/pixel_max (min must be <= max): {self.pixel_min} > {self.pixel_max}"
             )
+        # Fix 3 (round-6 CR): total_pixels must be a non-negative count, and an
+        # observation claiming MORE non-black pixels than the frame has total
+        # is impossible -- malformed the same way pixel_min > pixel_max is.
+        if self.total_pixels < 0:
+            raise ValueError(f"invalid total_pixels (must be >= 0): {self.total_pixels}")
+        if self.total_pixels > 0 and self.non_black_pixels > self.total_pixels:
+            raise ValueError(
+                f"invalid non_black_pixels/total_pixels (non_black_pixels must be <= total_pixels): "
+                f"{self.non_black_pixels} > {self.total_pixels}"
+            )
 
     def is_valid(self) -> bool:
         """True iff the frame shows real, non-uniform content (not black/blank)."""
@@ -1098,6 +1134,14 @@ class VisualEvidenceObservation:
             return False
         if self.pixel_min == self.pixel_max:
             return False
+        # Fix 3 (round-6 CR): coverage floor, only enforceable when
+        # total_pixels is known (an authoritative decode threads it; a bare
+        # self-report without it keeps the pre-existing semantics).
+        if self.total_pixels > 0:
+            if self.total_pixels < _MIN_EVIDENCE_TOTAL_PIXELS:
+                return False
+            if (self.non_black_pixels / self.total_pixels) < _MIN_EVIDENCE_NON_BLACK_FRACTION:
+                return False
         return True
 
     def to_json(self) -> dict[str, Any]:
@@ -1106,20 +1150,29 @@ class VisualEvidenceObservation:
     @classmethod
     def from_mapping(cls, data: Any) -> "VisualEvidenceObservation | None":
         """Tolerant parse: accepts either the runtime's snake_case keys
-        (``non_black_pixels``/``pixel_min``/``pixel_max``) or the camelCase
-        keys a browser-automation tool naturally emits
-        (``nonBlackPixels``/``pixelMin``/``pixelMax``). Returns ``None`` (never
-        raises) on anything malformed or absent -- the caller treats that
-        identically to "no evidence attached"."""
+        (``non_black_pixels``/``pixel_min``/``pixel_max``/``total_pixels``) or
+        the camelCase keys a browser-automation tool naturally emits
+        (``nonBlackPixels``/``pixelMin``/``pixelMax``/``totalPixels``).
+        Returns ``None`` (never raises) on anything malformed or absent -- the
+        caller treats that identically to "no evidence attached". ``total_
+        pixels`` is OPTIONAL (defaults to ``0``/"unknown") -- a self-report
+        that never carried it still parses, it just skips the coverage-floor
+        checks in ``is_valid()``, same as before this field existed."""
         if not isinstance(data, Mapping):
             return None
         non_black = data.get("non_black_pixels", data.get("nonBlackPixels"))
         pixel_min = data.get("pixel_min", data.get("pixelMin"))
         pixel_max = data.get("pixel_max", data.get("pixelMax"))
+        total_pixels = data.get("total_pixels", data.get("totalPixels"))
         if non_black is None or pixel_min is None or pixel_max is None:
             return None
         try:
-            return cls(non_black_pixels=int(non_black), pixel_min=int(pixel_min), pixel_max=int(pixel_max))
+            return cls(
+                non_black_pixels=int(non_black),
+                pixel_min=int(pixel_min),
+                pixel_max=int(pixel_max),
+                total_pixels=int(total_pixels) if total_pixels is not None else 0,
+            )
         except (TypeError, ValueError):
             return None
 
@@ -1320,6 +1373,7 @@ def derive_visual_observation(path: "str | Path") -> VisualEvidenceObservation:
             pixel_min, pixel_max = grayscale.getextrema()
             histogram = grayscale.histogram()  # 256-bucket luminance histogram
             non_black_pixels = sum(histogram[_DERIVED_NON_BLACK_LUMINANCE_THRESHOLD + 1 :])
+            total_pixels = width * height
     except VisualEvidenceDerivationError:
         raise
     except Exception as exc:  # noqa: BLE001 -- Pillow raises varied types (UnidentifiedImageError/OSError/...)
@@ -1328,6 +1382,10 @@ def derive_visual_observation(path: "str | Path") -> VisualEvidenceObservation:
         non_black_pixels=int(non_black_pixels),
         pixel_min=int(pixel_min),
         pixel_max=int(pixel_max),
+        # Fix 3 (round-6 CR): thread the decoded frame's total pixel count so
+        # is_valid() can enforce the coverage floor -- this is the
+        # AUTHORITATIVE decode path, the only source that can know it.
+        total_pixels=int(total_pixels),
     )
 
 
@@ -1510,10 +1568,10 @@ _NONGOAL_SECTION_RE = re.compile(
 _CLAIM_NEGATION_RE = re.compile(
     r"\b(?:must\s+not|must\s+never|shall\s+not|should\s+not|shouldn'?t|"
     r"does\s+not|doesn'?t|do\s+not|don'?t|cannot|can'?t|won'?t|will\s+not|"
-    r"never|no\s+longer|non[-\s]?goal|not\s+render|no\s+visible)\b",
+    r"never|no\s+longer|non[-\s]?goal|not\s+render|no\s+visible|without)\b",
     re.IGNORECASE,
 )
-_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+(?P<title>.+?)\s*$")
+_MARKDOWN_HEADING_RE = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<title>.+?)\s*$")
 
 
 def avatar_media_surface_touched(changed_paths: Iterable[str]) -> bool:
@@ -1525,6 +1583,24 @@ def avatar_media_surface_touched(changed_paths: Iterable[str]) -> bool:
     return any(_AVATAR_MEDIA_SURFACE_MARKER_RE.search(str(p)) for p in paths)
 
 
+def _line_has_unnegated_claim(text: str) -> bool:
+    """True iff ``text`` contains an avatar-visible-render claim that is NOT
+    negated. Negation is CLAIM-SPAN-LOCAL: a negation cue only suppresses a
+    claim match when the cue appears BEFORE that match starts (i.e. it
+    grammatically qualifies the render verb/claim itself, e.g. "validate
+    WITHOUT rendering a visible avatar"). A negation cue appearing AFTER the
+    claim match (a trailing qualifier, e.g. "renders a visible avatar
+    WITHOUT operator intervention") does not suppress it -- the claim stands.
+    Checks every claim occurrence on the line/title independently, so one
+    negated occurrence never hides a second, unnegated one."""
+    for claim in _AVATAR_VISIBLE_CLAIM_RE.finditer(text):
+        prefix = text[: claim.start()]
+        if _CLAIM_NEGATION_RE.search(prefix):
+            continue
+        return True
+    return False
+
+
 def avatar_visible_render_claimed(text: str) -> bool:
     """EXPLICIT CLAIM signal (detection contract #2): the plan text makes an
     explicit user-visible rendering claim as a DELIVERABLE.
@@ -1532,64 +1608,79 @@ def avatar_visible_render_claimed(text: str) -> bool:
     Fix 5: the claim must appear in an AFFIRMATIVE section (objective / exit
     criteria / acceptance / deliverable / scope / lanes / preamble) and must
     NOT be negated. A ``Non-goals`` / ``Out of scope`` section is scanned OFF,
-    and a line carrying a negation cue ("must not", "does not", "non-goal",
-    "no visible", ...) never counts -- so "must not render a visible avatar"
-    yields NO claim. A plan with no markdown headings at all is scanned whole
-    (back-compat), still with the per-line negation filter.
+    and a claim carrying a claim-local negation cue ("must not", "does not",
+    "non-goal", "no visible", a preceding "without", ...) never counts -- so
+    "must not render a visible avatar" yields NO claim. A plan with no
+    markdown headings at all is scanned whole (back-compat), still with the
+    per-line negation filter.
 
-    Fix (agent-harness#91 round-5 CR / codex): round-5 closes two
-    false-NEGATIVE gaps in the fix-5 scoping and one over-negation bug:
+    Fix (agent-harness#91 round-5 CR / codex): the phase TITLE (the ``# ``
+    heading) and IF-gate / exit-gate headings (e.g. ``## IF-AV-1-1``, ``##
+    Exit gate``) are evaluated for a claim too -- a heading's own title text
+    is scanned the same way a body line is (subject to the same claim-local
+    negation check), so the claim can live IN the heading itself.
 
-    1. The phase TITLE (the ``# `` heading) and IF-gate / exit-gate headings
-       (e.g. ``## IF-AV-1-1``, ``## Exit gate``) were never evaluated for a
-       claim -- a title like ``# AV-1 -- Visible Avatar`` was invisible to
-       the scan entirely. A heading's own title text is now scanned for a
-       claim the same way a body line is (subject to the same claim-local
-       negation check), so the claim can live IN the heading itself.
-    2. An unrecognized heading previously turned scanning OFF (``in_scope =
-       False`` in the ``else`` branch), silently swallowing body content
-       under any heading that isn't a known affirmative keyword -- exactly
-       what hides an IF-gate/exit-gate heading's body ("## IF-AV-1-1" /
-       "## Exit gate" don't match the affirmative-keyword regex). Unknown
-       headings are now NEUTRAL/affirmative-eligible (``in_scope = True``):
-       only an explicit Non-goals/out-of-scope heading disables scanning.
-    3. Negation is CLAIM-LOCAL, not qualifier-blind: ``without`` was removed
-       from ``_CLAIM_NEGATION_RE`` because a "without <X>" qualifier on an
-       otherwise-affirmative claim ("renders a visible avatar without
-       operator intervention") is NOT a negation of the claim -- only an
-       actual negation cue on the claim itself (Non-goals bullet, "must
-       not render", "does not render", "no visible avatar", ...) suppresses
-       it.
+    Fix (agent-harness#91 round-6 CR): round-5 introduced a regression --
+    an unrecognized/nested heading UNCONDITIONALLY set ``in_scope = True``
+    (a redundant if/else both assigning ``True``), so a subheading NESTED
+    under a Non-goals section (e.g. ``### Rationale`` under ``## Non-
+    goals``) turned scanning back ON, resurfacing the exact false-positive
+    Fix 5 was meant to close. Scope is now tracked with a DEPTH-AWARE stack
+    of ``(depth, in_scope)`` frames: on a new heading of depth ``d`` the
+    stack pops every frame at depth >= d, then pushes ``(d, scope)`` where
+    ``scope`` is FALSE for a Non-goals/out-of-scope heading, TRUE for a
+    known-affirmative heading, and otherwise INHERITED from the parent
+    frame (the new top of stack after popping) -- an UNKNOWN heading no
+    longer flips scope in either direction, it just continues whatever its
+    enclosing section was. A heading's own title is only checked for a claim
+    when the frame it just pushed is in scope (mirrors the pre-round-6
+    behavior of skipping the title check entirely for a Non-goals heading).
+
+    Round-6 also restores ``without`` to ``_CLAIM_NEGATION_RE`` (round-5 had
+    stripped it globally, so "validate without rendering a visible avatar"
+    wrongly counted as a claim) but scopes it via ``_line_has_unnegated_
+    claim``'s claim-local positional check: a negation cue -- including
+    "without" -- only suppresses a claim match that comes AFTER it on the
+    same line/title, so a trailing "without <X>" qualifier on an otherwise-
+    affirmative claim ("renders a visible avatar without operator
+    intervention") still counts, exactly like round-5 intended.
     """
     body = text or ""
-    in_scope = True  # preamble before the first heading is in scope
+    # Stack of (depth, in_scope) frames. depth=0 is the root/preamble frame
+    # (in scope before the first heading, matching the pre-round-6 default).
+    stack: list[tuple[int, bool]] = [(0, True)]
     for raw in body.splitlines():
         line = raw.strip()
         if not line:
             continue
         heading = _MARKDOWN_HEADING_RE.match(line)
         if heading:
+            depth = len(heading.group("hashes"))
             title = heading.group("title")
+            while len(stack) > 1 and stack[-1][0] >= depth:
+                stack.pop()
+            parent_scope = stack[-1][1]
             if _NONGOAL_SECTION_RE.search(title):
-                in_scope = False
-                continue
-            if _AFFIRMATIVE_SECTION_RE.search(title):
-                in_scope = True
+                scope = False
+            elif _AFFIRMATIVE_SECTION_RE.search(title):
+                scope = True
             else:
                 # An unrecognized heading (phase title, IF-gate, exit-gate,
-                # or any other unnamed section) is NEUTRAL/affirmative-
-                # eligible -- only a Non-goals/out-of-scope heading (handled
-                # above) disables scanning.
-                in_scope = True
+                # or any other unnamed section) INHERITS its enclosing
+                # section's scope -- it neither turns scanning on nor off.
+                scope = parent_scope
+            stack.append((depth, scope))
             # The heading's own title text can itself carry the claim (e.g.
             # the phase TITLE "# AV-1 -- Visible Avatar", or a claim written
-            # directly into a gate heading) -- scan it like a body line.
-            if _AVATAR_VISIBLE_CLAIM_RE.search(title) and not _CLAIM_NEGATION_RE.search(title):
+            # directly into a gate heading) -- but only when this heading is
+            # actually in scope (a Non-goals heading's own title, or one
+            # nested under an out-of-scope ancestor, is never scanned).
+            if scope and _line_has_unnegated_claim(title):
                 return True
             continue
-        if not in_scope:
+        if not stack[-1][1]:
             continue
-        if _AVATAR_VISIBLE_CLAIM_RE.search(line) and not _CLAIM_NEGATION_RE.search(line):
+        if _line_has_unnegated_claim(line):
             return True
     return False
 

@@ -25,11 +25,17 @@ no explicit render claim) produces NO finding -- legacy phases and non-media
 phases stay silent.
 
 When the contract is satisfied and the phase reports ``verification_status=
-passed``, it must attach a runner-owned visual artifact: a screenshot/video
-path (``visual_evidence_path``) PLUS automated pixel observations
+passed``, it must attach a runner-owned visual artifact: an IMAGE path
+(``visual_evidence_path`` -- a screenshot/frame PNG, JPEG, GIF, BMP, or WEBP;
+see ``models.derive_visual_observation``) PLUS automated pixel observations
 (``visual_evidence_observed``, ``models.VisualEvidenceObservation``) strong
-enough to reject a black or uniform/blank frame (``non_black_pixels > 0`` AND
-``pixel_min != pixel_max``).
+enough to reject a black or uniform/blank frame (``non_black_pixels`` a
+meaningful fraction of the frame AND ``pixel_min != pixel_max``). Fix 4
+(agent-harness#91 round-6 CR): the decoder only handles IMAGE headers/pixel
+data -- a video CONTAINER (mp4/webm/...) is never decoded here. Decoding a
+representative frame out of a video artifact is a tracked follow-up, not
+claimed by this gate today; callers must attach an already-extracted image
+frame.
 
 Autonomy-first: ``block``-severity, so under the default
 ``PHASE_LOOP_REVIEW=warn`` it is recorded and the loop continues; it blocks
@@ -42,7 +48,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
-from .closeout_validators import CloseoutContext, ReviewFinding, register_closeout_validator
+from .closeout_validators import CloseoutContext, ReviewFinding, register_closeout_validator, resolve_review_mode
 from .models import (
     VISUAL_EVIDENCE_OPT_OUT_REASONS,
     avatar_visual_evidence_required,
@@ -123,6 +129,21 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
     if opt_out in VISUAL_EVIDENCE_OPT_OUT_REASONS:
         return []  # declined with a typed reason
     if derivation_error is not None:
+        # Fix 4b (agent-harness#91 round-6 CR): a decoder-UNAVAILABLE
+        # environment (Pillow, the optional `visual` extra, not installed) is
+        # an ADOPTION-DEFAULT concern distinct from every other finding this
+        # validator raises -- a standard install without the `visual` extra
+        # would otherwise get a `visual_evidence_cannot_verify` finding on
+        # EVERY passing visual/avatar phase closeout under the default
+        # warn posture, purely because the optional decoder isn't installed
+        # (not because anything is actually wrong). Stay SILENT for that one
+        # specific case under warn/off; only the opt-in `block` posture turns
+        # a missing decoder into a hard block. An UNDECODABLE artifact
+        # (Pillow present, decode failed) is a genuine, actionable finding
+        # and is unaffected -- it is recorded under warn like any other
+        # finding, exactly as before.
+        if derivation_error == "visual_evidence_cannot_verify" and resolve_review_mode() != "block":
+            return []
         return [
             ReviewFinding(
                 code=derivation_error,
@@ -137,7 +158,7 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
                         else "the artifact could not be decoded as an image"
                     )
                     + "); self-reported pixel observations are never accepted as a substitute -- "
-                    "attach a genuinely decodable screenshot/video or record a "
+                    "attach a genuinely decodable screenshot/frame image or record a "
                     f"visual_evidence_opt_out reason ({', '.join(VISUAL_EVIDENCE_OPT_OUT_REASONS)})"
                 ),
                 severity="block",
@@ -151,8 +172,9 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
                 "phase owns an avatar/browser-media surface and claims a visible rendering "
                 "deliverable, reported verification_status=passed, but attached no valid "
                 "visual_evidence_path + a DECODED image whose derived pixel stats show "
-                "real content (non_black_pixels>0 and pixel_min!=pixel_max); attach a "
-                "runner-owned screenshot/video or record a visual_evidence_opt_out reason "
+                "real, sufficiently-covered content (non_black_pixels a meaningful fraction "
+                "of the frame and pixel_min!=pixel_max); attach a runner-owned "
+                "screenshot/frame image or record a visual_evidence_opt_out reason "
                 f"({', '.join(VISUAL_EVIDENCE_OPT_OUT_REASONS)})"
             ),
             severity="block",

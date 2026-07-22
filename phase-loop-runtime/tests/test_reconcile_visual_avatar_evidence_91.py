@@ -11,6 +11,7 @@ recorded but the promotion proceeds (autonomy-first, no human_required).
 import contextlib
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -409,6 +410,97 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
                 self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
             )
         self.assertEqual(code, 2)
+
+    # --- Fix 2 (agent-harness#91 round-6 CR): a MERGE closeout commit must
+    # still be evaluated -- a bare `git diff-tree --root <merge>` (no
+    # explicit parent) returns ZERO paths for an ordinary clean merge (the
+    # combined diff suppresses every non-conflicting path), which was
+    # silently read as "genuinely no files changed" -> gate bypassed
+    # (fail-open). The fix diffs against the TRUE first parent (the two-tree
+    # `git diff-tree <commit>^1 <commit>` form) -- not `-m --first-parent`,
+    # which was tried first but empirically still emits the UNION of every
+    # parent's diff. ---
+
+    def test_merge_commit_with_media_file_still_blocks_on_opt_in(self):
+        # A merge commit whose merged content brings in the owned
+        # avatar/browser-media surface (via a feature branch merged with
+        # --no-ff) must still be evaluated -- the gate must BLOCK on missing
+        # evidence exactly as it would for a direct, non-merge commit that
+        # touched the same file. Under the pre-fix bug, the merge commit's
+        # diff-tree returned no paths at all, so `avatar_media_surface_
+        # touched` saw an empty structural surface and the guard was
+        # (wrongly) inert -- promoting the phase with code 0.
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        repo = make_repo(Path(td.name))
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        base_branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        plan = write_phase_plan(repo, "RUNNER", roadmap, body=VISIBLE_AVATAR_BODY)
+        commit_fixture_paths(repo, "add runner plan", plan)
+
+        # Feature branch: adds the owned avatar/browser-media surface.
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/avatar-media"], cwd=repo, check=True)
+        media = repo / "tests" / "fixtures" / "avatar_call.html"
+        media.parent.mkdir(parents=True, exist_ok=True)
+        media.write_text("<html><body>avatar</body></html>\n", encoding="utf-8")
+        commit_fixture_paths(repo, "add avatar media fixture", media)
+
+        # Back on the base branch: an unrelated change, then merge the
+        # feature branch with --no-ff to produce a real 2-parent merge commit
+        # whose diff-tree --root (no explicit parent) would show ZERO paths.
+        subprocess.run(["git", "checkout", "-q", base_branch], cwd=repo, check=True)
+        unrelated = repo / "UNRELATED.md"
+        unrelated.write_text("unrelated change\n", encoding="utf-8")
+        commit_fixture_paths(repo, "unrelated base-branch change", unrelated)
+        subprocess.run(
+            ["git", "merge", "--no-ff", "-q", "feature/avatar-media", "-m", "merge avatar media feature"],
+            cwd=repo,
+            check=True,
+        )
+        merge_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        # Sanity: a bare (no -m --first-parent) diff-tree of this merge
+        # commit genuinely returns no paths -- proves the scenario reproduces
+        # the pre-fix bug shape, not just an artifact of this repo layout.
+        bare_diff = subprocess.run(
+            ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", merge_sha],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(bare_diff, "", "test scenario must reproduce the bare diff-tree empty-paths bug")
+
+        # Discriminating check: the resolver must report the TRUE first-
+        # parent diff, not the union of every parent's diff. `UNRELATED.md`
+        # was committed directly on the base branch (the merge's FIRST
+        # parent) BEFORE the merge, so it is already present in that parent
+        # and must NOT appear as a "changed path" of the merge commit itself
+        # -- only `avatar_call.html` (brought in from the feature branch)
+        # genuinely changed relative to the first parent. A union-of-all-
+        # parents diff (e.g. `git diff-tree -m --first-parent`, which
+        # empirically still emits every parent's diff, not just parent #1's)
+        # would wrongly include `UNRELATED.md` here.
+        from phase_loop_runtime.cli import _resolve_changed_paths_at_commit
+
+        resolved_paths = _resolve_changed_paths_at_commit(repo, merge_sha)
+        self.assertIn("tests/fixtures/avatar_call.html", resolved_paths)
+        self.assertNotIn("UNRELATED.md", resolved_paths)
+
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(
+                    repo, roadmap, "RUNNER",
+                    "--verification-status", "passed",
+                    "--allow-dirty",
+                    "--closeout-commit", merge_sha,
+                )
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
 
     # --- non-matching phase: guard is inert ---
 

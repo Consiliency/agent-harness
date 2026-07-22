@@ -327,22 +327,35 @@ def write_named_roadmap(repo: Path, phases: tuple[tuple[str, str], ...], version
     return roadmap
 
 
-def write_varied_png(path: Path, size: tuple[int, int] = (2, 2)) -> Path:
+def write_varied_png(path: Path, size: tuple[int, int] = (20, 20)) -> Path:
     """FAV (agent-harness#91 round-3 CR): write a REAL, DECODABLE image with
     genuine pixel variance (distinct light/dark pixels) at `path`, for tests
     that must exercise the derived-pixel-stats gate's PASS path. Unlike the
     pre-round-3 fixture (a 24-byte "PNG signature + zero bytes" fake that
     Pillow cannot decode at all), this round-trips through Pillow so
     `derive_visual_observation` computes a genuinely non_black_pixels>0,
-    pixel_min!=pixel_max observation from the actual pixel data."""
+    pixel_min!=pixel_max observation from the actual pixel data.
+
+    Fix 3 (agent-harness#91 round-6 CR): the default size was bumped from
+    (2, 2) to (20, 20) and a top-left QUADRANT (not just a single corner
+    pixel) is now lit white -- a real varied image must also clear the new
+    coverage floor (``VisualEvidenceObservation.is_valid()``'s minimum
+    total-pixel-count + minimum non-black-fraction checks), which a 4-total-
+    pixel fixture with only one or two lit pixels can no longer satisfy. The
+    remaining bottom-right area stays black (with one distinct gray corner
+    pixel) so genuine pixel_min=0/pixel_max=255 variance and a real black
+    region are both still present, exactly like before."""
     from PIL import Image
 
     path.parent.mkdir(parents=True, exist_ok=True)
     width, height = size
     img = Image.new("RGB", (width, height), color=(0, 0, 0))
-    # Light diagonal + at least one bright corner -- guarantees variance
-    # regardless of grayscale-conversion weighting.
-    img.putpixel((0, 0), (255, 255, 255))
+    # Light up the top-left quadrant white -- guarantees a comfortably large
+    # non-black coverage fraction regardless of `size`, while the rest of the
+    # frame stays black for genuine contrast/variance.
+    for x in range(max(1, width // 2)):
+        for y in range(max(1, height // 2)):
+            img.putpixel((x, y), (255, 255, 255))
     if width > 1 and height > 1:
         img.putpixel((width - 1, height - 1), (200, 200, 200))
     img.save(path, format="PNG")
@@ -414,26 +427,39 @@ def write_l_trns_transparent_png(path: Path, size: tuple[int, int] = (2, 2)) -> 
     return path
 
 
-def write_rgb_trns_partial_transparency_png(path: Path, size: tuple[int, int] = (2, 2)) -> Path:
+def write_rgb_trns_partial_transparency_png(path: Path, size: tuple[int, int] = (16, 16)) -> Path:
     """FAV (agent-harness#91 round-5 CR / codex): write a REAL, DECODABLE
-    mode-RGB PNG carrying a ``tRNS`` chunk where ONE pixel is the
-    transparent-marked magic color and the remaining pixels are genuinely
-    VISIBLE and VARIED (white/black/gray). Proves the round-5 fix reflects
-    only the OPAQUE visible pixels: the transparent-marked pixel composites
-    to black (like the existing "black == blank" rejection) while the real
-    opaque variance (the visible white/gray pixels) still drives
+    mode-RGB PNG carrying a ``tRNS`` chunk where a portion of the pixels are
+    the transparent-marked magic color and the remaining pixels are
+    genuinely VISIBLE and VARIED (white/black/gray). Proves the round-5 fix
+    reflects only the OPAQUE visible pixels: the transparent-marked pixels
+    composite to black (like the existing "black == blank" rejection) while
+    the real opaque variance (the visible white/gray pixels) still drives
     non_black_pixels/pixel_min/pixel_max -- neither swallowed nor inflated by
-    the transparent pixel."""
+    the transparent pixels.
+
+    Fix 3 (agent-harness#91 round-6 CR): the default size was bumped from
+    (2, 2) to (16, 16) -- a single 2x2-pattern tile can no longer clear the
+    new coverage floor on its own, so the ORIGINAL 2x2 pattern (one
+    transparent-marked pixel, one visible white, one visible black, one
+    visible gray) is now TILED across the frame: each 2x2 tile contributes
+    exactly the same 2 non-black opaque pixels (white + gray) as the
+    original single-tile fixture, so ``non_black_pixels`` scales predictably
+    as ``2 * (width // 2) * (height // 2)`` -- callers that need the exact
+    count (e.g. asserting the derived observation) can compute it from
+    ``size`` rather than relying on a hardcoded constant."""
     from PIL import Image
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = size
     transparent_color = (123, 45, 67)
-    img = Image.new("RGB", size, (0, 0, 0))
-    img.putpixel((0, 0), transparent_color)  # marked transparent -> composites to black
-    img.putpixel((0, 1), (255, 255, 255))  # visible white
-    img.putpixel((1, 0), (0, 0, 0))  # visible black
-    if size[0] > 1 and size[1] > 1:
-        img.putpixel((1, 1), (128, 128, 128))  # visible gray
+    img = Image.new("RGB", (width, height), (0, 0, 0))
+    for tx in range(0, width - 1, 2):
+        for ty in range(0, height - 1, 2):
+            img.putpixel((tx, ty), transparent_color)  # marked transparent -> composites to black
+            img.putpixel((tx, ty + 1), (255, 255, 255))  # visible white
+            img.putpixel((tx + 1, ty), (0, 0, 0))  # visible black
+            img.putpixel((tx + 1, ty + 1), (128, 128, 128))  # visible gray
     img.save(path, format="PNG", transparency=transparent_color)
     return path
 

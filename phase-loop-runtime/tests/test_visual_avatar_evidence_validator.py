@@ -175,6 +175,73 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertIsNone(VisualEvidenceObservation.from_mapping({"nonBlackPixels": 1, "pixelMin": -1, "pixelMax": 255}))
         self.assertIsNone(VisualEvidenceObservation.from_mapping({"nonBlackPixels": -5, "pixelMin": 0, "pixelMax": 255}))
 
+    # --- Fix 3 (round-6 CR): coverage floor -- a single opaque pixel (or a
+    # tiny frame) must not masquerade as real visual evidence. ---
+
+    def test_single_opaque_pixel_in_large_frame_is_invalid(self):
+        # #91 round-6 repro: a 1000x1000 frame with exactly ONE non-black
+        # pixel -- non_black_pixels=1 (>0) and differing extrema (from that
+        # one pixel) previously satisfied is_valid() even though the frame is
+        # visually blank. The coverage-fraction floor (1% of total_pixels)
+        # must reject this once total_pixels is known.
+        obs = VisualEvidenceObservation(non_black_pixels=1, pixel_min=0, pixel_max=255, total_pixels=1_000_000)
+        self.assertFalse(obs.is_valid())
+
+    def test_below_minimum_dimension_floor_is_invalid(self):
+        # A tiny (10x10 = 100px) frame, even 100% non-black, must fail the
+        # minimum-total-pixels floor (16x16 = 256px).
+        obs = VisualEvidenceObservation(non_black_pixels=100, pixel_min=0, pixel_max=255, total_pixels=100)
+        self.assertFalse(obs.is_valid())
+
+    def test_meaningful_coverage_fraction_is_valid(self):
+        # A real avatar frame: e.g. a 100x100 (10,000px) image with 20%
+        # non-black coverage clears both the dimension and fraction floors.
+        obs = VisualEvidenceObservation(non_black_pixels=2000, pixel_min=0, pixel_max=255, total_pixels=10_000)
+        self.assertTrue(obs.is_valid())
+
+    def test_unknown_total_pixels_keeps_legacy_semantics(self):
+        # A self-reported observation with no total_pixels (the pre-round-6
+        # shape) must still parse and pass under the ORIGINAL
+        # non_black_pixels>0 + pixel_min!=pixel_max semantics -- the
+        # coverage-floor checks are skipped entirely when total_pixels is
+        # unknown (0), preserving back-compat for callers that can't supply
+        # it.
+        obs = VisualEvidenceObservation(non_black_pixels=19200, pixel_min=0, pixel_max=255)
+        self.assertEqual(obs.total_pixels, 0)
+        self.assertTrue(obs.is_valid())
+
+    def test_non_black_exceeding_total_pixels_is_rejected(self):
+        # An impossible observation (more non-black pixels than the frame
+        # has total) is malformed the same way pixel_min > pixel_max is.
+        with self.assertRaises(ValueError):
+            VisualEvidenceObservation(non_black_pixels=200, pixel_min=0, pixel_max=255, total_pixels=100)
+
+    def test_single_pixel_evidence_finds_end_to_end(self):
+        # End-to-end: the closeout validator must find a self-reported
+        # single-opaque-pixel "pass" when the total_pixels the DECODED image
+        # actually carries reveals it as a near-blank frame.
+        pytest.importorskip("PIL")
+        from PIL import Image
+
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        img = Image.new("RGB", (1000, 1000), color=(0, 0, 0))
+        img.putpixel((0, 0), (255, 255, 255))
+        img.save(artifact, format="PNG")
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+            },
+        )
+        findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_missing_or_blank")
+
     def test_uniform_gray_evidence_still_finds(self):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         ctx = _ctx(
@@ -356,6 +423,50 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         # no finding, even under an unnamed heading.
         self.assertFalse(
             avatar_visible_render_claimed("## Some Unnamed Section\n\nThis integration test runs in a browser.\n")
+        )
+
+    # --- round-6 CR (regression in the round-5 fix + negation scoping): a
+    # nested subheading under Non-goals must NOT flip scope back on, and
+    # negation must be CLAIM-SPAN-LOCAL (a preceding "without" still negates;
+    # a trailing "without" qualifier on an affirmative claim does not). ---
+
+    def test_nested_heading_under_non_goals_stays_out_of_scope(self):
+        # The round-5 fix's redundant if/else both set in_scope=True for ANY
+        # unrecognized heading -- including one NESTED under a Non-goals
+        # section -- silently turning scanning back ON and resurfacing the
+        # exact false-positive Fix 5 exists to close. A depth-aware scope
+        # stack must keep the nested heading's body OUT of scope.
+        self.assertFalse(
+            avatar_visible_render_claimed(
+                "# FAV\n\n"
+                "## Non-goals\n\n"
+                "- This phase must not render a visible avatar in the browser meeting UI.\n\n"
+                "### Rationale\n\n"
+                "It renders a visible avatar in a way that is explicitly forbidden here.\n"
+            )
+        )
+
+    def test_scope_restored_after_non_goals_section_ends(self):
+        # A sibling heading at the SAME depth as the Non-goals heading must
+        # pop it off the scope stack and restore the parent's (affirmative)
+        # scope -- Non-goals must not leak into a later top-level section.
+        self.assertTrue(
+            avatar_visible_render_claimed(
+                "# FAV\n\n"
+                "## Non-goals\n\n"
+                "- This phase must not render a visible avatar server-side only.\n\n"
+                "## Deliverable\n\n"
+                "This phase renders a visible avatar in the browser meeting UI.\n"
+            )
+        )
+
+    def test_validate_without_rendering_is_negated(self):
+        # A NEGATING "without" precedes the claim -- must suppress it (this is
+        # the over-negation-removal regression: round-5 stripped "without"
+        # globally from the negation regex, which fixed the trailing-
+        # qualifier false-negative but broke this true negation).
+        self.assertFalse(
+            avatar_visible_render_claimed("## Objective\n\nWe validate without rendering a visible avatar.\n")
         )
 
     # --- Fix 4: artifact must EXIST inside the repo when a repo root is known ---
@@ -569,16 +680,55 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertEqual(findings[0].code, "visual_evidence_undecodable")
         self.assertEqual(findings[0].severity, "block")
 
-    def test_decoder_unavailable_finds_with_cannot_verify_code(self):
+    def test_decoder_unavailable_blocks_on_opt_in(self):
         # A decoder-unavailable environment (Pillow import raises) must fail
-        # CLOSED -- never fabricate a pass because derivation could not run.
-        # This is the CORE-ONLY fail-closed smoke (agent-harness#91 round-4
-        # CR): it must PASS even when Pillow is genuinely absent, so it
-        # deliberately does NOT use write_varied_png (which needs a real
-        # Pillow install to construct the fixture) -- derive_visual_observation
-        # raises on the `from PIL import Image` import itself, before ever
-        # touching the artifact's bytes, so a plain placeholder file is
-        # sufficient and no `pytest.importorskip("PIL")` guard belongs here.
+        # CLOSED under the opt-in `block` posture -- never fabricate a pass
+        # because derivation could not run. This is the CORE-ONLY fail-closed
+        # smoke (agent-harness#91 round-4 CR): it must PASS even when Pillow
+        # is genuinely absent, so it deliberately does NOT use write_varied_png
+        # (which needs a real Pillow install to construct the fixture) --
+        # derive_visual_observation raises on the `from PIL import Image`
+        # import itself, before ever touching the artifact's bytes, so a
+        # plain placeholder file is sufficient and no
+        # `pytest.importorskip("PIL")` guard belongs here.
+        #
+        # Fix 4b (round-6 CR): a decoder-unavailable environment is now
+        # SILENT under the default warn posture (see
+        # test_decoder_unavailable_is_silent_under_warn_default below) -- this
+        # test explicitly opts into `block` to exercise the still-blocking
+        # path.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x89PNG\r\n\x1a\n" + b"placeholder, never decoded: decoder is what's missing")
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}), patch.dict(
+            sys.modules, {"PIL": None, "PIL.Image": None}
+        ):
+            findings = visual_avatar_evidence_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "visual_evidence_cannot_verify")
+        self.assertEqual(findings[0].severity, "block")
+
+    def test_decoder_unavailable_is_silent_under_warn_default(self):
+        # Fix 4b (agent-harness#91 round-6 CR): ADOPTION DEFAULT -- a standard
+        # install without the optional `visual` extra (Pillow) must NOT get a
+        # `visual_evidence_cannot_verify` finding on every passing visual/
+        # avatar phase closeout under the default warn posture; that would
+        # spam every such phase purely because an optional dependency isn't
+        # installed, not because anything is actually wrong. Under warn/off,
+        # a decoder-unavailable environment must be SILENT (no finding at
+        # all) -- distinct from `visual_evidence_undecodable` (a genuinely
+        # corrupt artifact), which is still recorded as before.
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         artifact = Path(self._td.name) / "shots" / "frame.png"
         artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -595,9 +745,7 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         )
         with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
             findings = visual_avatar_evidence_validator(ctx)
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0].code, "visual_evidence_cannot_verify")
-        self.assertEqual(findings[0].severity, "block")
+        self.assertEqual(findings, [])
 
     def test_varied_real_image_is_clean(self):
         pytest.importorskip("PIL")
@@ -711,17 +859,23 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
 
     def test_rgb_trns_partial_transparency_reflects_only_visible_pixels(self):
         pytest.importorskip("PIL")
-        # Round-5 CR (codex): a mode-RGB tRNS image where ONE pixel is
-        # transparent-marked and the rest are genuinely visible/varied must
-        # reflect ONLY the opaque visible pixels -- the transparent pixel
-        # composites to black (folded into the existing black==blank
-        # semantics) without swallowing or inflating the real variance.
+        # Round-5 CR (codex): a mode-RGB tRNS image where a portion of the
+        # pixels are transparent-marked and the rest are genuinely
+        # visible/varied must reflect ONLY the opaque visible pixels -- the
+        # transparent pixels composite to black (folded into the existing
+        # black==blank semantics) without swallowing or inflating the real
+        # variance. Fix 3 (round-6 CR): the fixture now tiles its 2x2 pattern
+        # across a (16, 16) frame (see write_rgb_trns_partial_transparency_png)
+        # so the derived observation also clears the new coverage floor --
+        # non_black_pixels scales predictably as 2 non-black opaque pixels
+        # (white + gray) per 2x2 tile.
         artifact = Path(self._td.name) / "shots" / "rgb_trns_partial.png"
         write_rgb_trns_partial_transparency_png(artifact)
         obs = derive_visual_observation(artifact)
-        self.assertEqual(obs.non_black_pixels, 2)  # the visible white + gray pixels
-        self.assertEqual(obs.pixel_min, 0)  # transparent pixel + visible black pixel
-        self.assertEqual(obs.pixel_max, 255)  # visible white pixel
+        expected_non_black = 2 * (16 // 2) * (16 // 2)  # 2 visible opaque pixels per 2x2 tile
+        self.assertEqual(obs.non_black_pixels, expected_non_black)
+        self.assertEqual(obs.pixel_min, 0)  # transparent pixels + visible black pixels
+        self.assertEqual(obs.pixel_max, 255)  # visible white pixels
         self.assertTrue(obs.is_valid())
 
     def test_opaque_varied_image_still_valid_after_alpha_fix(self):
