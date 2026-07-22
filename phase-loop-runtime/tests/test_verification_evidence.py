@@ -1204,6 +1204,78 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         assert gate is not None
         self.assertEqual(gate["kind"], "malformed_closeout")
 
+    def test_redact_diagnostics_metadata_only_scrubs_short_flag_argv_secret(self):
+        # agent-harness#243 CR (cross-vendor codex, short-flag argv gap, follow-up to
+        # agent-harness#269): a diagnostic's ``argv`` LIST is a STRUCTURED command-context
+        # surface -- unlike ``raw_tail`` free text, there is no prose ambiguity in
+        # ``["curl", "-t", "AKIA..."]``. #269 added a command-context flag matcher covering
+        # long/short/quoted flags, but wired it ONLY into the sibling command-field branch
+        # (``suite_command`` / ``operational_exemptions[].command``) -- the diagnostics path
+        # is explicitly skipped by that recursive routing and instead uses the OLDER, strict
+        # ``_forbidden_metadata_kind``/``_SECRET_FLAG_RE`` matcher, whose structural split-argv
+        # composite only recognizes FULLY-SPELLED flags (``--token``), never the short ``-t``
+        # form. So a diagnostic with a short-flag secret in ``argv`` and an otherwise BENIGN
+        # ``raw_tail`` slipped through unredacted. Must FAIL (secret present, diagnostic NOT
+        # redacted) at agent-harness#243/#269 HEAD (6ad2c79) and PASS once ``argv`` is routed
+        # through the command-context flag matcher too.
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": ["curl", "-t", "AKIAIOSFODNN7EXAMPLEKEY"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "connection refused\n",  # benign -- no secret shape here
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertTrue(out[0]["redacted"])
+        self.assertEqual(out[0]["diagnostic_status"], "redacted")
+        self.assertNotIn("argv", out[0])
+        self.assertNotIn("raw_tail", out[0])
+        self.assertEqual(out[0]["redaction_reason"], "secret_like_command_flag")
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out))
+
+        # Long-flag, structured form must still redact too (pre-existing coverage, not a
+        # regression from routing argv through the command-context matcher).
+        long_flag_diagnostics = [
+            {
+                "role": "command", "index": 0,
+                "argv": ["curl", "--token", "AKIAIOSFODNN7EXAMPLEKEY"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "connection refused\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out_long = redact_diagnostics_metadata_only(long_flag_diagnostics)
+        self.assertTrue(out_long[0]["redacted"])
+        self.assertNotIn("argv", out_long[0])
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLEKEY", json.dumps(out_long))
+
+    def test_redact_diagnostics_metadata_only_does_not_over_redact_pytest_dash_k_argv(self):
+        # agent-harness#269 regression guard, extended to the diagnostics ``argv`` LIST path:
+        # the command-context flag matcher's short-flag vocabulary is deliberately narrow
+        # (``-t`` only, never ``-k``/``-s``/``-p``) because ``-k`` is pytest's keyword-selector
+        # flag and a suite diagnostic's ``argv`` is overwhelmingly a pytest invocation in this
+        # repo. Routing ``argv`` through the command-context matcher (this CR round) must NOT
+        # start over-redacting ``pytest -k <expr>`` diagnostics.
+        from phase_loop_runtime.redaction import redact_diagnostics_metadata_only
+
+        diagnostics = [
+            {
+                "role": "suite", "index": None,
+                "argv": ["pytest", "-k", "some_test_expression_long_enough"],
+                "exit_code": 1, "failure_kind": "nonzero_exit",
+                "raw_tail": "3 failed, 1 passed\n",
+                "truncated": False, "diagnostic_status": "present",
+            },
+        ]
+        out = redact_diagnostics_metadata_only(diagnostics)
+        self.assertNotIn("redacted", out[0])
+        self.assertEqual(out[0]["argv"], ["pytest", "-k", "some_test_expression_long_enough"])
+        self.assertEqual(out[0]["raw_tail"], "3 failed, 1 passed\n")
+
     def test_metadata_redaction_diagnostic_catches_secret_json_embedded_in_closeout_payload(self):
         # agent-harness#243 CR: a double-quoted secret buried deep inside the JSON-shaped
         # closeout payload (as `metadata_redaction_diagnostic` is actually invoked in
@@ -2128,6 +2200,83 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             self.assertTrue(exemptions, "expected operational_exemptions to be present on the early-return path")
             self.assertEqual(exemptions[0]["command"], "<redacted:command>")
             self.assertNotIn(secret, json.dumps(result))
+
+    def test_run_execute_verification_redacts_short_flag_argv_secret_and_closes_launch_json_state_json_egress(self):
+        # agent-harness#243 CR (cross-vendor codex, short-flag argv gap): full end-to-end
+        # reproduction of the diagnostics-``argv``-specific short-flag gap (unlike the
+        # operational-exemption / malformed-suite-command early-return path exercised above,
+        # here the command genuinely RUNS and fails, so the diagnostic's ``argv`` field is the
+        # actual argument vector -- not free text). The secret lives ONLY in ``argv`` via a
+        # short ``-t`` flag; ``raw_tail`` is benign (no stdout/stderr). Must FAIL (secret
+        # reaches launch.json / `state --json`) at agent-harness#243/#269 HEAD (6ad2c79) and
+        # PASS once diagnostic ``argv`` is routed through the command-context flag matcher.
+        import os
+        from unittest.mock import patch
+
+        from phase_loop_runtime import runner
+        from phase_loop_runtime.observability import merge_launch_metadata
+        from phase_loop_runtime.state_ops import inspect_state
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+
+        secret = "AKIAIOSFODNN7EXAMPLEKEY"
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            roadmap.write_text(
+                "---\n"
+                f"automation:\n  suite_command: [{sys.executable!r}, -c, 'print(\"suite\")']\n"
+                "---\n"
+                "# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            # No stdout/stderr -- raw_tail stays benign. The secret is carried ONLY in argv,
+            # via the short ``-t`` flag (extra positional args after ``-c CODE`` are ignored
+            # by the interpreter, so the process still exits 1 from the code itself).
+            secret_command = f'{sys.executable} -c "import sys; sys.exit(1)" -t {secret}'
+            plan = write_phase_plan(
+                repo, "RUNNER", roadmap,
+                body=f"# RUNNER\n\n## Verification\n- `{secret_command}`\n",
+            )
+            commit_fixture_paths(repo, "add plan", roadmap, plan)
+            run_dir = repo / ".phase-loop/runs/exec-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHASE_LOOP_PHASE_ALIAS", None)
+                os.environ.pop("PHASE_ALIAS", None)
+                os.environ.pop("PHASE_LOOP_VERIFY_REDACT_DIAGNOSTICS", None)
+                result = runner._run_execute_verification(
+                    repo=repo, roadmap=roadmap, plan=plan,
+                    artifacts={"root": run_dir}, phase_alias="RUNNER",
+                )
+
+            # The verification genuinely ran and genuinely failed (not an early-return stub).
+            self.assertFalse(result.get("ok"))
+            self.assertEqual(result["validation"]["code"], "nonzero_exit")
+            diag = result["validation"]["diagnostics"][0]
+            self.assertTrue(diag["redacted"], "diagnostic with a short-flag argv secret must be redacted")
+            self.assertEqual(diag["diagnostic_status"], "redacted")
+            self.assertNotIn("raw_tail", diag)
+            self.assertNotIn("argv", diag)
+            self.assertNotIn(secret, json.dumps(result))
+
+            # --- Egress reproduction: merge into launch.json exactly as the launch-action call
+            # site does, then read it back the way an agent would via `state --json`.
+            launch_path = run_dir / "launch.json"
+            launch_path.write_text("{}", encoding="utf-8")
+            merge_launch_metadata(launch_path, {"runner_verification": result})
+
+            on_disk_launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, json.dumps(on_disk_launch))
+
+            summary = inspect_state(repo, roadmap=None)
+            launch_metadata = summary["latest_launch_metadata"]
+            self.assertIsInstance(launch_metadata, dict)
+            egress_diag = launch_metadata["runner_verification"]["validation"]["diagnostics"][0]
+            self.assertTrue(egress_diag["redacted"])
+            self.assertNotIn("raw_tail", egress_diag)
+            self.assertNotIn("argv", egress_diag)
+            self.assertNotIn(secret, json.dumps(summary))  # the exact `state --json` payload
 
     def test_apply_diagnostics_redaction_scrubs_command_context_quoted_flag(self):
         # agent-harness#269: quoted-flag form (``'--token' 'VALUE'`` / ``"--token" "VALUE"``)

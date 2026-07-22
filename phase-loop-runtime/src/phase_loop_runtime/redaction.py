@@ -296,7 +296,29 @@ def redact_diagnostics_metadata_only(
     for item in diagnostics:
         if not isinstance(item, Mapping):
             continue
-        reason = "operator_forced" if force_all else _forbidden_metadata_kind(item)
+        if force_all:
+            reason = "operator_forced"
+        else:
+            reason = _forbidden_metadata_kind(item)
+            if reason is None:
+                # agent-harness#243 CR (cross-vendor codex, short-flag argv gap, follow-up to
+                # agent-harness#269): a diagnostic's ``argv`` is a STRUCTURED command-context
+                # list -- the actual argument vector of the command that produced this
+                # diagnostic, element by element -- never prose. ``_forbidden_metadata_kind``
+                # above only recognizes a split flag/value pair via ``_SECRET_FLAG_RE``, which
+                # requires the flag element to be a FULLY-SPELLED dash-prefixed keyword
+                # (``--token``, ``--api-key``, …); it does not include the short ``-t`` flag,
+                # so ``argv=["curl", "-t", "AKIA...KEY"]`` slipped through unredacted even
+                # though the sibling long-flag shape (``argv=["curl", "--token", "AKIA...KEY"]``)
+                # was already caught. Route ``argv`` specifically (not the whole diagnostic --
+                # ``raw_tail`` stays on the strict prose-safe path above) through the SAME
+                # command-context flag matcher (``_command_context_flag_kind`` /
+                # ``_COMMAND_CONTEXT_FLAG_RE``) already used for sibling command-named fields
+                # (``suite_command``, ``operational_exemptions[].command``) -- SSOT, not a
+                # forked pattern. That matcher's short-flag vocabulary is deliberately narrow
+                # (``-t`` only, never ``-k``/``-s``/``-p``), so ``argv=["pytest", "-k", <expr>]``
+                # is unaffected.
+                reason = _command_context_flag_kind(item.get("argv"))
         if reason is None:
             redacted.append(dict(item))
             continue
