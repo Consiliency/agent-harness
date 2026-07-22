@@ -23,7 +23,7 @@ from .roadmap_authority import RoadmapAuthorityError, assert_roadmap_authorized
 from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
-from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, VisualEvidenceObservation, avatar_visual_evidence_required, utc_now
+from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, VisualEvidenceObservation, avatar_visual_evidence_required, glob_match_paths, resolve_visual_evidence_artifact, utc_now
 from .closeout_validators import resolve_review_mode
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
@@ -2582,7 +2582,7 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
         repo=repo,
         roadmap=roadmap,
         phase=phase,
-        verification_status=getattr(args, "verification_status", None),
+        closeout_commit=closeout_commit,
         visual_evidence_path=getattr(args, "visual_evidence_path", None),
         visual_evidence_observed_raw=getattr(args, "visual_evidence_observed", None),
         visual_evidence_opt_out=getattr(args, "visual_evidence_opt_out", None),
@@ -2650,12 +2650,33 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     return 0
 
 
+def _resolve_owned_paths_at_commit(
+    repo: Path, owned_globs: tuple[str, ...], commit: str | None
+) -> tuple[str, ...]:
+    """Fix 3 (agent-harness#91 CR): resolve the phase's declared owned GLOB
+    patterns against the ACTUAL tree of the blocked/closeout commit, returning
+    the real files the globs match at that commit. Feeding these resolved paths
+    (not raw patterns like ``src/**``) into the media-render filename heuristic
+    is what makes the reconcile guard evaluate the SAME resolved-path surface
+    the closeout validator sees. Returns ``()`` when git is unavailable or the
+    commit's tree matches no owned file."""
+    if not owned_globs or not commit:
+        return ()
+    from .git_topology import _git
+
+    listing = _git(repo, "ls-tree", "-r", "--name-only", commit)
+    if not listing:
+        return ()
+    tree_files = [line.strip() for line in listing.splitlines() if line.strip()]
+    return tuple(glob_match_paths(tree_files, owned_globs))
+
+
 def _reconcile_visual_evidence_guard(
     *,
     repo: Path,
     roadmap: Path,
     phase: str,
-    verification_status: str | None,
+    closeout_commit: str | None,
     visual_evidence_path: str | None,
     visual_evidence_observed_raw: str | None,
     visual_evidence_opt_out: str | None,
@@ -2668,33 +2689,43 @@ def _reconcile_visual_evidence_guard(
     contract and evidence contract are satisfied. This re-applies the
     detection contract via the exact SAME function the closeout validator
     uses -- ``models.avatar_visual_evidence_required(changed_paths,
-    plan_text)`` -- fed with the phase's declared ``**Owned files**`` lane
-    patterns (``discovery.phase_owned_files``, the same ownership resolution
-    the rest of the runtime uses) standing in for the closeout's actual
-    dirty ``changed_paths``, so the structural signal can never diverge
-    between the two enforcement points the way a re-implemented parser
-    could. Evidence validity reuses ``models.VisualEvidenceObservation``
-    (the same pixel-validity check) as well.
+    plan_text)``.
+
+    Fix 2: the guard runs INDEPENDENT of the optional ``--verification-status``
+    flag. Reconcile always promotes to ``complete`` (the manual_repair event
+    sets ``status="complete"``), so a visual/avatar phase reaching completion
+    must satisfy the visual contract regardless of whether that flag was passed
+    -- omitting an optional flag must never bypass the gate.
+
+    Fix 3: the phase's declared ``**Owned files**`` lane GLOBS are RESOLVED
+    against the blocked commit's actual tree (``_resolve_owned_paths_at_commit``)
+    into the real files they match, so the structural signal is symmetric with
+    the closeout's actual-changed-paths evaluation (a raw ``src/**`` pattern
+    fed to a filename heuristic would never match the real
+    ``src/avatar_renderer.py`` that a closeout blocks on).
+
+    Fix 4: the referenced ``--visual-evidence-path`` is VALIDATED
+    (``resolve_visual_evidence_artifact``) -- it must EXIST inside the repo and
+    not escape it -- not merely asserted; observation validity reuses
+    ``models.VisualEvidenceObservation`` (schema + in-range + non-blank).
 
     Warn-default still applies (autonomy-first): this only REFUSES
     (``ok=False``) when the opt-in-to-block posture (``PHASE_LOOP_REVIEW=
-    block``) is active -- mirroring how the closeout validator's ``block``
-    finding is force-downgraded to ``warn`` under the default posture. Under
-    ``warn``/``off`` the shortfall is recorded on the manual_repair audit
-    trail but the promotion proceeds; no human_required gate is ever set.
+    block``) is active. Under ``warn``/``off`` the shortfall is recorded on the
+    manual_repair audit trail but the promotion proceeds; no human_required gate
+    is ever set.
 
     Returns ``(ok, manual_repair_fields)``. ``manual_repair_fields`` is
     ``None`` when the FAV contract doesn't apply to this phase at all.
     """
-    if verification_status != "passed":
-        return True, None
     plan = find_plan_artifact(repo, phase, roadmap=roadmap)
     try:
         plan_text = plan.read_text(encoding="utf-8") if plan else ""
     except OSError:
         plan_text = ""
-    owned_files = phase_owned_files(repo, roadmap, phase)
-    if not avatar_visual_evidence_required(owned_files, plan_text):
+    owned_globs = phase_owned_files(repo, roadmap, phase)
+    resolved_paths = _resolve_owned_paths_at_commit(repo, owned_globs, closeout_commit)
+    if not avatar_visual_evidence_required(resolved_paths, plan_text):
         return True, None
 
     if visual_evidence_opt_out:
@@ -2706,7 +2737,10 @@ def _reconcile_visual_evidence_guard(
             observation = VisualEvidenceObservation.from_mapping(json.loads(visual_evidence_observed_raw))
         except (ValueError, TypeError):
             observation = None
-    if visual_evidence_path and observation is not None and observation.is_valid():
+    # Fix 4: the artifact must EXIST inside the repo -- an out-of-repo/absolute
+    # escape or nonexistent path is rejected, not accepted as an assertion.
+    artifact_ok = bool(visual_evidence_path) and resolve_visual_evidence_artifact(repo, visual_evidence_path) is not None
+    if artifact_ok and observation is not None and observation.is_valid():
         return True, {
             "visual_evidence_path": visual_evidence_path,
             "visual_evidence_observed": observation.to_json(),

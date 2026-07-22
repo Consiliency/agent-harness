@@ -47,6 +47,8 @@ from .models import (
     VISUAL_EVIDENCE_OPT_OUT_REASONS,
     VisualEvidenceObservation,
     avatar_visual_evidence_required,
+    resolve_visual_evidence_artifact,
+    visual_evidence_terminal_fields,
 )
 
 
@@ -72,18 +74,38 @@ def _artifact_path(terminal: Mapping) -> str | None:
     return None
 
 
-def _has_valid_visual_evidence(terminal: Mapping) -> bool:
-    if not _artifact_path(terminal):
-        return False
+def _observation(terminal: Mapping) -> "VisualEvidenceObservation | None":
     observed = terminal.get("visual_evidence_observed")
+    if not isinstance(observed, Mapping):
+        # Also accept the flat BAML encoding folded onto the terminal summary.
+        flat = visual_evidence_terminal_fields(terminal).get("visual_evidence_observed")
+        if isinstance(flat, Mapping):
+            observed = flat
     if not isinstance(observed, Mapping):
         artifact_paths = terminal.get("artifact_paths")
         if isinstance(artifact_paths, Mapping):
             observed = artifact_paths.get("visual_evidence_observed")
-    observation = VisualEvidenceObservation.from_mapping(observed) if isinstance(observed, Mapping) else None
-    if observation is None:
+    return VisualEvidenceObservation.from_mapping(observed) if isinstance(observed, Mapping) else None
+
+
+def _has_valid_visual_evidence(terminal: Mapping, repo_root: str | None) -> bool:
+    """Fix 4: the evidence is a VALIDATED runner-owned artifact, not an
+    assertion. The referenced path must EXIST and be CONTAINED inside the repo
+    (when a repo root is available), and the observations must be a well-formed,
+    in-range ``VisualEvidenceObservation`` that rejects black/blank frames.
+
+    When ``repo_root`` is None (legacy/test callers that cannot supply a root)
+    existence/containment cannot be proven, so we fall back to the pre-existing
+    path-present + valid-observation check rather than fail-open on nothing.
+    Every LIVE path (runner + reconcile) threads a real repo root, so the
+    assertion-only hole (nonexistent / out-of-repo path) is closed there."""
+    path = _artifact_path(terminal)
+    if not path:
         return False
-    return observation.is_valid()
+    if repo_root is not None and resolve_visual_evidence_artifact(repo_root, path) is None:
+        return False  # nonexistent, or an out-of-repo/absolute-escape path
+    observation = _observation(terminal)
+    return observation is not None and observation.is_valid()
 
 
 @register_closeout_validator
@@ -93,8 +115,8 @@ def visual_avatar_evidence_validator(ctx: CloseoutContext) -> list[ReviewFinding
         return []
     if not avatar_visual_evidence_required(ctx.changed_paths, _plan_text(ctx.plan_path)):
         return []  # no owned avatar/browser-media surface + explicit visible-render claim
-    if _has_valid_visual_evidence(ctx.terminal):
-        return []  # a non-blank runner-owned visual artifact is attached
+    if _has_valid_visual_evidence(ctx.terminal, ctx.repo_root):
+        return []  # a validated, non-blank runner-owned visual artifact is attached
     opt_out = str(ctx.terminal.get("visual_evidence_opt_out") or "").strip()
     if opt_out in VISUAL_EVIDENCE_OPT_OUT_REASONS:
         return []  # declined with a typed reason

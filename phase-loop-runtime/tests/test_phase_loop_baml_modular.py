@@ -37,7 +37,17 @@ class PhaseLoopBamlModularTest(unittest.TestCase):
             "required_human_inputs": [],
         }
         parsed = parse_baml_response("EmitPhaseCloseout", json.dumps(payload))
-        self.assertEqual(parsed.payload, payload)
+        # FAV (issue #91): the closeout schema gained optional visual-evidence
+        # fields (additive). The typed payload dumps them as None when absent.
+        expected = {
+            **payload,
+            "visual_evidence_path": None,
+            "visual_evidence_non_black_pixels": None,
+            "visual_evidence_pixel_min": None,
+            "visual_evidence_pixel_max": None,
+            "visual_evidence_opt_out": None,
+        }
+        self.assertEqual(parsed.payload, expected)
         self.assertEqual(parsed.value.terminal_status, "complete")
 
     def test_missing_produced_if_gates_raises_validation_error(self):

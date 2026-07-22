@@ -7,7 +7,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple
+from typing import Mapping, NamedTuple
 
 
 class _DispatchOutcome(NamedTuple):
@@ -66,6 +66,7 @@ from .classifier import classify_all
 from .default_executor_resolver import DefaultResolutionContext, resolve_default_executor
 from .closeout_evidence_audit import audit_closeout_evidence
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
+from .closeout_validators import resolve_review_mode
 from .consiliency_gates import scan_consiliency_gates
 from .docs_freshness import scan_docs_freshness
 from .roadmap_authority import active_authorized_roadmap
@@ -140,6 +141,11 @@ from .models import (
     ParentChildRunMetadata,
     PRODUCT_LOOP_ACTIONS,
     StateSnapshot,
+    VISUAL_EVIDENCE_OPT_OUT_REASONS,
+    VisualEvidenceObservation,
+    avatar_visual_evidence_required,
+    resolve_visual_evidence_artifact,
+    visual_evidence_terminal_fields,
     WorkUnitCloseout,
     WorkUnitEventMetadata,
     WorkUnitIdentity,
@@ -6279,6 +6285,86 @@ def _execute_dispatch_preflight_gates(repo: Path, roadmap: Path, plan: Path) -> 
     return None
 
 
+def _visual_evidence_view_is_valid(repo: Path, terminal_view: Mapping[str, object]) -> bool:
+    """FAV (issue #91) Fix 4: a runner-owned visual artifact is valid only when
+    its path EXISTS inside the repo AND the observations are a well-formed,
+    in-range, non-blank ``VisualEvidenceObservation``. Mirrors the closeout
+    validator's ``_has_valid_visual_evidence`` for the authoritative reduction
+    path."""
+    path = terminal_view.get("visual_evidence_path")
+    if not path:
+        return False
+    if resolve_visual_evidence_artifact(repo, str(path)) is None:
+        return False
+    observed = terminal_view.get("visual_evidence_observed")
+    obs = VisualEvidenceObservation.from_mapping(observed) if isinstance(observed, Mapping) else None
+    return obs is not None and obs.is_valid()
+
+
+def _visual_evidence_closeout_outcome(
+    repo: Path,
+    plan: Path | None,
+    child_automation: Mapping[str, object],
+    automation_status: object,
+) -> dict[str, object] | None:
+    """FAV (issue #91) Fix 1: the AUTHORITATIVE visual-avatar-evidence gate.
+
+    Mirrors the produced-gates / #243 verification-evidence pattern -- it runs
+    at the SAME reduction site (``_closeout_gate_recheck``) so a visual-gate
+    BLOCK under the opt-in ``PHASE_LOOP_REVIEW=block`` posture reaches the
+    AUTHORITATIVE runner status/event and actually PREVENTS phase completion,
+    instead of only nesting a ``blocked`` closeout under an outer ``complete``
+    status the reducer still honors.
+
+    Returns a non-human event blocker when a would-complete phase reported
+    ``verification_status=passed`` but owns an avatar/browser-media surface with
+    an explicit visible-render claim and attached no valid runner-owned visual
+    artifact (and no typed opt-out). Warn/off posture -> ``None`` (autonomy-first:
+    the shortfall is still recorded in the nested closeout, the loop continues).
+    Never sets ``human_required`` (agent-recoverable)."""
+    if plan is None:
+        return None
+    if _phase_status_literal(automation_status) != "complete":
+        return None
+    reported = str(
+        child_automation.get("automation_verification_status")
+        or child_automation.get("verification_status")
+        or ""
+    )
+    if reported != "passed":
+        return None
+    if resolve_review_mode() != "block":
+        return None
+    changed_paths = _dirty_paths(repo)
+    try:
+        plan_text = Path(plan).read_text(encoding="utf-8")
+    except OSError:
+        plan_text = ""
+    if not avatar_visual_evidence_required(changed_paths, plan_text):
+        return None
+    payload = child_automation.get("native_closeout_payload")
+    source = payload if isinstance(payload, Mapping) else child_automation
+    terminal_view = visual_evidence_terminal_fields(source)
+    opt_out = str(terminal_view.get("visual_evidence_opt_out") or "").strip()
+    if opt_out in VISUAL_EVIDENCE_OPT_OUT_REASONS:
+        return None
+    if _visual_evidence_view_is_valid(repo, terminal_view):
+        return None
+    return {
+        "human_required": False,
+        "blocker_class": "review_gate_block",
+        "blocker_summary": (
+            "Review gate blocked closeout: visual_evidence_missing_or_blank -- phase owns "
+            "an avatar/browser-media surface and claims a visible-render deliverable, "
+            "reported verification_status=passed, but attached no valid runner-owned "
+            "visual_evidence_path + visual_evidence_observed (non_black_pixels>0, "
+            "pixel_min!=pixel_max) and no typed visual_evidence_opt_out."
+        ),
+        "required_human_inputs": (),
+        "access_attempts": (),
+    }
+
+
 def _closeout_gate_recheck(
     repo: Path,
     roadmap: Path,
@@ -6327,6 +6413,17 @@ def _closeout_gate_recheck(
                 "access_attempts": (),
             }
             blocked_reason = "gate_validation_failed"
+    # FAV (issue #91) Fix 1: authoritative visual-avatar-evidence gate, routed
+    # through the SAME shared reduction helper as produced-gates/goal-coverage so
+    # a visual BLOCK under opt-in reaches the authoritative status/event on both
+    # the direct and delegated completion paths -- never left merely nested under
+    # a successful outer status. Runs only when nothing else has blocked yet.
+    if event_blocker is None and plan is not None and child_automation:
+        _visual_blocker = _visual_evidence_closeout_outcome(repo, plan, child_automation, automation_status)
+        if _visual_blocker is not None:
+            automation_status = "blocked"
+            event_blocker = _visual_blocker
+            blocked_reason = "visual_evidence_missing_or_blank"
     if event_blocker is None and plan is not None and child_automation:
         _cov_evidence, _cov_blocker = _goal_coverage_closeout_outcome(
             repo, roadmap, plan,
@@ -7204,6 +7301,7 @@ def _attach_phase_loop_closeout(
         work_unit_closeout=work_unit_closeout,
         docs_freshness=docs_freshness,
         consiliency_gates=consiliency_gates,
+        repo_root=str(repo),
     )
     if phase_loop_closeout_diagnostic(closeout) is not None:
         return terminal_summary
@@ -9647,6 +9745,7 @@ def _write_deterministic_closeout(
         changed_paths=changed_paths,
         docs_freshness=docs_freshness,
         consiliency_gates=consiliency_gates,
+        repo_root=str(repo),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(closeout, indent=2, sort_keys=True), encoding="utf-8")

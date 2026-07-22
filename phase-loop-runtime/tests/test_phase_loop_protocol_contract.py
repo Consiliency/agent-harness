@@ -649,7 +649,15 @@ class PhaseLoopProtocolContractTest(unittest.TestCase):
             pre_existing_dirty_paths=(),
             artifact_paths={"plan": "/tmp/plan.md"},
         )
-        self.assertEqual(tuple(summary.keys()), TERMINAL_SUMMARY_FIELDS)
+        # FAV (issue #91): the visual-evidence fields are OPTIONAL -- emitted
+        # only when the native closeout carried them -- so an ordinary summary
+        # omits them. The always-on fields stay frozen in order.
+        _OPTIONAL_VISUAL = ("visual_evidence_path", "visual_evidence_observed", "visual_evidence_opt_out")
+        self.assertEqual(
+            tuple(summary.keys()),
+            tuple(f for f in TERMINAL_SUMMARY_FIELDS if f not in _OPTIONAL_VISUAL),
+        )
+        # Every whitelisted field (including the optional visual ones) is documented.
         for field in TERMINAL_SUMMARY_FIELDS:
             self.assertRegex(self.protocol_text, rf"`{re.escape(field)}`")
 

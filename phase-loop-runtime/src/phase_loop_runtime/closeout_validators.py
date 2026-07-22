@@ -98,6 +98,13 @@ class CloseoutContext:
     # doing repo IO itself (validators stay pure). None => no corroboration
     # available => the validator must not newly-fail on its absence.
     docs_freshness: Mapping[str, Any] | None = None
+    # FAV (issue #91) Fix 4: repo root for validating that a referenced
+    # runner-owned artifact (e.g. visual_evidence_path) EXISTS and is CONTAINED
+    # inside the repo. None => the caller could not supply a root (legacy/test
+    # callers); a validator that needs containment must then fall back to a
+    # posture that does not depend on repo IO rather than fail-open on an
+    # unvalidated assertion.
+    repo_root: str | None = None
 
 
 # A validator receives the context and returns zero or more findings.

@@ -1862,6 +1862,16 @@ These fields are the shared child-exit reduction contract. Adapters may add
 transport-specific metadata elsewhere, but they must not rename or omit these
 summary fields.
 
+The following visual-avatar-evidence fields (FAV, issue #91) are OPTIONAL — they
+are emitted only when the native closeout carried them (an avatar/browser-media
+phase that attached runner-owned visual evidence or a typed opt-out). Ordinary
+phases omit them entirely, but when present they are part of the reduction
+contract the closeout validator inspects, so they must not be silently dropped:
+
+- `visual_evidence_path`
+- `visual_evidence_observed`
+- `visual_evidence_opt_out`
+
 ## Monitor Payloads
 
 `build_notification_payload(...)` must emit exactly these top-level fields:

@@ -32,6 +32,18 @@ VISIBLE_AVATAR_BODY = (
     "- **Owned files**: `tests/fixtures/avatar_call.html`\n"
 )
 
+# Fix 3: owned files declared as a GLOB (`src/**`) whose resolved tree contains a
+# real media-render file (`src/avatar_renderer.py`). The closeout validator would
+# block on the real file; reconcile must resolve the glob to the same real path.
+GLOB_AVATAR_BODY = (
+    "# RUNNER\n\n"
+    "## Objective\n\n"
+    "This phase renders a visible avatar in the browser meeting UI (synthetic media).\n\n"
+    "## Lanes\n\n"
+    "### SL-0 - RUNNER\n"
+    "- **Owned files**: `src/**`\n"
+)
+
 GENERIC_BODY = (
     "# RUNNER\n\n## Objective\n\nGeneric backend refactor, no media surface.\n\n"
     "## Lanes\n\n### SL-0 - RUNNER\n- **Owned files**: `src/runner.py`\n"
@@ -59,14 +71,31 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
     def _args(self, repo: Path, roadmap: Path, phase: str, *extra: str) -> list[str]:
         return ["reconcile", "--repo", str(repo), "--roadmap", str(roadmap), "--phase", phase, *extra]
 
-    def _setup(self, body: str):
+    def _setup(self, body: str, owned_files: tuple[str, ...] = ("tests/fixtures/avatar_call.html",)):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         repo = make_repo(Path(td.name))
         roadmap = repo / "specs" / "phase-plans-v1.md"
         plan = write_phase_plan(repo, "RUNNER", roadmap, body=body)
-        commit_fixture_paths(repo, "add runner plan", plan)
+        # Fix 3: the reconcile guard resolves the phase's owned globs against the
+        # blocked commit's ACTUAL tree, so the declared owned media file(s) must
+        # genuinely exist and be committed -- otherwise the resolved-path surface
+        # is empty and the guard is (correctly) inert.
+        committed = [plan]
+        for rel in owned_files:
+            target = repo / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("<html><body>avatar</body></html>\n", encoding="utf-8")
+            committed.append(target)
+        commit_fixture_paths(repo, "add runner plan + owned files", *committed)
         return repo, roadmap
+
+    def _write_committed_artifact(self, repo: Path, rel: str) -> str:
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("PNGDATA\n", encoding="utf-8")
+        commit_fixture_paths(repo, "add visual evidence artifact", target)
+        return rel
 
     # --- warn-default: missing evidence records the shortfall but doesn't block ---
 
@@ -92,22 +121,43 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
 
     def test_matching_phase_valid_evidence_promotes_on_opt_in(self):
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        # Fix 4: the artifact must actually EXIST inside the repo.
+        artifact = self._write_committed_artifact(repo, "shots/frame.png")
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(
                     repo, roadmap, "RUNNER",
                     "--verification-status", "passed",
                     "--allow-dirty",
-                    "--visual-evidence-path", "shots/frame.png",
+                    "--visual-evidence-path", artifact,
                     "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}',
                 )
             )
         self.assertEqual(code, 0, stderr)
         manual_repair = read_events(repo)[-1]["metadata"]["manual_repair"]
-        self.assertEqual(manual_repair["visual_evidence_path"], "shots/frame.png")
+        self.assertEqual(manual_repair["visual_evidence_path"], artifact)
         self.assertTrue(manual_repair["visual_evidence_observed"])
 
     def test_matching_phase_blank_evidence_blocks_on_opt_in(self):
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        artifact = self._write_committed_artifact(repo, "shots/frame.png")
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(
+                    repo, roadmap, "RUNNER",
+                    "--verification-status", "passed",
+                    "--allow-dirty",
+                    "--visual-evidence-path", artifact,
+                    # uniform gray frame -- pixelMin == pixelMax
+                    "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 243, "pixelMax": 243}',
+                )
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    def test_matching_phase_nonexistent_artifact_blocks_on_opt_in(self):
+        # Fix 4: an ASSERTED path that does not exist in the repo is rejected --
+        # valid observations alone cannot promote it.
         repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
@@ -115,10 +165,52 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
                     repo, roadmap, "RUNNER",
                     "--verification-status", "passed",
                     "--allow-dirty",
-                    "--visual-evidence-path", "shots/frame.png",
-                    # uniform gray frame -- pixelMin == pixelMax
-                    "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 243, "pixelMax": 243}',
+                    "--visual-evidence-path", "shots/does_not_exist.png",
+                    "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}',
                 )
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    def test_matching_phase_out_of_repo_artifact_blocks_on_opt_in(self):
+        # Fix 4: an absolute out-of-repo escape path is rejected.
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(
+                    repo, roadmap, "RUNNER",
+                    "--verification-status", "passed",
+                    "--allow-dirty",
+                    "--visual-evidence-path", "/etc/hostname",
+                    "--visual-evidence-observed", '{"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255}',
+                )
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    # --- Fix 2: guard runs independent of the optional --verification-status ---
+
+    def test_matching_phase_missing_flag_still_guarded_on_opt_in(self):
+        # Omitting --verification-status must NOT bypass the gate: reconcile
+        # always promotes to complete, so a matching phase is still guarded.
+        repo, roadmap = self._setup(VISIBLE_AVATAR_BODY)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--allow-dirty")
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("visual-avatar evidence", stderr)
+
+    # --- Fix 3: owned GLOB resolves to a real media file at the commit ---
+
+    def test_owned_glob_resolves_to_real_media_file_and_guards(self):
+        # `src/**` owns a real `src/avatar_renderer.py`; reconcile must resolve
+        # the glob to that real path (the media-render filename heuristic) and
+        # guard the same way the closeout validator would on the real file.
+        repo, roadmap = self._setup(GLOB_AVATAR_BODY, owned_files=("src/avatar_renderer.py",))
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
+            code, _, stderr = _run(
+                self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")
             )
         self.assertEqual(code, 2)
         self.assertIn("visual-avatar evidence", stderr)
@@ -141,7 +233,7 @@ class ReconcileVisualAvatarEvidenceTest(unittest.TestCase):
     # --- non-matching phase: guard is inert ---
 
     def test_non_matching_phase_unaffected(self):
-        repo, roadmap = self._setup(GENERIC_BODY)
+        repo, roadmap = self._setup(GENERIC_BODY, owned_files=("src/runner.py",))
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
             code, _, stderr = _run(
                 self._args(repo, roadmap, "RUNNER", "--verification-status", "passed", "--allow-dirty")

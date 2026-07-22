@@ -41,14 +41,24 @@ INCIDENTAL_VIDEO_PLAN = (
 LEGACY_PLAN = "# LEGACY\n\nA generic backend refactor phase, no media surface at all.\n"
 
 
-def _ctx(plan, changed_paths=(), phase="FAV", terminal=None, automation=None):
+def _ctx(plan, changed_paths=(), phase="FAV", terminal=None, automation=None, repo_root=None):
     return CloseoutContext(
         phase_alias=phase,
         plan_path=str(plan),
         terminal=terminal or {"verification_status": "passed"},
         automation=automation or {"verification_status": "passed"},
         changed_paths=tuple(changed_paths),
+        repo_root=repo_root,
     )
+
+
+NON_GOAL_AVATAR_PLAN = (
+    "# FAV\n\n"
+    "## Objective\n\n"
+    "This phase parses meeting transcripts server-side.\n\n"
+    "## Non-goals\n\n"
+    "- This phase must not render a visible avatar in the browser meeting UI.\n"
+)
 
 
 def _write_plan(td: str, text: str) -> Path:
@@ -148,6 +158,12 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
         self.assertIsNotNone(obs)
         self.assertTrue(obs.is_valid())
 
+    def test_out_of_range_observation_is_rejected(self):
+        # Fix 4: pixel channel values must be 0..255; a count must be >= 0.
+        self.assertIsNone(VisualEvidenceObservation.from_mapping({"nonBlackPixels": 1, "pixelMin": 0, "pixelMax": 300}))
+        self.assertIsNone(VisualEvidenceObservation.from_mapping({"nonBlackPixels": 1, "pixelMin": -1, "pixelMax": 255}))
+        self.assertIsNone(VisualEvidenceObservation.from_mapping({"nonBlackPixels": -5, "pixelMin": 0, "pixelMax": 255}))
+
     def test_uniform_gray_evidence_still_finds(self):
         plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
         ctx = _ctx(
@@ -223,6 +239,90 @@ class VisualAvatarEvidenceValidatorTest(unittest.TestCase):
             terminal={"verification_status": "passed", "visual_evidence_opt_out": "because_i_said_so"},
         )
         self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
+
+    # --- Fix 5: negation / Non-goals must NOT match (no false-positive block) ---
+
+    def test_non_goal_negated_claim_is_silent(self):
+        # "must not render a visible avatar" under a Non-goals section, with an
+        # owned .html surface, must produce NO finding (contract: the claim must
+        # be an AFFIRMATIVE deliverable, not a forbidden non-goal).
+        plan = _write_plan(self._td.name, NON_GOAL_AVATAR_PLAN)
+        ctx = _ctx(plan, changed_paths=["tests/fixtures/avatar_call.html"])
+        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+
+    def test_non_goal_negated_claim_is_silent_end_to_end(self):
+        plan = _write_plan(self._td.name, NON_GOAL_AVATAR_PLAN)
+        c = _closeout(plan, ["tests/fixtures/avatar_call.html"])
+        self.assertFalse(c["verification"]["results"])
+        self.assertEqual(c["terminal_status"], "complete")
+
+    # --- Fix 4: artifact must EXIST inside the repo when a repo root is known ---
+
+    def test_repo_root_valid_artifact_is_clean(self):
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("png", encoding="utf-8")
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
+
+    def test_repo_root_nonexistent_artifact_still_finds(self):
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/nope.png",  # never created
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
+
+    def test_repo_root_out_of_repo_artifact_still_finds(self):
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "/etc/hostname",  # absolute out-of-repo escape
+                "visual_evidence_observed": {"nonBlackPixels": 19200, "pixelMin": 0, "pixelMax": 255},
+            },
+        )
+        self.assertEqual(len(visual_avatar_evidence_validator(ctx)), 1)
+
+    def test_flat_baml_encoded_observation_valid_artifact_is_clean(self):
+        # Fix 1: the flat BAML encoding (visual_evidence_non_black_pixels/...)
+        # folded onto the terminal summary is accepted equivalently.
+        plan = _write_plan(self._td.name, VISIBLE_AVATAR_PLAN)
+        artifact = Path(self._td.name) / "shots" / "frame.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("png", encoding="utf-8")
+        ctx = _ctx(
+            plan,
+            changed_paths=["tests/fixtures/avatar_call.html"],
+            repo_root=self._td.name,
+            terminal={
+                "verification_status": "passed",
+                "visual_evidence_path": "shots/frame.png",
+                "visual_evidence_non_black_pixels": 19200,
+                "visual_evidence_pixel_min": 0,
+                "visual_evidence_pixel_max": 255,
+            },
+        )
+        self.assertEqual(visual_avatar_evidence_validator(ctx), [])
 
     # --- end-to-end through closeout: warn-default / opt-in-block / no human_required ---
 

@@ -45,6 +45,38 @@ New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirr
   `manual_repair` audit trail but the promotion proceeds; only `PHASE_LOOP_REVIEW=block`
   refuses it. Never sets `human_required`.
 
+#### Cross-vendor CR fixes (5 findings)
+
+- **Fix 1 — the gate is now WIRED into the live runner (was inert).** The native closeout
+  schema (`emit_phase_closeout.baml` / `baml_modular.PhaseLoopCloseoutV1`) gained optional
+  `visual_evidence_path` + flat pixel fields (`visual_evidence_non_black_pixels`/`_pixel_min`/
+  `_pixel_max`) + `visual_evidence_opt_out`, and `TERMINAL_SUMMARY_FIELDS` was extended with
+  `visual_evidence_path`/`visual_evidence_observed`/`visual_evidence_opt_out`, so the
+  executor's attached evidence survives into the terminal summary the validator inspects
+  instead of being silently discarded. A visual-gate BLOCK under opt-in now propagates into
+  the AUTHORITATIVE runner reduction via `_visual_evidence_closeout_outcome`, routed through
+  the same `_closeout_gate_recheck` helper as the produced-gates/#243 path (direct AND
+  delegated completion), so the reducer can no longer COMPLETE a phase the visual gate
+  blocked — the block is no longer merely nested under a successful outer status.
+- **Fix 2 — reconcile guard runs independent of `--verification-status`.** Omitting that
+  optional flag no longer bypasses the gate (reconcile always promotes to `complete`).
+- **Fix 3 — reconcile/closeout path symmetry.** The reconcile guard now resolves the phase's
+  owned GLOB patterns against the blocked commit's actual tree
+  (`_resolve_owned_paths_at_commit` + `models.glob_match_paths`) into the real files they
+  match, feeding those RESOLVED paths (e.g. `src/avatar_renderer.py` that `src/**` covers)
+  into `avatar_visual_evidence_required` — matching the closeout's actual-changed-paths
+  evaluation instead of feeding a raw glob into a filename heuristic.
+- **Fix 4 — evidence is VALIDATED, not asserted.** `VisualEvidenceObservation` now rejects
+  out-of-range pixel values (`pixel_min`/`pixel_max` must be 0..255, `non_black_pixels >= 0`),
+  and the referenced `visual_evidence_path` must EXIST inside the repo
+  (`models.resolve_visual_evidence_artifact`, reusing the #238 os.path-containment posture) —
+  a nonexistent or out-of-repo/absolute-escape path is rejected in the runner and reconcile
+  paths (both thread a real repo root).
+- **Fix 5 — deliverable detector anchored + negation-aware.** `avatar_visible_render_claimed`
+  now scans only AFFIRMATIVE deliverable/objective/exit-criteria/acceptance sections and
+  rejects negation, so a Non-goals line like "must not render a visible avatar" no longer
+  produces an opt-in FALSE BLOCK.
+
 ### Verification-evidence hardening: whole-artifact integrity + closeout-diagnostic redaction (#243)
 
 Follow-up to #242 (#209), which preserved per-failing-stage raw diagnostics via a

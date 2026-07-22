@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Iterable, Mapping
@@ -355,6 +356,14 @@ TERMINAL_SUMMARY_FIELDS = (
     "unowned_dirty_paths",
     "pre_existing_dirty_paths",
     "artifact_paths",
+    # FAV (issue #91) Fix 1: visual-avatar evidence must SURVIVE from the native
+    # closeout into the terminal summary the closeout validator inspects.
+    # Whitelisted here (and emitted only when populated -- see
+    # observability.build_terminal_summary) so they are no longer silently
+    # discarded in the real runner flow.
+    "visual_evidence_path",
+    "visual_evidence_observed",
+    "visual_evidence_opt_out",
 )
 
 from .baml_modular import export_function_schema
@@ -1057,6 +1066,20 @@ class VisualEvidenceObservation:
     def __post_init__(self) -> None:
         if self.schema != VISUAL_EVIDENCE_OBSERVED_SCHEMA:
             raise ValueError(f"invalid visual evidence observation schema: {self.schema}")
+        # Fix 4 (agent-harness#91 CR): a well-formed observation must carry
+        # IN-RANGE integer pixel values -- non_black_pixels is a non-negative
+        # PIXEL COUNT (no fixed upper bound), pixel_min/pixel_max are 8-bit
+        # channel intensities (0..255). Out-of-range values (e.g. a negative
+        # count or pixel_max=300) are malformed, not merely a black/blank
+        # frame, so they raise here and `from_mapping` treats them identically
+        # to "no evidence attached" (its except clause already catches
+        # ValueError).
+        if self.non_black_pixels < 0:
+            raise ValueError(f"invalid non_black_pixels (must be >= 0): {self.non_black_pixels}")
+        if not (0 <= self.pixel_min <= 255):
+            raise ValueError(f"invalid pixel_min (must be 0..255): {self.pixel_min}")
+        if not (0 <= self.pixel_max <= 255):
+            raise ValueError(f"invalid pixel_max (must be 0..255): {self.pixel_max}")
 
     def is_valid(self) -> bool:
         """True iff the frame shows real, non-uniform content (not black/blank)."""
@@ -1090,6 +1113,81 @@ class VisualEvidenceObservation:
             return None
 
 
+def resolve_visual_evidence_artifact(repo_root: "str | Path | None", path_str: "str | None") -> "Path | None":
+    """Fix 4 (agent-harness#91 CR): a runner-owned visual-evidence artifact
+    must EXIST and be CONTAINED inside the repo -- mirrors the #238
+    breakglass path-safety posture (``cli._validate_reconcile_verification_log``):
+    fail closed on anything that can't be proven both inside the repo and
+    present on disk.
+
+    ``repo_root=None`` means the caller could not determine a repo root at
+    all -- containment can never be proven, so every candidate fails closed.
+    An absolute path is resolved as-is (still must land inside ``repo_root``);
+    a relative path is resolved against ``repo_root``. Returns the resolved
+    ``Path`` when valid, else ``None`` -- callers treat ``None`` identically
+    to "no evidence attached"."""
+    if not path_str or repo_root is None:
+        return None
+    root = Path(repo_root).resolve()
+    candidate = Path(path_str)
+    resolved = candidate if candidate.is_absolute() else root / candidate
+    try:
+        resolved = resolved.resolve()
+    except OSError:
+        return None
+    try:
+        inside = resolved.is_relative_to(root)
+    except AttributeError:  # pragma: no cover - py3.8 compatibility fallback
+        inside = str(resolved).startswith(str(root) + os.sep)
+    if not inside:
+        return None
+    return resolved if resolved.exists() else None
+
+
+def visual_evidence_terminal_fields(payload: Any) -> dict[str, Any]:
+    """FAV (issue #91) Fix 1: reconstruct the ``ctx.terminal``-shaped visual
+    evidence view (``visual_evidence_path`` / ``visual_evidence_observed`` /
+    ``visual_evidence_opt_out``) from a closeout payload that may carry the
+    BAML-schema-friendly FLAT encoding
+    (``visual_evidence_non_black_pixels``/``visual_evidence_pixel_min``/
+    ``visual_evidence_pixel_max``) instead of a nested
+    ``visual_evidence_observed`` mapping. Idempotent -- a payload that
+    already carries the nested/short-form keys is returned unchanged for
+    those keys, so this is safe to layer on top of any terminal-summary
+    shape. Returns only the keys it can actually populate (never clobbers
+    with ``None``)."""
+    if not isinstance(payload, Mapping):
+        return {}
+    fields: dict[str, Any] = {}
+    path = payload.get("visual_evidence_path")
+    if path:
+        fields["visual_evidence_path"] = path
+    observed = payload.get("visual_evidence_observed")
+    if isinstance(observed, Mapping):
+        fields["visual_evidence_observed"] = dict(observed)
+    else:
+        non_black = payload.get("visual_evidence_non_black_pixels")
+        pixel_min = payload.get("visual_evidence_pixel_min")
+        pixel_max = payload.get("visual_evidence_pixel_max")
+        if non_black is not None and pixel_min is not None and pixel_max is not None:
+            fields["visual_evidence_observed"] = {
+                "non_black_pixels": non_black,
+                "pixel_min": pixel_min,
+                "pixel_max": pixel_max,
+            }
+    opt_out = payload.get("visual_evidence_opt_out")
+    if opt_out:
+        fields["visual_evidence_opt_out"] = opt_out
+    return fields
+
+
+def _path_matches_glob(path: str, pattern: str) -> bool:
+    if fnmatch.fnmatchcase(path, pattern):
+        return True
+    # `**/x` should also match a top-level `x`.
+    return pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:])
+
+
 def _glob_touched(paths: Iterable[str], globs: Iterable[str]) -> bool:
     """True if any path matches any glob (POSIX, case-sensitive)."""
     pats = tuple(globs)
@@ -1097,13 +1195,32 @@ def _glob_touched(paths: Iterable[str], globs: Iterable[str]) -> bool:
         path = str(raw).strip()
         if not path:
             continue
-        for pattern in pats:
-            if fnmatch.fnmatchcase(path, pattern):
-                return True
-            # `**/x` should also match a top-level `x`.
-            if pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:]):
-                return True
+        if any(_path_matches_glob(path, pattern) for pattern in pats):
+            return True
     return False
+
+
+def glob_match_paths(paths: Iterable[str], patterns: Iterable[str]) -> list[str]:
+    """Fix 3 (agent-harness#91 CR): resolve owned GLOB patterns to the REAL
+    paths they match, using the same matching semantics as ``_glob_touched``.
+
+    The reconcile guard feeds these RESOLVED paths (e.g. the real
+    ``src/avatar_renderer.py`` that ``src/**`` covers) into the filename
+    media-render heuristic -- which expects real paths, not raw glob patterns --
+    so it evaluates the SAME resolved-path surface the closeout validator sees
+    (which operates on the run's actual changed paths). Preserves input order,
+    de-duplicated."""
+    pats = tuple(patterns)
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        path = str(raw).strip()
+        if not path or path in seen:
+            continue
+        if any(_path_matches_glob(path, pattern) for pattern in pats):
+            out.append(path)
+            seen.add(path)
+    return out
 
 
 def public_surface_touched(changed_paths: Iterable[str]) -> bool:
@@ -1173,6 +1290,30 @@ _AVATAR_VISIBLE_CLAIM_PATTERNS = (
 )
 _AVATAR_VISIBLE_CLAIM_RE = re.compile("|".join(_AVATAR_VISIBLE_CLAIM_PATTERNS), re.IGNORECASE)
 
+# Fix 5 (agent-harness#91 CR): anchor the explicit-claim scan to AFFIRMATIVE
+# deliverable/objective/exit-criteria/acceptance sections and reject NEGATION,
+# so a Non-goals line like "must not render a visible avatar" does NOT match
+# (which previously produced an opt-in FALSE BLOCK, contrary to the detection
+# contract). A section heading that names a non-goal / out-of-scope block turns
+# scanning OFF; an affirmative deliverable heading turns it back ON; and a
+# negated claim on an in-scope line is skipped.
+_AFFIRMATIVE_SECTION_RE = re.compile(
+    r"objective|exit\s+criteria|acceptance|deliverable|definition\s+of\s+done|"
+    r"requirement|scope|lane|summary|description|\bgoal",
+    re.IGNORECASE,
+)
+_NONGOAL_SECTION_RE = re.compile(
+    r"non[-\s]?goal|out[-\s]?of[-\s]?scope|explicitly\s+not|will\s+not|excluded",
+    re.IGNORECASE,
+)
+_CLAIM_NEGATION_RE = re.compile(
+    r"\b(?:must\s+not|must\s+never|shall\s+not|should\s+not|shouldn'?t|"
+    r"does\s+not|doesn'?t|do\s+not|don'?t|cannot|can'?t|won'?t|will\s+not|"
+    r"never|no\s+longer|without|non[-\s]?goal|not\s+render|no\s+visible)\b",
+    re.IGNORECASE,
+)
+_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+(?P<title>.+?)\s*$")
+
 
 def avatar_media_surface_touched(changed_paths: Iterable[str]) -> bool:
     """STRUCTURAL signal (detection contract #1): an owned/changed path is a
@@ -1185,8 +1326,38 @@ def avatar_media_surface_touched(changed_paths: Iterable[str]) -> bool:
 
 def avatar_visible_render_claimed(text: str) -> bool:
     """EXPLICIT CLAIM signal (detection contract #2): the plan text makes an
-    explicit user-visible rendering claim as a deliverable."""
-    return bool(_AVATAR_VISIBLE_CLAIM_RE.search(text or ""))
+    explicit user-visible rendering claim as a DELIVERABLE.
+
+    Fix 5: the claim must appear in an AFFIRMATIVE section (objective / exit
+    criteria / acceptance / deliverable / scope / lanes / preamble) and must
+    NOT be negated. A ``Non-goals`` / ``Out of scope`` section is scanned OFF,
+    and a line carrying a negation cue ("must not", "does not", "non-goal",
+    "no visible", ...) never counts -- so "must not render a visible avatar"
+    yields NO claim. A plan with no markdown headings at all is scanned whole
+    (back-compat), still with the per-line negation filter."""
+    body = text or ""
+    in_scope = True  # preamble before the first heading is in scope
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        heading = _MARKDOWN_HEADING_RE.match(line)
+        if heading:
+            title = heading.group("title")
+            if _NONGOAL_SECTION_RE.search(title):
+                in_scope = False
+            elif _AFFIRMATIVE_SECTION_RE.search(title):
+                in_scope = True
+            else:
+                # An unrelated/unknown top-level section is out of scope: the
+                # contract wants the claim in a named deliverable section.
+                in_scope = False
+            continue
+        if not in_scope:
+            continue
+        if _AVATAR_VISIBLE_CLAIM_RE.search(line) and not _CLAIM_NEGATION_RE.search(line):
+            return True
+    return False
 
 
 def avatar_visual_evidence_required(changed_paths: Iterable[str], plan_text: str) -> bool:

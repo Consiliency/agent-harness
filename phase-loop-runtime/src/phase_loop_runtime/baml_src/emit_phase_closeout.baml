@@ -31,6 +31,18 @@ class PhaseLoopCloseoutV1 {
   blocker_summary string?
   human_required bool?
   required_human_inputs string[]
+  // FAV (issue #91): visual-avatar/browser-media closeout evidence. Optional --
+  // only populated when the phase owns a visible-media-rendering surface and the
+  // plan claims a visible-render deliverable. visual_evidence_path is a
+  // repo-relative screenshot/video artifact; the three pixel fields are a flat
+  // (BAML-schema-friendly) encoding of the runtime's VisualEvidenceObservation
+  // (non_black_pixels, pixel_min, pixel_max). visual_evidence_opt_out carries a
+  // typed reason instead of evidence.
+  visual_evidence_path string?
+  visual_evidence_non_black_pixels int?
+  visual_evidence_pixel_min int?
+  visual_evidence_pixel_max int?
+  visual_evidence_opt_out string?
 }
 
 function EmitPhaseCloseout(
@@ -54,6 +66,7 @@ Required contract:
 - blocker_summary must be non-secret and null when there is no blocker.
 - human_required must be true only for a true human decision or access blocker, false for repairable automation blockers, and null when not blocked.
 - required_human_inputs must contain only non-secret inputs needed from a human.
+- visual_evidence_path, visual_evidence_non_black_pixels, visual_evidence_pixel_min, and visual_evidence_pixel_max are optional; populate them together with a runner-owned screenshot/video artifact when the phase rendered a visible avatar/browser-media surface, or set visual_evidence_opt_out to a typed reason instead of attaching evidence.
 
 Terminal-status decision tree:
 - Use complete only when the phase work met acceptance, required verification passed, and every active-plan IF gate is listed in produced_if_gates.
