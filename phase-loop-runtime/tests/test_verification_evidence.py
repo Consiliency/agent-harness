@@ -1577,7 +1577,7 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
             "some-tool --api-key AKIAIOSFODNN7EXAMPLEKEY --verbose",
             "some-tool --secret AKIAIOSFODNN7EXAMPLEKEY",
             "some-tool --password AKIAIOSFODNN7EXAMPLEKEY",
-            "curl --token=AKIAIOSFODNN7EXAMPLEKEY".replace("=", " "),
+            "curl --token\tAKIAIOSFODNN7EXAMPLEKEY",
         ]
         for case in free_text_cases:
             self.assertIsNone(
