@@ -152,39 +152,82 @@ class GlobSemanticsTest(unittest.TestCase):
         self.assertTrue(self._match("**/*.proto", "a/b/c/d.proto"))
 
     def test_malformed_glob_rejects(self):
-        for bad in ("", "/abs/path", "a/../b", "a[bc]", "a{b,c}", "a b"):
+        """Only the SAFE-CHARSET / empty-non-string checks, and round-7's
+        normalizes-to-nothing check, remain fail-closed at translate time.
+        `/abs/path` and `a/../b` are no longer in this set (round-7): they
+        normalize like a changed path does (`abs/path`, `b`) rather than
+        being rejected outright — see
+        `test_leading_slash_and_interior_dotdot_globs_now_normalize`."""
+        for bad in ("", "a[bc]", "a{b,c}", "a b"):
             with self.assertRaises(fd.BoundaryManifestInvalid):
                 fd._translate_glob_to_regex(bad)
 
     def test_dot_dot_and_absolute_globs_still_rejected(self):
-        """The genuinely unsafe glob shapes remain rejected at translate
-        time, unaffected by round-6: an absolute path, or a literal `..`
-        path-traversal component anywhere in the glob string (checked
-        BEFORE the per-segment dot/empty check that round-6 removed)."""
-        for bad in ("..", "x/../y", "/x"):
+        """Round-7 (Consiliency/agent-harness#191, codex round-7 CR): the
+        genuinely unsafe glob shapes are now exactly those that NORMALIZE to
+        no effective boundary at all — a bare `..` (nothing to pop, escapes
+        the glob's own root immediately) and a `..`-only/repo-escaping glob
+        (`x/../../y` pops past its own root). `x/../y` and `/x` are NOT in
+        this set any more (round-7 dropped the old blanket
+        any-`..`-anywhere / leading-`/` rejection in favor of symmetric
+        component normalization) — see
+        `test_leading_slash_and_interior_dotdot_globs_now_normalize`."""
+        for bad in ("..", "x/../../y"):
             with self.subTest(bad=bad):
                 with self.assertRaises(fd.BoundaryManifestInvalid):
                     fd._translate_glob_to_regex(bad)
 
-    def test_dot_and_empty_component_globs_no_longer_rejected(self):
-        """Round-6 (Consiliency/agent-harness#191, the MATCHING-layer fix for
-        the confirmed boundary-glob evasion): round-3's per-segment
-        `.`/empty-component rejection in `_translate_glob_to_regex` is
-        REMOVED. Round-3 reasoned these globs could "never match a real
-        changed path" because git's `-z` diff paths are always normalized —
-        that premise is FALSE for a hostile tree (`git mktree`/`git
-        commit-tree` accept `.`, `..`, and empty tree-entry names), which is
-        exactly the confirmed evasion this round closes: the fix normalizes
-        the PATH side of every match (`_normalize_path_for_matching`, used
-        by `evaluate_boundary_escalation`/`carry_forward`), not the glob
-        side. A `.`/empty-component glob is therefore no longer a fail-open
-        (it cannot silently narrow a boundary — the paths it's compared
-        against are always normalized too) and must compile without
-        raising; it is now, at worst, INERT against any normalized path (a
-        manifest-authoring lint concern, not a security defect)."""
-        for glob in ("./**", ".", "**/", "a//b", "x/./y", "x/"):
+    def test_leading_slash_and_interior_dotdot_globs_now_normalize(self):
+        """Round-7: a leading `/` or an interior (non-root-escaping) `..`
+        component is component-normalized the SAME way a changed path is
+        (`_normalize_path_for_matching`, reused symmetrically) — it is no
+        longer an automatic malformed-glob rejection. `/abs/path` drops its
+        leading empty segment exactly as a leading-slash changed path
+        already does (round-6); `a/../b` pops `a` via the `..` and resolves
+        to `b`, exactly as `_normalize_path_for_matching("a/../b")` already
+        does for a changed path."""
+        self._assert_pattern(fd._translate_glob_to_regex("/abs/path"), r"^abs/path$")
+        self.assertTrue(self._match("/abs/path", "abs/path"))
+        self._assert_pattern(fd._translate_glob_to_regex("a/../b"), r"^b$")
+        self.assertTrue(self._match("a/../b", "b"))
+
+    def _assert_pattern(self, compiled, expected: str) -> None:
+        self.assertEqual(compiled.pattern, expected)
+
+    def test_dot_and_empty_component_globs_now_normalize_not_inert(self):
+        """Round-7 (Consiliency/agent-harness#191, codex round-7 CR) —
+        CORRECTING round-6's risk read. Round-6 removed round-3's
+        per-segment `.`/empty-component rejection on the premise that such a
+        glob was "at worst inert" once the PATH side was normalized. That
+        premise was FALSE: leaving the GLOB side raw meant a glob whose
+        components were entirely `.`/empty (`./**`, `a//b`, `x/./y`, `x/`,
+        `**/`) compiled to a regex that could NEVER match any normalized
+        path — a silent, total fail-open (a section declared with ONLY such
+        a glob escalated NOTHING). Round-7 now NORMALIZES the glob's own
+        components before compiling, so these compile to a BROADER,
+        fail-safe pattern instead of an inert one — must not raise, and
+        must actually match a normalized path."""
+        cases = (
+            ("./**", "config"),  # -> "**", matches everything
+            ("a//b", "a/b"),
+            ("x/./y", "x/y"),
+            ("x/", "x"),
+            ("**/", ".git/config"),  # -> "**", matches everything
+        )
+        for glob, matches in cases:
             with self.subTest(glob=glob):
                 fd._translate_glob_to_regex(glob)  # must not raise
+                self.assertTrue(self._match(glob, matches), f"{glob!r} must match {matches!r} once normalized")
+
+    def test_normalizes_to_empty_globs_are_now_malformed(self):
+        """Round-7: a glob whose components are ENTIRELY `.`/empty (so it
+        normalizes to nothing at all) declares a surface with NO effective
+        boundary and is MALFORMED — the narrower, corrected replacement for
+        round-6's blanket "never raise on `.`/empty" rule."""
+        for glob in (".", "./", "//"):
+            with self.subTest(glob=glob):
+                with self.assertRaises(fd.BoundaryManifestInvalid):
+                    fd._translate_glob_to_regex(glob)
 
     def test_dot_git_component_compiles_and_matches(self):
         """Round-5 CR (codex, self-correcting): round-4 briefly rejected a
@@ -380,41 +423,109 @@ class BoundaryManifestLoadTest(GitRepoTestCase):
         self.assertFalse(esc.required)
         self.assertIsNone(esc.trigger)
 
-    def test_dot_and_empty_component_glob_manifest_is_present_not_malformed(self):
-        """Round-6 (Consiliency/agent-harness#191): these glob shapes are no
-        longer rejected at manifest-parse time (round-3's rejection is
-        REMOVED — see `_translate_glob_to_regex`'s docstring for why: the
-        fix is at the path-normalization matching layer, not the glob
-        syntax layer). A manifest declaring one of these is PRESENT and
-        well-formed; the glob is simply INERT against any normalized path
-        (normalization can never reproduce a `.`/empty component), so it
-        does not spuriously escalate a disjoint delta either — a
-        manifest-authoring lint concern for the operator, not a fail-open
-        this module must reject."""
-        for glob in ("./**", ".", "**/", "a//b", "x/./y", "x/"):
+    def test_inert_glob_bug_reproduction_now_escalates(self):
+        """THE round-7 (Consiliency/agent-harness#191, codex round-7 CR) bug
+        reproduction and fix, end to end. Round-6 normalized the PATH side
+        of every boundary match but left the GLOB side raw, so a boundary
+        declared with only a `.`/empty-component glob (`[auth] globs =
+        ["./**"]`, which compiled to `^\\.(?:/.*)?$` — a pattern no
+        NORMALIZED path can ever satisfy) was INERT: `evaluate_boundary_
+        escalation` returned `required=False` for EVERY changed path,
+        including `src/live.py`, silently leaving the `auth` surface with
+        ZERO effective boundary (fail-open, carry-forward permitted).
+        Round-7's symmetric glob-component normalization fixes this: `./**`
+        now normalizes to `**`, which matches every path — broader than the
+        author probably intended, but fail-SAFE (escalates MORE, never
+        less), closing the fail-open."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, '[auth]\nglobs = ["./**"]\n')
+        base = self.commit("c1 inert-glob boundary (pre-fix regression)")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
+        esc = fd.evaluate_boundary_escalation(load, ("src/live.py",))
+        self.assertTrue(esc.required, "'./**' must escalate (round-7 fix) — pre-fix this was required=False")
+        self.assertEqual(esc.trigger, "auth")
+
+    def test_inert_glob_bug_reproduction_specific_surface(self):
+        """The same bug/fix as `test_inert_glob_bug_reproduction_now_escalates`,
+        but with a more specific declared surface (`./auth/**`, normalizing
+        to `auth/**`) rather than the maximally-broad `./**`: it must
+        escalate a delta touching `auth/login.py` (the intended surface)
+        while remaining disjoint from an unrelated `other/thing.py` delta —
+        i.e. the fix is not merely "escalate everything", it restores the
+        AUTHOR'S actual declared boundary. `auth/**` (normalized, anchored)
+        does NOT match `src/auth/login.py` — a nested `auth` dir under
+        `src/` is a DIFFERENT location than a top-level `auth/**`; that
+        requires `**/auth/**` instead, exercised elsewhere."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, '[auth]\nglobs = ["./auth/**"]\n')
+        base = self.commit("c1 specific dot-prefixed boundary")
+        load = fd.load_boundary_manifest_at_base(self.repo, base)
+        self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
+        esc_in = fd.evaluate_boundary_escalation(load, ("auth/login.py",))
+        self.assertTrue(esc_in.required)
+        self.assertEqual(esc_in.trigger, "auth")
+        esc_nested = fd.evaluate_boundary_escalation(load, ("src/auth/login.py",))
+        self.assertFalse(esc_nested.required, "'./auth/**' normalizes to 'auth/**', anchored at repo root")
+        esc_out = fd.evaluate_boundary_escalation(load, ("other/thing.py",))
+        self.assertFalse(esc_out.required)
+
+    def test_dot_and_empty_component_glob_manifest_present_and_now_escalates(self):
+        """Round-7 correction of the round-6 test this replaces: these glob
+        shapes are still PRESENT/well-formed at manifest-parse time, but —
+        unlike round-6's (wrong) claim that they were harmlessly INERT —
+        they now normalize to a BROADER, matching pattern and DO escalate
+        the path their normalized form actually covers."""
+        cases = (
+            ("./**", "config"),  # -> "**"
+            ("a//b", "a/b"),
+            ("x/./y", "x/y"),
+            ("x/", "x"),
+            ("**/", ".git/config"),  # -> "**"
+        )
+        for glob, matching_path in cases:
             with self.subTest(glob=glob):
                 self.write(fd.BOUNDARY_MANIFEST_PATH, f'[auth]\nglobs = ["{glob}"]\n')
                 base = self.commit(f"c1 dot/empty-component glob {glob!r}")
                 load = fd.load_boundary_manifest_at_base(self.repo, base)
                 self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
                 self.assertIsNotNone(load.manifest)
-                esc = fd.evaluate_boundary_escalation(load, ("src/live.py",))
-                self.assertFalse(esc.required, f"{glob!r} must not spuriously escalate a disjoint path")
+                esc = fd.evaluate_boundary_escalation(load, (matching_path,))
+                self.assertTrue(esc.required, f"{glob!r} (normalized) must escalate {matching_path!r}")
 
-    def test_traversal_and_absolute_globs_still_malformed(self):
-        """The genuinely unsafe glob shapes (`..`-anywhere, absolute path)
-        remain fail-closed MALFORMED — unaffected by round-6, and still
-        force escalate-every-delta."""
-        for bad_glob in ("..", "x/../y", "/x"):
+    def test_normalizes_to_empty_glob_manifest_now_malformed(self):
+        """Round-7: a glob that normalizes to NO effective boundary at all
+        (`.`, `./`, `//`, a bare `..`, or a `..`-only/repo-escaping glob)
+        makes the WHOLE manifest MALFORMED at parse time — the narrower,
+        corrected replacement for round-6's "never reject `.`/empty"
+        blanket rule — and therefore forces escalate-every-delta exactly
+        like a missing/genuinely-malformed manifest."""
+        for bad_glob in (".", "./", "//", "..", "x/../../y"):
             with self.subTest(bad_glob=bad_glob):
                 self.write(fd.BOUNDARY_MANIFEST_PATH, f'[auth]\nglobs = ["{bad_glob}"]\n')
-                base = self.commit(f"c1 unsafe glob {bad_glob!r}")
+                base = self.commit(f"c1 normalizes-to-empty glob {bad_glob!r}")
                 load = fd.load_boundary_manifest_at_base(self.repo, base)
                 self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
                 self.assertIsNone(load.manifest)
                 esc = fd.evaluate_boundary_escalation(load, ("src/live.py",))
                 self.assertTrue(esc.required, f"{bad_glob!r} must escalate (fail-closed), not silently permit carry-forward")
-                self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_MALFORMED_MANIFEST)
+
+    def test_leading_slash_and_interior_dotdot_glob_manifest_now_normalizes(self):
+        """Round-7: `/abs/path` and `a/../b` are no longer rejected at
+        manifest-parse time — they normalize (`abs/path`, `b`) the same way
+        a leading-slash or interior-`..` changed path already does, and the
+        manifest is PRESENT/well-formed, escalating exactly the normalized
+        location."""
+        cases = (("/abs/path", "abs/path"), ("a/../b", "b"))
+        for glob, matching_path in cases:
+            with self.subTest(glob=glob):
+                self.write(fd.BOUNDARY_MANIFEST_PATH, f'[auth]\nglobs = ["{glob}"]\n')
+                base = self.commit(f"c1 normalizing glob {glob!r}")
+                load = fd.load_boundary_manifest_at_base(self.repo, base)
+                self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_PRESENT)
+                esc = fd.evaluate_boundary_escalation(load, (matching_path,))
+                self.assertTrue(esc.required, f"{glob!r} (normalized) must escalate {matching_path!r}")
+                self.assertEqual(esc.trigger, "auth")
+                esc_unrelated = fd.evaluate_boundary_escalation(load, ("totally/unrelated.py",))
+                self.assertFalse(esc_unrelated.required)
 
     def test_dot_git_component_glob_manifest_is_present_not_malformed(self):
         """Round-5 CR (codex, self-correcting): round-4 treated a `.git`
@@ -730,6 +841,28 @@ class BoundaryGlobEvasionRegressionTest(unittest.TestCase):
                 esc = fd.evaluate_boundary_escalation(load, (mangled,))
                 self.assertTrue(esc.required, f"{mangled!r} must escalate — pre-fix this EVADED")
                 self.assertEqual(esc.trigger, "deployment")
+
+    def test_mangled_glob_side_mirrors_mangled_path_side_symmetry(self):
+        """Round-7 (Consiliency/agent-harness#191, codex round-7 CR) glob-side
+        mirror of the round-6 path-side fix above: BOTH a mangled PATH
+        (`./auth/x`) and a mangled GLOB (`./auth/**`) must resolve to the
+        SAME normalized location and agree — matching is symmetric on
+        both sides of the comparison, not just the path side."""
+        load = self._load('[auth]\nglobs = ["./auth/**"]\n')
+        # a mangled glob (normalizes to "auth/**") against a CLEAN path.
+        esc_clean_path = fd.evaluate_boundary_escalation(load, ("auth/x",))
+        self.assertTrue(esc_clean_path.required)
+        self.assertEqual(esc_clean_path.trigger, "auth")
+        # a CLEAN glob against a mangled path (round-6's own case, restated
+        # here for the direct side-by-side comparison).
+        load_clean_glob = self._load('[auth]\nglobs = ["auth/**"]\n')
+        esc_mangled_path = fd.evaluate_boundary_escalation(load_clean_glob, ("./auth/x",))
+        self.assertTrue(esc_mangled_path.required)
+        self.assertEqual(esc_mangled_path.trigger, "auth")
+        # BOTH mangled simultaneously — the fully symmetric case.
+        esc_both_mangled = fd.evaluate_boundary_escalation(load, ("./auth/x",))
+        self.assertTrue(esc_both_mangled.required, "a mangled glob AND a mangled path must still agree and escalate")
+        self.assertEqual(esc_both_mangled.trigger, "auth")
 
     def test_confirmed_evasions_now_escalate_dockerfile_glob(self):
         load = self._load('[deployment]\nglobs = ["Dockerfile*"]\n')

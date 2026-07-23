@@ -564,6 +564,58 @@ touched.
   still-rejected in dedicated tests. (93 cases total in the module, up from
   69; `.git/**`'s `HostileGitTreeDotGitTest` positive coverage from round-5 is
   unaffected and stays green.)
+- **Round-7 (CONFIRMED, empirically reproduced): round-6's fix was
+  asymmetric — the changed-PATH side was normalized but the boundary-GLOB
+  side was left raw, so a glob authored with `.`/`..`/empty literal
+  components was INERT against every normalized path, silently zeroing out
+  a declared surface's boundary (fail-open, carry-forward permitted).**
+  Verified: `[auth] globs = ["./**"]` compiled to `^\.(?:/.*)?$`, which no
+  normalized path (never containing a bare leading `.` component) can ever
+  satisfy — `evaluate_boundary_escalation(..., ("src/live.py",)).required`
+  was `False`, meaning a surface declared with only that glob escalated
+  NOTHING. This is the exact dual of round-6's path-side evasion: the two
+  sides of the match could never agree on what "the same location" means.
+  `_translate_glob_to_regex` now applies the SAME `_normalize_path_for_
+  matching` component-normalization to the glob's own literal segments
+  (dropping `.`/empty, resolving `..` by popping the previous kept
+  segment) before compiling — wildcard segments (`*`, `**`, `?`, mixed
+  segments like `*.proto`) and a literal `.git` component are never
+  dropped or altered, only exact `.`/empty components are. `./**` now
+  normalizes to `**` (matches everything — broader than intended, but
+  fail-SAFE, the same escalate-more-not-less bias the globstar translation
+  already applies); `a//b` -> `a/b`; `x/./y` -> `x/y`; a leading `/` or an
+  interior `..` (`/abs/path`, `a/../b`) is likewise now normalized instead
+  of being flatly rejected at parse time (round-6's blanket absolute-path/
+  any-`..`-anywhere rejection is REMOVED, replaced by this normalization —
+  the SAME treadmill-avoidance argument round-6 already made for the path
+  side now applies symmetrically to the glob side). A glob that normalizes
+  to NOTHING at all (`.`, `./`, `//`, a bare `..`, or a `..`-only/repo-
+  escaping glob such as `x/../../y`) declares a surface with NO effective
+  boundary and is now MALFORMED (fail-closed — escalates every delta),
+  correcting round-6's claim that such a glob was merely "an inert...
+  manifest-authoring lint concern": it is not inert, it silently disables
+  the surface, and codex round-7 CR flagged it as a real fail-open, not a
+  hypothetical one. Lane B (`patch_digest`, `enumerate_changed_paths`) and
+  round-6's path-side normalization + carry-forward normalization are
+  untouched — only the glob-translation layer gained normalization.
+  **Tests** (`tests/test_fab_delta_c.py`): the inert-glob bug is
+  reproduced and pinned end to end
+  (`BoundaryManifestLoadTest.test_inert_glob_bug_reproduction_now_escalates`,
+  `..._specific_surface`); the round-6 "no longer rejected"/"still
+  rejected" glob tests are corrected for round-7's narrower malformed set
+  and split into normalizes-and-matches vs. normalizes-to-empty-and-
+  malformed cases (`GlobSemanticsTest.test_dot_and_empty_component_globs_now_normalize_not_inert`,
+  `test_normalizes_to_empty_globs_are_now_malformed`,
+  `test_leading_slash_and_interior_dotdot_globs_now_normalize`,
+  `BoundaryManifestLoadTest.test_dot_and_empty_component_glob_manifest_present_and_now_escalates`,
+  `test_normalizes_to_empty_glob_manifest_now_malformed`,
+  `test_leading_slash_and_interior_dotdot_glob_manifest_now_normalizes`); a
+  new symmetry test drives a mangled glob against a clean path, a clean
+  glob against a mangled path, and both mangled simultaneously, confirming
+  all three agree and escalate
+  (`BoundaryGlobEvasionRegressionTest.test_mangled_glob_side_mirrors_mangled_path_side_symmetry`).
+  All round-6 path-evasion, crafted-tree, and `.git`-component coverage
+  stays green unchanged.
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
