@@ -376,6 +376,38 @@ touched.
   that a fully well-formed manifest is unaffected) so the `not globs` clause
   cannot be silently loosened later (63 cases total in the module, up from
   58).
+- **Round-3 CR (codex, verified by direct execution; grok + gemini AGREE):
+  semantically-empty boundary globs now rejected at manifest-parse time.**
+  A glob can be syntactically SAFE (non-empty, not `/`-absolute, no `..`
+  component, safe charset — every check `_translate_glob_to_regex` already
+  ran) and still compile to a regex that matches ZERO real git changed
+  paths, because git's `-z` diff paths are always repository-relative and
+  NORMALIZED: never `./`-prefixed, never containing a `.`/`..` path
+  component, never an empty component (`a//b`), never trailing-slashed
+  (`x/`, `**/`). Direct execution against `8d68675` confirmed the bypass:
+  `[auth]\n globs = ["./**"]` gave `evaluate_boundary_escalation(load,
+  ("src/live.py",)).required == False` — `auth` LOOKED protected (PRESENT
+  disposition, a non-empty valid-glob list) while being silently
+  unprotected, violating the §5.4 downgrade-proof invariant ("no
+  zero-effective-boundary manifest may permit carry-forward").
+  `_translate_glob_to_regex` now rejects, per `/`-delimited segment, any
+  EMPTY component (leading/trailing/doubled slash) or a bare `.`/`..`
+  component — additive to the existing leading-`/`/`..`-anywhere/charset
+  checks, so `./**`, `.`, `..`, `**/`, `a//b`, `x/./y`, `x/../y`, and `x/`
+  all now raise `BoundaryManifestInvalid` (routing the whole manifest to
+  `MANIFEST_DISPOSITION_MALFORMED` -> escalate-every-delta, same fail-closed
+  disposition as missing/genuinely-malformed). The full legitimate default
+  glob set from design §5.4 (`**/contracts/**`, `**/*.proto`,
+  `**/schema/**`, `**/main.py`, `Dockerfile*`, `**/auth/**`,
+  `**/credsep.py`, `**/*secret*`, `**/migrations/**`, `**/*.sql`,
+  `**/deploy/**`, `**/*.tf`, `.github/workflows/**`) is unaffected — every
+  glob still compiles and still matches its representative in-boundary path
+  while not matching a disjoint one.
+  **Tests**: 3 new cases — unit-level rejection of all 8 degenerate glob
+  shapes, an end-to-end repro closing the exact `./**` bypass (subtests over
+  all 8 shapes, asserting `MANIFEST_DISPOSITION_MALFORMED` +
+  escalate-every-delta), and a no-regression sweep over the full legitimate
+  default glob set (66 cases total in the module, up from 63).
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 

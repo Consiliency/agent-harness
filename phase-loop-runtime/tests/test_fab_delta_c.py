@@ -156,6 +156,47 @@ class GlobSemanticsTest(unittest.TestCase):
             with self.assertRaises(fd.BoundaryManifestInvalid):
                 fd._translate_glob_to_regex(bad)
 
+    def test_semantically_empty_globs_rejected(self):
+        """Round-3 CR (codex, verified by direct execution against 8d68675;
+        grok + gemini AGREE): a glob can be SYNTACTICALLY valid (passes every
+        prior check — non-empty, not `/`-absolute, no `..` component, safe
+        charset) and still compile to a regex that matches ZERO real git
+        paths, because git's `-z` diff paths are always repository-relative
+        and NORMALIZED (never `./`-prefixed, never a `.`/`..` path
+        component, never an empty component, never trailing-slashed). Each
+        of these must now be rejected at manifest-parse time (fail-closed),
+        not silently accepted as a glob that "just doesn't match anything"."""
+        for bad in ("./**", ".", "..", "**/", "a//b", "x/./y", "x/../y", "x/", "/x"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(fd.BoundaryManifestInvalid):
+                    fd._translate_glob_to_regex(bad)
+
+    def test_legitimate_default_glob_set_all_compile_and_match_correctly(self):
+        """Regression: the full legitimate default glob set (design §5.4)
+        must all still compile AND match a representative in-boundary path
+        AND NOT match a clearly-disjoint path — the semantic-empty-glob
+        rejection must not over-reject any real-world pattern."""
+        cases = (
+            ("**/contracts/**", "pkg/contracts/x.py", "totally/unrelated.py"),
+            ("**/*.proto", "a/b/c.proto", "a/b/c.txt"),
+            ("**/schema/**", "a/schema/x.sql", "a/other/x.sql"),
+            ("**/main.py", "src/main.py", "src/other.py"),
+            ("Dockerfile*", "Dockerfile", "sub/Dockerfile"),
+            ("**/auth/**", "src/auth/login.py", "src/other/login.py"),
+            ("**/credsep.py", "convergence/broker/credsep.py", "convergence/broker/other.py"),
+            ("**/*secret*", "a/my_secret.txt", "a/my_plain.txt"),
+            ("**/migrations/**", "app/migrations/0001.py", "app/other/0001.py"),
+            ("**/*.sql", "db/schema.sql", "db/schema.py"),
+            ("**/deploy/**", "infra/deploy/main.tf", "infra/other/main.tf"),
+            ("**/*.tf", "infra/main.tf", "infra/main.py"),
+            (".github/workflows/**", ".github/workflows/ci.yml", "other/workflows/ci.yml"),
+        )
+        for glob, in_boundary, disjoint in cases:
+            with self.subTest(glob=glob):
+                pattern = fd._translate_glob_to_regex(glob)
+                self.assertTrue(pattern.match(in_boundary), f"{glob!r} must match {in_boundary!r}")
+                self.assertFalse(pattern.match(disjoint), f"{glob!r} must NOT match {disjoint!r}")
+
     def test_globstar_matches_across_embedded_newline(self):
         """agent-harness#191 CR finding 1: git permits NEWLINE characters in
         filenames and the `-z` + `os.fsdecode` path preserves them verbatim.
@@ -291,6 +332,26 @@ class BoundaryManifestLoadTest(GitRepoTestCase):
         esc = fd.evaluate_boundary_escalation(load, ("src/unrelated/thing.py",))
         self.assertFalse(esc.required)
         self.assertIsNone(esc.trigger)
+
+    def test_semantically_empty_glob_manifest_is_malformed_not_present(self):
+        """Round-3 CR (codex, verified by direct execution against 8d68675;
+        grok + gemini AGREE): the exact repro — `[auth]\\nglobs = ["./**"]`
+        used to give `evaluate_boundary_escalation(load, ("src/live.py",))
+        .required == False`, i.e. `auth` LOOKED protected (PRESENT
+        disposition, a non-empty valid-glob list) while being silently
+        UNPROTECTED, because `./**` compiles but matches no normalized git
+        path. It must now resolve to MALFORMED (same fail-closed disposition
+        as missing/genuinely-malformed) and force escalate-every-delta."""
+        for bad_glob in ("./**", ".", "..", "**/", "a//b", "x/./y", "x/../y", "x/", "/x"):
+            with self.subTest(bad_glob=bad_glob):
+                self.write(fd.BOUNDARY_MANIFEST_PATH, f'[auth]\nglobs = ["{bad_glob}"]\n')
+                base = self.commit(f"c1 semantically-empty glob {bad_glob!r}")
+                load = fd.load_boundary_manifest_at_base(self.repo, base)
+                self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
+                self.assertIsNone(load.manifest)
+                esc = fd.evaluate_boundary_escalation(load, ("src/live.py",))
+                self.assertTrue(esc.required, f"{bad_glob!r} must escalate (fail-closed), not silently permit carry-forward")
+                self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_MALFORMED_MANIFEST)
 
     def test_empty_file_manifest_is_malformed_not_present(self):
         """agent-harness#191 CR finding 2: a zero-byte

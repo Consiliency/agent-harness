@@ -78,10 +78,17 @@ FROZEN INTERFACE (IF-0-FAB-C-1) — D codes against this without renegotiation:
     implicit `**/` prefix, so a bare `Dockerfile*` (design §5.4's own
     example) matches only a repo-ROOT `Dockerfile*`, not `sub/Dockerfile`. A
     glob string that is empty, non-string, starts with `/`, contains a `..`
-    path-traversal component, or contains any character outside the safe set
-    `[A-Za-z0-9_./*?-]` is MALFORMED and INVALIDATES the whole manifest
+    path-traversal component, contains any character outside the safe set
+    `[A-Za-z0-9_./*?-]`, OR (round-3 CR, codex — semantic-empty-glob
+    fail-open) contains an EMPTY path component (`a//b`, a leading/trailing
+    `/`, e.g. `x/`, `**/`) or a bare `.`/`..` path COMPONENT (e.g. `./**`,
+    `.`, `x/./y`) is MALFORMED and INVALIDATES the whole manifest
     (fail-closed — a malformed glob never means "this one glob just doesn't
-    match anything").
+    match anything"). The dot/empty-component rejection exists because git's
+    `-z` diff paths are always normalized (never `./`-prefixed, `.`/`..`
+    -componented, doubly-slashed, or trailing-slashed) — a glob requiring one
+    of those forms is syntactically valid but matches ZERO real paths, a
+    silent downgrade of whatever boundary declared it (§5.4 downgrade-proof).
 
   * **Carry-forward/escalation decision rule (design §5.3/§5.4, the
     authoritative disposition table):**
@@ -349,6 +356,44 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
         raise BoundaryManifestInvalid(
             f"malformed boundary glob (only [A-Za-z0-9_./*?-] accepted, fail-closed): {glob!r}"
         )
+    # agent-harness#191 CR (Lane C round-3 finding, codex, verified by direct
+    # execution — semantically-empty boundary glob fail-open): a glob can be
+    # SYNTACTICALLY safe (passes every check above) and still compile to a
+    # regex that provably matches ZERO real git paths, because git's `-z`
+    # diff paths (`fab_canonical.enumerate_changed_paths`, reused verbatim
+    # elsewhere in this module) are always repository-RELATIVE and
+    # NORMALIZED: never a leading `./`, never a `.`/`..` path COMPONENT,
+    # never an empty component (`a//b`), never a trailing slash (`x/`,
+    # `**/`). A section whose globs are ALL of this degenerate shape LOOKS
+    # protected (PRESENT disposition, a non-empty `globs` list of valid
+    # strings) while being silently unprotected — `evaluate_boundary_escalation`
+    # would iterate real compiled patterns that simply never match, and
+    # return `required=False` even for a path that is semantically "in" that
+    # boundary. That is exactly the §5.4 downgrade-proof invariant this
+    # manifest format exists to guarantee ("no zero-effective-boundary
+    # manifest may permit carry-forward") — reproduced directly against this
+    # module: `[auth]\nglobs = ["./**"]` gave `evaluate_boundary_escalation(
+    # ..., ("src/live.py",)).required == False` before this check existed.
+    # Reject at the SEGMENT level (split on `/`, the same granularity the
+    # translator below already works at): any segment that is EMPTY
+    # (leading/trailing/doubled slash) or exactly `.`/`..` (a dot-relative or
+    # traversal component) can never appear in a normalized git path, so a
+    # glob containing one can never match a real changed path — fail-closed,
+    # same disposition as every other structural glob defect. This is
+    # ADDITIVE to (never replaces) the leading-`/`/`..`-anywhere checks
+    # above; `**`, `*`, `?`, and any other literal segment are unaffected —
+    # only these degenerate dot/empty/trailing-slash forms are rejected.
+    for _component in glob.split("/"):
+        if _component == "":
+            raise BoundaryManifestInvalid(
+                "malformed boundary glob (empty path component - leading, trailing, or doubled slash - "
+                f"fail-closed: cannot match any normalized git path): {glob!r}"
+            )
+        if _component in (".", ".."):
+            raise BoundaryManifestInvalid(
+                "malformed boundary glob (dot/dot-dot path component, fail-closed: cannot match any "
+                f"normalized git path): {glob!r}"
+            )
 
     segments = glob.split("/")
     n = len(segments)
