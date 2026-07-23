@@ -6,6 +6,111 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FAB Lane A — delta-review provenance schema + hash chain + trust root (Consiliency/agent-harness#191)
+
+New `phase_loop_runtime.fab_provenance` module: Lane A of #191's advisor-board
+delta-review design (`plans/design-fab-191-delta-review.md`). Freezes the security
+trust-root interface Lanes B/C/D build on (IF-0-FAB-A-1); does not implement the
+canonical `patch_digest` equivalence math, `git` calls, delta-chain carry-forward/
+escalation decisions, or gate wiring — those are B/C/D.
+
+- **Frozen schemas + JSON (de)serializers**: `ReviewProvenanceArtifact`
+  (`fab.review-provenance.v2`), `DeltaReviewRecord` (`fab.delta-review`),
+  `GateStatus` (`fab.gate-status.v2`) — frozen dataclasses with deterministic
+  `to_json()`/`from_json()` (sorted keys, tight separators), round-trippable.
+  Metadata-only: `Finding.body_ref` must be a content-ref digest
+  (`sha256:<64 hex>`), never inline review text; the seat sub-record
+  (`ProvenanceSeat`) uses `panel_invoker.SeatOutcomeRecord`'s own field names
+  (`seat_key`, `vendor_leg`, `required`, `status`, `epoch`, `artifact_digest`,
+  `evidence_digest`) so Lane D's seat cross-check can compare records directly.
+- **`artifact_digest`**: the single self-excluded field (like #243's
+  `log_sha256`) — reuses `verification_evidence._canonical_artifact_digest`'s
+  canonicalization (imported, not reimplemented); recomputed and verified on
+  every `from_json` load, so a field-edited artifact fails closed at load time.
+- **Fail-closed load**: oversized (>8 MiB) / malformed-JSON / `json.dumps`-
+  failure / any lone-UTF-16-surrogate value all raise a typed `ProvenanceInvalid`
+  — never a silent pass.
+- **Hash chain** (`compute_round_chain_digest`, `verify_chain`): the design §5.1
+  chain-digest formula (`C0 = H(policy‖review_scope‖material_digests‖findings‖
+  base_binding‖∅)`, `Ci = H(policy_i‖...‖C_{i-1})`) realized as SHA-256 over a
+  canonical JSON envelope keyed by field name. `verify_chain` recomputes every
+  round's digest and checks end-to-end contiguity (`parent_digest` +
+  `parent_chain_digest`); a spliced, reordered, or fabricated round fails
+  closed with a typed `ChainVerificationError`.
+- **Trust root**: `write_provenance`/`read_provenance` persist to and read from
+  the durable run store (`.phase-loop/runs/<run_id>/fab-provenance.json`,
+  alongside `verification.json`/`SeatOutcomeRecord`) — harness-only-written,
+  run-id-keyed. `read_provenance` has no parameter through which a caller can
+  substitute a client-supplied blob as authoritative; `reject_client_supplied_
+  provenance` makes the refusal directly testable.
+- **Immutable material** (`snapshot_material`/`reverify_material`): snapshots
+  `context_refs` bytes into the run store at review time (streamed SHA-256 in
+  1 MiB chunks, mirroring the #114 `context_refs` hashing pattern in
+  `panel_invoker.py`) and re-verifies both the snapshot copy and the live
+  reference at gate time, so a post-review edit of the underlying file is
+  detected rather than silently tolerated.
+
+#### Cross-vendor CR hardening (5 confirmed findings, codex-DISAGREE'd, all verified real)
+
+codex DISAGREE'd with all 5 findings on this trust-root module; every one reproduced against
+source and is fixed here. Tightens frozen interface IF-0-FAB-A-1 — B/C/D must code against the
+new shapes, not the pre-CR ones:
+
+- **F1 — strict fail-closed load**: `from_json`/`from_dict` now reject an UNKNOWN top-level or
+  nested field and a DUPLICATE JSON object key (anywhere in the document, via a strict
+  `object_pairs_hook`), both fail-closed as `ProvenanceInvalid`. Previously an unknown field was
+  silently dropped and a duplicate key silently collapsed to its last value — un-audited data
+  could ride outside the digest.
+- **F2 — hash-chain dual-link contiguity is no longer optional**: `verify_chain` previously only
+  checked `parent_digest` when BOTH the prior patch digest and the record's own `parent_digest`
+  were non-null. A `reviewed-clean` delta with a populated prior patch digest but
+  `parent_digest=None` now INVALIDATES (`ChainVerificationError`); a `reviewed-clean` record must
+  unconditionally carry a linking `parent_digest` (design §5.1).
+- **F3 — trust-root path-equality claim replaced with the invariant Lane A can actually
+  enforce**: `reject_client_supplied_provenance` no longer claims path equality proves harness
+  authorship (`.phase-loop/` is excluded only via the local, non-committed
+  `.git/info/exclude` — not a committed `.gitignore`; a file is already tracked under
+  `.phase-loop/` in this repo). It now enforces "run-store path AND not git-tracked" and documents
+  the honest residual (a co-resident writer to the trusted store, deferred to breakglass) in a new
+  design §6.1a trust-model subsection; full authorship enforcement (trusted-run-state read,
+  trusted `run_id` resolution) is now an explicit Lane D requirement (§9).
+- **F4 — `reverify_material` now binds to the claimed reviewed-material digest**: new
+  `aggregate_material_digest(material_digests)` (reuses the existing canonicalization helper) and
+  a new REQUIRED keyword-only `expected_reviewed_material_digest` argument on `reverify_material`
+  — a snapshot whose per-ref digests are internally stable but whose aggregate does not match the
+  artifact's claimed `review_scope.reviewed_material_digest` now fails closed (design §6.4).
+- **F5 — `Finding.body_ref` is now REQUIRED**: decided (not reflexively applied) that every
+  legitimate `Finding` in this design originates from a seat's review output and therefore always
+  has a referenceable body — there is no described bodyless finding type. `body_ref=None` now
+  raises `ProvenanceInvalid` at construction instead of being silently accepted.
+
+#### Round-2 CR fix: git-probe fail-open (codex + gemini, independently confirmed)
+
+- **`_is_git_tracked` polarity was backwards on git-probe ERRORS**: the F3 fix's
+  `_is_git_tracked` boundary probe (`reject_client_supplied_provenance`'s git-tracked guard)
+  returned `False` ("not tracked" = safe = ACCEPT) on `git rev-parse --is-inside-work-tree`
+  timeout / `OSError` / any nonzero return code, and on `git ls-files --error-unmatch` nonzero
+  (including fatal errors, e.g. rc 128) — directly contradicting the function's own docstring and
+  the trust-root's fail-closed requirement. Both codex and gemini independently reproduced
+  acceptance of a client-supplied provenance blob via a `rev-parse` timeout and a fatal rc 128.
+  Fixed: the polarity is now uncertainty-REJECTS — a git-probe timeout, `OSError`, or unexpected
+  nonzero return code on EITHER probe now returns `True` (tracked/unsafe, fail closed). The ONE
+  legitimate carve-out — `repo` is genuinely not a git working tree at all — is now recognized
+  ONLY via git's own deterministic, reproducible failure signature (`rev-parse` rc 128 with
+  `"not a git repository"` in stderr), not any nonzero rc. The `ls-files` probe no longer uses
+  `--error-unmatch` (whose nonzero exit conflated "not tracked" with real git errors); it uses
+  plain `git ls-files -- <path>`, where a clean `rc == 0` with empty output is the only signal
+  treated as definitively untracked/safe.
+
+#### Round-3 CR fix: malformed rc0 `rev-parse` output (codex)
+
+- **`_is_git_tracked` treated any non-`"true"` rc0 output as a definitive negative**: a clean
+  `git rev-parse --is-inside-work-tree` (rc 0) whose stdout was empty, malformed, or unexpected
+  returned `False` (= not-a-repo = the tracked guard does not apply = the path passes as safely
+  untracked). Now ONLY the exact well-formed `"false"` takes the definitive-negative branch; any
+  other rc0 output fails CLOSED (`True` = tracked/unsafe). Trust-root fail-closed completeness — no
+  rc0 output branch can smuggle a client-supplied provenance blob past the guard.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
