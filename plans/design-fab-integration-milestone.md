@@ -128,3 +128,41 @@ as `closeout_commit` around runner.py:8913). `_governed_premerge_review` returns
 (runner.py:7361) — but NOTE codex's finding that `build_phase_loop_closeout` runs while reducing the executor
 terminal summary, BEFORE the governed closeout commit, so the gate wiring must be re-checked so it validates
 the FINAL committed artifact, not an early/nonexistent one.
+
+---
+## v2 panel residuals → v3 REQUIREMENTS (codex; grok+gemini AGREE'd v2, codex found these deeper)
+
+These are load-bearing design requirements the fresh execution MUST resolve — two are architectural, not
+implementation nits. The plan is NOT "done" until these are designed:
+
+1. **Complete review representation (deeper honesty).** `staged_index_diff` (governed_bundle.py:23) is
+   text-mode `git diff`: it ignores nonzero rc, returns sentinels on decode/timeout, and can render only
+   "Binary files differ" / attribute-suppressed / invalid-UTF-8 content. So `commit^{tree} == reviewed_tree`
+   does NOT prove the seats actually SAW every changed byte. FAB must FAIL CLOSED (no provenance) unless every
+   changed path in the reviewed diff has a COMPLETE review representation (no binary-elided / suppressed /
+   sentinel content). Acceptance tests for each elision case.
+2. **Non-forgeable seat authenticity (ARCHITECTURAL).** `SeatOutcomeRecord` (panel_invoker.py:287) carries
+   NEITHER verdict NOR finding-ids, and `cross_check_seat_authenticity` (fab_gate.py:378) compares only
+   metadata AND tolerates omitted durable outcomes. So a provenance seat can reuse a real outcome's digests
+   while flipping its verdict to AGREE, or a required DISAGREE seat can be omitted, and the gate trusts the
+   provenance verdict. REQUIRED: persist verdict + finding bindings (durably, at invocation, tamper-evident)
+   and require COMPLETENESS for ALL required seats in the review epoch (no tolerated omissions). This likely
+   means EXTENDING SeatOutcomeRecord (or an adjacent durable record) — a Lane-D/panel-layer change. Test
+   wrong-verdict AND omitted-required-seat.
+3. **Crash-safe producer transaction.** v2 writes provenance BEFORE the hard gate — a crash between leaves an
+   unapproved artifact, and the clean-resume path can finalize as `noop_already_committed` (runner.py:9070)
+   while promotion does only equivalence (train_runner.py:527). REQUIRED: a durable GATE-PASSED commit marker
+   that admission atomically CONSUMES, OR rerun full `compose_gate_status` (authenticity + findings, not just
+   bytes) at promotion. Test every commit/write/gate/admission crash boundary.
+4. **Wire the whole-patch fallback (ARCHITECTURAL).** "no provenance → full review" is UNWIRED: the harness
+   reviews only the per-phase staged diff; there is NO existing path that constructs + board-reviews
+   `merge-base..head` for a PR, and the train bundle only lists PR URLs + short SHAs. REQUIRED: the fallback
+   must EXPLICITLY invoke a digest-bound whole-patch review of `merge-base..head` (or HALT non-human) — "no
+   provenance" alone does NOT satisfy acceptance criterion 1. This interacts with the deferred multi-commit
+   composition and may be the real prerequisite: FAB's "carry a whole-patch approval forward" premise needs a
+   whole-patch review to exist in the first place.
+
+**Assessment:** two panel rounds hardened this plan substantially, but codex keeps surfacing deeper
+*architectural* gaps (#2 seat-verdict persistence, #4 the missing whole-patch review path) — signals that FAB
+activation is a foundational design effort, not a wiring job, and wants a focused design pass (its own spike)
+before implementation. Piece 1 (safety net) is merged and safe; nothing here is urgent.
