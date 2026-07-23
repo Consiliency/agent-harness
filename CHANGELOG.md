@@ -676,6 +676,187 @@ touched.
   default-glob-set, and non-`..` round-7 dot/empty-component coverage stays
   green unchanged (102 tests, 80 subtests, all passing).
 
+### FAB Lane D — gate-status output + agent-review-gate wiring + authenticity cross-check + promotion re-assertion (Consiliency/agent-harness#191)
+
+New `phase_loop_runtime.fab_gate` module: the FINAL lane of #191's advisor-board
+delta-review design (`plans/design-fab-191-delta-review.md` §8/§6.3/§6.4/§4.4).
+This is where FAB actually DECIDES — composes `fab.gate-status.v2`, wires the
+single `status ∈ {pass, review_gate_block}` into the existing closeout-validator
+registry and the `governed_premerge` pre-merge gate, and adds the two authenticity
+checks (§6.3 durable `SeatOutcomeRecord` cross-check, §6.4 immutable-material
+re-verify) that make the gate's PASS trustworthy, not merely self-consistent.
+Additive only: reuses Lane A/B/C's frozen primitives (`verify_chain`,
+`reverify_material`/`aggregate_material_digest`, `EquivalenceBinding`/
+`equivalent`, `enforce_review_scope_for_escalation`) and the pre-existing
+`closeout_validators.verdict_binds_to`/`register_closeout_validator` pattern —
+none of those modules were modified beyond the minimal additive wiring below.
+
+- **`compose_gate_status`** composes `GateStatus` from the run-store's
+  `ReviewProvenanceArtifact` (`read_provenance`, keyed by `run_id` — never a
+  client/PR-supplied blob) plus a LIVE-recomputed `EquivalenceResult`
+  (`fab_canonical.equivalent`). `reviewed_sha` is ALWAYS
+  `artifact.candidate.head_sha` — the real reviewed SHA — and is NEVER set to
+  the live/final PR head (design §8, T16); `equivalence_verified` is a
+  SEPARATE, independently-recomputed proof. `status == pass` iff the delta
+  chain resolves to a governing binding whose live equivalence is
+  `EQUIVALENT`, every provenance seat authenticates against its durable
+  `SeatOutcomeRecord`, every round's material re-verifies, at least one seat
+  is `required` (a provenance artifact with zero required seats can no longer
+  vacuously pass), every required seat has a non-`DISAGREE` verdict, and no
+  `block`-severity finding remains unresolved — otherwise `review_gate_block`.
+  Mirrors `equivalent()`'s "never raise for an in-scope fail-closed condition"
+  posture, except `ProvenanceNotFound` propagates deliberately so a caller can
+  distinguish "not applicable" from "should block".
+- **`verdict_binds_to_equivalent(finding, gate_status)`** (§8 finding 5):
+  `verdict_binds_to(finding, gate_status.reviewed_sha)` (#88, reused verbatim)
+  AND `gate_status.equivalence_verified.result == EQUIVALENT` — two
+  independent facts ANDed, never one SHA masquerading as the other.
+- **§6.3 authenticity cross-check** (`cross_check_seat_authenticity`,
+  `read_seat_outcomes`/`append_seat_outcome`): every provenance seat is
+  cross-checked against the durable `SeatOutcomeRecord` for the same
+  `(seat_key, vendor_leg, epoch)` — a provenance seat with no matching durable
+  record, a disagreeing `required`/`status`/`artifact_digest`/
+  `evidence_digest`, or a required seat whose durable status is not a usable
+  terminal (`OK`) all INVALIDATE (T13). Defines the previously-missing durable
+  ledger location (a JSONL file sibling to the provenance artifact under the
+  same trusted `provenance_dir_for_run` root), reusing
+  `panel_invoker.serialize_seat_outcome` for encoding.
+- **§6.4 material re-verify** (`reverify_all_material`): re-hashes the
+  candidate round's AND every delta round's own snapshotted material against
+  its `review_scope.reviewed_material_digest` (reuses `reverify_material`); a
+  post-review edit of the underlying file is detected and INVALIDATES (T14).
+- **Closeout wiring** (`fab_gate_validator`, `@register_closeout_validator`):
+  follows the exact `verification_evidence_validator` pattern — `block`
+  severity, `blocker_class="review_gate_block"` (non-human,
+  `apply_review_findings` never sets `human_required`), force-downgraded to
+  `warn` under the default `PHASE_LOOP_REVIEW=warn`, blocking only when opted
+  in. Inert when the new `CloseoutContext.fab_gate_inputs` field (threaded
+  through `build_phase_loop_closeout`) is absent or the run recorded no FAB
+  provenance. `run_id` MUST be resolved by the caller from TRUSTED
+  harness/review-run output, never from `terminal`/`automation`
+  (agent/PR-influenced self-report).
+- **§4.4 promotion-time re-assertion** (`governed_premerge.
+  run_governed_premerge_loop`, new `fab_promotion_check`/`fab_equivalent_fn`
+  parameters, default `None` — byte-for-byte unchanged for every existing
+  caller): re-runs `equivalent()` against the LIVE PR immediately before
+  EITHER of the loop's two `mergeable=True` outcomes and overrides to a
+  non-human `review_gate_block` on any change — the runtime fail-closed
+  backstop for "conflict resolved outside the head after a pass" (I4b), which
+  holds even when GitHub's "require branches up to date" branch-protection
+  setting is absent or misconfigured.
+- **Tests** (`tests/test_fab_gate_d.py`, 20 cases, unmarked): all six #191
+  acceptance criteria end-to-end against real temporary git repositories —
+  disjoint clean delta passes without whole-patch re-review; an unrelated byte
+  invalidates; rebase invalidates at the gate AND the promotion re-assertion
+  separately refuses a merge-outside-head change; a boundary-surface delta
+  forces whole-patch escalation (delta-only scope rejected, whole-patch scope
+  corroborated by seats passes); a fabricated seat with no durable record and
+  a mutated material snapshot both invalidate; the exact-head degenerate case
+  (empty `delta_chain`) still passes — plus `verdict_binds_to_equivalent`'s
+  two-independent-facts contract, the closeout validator's warn-default/
+  opt-in-block/inert dispositions, and the promotion re-assertion's
+  pass-through-when-still-equivalent and byte-neutral-when-unset cases.
+
+### FAB Lane D — cross-vendor CR fail-open fixes + fail-closed-by-construction inert gate (Consiliency/agent-harness#191)
+
+A unanimous cross-vendor CR round on Lane D surfaced two gate-logic fail-opens
+and an inert-gate concern. `phase_loop_runtime.fab_gate` fixes both bugs and
+restructures the closeout validator so the inert branch is fail-closed by
+construction; no production producer/consumer wiring (runner.py/cli.py call
+sites, a seat-outcome-ledger writer, or `FabPromotionCheck`'s live merge-path
+wiring) is part of this fix — FAB remains dormant today, traced.
+
+- **A `reviewed-clean` delta round is now bound to its OWN seats, not just the
+  artifact-wide seat pool** (F1): Lane D previously authenticated the
+  artifact-wide seat list and required only one globally-`required` seat, but
+  never bound a delta round to its own reviewers — Lane C's `build_delta_round`
+  deliberately delegated that validation to Lane D for any record it did not
+  itself construct (e.g. one loaded from JSON), and Lane D never picked it up.
+  A `reviewed-clean` delta with `delta_round_seats=()` previously PASSED.
+  `DeltaReviewRecord` gains a `delta_round_seats` field (persisted by
+  `build_delta_round`, previously computed and discarded after a one-time
+  construction-time check); `compose_gate_status` now runs a new
+  `_require_delta_round_seat_binding` over EVERY resolved-status round in the
+  chain, requiring its seats be non-empty, authenticate against the durable
+  `SeatOutcomeRecord` ledger (§6.3, reusing `cross_check_seat_authenticity`),
+  and corroborate that round's own `resolved_finding_ids` (always) and
+  `reopened_finding_ids` (when `status == reviewed-clean` — mirrors
+  `build_delta_round`'s own asymmetric rule) via `fab_delta.
+  require_seat_corroboration`, reused. Deliberately not folded into
+  `chain_digest` (mirrors the artifact-level `seats` field, which the design's
+  hash formula also excludes); still tamper-evident via the whole-artifact
+  `artifact_digest` self-check.
+- **The chain resolution and unresolved-finding evaluation now cover EVERY
+  round, not just the final one** (F2): `resolve_chain_resolution` previously
+  validated only the LAST delta's status/`resulting_head_digest`/T5
+  review-scope, and `_unresolved_block_findings` consulted only the final
+  round's `resolved_finding_ids`/`reopened_finding_ids` — an intermediate
+  `pending`/`invalidated` round, an intermediate T5 violation, or an
+  unresolved `block` finding reopened by an earlier round could be masked by a
+  later, clean-looking final record. `resolve_chain_resolution` now requires
+  EVERY `delta_chain` member to be resolved/pass-eligible (`reviewed-clean` or
+  `escalated-whole-patch`), have its own `resulting_head_digest`, and pass its
+  own T5 re-check; `_unresolved_block_findings` now folds every round's
+  resolved/reopened audit trail IN ORDER, so a reopen only a middle round
+  recorded can never be silently resolved by a later round's silence.
+- **The closeout validator is fail-closed by construction, using the TRUSTED
+  `run_id`, never `ctx.terminal`/`ctx.automation` self-report** (F3, all three
+  vendors): `fab_gate_validator` previously returned `[]` (inert) whenever
+  `repo_root`/live-PR inputs were missing OR `compose_gate_status` raised
+  `ProvenanceNotFound` — three genuinely different situations collapsed into
+  one silent non-outcome a caller could induce by dropping an input. The
+  validator now commits to exactly two outcomes once a `run_id` is present:
+  (i) no `fab_gate_inputs`, or no extractable `run_id` → inert (`[]`) — the
+  ONLY inert branch, meaning "never scoped to FAB"; (ii) `run_id` present but
+  `repo_root`/`live_base_ref_name`/`live_head_sha` missing or malformed →
+  `block` — the gate was scoped to FAB but cannot complete; (iii) `run_id`
+  present but `ProvenanceNotFound` → `block`, not inert — `run_id` is the
+  TRUSTED scope marker the caller only sets when a run took the FAB path, so a
+  claimed run_id with no recorded provenance means the write path broke, not
+  "not FAB". FAB remains DORMANT in practice (no live producer writes
+  provenance today, traced) — this closes the fail-open for when a producer is
+  later wired, without changing any current runtime behavior.
+- **Tests** (`tests/test_fab_gate_d.py`, 31 cases total): the acceptance-1
+  fixture that previously codified the F1 unsafe outcome now supplies a real,
+  authenticated delta-round seat for its pass case; new cases cover a
+  zero-seat and an uncorroborated-reopen `reviewed-clean` delta both BLOCKing,
+  and each of F3's three branches (no-run_id inert, missing-inputs block,
+  no-provenance-for-a-claimed-run_id block).
+
+### FAB Lane D — fold delta-round seat VERDICTS into the pass gate (Consiliency/agent-harness#191, codex-reproduced)
+
+The F1 fix above authenticated a resolved delta round's OWN `delta_round_seats`
+(non-empty, §6.3 durable cross-check, finding-id corroboration) but never
+checked what those seats actually VERDICTED — so a `reviewed-clean` delta
+round whose required own seat returned `DISAGREE` (or no verdict at all)
+could still reach `GATE_STATUS_PASS` on the strength of the OLDER,
+artifact-wide `seats` agreeing. codex reproduced the gap at HEAD `47e6493`.
+
+- **`_require_delta_round_seat_binding` now folds each round's required-seat
+  verdicts into the same non-DISAGREE rule `compose_gate_status` already
+  applies at the artifact level** (design §8): for every resolved-status round,
+  it now additionally requires (a) at least one `delta_round_seats` entry be
+  `required` (mirrors the artifact-level `no_required_seats` rule — design
+  ambiguity #3 — applied per round, not just once for the whole artifact) and
+  (b) every `required` delta-round seat carry an `AGREE`/`PARTIALLY AGREE`
+  verdict, reusing `_unresolved_required_seats` (the exact artifact-level
+  check) against `record.delta_round_seats`. A `DISAGREE`, or unverdicted,
+  required delta-round seat now raises `DeltaRoundSeatBindingInvalid`
+  (fail-closed) regardless of what the artifact-wide seats say.
+- **`fab_delta.require_seat_corroboration` is deliberately left unchanged**:
+  its contract ("was this finding id reviewed by some seat at all", accepting
+  any non-null verdict including `DISAGREE`) is correct for its own narrower
+  question and is reused as-is for finding-id corroboration. The new
+  required-seat-verdict check above is a separate, unconditional check (it
+  fires even when a round resolves/reopens zero findings, closing the
+  "vacuous when nothing is resolved" gap) — it does not change
+  `require_seat_corroboration`'s existing semantics or callers.
+- **Tests** (`tests/test_fab_gate_d.py`, 35 cases total): new cases pin a
+  `reviewed-clean` delta with a required, authenticated `DISAGREE` delta-round
+  seat BLOCKing (the exact bug); a required seat with `verdict=None` BLOCKing;
+  an all-optional-seats round BLOCKing; and the legitimate AGREE case staying
+  green. All Lane A/B/C/D tests remain green.
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the

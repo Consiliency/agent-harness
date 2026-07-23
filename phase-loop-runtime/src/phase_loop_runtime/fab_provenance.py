@@ -774,7 +774,25 @@ class DeltaReviewRecord:
     """design §5.1 `DeltaReviewRecord` (`fab.delta-review`). Carries its own
     `policy`/`review_scope`/`material_digests` (per resolved-ambiguity #3) so its
     `chain_digest` is independently recomputable without consulting sibling
-    rounds for anything but `parent_chain_digest`."""
+    rounds for anything but `parent_chain_digest`.
+
+    `delta_round_seats` (agent-harness#191 CR, Lane D finding 1): the SAME
+    `delta_round_seats` `fab_delta.build_delta_round` already accepts and
+    corroborates `resolved_finding_ids`/`reopened_finding_ids` against at
+    construction time (`require_seat_corroboration`) — previously discarded
+    after that one-time check, never persisted. Lane D's gate needs this round's
+    OWN seats to re-authenticate them against the durable `SeatOutcomeRecord`
+    ledger (§6.3) and re-run the corroboration check independently at gate
+    time, so a round built any other way (e.g. loaded from JSON, never routed
+    through `build_delta_round`) cannot claim `reviewed-clean` on an
+    unsubstantiated or empty seat set. Deliberately NOT folded into
+    `chain_digest` — mirrors the artifact-level `seats` field, which the
+    design's C0/Ci hash formula (§5.1) also excludes; seat authenticity is a
+    SEPARATE, durable-ledger-backed check (§6.3), not a hash-chain concern.
+    Still tamper-evident: it rides inside `DeltaReviewRecord.to_dict()`, which
+    is folded into the WHOLE-ARTIFACT `artifact_digest` self-check
+    (`ReviewProvenanceArtifact.from_dict`) whenever this record is loaded as
+    part of a `delta_chain`."""
 
     schema: str = SCHEMA_DELTA_REVIEW
     policy: Any = None
@@ -792,6 +810,7 @@ class DeltaReviewRecord:
     resulting_head_digest: str | None = None
     status: str
     escalation: Escalation
+    delta_round_seats: tuple[ProvenanceSeat, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema != SCHEMA_DELTA_REVIEW:
@@ -817,6 +836,7 @@ class DeltaReviewRecord:
         resulting_head_digest: str | None,
         status: str,
         escalation: Escalation,
+        delta_round_seats: Sequence[ProvenanceSeat] = (),
     ) -> "DeltaReviewRecord":
         """Construct a delta round, computing `chain_digest` from the other
         fields (never accepted as caller-supplied — that would let a caller
@@ -852,6 +872,7 @@ class DeltaReviewRecord:
             resulting_head_digest=resulting_head_digest,
             status=status,
             escalation=escalation,
+            delta_round_seats=tuple(delta_round_seats),
         )
 
     def recompute_chain_digest(self) -> str:
@@ -890,6 +911,7 @@ class DeltaReviewRecord:
             "resulting_head_digest": self.resulting_head_digest,
             "status": self.status,
             "escalation": self.escalation.to_dict(),
+            "delta_round_seats": [s.to_dict() for s in self.delta_round_seats],
         }
 
     @classmethod
@@ -912,6 +934,7 @@ class DeltaReviewRecord:
             resulting_head_digest=_opt_str(d, "resulting_head_digest"),
             status=_req_str(d, "status"),
             escalation=Escalation.from_dict(_req(d, "escalation")),
+            delta_round_seats=tuple(ProvenanceSeat.from_dict(s) for s in d.get("delta_round_seats", [])),
         )
 
     def to_json(self) -> str:
