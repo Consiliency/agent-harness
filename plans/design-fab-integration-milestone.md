@@ -243,3 +243,52 @@ review representation) + write provenance. Consumer (piece 3) = durable admissio
 single-commit re-review + atomic re-admission + new provenance. Gate authority = the full `compose_gate_status`
 re-run at merge (piece 1 extended). Everything behind `PHASE_LOOP_FAB` (byte-neutral off). Merge-queue refused
 until #265. Multi-commit composition deferred.
+
+---
+## v5 — closes v4 panel fail-opens (codex + gemini; grok AGREE'd v4)
+
+Four specific forge-path fixes on top of v4's resolved design:
+
+1. **Expected-seat manifest anchors completeness (codex — closes omission of non-usable / never-recorded
+   required seats).** v4's "iterate durable required+usable records" has a hole: a required seat that TIMED
+   OUT / DEGRADED (non-usable) or NEVER produced a durable record isn't in that set, so completeness doesn't
+   demand it → the blocking seat is invisible (bypasses fab_gate.py:396's "required non-usable can't approve").
+   Neither `PanelLegResult` nor the board `Seat` carries an authoritative `required` flag
+   (panel_invoker.py:220, advisor_board/schema.py:141). **FIX:** persist an EPOCH-SCOPED EXPECTED-SEAT MANIFEST
+   (the set of required seat_keys) BEFORE panel invocation, harness-only-written to the run store. The gate
+   requires, for every epoch: every EXPECTED-required seat has (a) a durable outcome with a USABLE-terminal
+   status (a non-usable/timeout/degraded required outcome → BLOCK), AND (b) a matching provenance seat with
+   matching verdict AND finding_ids. Anchor completeness on the EXPECTED set (known pre-invocation), never the
+   produced set.
+2. **Bind finding_ids, not just verdict (gemini — closes the drop-the-blocking-finding forge).** v4's
+   cross-check binds verdict but not findings, so an attacker keeps the matching verdict and EMPTIES the
+   provenance `findings`, dropping a blocking finding a seat logged. **FIX:** `cross_check_seat_authenticity`
+   must require `set(provenance_seat.finding_ids) == set(durable.finding_ids)` per seat. Then the gate's
+   unresolved-block-finding check sees the true findings.
+3. **Explicit `epoch` on `DeltaReviewRecord` (gemini — closes the empty-seats epoch bypass).** Deriving a
+   delta round's epoch from its seats lets a forged `DeltaReviewRecord` with an EMPTY `seats` list evade
+   completeness (can't derive epoch → can't fetch durable records → 0 expected, 0 provided, trivially passes).
+   **FIX:** add an explicit `epoch: int` field to `DeltaReviewRecord`; completeness fetches the epoch's
+   EXPECTED-seat manifest + durable records BY THAT EPOCH — an empty-seats delta round then fails completeness
+   (the epoch's expected required seats are uncovered). This upgrades spike-A's "one-line invariant" to a
+   SECURITY requirement.
+4. **Honest fallback: "no provenance" = the pre-FAB STATUS QUO, NOT "full review" (codex — corrects a false
+   plan claim).** codex is right that "every closeout commit is reviewed" is FALSE (`noop_already_committed`
+   completes before review, runner.py:9070; executor mid-branch commits are outside the staged review; the
+   admitted-head guard proves "unchanged since publish," not "reviewed"). So the honest statement: when FAB
+   writes no provenance, the merge takes the EXISTING non-FAB admission-based path — with the SAME coverage
+   properties it has TODAY (pre-FAB). FAB neither weakens nor strengthens that path; it does NOT claim to
+   prove `merge-base..admitted_head` is fully reviewed. GUARANTEEING full-range review coverage (closing the
+   pre-existing admission≠review gap) is EXPLICITLY DEFERRED to the multi-commit-composition follow-up + an
+   OPTIONAL future strict mode (FAB-on ⇒ halt unless the whole range is provably reviewed) — NOT this
+   milestone. Do not claim otherwise in the code or docs. (This keeps the milestone's blast radius minimal:
+   FAB adds the shortcut + its guarantees for FAB-provenance PRs; non-FAB PRs merge exactly as today.)
+
+### Net (v1→v5)
+The plan now: honest per-phase-closeout reviewed unit + enforced honesty gate; non-forgeable authenticity via
+an expected-seat manifest + verdict-AND-finding binding + durable-driven epoch-scoped completeness (explicit
+DeltaReviewRecord.epoch); hard gate outside the warn registry; full byte-neutral gating; durable admission
+record + atomic re-admission + single-commit committed-range re-review; crash safety via full merge-time
+re-gate; enforced merge-queue prohibition (#265); complete-review-representation build requirement; and an
+HONEST fallback (status quo, full-range coverage deferred). Multi-commit composition + optional strict mode
+are the named follow-ups.
