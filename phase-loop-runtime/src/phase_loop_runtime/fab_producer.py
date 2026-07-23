@@ -265,7 +265,6 @@ def finalize_and_gate(
     closeout_dirty_paths: Sequence[str],
     base_ref_name: str,
     origin: str = "origin",
-    reviewed_bundle_text: str,
 ) -> ProducerOutcome:
     """Phase 2 (post-commit, harness-only). Runs the enforced honesty gate, and
     only if it holds, builds + writes provenance and runs the DEDICATED HARD

@@ -9111,9 +9111,18 @@ def _perform_phase_closeout_impl(
                 # Capture the exact staged tree the panel is about to review so the
                 # commit can prove it is byte-identical (below).
                 reviewed_tree = _git_output(repo, "write-tree")
+                # FAB (Consiliency/agent-harness#191) piece 2: scope this closeout
+                # to FAB only when the flag is on. Byte-neutral otherwise — no
+                # run_id, no capture, no producer, no import reached.
+                fab_run_id = None
+                fab_reviewed_base_sha = None
+                if _fab_closeout_enabled():
+                    fab_reviewed_base_sha = _git_output(repo, "rev-parse", "HEAD")
+                    fab_run_id = f"fab-{reviewed_tree}"
                 _governed = _governed_premerge_review(
                     repo, roadmap, phase, plan, terminal_status,
                     closeout_dirty_paths, snapshot.terminal_summary, run_mode,
+                    fab_run_id=fab_run_id,
                 )
                 if _governed is not None:
                     status = "blocked"
@@ -9164,6 +9173,41 @@ def _perform_phase_closeout_impl(
                             "closeout_commit": commit,
                         }
                     )
+                    # FAB (Consiliency/agent-harness#191) piece 2: the post-commit
+                    # producer transaction. Only when the closeout was scoped to
+                    # FAB (flag on) AND the review actually ran/passed (a real
+                    # implementation commit, not a planned doc). Honesty-gate
+                    # miss ⇒ no provenance, proceed exactly as the non-FAB path.
+                    # A DEDICATED hard-gate BLOCK ⇒ the phase is held (non-human
+                    # review_gate_block) — never a warn-downgraded pass.
+                    if fab_run_id is not None and status == "complete" and fab_reviewed_base_sha is not None:
+                        fab_outcome = _fab_closeout_producer(
+                            repo,
+                            fab_run_id=fab_run_id,
+                            reviewed_base_sha=fab_reviewed_base_sha,
+                            reviewed_tree=reviewed_tree,
+                            committed_head=commit,
+                            closeout_dirty_paths=closeout_dirty_paths,
+                        )
+                        if fab_outcome is not None and fab_outcome.wrote_provenance:
+                            metadata["closeout"]["fab_run_id"] = fab_run_id
+                            if fab_outcome.blocked:
+                                status = "blocked"
+                                blocker = {
+                                    "human_required": False,
+                                    "blocker_class": "review_gate_block",
+                                    "blocker_summary": fab_outcome.block_reason
+                                    or "FAB producer hard gate did not pass",
+                                    "required_human_inputs": (),
+                                }
+                                metadata["closeout"].update(
+                                    {
+                                        "closeout_action": "review_gate_block",
+                                        "verification_status": "blocked",
+                                        "fab_gate": {"blocked": True, "reason": fab_outcome.block_reason},
+                                    }
+                                )
+                                return status, _closeout_event()
                     # GATE: record SAFE beyond-ownership paths that were soft-committed
                     # as visible `soft` CloseoutExceptions (one per sensitivity class),
                     # never folded into a clean pass. BREAKGLASS: source/ci/lockfile UNSAFE
@@ -9573,8 +9617,57 @@ def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, act
     return ("blocked", event)
 
 
+def _fab_closeout_enabled() -> bool:
+    """True iff FAB producer wiring is active (``PHASE_LOOP_FAB`` on). Isolated
+    so the byte-neutral default path never imports the FAB stack."""
+    from .governed_premerge import fab_promotion_enabled
+
+    return fab_promotion_enabled()
+
+
+def _fab_resolve_base_ref_name(repo) -> str | None:
+    """Best-effort resolve the PR base branch name (e.g. ``main``) from
+    ``origin/HEAD``. Returns ``None`` when it cannot be resolved — the FAB
+    producer then declines to write provenance (fail-closed, no honest
+    merge-base)."""
+    out = _git_output_or_empty(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if not out:
+        return None
+    name = out.strip()
+    prefix = "origin/"
+    return name[len(prefix):] if name.startswith(prefix) else name
+
+
+def _fab_closeout_producer(
+    repo, *, fab_run_id, reviewed_base_sha, reviewed_tree, committed_head, closeout_dirty_paths, fab_epoch=1
+):
+    """Run the FAB piece-2 post-commit producer transaction (honesty gate →
+    build → write provenance → dedicated hard gate). Returns the
+    ``fab_producer.ProducerOutcome``, or ``None`` when the base ref cannot be
+    resolved (declines to write provenance — never blocks on that alone). Only
+    reached when ``PHASE_LOOP_FAB`` is on (caller-gated)."""
+    from . import fab_producer
+
+    base_ref_name = _fab_resolve_base_ref_name(repo)
+    if base_ref_name is None:
+        return None
+    return fab_producer.finalize_and_gate(
+        repo,
+        fab_run_id,
+        epoch=fab_epoch,
+        reviewed_base_sha=reviewed_base_sha,
+        reviewed_tree=reviewed_tree,
+        committed_head_sha=committed_head,
+        closeout_dirty_paths=closeout_dirty_paths,
+        base_ref_name=base_ref_name,
+        origin="origin",
+        reviewed_bundle_text="",  # unused post-capture; the run-store bundle snapshot is authoritative
+    )
+
+
 def _governed_premerge_review(
-    repo, roadmap, alias, plan, terminal_status, closeout_dirty_paths, terminal_summary, run_mode
+    repo, roadmap, alias, plan, terminal_status, closeout_dirty_paths, terminal_summary, run_mode,
+    *, fab_run_id: str | None = None, fab_epoch: int = 1,
 ):
     """Governed pre-merge review, run INSIDE ``_perform_phase_closeout`` — AFTER
     ``git add`` stages the owned paths and BEFORE the commit is finalized.
@@ -9587,6 +9680,13 @@ def _governed_premerge_review(
 
     Autonomous is a literal no-op (outer ``run_mode`` guard). Implementation
     closeouts only — a plan-doc closeout is the planning gate's job (P3).
+
+    ``fab_run_id`` (FAB Consiliency/agent-harness#191 piece 2; default ``None`` —
+    byte-neutral): when the caller has scoped this closeout to FAB (flag on), the
+    passing panel's REAL per-seat outcomes are captured AT INVOCATION here (the
+    anti-tautology anchor — never synthesized from the review return value) via
+    ``fab_producer.capture_review_at_invocation``, keyed by the trusted
+    ``fab_run_id``. Byte-neutral when ``None`` (no capture, no import reached).
     """
     if run_mode != "governed" or terminal_status == "planned" or not closeout_dirty_paths:
         return None
@@ -9611,6 +9711,13 @@ def _governed_premerge_review(
         # train_runner._live_merge_pr.
     )
     if result.mergeable:
+        if fab_run_id is not None and result.panel is not None:
+            # FAB piece 2: capture the REAL passing panel at invocation.
+            from .fab_producer import capture_review_at_invocation
+
+            capture_review_at_invocation(
+                repo, fab_run_id, result.panel, epoch=fab_epoch, reviewed_bundle_text=bundle
+            )
         return None
     blocker = dict(result.terminal_blocker or {})
     blocker.setdefault("human_required", False)

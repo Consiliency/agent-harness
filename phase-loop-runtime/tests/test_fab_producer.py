@@ -98,7 +98,6 @@ class ProducerTestCase(unittest.TestCase):
             closeout_dirty_paths=dirty,
             base_ref_name="main",
             origin="fetchsrc",
-            reviewed_bundle_text=bundle,
         )
 
     # -- honesty: single clean closeout → provenance + PASS -----------------
@@ -150,7 +149,7 @@ class ProducerTestCase(unittest.TestCase):
         outcome = prod.finalize_and_gate(
             self.repo, run_id, epoch=1, reviewed_base_sha=base, reviewed_tree=tree,
             committed_head_sha=head, closeout_dirty_paths=(), base_ref_name="main",
-            origin="fetchsrc", reviewed_bundle_text="bundle text",
+            origin="fetchsrc",
         )
         self.assertFalse(outcome.wrote_provenance)
         self.assertEqual(outcome.skipped_reason, "empty_closeout")
@@ -170,7 +169,7 @@ class ProducerTestCase(unittest.TestCase):
         outcome = prod.finalize_and_gate(
             self.repo, run_id, epoch=1, reviewed_base_sha=base, reviewed_tree=tree,
             committed_head_sha=head, closeout_dirty_paths=("a.py",), base_ref_name="main",
-            origin="fetchsrc", reviewed_bundle_text="bundle text",
+            origin="fetchsrc",
         )
         self.assertFalse(outcome.wrote_provenance)
         self.assertEqual(outcome.skipped_reason, "hook_mutated_tree")
@@ -218,7 +217,7 @@ class ProducerTestCase(unittest.TestCase):
             outcome = prod.finalize_and_gate(
                 self.repo, run_id, epoch=1, reviewed_base_sha=base, reviewed_tree=tree,
                 committed_head_sha=head, closeout_dirty_paths=("a.py",), base_ref_name="main",
-                origin="fetchsrc", reviewed_bundle_text="bundle text",
+                origin="fetchsrc",
                 # note: committed_head_sha is the REVIEWED head; the live head has
                 # drifted — compose_gate_status is called with live_head=reviewed
                 # head here, so instead assert via a follow-up gate below.
