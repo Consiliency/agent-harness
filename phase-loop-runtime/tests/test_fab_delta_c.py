@@ -171,6 +171,35 @@ class GlobSemanticsTest(unittest.TestCase):
                 with self.assertRaises(fd.BoundaryManifestInvalid):
                     fd._translate_glob_to_regex(bad)
 
+    def test_dot_git_component_rejected(self):
+        """Round-4 CR (codex, verified by direct execution against 48d27f3):
+        a `.git` path component is git-SPECIAL-forbidden (git's own pathname
+        verifier rejects a `.git` component anywhere in a tree, case-
+        insensitively — `fsck`/`unpack-trees` reject `.git`, `.GIT`, `.Git`,
+        ... to close the on-disk-`.git`-shadowing attack class), so a glob
+        with a literal `.git` component can never match a real `-z` diff
+        path. `[surface]\\nglobs = [".git/**"]` compiled and gave
+        `evaluate_boundary_escalation(..., ("src/live.py",)).required ==
+        False` before this check existed — the same zero-effective-boundary
+        downgrade as the round-3 structural findings, just via a git-special
+        restriction rather than a path-normalization one."""
+        for bad in (".git/**", "src/.GIT/**", ".Git/**", "a/.git/b", ".git", "**/.git/**"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(fd.BoundaryManifestInvalid):
+                    fd._translate_glob_to_regex(bad)
+
+    def test_dot_git_rejection_does_not_over_reject_wildcards_or_similar_names(self):
+        """The `.git` rejection is bounded to LITERAL segments only — a
+        wildcard segment that could INCIDENTALLY also match `.git` (`**`,
+        `*`, `.*`) is deliberately left alone (its breadth is the fail-SAFE
+        direction), and a legitimately dot-prefixed directory that merely
+        starts with the same three letters (`.github`) is a DIFFERENT
+        component entirely, not `.git`."""
+        self.assertTrue(self._match("**", ".git/config"))
+        self.assertTrue(self._match("*", ".git"))
+        self.assertTrue(self._match(".github/workflows/**", ".github/workflows/ci.yml"))
+        self.assertFalse(self._match(".github/workflows/**", ".git/workflows/ci.yml"))
+
     def test_legitimate_default_glob_set_all_compile_and_match_correctly(self):
         """Regression: the full legitimate default glob set (design §5.4)
         must all still compile AND match a representative in-boundary path
@@ -346,6 +375,27 @@ class BoundaryManifestLoadTest(GitRepoTestCase):
             with self.subTest(bad_glob=bad_glob):
                 self.write(fd.BOUNDARY_MANIFEST_PATH, f'[auth]\nglobs = ["{bad_glob}"]\n')
                 base = self.commit(f"c1 semantically-empty glob {bad_glob!r}")
+                load = fd.load_boundary_manifest_at_base(self.repo, base)
+                self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
+                self.assertIsNone(load.manifest)
+                esc = fd.evaluate_boundary_escalation(load, ("src/live.py",))
+                self.assertTrue(esc.required, f"{bad_glob!r} must escalate (fail-closed), not silently permit carry-forward")
+                self.assertEqual(esc.trigger, fd.ESCALATION_TRIGGER_MALFORMED_MANIFEST)
+
+    def test_dot_git_component_glob_manifest_is_malformed_not_present(self):
+        """Round-4 CR (codex, verified by direct execution against 48d27f3):
+        the exact repro — `[surface]\\nglobs = [".git/**"]` used to give
+        `evaluate_boundary_escalation(load, ("src/live.py",)).required ==
+        False`, i.e. `surface` LOOKED protected (PRESENT disposition, a
+        non-empty valid-glob list) while being silently UNPROTECTED, because
+        `.git/**` compiles but can never match a real diff path (git forbids
+        a `.git` path component anywhere, case-insensitively). It must now
+        resolve to MALFORMED (same fail-closed disposition as missing/
+        genuinely-malformed) and force escalate-every-delta, end to end."""
+        for bad_glob in (".git/**", "src/.GIT/**", ".Git/**", "a/.git/b"):
+            with self.subTest(bad_glob=bad_glob):
+                self.write(fd.BOUNDARY_MANIFEST_PATH, f'[surface]\nglobs = ["{bad_glob}"]\n')
+                base = self.commit(f"c1 dot-git-component glob {bad_glob!r}")
                 load = fd.load_boundary_manifest_at_base(self.repo, base)
                 self.assertEqual(load.disposition, fd.MANIFEST_DISPOSITION_MALFORMED)
                 self.assertIsNone(load.manifest)

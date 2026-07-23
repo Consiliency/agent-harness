@@ -89,6 +89,17 @@ FROZEN INTERFACE (IF-0-FAB-C-1) — D codes against this without renegotiation:
     -componented, doubly-slashed, or trailing-slashed) — a glob requiring one
     of those forms is syntactically valid but matches ZERO real paths, a
     silent downgrade of whatever boundary declared it (§5.4 downgrade-proof).
+    A glob is ALSO malformed if it contains a LITERAL (non-wildcard)
+    `/`-delimited segment that ASCII-lowercases to exactly `.git` (round-4
+    CR, codex — `.git`-component semantic-empty fail-open; e.g. `.git/**`,
+    `src/.GIT/**`, `a/.git/b`): git's own pathname verifier forbids a `.git`
+    path component anywhere in a tree, case-insensitively, so such a glob can
+    likewise never match a real diff path. A WILDCARD segment that could
+    incidentally also match `.git` (`**`, `*`, `.*`) is NOT rejected — see
+    `_translate_glob_to_regex`'s docstring for the full two-class decision
+    boundary this validator is bounded to, and the tracked non-blocking
+    residual (Consiliency/agent-harness#279) for what it deliberately does
+    not attempt.
 
   * **Carry-forward/escalation decision rule (design §5.3/§5.4, the
     authoritative disposition table):**
@@ -345,7 +356,42 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
     Raises `BoundaryManifestInvalid` on an empty/non-string glob, an absolute
     path (`/...`), a `..` path-traversal component, or any character outside
     the safe set `[A-Za-z0-9_./*?-]` — a malformed glob INVALIDATES (never
-    silently "matches nothing")."""
+    silently "matches nothing").
+
+    DECISION BOUNDARY (Consiliency/agent-harness#191 Lane C, round-3 + round-4
+    CR): this validator's job is to reject any glob that CANNOT match a
+    normalized git repo-relative path, because such a glob is a
+    zero-effective-boundary downgrade (§5.4's "no zero-effective-boundary
+    manifest may permit carry-forward" invariant) rather than a genuinely
+    narrow one. That rejection is deliberately bounded to exactly TWO
+    enumerated classes, not an open-ended "validate everything a real git
+    checkout might reject":
+
+      (a) STRUCTURAL non-normalized forms — an empty segment (leading/
+          trailing/doubled slash), or a `.`/`..` component — because
+          `fab_canonical.enumerate_changed_paths`'s `-z` diff paths are
+          always already normalized and can never contain one (round-3);
+      (b) the git-SPECIAL forbidden component `.git` (case-insensitive,
+          literal segments only) — because git's own pathname verifier
+          forbids a `.git` component anywhere in a tree, so a literal one in
+          a glob can never match a real diff path either (round-4, this fix).
+
+    What this validator deliberately does NOT do: exhaustively reproduce
+    every platform/filesystem-specific git-pathname restriction (Windows
+    reserved device names `CON`/`NUL`/`AUX`/...`, NTFS alternate-data-stream
+    `:` forms, HFS+ Unicode-dotless `.git` homoglyphs, Windows trailing-dot/
+    trailing-space trimming, and similar). Those are real but are NOT a Lane
+    C blocker: this module's own PRE-STATED TRUST BOUNDARY (module docstring,
+    mirroring Lane A §6.1a / Lane B / agent-harness#276) is that the boundary
+    manifest is read at the REVIEWED, base-pinned revision — a trusted,
+    already-reviewed artifact, not attacker-controlled delta content. An
+    exotic glob that happens to be semantically empty on one specific
+    platform's git is therefore a base-CONFIG lint concern (should be caught
+    when the manifest itself is authored/reviewed), not a runtime injection
+    vector an attacker can exploit by controlling repo CONTENTS at the delta
+    head. Full parity with git's platform-specific `verify_path` is tracked
+    as a non-blocking follow-up (Consiliency/agent-harness#279), not
+    re-litigated here every time a new exotic form is found."""
     if not isinstance(glob, str) or not glob:
         raise BoundaryManifestInvalid(f"malformed boundary glob (empty/non-string, fail-closed): {glob!r}")
     if glob.startswith("/"):
@@ -393,6 +439,37 @@ def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
             raise BoundaryManifestInvalid(
                 "malformed boundary glob (dot/dot-dot path component, fail-closed: cannot match any "
                 f"normalized git path): {glob!r}"
+            )
+
+    # agent-harness#191 CR (Lane C round-4 finding, codex, verified by direct
+    # execution — `.git`-component semantic-empty boundary fail-open): the
+    # round-3 check above closes STRUCTURAL non-normalized forms, but a glob
+    # can still be structurally normalized AND still match zero real git
+    # paths for a DIFFERENT reason — git's own pathname verifier
+    # unconditionally forbids a `.git` path COMPONENT anywhere in a tree,
+    # case-INSENSITIVELY (`fsck`/`unpack-trees` reject `.git`, `.GIT`,
+    # `.Git`, ... as a component, precisely to close the on-disk-`.git`-
+    # shadowing attack class), so a boundary glob with a literal `.git`
+    # component can never appear in git's own `-z` diff paths — reproduced
+    # directly against this module: `[surface]\nglobs = [".git/**"]` gave
+    # `evaluate_boundary_escalation(..., ("src/live.py",)).required == False`
+    # before this check existed, exactly the same zero-effective-boundary
+    # downgrade as the round-3 findings, just via a git-SPECIAL restriction
+    # rather than a path-normalization one. Reject only a LITERAL segment
+    # (no `*`/`?` wildcard character in it) whose ASCII-lowercased form is
+    # exactly `.git` — a wildcard segment that could INCIDENTALLY also match
+    # `.git` (`**`, `.*`, `.G?T`, ...) is deliberately left alone: its
+    # breadth is the fail-SAFE direction (matching MORE paths, including a
+    # `.git` one that git will never actually produce, never fewer), so only
+    # an explicit literal `.git` component — which can only ever match
+    # nothing — is the semantic-empty case this closes.
+    for _component in glob.split("/"):
+        if "*" in _component or "?" in _component:
+            continue  # wildcard segment: breadth is fail-safe, not the semantic-empty case
+        if _component.lower() == ".git":
+            raise BoundaryManifestInvalid(
+                "malformed boundary glob (literal '.git' path component, fail-closed: git forbids a "
+                f".git component anywhere, case-insensitively, so this can never match a real path): {glob!r}"
             )
 
     segments = glob.split("/")

@@ -408,6 +408,48 @@ touched.
   all 8 shapes, asserting `MANIFEST_DISPOSITION_MALFORMED` +
   escalate-every-delta), and a no-regression sweep over the full legitimate
   default glob set (66 cases total in the module, up from 63).
+- **Round-4 CR (codex, verified by direct execution against `48d27f3`):
+  literal `.git` path components now rejected — a git-SPECIAL semantic-empty
+  boundary, distinct from round-3's structural-normalization class.** Round-3
+  closed globs that cannot match a NORMALIZED git path; a glob can still be
+  fully normalized and STILL match zero real paths for a different reason —
+  git's own pathname verifier forbids a `.git` path component anywhere in a
+  tree, case-insensitively (`fsck`/`unpack-trees` reject `.git`, `.GIT`,
+  `.Git`, ... as a component, to close the on-disk-`.git`-shadowing attack
+  class). Direct execution confirmed the bypass: `[surface]\n globs =
+  [".git/**"]` gave `evaluate_boundary_escalation(load, ("src/live.py",))
+  .required == False` — `surface` looked protected while being silently
+  unprotected, same §5.4 downgrade-proof-invariant violation as round-3, via
+  a git-special restriction instead of a path-normalization one.
+  `_translate_glob_to_regex` now rejects any glob whose LITERAL `/`-delimited
+  segment (no `*`/`?` wildcard character in it) ASCII-lowercases to exactly
+  `.git` — additive to (never replacing) the round-3 checks, so `.git/**`,
+  `src/.GIT/**`, `.Git/**`, and `a/.git/b` all now raise
+  `BoundaryManifestInvalid`. A WILDCARD segment that could incidentally also
+  match `.git` (`**`, `*`, `.*`) is deliberately left unrejected — its
+  breadth is the fail-SAFE direction (matching MORE paths, never fewer) — and
+  a legitimately dot-prefixed directory like `.github/workflows/**` is
+  unaffected (`.github` is a different component than `.git`).
+  **Decision boundary, written down so future CR evaluates against it rather
+  than re-litigating each exotic form**: `_translate_glob_to_regex`'s
+  docstring now states the validator's job is bounded to exactly two
+  enumerated classes — (a) structural non-normalized forms (round-3) and (b)
+  the git-special forbidden `.git` component (round-4) — and explicitly does
+  NOT attempt exhaustive parity with every platform-specific git pathname
+  restriction (Windows reserved device names, NTFS alternate-data-stream
+  forms, HFS+ Unicode-dotless `.git` homoglyphs, Windows trailing-dot/space
+  trimming). Those are real but non-blocking: the boundary manifest is read
+  at the REVIEWED, base-pinned revision (this module's pre-stated trust
+  boundary, mirroring Lane A §6.1a / Lane B / #276) — a trusted artifact, not
+  attacker-controlled delta content — so an exotic residual is a base-config
+  lint concern, not a runtime injection vector. Tracked as a non-blocking
+  follow-up: Consiliency/agent-harness#279.
+  **Tests**: 3 new cases — unit-level rejection of 6 `.git`-component shapes
+  (`.git/**`, `src/.GIT/**`, `.Git/**`, `a/.git/b`, `.git`, `**/.git/**`), a
+  no-over-rejection check (`**`/`*`/`.github/workflows/**` still compile and
+  match correctly), and an end-to-end repro closing the exact `.git/**`
+  bypass over 4 case-variant shapes (asserting `MANIFEST_DISPOSITION_MALFORMED`
+  + escalate-every-delta) (69 cases total in the module, up from 66).
 
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
