@@ -50,8 +50,11 @@ consumes it), but its public names are still a stable contract other code
     (mirrors `fab_canonical.equivalent()`'s posture) EXCEPT
     `fab_provenance.ProvenanceNotFound`, which propagates deliberately — "no
     provenance recorded for this run_id" is categorically different from "a
-    recorded provenance is broken/tampered", and only the caller can tell
-    "not applicable" from "should block" apart (see `fab_gate_validator`).
+    recorded provenance is broken/tampered", and it is deliberately this
+    low-level primitive's caller, not `compose_gate_status` itself, that
+    decides what a missing provenance means for a GIVEN `run_id` (see
+    `fab_gate_validator`'s F3 branch table — once a `run_id` is present, it
+    resolves this to BLOCK, never "not applicable").
   * `verdict_binds_to_equivalent(finding, gate_status)` — design §8 finding 5:
     `verdict_binds_to(finding, gate_status.reviewed_sha)` (#88, REUSED from
     `closeout_validators`, never reimplemented) AND
@@ -65,10 +68,14 @@ consumes it), but its public names are still a stable contract other code
     EXACT `verification_evidence_validator`/`visual_avatar_evidence_validator`
     pattern: `severity="block"`, `blocker_class="review_gate_block"` (non-human
     — `apply_review_findings` never sets `human_required`), warn-default via
-    the global `PHASE_LOOP_REVIEW` control, opt-in `block`. Inert (`[]`) when
-    `CloseoutContext.fab_gate_inputs` is absent or the run recorded no FAB
-    provenance (`ProvenanceNotFound`) — this validator never fabricates a
-    finding about a repo/run that isn't using FAB delta review.
+    the global `PHASE_LOOP_REVIEW` control, opt-in `block`. Fail-closed BY
+    CONSTRUCTION (agent-harness#191 CR, finding 3): inert (`[]`) ONLY when
+    `CloseoutContext.fab_gate_inputs` is absent or carries no `run_id` (the
+    TRUSTED FAB-scope marker, resolved by the CALLER, never from `ctx.
+    terminal`/`ctx.automation`) — once a `run_id` is present, every other
+    failure (missing `repo_root`/live-PR inputs, or `ProvenanceNotFound` for
+    that claimed `run_id`) is a `block`, never a silent `[]`; see
+    `fab_gate_validator`'s own docstring for the exact branch table.
   * `FabPromotionCheck` / the `governed_premerge.run_governed_premerge_loop`
     wiring (design §4.4) — see that module for the promotion-time re-assertion
     itself; this module only supplies the reusable `resolve_equivalence_binding`
@@ -165,13 +172,18 @@ from .closeout_validators import (
     verdict_binds_to,
 )
 from .fab_canonical import EquivalenceBinding, equivalent
-from .fab_delta import enforce_review_scope_for_escalation
+from .fab_delta import (
+    ResolvedClaimUnverified,
+    enforce_review_scope_for_escalation,
+    require_seat_corroboration,
+)
 from .fab_provenance import (
     DELTA_STATUS_ESCALATED_WHOLE_PATCH,
     DELTA_STATUS_REVIEWED_CLEAN,
     EQUIVALENCE_EQUIVALENT,
     GATE_STATUS_BLOCK,
     GATE_STATUS_PASS,
+    DeltaReviewRecord,
     Escalation,
     EquivalenceResult,
     EquivalenceVerified,
@@ -212,6 +224,22 @@ class SeatAuthenticityInvalid(ProvenanceInvalid):
     disagrees with it on a load-bearing field, a required seat's durable
     status is not a usable terminal, or the durable ledger itself carries
     conflicting records for the same (seat_key, vendor_leg, epoch) key."""
+
+
+class DeltaRoundSeatBindingInvalid(ProvenanceInvalid):
+    """agent-harness#191 CR, Lane D finding 1: a resolved-status
+    (`reviewed-clean`/`escalated-whole-patch`) delta round has NO
+    `delta_round_seats` of its own, its seats fail the §6.3 durable
+    authenticity cross-check, or its `resolved_finding_ids`/
+    `reopened_finding_ids` are not corroborated by ITS OWN round's seats
+    (§5.3, `fab_delta.require_seat_corroboration`, reused). Lane C's
+    `build_delta_round` deliberately delegated ENFORCING this to Lane D for
+    any record it did not itself construct (e.g. one loaded from JSON) — this
+    is where that delegation is honored: the artifact-wide `seats` list and
+    its single "at least one required seat" check (`cross_check_seat_
+    authenticity` / `no_required_seats` below) are NOT sufficient on their
+    own, because neither binds a SPECIFIC delta round to the seats that
+    actually reviewed THAT round's claims."""
 
 
 # --------------------------------------------------------------------------- #
@@ -420,6 +448,64 @@ def cross_check_seat_authenticity(
 
 
 # --------------------------------------------------------------------------- #
+# Finding 1 (agent-harness#191 CR, Lane D) — bind EVERY resolved-status delta
+# round to its OWN delta_round_seats, never trusting the artifact-wide seat
+# pool alone.
+# --------------------------------------------------------------------------- #
+
+
+def _require_delta_round_seat_binding(
+    delta_chain: Sequence[DeltaReviewRecord],
+    durable_seat_outcomes: Sequence[SeatOutcomeRecord],
+) -> None:
+    """agent-harness#191 CR, Lane D finding 1: for every round in
+    `delta_chain` whose `status` is resolved/pass-eligible
+    (`_RESOLVED_DELTA_STATUSES` — `reviewed-clean` OR `escalated-whole-patch`),
+    require that round's OWN `delta_round_seats` (a) be non-empty, (b)
+    authenticate against the durable `SeatOutcomeRecord` ledger (§6.3, reusing
+    `cross_check_seat_authenticity` — the EXACT same cross-check the
+    artifact-wide seat list already gets), and (c) corroborate that round's
+    OWN `resolved_finding_ids` (always) and `reopened_finding_ids` (only when
+    `status == reviewed-clean` — mirrors `fab_delta.build_delta_round`'s own
+    asymmetric rule: an `escalated-whole-patch` round is, by definition, still
+    going BACK into whole-patch review, so its reopened ids have nothing yet
+    to corroborate). A round that is `pending`/`invalidated` is skipped here —
+    `resolve_chain_resolution` already fails the WHOLE gate closed on that
+    (finding 2), so this function only needs to guard resolved-looking rounds
+    from being trusted on an uncorroborated or fabricated seat claim.
+
+    Raises `DeltaRoundSeatBindingInvalid` (fail-closed) on the FIRST round
+    that fails any of the three checks — a `reviewed-clean` delta with
+    `delta_round_seats=()` (the exact unsafe outcome this closes) can never
+    reach a PASS."""
+    for index, record in enumerate(delta_chain):
+        if record.status not in _RESOLVED_DELTA_STATUSES:
+            continue
+        if not record.delta_round_seats:
+            raise DeltaRoundSeatBindingInvalid(
+                f"delta_chain[{index}] (status={record.status!r}) has NO delta_round_seats of its own "
+                "(fail-closed, F1: a resolved delta round with zero seats cannot be corroborated — the "
+                "artifact-wide seat list is not a substitute for THIS round's own reviewers)"
+            )
+        try:
+            cross_check_seat_authenticity(record.delta_round_seats, durable_seat_outcomes)
+        except SeatAuthenticityInvalid as exc:
+            raise DeltaRoundSeatBindingInvalid(
+                f"delta_chain[{index}] delta_round_seats failed the §6.3 durable authenticity "
+                f"cross-check (fail-closed): {exc}"
+            ) from exc
+        try:
+            require_seat_corroboration(record.resolved_finding_ids, record.delta_round_seats)
+            if record.status == DELTA_STATUS_REVIEWED_CLEAN:
+                require_seat_corroboration(record.reopened_finding_ids, record.delta_round_seats)
+        except ResolvedClaimUnverified as exc:
+            raise DeltaRoundSeatBindingInvalid(
+                f"delta_chain[{index}] has a resolved/reopened finding claim with no corroborating "
+                f"delta-round seat verdict (fail-closed, §5.3): {exc}"
+            ) from exc
+
+
+# --------------------------------------------------------------------------- #
 # §6.4 — immutable review-material re-verify (T14)
 # --------------------------------------------------------------------------- #
 
@@ -477,14 +563,22 @@ def resolve_chain_resolution(artifact: ReviewProvenanceArtifact) -> ChainResolut
     (`delta_chain` empty) via Lane B's `EquivalenceBinding.
     from_provenance_artifact` (never re-implemented), or the last delta
     round's `resulting_head_digest` as `expected_head_digest` when a chain
-    exists. Fail-closed (`GateChainUnresolved`, a `ProvenanceInvalid`
-    subclass) when the final round is `pending`/`invalidated`, has no
-    `resulting_head_digest`, fails a defense-in-depth T5 review-scope
-    re-check (reuses `fab_delta.enforce_review_scope_for_escalation`, never
-    re-implemented — this does NOT assume the record was actually built via
-    `build_delta_round`, since a loaded-from-JSON artifact was not
-    necessarily constructed through that path), or the artifact's
-    `base.ref_identity` is malformed."""
+    exists.
+
+    Fail-closed (`GateChainUnresolved`, a `ProvenanceInvalid` subclass) when
+    ANY round in the chain — not merely the final one (agent-harness#191 CR,
+    Lane D finding 2: "the chain is valid only if every member is
+    reviewed-clean [/ resolved] and contiguous", design §5.1) — is
+    `pending`/`invalidated`, has no `resulting_head_digest`, or fails a
+    defense-in-depth T5 review-scope re-check against ITS OWN
+    `resulting_head_digest` (reuses `fab_delta.enforce_review_scope_for_
+    escalation`, never re-implemented — this does NOT assume any record was
+    actually built via `build_delta_round`, since a loaded-from-JSON artifact
+    was not necessarily constructed through that path); also fail-closed when
+    the artifact's `base.ref_identity` is malformed. An intermediate
+    `pending`/`invalidated` round, or an intermediate T5 violation, is
+    structurally identical to a `verify_chain` splice/reorder in spirit — it
+    must never be masked by a later, resolved-looking final round."""
     if not artifact.delta_chain:
         binding = EquivalenceBinding.from_provenance_artifact(artifact)
         return ChainResolution(
@@ -494,23 +588,28 @@ def resolve_chain_resolution(artifact: ReviewProvenanceArtifact) -> ChainResolut
             re_reviewed_findings=(),
         )
 
-    last = artifact.delta_chain[-1]
-    if last.status not in _RESOLVED_DELTA_STATUSES:
-        raise GateChainUnresolved(
-            f"delta chain's final round has status={last.status!r} (fail-closed): not a resolved, "
-            f"pass-eligible state (must be one of {sorted(_RESOLVED_DELTA_STATUSES)!r})"
+    for index, record in enumerate(artifact.delta_chain):
+        if record.status not in _RESOLVED_DELTA_STATUSES:
+            raise GateChainUnresolved(
+                f"delta_chain[{index}] has status={record.status!r} (fail-closed): not a resolved, "
+                f"pass-eligible state (must be one of {sorted(_RESOLVED_DELTA_STATUSES)!r}) — EVERY "
+                "round in the chain must be resolved, not just the final one (F2)"
+            )
+        if record.resulting_head_digest is None:
+            raise GateChainUnresolved(f"delta_chain[{index}] has no resulting_head_digest (fail-closed)")
+
+        # Defense-in-depth: re-run T5 against EVERY record AS LOADED (its OWN
+        # resulting_head_digest — the same value `build_delta_round` uses at
+        # construction time for this exact round), never merely trusting
+        # that whatever produced it already enforced this, and never
+        # skipping any round but the last.
+        enforce_review_scope_for_escalation(
+            escalation=record.escalation,
+            review_scope=record.review_scope,
+            covering_patch_digest=record.resulting_head_digest,
         )
-    if last.resulting_head_digest is None:
-        raise GateChainUnresolved("delta chain's final round has no resulting_head_digest (fail-closed)")
 
-    # Defense-in-depth: re-run T5 against the record AS LOADED, never merely
-    # trusting that whatever produced it already enforced this.
-    enforce_review_scope_for_escalation(
-        escalation=last.escalation,
-        review_scope=last.review_scope,
-        covering_patch_digest=last.resulting_head_digest,
-    )
-
+    last = artifact.delta_chain[-1]
     ref_identity = artifact.base.ref_identity
     repo_slug, sep, ref_name = ref_identity.partition("#")
     if not sep or not repo_slug or not ref_name:
@@ -566,26 +665,36 @@ def _unresolved_required_seats(seats: Sequence[ProvenanceSeat]) -> tuple[str, ..
 
 def _unresolved_block_findings(
     findings: Sequence[Finding],
-    final_round_resolved: Sequence[str],
-    final_round_reopened: Sequence[str],
+    delta_chain: Sequence[DeltaReviewRecord],
 ) -> tuple[str, ...]:
-    """design ambiguity #2 (module docstring): a `severity=="block"` finding
-    is unresolved iff EITHER its top-level `status != "clean"`, OR the final
-    round's carry-forward reopened it (`reopened_finding_ids`) without ALSO
-    resolving it in that SAME round (`resolved_finding_ids`) — the reopen
-    audit trail always wins over a possibly-stale top-level `status`."""
-    resolved = set(final_round_resolved)
-    reopened = set(final_round_reopened)
-    unresolved: set[str] = set()
-    for finding in findings:
-        if finding.severity != "block":
-            continue
-        if finding.id in reopened and finding.id not in resolved:
-            unresolved.add(finding.id)
-            continue
-        if finding.status != "clean":
-            unresolved.add(finding.id)
-    return tuple(sorted(unresolved))
+    """design ambiguity #2 (module docstring), generalized across the WHOLE
+    chain (agent-harness#191 CR, Lane D finding 2 — "unresolved-finding
+    evaluation consults only the final round"): a `severity=="block"` finding
+    starts from its top-level `status` (`clean` == provisionally resolved —
+    `Finding.status` is never mutated by a later round's carry-forward
+    decision, per module docstring ambiguity #2), then folds EVERY
+    `delta_chain` round's `resolved_finding_ids`/`reopened_finding_ids` IN
+    ORDER: a round that reopens id `f` without ALSO resolving `f` in that SAME
+    round marks `f` unresolved from that point forward; a LATER round
+    resolving `f` (directly, or by reopening-and-resolving it in the same
+    round) marks it resolved again. The chain-FINAL fold state — not merely
+    the LAST round's own two lists — decides whether a block finding remains
+    open, so an intermediate reopen a later, clean-looking round never
+    mentions can never be silently masked."""
+    block_ids = {f.id for f in findings if f.severity == "block"}
+    resolved_state: dict[str, bool] = {f.id: (f.status == "clean") for f in findings if f.severity == "block"}
+    for record in delta_chain:
+        resolved_here = set(record.resolved_finding_ids)
+        reopened_here = set(record.reopened_finding_ids)
+        for fid in reopened_here:
+            if fid not in block_ids:
+                continue
+            resolved_state[fid] = fid in resolved_here
+        for fid in resolved_here:
+            if fid not in block_ids or fid in reopened_here:
+                continue  # already folded above (reopened-and-resolved-same-round)
+            resolved_state[fid] = True
+    return tuple(sorted(fid for fid, ok in resolved_state.items() if not ok))
 
 
 def _blocked_gate_status(
@@ -644,14 +753,21 @@ def compose_gate_status(
     caller (e.g. `fab_gate_validator`) can tell "not applicable, stay inert"
     from "should block" apart.
 
-    `status == GATE_STATUS_PASS` iff ALL of: the delta chain resolves to a
-    governing binding whose live-recomputed equivalence is `EQUIVALENT`;
-    EVERY provenance seat is authenticated against its durable
-    `SeatOutcomeRecord` (§6.3); every round's material re-verifies against its
-    claimed `reviewed_material_digest` (§6.4); at least one seat is `required`
-    (design ambiguity #3 — no vacuous pass on an empty seat set); every
-    required seat has a non-DISAGREE verdict; and no `block`-severity finding
-    remains unresolved. Otherwise `GATE_STATUS_BLOCK`, surfaced with
+    `status == GATE_STATUS_PASS` iff ALL of: EVERY round in the delta chain
+    (not just the final one — F2) is itself resolved/pass-eligible and the
+    chain resolves to a governing binding whose live-recomputed equivalence
+    is `EQUIVALENT`; EVERY provenance seat is authenticated against its
+    durable `SeatOutcomeRecord` (§6.3); EVERY resolved-status delta round's
+    OWN `delta_round_seats` are ALSO authenticated and corroborate that
+    round's `resolved_finding_ids`/`reopened_finding_ids` (F1 —
+    `_require_delta_round_seat_binding`; the artifact-wide seat list is not a
+    substitute for a round's own reviewers); every round's material
+    re-verifies against its claimed `reviewed_material_digest` (§6.4); at
+    least one seat is `required` (design ambiguity #3 — no vacuous pass on an
+    empty seat set); every required seat has a non-DISAGREE verdict; and no
+    `block`-severity finding remains unresolved ACROSS THE WHOLE CHAIN (F2 —
+    `_unresolved_block_findings` folds every round's audit trail, not just
+    the final one). Otherwise `GATE_STATUS_BLOCK`, surfaced with
     `equivalence_verified.reason` when the failure is equivalence-shaped, or a
     reason embedded in the raised/caught exception text otherwise."""
     artifact = read_provenance(repo, run_id)  # ProvenanceNotFound propagates deliberately.
@@ -662,6 +778,7 @@ def compose_gate_status(
         resolution = resolve_chain_resolution(artifact)
         durable_seats = seat_outcomes if seat_outcomes is not None else read_seat_outcomes(repo, run_id)
         cross_check_seat_authenticity(artifact.seats, durable_seats)
+        _require_delta_round_seat_binding(artifact.delta_chain, durable_seats)
         reverify_all_material(repo, run_id, artifact)
     except ProvenanceInvalid as exc:
         return _blocked_gate_status(
@@ -693,11 +810,7 @@ def compose_gate_status(
 
     no_required_seats = not any(seat.required for seat in artifact.seats)
     unresolved_required = _unresolved_required_seats(artifact.seats)
-    unresolved_block = _unresolved_block_findings(
-        artifact.findings,
-        final_round_resolved=(artifact.delta_chain[-1].resolved_finding_ids if artifact.delta_chain else ()),
-        final_round_reopened=(artifact.delta_chain[-1].reopened_finding_ids if artifact.delta_chain else ()),
-    )
+    unresolved_block = _unresolved_block_findings(artifact.findings, artifact.delta_chain)
 
     ok = (
         equivalence.result == EQUIVALENCE_EQUIVALENT
@@ -746,20 +859,54 @@ FAB_GATE_FINDING_CODE = "fab_delta_review_gate_block"
 
 @register_closeout_validator
 def fab_gate_validator(ctx: CloseoutContext) -> list[ReviewFinding]:
-    """The agent-review-gate wiring for FAB (design §9 Lane D). Inert (`[]`)
-    when `ctx.fab_gate_inputs` is absent/malformed, `ctx.repo_root` is unset,
-    or the run recorded no FAB provenance (`ProvenanceNotFound`) — this
-    validator NEVER fabricates a finding about a repo/run that is not using
-    FAB delta review. `fab_gate_inputs` is a plain, untyped mapping (not a
-    typed import from this module) so `closeout_validators.py` never needs to
-    import `fab_gate` — avoiding a `closeout_validators` <-> `fab_gate` import
-    cycle (`fab_gate` already imports `CloseoutContext`/
-    `register_closeout_validator`/`ReviewFinding`/`verdict_binds_to` FROM
-    `closeout_validators`); required keys: `run_id` (MUST be resolved by the
-    CALLER from TRUSTED harness/review-run output, never `ctx.terminal`/
-    `ctx.automation`), `live_base_ref_name`, `live_head_sha`; optional:
-    `origin` (default `"origin"`), `waiver` (audited echo, never silently
-    changes the computed status — design §8).
+    """The agent-review-gate wiring for FAB (design §9 Lane D).
+
+    FAB is currently DORMANT (agent-harness#191 CR, finding 3, traced): no
+    live producer writes `fab_gate_inputs`/provenance, and no live caller of
+    `build_phase_loop_closeout` threads a real `run_id` through — so this
+    validator is inert in practice TODAY. The rule below exists so it cannot
+    be silently bypassed once a producer is wired, not because it currently
+    fires on any real run.
+
+    **Fail-closed BY CONSTRUCTION (F3).** `run_id` is the TRUSTED FAB-scope
+    marker — per the module docstring's "`run_id` trust" note, it is
+    resolved ONLY by the CALLER from its own trusted process-local
+    run-allocation state, NEVER from `ctx.terminal`/`ctx.automation`
+    (agent/PR-influenced self-report fields; this validator does not and
+    must never fall back to reading a self-reported run_id — that would let
+    an attacker stay inert simply by omitting one). Once `run_id` is
+    genuinely present, this validator commits to ONE of exactly two
+    outcomes — PASS-shaped `[]` or a `block` finding — never a THIRD
+    "quietly not applicable" outcome that a caller could induce by dropping
+    an input:
+
+      (i)   NO `fab_gate_inputs` at all, or no `run_id` extractable from it
+            → inert (`[]`). This is the ONLY inert branch: it means "this run
+            was never scoped to FAB" (correct today, since nothing wires
+            `fab_gate_inputs` yet — the CALLER opts a run into FAB gating
+            by populating this mapping AT ALL).
+      (ii)  `run_id` present but `ctx.repo_root` / `live_base_ref_name` /
+            `live_head_sha` is missing or malformed → BLOCK. The gate was
+            scoped to FAB (a trusted run_id exists) but cannot complete —
+            an incomplete wiring must never be indistinguishable from "not
+            FAB".
+      (iii) `run_id` present but `compose_gate_status` raises
+            `ProvenanceNotFound` → BLOCK, not inert. A trusted run_id is
+            the caller's OWN assertion that this run took the FAB path;
+            "no provenance recorded for a run the caller itself scoped to
+            FAB" means the write path silently failed or was skipped, not
+            "this is a non-FAB run" — a phase the harness ACTUALLY
+            delta-reviewed must never pass by having its provenance write
+            dropped after the fact.
+
+    `fab_gate_inputs` is a plain, untyped mapping (not a typed import from
+    this module) so `closeout_validators.py` never needs to import
+    `fab_gate` — avoiding a `closeout_validators` <-> `fab_gate` import cycle
+    (`fab_gate` already imports `CloseoutContext`/`register_closeout_
+    validator`/`ReviewFinding`/`verdict_binds_to` FROM `closeout_validators`);
+    optional keys once `run_id` is present: `origin` (default `"origin"`),
+    `waiver` (audited echo, never silently changes the computed status —
+    design §8).
 
     Follows `verification_evidence_validator`'s EXACT posture: `severity=
     "block"` (warn-default under the global `PHASE_LOOP_REVIEW` control,
@@ -767,23 +914,49 @@ def fab_gate_validator(ctx: CloseoutContext) -> list[ReviewFinding]:
     `apply_review_findings` never sets `human_required`)."""
     inputs = ctx.fab_gate_inputs
     if not inputs:
-        return []
+        return []  # (i) — no fab_gate_inputs at all: never scoped to FAB.
     try:
-        run_id = str(inputs["run_id"])
+        run_id = inputs["run_id"]
+    except (KeyError, TypeError):
+        return []  # (i) — no run_id: the TRUSTED scope marker was never set.
+    if run_id is None:
+        return []  # (i) — an explicit null is still "no scope marker".
+    run_id = str(run_id)
+
+    # From here on `run_id` is present — this run IS scoped to FAB (F3). Every
+    # remaining branch is a `block`, never a silent `[]`.
+    if not ctx.repo_root:
+        return [
+            ReviewFinding(
+                code=FAB_GATE_FINDING_CODE,
+                reason=(
+                    f"FAB gate scoped to run_id={run_id!r} but ctx.repo_root is missing "
+                    "(fail-closed, F3: a FAB-scoped run must never silently stay inert)"
+                ),
+                severity="block",
+                blocker_class="review_gate_block",
+            )
+        ]
+    repo = Path(ctx.repo_root)
+
+    try:
         live_base_ref_name = str(inputs["live_base_ref_name"])
         live_head_sha = str(inputs["live_head_sha"])
         origin = str(inputs.get("origin") or "origin")
         waiver = inputs.get("waiver")
         waiver = str(waiver) if waiver is not None else None
-    except (KeyError, TypeError):
-        # Malformed wiring is a caller bug, not a signal about the PR itself —
-        # inert rather than a false block (explicit here for a clear audit
-        # trail; `run_closeout_validators` would otherwise silently swallow a
-        # raised exception from this validator the same way).
-        return []
-    if not ctx.repo_root:
-        return []
-    repo = Path(ctx.repo_root)
+    except (KeyError, TypeError) as exc:
+        return [
+            ReviewFinding(
+                code=FAB_GATE_FINDING_CODE,
+                reason=(
+                    f"FAB gate scoped to run_id={run_id!r} but live_base_ref_name/live_head_sha "
+                    f"is missing or malformed (fail-closed, F3): {exc}"
+                ),
+                severity="block",
+                blocker_class="review_gate_block",
+            )
+        ]
 
     try:
         gate_status = compose_gate_status(
@@ -795,7 +968,21 @@ def fab_gate_validator(ctx: CloseoutContext) -> list[ReviewFinding]:
             waiver=waiver,
         )
     except ProvenanceNotFound:
-        return []  # this run recorded no FAB provenance — not applicable.
+        # (iii) — F3: run_id is the trusted scope marker, so "no provenance
+        # for a claimed run_id" is a broken/incomplete gate, NEVER "not
+        # applicable". A caller that wants genuine non-FAB inertness omits
+        # `fab_gate_inputs`/`run_id` entirely (branch (i)) instead.
+        return [
+            ReviewFinding(
+                code=FAB_GATE_FINDING_CODE,
+                reason=(
+                    f"FAB gate scoped to run_id={run_id!r} but no provenance was recorded for it "
+                    "(fail-closed, F3: a scoped gate with no provenance is broken, not inert)"
+                ),
+                severity="block",
+                blocker_class="review_gate_block",
+            )
+        ]
     except Exception:
         # A review gate must never itself crash closeout, but an exception
         # from OUR OWN composition (not one of the fail-closed typed paths

@@ -1431,4 +1431,11 @@ def build_delta_round(
         resulting_head_digest=resulting_head_digest,
         status=status,
         escalation=escalation,
+        # agent-harness#191 CR / Lane D finding 1: persist the SAME seats just
+        # corroborated above onto the record itself (previously discarded after
+        # this one-time construction-time check) so Lane D's gate can
+        # independently re-authenticate + re-corroborate them per round, not
+        # just trust that this constructor was actually the one that built the
+        # record it is now reading.
+        delta_round_seats=tuple(delta_round_seats),
     )

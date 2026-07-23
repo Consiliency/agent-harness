@@ -239,6 +239,12 @@ class DeltaChainGateTest(GitRepoTestCase):
 
         self.write("pkg/c.py", "small disjoint delta\n")
         delta_head = self.commit("c2 small disjoint delta")
+        # F1 (agent-harness#191 CR, Lane D): a `reviewed-clean` delta round must
+        # carry its OWN authenticated, corroborating `delta_round_seats` — even
+        # here, where nothing is resolved/reopened (the delta is disjoint from
+        # every finding's path_scope, so both carry forward untouched), the
+        # round still needs at least one real seat that actually reviewed it.
+        delta_seats = (_seat("codex:x:high", epoch=2, finding_ids=()),)
         delta_record = fd.build_delta_round(
             repo=self.repo,
             base_sha=base,
@@ -249,7 +255,7 @@ class DeltaChainGateTest(GitRepoTestCase):
             delta_head_sha=delta_head,
             findings=findings,
             resolved_finding_ids=(),
-            delta_round_seats=(),
+            delta_round_seats=delta_seats,
             review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
             status=fp.DELTA_STATUS_REVIEWED_CLEAN,
         )
@@ -259,7 +265,7 @@ class DeltaChainGateTest(GitRepoTestCase):
         artifact = self.build_artifact(
             base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings, delta_chain=(delta_record,)
         )
-        self.persist("run-acc1", artifact, candidate_seats)
+        self.persist("run-acc1", artifact, candidate_seats + delta_seats)
         return base, candidate_head, delta_head
 
     def test_acceptance_1_disjoint_clean_delta_passes_without_whole_patch_rereview(self):
@@ -284,6 +290,121 @@ class DeltaChainGateTest(GitRepoTestCase):
         self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
         self.assertEqual(gate.equivalence_verified.result, fp.EQUIVALENCE_INVALIDATED)
         self.assertEqual(gate.equivalence_verified.reason, fc.REASON_CONTENT_DRIFT)
+
+
+# --------------------------------------------------------------------------- #
+# Finding 1 (agent-harness#191 CR, Lane D) — a `reviewed-clean` delta round
+# with zero, or uncorroborated, `delta_round_seats` of its OWN must BLOCK,
+# never pass on the strength of the artifact-wide seat list alone.
+# --------------------------------------------------------------------------- #
+
+
+class DeltaRoundSeatBindingTest(GitRepoTestCase):
+    def _base_and_candidate(self):
+        # A boundary manifest MUST be in force (no-manifest fail-closed forces
+        # whole-patch escalation on EVERY delta, per design §5.4) — write one
+        # whose globs don't match pkg/*.py, so the disjoint delta below stays a
+        # plain, non-escalated `reviewed-clean` round.
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "large reviewed content a\n")
+        self.write("pkg/b.py", "large reviewed content b\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=()),)
+        findings = ()
+        candidate = self.candidate(base, base)
+        artifact0 = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings)
+        return base, candidate, candidate_seats, findings, artifact0.chain_digest
+
+    def test_reviewed_clean_delta_with_zero_seats_blocks(self):
+        """The EXACT unsafe outcome F1 closes: a `reviewed-clean` delta round
+        built with `delta_round_seats=()` must never reach GATE_STATUS_PASS,
+        even when it resolves/reopens nothing at all."""
+        base, candidate, candidate_seats, findings, c0 = self._base_and_candidate()
+        self.write("pkg/c.py", "small disjoint delta\n")
+        delta_head = self.commit("c2 small disjoint delta, zero delta-round seats")
+        delta_record = fd.build_delta_round(
+            repo=self.repo,
+            base_sha=base,
+            repo_slug=self.REPO_SLUG,
+            parent_head_sha=base,
+            parent_patch_digest=candidate.patch_digest,
+            parent_chain_digest=c0,
+            delta_head_sha=delta_head,
+            findings=findings,
+            resolved_finding_ids=(),
+            delta_round_seats=(),  # <-- the unsafe case
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+        )
+        artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings, delta_chain=(delta_record,)
+        )
+        self.persist("run-zero-seats", artifact, candidate_seats)
+
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-zero-seats", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
+        self.assertIn("delta_round_seats", gate.equivalence_verified.reason)
+
+    def test_reviewed_clean_delta_with_uncorroborated_reopen_blocks(self):
+        """A round's `delta_round_seats` are non-empty and authenticate fine,
+        but do NOT corroborate a finding this round REOPENED (its
+        `finding_ids` don't cover it) — must still BLOCK (§5.3)."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed content\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=("f1",)),)
+        findings = (_finding("f1", path_scope=("pkg/a.py",)),)
+        candidate = self.candidate(base, base)
+        artifact0 = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings)
+        c0 = artifact0.chain_digest
+
+        self.write("pkg/a.py", "reviewed content, touched again by an unrelated delta\n")
+        delta_head = self.commit("c1 touches pkg/a.py again, reopening f1")
+        # This seat authenticates fine but does NOT cover f1 in its finding_ids
+        # — a seat that ran, but never actually verdicted the reopened finding.
+        uncorroborating_seat = _seat("codex:x:high", epoch=2, finding_ids=())
+
+        # `build_delta_round` itself enforces T4 corroboration at construction
+        # time (it would raise here) — to reach Lane D's independent gate-time
+        # check, load a record built as if corroboration had been bypassed by
+        # constructing the `DeltaReviewRecord` directly (mirrors "a
+        # loaded-from-JSON artifact was not necessarily constructed through
+        # build_delta_round", which is exactly the gap F1 closes).
+        delta_changed_paths = fc.enumerate_changed_paths(self.repo, base, delta_head)
+        resulting_head_digest = self.digest(base, delta_head)
+        cf = fd.carry_forward(findings, delta_changed_paths, suppress=False)
+        self.assertEqual(cf.reopened_finding_ids, ("f1",))
+        review_scope = fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY)
+        raw_record = fp.DeltaReviewRecord.build(
+            policy={"path": fd.BOUNDARY_MANIFEST_PATH, "source_rev": base, "digest": "d" * 64},
+            review_scope=review_scope,
+            material_digests=(),
+            parent_digest=candidate.patch_digest,
+            parent_chain_digest=c0,
+            delta_head_sha=delta_head,
+            delta_changed_paths=delta_changed_paths,
+            delta_commits=(),
+            resolved_finding_ids=(),
+            carried_forward_finding_ids=cf.carried_forward_finding_ids,
+            reopened_finding_ids=cf.reopened_finding_ids,
+            resulting_head_digest=resulting_head_digest,
+            status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+            escalation=fp.Escalation(required=False, trigger=None),
+            delta_round_seats=(uncorroborating_seat,),
+        )
+        artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats, findings=findings, delta_chain=(raw_record,)
+        )
+        self.persist("run-uncorroborated", artifact, candidate_seats + (uncorroborating_seat,))
+
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id="run-uncorroborated", live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_BLOCK)
 
 
 # --------------------------------------------------------------------------- #
@@ -718,18 +839,75 @@ class CloseoutValidatorTest(GitRepoTestCase):
         drifted = self.commit("c2 drift")
         return base, drifted
 
+    # -- F3 (agent-harness#191 CR) branch table ------------------------------
+    # (i) no run_id -> inert; (ii) run_id present but other inputs missing ->
+    # BLOCK; (iii) run_id present but ProvenanceNotFound -> BLOCK. Fail-closed
+    # BY CONSTRUCTION: once a trusted run_id is present, `[]` is never again a
+    # possible outcome.
+
     def test_inert_without_fab_gate_inputs(self):
+        """(i) — no `fab_gate_inputs` mapping at all."""
         ctx = cv.CloseoutContext(phase_alias="P1", plan_path="plan.md", repo_root=str(self.repo))
         self.assertEqual(fg.fab_gate_validator(ctx), [])
 
-    def test_inert_when_run_id_has_no_provenance(self):
+    def test_inert_when_fab_gate_inputs_has_no_run_id(self):
+        """(i) — `fab_gate_inputs` present but no `run_id` key: never scoped
+        to FAB (the trusted scope marker was never set by the caller)."""
+        ctx = cv.CloseoutContext(
+            phase_alias="P1",
+            plan_path="plan.md",
+            repo_root=str(self.repo),
+            fab_gate_inputs={"live_base_ref_name": "main", "live_head_sha": "a" * 40},
+        )
+        self.assertEqual(fg.fab_gate_validator(ctx), [])
+
+    def test_blocks_when_run_id_present_but_repo_root_missing(self):
+        """(ii) — `run_id` present (trusted scope marker asserted) but
+        `ctx.repo_root` is unset: the gate cannot complete, so it must BLOCK,
+        never silently stay inert."""
+        ctx = cv.CloseoutContext(
+            phase_alias="P1",
+            plan_path="plan.md",
+            repo_root=None,
+            fab_gate_inputs={"run_id": "run-x", "live_base_ref_name": "main", "live_head_sha": "a" * 40},
+        )
+        findings = fg.fab_gate_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, fg.FAB_GATE_FINDING_CODE)
+        self.assertEqual(findings[0].severity, "block")
+        self.assertEqual(findings[0].blocker_class, "review_gate_block")
+
+    def test_blocks_when_run_id_present_but_live_pr_identity_missing(self):
+        """(ii) — `run_id` present but `live_head_sha`/`live_base_ref_name`
+        missing/malformed: BLOCK, never inert."""
+        ctx = cv.CloseoutContext(
+            phase_alias="P1",
+            plan_path="plan.md",
+            repo_root=str(self.repo),
+            fab_gate_inputs={"run_id": "run-x"},
+        )
+        findings = fg.fab_gate_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].severity, "block")
+        self.assertEqual(findings[0].blocker_class, "review_gate_block")
+
+    def test_blocks_when_run_id_has_no_provenance(self):
+        """(iii) — `run_id` is present (the TRUSTED scope marker) but
+        `compose_gate_status` raises `ProvenanceNotFound`: BLOCK, not inert —
+        a phase the harness actually delta-reviewed must never pass merely
+        because its provenance write was dropped."""
         ctx = cv.CloseoutContext(
             phase_alias="P1",
             plan_path="plan.md",
             repo_root=str(self.repo),
             fab_gate_inputs={"run_id": "no-such-run", "live_base_ref_name": "main", "live_head_sha": "a" * 40},
         )
-        self.assertEqual(fg.fab_gate_validator(ctx), [])
+        findings = fg.fab_gate_validator(ctx)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, fg.FAB_GATE_FINDING_CODE)
+        self.assertEqual(findings[0].severity, "block")
+        self.assertEqual(findings[0].blocker_class, "review_gate_block")
+        self.assertIn("no-such-run", findings[0].reason)
 
     def test_warn_default_records_but_does_not_block(self):
         import os

@@ -757,6 +757,72 @@ none of those modules were modified beyond the minimal additive wiring below.
   opt-in-block/inert dispositions, and the promotion re-assertion's
   pass-through-when-still-equivalent and byte-neutral-when-unset cases.
 
+### FAB Lane D — cross-vendor CR fail-open fixes + fail-closed-by-construction inert gate (Consiliency/agent-harness#191)
+
+A unanimous cross-vendor CR round on Lane D surfaced two gate-logic fail-opens
+and an inert-gate concern. `phase_loop_runtime.fab_gate` fixes both bugs and
+restructures the closeout validator so the inert branch is fail-closed by
+construction; no production producer/consumer wiring (runner.py/cli.py call
+sites, a seat-outcome-ledger writer, or `FabPromotionCheck`'s live merge-path
+wiring) is part of this fix — FAB remains dormant today, traced.
+
+- **A `reviewed-clean` delta round is now bound to its OWN seats, not just the
+  artifact-wide seat pool** (F1): Lane D previously authenticated the
+  artifact-wide seat list and required only one globally-`required` seat, but
+  never bound a delta round to its own reviewers — Lane C's `build_delta_round`
+  deliberately delegated that validation to Lane D for any record it did not
+  itself construct (e.g. one loaded from JSON), and Lane D never picked it up.
+  A `reviewed-clean` delta with `delta_round_seats=()` previously PASSED.
+  `DeltaReviewRecord` gains a `delta_round_seats` field (persisted by
+  `build_delta_round`, previously computed and discarded after a one-time
+  construction-time check); `compose_gate_status` now runs a new
+  `_require_delta_round_seat_binding` over EVERY resolved-status round in the
+  chain, requiring its seats be non-empty, authenticate against the durable
+  `SeatOutcomeRecord` ledger (§6.3, reusing `cross_check_seat_authenticity`),
+  and corroborate that round's own `resolved_finding_ids` (always) and
+  `reopened_finding_ids` (when `status == reviewed-clean` — mirrors
+  `build_delta_round`'s own asymmetric rule) via `fab_delta.
+  require_seat_corroboration`, reused. Deliberately not folded into
+  `chain_digest` (mirrors the artifact-level `seats` field, which the design's
+  hash formula also excludes); still tamper-evident via the whole-artifact
+  `artifact_digest` self-check.
+- **The chain resolution and unresolved-finding evaluation now cover EVERY
+  round, not just the final one** (F2): `resolve_chain_resolution` previously
+  validated only the LAST delta's status/`resulting_head_digest`/T5
+  review-scope, and `_unresolved_block_findings` consulted only the final
+  round's `resolved_finding_ids`/`reopened_finding_ids` — an intermediate
+  `pending`/`invalidated` round, an intermediate T5 violation, or an
+  unresolved `block` finding reopened by an earlier round could be masked by a
+  later, clean-looking final record. `resolve_chain_resolution` now requires
+  EVERY `delta_chain` member to be resolved/pass-eligible (`reviewed-clean` or
+  `escalated-whole-patch`), have its own `resulting_head_digest`, and pass its
+  own T5 re-check; `_unresolved_block_findings` now folds every round's
+  resolved/reopened audit trail IN ORDER, so a reopen only a middle round
+  recorded can never be silently resolved by a later round's silence.
+- **The closeout validator is fail-closed by construction, using the TRUSTED
+  `run_id`, never `ctx.terminal`/`ctx.automation` self-report** (F3, all three
+  vendors): `fab_gate_validator` previously returned `[]` (inert) whenever
+  `repo_root`/live-PR inputs were missing OR `compose_gate_status` raised
+  `ProvenanceNotFound` — three genuinely different situations collapsed into
+  one silent non-outcome a caller could induce by dropping an input. The
+  validator now commits to exactly two outcomes once a `run_id` is present:
+  (i) no `fab_gate_inputs`, or no extractable `run_id` → inert (`[]`) — the
+  ONLY inert branch, meaning "never scoped to FAB"; (ii) `run_id` present but
+  `repo_root`/`live_base_ref_name`/`live_head_sha` missing or malformed →
+  `block` — the gate was scoped to FAB but cannot complete; (iii) `run_id`
+  present but `ProvenanceNotFound` → `block`, not inert — `run_id` is the
+  TRUSTED scope marker the caller only sets when a run took the FAB path, so a
+  claimed run_id with no recorded provenance means the write path broke, not
+  "not FAB". FAB remains DORMANT in practice (no live producer writes
+  provenance today, traced) — this closes the fail-open for when a producer is
+  later wired, without changing any current runtime behavior.
+- **Tests** (`tests/test_fab_gate_d.py`, 31 cases total): the acceptance-1
+  fixture that previously codified the F1 unsafe outcome now supplies a real,
+  authenticated delta-round seat for its pass case; new cases cover a
+  zero-seat and an uncorroborated-reopen `reviewed-clean` delta both BLOCKing,
+  and each of F3's three branches (no-run_id inert, missing-inputs block,
+  no-provenance-for-a-claimed-run_id block).
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
