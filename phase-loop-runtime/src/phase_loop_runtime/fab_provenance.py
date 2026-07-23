@@ -1421,7 +1421,27 @@ def read_provenance(repo: Path, run_id: str) -> ReviewProvenanceArtifact:
 
 def _is_git_tracked(repo: Path, path: Path) -> bool:
     """Boundary probe for `reject_client_supplied_provenance` (agent-harness#191
-    CR / F3) — NOT the Lane-B patch-digest/equivalence machinery (no diffing, no
+    CR / F3).
+
+    THREAT-MODEL BOUNDARY (agent-harness#191 CR rounds 3-4, stated once so it is
+    answered-by-design, not re-litigated): `git` is TRUSTED CI plumbing. The
+    attacker in scope controls repo CONTENTS (a PR branch can COMMIT a file at the
+    run-store path — that is the actual exploit this probe defeats: a tracked file
+    at a fixed pathspec makes `git ls-files -- <path>` print that path -> non-empty
+    -> tracked -> REJECT, verified by `test_path_at_authoritative_location_but_git
+    _tracked_is_rejected`). The attacker does NOT control the BYTES of the trusted
+    CI git binary's stdout. So we parse git's documented output (`.strip()` +
+    exact "true"/"false"/empty comparisons) rather than byte-exact stdout: a
+    hypothetical `" false\n"` / whitespace-only `ls-files` output for a tracked
+    file is not reachable within this boundary (it would require compromising the
+    trusted git binary, at which point it could emit "false"/"" directly and the
+    whole trust model has already collapsed). Byte-exact stdout parsing of trusted
+    git output is deliberately NOT done — it would trade a non-reachable fail-open
+    for a reachable fail-CLOSED regression on legitimate git version/platform
+    whitespace variance. Residual (parser completeness on a trusted input) tracked
+    separately, non-blocking.
+
+    NOT the Lane-B patch-digest/equivalence machinery (no diffing, no
     blob hashing, no merge-base math); a single yes/no question: "does git already
     track a file at this exact path in `repo`'s working tree". A tracked path is
     one a PR branch COMMIT can place content at — `.phase-loop/` is excluded from
