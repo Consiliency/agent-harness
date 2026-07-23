@@ -146,6 +146,7 @@ def _seat(seat_key: str, *, finding_ids: tuple = ()) -> fp.ProvenanceSeat:
         vendor_leg="codex",
         required=True,
         status="OK",
+        seat_instance_id=f"{seat_key}@1",
         epoch=1,
         artifact_digest="1" * 64,
         evidence_digest="2" * 64,
@@ -166,6 +167,9 @@ def _durable_from_seat(seat: fp.ProvenanceSeat) -> SeatOutcomeRecord:
         completed_at="2026-01-01T00:00:00Z",
         evidence_digest=seat.evidence_digest,
         reason=None,
+        verdict=seat.verdict,
+        finding_ids=seat.finding_ids,
+        seat_instance_id=seat.seat_instance_id,
     )
 
 
@@ -188,6 +192,24 @@ def _persist_provenance(repo: Path, run_id: str, *, base_sha: str, head_sha: str
     fp.write_provenance(repo, run_id, artifact)
     for seat in seats:
         fg.append_seat_outcome(repo, run_id, _durable_from_seat(seat))
+    # Piece 2: the harness-only durable round record the full merge-time re-gate
+    # now requires (expected-seat manifest + round identity + canonical findings).
+    fg.write_expected_seats(
+        repo, run_id, epoch=1,
+        expected_seats=tuple(
+            fg.ExpectedSeat(seat_instance_id=s.seat_instance_id, seat_key=s.seat_key,
+                            vendor_leg=s.vendor_leg, required=s.required)
+            for s in seats
+        ),
+    )
+    fg.finalize_review_round(
+        repo, run_id, reviewed_head_sha=head_sha,
+        reviewed_material_digest=artifact.candidate.review_scope.reviewed_material_digest,
+        canonical_findings=tuple(
+            fg.CanonicalFinding(finding_id=f.id, severity=f.severity, status=f.status, body_digest=f.body_ref)
+            for f in findings
+        ),
+    )
 
 
 def _reviewed_pr(repo: Path, run_id: str) -> tuple[str, str]:
@@ -214,6 +236,10 @@ def _make_gh_fake(*, base_ref: str, head, merged_sha: str = "sha-realmerge", cal
             return _REAL_SUBPROCESS_RUN(cmd, **kwargs)
         if calls is not None:
             calls.append(cmd)
+        # FAB merge-queue prohibition (2d) probes branch rules via `gh api`;
+        # default fixture: no merge queue (empty rules list) → merge proceeds.
+        if cmd[:2] == ["gh", "api"]:
+            return _FakeCompletedProcess(returncode=0, stdout="[]")
         label = _gh_subcommand(cmd)
         if label == "view-merged-sha":
             if not state["merged"]:
@@ -449,7 +475,10 @@ class TestLiveMergePrFabPromotion:
         calls: list = []
         fake = _make_gh_fake(base_ref="main", head=drifted_head, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match=r"FAB promotion-time re-assertion failed.*design §4\.4"):
+            # Piece 2 (2c): the merge-time re-assertion now runs the FULL hard
+            # gate; content drift surfaces as a review_gate_block with the
+            # content_drift equivalence reason.
+            with pytest.raises(RuntimeError, match=r"fab-promotion-reassertion-failed.*content_drift.*design §4\.4"):
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=drifted_head,
                     run_id="run-p4", fab_fetch_origin="fetchsrc",
@@ -499,4 +528,54 @@ class TestLiveMergePrFabPromotion:
                     repo, "feat/pr1", base="main", head_sha=drifted_head,
                     run_id="run-p6", fab_fetch_origin="fetchsrc",
                 )
+        assert sha == "sha-realmerge"
+
+    def test_flag_on_merge_queue_enabled_refuses_merge(self, tmp_path: Path, monkeypatch):
+        """design "Enforced merge-queue prohibition" (piece 2, 2d): flag on +
+        the base branch has a GitHub merge queue → refuse (a queued merge lands
+        asynchronously AFTER this re-assertion, a TOCTOU #265 will close). Even
+        with a run_id whose provenance is perfectly valid, the queue check fires
+        FIRST and no `gh pr merge` is ever issued."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq")
+
+        calls: list = []
+        base_fake = _make_gh_fake(base_ref="main", head=head, calls=calls)
+
+        def fake(cmd, **kwargs):
+            # The base branch DOES have a merge queue enabled.
+            if cmd[:2] == ["gh", "api"]:
+                return _FakeCompletedProcess(returncode=0, stdout=json.dumps([{"type": "merge_queue"}]))
+            return base_fake(cmd, **kwargs)
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="fab-merge-queue-prohibited"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head,
+                    run_id="run-mq", fab_fetch_origin="fetchsrc",
+                )
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls == [], "gh pr merge must never be invoked when a merge queue is enabled under FAB"
+
+    def test_flag_off_merge_queue_not_probed(self, tmp_path: Path, monkeypatch):
+        """Byte-neutral: with the flag OFF, the merge-queue prohibition issues
+        NO `gh api` probe and the merge proceeds even under a would-be queue."""
+        _git_available()
+        monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-off")
+
+        base_fake = _make_gh_fake(base_ref="main", head=head)
+
+        def fake(cmd, **kwargs):
+            if cmd[:2] == ["gh", "api"]:
+                raise AssertionError("gh api merge-queue probe must NOT run while PHASE_LOOP_FAB is off")
+            return base_fake(cmd, **kwargs)
+
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            sha = _live_merge_pr(
+                repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc"
+            )
         assert sha == "sha-realmerge"
