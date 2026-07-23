@@ -638,6 +638,61 @@ def patch_digest(
     return hashlib.sha256(stream).hexdigest()
 
 
+def enumerate_changed_paths(repo: Path, old_sha: str, new_sha: str) -> tuple[str, ...]:
+    """Lane C (design §5.2) reuse hook: the byte-exact `-z` changed-PATH set
+    (fsdecoded, deduplicated, sorted) between two resolved object ids, built
+    from the SAME hostile-git-hardened raw-diff enumeration `patch_digest`
+    uses internally (`_git_diff_raw_bytes` + `_iter_raw_diff_entries`) — so a
+    `DeltaReviewRecord.delta_changed_paths` and `patch_digest`'s own canonical
+    byte records can never diverge on what git reports as changed. This is a
+    thin additive wrapper around Lane B's existing private enumeration, not a
+    second implementation of raw-diff parsing (goal-id-inc2 "reuse, don't
+    re-implement" lesson).
+
+    Unlike `patch_digest` (which is always anchored at the reviewed
+    `base_sha`), `old_sha`/`new_sha` here are the two revisions a DELTA round
+    actually spans (typically the parent round's head and this round's head)
+    — both MUST be full, resolved object ids (`_validate_full_sha`), never
+    revision syntax. Any nonzero git return code, or a malformed/truncated
+    raw-diff stream, raises `PatchDigestInvalid` (fail-closed) — identical
+    discipline to `patch_digest`."""
+    repo = Path(repo)
+    old_sha = _validate_full_sha(old_sha, field_name="old_sha")
+    new_sha = _validate_full_sha(new_sha, field_name="new_sha")
+    raw = _git_diff_raw_bytes(repo, old_sha, new_sha)
+    entries = _iter_raw_diff_entries(raw)
+    return tuple(sorted({os.fsdecode(entry.path) for entry in entries}))
+
+
+def read_file_at_revision(repo: Path, rev: str, path: str) -> bytes | None:
+    """Lane C (design §5.4, T15) reuse hook: read a single file's raw bytes AT
+    a pinned revision — `GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects
+    show <rev>:<path>` — under the SAME hostile-git discipline every other git
+    call in this module uses (`_run_git`/`_git_env`). This is how Lane C reads
+    the boundary manifest at the reviewed BASE revision rather than the delta
+    head, so a delta cannot weaken the manifest and then be judged under the
+    weakened rules.
+
+    `rev` MUST be a full, resolved object id (`_validate_full_sha`) — never
+    revision syntax — so "pinned at the reviewed base" is a frozen point in
+    time, not a moving target.
+
+    Returns `None` on ANY nonzero git return code — both git's definitive
+    "path does not exist in <rev>" signal (the file is genuinely absent) and
+    any other, more ambiguous git failure collapse to the SAME `None` result
+    on purpose: Lane C's caller (the boundary-manifest loader) treats
+    "file absent" and "could not be read" identically as a "no manifest"
+    disposition, and "no manifest" is already the fail-closed default
+    (escalate every delta) — there is no less-safe disposition to
+    accidentally fall into by not distinguishing the two causes here."""
+    repo = Path(repo)
+    rev = _validate_full_sha(rev, field_name="rev")
+    completed = _run_git(repo, "show", f"{rev}:{path}", timeout=_GIT_GENERIC_TIMEOUT_SECONDS)
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
 # --------------------------------------------------------------------------- #
 # §4 — equivalence, base binding, invalidation
 # --------------------------------------------------------------------------- #

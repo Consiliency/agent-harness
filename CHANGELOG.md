@@ -209,6 +209,83 @@ re-assertion (§8/§4.4 — Lane D).
   path), and non-blob type-swap rejection (both real-git-plumbing-crafted
   and mocked).
 
+### FAB Lane C — delta-chain binding + carry-forward + boundary-manifest escalation (Consiliency/agent-harness#191)
+
+New `phase_loop_runtime.fab_delta` module: Lane C of #191's advisor-board
+delta-review design (`plans/design-fab-191-delta-review.md` §5, threats T4/T5/T15),
+built on Lane A's frozen provenance schemas/hash chain and Lane B's
+`patch_digest`/hostile-git discipline. Freezes the decision logic (IF-0-FAB-C-1)
+Lane D composes into `fab.gate-status.v2`; does not itself build that output
+composition, `verdict_binds_to_equivalent`, `governed_premerge`/closeout wiring,
+the §6.3 `SeatOutcomeRecord` authenticity cross-check, or the §4.4 promotion
+re-gate — those remain Lane D.
+
+- **Delta binding + typed status** (`validate_delta_binds_to_parent`,
+  `build_delta_round`): validates a `DeltaReviewRecord`'s `parent_digest` +
+  `parent_chain_digest` dual link (reusing Lane A's `verify_chain`/
+  `recompute_chain_digest` discipline), that `delta_changed_paths` matches the
+  LIVE `-z` diff set (new `fab_canonical.enumerate_changed_paths`, a thin
+  additive wrapper around Lane B's existing raw-diff enumeration — not a
+  second implementation), and that `resulting_head_digest` matches a live
+  `fab_canonical.patch_digest` recompute — never trusted from the record
+  itself (T12 posture). `status` stays the explicit `DELTA_STATUS_*` enum;
+  `is_carry_forward_eligible(record)` is `True` only at `reviewed-clean`.
+- **Clean-finding carry-forward** (`carry_forward`, §5.3/T4): a `status ==
+  "clean"` finding carries forward iff its `path_scope` is non-empty AND
+  disjoint from `delta_changed_paths` — decided by **the broker's own**
+  `convergence.broker.credsep.GitHubBrokerAdapter._covered_by_owned`
+  (credsep.py:190), imported and reused directly (asserted via a spy in
+  tests), never re-implemented as a parallel path matcher. Intersecting
+  `path_scope` reopens the finding; empty/absent `path_scope` ALWAYS reopens
+  (fail-closed re-review, never a silent carry). `require_seat_corroboration`
+  rejects a `resolved_finding_ids` claim with no delta-round seat record
+  carrying a real verdict on that exact finding id (`ResolvedClaimUnverified`)
+  — a claim is not a resolution.
+- **Boundary manifest + escalation** (`load_boundary_manifest_at_base`,
+  `evaluate_boundary_escalation`, §5.4/T15): parses a committed
+  `.advisor-board/boundaries.toml` (TOML — `tomllib`/`tomli` backport shim,
+  matching `advisor_board/config.py`'s existing 3.10-floor pattern) of
+  path-glob lists per protected surface. Glob semantics are FROZEN
+  (IF-0-FAB-C-1): segment-wise `**`/`*`/`?` translation (`**` spans zero or
+  more full path segments — including matching a bare top-level directory
+  name, the fail-SAFE/broader-match direction for an escalation boundary —
+  `*`/`?` bounded to one segment), case-sensitive, no implicit prefix; a
+  malformed glob (bad charset, absolute path, `..` traversal) INVALIDATES the
+  whole manifest. New `fab_canonical.read_file_at_revision` (hostile-git
+  `git show <rev>:<path>`, reused `--no-replace-objects` discipline) reads the
+  manifest's CONTENT at the reviewed **base** revision — never the delta
+  head — and its digest is threaded through as `DeltaReviewRecord.build`'s
+  `policy` argument so it is folded into `chain_digest` (Lane A's existing
+  per-round `policy` hash component): a delta cannot weaken the manifest and
+  then be judged under the weakened rules (verified directly: a delta that
+  weakens `boundaries.toml` at an intermediate tip does not let a LATER delta
+  from that tip escape escalation, because the manifest is always re-read at
+  the chain's constant `base_sha`). A delta touching the manifest PATH itself
+  forces whole-patch escalation regardless of content. No manifest, or a
+  malformed one (bad TOML/shape/glob), escalates EVERY delta — fail-closed:
+  "no boundaries" never means "carry everything forward". Manual escalation
+  is the typed `escalation.trigger = "reviewer:<seat_key>"` field, never
+  parsed from prose.
+- **`review_scope` enforcement** (`enforce_review_scope_for_escalation`,
+  §5.5/T5): a boundary-escalated round must record `review_scope.mode ==
+  "whole-patch"` AND `covers_patch_digest` equal to the FULL patch digest as
+  of THAT round's head (`resulting_head_digest` for a delta round, generalized
+  from the design's candidate-round example) — a `delta-only` scope on an
+  escalated round is rejected; escalation cannot be satisfied by a
+  delta-scoped review.
+- **Tests** (`tests/test_fab_delta_c.py`, unmarked — runs under CI's
+  `-m "not dotfiles_integration"`): 46 cases against REAL temporary git repos
+  covering acceptance criteria 1 (disjoint clean delta carries forward, no
+  whole-patch re-review) and 4 (boundary glob forces whole-patch escalation,
+  carry-forward suppressed), T15 (weakened-manifest-at-a-later-tip does not
+  escape escalation), T4 (uncorroborated/partially-corroborated resolved
+  claims rejected), T5 (delta-only scope on an escalated round rejected,
+  wrong `covers_patch_digest` rejected), carry-forward disjointness
+  (intersecting/empty/non-clean dispositions, plus a spy asserting the
+  broker's actual `_covered_by_owned` is invoked), no-manifest/malformed-
+  manifest/malformed-glob dispositions, and delta-binding tamper detection
+  (chain digest, parent links, changed paths, resulting digest).
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
