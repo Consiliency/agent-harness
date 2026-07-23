@@ -209,6 +209,473 @@ re-assertion (§8/§4.4 — Lane D).
   path), and non-blob type-swap rejection (both real-git-plumbing-crafted
   and mocked).
 
+### FAB Lane C — delta-chain binding + carry-forward + boundary-manifest escalation (Consiliency/agent-harness#191)
+
+New `phase_loop_runtime.fab_delta` module: Lane C of #191's advisor-board
+delta-review design (`plans/design-fab-191-delta-review.md` §5, threats T4/T5/T15),
+built on Lane A's frozen provenance schemas/hash chain and Lane B's
+`patch_digest`/hostile-git discipline. Freezes the decision logic (IF-0-FAB-C-1)
+Lane D composes into `fab.gate-status.v2`; does not itself build that output
+composition, `verdict_binds_to_equivalent`, `governed_premerge`/closeout wiring,
+the §6.3 `SeatOutcomeRecord` authenticity cross-check, or the §4.4 promotion
+re-gate — those remain Lane D.
+
+- **Delta binding + typed status** (`validate_delta_binds_to_parent`,
+  `build_delta_round`): validates a `DeltaReviewRecord`'s `parent_digest` +
+  `parent_chain_digest` dual link (reusing Lane A's `verify_chain`/
+  `recompute_chain_digest` discipline), that `delta_changed_paths` matches the
+  LIVE `-z` diff set (new `fab_canonical.enumerate_changed_paths`, a thin
+  additive wrapper around Lane B's existing raw-diff enumeration — not a
+  second implementation), and that `resulting_head_digest` matches a live
+  `fab_canonical.patch_digest` recompute — never trusted from the record
+  itself (T12 posture). `status` stays the explicit `DELTA_STATUS_*` enum;
+  `is_carry_forward_eligible(record)` is `True` only at `reviewed-clean`.
+- **Clean-finding carry-forward** (`carry_forward`, §5.3/T4): a `status ==
+  "clean"` finding carries forward iff its `path_scope` is non-empty AND
+  disjoint from `delta_changed_paths` — decided by **the broker's own**
+  `convergence.broker.credsep.GitHubBrokerAdapter._covered_by_owned`
+  (credsep.py:190), imported and reused directly (asserted via a spy in
+  tests), never re-implemented as a parallel path matcher. Intersecting
+  `path_scope` reopens the finding; empty/absent `path_scope` ALWAYS reopens
+  (fail-closed re-review, never a silent carry). `require_seat_corroboration`
+  rejects a `resolved_finding_ids` claim with no delta-round seat record
+  carrying a real verdict on that exact finding id (`ResolvedClaimUnverified`)
+  — a claim is not a resolution.
+- **Boundary manifest + escalation** (`load_boundary_manifest_at_base`,
+  `evaluate_boundary_escalation`, §5.4/T15): parses a committed
+  `.advisor-board/boundaries.toml` (TOML — `tomllib`/`tomli` backport shim,
+  matching `advisor_board/config.py`'s existing 3.10-floor pattern) of
+  path-glob lists per protected surface. Glob semantics are FROZEN
+  (IF-0-FAB-C-1): segment-wise `**`/`*`/`?` translation (`**` spans zero or
+  more full path segments — including matching a bare top-level directory
+  name, the fail-SAFE/broader-match direction for an escalation boundary —
+  `*`/`?` bounded to one segment), case-sensitive, no implicit prefix; a
+  malformed glob (bad charset, absolute path, `..` traversal) INVALIDATES the
+  whole manifest. New `fab_canonical.read_file_at_revision` (hostile-git
+  `git show <rev>:<path>`, reused `--no-replace-objects` discipline) reads the
+  manifest's CONTENT at the reviewed **base** revision — never the delta
+  head — and its digest is threaded through as `DeltaReviewRecord.build`'s
+  `policy` argument so it is folded into `chain_digest` (Lane A's existing
+  per-round `policy` hash component): a delta cannot weaken the manifest and
+  then be judged under the weakened rules (verified directly: a delta that
+  weakens `boundaries.toml` at an intermediate tip does not let a LATER delta
+  from that tip escape escalation, because the manifest is always re-read at
+  the chain's constant `base_sha`). A delta touching the manifest PATH itself
+  forces whole-patch escalation regardless of content. No manifest, or a
+  malformed one (bad TOML/shape/glob), escalates EVERY delta — fail-closed:
+  "no boundaries" never means "carry everything forward". Manual escalation
+  is the typed `escalation.trigger = "reviewer:<seat_key>"` field, never
+  parsed from prose.
+- **`review_scope` enforcement** (`enforce_review_scope_for_escalation`,
+  §5.5/T5): a boundary-escalated round must record `review_scope.mode ==
+  "whole-patch"` AND `covers_patch_digest` equal to the FULL patch digest as
+  of THAT round's head (`resulting_head_digest` for a delta round, generalized
+  from the design's candidate-round example) — a `delta-only` scope on an
+  escalated round is rejected; escalation cannot be satisfied by a
+  delta-scoped review.
+- **Tests** (`tests/test_fab_delta_c.py`, unmarked — runs under CI's
+  `-m "not dotfiles_integration"`): 46 cases against REAL temporary git repos
+  covering acceptance criteria 1 (disjoint clean delta carries forward, no
+  whole-patch re-review) and 4 (boundary glob forces whole-patch escalation,
+  carry-forward suppressed), T15 (weakened-manifest-at-a-later-tip does not
+  escape escalation), T4 (uncorroborated/partially-corroborated resolved
+  claims rejected), T5 (delta-only scope on an escalated round rejected,
+  wrong `covers_patch_digest` rejected), carry-forward disjointness
+  (intersecting/empty/non-clean dispositions, plus a spy asserting the
+  broker's actual `_covered_by_owned` is invoked), no-manifest/malformed-
+  manifest/malformed-glob dispositions, and delta-binding tamper detection
+  (chain digest, parent links, changed paths, resulting digest).
+
+### FAB Lane C — cross-vendor CR fail-open fixes (Consiliency/agent-harness#191)
+
+A follow-up cross-vendor CR round on Lane C surfaced four fail-opens, every
+one attacker-reachable under the module's own stated threat model (attacker
+controls repo CONTENTS — paths, the boundary manifest, `Finding.path_scope`).
+`phase_loop_runtime.fab_delta` fixes all four; no Lane A/B module, the
+base-pinned manifest read, or the broker's `_covered_by_owned` matcher was
+touched.
+
+- **Glob translation now spans embedded newlines** (`_translate_glob_to_regex`):
+  git permits `\n` in filenames, and the `-z` + `os.fsdecode` diff path
+  preserves it. The `**`-derived `.`-based regex fragments were compiled
+  without `re.DOTALL`, so a boundary glob like `**/auth/**` failed to match a
+  path such as `src\n/auth/login.py` — a protected-surface delta with a
+  newline in the path escaped escalation entirely. Compiling with
+  `re.DOTALL` widens `**`'s span to include newlines (only ever *widening*
+  what matches, the fail-safe direction for an escalation boundary); `*`/`?`
+  were already newline-safe (`[^/]`-class negation is unaffected by DOTALL).
+- **A present-but-empty manifest now fails closed as malformed**
+  (`_parse_boundary_manifest_bytes`): an empty or comment-only
+  `.advisor-board/boundaries.toml` parses to `{}` — valid TOML, zero
+  sections — and was classified `PRESENT` with zero compiled boundary
+  sections, so `evaluate_boundary_escalation` found nothing to match and
+  returned `required=False`: "no boundaries" silently permitted
+  carry-forward, contrary to the escalate-EVERY-delta fail-closed rule. A
+  manifest with zero compiled sections now raises `BoundaryManifestInvalid`,
+  routing it through the same `MANIFEST_DISPOSITION_MALFORMED` path as a
+  genuinely malformed manifest.
+- **`carry_forward`'s empty-`path_scope` guard now checks entry content, not
+  just sequence length**: `path_scope=("",)` (or `("  ",)`) is a non-empty
+  SEQUENCE containing a blank entry — it passed the old `if not
+  f.path_scope` check, but the broker's own `_covered_by_owned`
+  (credsep.py:204-208) treats a blank `owned` entry (after its OWN
+  `.rstrip("/")`) as falsy and skips it, so such a finding was classified
+  DISJOINT and carried forward without ever actually scoping anything. The
+  guard now checks `entry.strip().rstrip("/")` — mirroring
+  `_covered_by_owned`'s own emptiness test rather than only `.strip()` —
+  which also closes a residual variant caught on advisor review: an
+  all-slash entry like `path_scope=("/",)`/`("//",)` is non-blank under
+  `.strip()` alone but becomes empty under `_covered_by_owned`'s
+  `.rstrip("/")` and was therefore silently skipped by the SAME
+  matcher-skip mechanism. Blank/whitespace-only/all-slash entries now force
+  the same fail-closed `empty_path_scope` re-review disposition as a wholly
+  empty `path_scope`; a legitimate trailing-slash directory scope (e.g.
+  `"pkg/"`) is unaffected.
+- **`build_delta_round` now requires seat corroboration for every reopened
+  finding on a `reviewed-clean` round, not just `resolved_finding_ids`**:
+  design §5.3's full rule is "the delta round's seats must return a verdict
+  on exactly those [resolved] plus every re-opened finding." A non-escalated
+  delta that reopens a clean finding (its `path_scope` intersects the
+  delta's changed paths) could previously be recorded `status=
+  "reviewed-clean"` with zero delta-round seats and still pass
+  `is_carry_forward_eligible` — the reopened finding was never actually
+  re-reviewed. `require_seat_corroboration` is now also called on
+  `cf.reopened_finding_ids` whenever `status == DELTA_STATUS_REVIEWED_CLEAN`
+  (raising `ResolvedClaimUnverified` on any gap); `escalated-whole-patch`/
+  `pending`/`invalidated` rounds are unaffected — those are, by definition,
+  still going back into review.
+- **Tests** (`tests/test_fab_delta_c.py`): 12 new cases — glob-newline
+  matching across `**`/trailing-globstar spans, empty-file and comment-only
+  manifest dispositions (unit + end-to-end escalate-every-delta), blank/
+  whitespace/mixed/all-slash `path_scope` entries never carrying forward
+  (plus a sanity check that a legitimate trailing-slash directory scope
+  still carries), and a new `ReopenedFindingCorroborationTest` covering the
+  reviewed-clean-with-uncorroborated-reopened-finding rejection, the
+  corroborated-succeeds case, and confirming an escalated-whole-patch round
+  is unaffected (58 cases total in the module, up from 46).
+- **Round-2 CR (gemini): declared-section-with-empty-globs finding does NOT
+  reproduce — regression coverage added, no production change.** A round-2
+  cross-vendor CR pass hypothesized a residual fail-open in the finding-2
+  fix above: a manifest declaring a section with an empty `globs` list
+  (`[auth]\n globs = []`) would parse to a non-empty `sections={"auth": ()}`,
+  so the `if not sections:` zero-sections check would never fire, and
+  `evaluate_boundary_escalation` would then iterate zero compiled patterns
+  and silently permit carry-forward with a declared-but-neutered protected
+  surface. Reproduction against this exact shape shows the finding does not
+  hold: `_parse_boundary_manifest_bytes`'s per-section shape check
+  (`not isinstance(globs, list) or not globs or not all(isinstance(g, str)
+  for g in globs)`) already rejects an empty `globs` list, on every section,
+  unconditionally — and has done so since the module's original commit,
+  predating both the finding-2 fix and this round-2 finding. `sections`/
+  `compiled` are never populated for such a manifest; it resolves to
+  `MANIFEST_DISPOSITION_MALFORMED` (same as missing/genuinely-malformed) and
+  forces escalate-every-delta, confirmed end-to-end. No source change was
+  made — five new regression tests pin the existing behavior (single empty
+  section, all-sections-empty, one downgraded section among otherwise-real
+  ones, the end-to-end escalate-all assertion, and a no-regression check
+  that a fully well-formed manifest is unaffected) so the `not globs` clause
+  cannot be silently loosened later (63 cases total in the module, up from
+  58).
+- **Round-3 CR (codex, verified by direct execution; grok + gemini AGREE):
+  semantically-empty boundary globs now rejected at manifest-parse time.**
+  A glob can be syntactically SAFE (non-empty, not `/`-absolute, no `..`
+  component, safe charset — every check `_translate_glob_to_regex` already
+  ran) and still compile to a regex that matches ZERO real git changed
+  paths, because git's `-z` diff paths are always repository-relative and
+  NORMALIZED: never `./`-prefixed, never containing a `.`/`..` path
+  component, never an empty component (`a//b`), never trailing-slashed
+  (`x/`, `**/`). Direct execution against `8d68675` confirmed the bypass:
+  `[auth]\n globs = ["./**"]` gave `evaluate_boundary_escalation(load,
+  ("src/live.py",)).required == False` — `auth` LOOKED protected (PRESENT
+  disposition, a non-empty valid-glob list) while being silently
+  unprotected, violating the §5.4 downgrade-proof invariant ("no
+  zero-effective-boundary manifest may permit carry-forward").
+  `_translate_glob_to_regex` now rejects, per `/`-delimited segment, any
+  EMPTY component (leading/trailing/doubled slash) or a bare `.`/`..`
+  component — additive to the existing leading-`/`/`..`-anywhere/charset
+  checks, so `./**`, `.`, `..`, `**/`, `a//b`, `x/./y`, `x/../y`, and `x/`
+  all now raise `BoundaryManifestInvalid` (routing the whole manifest to
+  `MANIFEST_DISPOSITION_MALFORMED` -> escalate-every-delta, same fail-closed
+  disposition as missing/genuinely-malformed). The full legitimate default
+  glob set from design §5.4 (`**/contracts/**`, `**/*.proto`,
+  `**/schema/**`, `**/main.py`, `Dockerfile*`, `**/auth/**`,
+  `**/credsep.py`, `**/*secret*`, `**/migrations/**`, `**/*.sql`,
+  `**/deploy/**`, `**/*.tf`, `.github/workflows/**`) is unaffected — every
+  glob still compiles and still matches its representative in-boundary path
+  while not matching a disjoint one.
+  **Tests**: 3 new cases — unit-level rejection of all 8 degenerate glob
+  shapes, an end-to-end repro closing the exact `./**` bypass (subtests over
+  all 8 shapes, asserting `MANIFEST_DISPOSITION_MALFORMED` +
+  escalate-every-delta), and a no-regression sweep over the full legitimate
+  default glob set (66 cases total in the module, up from 63).
+- **Round-4 CR (codex, verified by direct execution against `48d27f3`):
+  literal `.git` path components now rejected — a git-SPECIAL semantic-empty
+  boundary, distinct from round-3's structural-normalization class.** Round-3
+  closed globs that cannot match a NORMALIZED git path; a glob can still be
+  fully normalized and STILL match zero real paths for a different reason —
+  git's own pathname verifier forbids a `.git` path component anywhere in a
+  tree, case-insensitively (`fsck`/`unpack-trees` reject `.git`, `.GIT`,
+  `.Git`, ... as a component, to close the on-disk-`.git`-shadowing attack
+  class). Direct execution confirmed the bypass: `[surface]\n globs =
+  [".git/**"]` gave `evaluate_boundary_escalation(load, ("src/live.py",))
+  .required == False` — `surface` looked protected while being silently
+  unprotected, same §5.4 downgrade-proof-invariant violation as round-3, via
+  a git-special restriction instead of a path-normalization one.
+  `_translate_glob_to_regex` now rejects any glob whose LITERAL `/`-delimited
+  segment (no `*`/`?` wildcard character in it) ASCII-lowercases to exactly
+  `.git` — additive to (never replacing) the round-3 checks, so `.git/**`,
+  `src/.GIT/**`, `.Git/**`, and `a/.git/b` all now raise
+  `BoundaryManifestInvalid`. A WILDCARD segment that could incidentally also
+  match `.git` (`**`, `*`, `.*`) is deliberately left unrejected — its
+  breadth is the fail-SAFE direction (matching MORE paths, never fewer) — and
+  a legitimately dot-prefixed directory like `.github/workflows/**` is
+  unaffected (`.github` is a different component than `.git`).
+  **Decision boundary, written down so future CR evaluates against it rather
+  than re-litigating each exotic form**: `_translate_glob_to_regex`'s
+  docstring now states the validator's job is bounded to exactly two
+  enumerated classes — (a) structural non-normalized forms (round-3) and (b)
+  the git-special forbidden `.git` component (round-4) — and explicitly does
+  NOT attempt exhaustive parity with every platform-specific git pathname
+  restriction (Windows reserved device names, NTFS alternate-data-stream
+  forms, HFS+ Unicode-dotless `.git` homoglyphs, Windows trailing-dot/space
+  trimming). Those are real but non-blocking: the boundary manifest is read
+  at the REVIEWED, base-pinned revision (this module's pre-stated trust
+  boundary, mirroring Lane A §6.1a / Lane B / #276) — a trusted artifact, not
+  attacker-controlled delta content — so an exotic residual is a base-config
+  lint concern, not a runtime injection vector. Tracked as a non-blocking
+  follow-up: Consiliency/agent-harness#279.
+  **Tests**: 3 new cases — unit-level rejection of 6 `.git`-component shapes
+  (`.git/**`, `src/.GIT/**`, `.Git/**`, `a/.git/b`, `.git`, `**/.git/**`), a
+  no-over-rejection check (`**`/`*`/`.github/workflows/**` still compile and
+  match correctly), and an end-to-end repro closing the exact `.git/**`
+  bypass over 4 case-variant shapes (asserting `MANIFEST_DISPOSITION_MALFORMED`
+  + escalate-every-delta) (69 cases total in the module, up from 66).
+- **Round-5 CR (codex, self-correcting): round-4's `.git`-component rejection
+  REVERTED — its premise was false for this module's own threat model, verified
+  empirically.** Round-4 reasoned that git's pathname verifier (`verify_path`)
+  forbids a `.git` path component anywhere in a tree, so a literal `.git` glob
+  segment could never match a real diff path. `verify_path` governs the
+  INDEX/WORKTREE (`git checkout`, `git add`, ordinary commits) — it is not
+  consulted by the raw plumbing (`git mktree`/`git commit-tree`) that builds and
+  diffs commit-tree objects directly, and `fab_canonical.enumerate_changed_paths`
+  (Lane C's actual input) is exactly a raw commit-tree `git diff --raw`
+  enumeration. Lane B's own threat model explicitly includes HAND-CRAFTED trees.
+  Verified directly: a crafted head commit (tree built via `git mktree` with a
+  `.git` subtree entry, committed via `git commit-tree`, entirely bypassing
+  `verify_path`) against a realistic base produces `git diff --no-renames -z
+  --raw <base> <crafted-head>` output containing a `.git/config` changed path
+  (rc==0) — so `.git/config` IS reachable through Lane C's actual input via a
+  hostile tree. `.git/**` is therefore a legitimate, VALUABLE boundary glob
+  (matching that injection is exactly the protection an operator declaring it
+  wants), not a semantic-empty one — the round-4 rejection removed real
+  protection and turned any manifest declaring `.git/**` into "malformed"
+  (escalate every delta), the opposite of a working boundary. `_translate_
+  glob_to_regex` no longer rejects a literal `.git` path component; the round-3
+  STRUCTURAL rejections (empty segment, leading/trailing/doubled slash, bare
+  `.`/`..` component) are untouched — those forms remain git-tree-object-illegal
+  at parse time, not merely an fsck warning, and stay rejected. The module and
+  function docstrings are corrected to describe the single remaining enumerated
+  rejection class and the corrected `.git` analysis.
+  Consiliency/agent-harness#279 (filed on the now-reverted round-4 premise) is
+  closed as superseded.
+  **Tests**: the round-4 rejection tests are replaced with positive coverage —
+  `.git`-component globs now assert they COMPILE and MATCH rather than raise
+  (`GlobSemanticsTest.test_dot_git_component_compiles_and_matches`), a manifest
+  declaring one now asserts PRESENT (not malformed) disposition
+  (`BoundaryManifestLoadTest.test_dot_git_component_glob_manifest_is_present_not_malformed`),
+  and a new `HostileGitTreeDotGitTest` class builds a crafted `.git`-injection
+  commit via real `git mktree`/`git commit-tree` plumbing in a real temporary
+  repo, confirms `fab_canonical.enumerate_changed_paths` reports the resulting
+  `.git/config` changed path, and confirms a `.git/**` boundary manifest
+  escalates that delta end-to-end (`evaluate_boundary_escalation(...).required
+  == True`, `trigger == "git_injection"`). Round-3's structural-rejection tests
+  are unchanged and remain green.
+- **Round-6 (CONFIRMED, empirically reproduced): a start-anchored boundary
+  glob could be evaded entirely by a MANGLED delta path — fixed at the
+  matching layer, not the glob-syntax layer; round-3's glob-path-legality
+  validation is REMOVED as the treadmill it always was.**
+  `fab_canonical.enumerate_changed_paths` does NO normalization (by design —
+  Lane B's raw bytes stay load-bearing for content identity), and
+  `git mktree`/`git commit-tree` accept `.`, `..`, and EMPTY tree-entry names
+  (only a literal `/` is ever rejected), so a hostile delta can surface a
+  literal changed path like `./.github/workflows/ci.yml`,
+  `.github//workflows/ci.yml`, or `x/../.github/workflows/ci.yml` that
+  `git checkout` would collapse to the real, protected path but that a
+  START-ANCHORED boundary glob's anchored literal-string match (`^\.github/
+  workflows(?:/.*)?$`) never sees. Confirmed against `b7491f8`:
+  `.github/workflows/**` and `Dockerfile*` both failed to match every mangled
+  form of their own protected path. A delta touching a protected surface via
+  such a path carried forward WITHOUT the whole-patch re-review FAB exists to
+  force — a fail-open at the MATCHING layer, not a glob-authoring mistake.
+  New `_normalize_path_for_matching(path) -> str | None`: splits a path on
+  `/`, drops `.` and empty segments, and resolves `..` by popping the
+  previous segment (the same collapse `git checkout` applies on disk) —
+  keeping every other segment (including a literal `.git`) verbatim. A `..`
+  that would escape the repo root, or a result that resolves to nothing,
+  returns `None` (abnormal) — callers fail closed on that sentinel rather
+  than treating it as "matches nothing". `evaluate_boundary_escalation` now
+  matches the NORMALIZED changed path (and normalizes the manifest-touch
+  comparison too) against compiled globs, and forces whole-patch escalation
+  immediately (`ESCALATION_TRIGGER_ABNORMAL_PATH`) on any abnormal changed
+  path; `carry_forward`'s disjointness test now normalizes BOTH
+  `delta_changed_paths` and every `Finding.path_scope` entry before calling
+  the broker's `_covered_by_owned` (still reused, never re-implemented) — an
+  abnormal delta path forces every remaining clean finding to reopen, and an
+  abnormal `path_scope` entry disqualifies that finding's whole scope the
+  same way a blank entry already did. Lane B (`patch_digest`,
+  `enumerate_changed_paths`) is untouched — normalization is applied ONLY at
+  this Lane-C matching decision, never to the raw bytes Lane B hashes.
+  **Round-3's glob-path-legality validation is REMOVED**
+  (`_translate_glob_to_regex` no longer rejects a `.`/`..`/empty glob
+  COMPONENT): its premise — that such a glob "can never match a normalized
+  git path" — was falsified by this same investigation (a hostile tree can
+  produce an unnormalized path), and the fix belongs on the PATH side of the
+  comparison, not the glob side; rejecting the glob was fixing the wrong
+  half of the equation and created a maintenance treadmill (round-4 already
+  had to special-case `.git` out of an over-broad version of this same
+  rejection, then round-5 had to revert it). Now that matching is
+  normalization-first, a `.`/`..`/empty glob component is no longer a
+  fail-open — at worst it is INERT (matches nothing a normalized path can
+  produce), a manifest-authoring lint concern, not a security defect this
+  module must reject. KEPT unchanged: absolute-path/`..`-anywhere/unsafe-
+  charset glob rejection (still genuinely unsafe shapes), and every
+  manifest-STRUCTURE guard (non-empty list of non-empty strings, a section
+  must have `globs`, malformed TOML/empty-manifest still escalate-all) — none
+  of that was path-legality enumeration.
+  **Tests** (`tests/test_fab_delta_c.py`): 24 new cases — direct
+  `_normalize_path_for_matching` unit coverage (dot/empty-segment dropping,
+  `..`-popping, root-escape abnormality, `.git` preserved verbatim);
+  unit-level evasion regression for both confirmed globs across all three
+  mangled forms (`BoundaryGlobEvasionRegressionTest`); a `CraftedTreeGlobEvasionTest`
+  class building REAL crafted commit trees (`git mktree`/`git commit-tree`,
+  the same technique `HostileGitTreeDotGitTest` uses) so the mangled paths
+  flow through the real `fab_canonical.enumerate_changed_paths` end to end —
+  confirming the `./…` and `x/../…` forms are reachable via actual git
+  plumbing (rc==0) and escalate correctly, plus a root-escaping
+  `x/../../outside` case forcing `ESCALATION_TRIGGER_ABNORMAL_PATH`; five new
+  `CarryForwardTest` cases covering a mangled delta path intersecting (and
+  correctly still carrying when disjoint from) a clean finding's
+  `path_scope`, a mangled `path_scope` entry itself, and an abnormal
+  delta/`path_scope` path forcing fail-closed reopen; the round-3 glob-
+  rejection tests are replaced with round-6 no-longer-rejected coverage
+  (`GlobSemanticsTest.test_dot_and_empty_component_globs_no_longer_rejected`,
+  `BoundaryManifestLoadTest.test_dot_and_empty_component_glob_manifest_is_present_not_malformed`),
+  with the genuinely-unsafe subset (`..`-anywhere, absolute path) pinned as
+  still-rejected in dedicated tests. (93 cases total in the module, up from
+  69; `.git/**`'s `HostileGitTreeDotGitTest` positive coverage from round-5 is
+  unaffected and stays green.)
+- **Round-7 (CONFIRMED, empirically reproduced): round-6's fix was
+  asymmetric — the changed-PATH side was normalized but the boundary-GLOB
+  side was left raw, so a glob authored with `.`/`..`/empty literal
+  components was INERT against every normalized path, silently zeroing out
+  a declared surface's boundary (fail-open, carry-forward permitted).**
+  Verified: `[auth] globs = ["./**"]` compiled to `^\.(?:/.*)?$`, which no
+  normalized path (never containing a bare leading `.` component) can ever
+  satisfy — `evaluate_boundary_escalation(..., ("src/live.py",)).required`
+  was `False`, meaning a surface declared with only that glob escalated
+  NOTHING. This is the exact dual of round-6's path-side evasion: the two
+  sides of the match could never agree on what "the same location" means.
+  `_translate_glob_to_regex` now applies the SAME `_normalize_path_for_
+  matching` component-normalization to the glob's own literal segments
+  (dropping `.`/empty, resolving `..` by popping the previous kept
+  segment) before compiling — wildcard segments (`*`, `**`, `?`, mixed
+  segments like `*.proto`) and a literal `.git` component are never
+  dropped or altered, only exact `.`/empty components are. `./**` now
+  normalizes to `**` (matches everything — broader than intended, but
+  fail-SAFE, the same escalate-more-not-less bias the globstar translation
+  already applies); `a//b` -> `a/b`; `x/./y` -> `x/y`; a leading `/` or an
+  interior `..` (`/abs/path`, `a/../b`) is likewise now normalized instead
+  of being flatly rejected at parse time (round-6's blanket absolute-path/
+  any-`..`-anywhere rejection is REMOVED, replaced by this normalization —
+  the SAME treadmill-avoidance argument round-6 already made for the path
+  side now applies symmetrically to the glob side). A glob that normalizes
+  to NOTHING at all (`.`, `./`, `//`, a bare `..`, or a `..`-only/repo-
+  escaping glob such as `x/../../y`) declares a surface with NO effective
+  boundary and is now MALFORMED (fail-closed — escalates every delta),
+  correcting round-6's claim that such a glob was merely "an inert...
+  manifest-authoring lint concern": it is not inert, it silently disables
+  the surface, and codex round-7 CR flagged it as a real fail-open, not a
+  hypothetical one. Lane B (`patch_digest`, `enumerate_changed_paths`) and
+  round-6's path-side normalization + carry-forward normalization are
+  untouched — only the glob-translation layer gained normalization.
+  **Tests** (`tests/test_fab_delta_c.py`): the inert-glob bug is
+  reproduced and pinned end to end
+  (`BoundaryManifestLoadTest.test_inert_glob_bug_reproduction_now_escalates`,
+  `..._specific_surface`); the round-6 "no longer rejected"/"still
+  rejected" glob tests are corrected for round-7's narrower malformed set
+  and split into normalizes-and-matches vs. normalizes-to-empty-and-
+  malformed cases (`GlobSemanticsTest.test_dot_and_empty_component_globs_now_normalize_not_inert`,
+  `test_normalizes_to_empty_globs_are_now_malformed`,
+  `test_leading_slash_and_interior_dotdot_globs_now_normalize`,
+  `BoundaryManifestLoadTest.test_dot_and_empty_component_glob_manifest_present_and_now_escalates`,
+  `test_normalizes_to_empty_glob_manifest_now_malformed`,
+  `test_leading_slash_and_interior_dotdot_glob_manifest_now_normalizes`); a
+  new symmetry test drives a mangled glob against a clean path, a clean
+  glob against a mangled path, and both mangled simultaneously, confirming
+  all three agree and escalate
+  (`BoundaryGlobEvasionRegressionTest.test_mangled_glob_side_mirrors_mangled_path_side_symmetry`).
+  All round-6 path-evasion, crafted-tree, and `.git`-component coverage
+  stays green unchanged.
+- **Round-8 (CONFIRMED, empirically reproduced): round-7's glob-side `..`
+  RESOLUTION was itself unsound against a variable-length `**`, producing a
+  silent UNDER-match/fail-open.** Round-7 made `_translate_glob_to_regex`
+  reuse `_normalize_path_for_matching` verbatim on the glob string,
+  resolving a glob's `..` component by popping the previous kept segment —
+  exactly as it does for a changed path. But a glob's previous segment can
+  be `**`, representing ZERO OR MORE path segments, a variable-length unit
+  with no fixed segment to pop; popping it anyway is unsound. Verified:
+  `_translate_glob_to_regex("**/../auth/**")` (round-7) normalized to
+  `auth/**` (popping the `**`), compiling to the ANCHORED
+  `^auth(?:/.*)?$`. The mangled changed path `x/y/../auth/login.py`
+  normalizes (path-side, unaffected) to `x/auth/login.py`, which that
+  anchored pattern does NOT match — `required` was `False` for a delta that
+  should have forced whole-patch escalation, silently under-protecting an
+  `[auth] globs = ["**/../auth/**"]` surface. Fix: `_translate_glob_to_regex`
+  now normalizes globs through a NEW, dedicated helper,
+  `_normalize_glob_components` — distinct from `_normalize_path_for_
+  matching` — which still drops `.`/empty components (unaffected by the
+  `**`-length ambiguity; `./**` -> `**`, `a//b` -> `a/b` unchanged from
+  round-7) but REJECTS (never resolves) any `..` component outright: a
+  boundary glob has no legitimate reason to contain "up a directory" at
+  all, so `..` in a glob is now a fail-closed CONFIGURATION ERROR
+  (`BoundaryManifestInvalid` -> `MANIFEST_DISPOSITION_MALFORMED`,
+  escalates every delta) rather than an attempted-but-unsound resolution.
+  This is a DELIBERATE ASYMMETRY between the two sides of a match, not a
+  rollback of round-7's intent: a changed PATH always resolves to one
+  concrete, fixed-length repo location (git's own real on-disk `..`-
+  collapse, unambiguous), so `_normalize_path_for_matching` still RESOLVES
+  `..` for paths, completely unchanged; a GLOB can contain a
+  variable-length `**`, so its `..` is REJECTED instead of resolved. Lane B
+  (`patch_digest`, `enumerate_changed_paths`), the carry-forward path-side
+  normalization, and Lane D are untouched — only the glob-translation
+  layer's `..` policy changed, from resolve to reject.
+  **Tests** (`tests/test_fab_delta_c.py`): the confirmed under-match is
+  reproduced directly at the matching layer
+  (`BoundaryGlobEvasionRegressionTest.
+  test_glob_dotdot_after_globstar_is_rejected_not_under_matched`) and
+  end-to-end at the manifest layer, confirming malformed disposition now
+  escalates the exact bug path plus an unrelated path unconditionally
+  (`BoundaryManifestLoadTest.
+  test_glob_dotdot_after_globstar_manifest_is_malformed_escalates_every_delta`);
+  a widened always-malformed set now covers `a/../b`, `x/../y`,
+  `**/../x`, `x/../**`, `../auth/**`, and `**/../auth/**` alongside the
+  pre-existing bare-`..`/repo-escaping cases
+  (`GlobSemanticsTest.test_any_dotdot_component_glob_is_always_malformed`,
+  `BoundaryManifestLoadTest.test_normalizes_to_empty_glob_manifest_now_malformed`);
+  the round-7 tests asserting `a/../b` NORMALIZES are corrected to assert it
+  is now REJECTED, while the still-valid leading-`/`-drops-empty-segment
+  coverage is kept
+  (`GlobSemanticsTest.test_leading_slash_globs_still_normalize_dotdot_globs_do_not`,
+  `BoundaryManifestLoadTest.test_leading_slash_glob_manifest_still_normalizes`);
+  a new symmetry test confirms the LEGIT case stays green — a mangled PATH
+  (`x/../auth/login.py`) still resolves `..` and escalates against a
+  perfectly normal, unmangled glob (`**/auth/**`)
+  (`BoundaryGlobEvasionRegressionTest.
+  test_mangled_path_dotdot_still_resolves_against_normal_glob_symmetry_preserved`).
+  All round-1/2/6/7 path-evasion, crafted-tree, `.git`-component, §5.4
+  default-glob-set, and non-`..` round-7 dot/empty-component coverage stays
+  green unchanged (102 tests, 80 subtests, all passing).
+
 ### Visual-avatar-evidence closeout gate (FAV, Consiliency/agent-harness#91)
 
 New opt-in-to-block closeout validator, `visual_avatar_evidence_validator`, mirroring the
