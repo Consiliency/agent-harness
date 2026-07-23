@@ -142,6 +142,11 @@ class RoundTripTest(unittest.TestCase):
         self.assertEqual(d1.schema, "fab.delta-review")
         round_tripped = fp.DeltaReviewRecord.from_dict(d1.to_dict())
         self.assertEqual(round_tripped, d1)
+        # standalone to_json()/from_json() (not just the dict path)
+        text = d1.to_json()
+        json_round_tripped = fp.DeltaReviewRecord.from_json(text)
+        self.assertEqual(json_round_tripped, d1)
+        self.assertEqual(json_round_tripped.to_json(), text)
 
     def test_gate_status_round_trips_and_schema_is_exact(self):
         status = fp.GateStatus(
@@ -293,6 +298,21 @@ class FailClosedLoadTest(unittest.TestCase):
         huge = json.dumps({"schema": "fab.gate-status.v2", "pad": "x" * (fp.MAX_GATE_STATUS_BYTES + 1)})
         with self.assertRaises(fp.ProvenanceInvalid):
             fp.GateStatus.from_json(huge)
+
+    def test_oversize_delta_review_record_invalidates(self):
+        huge = json.dumps({"schema": "fab.delta-review", "pad": "x" * (fp.MAX_DELTA_REVIEW_RECORD_BYTES + 1)})
+        with self.assertRaises(fp.ProvenanceInvalid):
+            fp.DeltaReviewRecord.from_json(huge)
+
+    def test_oversize_run_store_provenance_rejected_before_full_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_id = "20260723T000000Z-00-test-run"
+            path = fp.provenance_path_for_run(repo, run_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("x" * (fp.MAX_PROVENANCE_ARTIFACT_BYTES + 1), encoding="utf-8")
+            with self.assertRaises(fp.ProvenanceInvalid):
+                fp.read_provenance(repo, run_id)
 
     def test_malformed_json_invalidates(self):
         with self.assertRaises(fp.ProvenanceInvalid):

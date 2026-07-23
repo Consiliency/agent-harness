@@ -159,6 +159,9 @@ MAX_PROVENANCE_ARTIFACT_BYTES = 8 * 1024 * 1024
 # Gate-status is a small echo record (ids + digests, no findings/seats detail) —
 # a much tighter cap is appropriate and still generous.
 MAX_GATE_STATUS_BYTES = 512 * 1024
+# A single delta round, standalone (e.g. exchanged before being appended to an
+# artifact's delta_chain) — bounded well under the full-artifact cap.
+MAX_DELTA_REVIEW_RECORD_BYTES = 1 * 1024 * 1024
 
 # Immutable-material snapshot: stream hashing in 1 MiB chunks (mirrors the
 # established #114 pattern in panel_invoker.py's `_context_ref_entry`,
@@ -790,6 +793,24 @@ class DeltaReviewRecord:
             escalation=Escalation.from_dict(_req(d, "escalation")),
         )
 
+    def to_json(self) -> str:
+        """Deterministic, round-trippable JSON (sorted keys, tight separators)
+        for a STANDALONE delta round (e.g. exchanged before being appended to
+        an artifact's `delta_chain`) — deliverable item 1's `to_json()`/
+        `from_json()` requirement applies to all three record types, not just
+        `ReviewProvenanceArtifact`/`GateStatus`."""
+        try:
+            return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError) as exc:
+            raise ProvenanceInvalid(f"json.dumps failed while serializing delta record: {exc}") from exc
+
+    @classmethod
+    def from_json(cls, text: str) -> "DeltaReviewRecord":
+        """The fail-closed loader for a standalone delta round: oversize /
+        malformed-JSON / surrogate-in-value all raise `ProvenanceInvalid`."""
+        data = _load_json_fail_closed(text, max_bytes=MAX_DELTA_REVIEW_RECORD_BYTES)
+        return cls.from_dict(data)
+
 
 # --------------------------------------------------------------------------- #
 # ReviewProvenanceArtifact (design §6.5, `fab.review-provenance.v2`)
@@ -1220,6 +1241,19 @@ def read_provenance(repo: Path, run_id: str) -> ReviewProvenanceArtifact:
     subclass) when the run store has nothing for `run_id` — it never falls back
     to any other candidate location."""
     path = provenance_path_for_run(repo, run_id)
+    # #243 precedent (verification_evidence.load_verification_artifact): stat
+    # the oversize bound BEFORE reading, so a tampered/runaway file is rejected
+    # without ever being pulled fully into memory. A missing-file stat OSError
+    # falls through to the read_text below, which raises the canonical
+    # ProvenanceNotFound.
+    try:
+        if path.stat().st_size > MAX_PROVENANCE_ARTIFACT_BYTES:
+            raise ProvenanceInvalid(
+                f"run-store provenance for run_id={run_id!r} exceeds max size "
+                f"{MAX_PROVENANCE_ARTIFACT_BYTES} bytes (fail-closed, not read)"
+            )
+    except OSError:
+        pass
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
