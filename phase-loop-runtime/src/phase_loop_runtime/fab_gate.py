@@ -760,7 +760,16 @@ def _durable_finalized_epochs(repo: Path, run_id: str) -> set[int]:
     epoch-set completeness). A record that exists but is NOT finalized (a crash
     mid-produce) is not counted — the client cannot authenticate it anyway. Reuses
     `read_review_round` (validates size / digest / epoch-match) per epoch. Fail-
-    closed (`ReviewRoundInvalid`) on a malformed round-record filename."""
+    closed (`ReviewRoundInvalid`) on a malformed round-record filename.
+
+    GATE<->CONSUMER CONTRACT (3b-gate CR round 2, named boundary): epoch-set
+    EQUALITY is sound ONLY if the run store for `run_id` holds EXACTLY the final
+    chain's finalized rounds — never a stale one from a superseded/failed attempt.
+    The piece-3b CONSUMER's recapture MUST truncate/scope stale round records per
+    attempt (as `capture_review_at_invocation` already truncates the seat ledger),
+    or a legitimate retry whose honest chain is a strict subset would false-BLOCK.
+    Equality (not subset-tolerance, which would reopen the content-neutral-drop
+    hole) is deliberate; the consumer owns keeping the store clean."""
     run_dir = provenance_dir_for_run(repo, run_id)
     base, _, ext = REVIEW_ROUND_FILENAME.rpartition(".")
     prefix, suffix = f"{base}.e", f".{ext}"
@@ -1460,6 +1469,16 @@ def _validate_chain_binds_to_git(repo: Path, artifact: ReviewProvenanceArtifact)
             f"live={live_candidate_digest!r} — the candidate's equivalence head must be derived from the "
             "authenticated head, never trusted from the client patch_digest"
         )
+    # CANDIDATE read-surface enumeration (the recurring "did I apply it to the
+    # whole surface" check): the gate reads `candidate.head_sha` (bound by round
+    # identity), `candidate.review_scope.reviewed_material_digest` (bound by round
+    # identity + material re-verify), and `candidate.patch_digest` (bound just
+    # above). `candidate.review_scope.covers_patch_digest`/`.mode` are DELIBERATELY
+    # unbound on the candidate path: they are read NOWHERE for a gate decision
+    # (equivalence uses `candidate.patch_digest`, not `covers_patch_digest`) — only
+    # folded into `c0`, which for an empty chain is self-consistent (verify_chain
+    # checks `chain_digest == c0`), so forging them changes nothing decided. A
+    # future decision that reads them would be the same hole one field over.
 
     if not artifact.delta_chain:
         return
