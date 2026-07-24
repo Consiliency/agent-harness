@@ -225,6 +225,10 @@ def append_record(path: Path, record: LedgerRecord) -> None:
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
     try:
         os.write(fd, encoded)
+        # Durable append (FAB 3b-consumer CR B2): the ledger append is the
+        # re-admission COMMIT POINT — fsync it so a crash cannot lose the record
+        # that just advanced the admitted head to a gate-passed chain.
+        os.fsync(fd)
     finally:
         os.close(fd)
 

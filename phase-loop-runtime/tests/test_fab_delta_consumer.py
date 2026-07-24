@@ -19,6 +19,7 @@ from phase_loop_runtime import fab_delta as fd
 from phase_loop_runtime import fab_gate as fg
 from phase_loop_runtime import fab_producer as prod
 from phase_loop_runtime import fab_provenance as fp
+from phase_loop_runtime.governed_bundle import committed_range_diff
 from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 
@@ -76,13 +77,14 @@ class DeltaConsumerRoundTripTest(GitRepoTestCase):
         # -- DELTA round (epoch 2): a real committed-range review of the advance --
         self.write("pkg/c.py", "small disjoint delta content\n")
         delta_head = self.commit("c2 disjoint delta advance")
-        prod.capture_delta_review_at_invocation(self.repo, run_id, _delta_panel(), epoch=2)
+        diff = committed_range_diff(self.repo, candidate_head, delta_head)
+        prod.capture_delta_review_at_invocation(self.repo, run_id, _delta_panel(), epoch=2, reviewed_diff_text=diff)
         delta_record = prod.build_and_finalize_delta_round(
             self.repo, run_id,
             epoch=2, base_sha=base, repo_slug=self.REPO_SLUG,
             parent_head_sha=candidate_head, parent_patch_digest=candidate.patch_digest, parent_chain_digest=c0,
             delta_head_sha=delta_head, findings=(), resolved_finding_ids=(),
-            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY), reviewed_diff_text=diff,
         )
         self.assertEqual(delta_record.status, fp.DELTA_STATUS_REVIEWED_CLEAN)
         self.assertFalse(delta_record.escalation.required)
@@ -123,19 +125,23 @@ class DeltaConsumerRoundTripTest(GitRepoTestCase):
         # ATTEMPT 1 → epochs {1, 2, 3}.
         self.write("pkg/c.py", "delta 2\n")
         delta2_head = self.commit("c2 delta")
-        prod.capture_delta_review_at_invocation(self.repo, run_id, _delta_panel(), epoch=2)
+        diff2 = committed_range_diff(self.repo, candidate_head, delta2_head)
+        prod.capture_delta_review_at_invocation(self.repo, run_id, _delta_panel(), epoch=2, reviewed_diff_text=diff2)
         d2 = prod.build_and_finalize_delta_round(
             self.repo, run_id, epoch=2, base_sha=base, repo_slug=self.REPO_SLUG,
             parent_head_sha=candidate_head, parent_patch_digest=candidate.patch_digest, parent_chain_digest=c0,
             delta_head_sha=delta2_head, findings=(), review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            reviewed_diff_text=diff2,
         )
         self.write("pkg/d.py", "delta 3\n")
         delta3_head = self.commit("c3 delta")
-        prod.capture_delta_review_at_invocation(self.repo, run_id, _delta_panel(), epoch=3)
+        diff3 = committed_range_diff(self.repo, delta2_head, delta3_head)
+        prod.capture_delta_review_at_invocation(self.repo, run_id, _delta_panel(), epoch=3, reviewed_diff_text=diff3)
         prod.build_and_finalize_delta_round(
             self.repo, run_id, epoch=3, base_sha=base, repo_slug=self.REPO_SLUG,
             parent_head_sha=delta2_head, parent_patch_digest=d2.resulting_head_digest, parent_chain_digest=d2.chain_digest,
             delta_head_sha=delta3_head, findings=(), review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            reviewed_diff_text=diff3,
         )
         # RETRY resolves in {1,2}: the client chain is (d2,) only, but the run store
         # still holds the stale finalized epoch-3 record → false-BLOCK.
@@ -168,6 +174,10 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         candidate_head; returns (ledger_path, base, candidate_head, delta_head)."""
         from phase_loop_runtime.train_ledger import LedgerRecord, append_record
 
+        # Exclude the run store from git (as the real runtime does via
+        # .git/info/exclude) so the test's `git add -A` never tracks `.phase-loop/`
+        # and a `git reset --hard` cannot delete the durable run store.
+        (self.repo / ".git" / "info" / "exclude").write_text(".phase-loop/\n", encoding="utf-8")
         self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
         base = self.commit("c0 base")
         self.push_main()
@@ -189,7 +199,12 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
             fab_run_id=self.RUN, merge_order=0))
         return ledger_path, base, candidate_head, delta_head
 
-    def _review_fn(self, ws, diff):
+    # All delta advances in these fixtures touch `pkg/...`; the node's owned scope
+    # is `pkg` so the CR-B4 broker owned-scope re-check passes for the intended
+    # cases and can be narrowed to prove an out-of-scope escape fails closed.
+    OWNED = ["pkg"]
+
+    def _review_fn(self, ws, diff, author_vendors=frozenset()):
         from phase_loop_runtime.governed_premerge import LoopResult
         return LoopResult(mergeable=True, ran=True, rounds=1, panel=_delta_panel())
 
@@ -201,7 +216,7 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         new_admitted = tr._fab_delta_readmit(
             self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
-            delta_review_fn=self._review_fn, fab_fetch_origin="fetchsrc",
+            delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
         )
         self.assertEqual(new_admitted, delta_head)
         # COMMIT POINT: the ledger now admits the new head with the same fab_run_id.
@@ -241,7 +256,7 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
                 tr._fab_delta_readmit(
                     self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
                     merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
-                    delta_review_fn=self._review_fn, fab_fetch_origin="fetchsrc",
+                    delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
                 )
             # Fail-closed: the ledger still admits the OLD candidate head.
             self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
@@ -251,7 +266,7 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
             new_admitted = tr._fab_delta_readmit(
                 self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
                 merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
-                delta_review_fn=self._review_fn, fab_fetch_origin="fetchsrc",
+                delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
             )
             self.assertEqual(new_admitted, delta_head)
             self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, delta_head)
@@ -273,16 +288,79 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
 
         ledger_path, base, candidate_head, delta_head = self._setup_candidate_and_advance()
 
-        def reject_fn(ws, diff):
+        def reject_fn(ws, diff, author_vendors=frozenset()):
             return LoopResult(mergeable=False, ran=True, rounds=1, panel=_delta_panel())
 
         result = tr._fab_delta_readmit(
             self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
-            delta_review_fn=reject_fn, fab_fetch_origin="fetchsrc",
+            delta_review_fn=reject_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
         )
         self.assertIsNone(result)
         self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
+
+    def test_torn_provenance_from_crash_recovers_on_next_attempt(self):
+        """CR B2 — the crux the happy/final-append tests masked. Attempt 1 CRASHES
+        AFTER the provenance is overwritten with the extended chain (before the
+        gate-verify/recovery could run) → a torn durable state (ledger admits C1,
+        provenance resolves to C2, and the durable epoch-2 record would even fail
+        the candidate-only epoch-set-completeness → the node was bricked: couldn't
+        merge, revert, or accept a fix). The author then replaces the advance with
+        a new single commit C2'; attempt 2 must CONVERGE — the unconditional
+        scope-back-to-admitted-prefix at the START of the attempt recovers the
+        torn state, then rebuilds for C2' and re-admits."""
+        import subprocess
+
+        from phase_loop_runtime import fab_provenance as fpmod
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        ledger_path, base, candidate_head, c2_head = self._setup_candidate_and_advance()
+
+        # ATTEMPT 1: crash on the fsync of the EXTENDED provenance (the one whose
+        # chain is nonempty) → torn state left, no recovery.
+        real_fsync = fpmod.fsync_run_store_durable
+        crashed = {"done": False}
+
+        def crashing_fsync(repo, run_id):
+            art = fg.read_provenance(repo, run_id)
+            if art.delta_chain and not crashed["done"]:
+                crashed["done"] = True
+                raise OSError("simulated crash after the extended-provenance overwrite")
+            return real_fsync(repo, run_id)
+
+        fpmod.fsync_run_store_durable = crashing_fsync
+        try:
+            with self.assertRaises(OSError):
+                tr._fab_delta_readmit(
+                    self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+                    merge_order=0, admitted_head_sha=candidate_head, live_head_sha=c2_head,
+                    delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+                )
+        finally:
+            fpmod.fsync_run_store_durable = real_fsync
+        # Torn: the provenance resolves to C2 but the ledger still admits C1.
+        self.assertEqual(fg.read_provenance(self.repo, self.RUN).delta_chain[-1].delta_head_sha, c2_head)
+        self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
+
+        # The author force-resets the branch to the admitted head and pushes a NEW
+        # single-commit replacement advance C2'.
+        subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
+        self.write("pkg/fix.py", "fixed single-commit advance\n")
+        c2b_head = self.commit("c2' replacement advance")
+
+        # ATTEMPT 2 must CONVERGE (scope-back-at-start recovers the torn state).
+        new_admitted = tr._fab_delta_readmit(
+            self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+            merge_order=0, admitted_head_sha=candidate_head, live_head_sha=c2b_head,
+            delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+        )
+        self.assertEqual(new_admitted, c2b_head, "attempt 2 must converge, not brick on the torn state")
+        self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, c2b_head)
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=c2b_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
 
     def test_multi_commit_advance_is_not_handled(self):
         """A MULTI-commit advance is out of scope → _fab_delta_readmit returns None
@@ -295,6 +373,160 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         result = tr._fab_delta_readmit(
             self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head_2,
-            delta_review_fn=self._review_fn, fab_fetch_origin="fetchsrc",
+            delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
         )
         self.assertIsNone(result)
+
+    def test_delta_touching_out_of_scope_path_is_not_re_admitted(self):
+        """CR B4 — broker owned-scope re-check (ah#202/#251). The advance touches
+        `pkg/c.py`; when the node's owned scope does NOT cover it, the re-admission
+        fails closed (→ the pr-head-advanced guard), never broker-admitting an
+        advance that escapes the node's owned scope. An UNPROVABLE scope
+        (`owned_paths=None`) is treated the same way — the fence is never applied on
+        a scope we cannot establish."""
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        ledger_path, base, candidate_head, delta_head = self._setup_candidate_and_advance()
+        for scope in (["docs"], None):  # out-of-scope, then unprovable
+            result = tr._fab_delta_readmit(
+                self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+                delta_review_fn=self._review_fn, owned_paths=scope, fab_fetch_origin="fetchsrc",
+            )
+            self.assertIsNone(result, f"owned_paths={scope!r} must fail closed")
+            self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
+
+    def test_delta_commit_author_vendor_is_excluded_from_the_delta_review(self):
+        """CR B5 — reviewer≠author for the DELTA. The advance is authored OUT-OF-BAND
+        by a vendor (gemini) with NO local dispatch event; `_fab_delta_readmit` must
+        extract that vendor from the ACTUAL delta commit range and pass it to the
+        review as an excluded author — so the vendor can never sit on its own
+        delta's board (the historical dispatch-event union would MISS it)."""
+        import os
+        import subprocess
+
+        from phase_loop_runtime import train_runner as tr
+
+        ledger_path, base, candidate_head, _delta_head = self._setup_candidate_and_advance()
+        # Replace the advance with one AUTHORED by a gemini agent (author +
+        # committer + Co-authored-by all carry the vendor marker), no dispatch event.
+        subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
+        self.write("pkg/c.py", "gemini out-of-band advance\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True, capture_output=True)
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": "Gemini Agent", "GIT_AUTHOR_EMAIL": "g@example.com",
+               "GIT_COMMITTER_NAME": "Gemini Agent", "GIT_COMMITTER_EMAIL": "g@example.com"}
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-m", "delta by gemini\n\nCo-authored-by: Gemini <g@example.com>"],
+            check=True, capture_output=True, env=env,
+        )
+        gem_head = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+
+        # The extractor binds the vendor to the actual delta commits.
+        self.assertIn("gemini", tr._delta_commit_author_vendors(self.repo, candidate_head, gem_head))
+
+        seen: dict = {}
+
+        def capturing_review(ws, diff, author_vendors=frozenset()):
+            from phase_loop_runtime.governed_premerge import LoopResult
+            seen["authors"] = frozenset(author_vendors)
+            return LoopResult(mergeable=True, ran=True, rounds=1, panel=_delta_panel())
+
+        new_admitted = tr._fab_delta_readmit(
+            self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+            merge_order=0, admitted_head_sha=candidate_head, live_head_sha=gem_head,
+            delta_review_fn=capturing_review, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+        )
+        self.assertEqual(new_admitted, gem_head)
+        self.assertIn(
+            "gemini", seen["authors"],
+            "the delta's OWN author vendor must be passed to the review as an excluded author",
+        )
+
+
+class SeatLedgerAtomicRewriteTest(GitRepoTestCase):
+    """CR B1 — the durable seat ledger is rewritten ATOMICALLY (temp → fsync →
+    `os.replace`), never unlink-then-append. A crash DURING the rewrite must leave
+    the ORIGINAL ledger fully intact — losing the candidate seats would brick the
+    node (the gate could no longer authenticate them)."""
+
+    def test_crash_during_rewrite_leaves_original_ledger_intact(self):
+        from phase_loop_runtime import fab_gate as fgmod
+        from phase_loop_runtime import fab_provenance as fpmod
+
+        run_id = "fab-seat-atomic"
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.commit("c0 base")
+        self.push_main()
+
+        s1 = _durable_from_seat(_seat("codex:c:high", epoch=1, finding_ids=()))
+        s2 = _durable_from_seat(_seat("gemini:d:high", epoch=2, finding_ids=()))
+        fgmod.append_seat_outcome(self.repo, run_id, s1)
+        fgmod.append_seat_outcome(self.repo, run_id, s2)
+        self.assertEqual(len(fgmod.read_seat_outcomes(self.repo, run_id)), 2)
+
+        # Crash at the atomic replace while rewriting to DROP epoch 2: the rewrite
+        # must raise and leave the on-disk ledger UNCHANGED (both records present).
+        real_replace = fpmod.os.replace
+
+        def boom(src, dst):
+            raise OSError("simulated crash before the atomic replace")
+
+        fpmod.os.replace = boom
+        try:
+            with self.assertRaises(OSError):
+                fgmod.rewrite_seat_ledger(self.repo, run_id, [s1])
+        finally:
+            fpmod.os.replace = real_replace
+
+        after = fgmod.read_seat_outcomes(self.repo, run_id)
+        self.assertEqual(
+            len(after), 2,
+            "a crash mid-rewrite must never truncate/lose the durable seat ledger (never unlink-then-append)",
+        )
+
+
+class DeltaMaterialBindingTest(GitRepoTestCase):
+    """CR B3 — the delta review binds the REVIEWED bytes, and an incomplete render
+    is never laundered into provenance for bytes the seats never saw."""
+
+    def test_sentinel_reviewed_diff_is_rejected_no_delta_round(self):
+        run_id = "fab-delta-sentinel"
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.commit("c0 base")
+        self.push_main()
+        # `committed_range_diff`'s fail-closed sentinel (nonzero git rc / empty
+        # range) must be REJECTED at capture — no seats/round for unseen bytes.
+        for sentinel in ("(committed range diff unavailable)", "(empty committed range diff)"):
+            with self.assertRaises(prod.ProvenanceInvalid):
+                prod.capture_delta_review_at_invocation(
+                    self.repo, run_id, _delta_panel(), epoch=2, reviewed_diff_text=sentinel
+                )
+
+
+class DeltaReviewEmptyAuthorFailsClosedTest(unittest.TestCase):
+    """CR B5 load-bearing assumption — the REAL delta review (`_default_delta_
+    review`, not the injected seam) FAILS CLOSED when the author-vendor set is empty
+    (unknown author). This is what makes 'union the delta authors with the dispatch
+    authors, empty ⇒ block' conservative rather than a silent self-review: an
+    out-of-band vendor commit with no marker and no dispatch event yields an empty
+    set → NOT mergeable, never the full panel including the author's own vendor.
+    The block fires BEFORE any panel/leg discovery, so no CLI is spawned."""
+
+    def test_empty_author_vendors_is_not_mergeable(self):
+        import tempfile
+        from pathlib import Path
+
+        from phase_loop_runtime import train_runner as tr
+
+        with tempfile.TemporaryDirectory() as d:
+            result = tr._default_delta_review(
+                Path(d), "diff --git a/x b/x\n@@\n+y\n", author_vendors=frozenset()
+            )
+        self.assertFalse(
+            getattr(result, "mergeable", True),
+            "an unknown (empty) delta author must fail closed, never run a self-review panel",
+        )

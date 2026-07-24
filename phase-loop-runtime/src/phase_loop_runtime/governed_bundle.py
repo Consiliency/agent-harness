@@ -89,6 +89,13 @@ def committed_range_diff(repo: Path, base_sha: str, head_sha: str) -> str:
         )
     except Exception:
         return "(committed range diff unavailable)"
+    # FAIL-CLOSED on a nonzero git exit (3b-consumer CR B3): a nonzero rc means git
+    # could not honestly render the range, so its (possibly partial) stdout must
+    # NOT be treated as the reviewed bytes. Return the sentinel the producer's
+    # complete-review-representation predicate rejects — never a truncated diff
+    # laundered into provenance.
+    if out.returncode != 0:
+        return "(committed range diff unavailable)"
     return out.stdout.rstrip() or "(empty committed range diff)"
 
 

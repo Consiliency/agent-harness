@@ -762,38 +762,125 @@ def _resolve_admission_fab_run_id(
     return plumbed_run_id, None
 
 
-def _default_delta_review(workspace: Path, diff_text: str):
+_DELTA_AUTHOR_VENDOR_MARKERS = {
+    "claude": "claude", "anthropic": "claude", "opus": "claude", "sonnet": "claude",
+    "haiku": "claude", "fable": "claude",
+    "codex": "codex", "openai": "codex", "gpt": "codex",
+    "gemini": "gemini", "google": "gemini",
+    "grok": "grok", "xai": "grok",
+}
+
+
+def _delta_commit_author_vendors(workspace: Path, old_sha: str, new_sha: str) -> frozenset:
+    """The vendors that AUTHORED the delta commit range ``old..new`` — scanned from
+    every commit's author, committer, AND ``Co-authored-by`` trailers (3b-consumer
+    CR B5). Unlike the historical dispatch-event union, this is bound to the ACTUAL
+    delta commits, so a vendor that authored an OUT-OF-BAND advance (with NO local
+    dispatch event) is still excluded from reviewing its own delta — closing the
+    hole where a candidate authored by codex is advanced out-of-band by gemini and
+    gemini then reviews its own delta. Empty when the range is not attributable to
+    any known vendor (e.g. a human push); the caller unions this with the dispatch
+    authors and lets `governed_premerge_for_run` fail closed on a genuinely unknown
+    author, matching the candidate path."""
+    out = subprocess.run(
+        ["git", "-C", str(workspace), "log",
+         "--format=%an%n%cn%n%(trailers:key=Co-authored-by,valueonly)", f"{old_sha}..{new_sha}"],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return frozenset()
+    text = out.stdout.lower()
+    return frozenset(v for kw, v in _DELTA_AUTHOR_VENDOR_MARKERS.items() if kw in text)
+
+
+def _paths_covered_by_owned(changed_paths, owned_paths) -> bool:
+    """True iff EVERY changed path is a SUBSET of the node's owned scope — REUSING
+    the broker's OWN admission predicate (`GitHubBrokerAdapter._covered_by_owned`)
+    over the byte-exact ``-z`` changed paths (`enumerate_changed_paths`) it checked
+    at admission, so the re-admission applies the IDENTICAL fence, not a parallel
+    reimplementation (3b-consumer CR B4; ah#202/#251; goal-id-inc2 "a check that
+    must AGREE with a runtime check must REUSE the runtime func"). ``owned_paths``
+    empty / ``None`` ⇒ ``False``: the node's owned scope is not provably known
+    (e.g. a snapshot-based train with no explicit resolver), so the delta's fencing
+    is unestablished and the re-admission must fail closed rather than
+    broker-admit an advance that may escape the node's owned scope."""
+    from .convergence.broker.credsep import GitHubBrokerAdapter
+
+    owned = tuple(owned_paths or ())
+    if not owned:
+        return False
+    return all(GitHubBrokerAdapter._covered_by_owned(p, owned) for p in changed_paths)
+
+
+def _default_delta_review(workspace: Path, diff_text: str, author_vendors=frozenset()):
     """The production committed-range delta review — renders a governed bundle over
     the delta diff and runs the real cross-vendor panel (`governed_premerge_for_
-    run`). Returns a `LoopResult` (`mergeable` + the real `panel`). Injected as a
-    seam so tests drive the handled branch without spawning CLIs.
-
-    REVIEWER≠AUTHOR (parity with the candidate producer, which passes
-    `_phase_author_vendors`): exclude EVERY vendor that authored work in this repo
-    — the UNION across all dispatch events — from the delta review board, a
-    conservative superset of the delta's own author so the author can never sit on
-    its own delta's review. An empty author set means the authorship is unknown →
-    `governed_premerge_for_run` fails closed (no disjoint reviewer / unknown
-    author), matching the candidate path's posture."""
-    from .events import read_events
+    run`), excluding ``author_vendors`` from the review board (reviewer≠author, the
+    set the caller computed from the ACTUAL delta commits ∪ dispatch history — CR
+    B5). Returns a `LoopResult` (`mergeable` + the real `panel`). Injected as a seam
+    so tests drive the handled branch without spawning CLIs. An empty
+    ``author_vendors`` means the authorship is unknown → `governed_premerge_for_run`
+    fails closed (no disjoint reviewer / unknown author), matching the candidate
+    path's posture."""
     from .governed_bundle import render_governed_bundle
-    from .governed_review import author_vendor_for_executor
     from .panel_invoker import available_panel_legs
     from .runner import governed_premerge_for_run
 
-    author_vendors = frozenset(
-        author_vendor_for_executor(str(e.get("selected_executor")))
-        for e in read_events(workspace)
-        if isinstance(e, dict) and e.get("selected_executor")
-    )
     bundle = render_governed_bundle(phase_alias="fab-delta", terminal={}, plan_path=None, diff_text=diff_text)
     return governed_premerge_for_run(
         artifact=bundle,
         author_executor="",
-        author_vendors=author_vendors,
+        author_vendors=frozenset(author_vendors),
         run_mode="governed",
         available_legs=available_panel_legs(),
     )
+
+
+def _admitted_prefix(artifact, admitted_head_sha: str):
+    """The (delta_chain prefix, epoch list) of the durable chain ending EXACTLY at
+    `admitted_head_sha` — the known-good state the durable run store is scoped back
+    to on every re-admission attempt (CR B2). Returns `(None, None)` when the
+    admitted head is neither the candidate head nor any delta round's head (an
+    inconsistent state → the caller falls through to the fail-closed guard)."""
+    from .fab_gate import FAB_CANDIDATE_EPOCH
+
+    if artifact.candidate.head_sha == admitted_head_sha:
+        return (), [FAB_CANDIDATE_EPOCH]
+    prefix = []
+    epochs = [FAB_CANDIDATE_EPOCH]
+    for d in artifact.delta_chain:
+        prefix.append(d)
+        epochs.append(d.epoch)
+        if d.delta_head_sha == admitted_head_sha:
+            return tuple(prefix), epochs
+    return None, None
+
+
+def _scope_run_to_admitted_prefix(workspace: Path, run_id: str, artifact, prefix_chain, prefix_epochs):
+    """Recover the durable run store to the admitted-chain prefix (CR B2): rewrite
+    the provenance to `(candidate + prefix_chain)`, scope the per-epoch round
+    records + seat ledger to `prefix_epochs`, and fsync. Re-establishes the
+    invariant "the durable state IS the admitted chain" before any rebuild — so a
+    torn extended state left by a failed / crashed prior attempt can never brick
+    the node (it converges back to a known-good, gate-passing admitted chain, from
+    which the current live head is re-reviewed or the node cleanly stays at the
+    admitted head). Returns the recovered artifact."""
+    from . import fab_producer, fab_provenance
+
+    recovered = fab_provenance.ReviewProvenanceArtifact.build(
+        repo=artifact.repo,
+        base=artifact.base,
+        boundary_manifest=artifact.boundary_manifest,
+        candidate=artifact.candidate,
+        seats=artifact.seats,
+        findings=artifact.findings,
+        material_digests=artifact.material_digests,
+        delta_chain=tuple(prefix_chain),
+    )
+    fab_provenance.write_provenance(workspace, run_id, recovered)
+    fab_producer.scope_run_to_epochs(workspace, run_id, prefix_epochs)
+    fab_provenance.fsync_run_store_durable(workspace, run_id)
+    return recovered
 
 
 def _fab_delta_readmit(
@@ -808,6 +895,7 @@ def _fab_delta_readmit(
     admitted_head_sha: str,
     live_head_sha: str,
     delta_review_fn: Callable,
+    owned_paths: Optional[Sequence[str]] = None,
     fab_fetch_origin: str = "origin",
 ) -> Optional[str]:
     """FAB piece 3b consumer — the delta-review shortcut HANDLED BRANCH + ATOMIC
@@ -841,88 +929,140 @@ def _fab_delta_readmit(
     if _rl.returncode != 0 or _rl.stdout.strip() != "1":
         return None
 
+    # 1b. BROKER OWNED-SCOPE RE-CHECK (CR B4): re-diff the advance
+    # ``admitted..live`` and require every changed path to be a SUBSET of the node's
+    # owned scope (broker admission semantics, ah#202/#251). This is the fencing the
+    # original admission applied; a re-admission that skipped it would let an
+    # advanced delta touching paths OUTSIDE the node's owned scope be
+    # "broker-admitted" without fencing. Fail closed (→ guard) when the delta
+    # escapes scope OR when the owned scope is not provably known (`owned_paths`
+    # empty/None) — the re-admission never fences on an unprovable scope.
+    from .fab_canonical import enumerate_changed_paths
+
+    _changed = enumerate_changed_paths(workspace, admitted_head_sha, live_head_sha)
+    if not _paths_covered_by_owned(_changed, owned_paths):
+        return None
+
     try:
         artifact = fab_gate.read_provenance(workspace, run_id)
     except Exception:  # noqa: BLE001 - unreadable provenance → not handled, guard fires
         return None
 
+    prefix_chain, prefix_epochs = _admitted_prefix(artifact, admitted_head_sha)
+    if prefix_chain is None:
+        # The admitted head is not in the durable chain → inconsistent → guard.
+        return None
     resolved_final = (
         artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
     )
-    if resolved_final == live_head_sha:
-        # IDEMPOTENT RESUME: a prior attempt already extended the provenance to the
-        # live head (a crash BETWEEN the provenance overwrite and the ledger append).
-        # Do NOT rebuild — the common gate-verify + ledger-append below re-admits,
-        # converging the interrupted re-admission.
-        pass
-    elif resolved_final == admitted_head_sha:
-        # Not yet extended — build the delta round FRESH and extend the provenance.
-        base_sha = artifact.base.base_sha
-        repo_slug = artifact.base.ref_identity.split("#", 1)[0]
-        if artifact.delta_chain:
-            parent_patch_digest = artifact.delta_chain[-1].resulting_head_digest
-            parent_chain_digest = artifact.delta_chain[-1].chain_digest
-            next_epoch = max([fab_gate.FAB_CANDIDATE_EPOCH, *(d.epoch for d in artifact.delta_chain)]) + 1
-        else:
-            parent_patch_digest = artifact.candidate.patch_digest
-            parent_chain_digest = artifact.compute_c0()
-            next_epoch = fab_gate.FAB_CANDIDATE_EPOCH + 1
 
-        # Committed-range delta review (real panel, injected seam).
-        from .governed_bundle import committed_range_diff
-
-        review = delta_review_fn(workspace, committed_range_diff(workspace, admitted_head_sha, live_head_sha))
-        if not getattr(review, "mergeable", False) or getattr(review, "panel", None) is None:
-            return None
-
-        # Capture (anti-tautology) + build the delta round off live git.
-        fab_producer.capture_delta_review_at_invocation(workspace, run_id, review.panel, epoch=next_epoch)
+    def _gate_passes() -> bool:
         try:
-            delta_record = fab_producer.build_and_finalize_delta_round(
-                workspace, run_id,
-                epoch=next_epoch, base_sha=base_sha, repo_slug=repo_slug,
-                parent_head_sha=admitted_head_sha, parent_patch_digest=parent_patch_digest,
-                parent_chain_digest=parent_chain_digest, delta_head_sha=live_head_sha,
-                findings=(), review_scope=ReviewScope(mode=REVIEW_SCOPE_DELTA_ONLY),
-            )
-        except Exception:  # noqa: BLE001 - a delta that can't be honestly built → fall through
-            return None
+            return fab_gate.compose_gate_status(
+                repo=workspace, run_id=run_id, live_base_ref_name=_DEFAULT_BASE,
+                live_head_sha=live_head_sha, origin=fab_fetch_origin,
+            ).status == fab_provenance.GATE_STATUS_PASS
+        except Exception:  # noqa: BLE001 - fail-closed on a broken gate compose
+            return False
 
-        # Recapture-truncation: scope the run to THIS attempt's chain so the durable
-        # finalized epoch set equals the client chain (the gate's epoch-set EQUALITY).
-        keep = [fab_gate.FAB_CANDIDATE_EPOCH, *(d.epoch for d in artifact.delta_chain), next_epoch]
-        fab_producer.scope_run_to_epochs(workspace, run_id, keep)
-
-        # Overwrite provenance in place with the EXTENDED chain, then fsync — BEFORE
-        # the ledger commit (durability ordering).
-        extended = fab_provenance.ReviewProvenanceArtifact.build(
-            repo=artifact.repo,
-            base=artifact.base,
-            boundary_manifest=artifact.boundary_manifest,
-            candidate=artifact.candidate,
-            seats=artifact.seats,
-            findings=artifact.findings,
-            material_digests=artifact.material_digests,
-            delta_chain=(*artifact.delta_chain, delta_record),
+    # OPTIMIZATION (idempotent success-resume): a prior attempt already extended the
+    # chain to the live head AND it passes the gate — only the ledger append was
+    # pending (crash between the gate-pass and the append). Re-admit without
+    # rebuilding. Any OTHER extended state (gate now fails, wrong head) is NOT
+    # salvaged — it scopes back below (CR B2: never a half-recovered state).
+    if resolved_final == live_head_sha and _gate_passes():
+        append_record(
+            ledger_path,
+            LedgerRecord(
+                node_id=node_id, status="pr_open", branch=branch, pr_url=pr_url,
+                head_sha=live_head_sha, merge_order=merge_order, fab_run_id=run_id,
+            ),
         )
-        fab_provenance.write_provenance(workspace, run_id, extended)
-        fab_provenance.fsync_run_store_durable(workspace, run_id)
+        return live_head_sha
+
+    # UNCONDITIONAL RECOVERY (CR B2): scope the durable run store back to the
+    # admitted-chain prefix BEFORE building, so every attempt starts from a
+    # known-good, gate-passing state — a torn extended state from a failed/crashed
+    # prior attempt can never brick the node.
+    artifact = _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+
+    base_sha = artifact.base.base_sha
+    repo_slug = artifact.base.ref_identity.split("#", 1)[0]
+    if artifact.delta_chain:
+        parent_patch_digest = artifact.delta_chain[-1].resulting_head_digest
+        parent_chain_digest = artifact.delta_chain[-1].chain_digest
+        next_epoch = max([fab_gate.FAB_CANDIDATE_EPOCH, *(d.epoch for d in artifact.delta_chain)]) + 1
     else:
-        # The provenance's final head is neither the admitted head (fresh build) nor
-        # the live head (idempotent resume) — an inconsistent state → fall through
-        # to the fail-closed guard.
+        parent_patch_digest = artifact.candidate.patch_digest
+        parent_chain_digest = artifact.compute_c0()
+        next_epoch = fab_gate.FAB_CANDIDATE_EPOCH + 1
+
+    # Committed-range delta review (real panel, injected seam). The diff is the
+    # reviewed bytes the panel saw AND the delta round's bound material (CR B3).
+    from .governed_bundle import committed_range_diff
+
+    reviewed_diff = committed_range_diff(workspace, admitted_head_sha, live_head_sha)
+    # REVIEWER≠AUTHOR for the DELTA (CR B5): the vendors that AUTHORED the delta
+    # commit range (bound to the actual ``admitted..live`` commits) UNION the
+    # historical dispatch authors — so a vendor that advanced the head out-of-band,
+    # with no local dispatch event, can never sit on its own delta's review board.
+    from .events import read_events
+    from .governed_review import author_vendor_for_executor
+
+    _dispatch_authors = frozenset(
+        author_vendor_for_executor(str(e.get("selected_executor")))
+        for e in read_events(workspace)
+        if isinstance(e, dict) and e.get("selected_executor")
+    )
+    author_vendors = _delta_commit_author_vendors(workspace, admitted_head_sha, live_head_sha) | _dispatch_authors
+    review = delta_review_fn(workspace, reviewed_diff, author_vendors)
+    if not getattr(review, "mergeable", False) or getattr(review, "panel", None) is None:
         return None
+
+    # Capture (anti-tautology) + build the delta round off live git, binding the
+    # reviewed diff bytes as the round's material (CR B3).
+    try:
+        fab_producer.capture_delta_review_at_invocation(
+            workspace, run_id, review.panel, epoch=next_epoch, reviewed_diff_text=reviewed_diff
+        )
+        delta_record = fab_producer.build_and_finalize_delta_round(
+            workspace, run_id,
+            epoch=next_epoch, base_sha=base_sha, repo_slug=repo_slug,
+            parent_head_sha=admitted_head_sha, parent_patch_digest=parent_patch_digest,
+            parent_chain_digest=parent_chain_digest, delta_head_sha=live_head_sha,
+            findings=(), review_scope=ReviewScope(mode=REVIEW_SCOPE_DELTA_ONLY),
+            reviewed_diff_text=reviewed_diff,
+        )
+    except Exception:  # noqa: BLE001 - a delta that can't be honestly built (incl. incomplete review representation) → recover + fall through
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    # Recapture-truncation: scope the run to THIS attempt's chain so the durable
+    # finalized epoch set equals the client chain (the gate's epoch-set EQUALITY).
+    fab_producer.scope_run_to_epochs(
+        workspace, run_id, [*prefix_epochs, next_epoch]
+    )
+
+    # Overwrite provenance in place with the EXTENDED chain, then fsync — BEFORE the
+    # ledger commit (durability ordering).
+    extended = fab_provenance.ReviewProvenanceArtifact.build(
+        repo=artifact.repo,
+        base=artifact.base,
+        boundary_manifest=artifact.boundary_manifest,
+        candidate=artifact.candidate,
+        seats=artifact.seats,
+        findings=artifact.findings,
+        material_digests=artifact.material_digests,
+        delta_chain=(*artifact.delta_chain, delta_record),
+    )
+    fab_provenance.write_provenance(workspace, run_id, extended)
+    fab_provenance.fsync_run_store_durable(workspace, run_id)
 
     # Verify the extended artifact PASSES the merged gate BEFORE committing the
-    #    re-admission — never advance the admitted head to a non-gate-passing chain.
-    try:
-        gate = fab_gate.compose_gate_status(
-            repo=workspace, run_id=run_id, live_base_ref_name=_DEFAULT_BASE,
-            live_head_sha=live_head_sha, origin=fab_fetch_origin,
-        )
-    except Exception:  # noqa: BLE001 - fail-closed: don't re-admit on a broken gate compose
-        return None
-    if gate.status != fab_provenance.GATE_STATUS_PASS:
+    # re-admission — never advance the admitted head to a non-gate-passing chain. On
+    # a FAIL, recover to the admitted prefix so no torn state is left behind (CR B2).
+    if not _gate_passes():
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
         return None
 
     # 7. COMMIT POINT: append the new LedgerRecord (new admitted_head + same
@@ -2549,12 +2689,19 @@ def run_train(
             _live_now = live_pr_head_sha_fn(_ws_m, _pr_branch_m)
             if _live_now and _admitted_now and _live_now != _admitted_now:
                 _delta_review = _delta_review_fn if _delta_review_fn is not None else _default_delta_review
+                # The node's OWNED SCOPE for the broker re-check (CR B4): re-resolve
+                # it via the same seam the admission used. When the train carries no
+                # explicit owned-paths resolver (owned scope known only from the
+                # run-loop snapshot, not re-resolvable here), pass None so the
+                # re-admission fails closed rather than fencing on an unprovable scope.
+                _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else None
                 _new_admitted = _fab_delta_readmit(
                     _ws_m, ledger_path, node_id=_nid_m, run_id=_fab_run_id_shortcut,
                     branch=_pr_branch_m, pr_url=completed_nodes[_nid_m].get("pr_url"),
                     merge_order=completed_nodes[_nid_m].get("merge_order"),
                     admitted_head_sha=_admitted_now, live_head_sha=_live_now,
-                    delta_review_fn=_delta_review, fab_fetch_origin=fab_fetch_origin,
+                    delta_review_fn=_delta_review, owned_paths=_owned_now,
+                    fab_fetch_origin=fab_fetch_origin,
                 )
                 if _new_admitted is not None:
                     # Re-admission committed (new LedgerRecord appended) — advance the

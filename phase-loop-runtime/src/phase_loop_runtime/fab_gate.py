@@ -325,6 +325,26 @@ def append_seat_outcome(repo: Path, run_id: str, record: SeatOutcomeRecord) -> N
         os.close(fd)
 
 
+def rewrite_seat_ledger(repo: Path, run_id: str, records: Sequence[SeatOutcomeRecord]) -> None:
+    """ATOMICALLY replace the durable seat ledger with `records` (3b-consumer CR
+    B1): serialize the kept records, then write them via the durable atomic-write
+    primitive (temp file → fsync → `os.replace` → fsync parent). NEVER
+    unlink-then-append a durable TRUST record — a crash after the unlink (or
+    mid-replay) would permanently lose the candidate seats (the only proof the gate
+    can authenticate them by) and BRICK the node. Reuses `serialize_seat_outcome`
+    (the same encoder as `append_seat_outcome`) and `atomic_write_text_durable`."""
+    lines: list[str] = []
+    for record in records:
+        line = serialize_seat_outcome(record)
+        if len((line + "\n").encode("utf-8")) > _MAX_SEAT_OUTCOME_LINE_BYTES:
+            raise ProvenanceInvalid(
+                f"seat-outcome record for {record.seat_key!r} exceeds max line size "
+                f"{_MAX_SEAT_OUTCOME_LINE_BYTES} bytes (fail-closed, not written)"
+            )
+        lines.append(line)
+    atomic_write_text_durable(seat_outcomes_path_for_run(repo, run_id), "".join(l + "\n" for l in lines))
+
+
 def _seat_outcome_from_dict(d: Mapping[str, Any]) -> SeatOutcomeRecord:
     unknown = set(d.keys()) - _SEAT_OUTCOME_FIELDS
     if unknown:
