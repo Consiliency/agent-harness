@@ -6,6 +6,48 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FAB activation piece 2 — producer + forge-resistance trust root (Consiliency/agent-harness#191)
+
+Activates the dormant FAB gate's PRODUCER behind `PHASE_LOOP_FAB` (default off ⇒
+byte-for-byte unchanged; a stash-proof off-path test proves it). The guiding
+invariant: the gate trusts ONLY what the harness wrote to the run store at review
+time and verifies the client-supplied `ReviewProvenanceArtifact` against it,
+field-by-field, fail-closed on any absence / mismatch / vacuity.
+
+- **Seat-instance identity + verdict/finding binding** (design v4/v5/v6):
+  `SeatOutcomeRecord` and `ProvenanceSeat` gain `seat_instance_id` (a unique
+  per-invocation id — `seat_key` is non-unique), and `SeatOutcomeRecord` gains
+  `verdict` + `finding_ids`. All keyword-defaulted and serialized only when set,
+  so non-FAB records are byte-for-byte unchanged.
+- **Durable review-round record** (`fab-review-round.json`, harness-only-written,
+  run-store-keyed): the epoch-scoped EXPECTED-seat manifest (completeness
+  denominator, frozen before invocation), harness-authenticated canonical finding
+  records (severity + status + body digest), and a harness-issued round identity
+  bound to the reviewed head + reviewed material. Self-digested/tamper-evident.
+- **`cross_check_round_authenticity`** drives everything from the durable side:
+  round-identity match (finalized + head + material), no-vacuous-pass, completeness
+  anchored on the expected manifest keyed on `seat_instance_id`, strict verdict
+  binding, finding-id binding, and exact finding-CONTENT binding. A FAB-scoped run
+  with no durable round record BLOCKS.
+- **`fab_producer`** — the atomic, flag-scoped producer transaction: capture the
+  real passing panel at invocation (durable seats with real verdict/status/evidence
+  + expected manifest) → post-commit honesty gate (single-reviewed-commit-covers-PR
+  via `merge-base(origin/base, head)`, post-hook `commit^`/tree verify catching a
+  hook-mutated tree, non-empty, and a COMPLETE-REVIEW-REPRESENTATION predicate over
+  the committed range catching binary / attribute-suppressed / invalid-UTF-8
+  elision) → build the artifact from the durable ledger → `write_provenance` →
+  finalize the round → a DEDICATED HARD `compose_gate_status` that blocks on
+  non-pass regardless of `PHASE_LOOP_REVIEW` (never the warn-downgradable registry).
+  Any honesty miss ⇒ no provenance ⇒ existing non-FAB path.
+- **Merge-time full re-gate** (`train_runner._live_merge_pr`, extends piece 1):
+  the promotion re-assertion now runs the FULL hard `compose_gate_status`
+  (authenticity + unresolved findings + equivalence) — the authoritative decision,
+  so a crashed/tampered/incomplete artifact is caught at merge. **Enforced
+  merge-queue prohibition**: FAB on + a merge queue on the base branch ⇒ refuse
+  (a queued merge lands asynchronously after the re-assertion; TODO #265).
+- **Closeout wiring**: `_perform_phase_closeout_impl` captures the panel at
+  invocation and runs the producer post-commit, all gated behind the flag.
+
 ### CI — Migrate GitHub Actions workflows to Blacksmith runners (Consiliency/agent-harness#284)
 
 Switched `runs-on:` from GitHub-hosted `ubuntu-latest` to Blacksmith's

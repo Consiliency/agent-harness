@@ -538,6 +538,12 @@ class ProvenanceSeat:
     evidence_digest: str
     verdict: str | None = None
     finding_ids: tuple[str, ...] = ()
+    # FAB activation piece 2 (design v6 #1): a UNIQUE per-invocation seat-INSTANCE
+    # id. `seat_key` is explicitly non-unique (advisor_board.Seat.seat_key,
+    # POSITIONALLY distinguished), so the gate keys completeness/verdict/finding
+    # cross-checks on this instance id — never on `seat_key`. Keyword-defaulted
+    # `None` so every Lane A/B/C/D fixture that predates the id stays valid.
+    seat_instance_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.verdict is not None and self.verdict not in _VALID_VERDICTS:
@@ -554,6 +560,7 @@ class ProvenanceSeat:
             "artifact_digest": self.artifact_digest,
             "evidence_digest": self.evidence_digest,
             "finding_ids": list(self.finding_ids),
+            "seat_instance_id": self.seat_instance_id,
         }
 
     @classmethod
@@ -569,6 +576,7 @@ class ProvenanceSeat:
             artifact_digest=_req_str(d, "artifact_digest"),
             evidence_digest=_req_str(d, "evidence_digest"),
             finding_ids=_tuple_str(d, "finding_ids"),
+            seat_instance_id=_opt_str(d, "seat_instance_id"),
         )
 
 
@@ -1388,6 +1396,69 @@ def provenance_path_for_run(repo: Path, run_id: str) -> Path:
     return provenance_dir_for_run(repo, run_id) / PROVENANCE_FILENAME
 
 
+def atomic_write_text_durable(path: Path, text: str) -> None:
+    """Atomically write `text` to `path` and make it DURABLE before returning
+    (agent-harness#191 CR round 7 / codex#4): fsync the temp file's contents AND
+    the parent directory entry before/after the rename, so the FAB ordering
+    invariant "provenance + round records are on stable storage BEFORE the branch
+    ref advances" holds across a host/kernel crash — a crash must never preserve
+    the ref update while losing the authoritative gate record. Mirrors the
+    seat-outcome ledger's existing fsync posture (`fab_gate.append_seat_outcome`)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, path)  # atomic within the run store
+    _fsync_path(path.parent, getattr(os, "O_DIRECTORY", 0))
+
+
+def _fsync_path(path: Path, flags: int) -> None:
+    fd = os.open(str(path), flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_run_store_durable(repo: Path, run_id: str) -> None:
+    """fsync the ENTIRE authenticating record set for `run_id` before the branch
+    ref advances (agent-harness#191 CR round 8/9): every FILE under the run-store
+    dir (provenance, round record, seat ledger, material snapshots — the last are
+    `shutil.copyfile`'d without their own fsync), every DIRECTORY under it, the run
+    dir ITSELF, AND its PARENT (the runs root) — because an fsync of a file/subdir
+    does NOT durably record its entry in the containing directory without fsyncing
+    that directory. So a host/kernel crash can never preserve the advanced ref
+    while losing any record needed to authenticate the provenance.
+
+    FAILS CLOSED, does not swallow (CR round 9 / codex#5): a missing run dir or
+    ANY fsync failure (EIO, permission, ...) RAISES `ProvenanceInvalid` — the
+    caller's producer-crash path then BLOCKS the closeout with NO ref advance. A
+    durability primitive that suppressed its own failures would report durability
+    it never established (the exact fail-open this closes)."""
+    run_dir = provenance_dir_for_run(repo, run_id)
+    if not run_dir.exists():
+        raise ProvenanceInvalid(
+            f"FAB run store {run_dir} is missing at the durability sync (fail-closed): cannot establish "
+            "provenance durability before the ref advances"
+        )
+    dir_flags = getattr(os, "O_DIRECTORY", 0)
+    try:
+        for entry in sorted(run_dir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            if entry.is_file():
+                _fsync_path(entry, os.O_RDONLY)
+            elif entry.is_dir():
+                _fsync_path(entry, dir_flags)
+        for durable_dir in (run_dir, run_dir.parent):
+            _fsync_path(durable_dir, dir_flags)
+    except OSError as exc:
+        raise ProvenanceInvalid(
+            f"FAB durability fsync failed for run store {run_dir} (fail-closed): {exc} — refusing to advance "
+            "the ref on non-durable provenance"
+        ) from exc
+
+
 def write_provenance(repo: Path, run_id: str, artifact: ReviewProvenanceArtifact) -> Path:
     """Intended-harness-only write path (design §6.1): persists `artifact` to the
     durable run store keyed by `run_id`. This is the ONLY function in this module
@@ -1401,11 +1472,9 @@ def write_provenance(repo: Path, run_id: str, artifact: ReviewProvenanceArtifact
     caller-chosen destination — the write always targets the run-store path for
     `run_id`, never a PR-branch checkout or a client-supplied path."""
     path = provenance_path_for_run(repo, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = artifact.to_json()
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(text, encoding="utf-8")
-    os.replace(tmp_path, path)  # atomic within the run store
+    # Durable (fsync'd) write — provenance must be on stable storage BEFORE the
+    # branch ref advances (CR round 7 / codex#4).
+    atomic_write_text_durable(path, artifact.to_json())
     return path
 
 

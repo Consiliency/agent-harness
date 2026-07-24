@@ -218,6 +218,12 @@ class LoopResult:
     degraded: bool = False
     terminal_blocker: dict | None = None
     reason: str | None = None
+    # FAB (Consiliency/agent-harness#191) piece 2: the passing round's
+    # `PanelResult`, surfaced so the FAB producer can capture the REAL panel
+    # legs (verdict/status/evidence) at invocation. Populated only on the
+    # converged `mergeable=True` governed return; `None` everywhere else and
+    # for every non-FAB caller (an unused, behaviorally-inert field).
+    panel: "PanelResult | None" = None
 
 
 def run_governed_premerge_loop(
@@ -323,6 +329,7 @@ def run_governed_premerge_loop(
                 )
             return LoopResult(
                 mergeable=True, ran=True, rounds=rnd, findings=tuple(collected),
+                panel=gate.panel,  # GateResult always carries the reviewed panel on a promoted return
             )
 
         # Unresolved block findings this round.

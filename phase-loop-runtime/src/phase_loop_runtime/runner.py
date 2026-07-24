@@ -8732,6 +8732,23 @@ def _perform_phase_closeout_impl(
     }
     blocker = None
     status = terminal_status
+    # The gated candidate SHA when a FAB object-gate advance occurs (CR round 8);
+    # None on every non-FAB / noop / declined path. Defined at function scope so
+    # the `closeout_mode == "push"` block can push it instead of ambient HEAD.
+    fab_gated_sha = None
+    # The immutable push COORDINATES (remote + destination ref) captured at GATE
+    # time for the FAB path (CR round 9/10/11 / codex#4), so a concurrent HEAD
+    # switch after gating can never re-derive the ref from ambient topology and
+    # push the gated candidate to the wrong branch. Only the COORDINATES are
+    # pinned here; the push ELIGIBILITY is judged post-advance and is BEHIND-ONLY
+    # (non-fast-forward vs the PINNED remote-tracking ref — see
+    # `_fab_pinned_push_eligibility`). There is deliberately NO "clean" check: a
+    # `git status`-style clean test is inherently ambient (it reports the worktree
+    # relative to *current* HEAD), so a concurrent switch would poison it, and it
+    # is meaningless for the IMMUTABLE gated object we push. None on the non-FAB
+    # path (fail-closed: a FAB candidate that advanced with no pinned coordinates
+    # publishes NOTHING rather than falling through to the ambient-HEAD push).
+    fab_push_coords = None
 
     def _closeout_event() -> LoopEvent:
         """The single canonical closeout LoopEvent builder, read at call time so
@@ -9079,6 +9096,12 @@ def _perform_phase_closeout_impl(
             # per the derivation at the top of this function) so a blocked / failed / not-yet-
             # verified phase is never silently finalized as complete.
             commit = _git_output(repo, "rev-parse", "HEAD")
+            # FAB (Consiliency/agent-harness#191) piece 2: no resume re-gate is
+            # needed here. Object-gating (below) advances the branch ref IFF the
+            # FAB hard gate passed, so a FAB commit that reaches HEAD was already
+            # gated; a blocked/crashed attempt never advanced the ref (the
+            # candidate stayed an unreferenced object) and thus never reaches this
+            # noop path. This branch is unchanged from the non-FAB behavior.
             status = "complete"
             metadata["closeout"]["verification_status"] = "passed"
             metadata["closeout"].update(
@@ -9111,9 +9134,18 @@ def _perform_phase_closeout_impl(
                 # Capture the exact staged tree the panel is about to review so the
                 # commit can prove it is byte-identical (below).
                 reviewed_tree = _git_output(repo, "write-tree")
+                # FAB (Consiliency/agent-harness#191) piece 2: scope this closeout
+                # to FAB only when the flag is on. Byte-neutral otherwise — no
+                # run_id, no capture, no producer, no import reached.
+                fab_run_id = None
+                fab_reviewed_base_sha = None
+                if _fab_closeout_enabled():
+                    fab_reviewed_base_sha = _git_output(repo, "rev-parse", "HEAD")
+                    fab_run_id = f"fab-{reviewed_tree}"
                 _governed = _governed_premerge_review(
                     repo, roadmap, phase, plan, terminal_status,
                     closeout_dirty_paths, snapshot.terminal_summary, run_mode,
+                    fab_run_id=fab_run_id,
                 )
                 if _governed is not None:
                     status = "blocked"
@@ -9140,13 +9172,73 @@ def _perform_phase_closeout_impl(
                         stderr="staged index changed between governed review and commit",
                     )
                     return status, _closeout_event()
-                # Commit the STAGED index (pathspec-less), which the index-isolation
-                # above narrowed to exactly the reviewed closeout paths. A pathspec
-                # commit (`git commit -- <paths>`) would instead re-read the WORKING
-                # TREE for those paths and could land bytes different from the reviewed
-                # staged index (breaking "reviewed == committed"); committing the index
-                # preserves the governed panel's exact bytes.
-                commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
+                fab_wrote_provenance = False
+                # `terminal_status != "planned"` (CR round 6 review): a plan-doc
+                # closeout never captures FAB seats and must take the byte-identical
+                # non-FAB `git commit` path — never route a planned commit through
+                # commit-tree/update-ref (which would skip hooks/signing).
+                if (
+                    fab_run_id is not None
+                    and fab_reviewed_base_sha is not None
+                    and terminal_status != "planned"
+                    and not _fab_pre_commit_control_active(repo)
+                ):
+                    # FAB (Consiliency/agent-harness#191) piece 2 — OBJECT-GATING
+                    # (CR round 6): gate the candidate commit OBJECT before
+                    # advancing any ref. Create it with `commit-tree` (no ref/
+                    # index/worktree change, no hooks → reviewed==committed is
+                    # structural), run the dedicated hard gate against it, and
+                    # advance the branch ref ONLY on a gate PASS/decline — never on
+                    # a hard-gate BLOCK or crash. The ref advances IFF the gate
+                    # passed, so a crash before the atomic update-ref leaves HEAD
+                    # unchanged and the candidate an unreferenced object (retry
+                    # re-reviews clean; no orphaned reachable commit). This replaces
+                    # the whole post-commit crash-safety machinery. Object-gating is
+                    # used ONLY when there is no pre-commit hook / required signing
+                    # to skip (`_fab_pre_commit_control_active`); otherwise FAB
+                    # DECLINES to the non-FAB `git commit` path below (team-lead
+                    # decision — never silently skip a blocking check-hook).
+                    #
+                    # Capture ONLY the immutable push COORDINATES NOW (pre-advance,
+                    # pre-any-concurrent-switch), so the gated candidate is later
+                    # pushed to THIS remote+ref — never one re-derived from post-gate
+                    # ambient topology (CR round 9/10 #4). Eligibility is NOT captured
+                    # here: pre-gate the worktree is still dirty so it would always
+                    # refuse (the round-9 bug); it is judged fresh post-advance. The
+                    # resolver returns remote/push_ref even for a dirty worktree.
+                    if closeout_mode == "push":
+                        _coords = resolve_closeout_push_target(repo, collect_git_topology(repo))
+                        if _coords.get("remote") and _coords.get("push_ref"):
+                            fab_push_coords = {"remote": _coords["remote"], "push_ref": _coords["push_ref"]}
+                    fab_kind, commit_result, fab_wrote_provenance, fab_gated_sha = _fab_object_gate_commit(
+                        repo,
+                        fab_run_id=fab_run_id,
+                        reviewed_tree=reviewed_tree,
+                        parent_sha=fab_reviewed_base_sha,
+                        commit_message=commit_message,
+                        closeout_dirty_paths=closeout_dirty_paths,
+                        metadata=metadata,
+                    )
+                    if fab_kind == "blocked":
+                        # Hard-gate BLOCK or crash: the ref was NOT advanced.
+                        status = "blocked"
+                        blocker = metadata["closeout"].pop("_fab_blocker")
+                        _run_git_closeout(repo, "reset", "--quiet", "HEAD", "--", *closeout_dirty_paths)
+                        return status, _closeout_event()
+                    if fab_kind == "declined":
+                        # Honest non-FAB decline (or detached HEAD): DO NOT publish
+                        # the commit-tree object. Fall back to the normal
+                        # hook-running / signing `git commit -F -` path (CR round
+                        # 7 #1) — no FAB provenance for this closeout.
+                        commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
+                    # else "advanced"/"failed": commit_result is set.
+                else:
+                    # Non-FAB (byte-for-byte unchanged): commit the STAGED index
+                    # (pathspec-less), which the index-isolation above narrowed to
+                    # exactly the reviewed closeout paths. A pathspec commit
+                    # (`git commit -- <paths>`) would re-read the WORKING TREE and
+                    # could land bytes different from the reviewed staged index.
+                    commit_result = _run_git_closeout(repo, "commit", "-F", "-", input_text=commit_message)
                 if commit_result.returncode != 0:
                     status, blocker = _commit_failure_closeout(
                         metadata,
@@ -9155,7 +9247,11 @@ def _perform_phase_closeout_impl(
                         stderr=commit_result.stderr or commit_result.stdout,
                     )
                 else:
-                    commit = _git_output(repo, "rev-parse", "HEAD")
+                    # For a FAB object-gate advance, record the GATED candidate SHA
+                    # — never re-resolve ambient HEAD (a concurrent branch switch to
+                    # another branch at expected_old could otherwise make us record
+                    # the wrong, un-gated SHA — CR round 8 / codex#4).
+                    commit = fab_gated_sha or _git_output(repo, "rev-parse", "HEAD")
                     status = "planned" if terminal_status == "planned" else "complete"
                     metadata["closeout"]["verification_status"] = "not_run" if status == "planned" else "passed"
                     metadata["closeout"].update(
@@ -9164,6 +9260,12 @@ def _perform_phase_closeout_impl(
                             "closeout_commit": commit,
                         }
                     )
+                    # FAB (Consiliency/agent-harness#191) piece 2: the object-gate
+                    # above already ran the dedicated hard gate against this exact
+                    # commit BEFORE advancing the ref and durably wrote provenance on
+                    # a PASS. Just record it here.
+                    if fab_wrote_provenance:
+                        metadata["closeout"]["fab_run_id"] = fab_run_id
                     # GATE: record SAFE beyond-ownership paths that were soft-committed
                     # as visible `soft` CloseoutExceptions (one per sensitivity class),
                     # never folded into a clean pass. BREAKGLASS: source/ci/lockfile UNSAFE
@@ -9239,23 +9341,63 @@ def _perform_phase_closeout_impl(
                                     "access_attempts": (),
                                 }
         if closeout_mode == "push":
-            decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
-            if decision.get("allowed"):
-                _git(repo, "push", str(decision["remote"]), f"HEAD:{decision['push_ref']}")
-                metadata["closeout"].update(
-                    {
-                        "closeout_action": "push",
-                        "closeout_push_ref": f"{decision['remote']} {decision['push_ref']}",
-                    }
-                )
+            if fab_gated_sha is not None:
+                # FAB candidate advanced → the FAB push path, PERIOD (CR round 11 —
+                # codex+gemini). SELECTION depends SOLELY on whether a FAB
+                # candidate advanced; it NEVER falls through to the non-FAB
+                # ambient-HEAD push, which after a concurrent switch would publish
+                # an un-gated commit while the gated candidate stays unpublished.
+                if fab_push_coords is None:
+                    # No pinned push target (the gated branch had no upstream, or
+                    # the resolver returned no coordinates at gate time). FAIL
+                    # CLOSED: push NOTHING. The local gated advance stands — the
+                    # closeout completes with the commit local + unpushed, the
+                    # correct "no push target" outcome. Never push ambient HEAD.
+                    metadata["closeout"].update(
+                        {"closeout_action": "push_refused", "closeout_refusal_reason": "missing_push_target"}
+                    )
+                else:
+                    remote, push_ref = fab_push_coords["remote"], fab_push_coords["push_ref"]
+                    # ELIGIBILITY is judged against the PINNED target ONLY (never
+                    # ambient topology): the pushed source is the immutable gated
+                    # object, so the only refusal is a non-fast-forward vs the
+                    # pinned remote ref. No `collect_git_topology()` of the
+                    # (possibly switched-to) ambient HEAD enters this path.
+                    eligibility = _fab_pinned_push_eligibility(
+                        repo, remote=str(remote), push_ref=str(push_ref), candidate_sha=fab_gated_sha
+                    )
+                    if eligibility.get("allowed"):
+                        _git(repo, "push", str(remote), f"{fab_gated_sha}:{push_ref}")
+                        metadata["closeout"].update(
+                            {"closeout_action": "push", "closeout_push_ref": f"{remote} {push_ref}"}
+                        )
+                    else:
+                        metadata["closeout"].update(
+                            {
+                                "closeout_action": "push_refused",
+                                "closeout_push_ref": push_ref,
+                                "closeout_refusal_reason": eligibility.get("refusal_reason"),
+                            }
+                        )
             else:
-                metadata["closeout"].update(
-                    {
-                        "closeout_action": "push_refused",
-                        "closeout_push_ref": decision.get("push_ref"),
-                        "closeout_refusal_reason": decision.get("refusal_reason"),
-                    }
-                )
+                # Non-FAB path — byte-for-byte unchanged: resolve fresh, push HEAD.
+                decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
+                if decision.get("allowed"):
+                    _git(repo, "push", str(decision["remote"]), f"HEAD:{decision['push_ref']}")
+                    metadata["closeout"].update(
+                        {
+                            "closeout_action": "push",
+                            "closeout_push_ref": f"{decision['remote']} {decision['push_ref']}",
+                        }
+                    )
+                else:
+                    metadata["closeout"].update(
+                        {
+                            "closeout_action": "push_refused",
+                            "closeout_push_ref": decision.get("push_ref"),
+                            "closeout_refusal_reason": decision.get("refusal_reason"),
+                        }
+                    )
     # OWNFIX #36-item1: if the owned subset committed cleanly but a genuinely-unowned
     # remainder exists, surface it loudly AFTER preserving the owned work. Only fires on
     # commit success (status complete/planned) so it never overrides an earlier block
@@ -9573,8 +9715,265 @@ def _governed_planning_gate(repo, roadmap, alias, plan, snapshot, selection, act
     return ("blocked", event)
 
 
+def _fab_closeout_enabled() -> bool:
+    """True iff FAB producer wiring is active (``PHASE_LOOP_FAB`` on). Isolated
+    so the byte-neutral default path never imports the FAB stack."""
+    from .governed_premerge import fab_promotion_enabled
+
+    return fab_promotion_enabled()
+
+
+def _fab_resolve_base_ref_name(repo) -> str | None:
+    """Best-effort resolve the PR base branch name (e.g. ``main``) from
+    ``origin/HEAD``. Returns ``None`` when it cannot be resolved — the FAB
+    producer then declines to write provenance (fail-closed, no honest
+    merge-base)."""
+    out = _git_output_or_empty(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if not out:
+        return None
+    name = out.strip()
+    prefix = "origin/"
+    return name[len(prefix):] if name.startswith(prefix) else name
+
+
+def _fab_closeout_producer(
+    repo, *, fab_run_id, reviewed_base_sha, reviewed_tree, committed_head, closeout_dirty_paths,
+    fab_epoch=1, origin="origin",
+):
+    """Run the FAB piece-2 post-commit producer transaction (honesty gate →
+    build → write provenance → dedicated hard gate). Returns the
+    ``fab_producer.ProducerOutcome``, or ``None`` when the base ref cannot be
+    resolved (declines to write provenance — never blocks on that alone). Only
+    reached when ``PHASE_LOOP_FAB`` is on (caller-gated). ``origin`` is the git
+    remote the honesty gate fetches from (production ``"origin"``; a test may
+    point it at a local bare remote)."""
+    from . import fab_producer
+
+    base_ref_name = _fab_resolve_base_ref_name(repo)
+    if base_ref_name is None:
+        return None
+    return fab_producer.finalize_and_gate(
+        repo,
+        fab_run_id,
+        epoch=fab_epoch,
+        reviewed_base_sha=reviewed_base_sha,
+        reviewed_tree=reviewed_tree,
+        committed_head_sha=committed_head,
+        closeout_dirty_paths=closeout_dirty_paths,
+        base_ref_name=base_ref_name,
+        origin=origin,
+    )
+
+
+def _fab_commit_tree(repo, *, tree: str, parent: str, message: str) -> str | None:
+    """Create the candidate commit as a git OBJECT (`git commit-tree`) WITHOUT
+    advancing any ref/index/worktree (CR round 6 object-gating). Returns the
+    candidate SHA, or ``None`` on failure. commit-tree does NOT run pre-commit
+    hooks — which is the point: no hook can mutate the tree after the seats
+    reviewed it, so reviewed == committed is STRUCTURAL for the FAB path (a
+    deliberate, documented behavior difference for FAB-on closeouts)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "commit-tree", tree, "-p", parent],
+            input=message, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _fab_pinned_push_eligibility(repo, *, remote: str, push_ref: str, candidate_sha: str) -> dict[str, object]:
+    """FAB push eligibility judged against the PINNED coordinates ONLY (CR round
+    11 — codex+gemini). No ambient HEAD/branch/upstream is consulted, so a
+    concurrent HEAD switch after the gate advance cannot false-allow or
+    false-refuse this push. Because the pushed source is the IMMUTABLE gated
+    object (`candidate_sha`), a `git status`-style "clean" check has no pinned
+    meaning here (it reports the worktree relative to *current* HEAD — pure
+    ambient topology). The only reason to refuse is a non-fast-forward against the
+    pinned remote branch: the remote-tracking ref holds commits the gated
+    candidate does not contain."""
+    branch = push_ref
+    if branch.startswith("refs/heads/"):
+        branch = branch[len("refs/heads/") :]
+    tracking = f"{remote}/{branch}"
+    tip = _git_output_or_empty(repo, "rev-parse", "--verify", "--quiet", tracking)
+    if not tip:
+        # No known remote-tracking ref for the pinned target → nothing to be
+        # behind (a first publish of this branch). A real non-fast-forward would
+        # still be rejected by the remote itself, never publishing ambient HEAD.
+        return {"allowed": True}
+    behind = _git_output_or_empty(repo, "rev-list", "--count", f"{candidate_sha}..{tracking}")
+    try:
+        if int(behind or "0") > 0:
+            return {"allowed": False, "refusal_reason": "behind_upstream"}
+    except ValueError:
+        return {"allowed": False, "refusal_reason": "behind_upstream_uncertain"}
+    return {"allowed": True}
+
+
+def _fab_advance_ref(repo, new_sha: str, *, ref: str, expected_old: str) -> bool:
+    """Atomically advance the CONCRETE ref `ref` (a `refs/heads/<branch>` resolved
+    at GATE time, never symbolic `HEAD` re-resolved later — CR round 7 / codex#3,
+    else a concurrent branch switch to another branch sitting at `expected_old`
+    would advance the WRONG branch) to `new_sha` via `git update-ref`, ONLY if it
+    still points at `expected_old`. Called AFTER the gate passed and provenance is
+    durably written, so the ref advances IFF the gate passed. A crash before it
+    leaves HEAD unchanged + the candidate an unreferenced object, so a retry
+    re-reviews from scratch. Returns False on any failure (concurrent advance /
+    git error)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "update-ref", ref, new_sha, expected_old],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+#: The commit-time hooks `git commit` runs that `git commit-tree` bypasses (CR
+#: round 7 / codex#7): a blocking `pre-commit` check (secret-scanner, formatter),
+#: a `commit-msg` validator, and `prepare-commit-msg`. If any is configured, FAB
+#: declines to the hook-running `git commit` path.
+_FAB_COMMIT_HOOKS = ("pre-commit", "commit-msg", "prepare-commit-msg")
+
+
+def _fab_pre_commit_control_active(repo) -> bool:
+    """True iff `git commit` would run a commit-time CONTROL — a configured
+    `pre-commit`/`commit-msg`/`prepare-commit-msg` hook (a blocking check, a
+    formatter, a message validator) — or SIGN the commit, i.e. something
+    `git commit-tree` cannot replicate. When True, the FAB path DECLINES to the
+    normal `git commit -F -` (which runs the hook / signs) and produces NO
+    provenance for that closeout (the pre-FAB path exactly) — object-gating is
+    used only when there is genuinely nothing to skip.
+
+    Fail-closed on uncertainty (return True): never assume "no hook / not signed"
+    and silently skip a control we could not rule out (team-lead decision, CR
+    round 6/7/8). Covers the effective `core.hooksPath` (so husky's `.husky/` and
+    the framework `.git/hooks/*` shims are seen) and `commit.gpgsign` parsed with
+    git's OWN canonical boolean parser (`--type=bool`) — so a VALUELESS
+    `[commit] gpgsign` key (valid git syntax meaning TRUE, which a raw `--get`
+    returns as empty) is correctly read as required signing, and a malformed
+    boolean value — which real `git commit` rejects — fails closed."""
+    # Required signing: git's canonical boolean parse. rc==0 → "true"/"false";
+    # rc==1 → key unset; any other rc → malformed value → fail-closed decline.
+    try:
+        sign = subprocess.run(
+            ["git", "-C", str(repo), "config", "--type=bool", "--get", "commit.gpgsign"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True  # cannot probe signing → fail closed
+    if sign.returncode == 0:
+        if sign.stdout.strip().lower() == "true":
+            return True  # required signing (incl. a valueless [commit] gpgsign key)
+    elif sign.returncode != 1:
+        return True  # not "unset" (rc 1) → a malformed boolean value → fail closed
+    hooks_path = _git_output_or_empty(repo, "rev-parse", "--git-path", "hooks").strip()
+    if not hooks_path:
+        return True  # cannot resolve the effective hooks dir → fail closed
+    hooks_dir = Path(hooks_path)
+    if not hooks_dir.is_absolute():
+        hooks_dir = Path(repo) / hooks_dir
+    for hook_name in _FAB_COMMIT_HOOKS:
+        hook = hooks_dir / hook_name
+        try:
+            # A configured hook is an EXECUTABLE file (git's shipped `*.sample`
+            # hooks are deliberately non-executable and are ignored).
+            if hook.is_file() and os.access(hook, os.X_OK):
+                return True
+        except OSError:
+            return True  # stat failure → fail closed
+    return False
+
+
+def _fab_object_gate_commit(
+    repo, *, fab_run_id, reviewed_tree, parent_sha, commit_message, closeout_dirty_paths, metadata
+):
+    """FAB object-gating (CR round 6/7). Create the candidate commit as an object,
+    run the dedicated hard gate against THAT exact object, and advance the branch
+    ref ONLY on a gate PASS — never on a hard-gate BLOCK, crash, or honest decline.
+
+    Returns ``(kind, commit_result, fab_wrote_provenance, gated_sha)`` where
+    ``kind`` is:
+      * ``"blocked"`` — hard-gate BLOCK / crash. Ref NOT advanced (candidate stays
+        an unreferenced object); the caller reads ``metadata['closeout']
+        ['_fab_blocker']`` and blocks.
+      * ``"declined"`` — an honest non-FAB decline (multi-commit / unresolved base
+        / incomplete representation / autonomous), OR a detached HEAD. NO
+        provenance; the caller falls back to the normal `git commit -F -` (which
+        runs hooks / signs) — a commit-tree object must NEVER publish a declined
+        closeout (CR round 7 / codex#1).
+      * ``"advanced"`` — the gate PASSED: provenance is durably written, the
+        CONCRETE branch ref (resolved at gate time) is advanced to the exact gated
+        SHA (``gated_sha``). The caller MUST record/push ``gated_sha`` (not ambient
+        HEAD, which a concurrent branch switch could change — CR round 8 / codex#4).
+      * ``"failed"`` — commit-tree / update-ref failure (``commit_result.returncode
+        != 0``; the caller's normal commit-failure path).
+
+    Crash-safety collapses to "durably write provenance, THEN advance the ref": a
+    crash before `_fab_advance_ref` leaves HEAD unchanged, so nothing un-gated is
+    ever reachable."""
+    # Resolve the CONCRETE branch ref NOW (CR round 7 / codex#3), so the CAS binds
+    # the branch this closeout is on, not a symbolic HEAD re-resolved after gating.
+    target_ref = _git_output_or_empty(repo, "symbolic-ref", "-q", "HEAD").strip()
+    if not target_ref:
+        return "declined", None, False, None  # detached HEAD → fall back to `git commit`
+    candidate = _fab_commit_tree(repo, tree=reviewed_tree, parent=parent_sha, message=commit_message)
+    if candidate is None:
+        return "failed", subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="git commit-tree failed"), False, None
+    try:
+        outcome = _fab_closeout_producer(
+            repo,
+            fab_run_id=fab_run_id,
+            reviewed_base_sha=parent_sha,
+            reviewed_tree=reviewed_tree,
+            committed_head=candidate,
+            closeout_dirty_paths=closeout_dirty_paths,
+        )
+        crashed = False
+    except Exception as exc:  # noqa: BLE001 - fail-closed
+        outcome, crashed = None, True
+        metadata["closeout"]["fab_gate"] = {"blocked": True, "reason": f"producer_crashed:{exc}"}
+    if crashed or (outcome is not None and outcome.blocked):
+        reason = (
+            outcome.block_reason if outcome is not None else None
+        ) or "FAB hard gate did not pass / crashed"
+        metadata["closeout"].update(
+            {
+                "closeout_action": "review_gate_block",
+                "verification_status": "blocked",
+                "fab_gate": metadata["closeout"].get("fab_gate") or {"blocked": True, "reason": reason},
+            }
+        )
+        metadata["closeout"]["_fab_blocker"] = {
+            "human_required": False,
+            "blocker_class": "review_gate_block",
+            "blocker_summary": reason,
+            "required_human_inputs": (),
+        }
+        return "blocked", None, False, None  # ref NOT advanced
+    if outcome is None or not outcome.wrote_provenance:
+        # Honest DECLINE (no provenance): the commit-tree object must NOT publish
+        # it. Fall back to the hook-running `git commit` path (CR round 7 #1).
+        return "declined", None, False, None
+    # PASS → provenance is durably written; advance the concrete ref atomically.
+    if not _fab_advance_ref(repo, candidate, ref=target_ref, expected_old=parent_sha):
+        return (
+            "failed",
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="git update-ref failed after FAB gate pass"),
+            False,
+            None,
+        )
+    return "advanced", subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""), True, candidate
+
+
 def _governed_premerge_review(
-    repo, roadmap, alias, plan, terminal_status, closeout_dirty_paths, terminal_summary, run_mode
+    repo, roadmap, alias, plan, terminal_status, closeout_dirty_paths, terminal_summary, run_mode,
+    *, fab_run_id: str | None = None, fab_epoch: int = 1,
 ):
     """Governed pre-merge review, run INSIDE ``_perform_phase_closeout`` — AFTER
     ``git add`` stages the owned paths and BEFORE the commit is finalized.
@@ -9587,6 +9986,13 @@ def _governed_premerge_review(
 
     Autonomous is a literal no-op (outer ``run_mode`` guard). Implementation
     closeouts only — a plan-doc closeout is the planning gate's job (P3).
+
+    ``fab_run_id`` (FAB Consiliency/agent-harness#191 piece 2; default ``None`` —
+    byte-neutral): when the caller has scoped this closeout to FAB (flag on), the
+    passing panel's REAL per-seat outcomes are captured AT INVOCATION here (the
+    anti-tautology anchor — never synthesized from the review return value) via
+    ``fab_producer.capture_review_at_invocation``, keyed by the trusted
+    ``fab_run_id``. Byte-neutral when ``None`` (no capture, no import reached).
     """
     if run_mode != "governed" or terminal_status == "planned" or not closeout_dirty_paths:
         return None
@@ -9611,6 +10017,14 @@ def _governed_premerge_review(
         # train_runner._live_merge_pr.
     )
     if result.mergeable:
+        if fab_run_id is not None and result.panel is not None:
+            # FAB piece 2: capture the REAL passing panel at invocation.
+            from .fab_producer import capture_review_at_invocation
+
+            capture_review_at_invocation(
+                repo, fab_run_id, result.panel, epoch=fab_epoch, reviewed_bundle_text=bundle,
+                reviewed_diff_text=diff_text, closeout_dirty_paths=closeout_dirty_paths,
+            )
         return None
     blocker = dict(result.terminal_blocker or {})
     blocker.setdefault("human_required", False)

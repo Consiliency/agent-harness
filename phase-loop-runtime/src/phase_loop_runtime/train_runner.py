@@ -450,6 +450,95 @@ def _live_pr_head_sha(workspace: Path, branch: str) -> Optional[str]:
 _TRAIN_REVIEW_NODE_ID: str = "_train_review_"
 
 
+def _repo_slug_owner_repo(repo_args: Sequence[str]) -> Optional[str]:
+    """Extract the ``<owner>/<repo>`` tail from ``_gh_repo_binding``'s
+    ``["--repo", "<host>/<owner>/<repo>"]`` so a `gh api` path can be bound to
+    the SAME broker-validated identity every sibling `gh pr` call uses. Returns
+    ``None`` when no explicit `--repo` was resolvable (identity unbound)."""
+    if len(repo_args) >= 2 and repo_args[0] == "--repo" and repo_args[1]:
+        parts = [p for p in repo_args[1].split("/") if p]
+        if len(parts) >= 2:
+            return "/".join(parts[-2:])
+    return None
+
+
+def _fab_merge_queue_prohibition(
+    workspace: Path,
+    base_ref: str,
+    repo_args: Sequence[str],
+    env_override,
+) -> Optional[str]:
+    """design "Enforced merge-queue prohibition" (activation piece 2, 2d).
+
+    Byte-neutral / inert (returns ``None``, no ``gh`` call) unless
+    ``PHASE_LOOP_FAB`` is on. When it IS on, probe whether ``base_ref`` (the PR's
+    already-read current base) has a GitHub merge queue enabled; if so, return a
+    non-``None`` refusal reason (the caller raises). A merge queue creates the
+    final merge commit ASYNCHRONOUSLY after ``gh pr merge`` merely enqueues the
+    PR, so the piece-1/2c promotion re-assertion cannot bind to the real
+    promotion event — a TOCTOU FAB must not proceed through until Consiliency/
+    agent-harness#265 lands queue-bound re-assertion.
+
+    Fail-closed on ambiguity: if the merge-queue state cannot be read while the
+    flag is on, refuse rather than risk enqueuing under a queue we could not
+    rule out. A definitive "no queue" (or the flag being off) proceeds. Reuses
+    the base ref already read by the combined pre-merge ``gh pr view`` (no extra
+    PR read) and makes ONE `gh api` branch-rules call, bound to the
+    broker-validated repo identity (see `_repo_slug_owner_repo`).
+
+    KNOWN LIMITATION (disclosed for the cross-vendor CR, not a silent gap): this
+    detects a merge queue configured via a repository RULESET (the
+    `rules/branches` endpoint's `merge_queue` rule type). A merge queue enabled
+    via CLASSIC branch protection is NOT reported there and would read as a clean
+    rule list → a fail-OPEN. Robust classic-protection detection is deferred to
+    Consiliency/agent-harness#265, which replaces this whole prohibition with
+    queue-bound re-assertion; it is not worth a fragile, over-blocking classic
+    probe here. Ruleset-based queues (the modern default) ARE caught."""
+    from .governed_premerge import fab_promotion_enabled
+
+    if not fab_promotion_enabled():
+        return None
+    if not base_ref:
+        return "fab-merge-queue-unresolvable: PR has no readable base ref (fail-closed)"
+    # Bind the `gh api` probe to the BROKER-VALIDATED repo identity — `gh api`
+    # takes no `--repo`, so (unlike every sibling `gh pr` call that carries
+    # `repo_args`) it would otherwise resolve `{owner}/{repo}` from ambient
+    # context and could misresolve in a detached/worktree checkout to a
+    # DIFFERENT repo's rules (a fail-open). Substitute the resolved owner/repo
+    # into the path explicitly; if the identity cannot be resolved while the
+    # flag is on, refuse rather than probe an unbound repo (fail-closed).
+    owner_repo = _repo_slug_owner_repo(repo_args)
+    if owner_repo is None:
+        return (
+            "fab-merge-queue-unresolvable: could not bind the merge-queue probe to the broker-validated "
+            "repo identity while PHASE_LOOP_FAB is on (fail-closed — refusing to probe an unbound repo)"
+        )
+    # Query the base branch's rules for an enabled merge queue.
+    rules = subprocess.run(
+        ["gh", "api", f"repos/{owner_repo}/rules/branches/{base_ref}"],
+        cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
+    )
+    if rules.returncode != 0:
+        # `gh api` returns non-zero when the rules endpoint is unavailable (e.g.
+        # older GHES) — that is NOT proof a queue is absent; fail closed.
+        return (
+            f"fab-merge-queue-unresolvable: could not read branch rules for '{base_ref}' to rule out a "
+            f"merge queue while PHASE_LOOP_FAB is on (fail-closed): {rules.stderr.strip() or 'gh api failed'}"
+        )
+    try:
+        rule_types = {r.get("type") for r in json.loads(rules.stdout or "[]") if isinstance(r, dict)}
+    except Exception as exc:
+        return f"fab-merge-queue-unresolvable: could not parse branch rules (fail-closed): {exc}"
+    if "merge_queue" in rule_types:
+        return (
+            f"fab-merge-queue-prohibited: base branch '{base_ref}' has a GitHub merge queue enabled and "
+            "PHASE_LOOP_FAB is on — a queued merge creates the final commit asynchronously AFTER this "
+            "re-assertion, reopening a TOCTOU the check cannot bind to. Refusing to merge (non-human; "
+            "TODO Consiliency/agent-harness#265 will bind the re-assertion to the queued promotion)."
+        )
+    return None
+
+
 def _fab_promotion_gate_before_merge(
     workspace: Path,
     run_id: Optional[str],
@@ -512,11 +601,7 @@ def _fab_promotion_gate_before_merge(
     ``origin`` itself stays a github.com-shaped URL for identity resolution
     — the SAME two-remote fixture pattern `test_fab_canonical_b.py`/
     `test_fab_gate_d.py` already use, never a production behavior change."""
-    from .governed_premerge import (
-        FabPromotionCheck,
-        fab_promotion_enabled,
-        fab_promotion_refusal_reason,
-    )
+    from .governed_premerge import fab_promotion_enabled
 
     if run_id is None or not fab_promotion_enabled():
         return None
@@ -563,15 +648,40 @@ def _fab_promotion_gate_before_merge(
             "PR base/head could not be read before merge (fail-closed, design §4.4)"
         )
 
-    binding = fab_gate.resolve_equivalence_binding(artifact)
-    check = FabPromotionCheck(
-        binding=binding,
-        repo_dir=workspace,
-        live_base_ref_name=live_base_ref_name,
-        live_head_sha=live_head_sha,
-        origin=fab_fetch_origin,
-    )
-    return fab_promotion_refusal_reason(check, fab_canonical.equivalent)
+    # design v4 Resolves #3 (activation piece 2, 2c) — the merge-time re-assertion
+    # runs the FULL hard `compose_gate_status` (authenticity §6.3 round + seat
+    # cross-check + unresolved-block findings + live equivalence — NOT just byte
+    # equivalence), so a provenance-written-but-not-gate-passed (crash), tampered,
+    # or incomplete artifact is caught AT MERGE and the head is rejected. This is
+    # the AUTHORITATIVE decision (the closeout gate is advisory/early). It reads
+    # the durable round record + seat ledger from the workspace run store keyed by
+    # the trusted `run_id`, never the artifact — so no gate-pass at merge ⇒ no
+    # merge, with no separate crash marker needed. Note `artifact` was read above
+    # only to give the precise ProvenanceNotFound/unreadable refusal messages;
+    # `compose_gate_status` re-reads from the same trusted run store.
+    from .fab_provenance import GATE_STATUS_PASS
+
+    try:
+        gate_status = fab_gate.compose_gate_status(
+            repo=workspace,
+            run_id=run_id,
+            live_base_ref_name=live_base_ref_name,
+            live_head_sha=live_head_sha,
+            origin=fab_fetch_origin,
+        )
+    except Exception as exc:
+        return (
+            f"fab-promotion-reassertion-unresolvable: run_id={run_id!r} — the FAB "
+            f"merge-time hard gate could not be composed (fail-closed, design §4.4): {exc}"
+        )
+    if gate_status.status != GATE_STATUS_PASS:
+        reason = gate_status.equivalence_verified.reason if gate_status.equivalence_verified else None
+        return (
+            f"fab-promotion-reassertion-failed: run_id={run_id!r} — the FAB merge-time "
+            f"hard gate did not pass (status={gate_status.status}); reason={reason} — "
+            "refusing to merge (non-human, agent-recoverable, design §4.4)"
+        )
+    return None
 
 
 def _live_merge_pr(
@@ -783,6 +893,20 @@ def _live_merge_pr(
     # milestone; #265 (merge-queue-async) must make the re-assertion bind to
     # the queued promotion (and handle `--delete-branch`) before FAB +
     # merge-queue can be combined safely.
+    # MERGE-QUEUE PROHIBITION (design "Enforced merge-queue prohibition",
+    # activation piece 2, 2d — NOT just documented). When `PHASE_LOOP_FAB` is on
+    # AND the target repo/PR has a merge queue enabled, a `gh pr merge` only
+    # ENQUEUES the PR: the real merge commit is created later, asynchronously,
+    # AFTER this function's piece-1/2c re-assertions — reopening a TOCTOU the
+    # re-check cannot bind to. Until Consiliency/agent-harness#265 makes the
+    # re-assertion bind to the queued promotion, refuse (non-human) rather than
+    # proceed. Byte-neutral: only consulted when the FAB flag is on (no extra
+    # `gh` call otherwise). TODO(Consiliency/agent-harness#265): replace this
+    # prohibition with queue-bound tracking.
+    queue_refusal = _fab_merge_queue_prohibition(workspace, current_base, repo_args, env_override)
+    if queue_refusal is not None:
+        raise RuntimeError(queue_refusal)
+
     fab_refusal = _fab_promotion_gate_before_merge(
         workspace, run_id, live_base_ref_name=current_base, live_head_sha=current_head,
         fab_fetch_origin=fab_fetch_origin,
