@@ -246,6 +246,45 @@ def test_flag_on_planned_closeout_does_not_object_gate(tmp_path, monkeypatch):
     assert _git(repo, "rev-parse", "HEAD") != base and "fab_run_id" not in event.metadata.get("closeout", {})
 
 
+def test_pre_commit_hook_declines_to_git_commit(tmp_path, monkeypatch):
+    """FAB-on + a configured pre-commit hook → FAB DECLINES to the non-FAB
+    `git commit` path (which RUNS the hook, incl. a blocking check-hook), and
+    produces NO FAB provenance. Object-gating (commit-tree) must NOT run, since it
+    would silently skip the hook."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    # A configured pre-commit hook that leaves a marker so we can prove it ran.
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\ntouch \"$(git rev-parse --show-toplevel)/HOOK_RAN\"\nexit 0\n")
+    hook.chmod(0o755)
+    # The object-gate must NOT be invoked when a hook is present.
+    monkeypatch.setattr(R, "_fab_object_gate_commit", lambda *a, **k: (_ for _ in ()).throw(AssertionError("object-gate must not run when a pre-commit hook is present")))
+    _stage_change(repo)
+
+    status, event = _closeout(repo, roadmap)
+    assert status == "complete", event.metadata.get("closeout", {})
+    assert (repo / "HOOK_RAN").exists(), "the pre-commit hook must have run via the non-FAB git commit path"
+    assert "fab_run_id" not in event.metadata.get("closeout", {}), "a declined closeout produces no FAB provenance"
+    assert "pkg/mod.py" in _git(repo, "show", "--name-only", "--format=", "HEAD")
+
+
+def test_control_detection(tmp_path, monkeypatch):
+    """`_fab_pre_commit_control_active`: None → False; executable pre-commit hook
+    → True; required signing → True; uncertain → fail-closed True."""
+    repo, _ = _setup_repo(tmp_path)
+    assert R._fab_pre_commit_control_active(repo) is False, "clean repo → object-gating allowed"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 0\n")
+    hook.chmod(0o644)  # NON-executable (git's sample posture) → not a configured hook
+    assert R._fab_pre_commit_control_active(repo) is False
+    hook.chmod(0o755)  # executable → a real configured hook
+    assert R._fab_pre_commit_control_active(repo) is True
+    hook.unlink()
+    subprocess.run(["git", "-C", str(repo), "config", "commit.gpgsign", "true"], check=True)
+    assert R._fab_pre_commit_control_active(repo) is True, "required signing → decline (commit-tree can't sign)"
+
+
 def test_flag_off_is_byte_neutral(tmp_path, monkeypatch):
     """Byte-neutral: with PHASE_LOOP_FAB OFF, the closeout uses the normal
     `git commit` path and completes; a resume hits the unchanged noop path."""

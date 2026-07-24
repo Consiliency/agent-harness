@@ -9164,6 +9164,7 @@ def _perform_phase_closeout_impl(
                     fab_run_id is not None
                     and fab_reviewed_base_sha is not None
                     and terminal_status != "planned"
+                    and not _fab_pre_commit_control_active(repo)
                 ):
                     # FAB (Consiliency/agent-harness#191) piece 2 — OBJECT-GATING
                     # (CR round 6): gate the candidate commit OBJECT before
@@ -9175,7 +9176,11 @@ def _perform_phase_closeout_impl(
                     # passed, so a crash before the atomic update-ref leaves HEAD
                     # unchanged and the candidate an unreferenced object (retry
                     # re-reviews clean; no orphaned reachable commit). This replaces
-                    # the whole post-commit crash-safety machinery.
+                    # the whole post-commit crash-safety machinery. Object-gating is
+                    # used ONLY when there is no pre-commit hook / required signing
+                    # to skip (`_fab_pre_commit_control_active`); otherwise FAB
+                    # DECLINES to the non-FAB `git commit` path below (team-lead
+                    # decision — never silently skip a blocking check-hook).
                     commit_result, fab_wrote_provenance = _fab_object_gate_commit(
                         repo,
                         fab_run_id=fab_run_id,
@@ -9717,6 +9722,37 @@ def _fab_advance_ref(repo, new_sha: str, *, expected_old: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def _fab_pre_commit_control_active(repo) -> bool:
+    """True iff `git commit` would run a pre-commit CONTROL — a configured
+    pre-commit hook (a blocking check like a secret-scanner, or a formatter) — or
+    SIGN the commit, i.e. something `git commit-tree` cannot replicate. When True,
+    the FAB path DECLINES to the normal `git commit -F -` (which runs the hook /
+    signs) and produces NO provenance for that closeout (the pre-FAB path exactly)
+    — object-gating is only used when there is genuinely nothing to skip.
+
+    Fail-closed on uncertainty (return True): never assume "no hook" and silently
+    skip a control we could not rule out (team-lead decision, CR round 6). Covers
+    the effective `core.hooksPath` (so husky's `.husky/` and the `pre-commit`
+    framework's `.git/hooks/pre-commit` shim are both seen) and required signing
+    (`commit.gpgsign`)."""
+    signing = _git_output_or_empty(repo, "config", "--get", "commit.gpgsign").strip().lower()
+    if signing in ("true", "1", "yes", "on"):
+        return True
+    hooks_path = _git_output_or_empty(repo, "rev-parse", "--git-path", "hooks").strip()
+    if not hooks_path:
+        return True  # cannot resolve the effective hooks dir → fail closed
+    hooks_dir = Path(hooks_path)
+    if not hooks_dir.is_absolute():
+        hooks_dir = Path(repo) / hooks_dir
+    pre_commit = hooks_dir / "pre-commit"
+    try:
+        # A configured hook is an EXECUTABLE `pre-commit` (git's shipped
+        # `pre-commit.sample` is deliberately non-executable and is ignored).
+        return pre_commit.is_file() and os.access(pre_commit, os.X_OK)
+    except OSError:
+        return True  # stat failure → fail closed
 
 
 def _fab_object_gate_commit(
