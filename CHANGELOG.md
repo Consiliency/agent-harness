@@ -38,6 +38,42 @@ byte-for-byte unchanged; a stash-proof off-path test proves it).
   existing `pr-head-advanced` guard (no shortcut yet). The delta consumer +
   delta-round authentication + atomic re-admission are piece 3b.
 
+### FAB activation piece 3b-consumer — delta-review shortcut + atomic re-admission (Consiliency/agent-harness#191)
+
+Activates the deliberate, opt-in delta-review shortcut behind the trusted
+coordinator opt-in (`run_train(fab_delta_shortcut=...)` AND `PHASE_LOOP_FAB`;
+default off ⇒ byte-for-byte unchanged, an advanced head hits the unchanged
+`pr-head-advanced` guard). Builds on the merged 3b-gate (delta-chain
+authentication). Every input the gate reads is authenticated against a
+harness-written durable record; every git-derivable field is recomputed off live
+git.
+
+- **Delta-round producer** (`fab_producer.capture_delta_review_at_invocation` +
+  `build_and_finalize_delta_round`): captures a delta round's REAL committed-range
+  panel seats durably at invocation (anti-tautology; per-epoch ledger truncation
+  so the candidate round's seats survive), builds the `DeltaReviewRecord` off live
+  git, and binds the harness round-resolution digest into the per-epoch durable
+  record. Proven gate-consistent by a real-git round-trip through the merged gate.
+- **Committed-range review primitive** (`governed_bundle.committed_range_diff`):
+  reviews `old_admitted..new_head`; both revs validated as resolved SHAs
+  (fail-closed on a ref/flag-leading value).
+- **Recapture-truncation** (`scope_run_to_epochs`): removes stale finalized round
+  records per attempt so the durable epoch set equals the retry's chain (the gate
+  enforces epoch-set equality) — a retry resolving in fewer epochs is not
+  false-blocked.
+- **Handled branch + atomic re-admission** (train merge loop): on a single-commit
+  advance of an admitted FAB node with the opt-in, review the delta → capture +
+  build → overwrite provenance with the extended chain → `fsync_run_store_durable`
+  → verify the extended artifact passes the merged gate → append a new
+  `LedgerRecord` (new admitted head + same `fab_run_id`, the commit point) → merge
+  the new head. A crash before the ledger append fails closed (the ledger admits
+  the old head → the guard fires); resume is idempotent (the already-extended
+  provenance is re-verified and re-admitted) and converges. Reviewer≠author: the
+  delta board excludes every vendor that authored work in the repo. The opt-in is
+  read only from the coordinator (inert until a coordinator sets it; never
+  PR-derived); everything not handled falls through to the unchanged fail-closed
+  guard.
+
 ### FAB activation piece 2 — producer + forge-resistance trust root (Consiliency/agent-harness#191)
 
 Activates the dormant FAB gate's PRODUCER behind `PHASE_LOOP_FAB` (default off ⇒

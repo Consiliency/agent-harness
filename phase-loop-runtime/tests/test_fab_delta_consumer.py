@@ -262,6 +262,28 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         finally:
             _trmod.append_record = real_append
 
+    def test_review_reject_is_not_re_admitted(self):
+        """The whole point of reviewing: a delta review that does NOT pass (panel
+        non-mergeable) → _fab_delta_readmit returns None, appends NO ledger record,
+        and the admitted head stays the OLD candidate head (→ pr-head-advanced
+        guard fires at merge)."""
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.governed_premerge import LoopResult
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        ledger_path, base, candidate_head, delta_head = self._setup_candidate_and_advance()
+
+        def reject_fn(ws, diff):
+            return LoopResult(mergeable=False, ran=True, rounds=1, panel=_delta_panel())
+
+        result = tr._fab_delta_readmit(
+            self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+            merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+            delta_review_fn=reject_fn, fab_fetch_origin="fetchsrc",
+        )
+        self.assertIsNone(result)
+        self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
+
     def test_multi_commit_advance_is_not_handled(self):
         """A MULTI-commit advance is out of scope → _fab_delta_readmit returns None
         (the caller falls through to the unchanged pr-head-advanced guard)."""

@@ -766,15 +766,31 @@ def _default_delta_review(workspace: Path, diff_text: str):
     """The production committed-range delta review — renders a governed bundle over
     the delta diff and runs the real cross-vendor panel (`governed_premerge_for_
     run`). Returns a `LoopResult` (`mergeable` + the real `panel`). Injected as a
-    seam so tests drive the handled branch without spawning CLIs."""
+    seam so tests drive the handled branch without spawning CLIs.
+
+    REVIEWER≠AUTHOR (parity with the candidate producer, which passes
+    `_phase_author_vendors`): exclude EVERY vendor that authored work in this repo
+    — the UNION across all dispatch events — from the delta review board, a
+    conservative superset of the delta's own author so the author can never sit on
+    its own delta's review. An empty author set means the authorship is unknown →
+    `governed_premerge_for_run` fails closed (no disjoint reviewer / unknown
+    author), matching the candidate path's posture."""
+    from .events import read_events
     from .governed_bundle import render_governed_bundle
+    from .governed_review import author_vendor_for_executor
     from .panel_invoker import available_panel_legs
     from .runner import governed_premerge_for_run
 
+    author_vendors = frozenset(
+        author_vendor_for_executor(str(e.get("selected_executor")))
+        for e in read_events(workspace)
+        if isinstance(e, dict) and e.get("selected_executor")
+    )
     bundle = render_governed_bundle(phase_alias="fab-delta", terminal={}, plan_path=None, diff_text=diff_text)
     return governed_premerge_for_run(
         artifact=bundle,
         author_executor="",
+        author_vendors=author_vendors,
         run_mode="governed",
         available_legs=available_panel_legs(),
     )
