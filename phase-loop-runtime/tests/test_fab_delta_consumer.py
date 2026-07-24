@@ -380,6 +380,66 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
 
+    def test_shortcut_engages_for_a_remote_only_advance_via_fetch(self):
+        """CR round 5 #2 — the load-bearing REAL use case: the live head comes from
+        GitHub's API (a push to the PR from ANOTHER host), so the delta commit is NOT
+        in the reviewed workspace. The shortcut must FETCH it before the local
+        eligibility rev-list, or it never engages for a remote advance. Here the
+        delta commit exists ONLY on the remote (a second clone created + pushed it;
+        the reviewed workspace never had it) — the re-admission must still converge,
+        proving the fetch, not a locally-created commit (which masked this)."""
+        import os
+        import subprocess
+
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        ledger_path, base, candidate_head, _local_advance = self._setup_candidate_and_advance()
+        # Drop the LOCAL advance the fixture made — we want a REMOTE-only one.
+        subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
+        # Publish the admitted candidate to the remote (a side ref, leaving
+        # fetchsrc/main = base so the gate's base-currency check is unaffected).
+        subprocess.run(["git", "-C", str(self.repo), "push", "-q", "-f", "fetchsrc",
+                        f"{candidate_head}:refs/heads/cand"], check=True, capture_output=True)
+
+        # A SEPARATE clone creates the delta commit and pushes it ONLY to the remote.
+        remote_work = self.repo.parent / "remote_work"
+        subprocess.run(["git", "clone", "-q", str(self.origin_dir), str(remote_work)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(remote_work), "checkout", "-q", candidate_head], check=True, capture_output=True)
+        (remote_work / "pkg").mkdir(parents=True, exist_ok=True)
+        (remote_work / "pkg" / "remote.py").write_text("remote-only advance\n", encoding="utf-8")
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": "Codex Agent", "GIT_AUTHOR_EMAIL": "agent@codex.example",
+               "GIT_COMMITTER_NAME": "Codex Agent", "GIT_COMMITTER_EMAIL": "agent@codex.example"}
+        subprocess.run(["git", "-C", str(remote_work), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(remote_work), "commit", "-m", "remote delta advance"],
+                       check=True, capture_output=True, env=env)
+        remote_head = subprocess.run(["git", "-C", str(remote_work), "rev-parse", "HEAD"],
+                                     capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "-C", str(remote_work), "push", "-q", "origin", f"{remote_head}:refs/heads/pr"],
+                       check=True, capture_output=True)
+
+        # The reviewed workspace does NOT have the remote delta commit locally.
+        self.assertNotEqual(
+            0,
+            subprocess.run(["git", "-C", str(self.repo), "cat-file", "-e", f"{remote_head}^{{commit}}"],
+                           capture_output=True).returncode,
+            "precondition: the remote-only delta commit must be absent from the reviewed workspace",
+        )
+
+        # The re-admission fetches it and converges to the remote head.
+        new_admitted = tr._fab_delta_readmit(
+            self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+            merge_order=0, admitted_head_sha=candidate_head, live_head_sha=remote_head,
+            delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+        )
+        self.assertEqual(new_admitted, remote_head, "the shortcut must ENGAGE for a remote-only advance (via fetch)")
+        self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, remote_head)
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=remote_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
     def test_multi_commit_advance_is_not_handled(self):
         """A MULTI-commit advance is out of scope → _fab_delta_readmit returns None
         (the caller falls through to the unchanged pr-head-advanced guard)."""

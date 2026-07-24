@@ -996,6 +996,31 @@ def _fab_delta_readmit(
     from . import fab_gate, fab_producer, fab_provenance
     from .fab_provenance import REVIEW_SCOPE_DELTA_ONLY, ReviewScope
 
+    # 0. FETCH the live head into the workspace FIRST (3b-consumer CR round 5 #2).
+    # `live_head_sha` comes from GitHub's API (`headRefOid`) — for the ACTUAL use
+    # case, an ordinary push to the PR from ANOTHER host, that commit object is NOT
+    # in the reviewed workspace's object store. Every LOCAL git op below (the
+    # single-commit rev-list, `enumerate_changed_paths`, `committed_range_diff`, the
+    # delta-author attribution) would then error on the unknown SHA and the shortcut
+    # would NEVER ENGAGE for a real remote advance (it'd fall through to the guard).
+    # Fetch the exact SHA from the FAB fetch remote before any local read; the
+    # admitted head is already local (the reviewed candidate). The fetch is
+    # BEST-EFFORT ("ensure the object is present"): a local-host advance is already
+    # in the store (and a fetch-by-SHA may legitimately fail), while a remote-host
+    # advance needs the fetch — so the load-bearing gate is the PRESENCE check
+    # below, not the fetch's exit code. Absent after the fetch → not handled (guard
+    # fires), never a weakening.
+    subprocess.run(
+        ["git", "-C", str(workspace), "fetch", "--no-tags", fab_fetch_origin, live_head_sha],
+        capture_output=True, text=True,
+    )
+    _present = subprocess.run(
+        ["git", "-C", str(workspace), "cat-file", "-e", f"{live_head_sha}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    if _present.returncode != 0:
+        return None
+
     # 1. SINGLE-commit advance only (multi-commit is out of scope → fall through).
     _rl = subprocess.run(
         ["git", "-C", str(workspace), "rev-list", "--count", f"{admitted_head_sha}..{live_head_sha}"],
