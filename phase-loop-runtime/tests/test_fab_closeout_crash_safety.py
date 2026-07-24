@@ -128,7 +128,7 @@ def test_blocked_fab_commit_is_not_noop_completed_on_retry(tmp_path, monkeypatch
     run_id = f"fab-{tree}"
     assert prod.is_fab_scoped(repo, run_id), "attempt 1 was FAB-scoped (capture ran)"
     assert not prod.is_closeout_cleared(repo, run_id, committed), "a blocked closeout must NOT be cleared"
-    assert prod.read_pending_closeout(repo, "CONTRACT")["committed_head"] == committed
+    assert prod.read_phase_scope(repo, "CONTRACT")["committed_head"] == committed
 
     # Attempt 2 (resume): the file is already committed → nothing staged → the
     # noop_already_committed branch. It MUST re-gate and stay blocked, never
@@ -208,9 +208,9 @@ def test_flag_off_noop_retry_is_byte_neutral(tmp_path, monkeypatch):
 
 
 def _capture_and_commit(repo: Path, phase: str = "CONTRACT") -> tuple[str, str]:
-    """Capture a FAB review (real panel legs), commit a staged change, and write
-    the phase's durable PENDING record — WITHOUT the cleared marker: the state a
-    blocked/crashed attempt-1 leaves. Returns (run_id, committed_head)."""
+    """Capture a FAB review (real panel legs), write the PRE-commit phase-scope
+    anchor, commit a staged change, then bind committed_head — WITHOUT the cleared
+    marker: the state a blocked/crashed attempt-1 leaves. Returns (run_id, head)."""
     from phase_loop_runtime.governed_bundle import staged_index_diff
     from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 
@@ -227,9 +227,10 @@ def _capture_and_commit(repo: Path, phase: str = "CONTRACT") -> tuple[str, str]:
         repo, run_id, panel, epoch=1, reviewed_bundle_text="bundle",
         reviewed_diff_text=staged_index_diff(repo, ["pkg/mod.py"]), closeout_dirty_paths=("pkg/mod.py",),
     )
+    prod.write_phase_scope(repo, phase, run_id=run_id)  # pre-commit existence anchor
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c1"], check=True)
     committed = _git(repo, "rev-parse", "HEAD")
-    prod.write_pending_closeout(repo, phase, committed_head=committed, run_id=run_id)
+    prod.write_phase_scope(repo, phase, run_id=run_id, committed_head=committed)  # post-commit bind
     return run_id, committed
 
 
@@ -312,8 +313,8 @@ def test_same_tree_replay_does_not_reuse_marker(tmp_path, monkeypatch):
     c2 = _git(repo, "rev-parse", "HEAD")
     assert c2 != c1
     assert _git(repo, "rev-parse", f"{c2}^{{tree}}") == _git(repo, "rev-parse", f"{c1}^{{tree}}"), "same tree"
-    # The pending record now points at C2 (a real re-closeout would update it).
-    prod.write_pending_closeout(repo, "CONTRACT", committed_head=c2, run_id=run_id)
+    # The phase-scope anchor now points at C2 (a real re-closeout would rebind it).
+    prod.write_phase_scope(repo, "CONTRACT", run_id=run_id, committed_head=c2)
     # C2 must NOT be cleared by C1's marker.
     assert not prod.is_closeout_cleared(repo, run_id, c2)
     # Force the re-gate to decline (offline) so C2 stays blocked rather than trusting C1.
@@ -347,54 +348,96 @@ def _regate_offline(monkeypatch) -> None:
     ))
 
 
-def test_orphaned_fab_commit_pending_absent_fails_closed(tmp_path, monkeypatch):
-    """CR round 4: the commit succeeds and the FAB capture/round record is on disk
-    under fab-<tree> (pre-commit), but the process died BEFORE write_pending_closeout
-    (pending file absent). The resume must NOT complete — the pre-commit backstop
-    re-derives FAB scope from the round record → re-gate → fail closed."""
+def test_committed_head_none_head_advanced_blocks(tmp_path, monkeypatch):
+    """Crash BETWEEN the pre-commit scope write and the post-commit committed_head
+    bind (scope anchor exists, committed_head=None), THEN HEAD advances to an
+    unrelated non-FAB commit. The phase is proven scoped by the pre-commit anchor
+    but its FAB commit is not the current HEAD → cannot locate clearance → BLOCK."""
     monkeypatch.setenv("PHASE_LOOP_FAB", "1")
     repo, _ = _setup_repo(tmp_path)
-    run_id, committed = _capture_and_commit(repo)  # this also wrote the pending record...
-    prod._pending_path(repo, "CONTRACT").unlink()   # ...simulate the crash: pending never persisted
-    assert prod.read_pending_closeout(repo, "CONTRACT") is None
-    assert prod.is_fab_scoped(repo, run_id), "the pre-commit round record survives the crash"
+    run_id, c1 = _capture_and_commit(repo)
+    # Simulate the crash: rewrite the anchor with committed_head=None (never bound).
+    prod.write_phase_scope(repo, "CONTRACT", run_id=run_id)
+    assert prod.read_phase_scope(repo, "CONTRACT")["committed_head"] is None
+    # HEAD advances to an unrelated non-FAB commit (different tree, no capture).
+    (repo / "unrelated.txt").write_text("noise\n")
+    subprocess.run(["git", "-C", str(repo), "add", "unrelated.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c2 unrelated"], check=True)
+    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
+    assert result is not None and result[0] == "blocked", (
+        "a scoped phase with no bound commit whose FAB commit isn't HEAD must fail closed"
+    )
+
+
+def test_committed_head_none_head_matches_regates(tmp_path, monkeypatch):
+    """committed_head=None (crash before bind) but the current HEAD IS the FAB
+    commit (same reviewed tree) → recover HEAD and re-gate; offline decline → BLOCK."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, _ = _setup_repo(tmp_path)
+    run_id, c1 = _capture_and_commit(repo)
+    prod.write_phase_scope(repo, "CONTRACT", run_id=run_id)  # committed_head=None
+    _break_origin(repo)
+    _regate_offline(monkeypatch)
+    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
+    assert result is not None and result[0] == "blocked", "recovered orphan must re-gate; offline decline → block"
+
+
+def test_intersection_committed_head_bound_but_head_advanced_to_non_fab(tmp_path, monkeypatch):
+    """THE CR ROUND-5 INTERSECTION (which every HEAD-derived backstop missed): the
+    phase-scope anchor binds committed_head=C1, but HEAD has advanced to an
+    unrelated non-FAB commit C2 (different tree, no capture). The completion
+    decision must derive from the phase anchor's C1 (NOT ambient HEAD's tree) →
+    C1 uncleared → re-gate → BLOCK, never complete C1 un-gated."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, _ = _setup_repo(tmp_path)
+    run_id, c1 = _capture_and_commit(repo)  # anchor committed_head=C1, no marker
+    (repo / "unrelated.txt").write_text("noise\n")
+    subprocess.run(["git", "-C", str(repo), "add", "unrelated.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c2 unrelated advance"], check=True)
+    c2 = _git(repo, "rev-parse", "HEAD")
+    assert _git(repo, "rev-parse", "HEAD^{tree}") != _git(repo, "rev-parse", f"{c1}^{{tree}}")
+    assert not prod.is_fab_scoped(repo, f"fab-{_git(repo, 'rev-parse', 'HEAD^{tree}')}"), "C2's tree is non-FAB"
     _break_origin(repo)
     _regate_offline(monkeypatch)
     result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
     assert result is not None and result[0] == "blocked", (
-        "an orphaned FAB commit (pending absent) must fail closed via the pre-commit backstop, not complete"
+        "pending-absent∧HEAD-advanced-to-non-FAB must BLOCK via the phase anchor, not complete an un-gated commit"
     )
 
 
-def test_corrupt_pending_file_fails_closed(tmp_path, monkeypatch):
-    """A truncated/corrupt pending file (read_pending_closeout → None) while the
-    FAB run dir + an uncleared commit exist → the backstop re-gates → block."""
-    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
-    repo, _ = _setup_repo(tmp_path)
-    run_id, committed = _capture_and_commit(repo)
-    prod._pending_path(repo, "CONTRACT").write_text("{ this is not valid json", encoding="utf-8")
-    assert prod.read_pending_closeout(repo, "CONTRACT") is None
-    _break_origin(repo)
-    _regate_offline(monkeypatch)
-    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
-    assert result is not None and result[0] == "blocked", "a corrupt pending file must fail closed, not complete"
-
-
 def test_unreachable_vouched_commit_blocks(tmp_path, monkeypatch):
-    """CR round 4 / codex#2: a stale pending record vouches for a commit that is no
-    longer reachable from HEAD (branch reset/off-branch). Even with a valid cleared
+    """CR round 4 / codex#2: the phase anchor vouches for a commit no longer
+    reachable from HEAD (branch reset/off-branch). Even with a valid cleared
     marker, the phase must NOT finalize against a gone commit → block."""
     monkeypatch.setenv("PHASE_LOOP_FAB", "1")
     repo, _ = _setup_repo(tmp_path)
     run_id, c1 = _capture_and_commit(repo)
     prod.mark_closeout_cleared(repo, run_id, c1)  # C1 legitimately passed + cleared
     assert prod.is_closeout_cleared(repo, run_id, c1)
-    # Reset HEAD to before C1 — the vouched commit is no longer on the branch.
     subprocess.run(["git", "-C", str(repo), "reset", "--hard", "HEAD~1"], check=True)
     result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata={"closeout": {}})
     assert result is not None and result[0] == "blocked", (
         "a cleared marker must not finalize a phase against a commit no longer reachable from HEAD"
     )
+
+
+def test_coherence_cleared_phase_completes_despite_head_advance(tmp_path, monkeypatch):
+    """COHERENCE (CR round 5): a legitimately CLEARED phase must NOT get stuck
+    blocked at a later resume when HEAD has advanced — the commit-bound cleared
+    marker for its committed_head DOMINATES (cleared → complete), because the
+    vouched C1 is still reachable from the advanced HEAD."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, _ = _setup_repo(tmp_path)
+    run_id, c1 = _capture_and_commit(repo)
+    prod.mark_closeout_cleared(repo, run_id, c1)  # C1 passed + cleared
+    # HEAD advances (a later phase), C1 still an ancestor.
+    (repo / "later.txt").write_text("later phase\n")
+    subprocess.run(["git", "-C", str(repo), "add", "later.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c2 later phase"], check=True)
+    meta = {"closeout": {}}
+    result = R._fab_noop_regate_block(repo, phase="CONTRACT", metadata=meta)
+    assert result is None, "a cleared, still-reachable phase must complete, not be false-blocked on resume"
+    assert meta["closeout"]["closeout_commit"] == c1  # records the FAB-vouched commit, not ambient HEAD
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -9163,6 +9163,21 @@ def _perform_phase_closeout_impl(
                         stderr="staged index changed between governed review and commit",
                     )
                     return status, _closeout_event()
+                # CR round 5: write the PHASE-BOUND FAB scope anchor BEFORE the
+                # commit ref advances, when this closeout is FAB-scoped. Its mere
+                # existence (phase-keyed, pre-commit) makes the resume completion
+                # decision independent of BOTH ambient HEAD and any post-commit
+                # write window — the phase must earn a commit-bound clearance to
+                # complete, or fail closed. A failure here does not crash the
+                # closeout (absence == genuinely non-FAB is the only fall-through,
+                # and that is the co-resident-writer / breakglass boundary).
+                if fab_run_id is not None:
+                    from . import fab_producer as _fab_producer_scope
+
+                    try:
+                        _fab_producer_scope.write_phase_scope(repo, phase, run_id=fab_run_id)
+                    except Exception:  # noqa: BLE001
+                        pass
                 # Commit the STAGED index (pathspec-less), which the index-isolation
                 # above narrowed to exactly the reviewed closeout paths. A pathspec
                 # commit (`git commit -- <paths>`) would instead re-read the WORKING
@@ -9197,21 +9212,17 @@ def _perform_phase_closeout_impl(
                     if fab_run_id is not None and status == "complete" and fab_reviewed_base_sha is not None:
                         from . import fab_producer as _fab_producer
 
-                        # CR round 3 / blocker 2: durably record the phase's
-                        # produced commit + FAB run_id as EARLY as possible after
-                        # the commit, so a moved/advanced HEAD on resume cannot
-                        # misattribute this commit's FAB scope. A failure here does
-                        # NOT crash the closeout: the pending record is only an
-                        # anti-HEAD-move CONVENIENCE — its absence is covered
-                        # fail-closed by the PRE-commit backstop in
-                        # `_fab_noop_regate_block` (CR round 4), which re-derives
-                        # FAB scope from the capture/round record written under
-                        # `fab-<tree>` BEFORE the commit.
+                        # CR round 3/5: bind the phase's produced commit into the
+                        # pre-commit scope anchor as EARLY as possible after the
+                        # commit (the anti-HEAD-move LOCATE convenience). A failure
+                        # here does NOT crash the closeout and does NOT fail open:
+                        # a `committed_head is None` anchor still proves the phase
+                        # is FAB-scoped, so the resume path fails closed.
                         try:
-                            _fab_producer.write_pending_closeout(
-                                repo, phase, committed_head=commit, run_id=fab_run_id
+                            _fab_producer.write_phase_scope(
+                                repo, phase, run_id=fab_run_id, committed_head=commit
                             )
-                        except Exception:  # noqa: BLE001 - absence is backstopped
+                        except Exception:  # noqa: BLE001 - scope existence already recorded pre-commit
                             pass
                         # Exception-safe (CR round-2 crash safety): a post-commit
                         # producer crash must leave a FAIL-CLOSED state — no cleared
@@ -9785,51 +9796,55 @@ def _fab_noop_regate_block(repo, *, phase, metadata):
     Returns ``(status, blocker)`` when the phase's FAB commit must STAY BLOCKED
     (never finalized), or ``None`` when it is safe to complete.
 
-    INVARIANT (CR round 4): completing a FAB-scoped commit on any retry REQUIRES
-    an affirmative COMMIT-BOUND clearance (the cleared marker, or a fresh re-gate
-    PASS) for that EXACT commit. Whether a commit is FAB-scoped is determined from
-    PRE-commit durable evidence (the capture/round record under `fab-<tree>`,
-    written BEFORE the commit — crash-robust), NEVER from the post-commit pending
-    write. The pending record is only an anti-HEAD-move CONVENIENCE for LOCATING
-    the phase's committed_head; its ABSENCE falls back to the pre-commit backstop,
-    never to "complete".
+    INVARIANT (CR round 5): the completion decision is answerable from PHASE-keyed
+    state ALONE — the pre-commit `fab-phase-scope/<phase>` anchor — independent of
+    BOTH ambient HEAD (round 3 axis) and the post-commit write window (round 4
+    axis). Completing a FAB-scoped phase REQUIRES an affirmative COMMIT-BOUND
+    clearance (a cleared marker, or a fresh re-gate PASS) for the exact commit it
+    produced. The anchor is written PRE-commit, so its existence survives a
+    post-commit crash; it is keyed by PHASE, so a moved/advanced HEAD cannot make
+    it miss.
 
     Decision table (only reached with ``PHASE_LOOP_FAB`` on):
-      * PENDING PRESENT → use its `committed_head`/`run_id` (the anti-HEAD-move
-        anchor — a moved/advanced HEAD cannot misattribute scope, CR round 3).
-      * PENDING ABSENT (crash in the post-commit/pre-write window, or a lost/
-        corrupt pending file) → PRE-COMMIT BACKSTOP: if HEAD is FAB-scoped
-        (`is_fab_scoped(fab-<HEAD^{tree}>)`) it is an ORPHANED FAB commit → treat
-        HEAD as the committed_head and re-gate; only a genuinely non-FAB HEAD (no
-        capture record) completes.
-      * REACHABILITY: the resolved `committed_head` must be an ancestor of HEAD,
-        else BLOCK (a reset/off-branch stale record must not finalize a gone
-        commit — codex#2).
-      * a commit-bound cleared marker for EXACTLY `committed_head` → ``None``
-        (trust it; prevents FALSE-blocking a legitimately-passed commit on resume).
-      * otherwise RE-GATE `committed_head`. ONLY an affirmative PASS clears; a
-        re-gate DECLINE or BLOCK BOTH fail closed (a known-not-cleared commit's
-        decline = "cannot establish FAB honesty now" = fail-closed, not the
-        non-FAB fallback). Do NOT relax it to "decline ⇒ complete"."""
+      * no phase-scope anchor → ``None`` (a genuinely non-FAB phase; for the
+        crash-safety class the anchor is pre-commit + atomic, so its absence
+        means non-FAB — a deleted/corrupt run store is the disclosed breakglass
+        boundary, residual #2, explicitly out of scope).
+      * anchor with a bound `committed_head` → evaluate THAT commit (never ambient
+        HEAD): unreachable → BLOCK (codex#2); a commit-bound cleared marker →
+        ``None`` (trust it — coherence: cleared DOMINATES, no false-block on
+        resume); otherwise RE-GATE it, PASS-only clears.
+      * anchor with `committed_head is None` (crash between the pre-commit write
+        and the post-commit bind) → the phase is scoped but its commit was never
+        recorded. Recover ONLY if the current HEAD is that exact FAB commit (its
+        tree matches the anchor's `run_id=fab-<tree>`); otherwise BLOCK — a
+        scoped phase with no locatable cleared commit must never complete.
+
+    ONLY an affirmative PASS clears; a re-gate DECLINE or BLOCK BOTH fail closed
+    (a known-not-cleared commit's decline = "cannot establish FAB honesty now" =
+    fail-closed, not the non-FAB fallback). Do NOT relax it to "decline ⇒ complete"."""
     from . import fab_producer
 
-    pending = fab_producer.read_pending_closeout(repo, phase)
-    if pending is not None:
-        committed_head = pending["committed_head"]
-        run_id = pending["run_id"]
-    else:
-        # PRE-COMMIT BACKSTOP — absence of the post-commit pending record must
-        # NEVER mean "safe". FAB scope is proven by the capture/round record
-        # written under `fab-<tree>` BEFORE the commit (crash-robust).
-        tree = _git_output_or_empty(repo, "rev-parse", "HEAD^{tree}")
-        if not tree:
-            return None  # no HEAD commit at all → nothing to gate
-        run_id = f"fab-{tree}"
-        if not fab_producer.is_fab_scoped(repo, run_id):
-            return None  # genuinely non-FAB HEAD (no capture) → safe to complete
-        committed_head = _git_output_or_empty(repo, "rev-parse", "HEAD")
-        if not committed_head:
-            return None
+    scope = fab_producer.read_phase_scope(repo, phase)
+    if scope is None:
+        return None  # genuinely non-FAB phase (no pre-commit scope anchor)
+    run_id = scope["run_id"]
+    committed_head = scope.get("committed_head")
+    if not committed_head:
+        # Scoped, but the commit was never bound (crash between the pre-commit
+        # scope write and the post-commit bind). Recover only if the current HEAD
+        # IS that FAB commit (same reviewed tree as the anchor's run_id); else
+        # fail closed — a scoped phase with no locatable clearance must not complete.
+        head = _git_output_or_empty(repo, "rev-parse", "HEAD")
+        head_tree = _git_output_or_empty(repo, "rev-parse", "HEAD^{tree}")
+        if head and head_tree and f"fab-{head_tree}" == run_id:
+            committed_head = head
+        else:
+            return _fab_regate_blocked(
+                metadata,
+                "FAB-scoped phase has no recorded commit and its FAB commit is not the current HEAD "
+                "(fail-closed — cannot establish clearance)",
+            )
 
     # A vouched/uncleared commit that is no longer on the branch must never
     # finalize the phase (reset / off-branch stale record — codex#2).

@@ -158,29 +158,39 @@ def is_closeout_cleared(repo: Path, run_id: str, committed_head: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# CR round 3 / blocker 2 — a durable PENDING-CLOSEOUT record keyed to the PHASE,
-# recording the exact commit the phase produced (its FAB run_id). The resume/noop
-# path reads this to evaluate the phase's OWN committed head, immune to a moved /
-# reset / concurrently-advanced ambient HEAD (which could otherwise erase or
-# misattribute FAB scope). Written durably at the initial closeout, before the
-# FAB gate runs, so a block/crash still leaves it discoverable on retry.
+# CR round 5 — the PHASE-BOUND, PRE-COMMIT scope anchor. Keyed by the phase (nid)
+# — NOT by tree and NOT written post-commit — so the resume completion decision
+# is answerable from phase-keyed state ALONE, independent of BOTH ambient HEAD
+# (round 3 axis) and the post-commit write window (round 4 axis). Written at the
+# START of a FAB-scoped closeout, BEFORE the commit is created: its mere EXISTENCE
+# means this phase is FAB-scoped and MUST produce an affirmative commit-bound
+# clearance to complete. `committed_head` is bound as early as possible AFTER the
+# commit (the anti-HEAD-move locate convenience); a `committed_head is None`
+# record (crash between the pre-commit write and the post-commit bind) still
+# proves scope → fail closed on resume. Its ABSENCE means a genuinely non-FAB
+# phase (for the crash-safety class this record is pre-commit + atomic, so it
+# survives; a deleted/corrupted run store is the disclosed co-resident-writer /
+# breakglass boundary, residual #2 — explicitly out of scope).
 # --------------------------------------------------------------------------- #
 
-PENDING_DIRNAME = "fab-pending"
+PHASE_SCOPE_DIRNAME = "fab-phase-scope"
 
 
-def _pending_path(repo: Path, phase: str) -> Path:
+def _phase_scope_path(repo: Path, phase: str) -> Path:
     safe = hashlib.sha256(phase.encode("utf-8")).hexdigest()[:32]
-    return phase_loop_runs_dir(Path(repo)) / PENDING_DIRNAME / f"{safe}.json"
+    return phase_loop_runs_dir(Path(repo)) / PHASE_SCOPE_DIRNAME / f"{safe}.json"
 
 
-def write_pending_closeout(repo: Path, phase: str, *, committed_head: str, run_id: str) -> None:
-    path = _pending_path(repo, phase)
+def write_phase_scope(repo: Path, phase: str, *, run_id: str, committed_head: str | None = None) -> None:
+    """Write/refresh the phase's pre-commit FAB scope anchor. Called PRE-commit
+    with ``committed_head=None`` (existence = must-clear-to-complete), then again
+    POST-commit with the bound ``committed_head`` (the locate convenience)."""
+    path = _phase_scope_path(repo, phase)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(
         json.dumps(
-            {"phase": phase, "committed_head": committed_head, "run_id": run_id, "at": _utc_now_iso()},
+            {"phase": phase, "run_id": run_id, "committed_head": committed_head, "at": _utc_now_iso()},
             separators=(",", ":"),
         ),
         encoding="utf-8",
@@ -188,16 +198,18 @@ def write_pending_closeout(repo: Path, phase: str, *, committed_head: str, run_i
     os.replace(tmp, path)
 
 
-def read_pending_closeout(repo: Path, phase: str) -> dict | None:
-    """Return the phase's recorded pending-closeout ``{committed_head, run_id}``,
-    or ``None`` when the phase never produced a FAB-scoped commit."""
+def read_phase_scope(repo: Path, phase: str) -> dict | None:
+    """Return the phase's FAB scope anchor ``{run_id, committed_head|None}``, or
+    ``None`` when the phase is not FAB-scoped (no anchor). ``committed_head`` may
+    be ``None`` (scoped, but the commit was never bound — a crash-safety state
+    the resume path treats fail-closed)."""
     try:
-        data = json.loads(_pending_path(repo, phase).read_text(encoding="utf-8"))
+        data = json.loads(_phase_scope_path(repo, phase).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or not data.get("committed_head") or not data.get("run_id"):
+    if not isinstance(data, dict) or not data.get("run_id"):
         return None
-    return data
+    return {"run_id": str(data["run_id"]), "committed_head": data.get("committed_head")}
 
 
 def _sha256_hex(data: bytes) -> str:
