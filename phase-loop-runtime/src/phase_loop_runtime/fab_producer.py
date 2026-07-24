@@ -47,11 +47,14 @@ from .fab_canonical import (
     resolve_broker_repo_identity,
 )
 from .fab_gate import (
+    FAB_CANDIDATE_EPOCH,
     ExpectedSeat,
     append_seat_outcome,
     compose_gate_status,
     finalize_review_round,
+    read_review_round,
     read_seat_outcomes,
+    review_round_path_for_run,
     seat_outcomes_path_for_run,
     write_expected_seats,
 )
@@ -71,7 +74,7 @@ from .fab_provenance import (
     snapshot_material,
     write_provenance,
 )
-from .fab_delta import BOUNDARY_MANIFEST_PATH
+from .fab_delta import BOUNDARY_MANIFEST_PATH, build_delta_round
 from .panel_invoker import PanelResult, SeatOutcomeRecord, terminal_verdict
 
 # The reviewed bundle bytes, snapshotted into the run store as the round's
@@ -259,6 +262,142 @@ def capture_review_at_invocation(
             )
         )
     write_expected_seats(repo, run_id, epoch=epoch, expected_seats=tuple(expected))
+
+
+# --------------------------------------------------------------------------- #
+# Piece 3b CONSUMER — delta-round capture + build. Produces a DeltaReviewRecord
+# (appended to the candidate artifact's `delta_chain`) that the LIVE merged gate
+# authenticates: the durable per-epoch round record carries the harness-computed
+# resolution_digest, the delta seats are captured from the REAL committed-range
+# panel (anti-tautology), and every git-derivable field is computed off live git.
+# --------------------------------------------------------------------------- #
+
+
+def _rewrite_seat_ledger_dropping_epoch(repo: Path, run_id: str, epoch: int) -> None:
+    """Remove all durable seat records for `epoch` from the ledger (rewrite
+    without them) — the per-epoch analog of the candidate capture's whole-ledger
+    truncation, so re-capturing THIS delta epoch yields one clean set while the
+    candidate + other delta epochs' seats survive (idempotent re-capture; the
+    gate's conflicting-record check would otherwise permanently block a retry)."""
+    ledger = seat_outcomes_path_for_run(repo, run_id)
+    if not ledger.exists():
+        return
+    kept = [r for r in read_seat_outcomes(repo, run_id) if r.epoch != epoch]
+    ledger.unlink()
+    for record in kept:
+        append_seat_outcome(repo, run_id, record)
+
+
+def capture_delta_review_at_invocation(repo: Path, run_id: str, panel: PanelResult, *, epoch: int) -> None:
+    """Piece 3b consumer: capture a DELTA round's REAL committed-range panel seats
+    durably AT INVOCATION (anti-tautology — the seats come from the real panel,
+    NEVER synthesized from the review result). Mirrors
+    `capture_review_at_invocation` for a delta epoch (>= 2), but scoped to THIS
+    epoch: it does NOT truncate the whole seat ledger (the candidate round's
+    epoch-1 seats, and any prior delta epoch's, must survive). Appends
+    epoch-scoped `SeatOutcomeRecord`s + freezes the per-epoch expected-seat
+    manifest, exactly like the candidate round — so the gate's per-round
+    completeness + verdict/finding binding authenticate the delta round too."""
+    if epoch <= FAB_CANDIDATE_EPOCH:
+        raise ValueError(f"delta epoch must be > candidate epoch {FAB_CANDIDATE_EPOCH}, got {epoch}")
+    _rewrite_seat_ledger_dropping_epoch(repo, run_id, epoch)
+    expected: list[ExpectedSeat] = []
+    for index, leg in enumerate(panel.legs):
+        seat_key = leg.seat_key or leg.leg
+        instance_id = _seat_instance_id(run_id, epoch, seat_key, index)
+        durable = SeatOutcomeRecord(
+            seat_key=seat_key,
+            vendor_leg=leg.leg,
+            required=True,
+            status=leg.status,
+            attempt_id=f"{run_id}:{epoch}:{index}",
+            epoch=epoch,
+            artifact_digest=_sha256_hex((leg.text or "").encode("utf-8")),
+            completed_at=_utc_now_iso(),
+            evidence_digest=_sha256_hex((leg.text or "").encode("utf-8")),
+            reason=None,
+            verdict=terminal_verdict(leg.text),
+            finding_ids=(),
+            seat_instance_id=instance_id,
+        )
+        append_seat_outcome(repo, run_id, durable)
+        expected.append(
+            ExpectedSeat(seat_instance_id=instance_id, seat_key=seat_key, vendor_leg=leg.leg, required=True)
+        )
+    write_expected_seats(repo, run_id, epoch=epoch, expected_seats=tuple(expected))
+
+
+def build_and_finalize_delta_round(
+    repo: Path,
+    run_id: str,
+    *,
+    epoch: int,
+    base_sha: str,
+    repo_slug: str,
+    parent_head_sha: str,
+    parent_patch_digest: str | None,
+    parent_chain_digest: str | None,
+    delta_head_sha: str,
+    findings: Sequence,
+    resolved_finding_ids: Sequence[str] = (),
+    review_scope,
+    reviewed_material_digest: str | None = None,
+    canonical_findings: Sequence = (),
+    manual_escalation_trigger: str | None = None,
+    status: str | None = None,
+):
+    """Build THIS delta round's `DeltaReviewRecord` off LIVE git (via Lane C's
+    `build_delta_round`) using the delta seats just captured durably, then
+    `finalize_review_round(delta_record=...)` — which binds the harness
+    round-RESOLUTION digest into the per-epoch durable record. Returns the
+    `DeltaReviewRecord` to append to the candidate artifact's `delta_chain`.
+
+    The `delta_round_seats` are rebuilt FROM the durable ledger (never the panel
+    return), so the artifact the gate reads mirrors the durable records exactly."""
+    delta_seats = tuple(
+        ProvenanceSeat(
+            seat_key=d.seat_key,
+            vendor_leg=d.vendor_leg,
+            required=d.required,
+            status=d.status,
+            epoch=d.epoch,
+            artifact_digest=d.artifact_digest,
+            evidence_digest=d.evidence_digest,
+            verdict=d.verdict,
+            finding_ids=d.finding_ids,
+            seat_instance_id=d.seat_instance_id,
+        )
+        for d in read_seat_outcomes(repo, run_id)
+        if d.epoch == epoch
+    )
+    build_kwargs = dict(
+        epoch=epoch,
+        repo=repo,
+        base_sha=base_sha,
+        repo_slug=repo_slug,
+        parent_head_sha=parent_head_sha,
+        parent_patch_digest=parent_patch_digest,
+        parent_chain_digest=parent_chain_digest,
+        delta_head_sha=delta_head_sha,
+        findings=findings,
+        resolved_finding_ids=resolved_finding_ids,
+        delta_round_seats=delta_seats,
+        review_scope=review_scope,
+        manual_escalation_trigger=manual_escalation_trigger,
+    )
+    if status is not None:
+        build_kwargs["status"] = status
+    delta_record = build_delta_round(**build_kwargs)
+    finalize_review_round(
+        repo,
+        run_id,
+        epoch=epoch,
+        reviewed_head_sha=delta_head_sha,
+        reviewed_material_digest=reviewed_material_digest,
+        canonical_findings=canonical_findings,
+        delta_record=delta_record,
+    )
+    return delta_record
 
 
 @dataclass(frozen=True, kw_only=True)
