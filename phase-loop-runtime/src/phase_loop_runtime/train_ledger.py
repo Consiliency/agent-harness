@@ -198,11 +198,73 @@ def default_ledger_path(coordinator_dir: Path, train_name: str) -> Path:
 # ---------------------------------------------------------------------------
 # Append
 
-def append_record(path: Path, record: LedgerRecord) -> None:
+def _repair_torn_trailing_line(path: Path) -> None:
+    """Truncate a crash-torn (un-terminated, no trailing ``\\n``) partial last record
+    before appending (3b-consumer CR round 3 B3). The tolerant reader DROPS a torn
+    final line on READ, but an append writes new JSON directly onto the newline-less
+    fragment, fusing them into a malformed NON-final record that later raises
+    permanently — and hides the re-admission. Repairing the tail here makes an append
+    after a torn write CONVERGE instead of compounding. No-op unless the file exists,
+    is non-empty, and does NOT end in a newline (the only crash-torn shape).
+    Append-only ⇒ a torn record is always the LAST line.
+
+    A DELIBERATE parallel minimal copy of `fab_gate._truncate_torn_trailing_line`
+    — NOT shared, because this module is stdlib-only, coordinator-owned infra and
+    must not depend on `fab_gate` (that import would be a wrong architectural
+    inversion). The two are independent; if this trust-root logic changes, change
+    both. In steady state this is READ-ONLY (seek + one-byte read, no write/fsync);
+    it only truncates+fsyncs on a genuinely torn tail (a post-crash condition), so a
+    normal (non-FAB) append is byte- and durability-identical to merged main."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            if size == 0:
+                return
+            fh.seek(size - 1)
+            if fh.read(1) == b"\n":
+                return  # clean tail
+            fh.seek(0)
+            data = fh.read()
+    except FileNotFoundError:
+        return
+    idx = data.rfind(b"\n")
+    keep = idx + 1 if idx >= 0 else 0
+    with open(path, "r+b") as fh:
+        fh.truncate(keep)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write ALL of ``data`` to ``fd``, looping over partial writes (3b-consumer CR
+    round 2 B3): a bare ``os.write`` may write fewer bytes than requested, and a
+    partial trailing record would either fold the ledger to an OLD state or make the
+    strict resume reader reject the file. The append is the re-admission COMMIT
+    POINT — it must never report success on a truncated record."""
+    view = memoryview(data)
+    written = 0
+    while written < len(view):
+        n = os.write(fd, view[written:])
+        if n <= 0:  # pragma: no cover - defensive; os.write raises rather than returns 0
+            raise OSError("short write to train ledger (0 bytes); refusing to report a partial append")
+        written += n
+
+
+def append_record(path: Path, record: LedgerRecord, *, durable: bool = False) -> None:
     """Atomically append ``record`` to the ledger at ``path``.
 
-    Uses ``O_APPEND`` with a single ``os.write`` call for durability.  The
-    parent directory is created if absent.
+    Uses ``O_APPEND`` with a fully-drained write (``_write_all``) so a partial
+    ``os.write`` can never leave a truncated record.  The parent directory is
+    created if absent.
+
+    ``durable`` (default ``False`` — BYTE/behaviour-neutral for every non-FAB train
+    append; 3b-consumer CR round 2 B6): when ``True`` the append is ``fsync``'d
+    because it is the FAB re-admission COMMIT POINT — a crash must not lose the
+    record that just advanced the admitted head to a gate-passed chain. Only
+    ``_fab_delta_readmit`` passes ``durable=True``; every ordinary train append
+    keeps merged-main's fsync-free posture so its latency/failure behaviour is
+    unchanged.
 
     The caller is responsible for ensuring ``path`` is outside any repo's
     ``.phase-loop/`` directory.
@@ -221,10 +283,15 @@ def append_record(path: Path, record: LedgerRecord) -> None:
         )
     _assert_not_phase_loop(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Repair a crash-torn trailing fragment BEFORE appending (B3) so a new record
+    # never fuses onto a partial one into a permanently-unreadable mid-file line.
+    _repair_torn_trailing_line(path)
     encoded = (json.dumps(record.to_dict(), sort_keys=True) + "\n").encode("utf-8")
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
     try:
-        os.write(fd, encoded)
+        _write_all(fd, encoded)
+        if durable:
+            os.fsync(fd)
     finally:
         os.close(fd)
 

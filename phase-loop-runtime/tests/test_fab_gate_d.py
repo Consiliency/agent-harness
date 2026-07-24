@@ -156,6 +156,18 @@ class GitRepoTestCase(unittest.TestCase):
         scope = fp.ReviewScope(mode=fp.REVIEW_SCOPE_WHOLE_PATCH, reviewed_material_digest=reviewed_material_digest, covers_patch_digest=pd)
         return fp.CandidateRecord(head_sha=head_sha, review_scope=scope, patch_digest=pd)
 
+    def delta_material(self, run_id: str, epoch: int, content: str = "reviewed delta bytes\n"):
+        """Snapshot a per-epoch reviewed-bundle file as this delta round's MATERIAL
+        and return (material_digests, aggregate_digest). A delta round MUST bind the
+        reviewed bytes (3b-consumer CR round 2 B4) — the gate blocks a delta round
+        with no reviewed_material_digest — so every gate fixture that builds a
+        PASSING delta round binds material exactly as the real producer does."""
+        bundle = fp.provenance_dir_for_run(self.repo, run_id) / f"fab-reviewed-bundle.e{int(epoch)}.md"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        bundle.write_text(content, encoding="utf-8")
+        digests = fp.snapshot_material(self.repo, run_id, [str(bundle)])
+        return digests, fp.aggregate_material_digest(digests)
+
     def build_artifact(
         self,
         *,
@@ -563,6 +575,7 @@ class DeltaChainGateTest(GitRepoTestCase):
         # Candidate = epoch 1, this delta round = epoch 2 (its seats + its durable
         # round record share the epoch — the per-round authentication anchors on it).
         delta_seats = (_seat("codex:x:high", epoch=2, finding_ids=()),)
+        delta_digests, delta_aggregate = self.delta_material("run-acc1", 2)
         delta_record = fd.build_delta_round(
             epoch=2,
             repo=self.repo,
@@ -575,7 +588,8 @@ class DeltaChainGateTest(GitRepoTestCase):
             findings=findings,
             resolved_finding_ids=(),
             delta_round_seats=delta_seats,
-            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY, reviewed_material_digest=delta_aggregate),
+            material_digests=delta_digests,
             status=fp.DELTA_STATUS_REVIEWED_CLEAN,
         )
         self.assertFalse(delta_record.escalation.required)
@@ -603,6 +617,46 @@ class DeltaChainGateTest(GitRepoTestCase):
         gate = fg.compose_gate_status(
             repo=self.repo, run_id="run-acc1", live_base_ref_name="main",
             live_head_sha=delta_head, origin="fetchsrc",
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
+    def test_orphan_out_of_chain_seat_is_gate_harmless(self):
+        """Round 4 (1b invariant the recovery trigger relies on): a COMPLETE orphan
+        seat for an epoch with NO finalized round record (a crash after the epoch-N
+        seat appends but before finalize) is GATE-HARMLESS — the gate keys epoch-set
+        equality on finalized ROUND RECORDS and only consults seats for finalized
+        epochs. This pins the assumption behind `_fab_recover_torn_to_admitted`'s
+        cheap scope trigger (it need NOT scope on orphan seats, only on a torn seat
+        tail or stale round records). If this ever starts BLOCKING, that trigger
+        would under-recover and must be widened to seat epochs."""
+        run_id = "run-orphan-seat"
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=()),)
+        candidate = self.candidate(base, base)
+        artifact = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats)
+        fp.write_provenance(self.repo, run_id, artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, run_id, _durable_from_seat(s))
+        self.write_review_round(run_id, artifact)  # candidate round record (epoch 1) only
+        self.assertEqual(
+            fg.compose_gate_status(repo=self.repo, run_id=run_id, live_base_ref_name="main",
+                                   live_head_sha=base, origin="fetchsrc").status,
+            fp.GATE_STATUS_PASS,
+        )
+        # Inject a COMPLETE orphan epoch-2 seat + its expected manifest, but NO
+        # finalized round record — the merge re-gate must still PASS at the admitted
+        # head (the orphan is never iterated).
+        orphan = _seat("gemini:d:high", epoch=2, finding_ids=())
+        fg.append_seat_outcome(self.repo, run_id, _durable_from_seat(orphan))
+        fg.write_expected_seats(self.repo, run_id, epoch=2, expected_seats=(
+            fg.ExpectedSeat(seat_instance_id=orphan.seat_instance_id, seat_key=orphan.seat_key,
+                            vendor_leg=orphan.vendor_leg, required=True),
+        ))
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=run_id, live_base_ref_name="main", live_head_sha=base, origin="fetchsrc"
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
 
@@ -649,6 +703,8 @@ class DeltaChainForgeTest(GitRepoTestCase):
         forge_artifact_delta=None,
         extra_artifact_delta_seats: tuple[fp.ProvenanceSeat, ...] = (),
         drop_delta_from_artifact: bool = False,
+        bind_material: bool = True,
+        empty_material: bool = False,
     ) -> str:
         """Build + persist an otherwise-passing disjoint-clean delta chain, with
         knobs to forge exactly one thing. Returns the delta head (the live head)."""
@@ -668,11 +724,21 @@ class DeltaChainForgeTest(GitRepoTestCase):
                 seat_instance_id=f"codex:x:high@{delta_epoch}",
             ),
         )
+        if empty_material:
+            # B4 (round 3) negative control: a ZERO-file material set with the EMPTY
+            # aggregate digest (non-None) — must NOT be accepted as "material bound".
+            delta_digests, delta_aggregate = (), fp.aggregate_material_digest(())
+        elif bind_material:
+            delta_digests, delta_aggregate = self.delta_material(self.RUN, delta_epoch)
+        else:
+            # B4 negative control: a delta round with NO reviewed-material binding.
+            delta_digests, delta_aggregate = (), None
         delta_record = fd.build_delta_round(
             epoch=delta_epoch, repo=self.repo, base_sha=base, repo_slug=self.REPO_SLUG,
             parent_head_sha=base, parent_patch_digest=candidate.patch_digest, parent_chain_digest=c0,
             delta_head_sha=delta_head, findings=(), resolved_finding_ids=(), delta_round_seats=delta_seats,
-            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY), status=fp.DELTA_STATUS_REVIEWED_CLEAN,
+            review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY, reviewed_material_digest=delta_aggregate),
+            material_digests=delta_digests, status=fp.DELTA_STATUS_REVIEWED_CLEAN,
         )
         # The ARTIFACT (client) delta record may be a FORGED transform of the
         # honest record — while `persist_delta_round` below binds the HONEST
@@ -737,6 +803,21 @@ class DeltaChainForgeTest(GitRepoTestCase):
             repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
+    def test_delta_round_without_material_blocks(self):
+        """CR round 2 B4 — a delta round with NO reviewed-material digest must BLOCK
+        (never 'nothing to verify'): a delta advance authenticating with no
+        reviewed-byte binding is exactly the hole. Non-vacuous: the baseline (with
+        material) passes."""
+        self._assert_blocks(self._fixture(bind_material=False))
+
+    def test_delta_round_with_empty_material_blocks(self):
+        """CR round 3 B4 — a ZERO-file material set with the EMPTY aggregate digest
+        (non-None, so it slips past a None-only check) must ALSO BLOCK: an empty
+        material set makes the re-verify loop over nothing and trivially match, so
+        material isn't genuinely bound. Non-vacuous: the baseline (real material)
+        passes."""
+        self._assert_blocks(self._fixture(empty_material=True))
 
     def test_verdict_flip_blocks(self):
         """The delta seat claims AGREE in the artifact, but the harness durably

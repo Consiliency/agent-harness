@@ -687,6 +687,21 @@ class TestPiece3aResolveAdmissionFabRunId:
         assert bound is None
         assert reason is not None and "fab-admission-provenance-missing" in reason
 
+    def test_unreadable_provenance_fails_closed(self, tmp_path: Path, monkeypatch):
+        """grok 3a follow-up: a plumbed run_id whose provenance is PRESENT but
+        UNREADABLE/tampered (not merely absent) must fail CLOSED — a broken
+        FAB-scoped artifact is never treated as 'non-FAB'."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        # A provenance file EXISTS at the run-store path but is corrupt JSON.
+        path = fp.provenance_path_for_run(repo, "run-corrupt")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ this is not valid provenance json", encoding="utf-8")
+        bound, reason = _resolve_admission_fab_run_id(repo, "sha-whatever", "run-corrupt")
+        assert bound is None
+        assert reason is not None and "fab-admission-provenance-unreadable" in reason
+
     def test_flag_off_is_inert(self, tmp_path: Path, monkeypatch):
         _git_available()
         monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
@@ -853,6 +868,140 @@ class TestPiece3aAdmissionBridgeIntegration:
         assert result["status"] != "merged"
         assert "fab-admission-head-mismatch" in json.dumps(result, default=str)
         assert captured == {}, "no node may merge once admission fails closed"
+
+
+class TestPiece3bRecoveryWiring:
+    """Round 4 1a/1b — the FAB torn-state recovery / re-admission wiring in the P4
+    merge loop."""
+
+    def _resume_ledger(self, tmp_path):
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/repo-a",
+            head_sha="sha-a", pr_url="https://gh/a/1", merge_order=0, fab_run_id="run-repo-a"))
+        append_record(ledger, LedgerRecord(
+            node_id="repo-b/specs/plan-b.md", status="pr_open", branch="feat/repo-b",
+            head_sha="sha-b", pr_url="https://gh/b/1", merge_order=1, fab_run_id="run-repo-b"))
+        return roadmap, ws_map, ledger
+
+    def test_recovery_runs_for_fab_nodes_even_with_shortcut_disabled(self, tmp_path: Path, monkeypatch):
+        """1b: the torn-state recovery runs before the merge re-gate for EVERY FAB
+        node, INDEPENDENT of the delta-shortcut opt-in (OFF here) — otherwise a torn
+        seat ledger from a crashed prior attempt would brick the STRICT merge re-gate
+        forever even with the shortcut disabled. The re-gate runs regardless of
+        opt-in, so recovery must too."""
+        from phase_loop_runtime import train_runner as tr
+
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        roadmap, ws_map, ledger = self._resume_ledger(tmp_path)
+
+        recovered: list = []
+        monkeypatch.setattr(
+            tr, "_fab_recover_torn_to_admitted",
+            lambda ws, run_id, *, admitted_head_sha: recovered.append(run_id),
+        )
+        captured: dict = {}
+        result = _p3a_run_train(
+            roadmap, ledger, ws_map,
+            run_loop=lambda *a, **kw: (None, []),  # resume: run_loop not invoked
+            publish=_make_publish_stub({}),
+            merge_fn=_capturing_merge_stub(captured),
+        )
+        assert result["status"] == "merged", result
+        assert set(recovered) == {"run-repo-a", "run-repo-b"}, recovered
+        assert captured == {"repo-a": "run-repo-a", "repo-b": "run-repo-b"}
+
+    def test_raise_in_fab_recovery_is_caught_as_merge_halted(self, tmp_path: Path, monkeypatch):
+        """1a: a raise anywhere in the FAB recovery/re-admission is caught and
+        ledgered as blocked / merge_halted — NEVER an uncaught traceback that aborts
+        run_train (the shortcut sites live outside the merge-call try/except, so
+        without this an exception here would violate run_train's no-uncaught-escape
+        contract)."""
+        from phase_loop_runtime import train_runner as tr
+
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        roadmap, ws_map, ledger = self._resume_ledger(tmp_path)
+
+        def boom(ws, run_id, *, admitted_head_sha):
+            raise OSError("simulated FAB recovery failure")
+
+        monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", boom)
+        captured: dict = {}
+        result = _p3a_run_train(
+            roadmap, ledger, ws_map,
+            run_loop=lambda *a, **kw: (None, []),
+            publish=_make_publish_stub({}),
+            merge_fn=_capturing_merge_stub(captured),
+        )
+        assert result["status"] == "merge_halted", result
+        assert result["reason"] == "fab_readmit_failed", result
+        assert captured == {}, "no node merges once FAB recovery fails closed"
+        assert read_ledger(ledger)["repo-a/specs/plan-a.md"].status == "blocked"
+
+    _SOLO_MD = (
+        "# Release Train: solo\n\n## Nodes\n\n"
+        "### Node: repo-a / specs/plan-a.md\n\n**Depends on:** (none)\n**Channel:** (none)\n"
+    )
+
+    def _run_with_advanced_head(self, tmp_path, monkeypatch, engaged):
+        """Drive the merge loop for a SINGLE admitted FAB node whose live PR head has
+        ADVANCED (live != admitted), with the coordinator opt-in ON, spying on
+        `_fab_delta_readmit` so the ENGAGE decision is observable without running the
+        real re-admission. A single node avoids the unrelated downstream
+        upstream-changed guard a 2-node train would trip on an advanced upstream."""
+        from phase_loop_runtime.train_runner import run_train
+        from phase_loop_runtime import train_runner as tr
+
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        roadmap = parse_train_roadmap(self._SOLO_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/repo-a",
+            head_sha="sha-a", pr_url="https://gh/a/1", merge_order=0, fab_run_id="run-repo-a"))
+
+        monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: None)  # no-op safety net
+        monkeypatch.setattr(
+            tr, "_fab_delta_readmit",
+            lambda *a, **k: (engaged.append(k.get("live_head_sha")), None)[1],
+        )
+        return run_train(
+            roadmap, ledger, run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_p3a_pr_open,
+            _live_pr_head_sha_fn=lambda ws, br: f"advanced-{br}",  # live != admitted
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_capturing_merge_stub({}),
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            fab_delta_shortcut=True,  # coordinator opt-in ON
+        )
+
+    def test_interlock_off_fences_engage_in_the_merge_loop(self, tmp_path: Path, monkeypatch):
+        """CR round 5 (operator interlock): with the #288 constant at its shipped
+        default (False), an ADVANCED head + BOTH opt-ins on does NOT engage the
+        shortcut — `_fab_delta_readmit` is never called; the advance is handled by the
+        normal (unchanged) `pr-head-advanced` path. The broker gap is unreachable by
+        construction."""
+        engaged: list = []
+        result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged)
+        assert engaged == [], "the ENGAGE path must be fenced off while _FAB_DELTA_BROKER_READMIT_READY is False"
+        assert result["status"] == "merged", result
+
+    def test_interlock_on_re_enables_engage(self, tmp_path: Path, monkeypatch):
+        """Flipping the interlock True (as #288 will) re-enables ENGAGE — the clear
+        switch + proof: `_fab_delta_readmit` IS invoked for the advanced head."""
+        monkeypatch.setattr("phase_loop_runtime.governed_premerge._FAB_DELTA_BROKER_READMIT_READY", True)
+        engaged: list = []
+        self._run_with_advanced_head(tmp_path, monkeypatch, engaged)
+        assert engaged and all(str(h).startswith("advanced-") for h in engaged), engaged
 
 
 class TestPiece3aRegateEndToEnd:

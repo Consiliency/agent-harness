@@ -744,13 +744,476 @@ def _resolve_admission_fab_run_id(
             f"provenance could not be read (fail-closed, agent-harness#191 piece 3a): {exc}"
         )
 
-    if artifact.candidate.head_sha != admitted_head_sha:
+    # Compare the admitted head against the artifact's RESOLVED FINAL head, not
+    # the candidate head verbatim (piece 3b): a re-admitted DELTA artifact still
+    # has `candidate.head_sha == old_admitted` (the candidate round covers
+    # base..old_admitted), while the newly-admitted head is the final delta
+    # round's head. 3a's `candidate.head` check was the no-chain special case; a
+    # delta chain's admitted head is `delta_chain[-1].delta_head_sha`. Reusing the
+    # candidate-only check would false-BLOCK every successful re-admission. Still
+    # fail-closed on mismatch (a torn / ambiguous re-admission).
+    final_head = artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
+    if final_head != admitted_head_sha:
         return None, (
-            f"fab-admission-head-mismatch: run_id={plumbed_run_id!r} — provenance candidate head "
-            f"{artifact.candidate.head_sha!r} != broker-admitted head {admitted_head_sha!r} "
-            "(fail-closed, agent-harness#191 piece 3a: torn / ambiguous admission)"
+            f"fab-admission-head-mismatch: run_id={plumbed_run_id!r} — provenance resolved-final head "
+            f"{final_head!r} != broker-admitted head {admitted_head_sha!r} "
+            "(fail-closed, agent-harness#191 piece 3a/3b: torn / ambiguous admission)"
         )
     return plumbed_run_id, None
+
+
+_DELTA_AUTHOR_VENDOR_MARKERS = {
+    "claude": "claude", "anthropic": "claude", "opus": "claude", "sonnet": "claude",
+    "haiku": "claude", "fable": "claude",
+    "codex": "codex", "openai": "codex", "gpt": "codex",
+    "gemini": "gemini", "google": "gemini",
+    "grok": "grok", "xai": "grok",
+}
+
+
+def _delta_commit_author_vendors(workspace: Path, old_sha: str, new_sha: str) -> frozenset:
+    """The vendors that AUTHORED the delta commit range ``old..new`` — scanned from
+    every commit's author, committer, AND ``Co-authored-by`` trailers (3b-consumer
+    CR B5). Unlike the historical dispatch-event union, this is bound to the ACTUAL
+    delta commits, so a vendor that authored an OUT-OF-BAND advance (with NO local
+    dispatch event) is still excluded from reviewing its own delta — closing the
+    hole where a candidate authored by codex is advanced out-of-band by gemini and
+    gemini then reviews its own delta. Empty when the range is not attributable to
+    any known vendor (e.g. a human push); the caller unions this with the dispatch
+    authors and lets `governed_premerge_for_run` fail closed on a genuinely unknown
+    author, matching the candidate path.
+
+    KNOWN LIMITATION (accepted for this milestone, agent-harness#191): this rests on
+    SELF-DECLARED git author/committer/trailer identity, which is SPOOFABLE — an
+    attacker can set the author to a vendor they are NOT, or to a non-vendor to evade
+    exclusion. The reviewer≠author exclusion is therefore best-effort against honest
+    misconfiguration / accidental self-review, NOT a defense against a motivated
+    forger. The real fix (trusted / cryptographically-signed attribution) is out of
+    scope here; this is disclosed, not silently assumed sound."""
+    out = subprocess.run(
+        # author + committer NAME AND EMAIL + Co-authored-by trailers (3b-consumer
+        # CR round 2 B5): reading names alone missed a vendor that only appears in
+        # the email (e.g. `codex@openai.com`), leaving the delta author unidentified.
+        ["git", "-C", str(workspace), "log",
+         "--format=%an%n%ae%n%cn%n%ce%n%(trailers:key=Co-authored-by,valueonly)", f"{old_sha}..{new_sha}"],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return frozenset()
+    text = out.stdout.lower()
+    return frozenset(v for kw, v in _DELTA_AUTHOR_VENDOR_MARKERS.items() if kw in text)
+
+
+def _paths_covered_by_owned(changed_paths, owned_paths) -> bool:
+    """True iff EVERY changed path is a SUBSET of the node's owned scope — REUSING
+    the broker's OWN admission predicate (`GitHubBrokerAdapter._covered_by_owned`)
+    over the byte-exact ``-z`` changed paths (`enumerate_changed_paths`) it checked
+    at admission, so the re-admission applies the IDENTICAL fence, not a parallel
+    reimplementation (3b-consumer CR B4; ah#202/#251; goal-id-inc2 "a check that
+    must AGREE with a runtime check must REUSE the runtime func"). ``owned_paths``
+    empty / ``None`` ⇒ ``False``: the node's owned scope is not provably known
+    (e.g. a snapshot-based train with no explicit resolver), so the delta's fencing
+    is unestablished and the re-admission must fail closed rather than
+    broker-admit an advance that may escape the node's owned scope."""
+    from .convergence.broker.credsep import GitHubBrokerAdapter
+
+    owned = tuple(owned_paths or ())
+    if not owned:
+        return False
+    return all(GitHubBrokerAdapter._covered_by_owned(p, owned) for p in changed_paths)
+
+
+def _default_delta_review(workspace: Path, diff_text: str, author_vendors=frozenset()):
+    """The production committed-range delta review — renders a governed bundle over
+    the delta diff and runs the real cross-vendor panel (`governed_premerge_for_
+    run`), excluding ``author_vendors`` from the review board (reviewer≠author, the
+    set the caller computed from the ACTUAL delta commits ∪ dispatch history — CR
+    B5). Returns a `LoopResult` (`mergeable` + the real `panel`). Injected as a seam
+    so tests drive the handled branch without spawning CLIs. An empty
+    ``author_vendors`` means the authorship is unknown → `governed_premerge_for_run`
+    fails closed (no disjoint reviewer / unknown author), matching the candidate
+    path's posture."""
+    from .governed_bundle import render_governed_bundle
+    from .panel_invoker import available_panel_legs
+    from .runner import governed_premerge_for_run
+
+    bundle = render_governed_bundle(phase_alias="fab-delta", terminal={}, plan_path=None, diff_text=diff_text)
+    return governed_premerge_for_run(
+        artifact=bundle,
+        author_executor="",
+        author_vendors=frozenset(author_vendors),
+        run_mode="governed",
+        available_legs=available_panel_legs(),
+    )
+
+
+def _admitted_prefix(artifact, admitted_head_sha: str):
+    """The (delta_chain prefix, epoch list) of the durable chain ending EXACTLY at
+    `admitted_head_sha` — the known-good state the durable run store is scoped back
+    to on every re-admission attempt (CR B2). Returns `(None, None)` when the
+    admitted head is neither the candidate head nor any delta round's head (an
+    inconsistent state → the caller falls through to the fail-closed guard)."""
+    from .fab_gate import FAB_CANDIDATE_EPOCH
+
+    if artifact.candidate.head_sha == admitted_head_sha:
+        return (), [FAB_CANDIDATE_EPOCH]
+    prefix = []
+    epochs = [FAB_CANDIDATE_EPOCH]
+    for d in artifact.delta_chain:
+        prefix.append(d)
+        epochs.append(d.epoch)
+        if d.delta_head_sha == admitted_head_sha:
+            return tuple(prefix), epochs
+    return None, None
+
+
+def _scope_run_to_admitted_prefix(workspace: Path, run_id: str, artifact, prefix_chain, prefix_epochs):
+    """Recover the durable run store to the admitted-chain prefix — RE-ENTRANTLY (CR
+    round 2 B2, round 3 B1/B2). ORDER MATTERS: (1) repair any crash-torn trailing
+    seat-ledger line so the STRICT seat reader can run at all (round 3 B1 — a SIGKILL
+    mid-append otherwise bricks every recovery); (2) remove the stale per-epoch round
+    records + seat records NOT in `prefix_epochs` FIRST; (3) THEN overwrite the
+    provenance to `(candidate + prefix_chain)`; (4) fsync.
+
+    Removing stale epochs BEFORE rewriting provenance makes recovery re-entrant
+    (round 3 B2): a crash between them leaves provenance still resolving PAST the
+    admitted head, so `_admitted_prefix`/the caller re-detects the torn state and
+    re-runs cleanly — never the inverse (admitted-looking provenance + stale
+    finalized rounds that an early-return would skip forever, false-blocking the gate
+    on epoch-set equality). `scope_run_to_epochs` is idempotent. Returns the recovered
+    artifact."""
+    from . import fab_gate, fab_producer, fab_provenance
+
+    recovered = fab_provenance.ReviewProvenanceArtifact.build(
+        repo=artifact.repo,
+        base=artifact.base,
+        boundary_manifest=artifact.boundary_manifest,
+        candidate=artifact.candidate,
+        seats=artifact.seats,
+        findings=artifact.findings,
+        material_digests=artifact.material_digests,
+        delta_chain=tuple(prefix_chain),
+    )
+    fab_gate.repair_torn_seat_ledger_tail(workspace, run_id)
+    fab_producer.scope_run_to_epochs(workspace, run_id, prefix_epochs)
+    fab_provenance.write_provenance(workspace, run_id, recovered)
+    fab_provenance.fsync_run_store_durable(workspace, run_id)
+    return recovered
+
+
+def _fab_recover_torn_to_admitted(workspace: Path, run_id: str, *, admitted_head_sha: str) -> None:
+    """CR round 2 B1 — RESET-TO-ADMITTED recovery. The handled branch (which runs
+    the unconditional scope-back) is gated on ``live != admitted``; so when the PR
+    is reset BACK to the admitted head (``live == admitted``) after a crashed
+    re-admission left a torn EXTENDED provenance, the handled branch is SKIPPED and
+    the stale extended chain would make the merge-time FAB re-gate reject FOREVER
+    (the durable chain resolves past the admitted head). Detect a torn extended
+    provenance (resolved-final != admitted head) and scope the durable run store
+    back to the admitted-chain prefix, so a reset-to-admitted converges. No-op when
+    the provenance already resolves to the admitted head, or when the admitted head
+    is not in the durable chain (left for the fail-closed guard). Does NOT touch the
+    caller's in-memory admitted head — recovery stays at the admitted head; only the
+    handled branch advances it.
+
+    RE-ENTRANT (round 3 B1/B2): repairs a crash-torn seat-ledger tail before the
+    strict reader runs, and when the provenance already resolves to the admitted head
+    it STILL scopes epochs idempotently — never an early-return that would skip a
+    prior crashed recovery's stale-epoch cleanup forever (which would false-block the
+    gate on epoch-set equality)."""
+    from . import fab_gate, fab_producer, fab_provenance
+
+    # Repair a crash-torn seat-ledger tail BEFORE any strict read (round 3 B1).
+    # Provenance + round records are written atomically (temp+replace) and cannot
+    # tear; only the append-based seat ledger can.
+    repaired = fab_gate.repair_torn_seat_ledger_tail(workspace, run_id)
+    try:
+        artifact = fab_gate.read_provenance(workspace, run_id)
+    except Exception:  # noqa: BLE001 - no readable provenance → nothing to recover; guard handles it
+        return
+    prefix_chain, prefix_epochs = _admitted_prefix(artifact, admitted_head_sha)
+    if prefix_chain is None:
+        return  # admitted head not in the durable chain → leave for the guard
+    resolved_final = (
+        artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
+    )
+    if resolved_final == admitted_head_sha:
+        # Provenance already resolves to the admitted head. This recovery now runs
+        # for EVERY FAB node before the merge re-gate (round 4 1b), so keep the clean
+        # case CHEAP: only scope when there is actually torn/stale durable state that
+        # would BRICK the strict re-gate — a just-repaired seat tail (`repaired`), or
+        # STALE finalized ROUND RECORDS a prior crashed recovery left (`stale`, round
+        # 3 B2 — these false-block the gate on epoch-set EQUALITY). Complete ORPHAN
+        # out-of-chain SEAT lines (a crash after the epoch-N seat appends but before
+        # finalize wrote the round record) are deliberately NOT a trigger: the gate
+        # keys epoch-set equality on finalized ROUND RECORDS and only consults seats
+        # for finalized epochs, so an epoch with no round record is never iterated and
+        # its orphan seats are gate-HARMLESS (verified: compose_gate_status PASSes with
+        # a complete orphan epoch-2 seat + expected manifest but no round record).
+        # They are swept by the next shortcut attempt's scope_run_to_epochs anyway.
+        stale = fab_producer.finalized_round_epochs(workspace, run_id) - set(prefix_epochs)
+        if repaired or stale:
+            fab_producer.scope_run_to_epochs(workspace, run_id, prefix_epochs)
+            fab_provenance.fsync_run_store_durable(workspace, run_id)
+        return
+    _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+
+
+def _fab_delta_readmit(
+    workspace: Path,
+    ledger_path: Path,
+    *,
+    node_id: str,
+    run_id: str,
+    branch: Optional[str],
+    pr_url: Optional[str],
+    merge_order: Optional[int],
+    admitted_head_sha: str,
+    live_head_sha: str,
+    delta_review_fn: Callable,
+    owned_paths: Optional[Sequence[str]] = None,
+    fab_fetch_origin: str = "origin",
+) -> Optional[str]:
+    """FAB piece 3b consumer — the delta-review shortcut HANDLED BRANCH + ATOMIC
+    RE-ADMISSION. On a SINGLE-commit advance of an admitted FAB node (the caller
+    has already checked the trusted opt-in), review the committed delta
+    ``admitted..live``; on a PASS, capture+build the delta round, ATOMICALLY
+    re-admit the new head, and return it. Returns ``None`` (→ the caller falls
+    through to the UNCHANGED, fail-closed ``pr-head-advanced`` guard in
+    ``_live_merge_pr``) for a multi-commit advance, a non-PASS review, a
+    non-gate-passing extended artifact, or any inconsistency — NEVER a weakening of
+    the guard.
+
+    ATOMIC ORDERING (the ledger append is the COMMIT POINT): overwrite the
+    provenance in place (same ``run_id``) with the extended chain → ``fsync_run_
+    store_durable`` → verify the extended artifact PASSES the merged gate → append
+    the new ``LedgerRecord`` (new admitted_head + same ``fab_run_id``). A crash
+    BEFORE the ledger append fails CLOSED: the ledger still points at the OLD
+    admitted head, so ``_live_merge_pr`` pins ``--match-head-commit`` to it while
+    the live head has advanced → the pr-head-advanced guard fires. On resume this
+    branch re-runs (recapture → ``scope_run_to_epochs`` → rebuild → re-admit) and
+    converges — the per-attempt epoch scoping keeps the durable epoch set equal to
+    the retry's chain."""
+    from . import fab_gate, fab_producer, fab_provenance
+    from .fab_provenance import REVIEW_SCOPE_DELTA_ONLY, ReviewScope
+
+    # 0. FETCH the live head into the workspace FIRST (3b-consumer CR round 5 #2).
+    # `live_head_sha` comes from GitHub's API (`headRefOid`) — for the ACTUAL use
+    # case, an ordinary push to the PR from ANOTHER host, that commit object is NOT
+    # in the reviewed workspace's object store. Every LOCAL git op below (the
+    # single-commit rev-list, `enumerate_changed_paths`, `committed_range_diff`, the
+    # delta-author attribution) would then error on the unknown SHA and the shortcut
+    # would NEVER ENGAGE for a real remote advance (it'd fall through to the guard).
+    # Fetch the exact SHA from the FAB fetch remote before any local read; the
+    # admitted head is already local (the reviewed candidate). The fetch is
+    # BEST-EFFORT ("ensure the object is present"): a local-host advance is already
+    # in the store (and a fetch-by-SHA may legitimately fail), while a remote-host
+    # advance needs the fetch — so the load-bearing gate is the PRESENCE check
+    # below, not the fetch's exit code. Absent after the fetch → not handled (guard
+    # fires), never a weakening.
+    #
+    # OID VALIDATION (round-5 CR, grok — parity with `committed_range_diff`'s
+    # `_require_resolved_sha`): validate `live_head_sha` as a RESOLVED hex OID
+    # (7-64 hex) BEFORE shelling out to `git fetch`, so a flag-leading (`--…`) or
+    # ref/branch value can never be smuggled to git as an argument (argv-injection
+    # surface). Fail-CLOSED → fall through to the guard (never raise; this is not a
+    # transient error, but it is a caller-supplied value, not a hard bug here).
+    import re as _re
+
+    if not _re.fullmatch(r"[0-9a-fA-F]{7,64}", live_head_sha or ""):
+        return None
+    subprocess.run(
+        ["git", "-C", str(workspace), "fetch", "--no-tags", fab_fetch_origin, live_head_sha],
+        capture_output=True, text=True,
+    )
+    _present = subprocess.run(
+        ["git", "-C", str(workspace), "cat-file", "-e", f"{live_head_sha}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    if _present.returncode != 0:
+        return None
+
+    # 1. SINGLE-commit advance only (multi-commit is out of scope → fall through).
+    _rl = subprocess.run(
+        ["git", "-C", str(workspace), "rev-list", "--count", f"{admitted_head_sha}..{live_head_sha}"],
+        capture_output=True, text=True,
+    )
+    if _rl.returncode != 0 or _rl.stdout.strip() != "1":
+        return None
+
+    # 1b. BROKER OWNED-SCOPE RE-CHECK (CR B4): re-diff the advance
+    # ``admitted..live`` and require every changed path to be a SUBSET of the node's
+    # owned scope (broker admission semantics, ah#202/#251). This is the fencing the
+    # original admission applied; a re-admission that skipped it would let an
+    # advanced delta touching paths OUTSIDE the node's owned scope be
+    # "broker-admitted" without fencing. Fail closed (→ guard) when the delta
+    # escapes scope OR when the owned scope is not provably known (`owned_paths`
+    # empty/None) — the re-admission never fences on an unprovable scope.
+    from .fab_canonical import enumerate_changed_paths
+
+    _changed = enumerate_changed_paths(workspace, admitted_head_sha, live_head_sha)
+    if not _paths_covered_by_owned(_changed, owned_paths):
+        return None
+
+    try:
+        artifact = fab_gate.read_provenance(workspace, run_id)
+    except Exception:  # noqa: BLE001 - unreadable provenance → not handled, guard fires
+        return None
+
+    prefix_chain, prefix_epochs = _admitted_prefix(artifact, admitted_head_sha)
+    if prefix_chain is None:
+        # The admitted head is not in the durable chain → inconsistent → guard.
+        return None
+    resolved_final = (
+        artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
+    )
+
+    def _gate_passes() -> bool:
+        try:
+            return fab_gate.compose_gate_status(
+                repo=workspace, run_id=run_id, live_base_ref_name=_DEFAULT_BASE,
+                live_head_sha=live_head_sha, origin=fab_fetch_origin,
+            ).status == fab_provenance.GATE_STATUS_PASS
+        except Exception:  # noqa: BLE001 - fail-closed on a broken gate compose
+            return False
+
+    # OPTIMIZATION (idempotent success-resume): a prior attempt already extended the
+    # chain to the live head AND it passes the gate — only the ledger append was
+    # pending (crash between the gate-pass and the append). Re-admit without
+    # rebuilding. Any OTHER extended state (gate now fails, wrong head) is NOT
+    # salvaged — it scopes back below (CR B2: never a half-recovered state).
+    if resolved_final == live_head_sha and _gate_passes():
+        append_record(
+            ledger_path,
+            LedgerRecord(
+                node_id=node_id, status="pr_open", branch=branch, pr_url=pr_url,
+                head_sha=live_head_sha, merge_order=merge_order, fab_run_id=run_id,
+            ),
+            durable=True,  # re-admission COMMIT POINT (B6): fsync this append
+        )
+        return live_head_sha
+
+    # UNCONDITIONAL RECOVERY (CR B2): scope the durable run store back to the
+    # admitted-chain prefix BEFORE building, so every attempt starts from a
+    # known-good, gate-passing state — a torn extended state from a failed/crashed
+    # prior attempt can never brick the node.
+    artifact = _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+
+    base_sha = artifact.base.base_sha
+    repo_slug = artifact.base.ref_identity.split("#", 1)[0]
+    if artifact.delta_chain:
+        parent_patch_digest = artifact.delta_chain[-1].resulting_head_digest
+        parent_chain_digest = artifact.delta_chain[-1].chain_digest
+        next_epoch = max([fab_gate.FAB_CANDIDATE_EPOCH, *(d.epoch for d in artifact.delta_chain)]) + 1
+    else:
+        parent_patch_digest = artifact.candidate.patch_digest
+        parent_chain_digest = artifact.compute_c0()
+        next_epoch = fab_gate.FAB_CANDIDATE_EPOCH + 1
+
+    # Committed-range delta review (real panel, injected seam). The diff is the
+    # reviewed bytes the panel saw AND the delta round's bound material (CR B3).
+    from .governed_bundle import committed_range_diff
+
+    reviewed_diff = committed_range_diff(workspace, admitted_head_sha, live_head_sha)
+    # REVIEWER≠AUTHOR for the DELTA (CR B5): the vendors that AUTHORED the delta
+    # commit range (bound to the actual ``admitted..live`` commits) UNION the
+    # historical dispatch authors — so a vendor that advanced the head out-of-band,
+    # with no local dispatch event, can never sit on its own delta's review board.
+    from .events import read_events
+    from .governed_review import author_vendor_for_executor
+
+    # REVIEWER≠AUTHOR is established AT THIS BOUNDARY, not delegated to the review
+    # fn (CR round 2 B5): the delta author is identified SOLELY from the actual
+    # delta commit range. If it cannot be positively attributed to a vendor, fail
+    # CLOSED here — the historical dispatch set must NEVER mask an unidentified
+    # delta author (a nonempty dispatch union would otherwise suppress the
+    # unknown_author fail-closed and let the real, unidentified delta vendor onto
+    # its own review board).
+    _delta_authors = _delta_commit_author_vendors(workspace, admitted_head_sha, live_head_sha)
+    if not _delta_authors:
+        return None
+    _dispatch_authors = frozenset(
+        author_vendor_for_executor(str(e.get("selected_executor")))
+        for e in read_events(workspace)
+        if isinstance(e, dict) and e.get("selected_executor")
+    )
+    # Union only WIDENS the exclusion (the delta author is already established);
+    # dispatch authors can only add MORE excluded vendors, never rescue an empty set.
+    author_vendors = _delta_authors | _dispatch_authors
+    review = delta_review_fn(workspace, reviewed_diff, author_vendors)
+    if not getattr(review, "mergeable", False) or getattr(review, "panel", None) is None:
+        return None
+
+    # Capture (anti-tautology) + build the delta round off live git, binding the
+    # reviewed diff bytes as the round's material (CR B3).
+    try:
+        fab_producer.capture_delta_review_at_invocation(
+            workspace, run_id, review.panel, epoch=next_epoch, reviewed_diff_text=reviewed_diff
+        )
+        delta_record = fab_producer.build_and_finalize_delta_round(
+            workspace, run_id,
+            epoch=next_epoch, base_sha=base_sha, repo_slug=repo_slug,
+            parent_head_sha=admitted_head_sha, parent_patch_digest=parent_patch_digest,
+            parent_chain_digest=parent_chain_digest, delta_head_sha=live_head_sha,
+            findings=(), review_scope=ReviewScope(mode=REVIEW_SCOPE_DELTA_ONLY),
+            reviewed_diff_text=reviewed_diff,
+        )
+    except Exception:  # noqa: BLE001 - a delta that can't be honestly built (incl. incomplete review representation) → recover + fall through
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    # Recapture-truncation: scope the run to THIS attempt's chain so the durable
+    # finalized epoch set equals the client chain (the gate's epoch-set EQUALITY).
+    fab_producer.scope_run_to_epochs(
+        workspace, run_id, [*prefix_epochs, next_epoch]
+    )
+
+    # Overwrite provenance in place with the EXTENDED chain, then fsync — BEFORE the
+    # ledger commit (durability ordering).
+    extended = fab_provenance.ReviewProvenanceArtifact.build(
+        repo=artifact.repo,
+        base=artifact.base,
+        boundary_manifest=artifact.boundary_manifest,
+        candidate=artifact.candidate,
+        seats=artifact.seats,
+        findings=artifact.findings,
+        material_digests=artifact.material_digests,
+        delta_chain=(*artifact.delta_chain, delta_record),
+    )
+    fab_provenance.write_provenance(workspace, run_id, extended)
+    fab_provenance.fsync_run_store_durable(workspace, run_id)
+
+    # Verify the extended artifact PASSES the merged gate BEFORE committing the
+    # re-admission — never advance the admitted head to a non-gate-passing chain. On
+    # a FAIL, recover to the admitted prefix so no torn state is left behind (CR B2).
+    if not _gate_passes():
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    # 7. COMMIT POINT: append the new LedgerRecord (new admitted_head + same
+    #    fab_run_id). A crash before this leaves the ledger at the OLD admitted head
+    #    → guard fires at merge; resume re-runs this branch and converges.
+    #
+    # KNOWN LIMITATION (operator-ratified deferral — Consiliency/agent-harness#288):
+    # this re-admission does an owned-scope re-check (step 1b, the broker's OWN
+    # `_covered_by_owned`) + a DIRECT durable ledger append — it does NOT go through
+    # a full broker admission, so it takes NO fresh broker lease/epoch and broker
+    # revocation / linearizability does NOT gate it (a narrow multi-coordinator
+    # concurrency edge in a governed-pipeline deployment; not reachable in the
+    # manual-admin-merge / FAB-off-by-default dev flow). CONTENT is still fully
+    # protected: the merge-time re-gate (`_live_merge_pr` → `compose_gate_status`)
+    # re-authenticates the whole chain (provenance + per-round seats + equivalence)
+    # on this new head and HARD-BLOCKS on non-PASS, and a NEW provenance record was
+    # written for the new head. Full broker re-admission (decoupled admit +
+    # lease-epoch bump + revocation) is deferred to #288.
+    append_record(
+        ledger_path,
+        LedgerRecord(
+            node_id=node_id, status="pr_open", branch=branch, pr_url=pr_url,
+            head_sha=live_head_sha, merge_order=merge_order, fab_run_id=run_id,
+        ),
+        durable=True,  # re-admission COMMIT POINT (B6): fsync this append
+    )
+    return live_head_sha
 
 
 def _live_merge_pr(
@@ -1479,6 +1942,13 @@ def run_train(
     # a real local bare repo while `origin` stays github-shaped for identity
     # resolution (the same two-remote pattern `_live_merge_pr` already exposes).
     fab_fetch_origin: str = "origin",
+    # FAB piece 3b consumer — the TRUSTED delta-review-shortcut opt-in (operator/
+    # coordinator-set at train launch, NEVER PR-derived). Default OFF = byte-neutral
+    # (an advanced FAB head hits the unchanged pr-head-advanced guard). On (with
+    # PHASE_LOOP_FAB) → a single-commit advance of an admitted FAB node is handled:
+    # review the delta, atomically re-admit, then merge the new head.
+    fab_delta_shortcut: bool = False,
+    _delta_review_fn: Optional[Callable] = None,  # committed-range review seam; default = real panel
 ) -> Dict:
     """Coordinate a cross-repo release train: preflight, topo-sort, draft-PR open [+ merge].
 
@@ -1838,6 +2308,14 @@ def run_train(
                 # snapshot guard.  owned_paths come from the committed diff vs
                 # base (or an explicit resolver); publish pushes the existing
                 # branch WITHOUT a new commit (prebuilt=True).
+                #
+                # FAB (agent-harness#191 piece 3a): a prebuilt node does NOT plumb a
+                # fab_run_id (`_node_fab_run_id` stays None — there is no run_loop
+                # closeout summary to read it from). So the merge-time re-gate is
+                # inert for prebuilt nodes today; FAB provenance is produced only on
+                # the EXECUTE path (run_loop closeout). A prebuilt node whose work
+                # was FAB-reviewed elsewhere would need its run_id surfaced through
+                # the prebuilt admission — a documented follow-up, not wired here.
                 if _explicit_owned_paths:
                     owned_paths = list(resolve_owned_paths(node))  # type: ignore[arg-type]
                 else:
@@ -2331,6 +2809,74 @@ def run_train(
         # return merge_halted so no uncaught exception escapes run_train and
         # already-merged upstream nodes remain recorded (forward-only).
         _pr_branch_m = completed_nodes[_nid_m]["branch"]
+
+        # FAB piece 3b consumer — DELTA-REVIEW SHORTCUT (handled branch). On a
+        # SINGLE-commit advance of an admitted FAB node WITH the trusted opt-in,
+        # review the committed delta and ATOMICALLY re-admit the new head BEFORE the
+        # merge — then the merge proceeds with the (updated) admitted head and the
+        # re-gate reads the extended chain. Everything else (opt-in off, multi-commit
+        # advance, non-PASS review, non-equivalent) falls through to the UNCHANGED
+        # fail-closed pr-head-advanced guard in `_live_merge_pr` — this is a pure
+        # ADDITION gated entirely by the trusted opt-in, never a weakening. Byte-
+        # neutral when off (no live-head read, no re-admission).
+        from .governed_premerge import fab_delta_shortcut_enabled
+
+        _fab_run_id_shortcut = completed_nodes[_nid_m].get("fab_run_id")
+        # A raise anywhere in the FAB recovery/re-admission MUST NOT escape run_train
+        # (round 4 1a): both sites live OUTSIDE the merge-call try/except below, so an
+        # uncaught traceback here would abort run_train and violate its
+        # no-uncaught-escape contract (already-merged upstream nodes must stay
+        # recorded, forward-only). Catch → blocked + merge_halted, same as a merge
+        # failure. Gated on `fab_run_id is not None`, so byte-neutral when the FAB
+        # master flag is off (no provenance ⇒ no run_id ⇒ block skipped entirely).
+        if _fab_run_id_shortcut is not None:
+            try:
+                _admitted_now = completed_nodes[_nid_m].get("admitted_head_sha")
+                # UNCONDITIONAL torn-state recovery before the merge re-gate (round 4
+                # 1b): a crashed prior shortcut attempt can leave a torn seat-ledger
+                # tail / torn extended provenance that the STRICT merge-time re-gate
+                # strict-reads and refuses FOREVER — EVEN with the shortcut now
+                # DISABLED (the re-gate runs for every FAB node regardless of opt-in).
+                # So recovery must run on the path the re-gate takes, not only inside
+                # the opt-in-gated shortcut. Recover to the admitted head first.
+                if _admitted_now:
+                    _fab_recover_torn_to_admitted(_ws_m, _fab_run_id_shortcut, admitted_head_sha=_admitted_now)
+                # Then — ONLY with the trusted opt-in — the delta-review shortcut
+                # re-admits a single-commit advance BEFORE the merge.
+                if fab_delta_shortcut_enabled(fab_delta_shortcut):
+                    _live_now = live_pr_head_sha_fn(_ws_m, _pr_branch_m)
+                    if _live_now and _admitted_now and _live_now != _admitted_now:
+                        _delta_review = _delta_review_fn if _delta_review_fn is not None else _default_delta_review
+                        # The node's OWNED SCOPE for the broker re-check (CR B4):
+                        # re-resolve it via the same seam the admission used. When the
+                        # train carries no explicit owned-paths resolver, pass None so
+                        # the re-admission fails closed rather than fencing on an
+                        # unprovable scope.
+                        _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else None
+                        _new_admitted = _fab_delta_readmit(
+                            _ws_m, ledger_path, node_id=_nid_m, run_id=_fab_run_id_shortcut,
+                            branch=_pr_branch_m, pr_url=completed_nodes[_nid_m].get("pr_url"),
+                            merge_order=completed_nodes[_nid_m].get("merge_order"),
+                            admitted_head_sha=_admitted_now, live_head_sha=_live_now,
+                            delta_review_fn=_delta_review, owned_paths=_owned_now,
+                            fab_fetch_origin=fab_fetch_origin,
+                        )
+                        if _new_admitted is not None:
+                            # Re-admission committed (new LedgerRecord appended) —
+                            # advance the in-memory admitted head so the merge pins to it.
+                            completed_nodes[_nid_m]["admitted_head_sha"] = _new_admitted
+                            completed_nodes[_nid_m]["head_sha"] = _new_admitted
+            except Exception as _fab_exc_m:  # noqa: BLE001 - never let FAB recovery/readmit abort run_train (round 4 1a)
+                append_record(
+                    ledger_path,
+                    LedgerRecord(node_id=_nid_m, status="blocked", branch=_pr_branch_m),
+                )
+                return {
+                    "status": "merge_halted",
+                    "node_id": _nid_m,
+                    "reason": "fab_readmit_failed",
+                    "detail": str(_fab_exc_m),
+                }
         # agent-harness#250 (N7 CR follow-up, finding 4; hardened per the defect-1
         # CR corroboration by codex+grok): thread the broker-ADMITTED head_sha the
         # same way `base` is already threaded — completed_nodes[...]["admitted_head_sha"]

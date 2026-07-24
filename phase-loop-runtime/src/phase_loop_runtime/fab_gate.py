@@ -319,10 +319,44 @@ def append_seat_outcome(repo: Path, run_id: str, record: SeatOutcomeRecord) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(fd, raw)
+        # Fully-drained write (3b-consumer CR round 2 B2): a bare `os.write` may
+        # write fewer bytes than requested; a partial trailing seat record would
+        # make the STRICT `read_seat_outcomes` fail the whole read closed. The torn
+        # NEWLINE-LESS tail a failed/short append leaves is exactly the shape the
+        # recovery-side `repair_torn_seat_ledger_tail` truncates before the strict
+        # re-gate reads it (3b-consumer CR round 4: an explicit ftruncate-back here
+        # was WITHDRAWN by the panel as subsumed by that recovery repair). Loop until
+        # every byte lands, then fsync.
+        view = memoryview(raw)
+        written = 0
+        while written < len(view):
+            n = os.write(fd, view[written:])
+            if n <= 0:  # pragma: no cover - defensive; os.write raises rather than returns 0
+                raise ProvenanceInvalid("short write to seat-outcome ledger (0 bytes); refusing a partial trust record")
+            written += n
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def rewrite_seat_ledger(repo: Path, run_id: str, records: Sequence[SeatOutcomeRecord]) -> None:
+    """ATOMICALLY replace the durable seat ledger with `records` (3b-consumer CR
+    B1): serialize the kept records, then write them via the durable atomic-write
+    primitive (temp file → fsync → `os.replace` → fsync parent). NEVER
+    unlink-then-append a durable TRUST record — a crash after the unlink (or
+    mid-replay) would permanently lose the candidate seats (the only proof the gate
+    can authenticate them by) and BRICK the node. Reuses `serialize_seat_outcome`
+    (the same encoder as `append_seat_outcome`) and `atomic_write_text_durable`."""
+    lines: list[str] = []
+    for record in records:
+        line = serialize_seat_outcome(record)
+        if len((line + "\n").encode("utf-8")) > _MAX_SEAT_OUTCOME_LINE_BYTES:
+            raise ProvenanceInvalid(
+                f"seat-outcome record for {record.seat_key!r} exceeds max line size "
+                f"{_MAX_SEAT_OUTCOME_LINE_BYTES} bytes (fail-closed, not written)"
+            )
+        lines.append(line)
+    atomic_write_text_durable(seat_outcomes_path_for_run(repo, run_id), "".join(l + "\n" for l in lines))
 
 
 def _seat_outcome_from_dict(d: Mapping[str, Any]) -> SeatOutcomeRecord:
@@ -357,6 +391,55 @@ def _seat_outcome_from_dict(d: Mapping[str, Any]) -> SeatOutcomeRecord:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ProvenanceInvalid(f"malformed seat-outcome record (fail-closed): {exc}") from exc
+
+
+def repair_torn_seat_ledger_tail(repo: Path, run_id: str) -> bool:
+    """RECOVERY-ONLY crash-torn-tail repair (3b-consumer CR round 3 B1). A SIGKILL
+    mid seat-append can leave a PARTIAL last line (no trailing newline) — un-
+    committed state that the STRICT `read_seat_outcomes` (correctly) rejects for the
+    WHOLE ledger, which would otherwise make every scope-back recovery path fail and
+    BRICK the node. The GATE reader stays strict (a tolerant gate reader could drop
+    a blocking seat); instead RECOVERY explicitly truncates the un-terminated
+    trailing bytes back to the last complete record before it reads+rewrites. Only
+    ever removes an append that never finished (no newline); a committed record is
+    fsync-terminated with ``\\n`` and is never touched. Returns True if it repaired.
+
+    Append-only ⇒ a torn record is always the LAST line, so truncate-to-last-newline
+    preserves every complete record."""
+    path = seat_outcomes_path_for_run(repo, run_id)
+    return _truncate_torn_trailing_line(path)
+
+
+def _truncate_torn_trailing_line(path: Path) -> bool:
+    """Truncate a file's un-terminated (no trailing ``\\n``) partial last line back
+    to the last complete record. No-op when the file is absent, empty, or already
+    ends in a newline. Durable (fsync). Shared by the seat-ledger recovery repair.
+
+    A DELIBERATE parallel minimal copy of `train_ledger._repair_torn_trailing_line`
+    — NOT shared, because `train_ledger` is documented stdlib-only, coordinator-owned
+    infra that must not depend on `fab_gate` (importing this would be a wrong
+    architectural inversion). The two are independent (no agree-requirement between
+    them); if this trust-root logic ever needs to change, change both."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            if size == 0:
+                return False
+            fh.seek(size - 1)
+            if fh.read(1) == b"\n":
+                return False  # clean tail — nothing to repair
+            fh.seek(0)
+            data = fh.read()
+    except FileNotFoundError:
+        return False
+    idx = data.rfind(b"\n")
+    keep = idx + 1 if idx >= 0 else 0
+    with open(path, "r+b") as fh:
+        fh.truncate(keep)
+        fh.flush()
+        os.fsync(fh.fileno())
+    return True
 
 
 def read_seat_outcomes(repo: Path, run_id: str) -> tuple[SeatOutcomeRecord, ...]:
@@ -1309,9 +1392,35 @@ def _require_delta_round_seat_binding(
 
 
 def _reverify_round_material(
-    repo: Path, run_id: str, review_scope: ReviewScope, material_digests: Sequence[MaterialDigest]
+    repo: Path,
+    run_id: str,
+    review_scope: ReviewScope,
+    material_digests: Sequence[MaterialDigest],
+    *,
+    require_material: bool = False,
 ) -> None:
+    if require_material and not material_digests:
+        # A DELTA round with ZERO material files is never "nothing to verify"
+        # (3b-consumer CR round 3 B4): an EMPTY `material_digests` makes
+        # `reverify_material` loop over nothing and `aggregate_material_digest(())`
+        # (the empty aggregate) trivially match — so a `None`-only check let an
+        # empty-material delta round pass with NO reviewed-byte binding. Require
+        # NON-EMPTY material for a delta advance. Candidate rounds pass
+        # `require_material=False` (a whole-patch candidate need not record snapshot
+        # material).
+        raise ProvenanceInvalid(
+            "delta round records no reviewed material (fail-closed, 3b-consumer CR round 3 B4): "
+            "a delta round must bind the reviewed bytes over a NON-EMPTY material set; a zero-file / "
+            "empty-aggregate material set is never 'nothing to verify' for a delta advance"
+        )
     if review_scope.reviewed_material_digest is None:
+        if require_material:
+            # A delta round that records material but no aggregate digest is
+            # ambiguous — fail closed (B4).
+            raise ProvenanceInvalid(
+                "delta round has material but no reviewed_material_digest (fail-closed, 3b-consumer CR B4): "
+                "a delta round must bind the reviewed bytes"
+            )
         if material_digests:
             raise ProvenanceInvalid(
                 "round records material_digests but no reviewed_material_digest claim (fail-closed, "
@@ -1332,7 +1441,10 @@ def reverify_all_material(repo: Path, run_id: str, artifact: ReviewProvenanceArt
     mismatch across the whole artifact."""
     _reverify_round_material(repo, run_id, artifact.candidate.review_scope, artifact.material_digests)
     for record in artifact.delta_chain:
-        _reverify_round_material(repo, run_id, record.review_scope, record.material_digests)
+        # require_material=True: every DELTA round must bind reviewed bytes (B4).
+        _reverify_round_material(
+            repo, run_id, record.review_scope, record.material_digests, require_material=True
+        )
 
 
 # --------------------------------------------------------------------------- #
