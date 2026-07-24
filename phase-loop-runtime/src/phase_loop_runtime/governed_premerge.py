@@ -60,6 +60,22 @@ def fab_promotion_enabled(env: Mapping[str, str] | None = None) -> bool:
     value = str(env.get(FAB_PROMOTION_ENV) or "").strip().lower()
     return value in {"1", "true", "yes", "on"}
 
+
+def fab_delta_shortcut_enabled(coordinator_opt_in: bool, env: Mapping[str, str] | None = None) -> bool:
+    """FAB piece 3b consumer — the TRUSTED opt-in gate for the delta-review
+    shortcut (the train-merge-loop handled branch). True iff BOTH:
+      * the master ``PHASE_LOOP_FAB`` control is on (``fab_promotion_enabled``), AND
+      * ``coordinator_opt_in`` is set — an OPERATOR/COORDINATOR-controlled signal
+        (a ``run_train`` launch parameter / trusted train-config field), NEVER
+        derived from PR metadata, branch name, or commit content.
+
+    Both inputs are coordinator-trusted, so a PR branch can never engage the delta
+    shortcut for itself. OFF (default) ⇒ an advanced head hits the UNCHANGED
+    ``pr-head-advanced`` guard — byte-neutral vs. today, and the handled branch is
+    a pure ADDITION gated entirely by this predicate, never a weakening of the
+    fail-closed guard."""
+    return fab_promotion_enabled(env) and bool(coordinator_opt_in)
+
 # implementer → planner is the only model_class escalation; planner is terminal.
 _NEXT_CLASS = {"implementer": "planner", "worker": "implementer"}
 

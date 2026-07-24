@@ -13,13 +13,32 @@ is the harness's own computation, and the gate re-derives everything.
 """
 from __future__ import annotations
 
+import unittest
+
 from phase_loop_runtime import fab_delta as fd
 from phase_loop_runtime import fab_gate as fg
 from phase_loop_runtime import fab_producer as prod
 from phase_loop_runtime import fab_provenance as fp
+from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 
 from test_fab_gate_d import GitRepoTestCase, _STRONG_MANIFEST, _durable_from_seat, _seat
+
+
+class DeltaShortcutOptInTest(unittest.TestCase):
+    """The delta-review shortcut is gated by a TRUSTED coordinator opt-in AND the
+    master PHASE_LOOP_FAB flag — never engaged by PR-controlled input."""
+
+    def test_requires_both_master_flag_and_coordinator_opt_in(self):
+        on = {FAB_PROMOTION_ENV: "1"}
+        off: dict = {}
+        # Both on → engaged.
+        self.assertTrue(fab_delta_shortcut_enabled(True, env=on))
+        # Master flag off → never engaged, even with opt-in.
+        self.assertFalse(fab_delta_shortcut_enabled(True, env=off))
+        # Coordinator opt-in off → never engaged, even with the master flag.
+        self.assertFalse(fab_delta_shortcut_enabled(False, env=on))
+        self.assertFalse(fab_delta_shortcut_enabled(False, env=off))
 
 
 def _delta_panel() -> PanelResult:
