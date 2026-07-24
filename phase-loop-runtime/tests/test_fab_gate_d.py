@@ -757,6 +757,37 @@ class DeltaChainForgeTest(GitRepoTestCase):
         finalized (round identity unbound) — a crash mid-produce must not pass."""
         self._assert_blocks(self._fixture(finalize_round=False))
 
+    def test_wrong_candidate_epoch_blocks(self):
+        """The candidate epoch is FIXED = 1 and NEVER derived from the
+        client-supplied `artifact.seats[*].epoch`: an artifact whose candidate
+        seats claim a non-1 epoch cannot shift which durable record the gate
+        reads. The gate reads the candidate round record at epoch 1; the epoch-2
+        artifact seats then have no matching durable record → BLOCK."""
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        # The client artifact CLAIMS candidate seats at epoch 2 (the forge).
+        forged_seat = _seat("codex:x:high", epoch=2, finding_ids=())
+        candidate = self.candidate(base, base)
+        artifact = self.build_artifact(base_sha=base, candidate=candidate, seats=(forged_seat,))
+        fp.write_provenance(self.repo, self.RUN, artifact)
+        # But the HARNESS durably recorded the candidate at the FIXED epoch 1
+        # (what the real producer always writes) — a different instance id.
+        honest_seat = _seat("codex:x:high", epoch=1, finding_ids=())
+        fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(honest_seat))
+        fg.write_expected_seats(
+            self.repo, self.RUN, epoch=1,
+            expected_seats=(fg.ExpectedSeat(
+                seat_instance_id=honest_seat.seat_instance_id, seat_key=honest_seat.seat_key,
+                vendor_leg=honest_seat.vendor_leg, required=True),),
+        )
+        fg.finalize_review_round(
+            self.repo, self.RUN, epoch=1, reviewed_head_sha=base,
+            reviewed_material_digest=candidate.review_scope.reviewed_material_digest, canonical_findings=(),
+        )
+        self._assert_blocks(base)
+
 
 # --------------------------------------------------------------------------- #
 # Finding 1 (agent-harness#191 CR, Lane D) — a `reviewed-clean` delta round
