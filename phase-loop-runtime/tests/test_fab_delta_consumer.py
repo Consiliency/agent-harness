@@ -459,6 +459,27 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
 
+    def test_non_oid_live_head_is_rejected_before_fetch(self):
+        """CR round 5 (grok) — `live_head_sha` is validated as a resolved hex OID
+        BEFORE `git fetch` shells out, so a flag-leading / ref value can never be
+        smuggled to git as an argument (parity with `committed_range_diff`). A
+        non-OID value fails closed (→ guard, returns None), never reaching git; the
+        admitted head is unchanged."""
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        ledger_path, base, candidate_head, _advance = self._setup_candidate_and_advance()
+        for bad in ("--upload-pack=evil", "refs/heads/main", "HEAD", "", "zzzz"):
+            self.assertIsNone(
+                tr._fab_delta_readmit(
+                    self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+                    merge_order=0, admitted_head_sha=candidate_head, live_head_sha=bad,
+                    delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+                ),
+                f"non-OID live_head_sha {bad!r} must fail closed before any git op",
+            )
+        self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
+
     def test_multi_commit_advance_is_not_handled(self):
         """A MULTI-commit advance is out of scope → _fab_delta_readmit returns None
         (the caller falls through to the unchanged pr-head-advanced guard)."""

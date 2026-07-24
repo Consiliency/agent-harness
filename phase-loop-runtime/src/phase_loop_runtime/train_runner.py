@@ -1010,6 +1010,17 @@ def _fab_delta_readmit(
     # advance needs the fetch — so the load-bearing gate is the PRESENCE check
     # below, not the fetch's exit code. Absent after the fetch → not handled (guard
     # fires), never a weakening.
+    #
+    # OID VALIDATION (round-5 CR, grok — parity with `committed_range_diff`'s
+    # `_require_resolved_sha`): validate `live_head_sha` as a RESOLVED hex OID
+    # (7-64 hex) BEFORE shelling out to `git fetch`, so a flag-leading (`--…`) or
+    # ref/branch value can never be smuggled to git as an argument (argv-injection
+    # surface). Fail-CLOSED → fall through to the guard (never raise; this is not a
+    # transient error, but it is a caller-supplied value, not a hard bug here).
+    import re as _re
+
+    if not _re.fullmatch(r"[0-9a-fA-F]{7,64}", live_head_sha or ""):
+        return None
     subprocess.run(
         ["git", "-C", str(workspace), "fetch", "--no-tags", fab_fetch_origin, live_head_sha],
         capture_output=True, text=True,
