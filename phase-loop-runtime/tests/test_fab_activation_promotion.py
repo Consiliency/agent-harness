@@ -877,6 +877,35 @@ class TestLiveMergePrFabPromotion:
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
                 )
 
+    def test_flag_off_resume_with_stale_run_id_is_byte_neutral(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 3: a flag-OFF RESUME of a node whose ledger persisted a
+        `fab_run_id` (from a prior flag-ON admission) must behave EXACTLY like a
+        non-FAB node — `--delete-branch` KEPT, and the enqueue raises the byte-neutral
+        'could not determine merge commit SHA' fail-closed. FAB stays DORMANT: no queue
+        wait, no recorded queue SHA. Gating the FAB path on `run_id is None` (not the
+        CURRENT flag) would half-activate FAB here (drop --delete-branch + track the
+        queue while the re-gate is inert) — the byte-neutrality regression this closes."""
+        _git_available()
+        monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)  # flag OFF now
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-stale")  # provenance persisted, but flag is OFF
+        calls: list = []
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, calls=calls)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="could not determine merge commit SHA"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head,
+                    run_id="run-stale",  # STALE persisted run_id restored on a flag-off resume
+                    fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                )
+        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
+        assert merge_calls and "--delete-branch" in merge_calls[0], (
+            "a flag-off resume with a stale run_id must KEEP --delete-branch (byte-neutral vs non-FAB main)"
+        )
+        assert not any("isInMergeQueue" in " ".join(c) for c in calls), (
+            "the FAB queue wait must NOT run when the flag is off — FAB stays dormant"
+        )
+
     def test_non_fab_queue_node_is_byte_neutral_fail_closed(self, tmp_path: Path, monkeypatch):
         """Byte-neutral: a NON-FAB node (`run_id=None`) whose merge ENQUEUES (never
         synchronously MERGED) hits main's UNCHANGED fail-closed raise — the queue-bound

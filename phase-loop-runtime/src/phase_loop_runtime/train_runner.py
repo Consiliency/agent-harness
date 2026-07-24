@@ -486,11 +486,16 @@ def _fab_promotion_gate_before_merge(
     ``None`` — ``run_id`` MUST be sourced by the caller from its own trusted
     runner/train-context bookkeeping (e.g. a future producer's
     ``completed_nodes[node_id]["fab_run_id"]``), never from PR/branch
-    content. ``run_id is None`` is the ONLY inert branch — it means this
-    node was never scoped to FAB, mirroring ``fab_gate_validator``'s branch
-    (i) (agent-harness#191 CR, F3's "run_id trust" doctrine).
+    content. There are TWO inert branches — ``run_id is None`` (this node was
+    never scoped to FAB) AND ``not fab_promotion_enabled()`` (the flag is OFF
+    NOW, e.g. a flag-off RESUME of a run whose ledger persisted a `fab_run_id`
+    from a prior flag-on admission — FAB stays DORMANT/byte-neutral). Callers
+    on the FAB path therefore key on ``fab_active = run_id is not None and
+    fab_promotion_enabled()``, never on ``run_id`` alone (#265 CR round 3).
+    Mirrors ``fab_gate_validator``'s branch (i) (agent-harness#191 CR, F3's
+    "run_id trust" doctrine).
 
-    Once a ``run_id`` IS present, this fails CLOSED, never inert:
+    Once ``run_id`` IS present AND the flag is on, this fails CLOSED, never inert:
 
     * A present ``run_id`` is itself the FAB-scope marker (F3). If provenance
       cannot be read for it — ``fab_provenance.ProvenanceNotFound`` (missing,
@@ -1612,13 +1617,25 @@ def _live_merge_pr(
     # check=True) if the head has advanced past `head_sha`. Under a queue it
     # pins the exact head the queue will merge.
     #
-    # `--delete-branch`: kept for a NON-FAB node (`run_id is None`) — byte-neutral
-    # vs. main. DROPPED for a FAB node (#265): `gh` REJECTS `--delete-branch` when
-    # the PR is enqueued rather than merged directly, which would abort the enqueue;
-    # the post-merge prune hook / the repo's auto-delete-head-branches handles
-    # cleanup on the FAB path instead.
+    # FAB-ACTIVE gate (#265 CR round 3): FAB behaviour keys on run_id AND the CURRENT
+    # flag, never run_id alone. A flag-ON run persists `fab_run_id` in the ledger; a
+    # RESUME with the flag OFF restores that run_id but the FAB machinery must stay
+    # DORMANT (byte-neutral). Gating the two FAB-path decisions below on `run_id is
+    # None` (not the flag) would half-activate FAB on a flag-off resume — dropping
+    # `--delete-branch` + tracking the queue while the pre-enqueue re-gate is inert
+    # (`_fab_promotion_gate_before_merge` already short-circuits on `not
+    # fab_promotion_enabled()`). `fab_active` keeps all three consistent.
+    from .governed_premerge import fab_promotion_enabled
+
+    fab_active = run_id is not None and fab_promotion_enabled()
+
+    # `--delete-branch`: kept UNLESS the node is FAB-ACTIVE — byte-neutral vs. main
+    # (a non-FAB node, OR a flag-off resume with a stale persisted run_id, keeps it).
+    # DROPPED only when FAB-active (#265): `gh` REJECTS `--delete-branch` when the PR
+    # is enqueued rather than merged directly, which would abort the enqueue; the
+    # post-merge prune hook / repo auto-delete-head-branches handles cleanup then.
     merge_cmd = ["gh", "pr", "merge", branch, *repo_args, "--merge"]
-    if run_id is None:
+    if not fab_active:
         merge_cmd.append("--delete-branch")
     if head_sha:
         merge_cmd += ["--match-head-commit", head_sha]
@@ -1653,17 +1670,18 @@ def _live_merge_pr(
 
     # Not merged synchronously. SELF-DETECT (no pre-probe): the PR was ENQUEUED under
     # a merge queue (still OPEN, null mergeCommit.oid).
-    if run_id is None:
-        # NON-FAB node: unchanged, byte-neutral fail-closed. Queue tracking is a FAB
-        # capability (it needs the FAB re-gate); off the FAB path we do not follow a
-        # queue and keep main's behaviour exactly.
+    if not fab_active:
+        # NON-FAB node (or a flag-OFF resume with a stale persisted run_id): unchanged,
+        # byte-neutral fail-closed. Queue tracking is a FAB-ACTIVE capability (it needs
+        # the FAB re-gate, which is inert when the flag is off); off the active-FAB path
+        # we do not follow a queue and keep main's behaviour exactly.
         raise RuntimeError(
             f"could not determine merge commit SHA for branch '{branch}' in "
             f"'{workspace}' after gh pr merge reported success — the "
             f"post-merge state was not resolvable as a validated MERGED PR"
         )
 
-    # FAB node enqueued under a merge queue (#265): track it to the terminal merged
+    # FAB-active node enqueued under a merge queue (#265): track it to the terminal
     # SHA, re-gate against that commit, and return it (the caller records it in the
     # ledger) — never leaving a deferred merge outside the coordinator's observation.
     return _fab_queue_bound_merge_wait(
