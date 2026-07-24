@@ -1181,6 +1181,19 @@ def _fab_delta_readmit(
     # 7. COMMIT POINT: append the new LedgerRecord (new admitted_head + same
     #    fab_run_id). A crash before this leaves the ledger at the OLD admitted head
     #    → guard fires at merge; resume re-runs this branch and converges.
+    #
+    # KNOWN LIMITATION (operator-ratified deferral — Consiliency/agent-harness#288):
+    # this re-admission does an owned-scope re-check (step 1b, the broker's OWN
+    # `_covered_by_owned`) + a DIRECT durable ledger append — it does NOT go through
+    # a full broker admission, so it takes NO fresh broker lease/epoch and broker
+    # revocation / linearizability does NOT gate it (a narrow multi-coordinator
+    # concurrency edge in a governed-pipeline deployment; not reachable in the
+    # manual-admin-merge / FAB-off-by-default dev flow). CONTENT is still fully
+    # protected: the merge-time re-gate (`_live_merge_pr` → `compose_gate_status`)
+    # re-authenticates the whole chain (provenance + per-round seats + equivalence)
+    # on this new head and HARD-BLOCKS on non-PASS, and a NEW provenance record was
+    # written for the new head. Full broker re-admission (decoupled admit +
+    # lease-epoch bump + revocation) is deferred to #288.
     append_record(
         ledger_path,
         LedgerRecord(
