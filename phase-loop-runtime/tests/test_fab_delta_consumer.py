@@ -27,19 +27,38 @@ from test_fab_gate_d import GitRepoTestCase, _STRONG_MANIFEST, _durable_from_sea
 
 
 class DeltaShortcutOptInTest(unittest.TestCase):
-    """The delta-review shortcut is gated by a TRUSTED coordinator opt-in AND the
-    master PHASE_LOOP_FAB flag — never engaged by PR-controlled input."""
+    """The delta-review shortcut is gated by the #288 broker-readmit INTERLOCK AND a
+    TRUSTED coordinator opt-in AND the master PHASE_LOOP_FAB flag — never engaged by
+    PR-controlled input, and fenced OFF entirely until the deferred broker
+    re-admission (Consiliency/agent-harness#288) lands."""
 
-    def test_requires_both_master_flag_and_coordinator_opt_in(self):
+    def test_interlock_off_fences_engage_even_with_both_opt_ins(self):
+        """CR round 5 (operator interlock): with the #288 interlock constant False —
+        its shipped default — the shortcut NEVER engages, even with BOTH the master
+        flag and the coordinator opt-in on. The broker gap is unreachable by
+        construction, not by operator discipline."""
+        import phase_loop_runtime.governed_premerge as gpmod
+
+        self.assertFalse(gpmod._FAB_DELTA_BROKER_READMIT_READY, "shipped default must be fenced OFF")
+        on = {FAB_PROMOTION_ENV: "1"}
+        self.assertFalse(fab_delta_shortcut_enabled(True, env=on))
+
+    def test_requires_interlock_and_both_master_flag_and_coordinator_opt_in(self):
+        """With the interlock FLIPPED ON (as #288 will), the gate reduces to the
+        original master-flag AND coordinator-opt-in predicate — a clear switch + a
+        proof the two trusted inputs are still both required."""
+        import unittest.mock as _mock
+
         on = {FAB_PROMOTION_ENV: "1"}
         off: dict = {}
-        # Both on → engaged.
-        self.assertTrue(fab_delta_shortcut_enabled(True, env=on))
-        # Master flag off → never engaged, even with opt-in.
-        self.assertFalse(fab_delta_shortcut_enabled(True, env=off))
-        # Coordinator opt-in off → never engaged, even with the master flag.
-        self.assertFalse(fab_delta_shortcut_enabled(False, env=on))
-        self.assertFalse(fab_delta_shortcut_enabled(False, env=off))
+        with _mock.patch("phase_loop_runtime.governed_premerge._FAB_DELTA_BROKER_READMIT_READY", True):
+            # Both on → engaged.
+            self.assertTrue(fab_delta_shortcut_enabled(True, env=on))
+            # Master flag off → never engaged, even with opt-in.
+            self.assertFalse(fab_delta_shortcut_enabled(True, env=off))
+            # Coordinator opt-in off → never engaged, even with the master flag.
+            self.assertFalse(fab_delta_shortcut_enabled(False, env=on))
+            self.assertFalse(fab_delta_shortcut_enabled(False, env=off))
 
 
 def _delta_panel() -> PanelResult:
