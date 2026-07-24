@@ -1722,8 +1722,27 @@ def snapshot_material(repo: Path, run_id: str, context_refs: Sequence[str]) -> t
         except OSError as exc:
             raise ProvenanceInvalid(f"context_ref is not readable (fail-closed, not silent-empty): {ref} ({exc})") from exc
         dest = snapshot_dir / f"{digest}{source.suffix}"
-        if not dest.exists():
-            shutil.copyfile(source, dest)
+        # Atomic + REPAIRING snapshot copy (3b-consumer CR round 2 B2): copy via a
+        # temp file + fsync + `os.replace` so a crash never leaves a TORN
+        # digest-named snapshot; and when the destination already exists, re-verify
+        # its bytes and RE-COPY if it is torn (a partial copy from a prior crash) —
+        # a bare `if not dest.exists()` would trust a same-named file whose content
+        # was never validated, making every retry's §6.4 material re-verify fail
+        # permanently (the "torn snapshot bricks recovery" defect).
+        needs_copy = True
+        if dest.exists():
+            try:
+                needs_copy = _stream_sha256(dest) != digest
+            except OSError:
+                needs_copy = True
+        if needs_copy:
+            tmp = dest.with_name(dest.name + ".tmp")
+            with source.open("rb") as src_fh, tmp.open("wb") as dst_fh:
+                shutil.copyfileobj(src_fh, dst_fh)
+                dst_fh.flush()
+                os.fsync(dst_fh.fileno())
+            os.replace(tmp, dest)
+            _fsync_path(dest.parent, getattr(os, "O_DIRECTORY", 0))
         digests.append(MaterialDigest(ref=str(source.resolve()), sha256=digest))
     return tuple(digests)
 

@@ -398,7 +398,7 @@ def build_and_finalize_delta_round(
     findings: Sequence,
     resolved_finding_ids: Sequence[str] = (),
     review_scope,
-    reviewed_diff_text: str | None = None,
+    reviewed_diff_text: str,
     canonical_findings: Sequence = (),
     manual_escalation_trigger: str | None = None,
     status: str | None = None,
@@ -434,22 +434,29 @@ def build_and_finalize_delta_round(
         for d in read_seat_outcomes(repo, run_id)
         if d.epoch == epoch
     )
-    material_digests: Sequence = ()
-    if reviewed_diff_text is not None:
-        # Independent structural completeness probe over the committed range — a
-        # binary / attribute-suppressed changed path the seats couldn't have read
-        # → fail closed (CR B3), even though the rendered text passed.
-        numstat_reason = _numstat_binary_elision(repo, parent_head_sha, delta_head_sha, [])
-        if numstat_reason is not None:
-            raise ProvenanceInvalid(
-                f"incomplete delta review representation (fail-closed, 3b-consumer CR B3): {numstat_reason}"
-            )
-        material_digests = snapshot_material(
-            repo, run_id, [str(_delta_reviewed_bundle_path(repo, run_id, epoch))]
+    # A DELTA round MUST bind the reviewed bytes (3b-consumer CR round 2 B4):
+    # `reviewed_diff_text` is REQUIRED — a delta round with no material digest would
+    # authenticate with no reviewed-byte binding (the gate would treat it as
+    # "nothing to verify"). The producer never mints one.
+    if not reviewed_diff_text:
+        raise ProvenanceInvalid(
+            "delta round requires reviewed_diff_text (fail-closed, 3b-consumer CR round 2 B4): "
+            "a delta round must bind the reviewed bytes; an empty/absent reviewed diff is never a round"
         )
-        review_scope = _dc_replace(
-            review_scope, reviewed_material_digest=aggregate_material_digest(material_digests)
+    # Independent structural completeness probe over the committed range — a
+    # binary / attribute-suppressed changed path the seats couldn't have read
+    # → fail closed (CR B3), even though the rendered text passed.
+    numstat_reason = _numstat_binary_elision(repo, parent_head_sha, delta_head_sha, [])
+    if numstat_reason is not None:
+        raise ProvenanceInvalid(
+            f"incomplete delta review representation (fail-closed, 3b-consumer CR B3): {numstat_reason}"
         )
+    material_digests = snapshot_material(
+        repo, run_id, [str(_delta_reviewed_bundle_path(repo, run_id, epoch))]
+    )
+    review_scope = _dc_replace(
+        review_scope, reviewed_material_digest=aggregate_material_digest(material_digests)
+    )
     build_kwargs = dict(
         epoch=epoch,
         repo=repo,

@@ -319,7 +319,17 @@ def append_seat_outcome(repo: Path, run_id: str, record: SeatOutcomeRecord) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(fd, raw)
+        # Fully-drained write (3b-consumer CR round 2 B2): a bare `os.write` may
+        # write fewer bytes than requested; a partial trailing seat record would
+        # make the STRICT `read_seat_outcomes` fail the whole read closed and defeat
+        # scope-back recovery. Loop until every byte lands, then fsync.
+        view = memoryview(raw)
+        written = 0
+        while written < len(view):
+            n = os.write(fd, view[written:])
+            if n <= 0:  # pragma: no cover - defensive; os.write raises rather than returns 0
+                raise ProvenanceInvalid("short write to seat-outcome ledger (0 bytes); refusing a partial trust record")
+            written += n
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -1329,9 +1339,25 @@ def _require_delta_round_seat_binding(
 
 
 def _reverify_round_material(
-    repo: Path, run_id: str, review_scope: ReviewScope, material_digests: Sequence[MaterialDigest]
+    repo: Path,
+    run_id: str,
+    review_scope: ReviewScope,
+    material_digests: Sequence[MaterialDigest],
+    *,
+    require_material: bool = False,
 ) -> None:
     if review_scope.reviewed_material_digest is None:
+        if require_material:
+            # A DELTA round with NO reviewed-material digest is never "nothing to
+            # verify" (3b-consumer CR round 2 B4): a delta advance must bind the
+            # bytes its seats reviewed, or it authenticates with no reviewed-byte
+            # binding at all. Fail closed. Candidate rounds pass `require_material=
+            # False` (a whole-patch candidate need not record snapshot material).
+            raise ProvenanceInvalid(
+                "delta round has no reviewed_material_digest (fail-closed, 3b-consumer CR round 2 B4): "
+                "a delta round must bind the reviewed bytes; an absent material digest is never "
+                "'nothing to verify' for a delta advance"
+            )
         if material_digests:
             raise ProvenanceInvalid(
                 "round records material_digests but no reviewed_material_digest claim (fail-closed, "
@@ -1352,7 +1378,10 @@ def reverify_all_material(repo: Path, run_id: str, artifact: ReviewProvenanceArt
     mismatch across the whole artifact."""
     _reverify_round_material(repo, run_id, artifact.candidate.review_scope, artifact.material_digests)
     for record in artifact.delta_chain:
-        _reverify_round_material(repo, run_id, record.review_scope, record.material_digests)
+        # require_material=True: every DELTA round must bind reviewed bytes (B4).
+        _reverify_round_material(
+            repo, run_id, record.review_scope, record.material_digests, require_material=True
+        )
 
 
 # --------------------------------------------------------------------------- #

@@ -190,9 +190,10 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         for s in candidate_seats:
             fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
         self.write_review_round(self.RUN, candidate_artifact)
-        # The advance: a single commit past the admitted candidate head.
+        # The advance: a single vendor-authored commit past the admitted candidate
+        # head (attributable so the readmit boundary's reviewer≠author check passes).
         self.write("pkg/c.py", "disjoint delta advance\n")
-        delta_head = self.commit("c2 advance")
+        delta_head = self._vendor_commit("c2 advance", vendor="Codex")
         ledger_path = self.repo.parent / "train.ledger.jsonl"
         append_record(ledger_path, LedgerRecord(
             node_id="n1", status="pr_open", branch="feat/pr1", head_sha=candidate_head,
@@ -203,6 +204,23 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
     # is `pkg` so the CR-B4 broker owned-scope re-check passes for the intended
     # cases and can be narrowed to prove an out-of-scope escape fails closed.
     OWNED = ["pkg"]
+
+    def _vendor_commit(self, message: str, *, vendor: str = "Codex") -> str:
+        """Commit the currently-written files AUTHORED by a vendor agent, so the
+        delta commit range is positively attributable (CR round 2 B5: an
+        unattributed delta author fails closed at the readmit boundary). Returns the
+        new HEAD sha."""
+        import os
+        import subprocess
+
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True, capture_output=True)
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": f"{vendor} Agent", "GIT_AUTHOR_EMAIL": f"agent@{vendor.lower()}.example",
+               "GIT_COMMITTER_NAME": f"{vendor} Agent", "GIT_COMMITTER_EMAIL": f"agent@{vendor.lower()}.example"}
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-m", message], check=True, capture_output=True, env=env)
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
 
     def _review_fn(self, ws, diff, author_vendors=frozenset()):
         from phase_loop_runtime.governed_premerge import LoopResult
@@ -245,10 +263,10 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         real_append = _trmod.append_record
         state = {"crash": True}
 
-        def crashing_append(path, record):
+        def crashing_append(path, record, **kwargs):
             if state["crash"] and record.status == "pr_open" and record.head_sha == delta_head:
                 raise OSError("simulated crash at the ledger commit point")
-            return real_append(path, record)
+            return real_append(path, record, **kwargs)
 
         _trmod.append_record = crashing_append
         try:
@@ -347,7 +365,7 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         # single-commit replacement advance C2'.
         subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
         self.write("pkg/fix.py", "fixed single-commit advance\n")
-        c2b_head = self.commit("c2' replacement advance")
+        c2b_head = self._vendor_commit("c2' replacement advance", vendor="Codex")
 
         # ATTEMPT 2 must CONVERGE (scope-back-at-start recovers the torn state).
         new_admitted = tr._fab_delta_readmit(
@@ -446,6 +464,147 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
             "the delta's OWN author vendor must be passed to the review as an excluded author",
         )
 
+    def test_delta_author_identified_by_email_only(self):
+        """CR round 2 B5 — the delta-author extraction reads author/committer EMAIL,
+        not just name. A commit whose NAME carries no vendor marker but whose EMAIL
+        does (e.g. `codex@openai.com`) is still positively attributed."""
+        import os
+        import subprocess
+
+        from phase_loop_runtime import train_runner as tr
+
+        _ledger, base, candidate_head, _delta = self._setup_candidate_and_advance()
+        subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
+        self.write("pkg/c.py", "advance attributable by email only\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True, capture_output=True)
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": "Automation Bot", "GIT_AUTHOR_EMAIL": "codex@openai.com",
+               "GIT_COMMITTER_NAME": "Automation Bot", "GIT_COMMITTER_EMAIL": "codex@openai.com"}
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-m", "email-only advance"],
+                       check=True, capture_output=True, env=env)
+        head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        self.assertIn("codex", tr._delta_commit_author_vendors(self.repo, candidate_head, head))
+
+    def test_unattributed_delta_author_fails_closed_regardless_of_dispatch(self):
+        """CR round 2 B5 — an UNIDENTIFIED delta author fails closed AT the readmit
+        boundary, and the historical dispatch set never masks it. A human/non-vendor
+        advance (no vendor marker in name/email/trailers) → the boundary returns
+        None BEFORE the dispatch union is even consulted, so a nonempty dispatch
+        history cannot rescue it into a review that would seat the real (unknown)
+        author."""
+        import os
+        import subprocess
+
+        import phase_loop_runtime.events as _events
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        ledger_path, base, candidate_head, _delta = self._setup_candidate_and_advance()
+        subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
+        self.write("pkg/c.py", "human out-of-band advance\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True, capture_output=True)
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": "Jane Human", "GIT_AUTHOR_EMAIL": "jane@example.com",
+               "GIT_COMMITTER_NAME": "Jane Human", "GIT_COMMITTER_EMAIL": "jane@example.com"}
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-m", "human advance"],
+                       check=True, capture_output=True, env=env)
+        human_head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+                                    capture_output=True, text=True).stdout.strip()
+        self.assertEqual(frozenset(), tr._delta_commit_author_vendors(self.repo, candidate_head, human_head))
+
+        # Even with a nonempty dispatch history, the unattributed delta fails closed.
+        orig = _events.read_events
+        _events.read_events = lambda ws: [{"selected_executor": "codex"}]
+        try:
+            result = tr._fab_delta_readmit(
+                self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=candidate_head, live_head_sha=human_head,
+                delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+            )
+        finally:
+            _events.read_events = orig
+        self.assertIsNone(result)
+        self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
+
+    def test_reset_to_admitted_recovers_torn_extended_provenance(self):
+        """CR round 2 B1 — reset-to-admitted recovery. A crashed prior attempt left a
+        torn EXTENDED provenance (resolves past the admitted head) while the ledger
+        still admits the candidate head. The PR is then RESET back to the admitted
+        head (live == admitted), so the handled branch is skipped. Without recovery
+        the merge re-gate would reject forever; `_fab_recover_torn_to_admitted`
+        scopes the durable run store back to the admitted-chain prefix so the node
+        converges at the admitted head."""
+        import subprocess
+
+        from phase_loop_runtime import fab_provenance as fpmod
+        from phase_loop_runtime import train_runner as tr
+
+        ledger_path, base, candidate_head, c2_head = self._setup_candidate_and_advance()
+
+        # ATTEMPT 1 crashes at the fsync of the EXTENDED provenance → torn state.
+        real_fsync = fpmod.fsync_run_store_durable
+        crashed = {"done": False}
+
+        def crashing_fsync(repo, run_id):
+            art = fg.read_provenance(repo, run_id)
+            if art.delta_chain and not crashed["done"]:
+                crashed["done"] = True
+                raise OSError("simulated crash after the extended-provenance overwrite")
+            return real_fsync(repo, run_id)
+
+        fpmod.fsync_run_store_durable = crashing_fsync
+        try:
+            with self.assertRaises(OSError):
+                tr._fab_delta_readmit(
+                    self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+                    merge_order=0, admitted_head_sha=candidate_head, live_head_sha=c2_head,
+                    delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+                )
+        finally:
+            fpmod.fsync_run_store_durable = real_fsync
+        # Torn: provenance resolves to C2 but the ledger still admits the candidate.
+        self.assertEqual(fg.read_provenance(self.repo, self.RUN).delta_chain[-1].delta_head_sha, c2_head)
+
+        # The branch is RESET back to the admitted head (live == admitted).
+        subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
+
+        # Recovery scopes the torn extended chain back to the admitted prefix.
+        tr._fab_recover_torn_to_admitted(self.repo, self.RUN, admitted_head_sha=candidate_head)
+        recovered = fg.read_provenance(self.repo, self.RUN)
+        self.assertEqual(recovered.delta_chain, (), "torn extended chain must be scoped back to the candidate")
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=candidate_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
+
+class LedgerDurabilityScopingTest(unittest.TestCase):
+    """CR round 2 B6 — the train ledger append fsyncs ONLY at the FAB re-admission
+    commit point (`durable=True`), never on ordinary appends, so a non-FAB train run
+    is behaviour-identical to merged main (which had no fsync). A byte-comparison
+    test cannot see this — fsync changes no bytes — so this asserts on the fsync
+    CALL count directly."""
+
+    def test_default_append_does_not_fsync_but_durable_does(self):
+        import tempfile
+        from pathlib import Path
+
+        import phase_loop_runtime.train_ledger as tl
+
+        calls: list = []
+        real_fsync = tl.os.fsync
+        tl.os.fsync = lambda fd: calls.append(fd)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                ledger = Path(d) / "train.ledger.jsonl"
+                tl.append_record(ledger, tl.LedgerRecord(node_id="n", status="pr_open"))
+                self.assertEqual(calls, [], "a default (non-FAB) train append must NOT fsync (byte/behaviour-neutral)")
+                tl.append_record(ledger, tl.LedgerRecord(node_id="n", status="merged"), durable=True)
+                self.assertEqual(len(calls), 1, "the FAB re-admission commit point (durable=True) must fsync")
+        finally:
+            tl.os.fsync = real_fsync
+
 
 class SeatLedgerAtomicRewriteTest(GitRepoTestCase):
     """CR B1 — the durable seat ledger is rewritten ATOMICALLY (temp → fsync →
@@ -505,6 +664,31 @@ class DeltaMaterialBindingTest(GitRepoTestCase):
                 prod.capture_delta_review_at_invocation(
                     self.repo, run_id, _delta_panel(), epoch=2, reviewed_diff_text=sentinel
                 )
+
+    def test_torn_material_snapshot_is_repaired_not_trusted(self):
+        """CR round 2 B2 — a material snapshot copied non-atomically and never
+        repaired bricks recovery: a crash-torn snapshot at the digest-named path
+        would make every retry's §6.4 re-verify fail permanently. `snapshot_material`
+        must RE-COPY (repair) a destination whose bytes don't match its digest, not
+        trust it because the name exists."""
+        run_id = "fab-delta-torn-material"
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.commit("c0 base")
+        self.push_main()
+        bundle = self.repo / "bundle.md"
+        bundle.write_text("the reviewed bytes\n", encoding="utf-8")
+
+        digests = fp.snapshot_material(self.repo, run_id, [str(bundle)])
+        snap = fp.provenance_dir_for_run(self.repo, run_id) / fp.MATERIAL_SNAPSHOT_DIRNAME / f"{digests[0].sha256}.md"
+        self.assertTrue(snap.is_file())
+
+        # Simulate a crash-torn snapshot: the digest-named file exists but its bytes
+        # are truncated/garbage. A bare `if not dest.exists()` would trust it.
+        snap.write_text("TORN", encoding="utf-8")
+        again = fp.snapshot_material(self.repo, run_id, [str(bundle)])
+        self.assertEqual(again[0].sha256, digests[0].sha256)
+        self.assertEqual(snap.read_text(encoding="utf-8"), "the reviewed bytes\n",
+                         "a torn snapshot must be REPAIRED (re-copied), never trusted by name alone")
 
 
 class DeltaReviewEmptyAuthorFailsClosedTest(unittest.TestCase):

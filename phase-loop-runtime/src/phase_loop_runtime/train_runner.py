@@ -783,8 +783,11 @@ def _delta_commit_author_vendors(workspace: Path, old_sha: str, new_sha: str) ->
     authors and lets `governed_premerge_for_run` fail closed on a genuinely unknown
     author, matching the candidate path."""
     out = subprocess.run(
+        # author + committer NAME AND EMAIL + Co-authored-by trailers (3b-consumer
+        # CR round 2 B5): reading names alone missed a vendor that only appears in
+        # the email (e.g. `codex@openai.com`), leaving the delta author unidentified.
         ["git", "-C", str(workspace), "log",
-         "--format=%an%n%cn%n%(trailers:key=Co-authored-by,valueonly)", f"{old_sha}..{new_sha}"],
+         "--format=%an%n%ae%n%cn%n%ce%n%(trailers:key=Co-authored-by,valueonly)", f"{old_sha}..{new_sha}"],
         capture_output=True, text=True,
     )
     if out.returncode != 0:
@@ -883,6 +886,36 @@ def _scope_run_to_admitted_prefix(workspace: Path, run_id: str, artifact, prefix
     return recovered
 
 
+def _fab_recover_torn_to_admitted(workspace: Path, run_id: str, *, admitted_head_sha: str) -> None:
+    """CR round 2 B1 — RESET-TO-ADMITTED recovery. The handled branch (which runs
+    the unconditional scope-back) is gated on ``live != admitted``; so when the PR
+    is reset BACK to the admitted head (``live == admitted``) after a crashed
+    re-admission left a torn EXTENDED provenance, the handled branch is SKIPPED and
+    the stale extended chain would make the merge-time FAB re-gate reject FOREVER
+    (the durable chain resolves past the admitted head). Detect a torn extended
+    provenance (resolved-final != admitted head) and scope the durable run store
+    back to the admitted-chain prefix, so a reset-to-admitted converges. No-op when
+    the provenance already resolves to the admitted head, or when the admitted head
+    is not in the durable chain (left for the fail-closed guard). Does NOT touch the
+    caller's in-memory admitted head — recovery stays at the admitted head; only the
+    handled branch advances it."""
+    from . import fab_gate
+
+    try:
+        artifact = fab_gate.read_provenance(workspace, run_id)
+    except Exception:  # noqa: BLE001 - unreadable provenance → nothing to recover; guard handles it
+        return
+    resolved_final = (
+        artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
+    )
+    if resolved_final == admitted_head_sha:
+        return  # not torn; nothing to recover
+    prefix_chain, prefix_epochs = _admitted_prefix(artifact, admitted_head_sha)
+    if prefix_chain is None:
+        return  # admitted head not in the durable chain → leave for the guard
+    _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+
+
 def _fab_delta_readmit(
     workspace: Path,
     ledger_path: Path,
@@ -977,6 +1010,7 @@ def _fab_delta_readmit(
                 node_id=node_id, status="pr_open", branch=branch, pr_url=pr_url,
                 head_sha=live_head_sha, merge_order=merge_order, fab_run_id=run_id,
             ),
+            durable=True,  # re-admission COMMIT POINT (B6): fsync this append
         )
         return live_head_sha
 
@@ -1009,12 +1043,24 @@ def _fab_delta_readmit(
     from .events import read_events
     from .governed_review import author_vendor_for_executor
 
+    # REVIEWER≠AUTHOR is established AT THIS BOUNDARY, not delegated to the review
+    # fn (CR round 2 B5): the delta author is identified SOLELY from the actual
+    # delta commit range. If it cannot be positively attributed to a vendor, fail
+    # CLOSED here — the historical dispatch set must NEVER mask an unidentified
+    # delta author (a nonempty dispatch union would otherwise suppress the
+    # unknown_author fail-closed and let the real, unidentified delta vendor onto
+    # its own review board).
+    _delta_authors = _delta_commit_author_vendors(workspace, admitted_head_sha, live_head_sha)
+    if not _delta_authors:
+        return None
     _dispatch_authors = frozenset(
         author_vendor_for_executor(str(e.get("selected_executor")))
         for e in read_events(workspace)
         if isinstance(e, dict) and e.get("selected_executor")
     )
-    author_vendors = _delta_commit_author_vendors(workspace, admitted_head_sha, live_head_sha) | _dispatch_authors
+    # Union only WIDENS the exclusion (the delta author is already established);
+    # dispatch authors can only add MORE excluded vendors, never rescue an empty set.
+    author_vendors = _delta_authors | _dispatch_authors
     review = delta_review_fn(workspace, reviewed_diff, author_vendors)
     if not getattr(review, "mergeable", False) or getattr(review, "panel", None) is None:
         return None
@@ -1074,6 +1120,7 @@ def _fab_delta_readmit(
             node_id=node_id, status="pr_open", branch=branch, pr_url=pr_url,
             head_sha=live_head_sha, merge_order=merge_order, fab_run_id=run_id,
         ),
+        durable=True,  # re-admission COMMIT POINT (B6): fsync this append
     )
     return live_head_sha
 
@@ -2708,6 +2755,13 @@ def run_train(
                     # in-memory admitted head so the merge below pins to it.
                     completed_nodes[_nid_m]["admitted_head_sha"] = _new_admitted
                     completed_nodes[_nid_m]["head_sha"] = _new_admitted
+            elif _admitted_now and _live_now == _admitted_now:
+                # RESET-TO-ADMITTED recovery (CR round 2 B1): the live head is back at
+                # the admitted head, so the handled branch above is skipped. If a
+                # crashed prior attempt left a torn EXTENDED provenance, the merge
+                # re-gate would reject forever — scope the durable run store back to
+                # the admitted-chain prefix so the reset-to-admitted converges.
+                _fab_recover_torn_to_admitted(_ws_m, _fab_run_id_shortcut, admitted_head_sha=_admitted_now)
         # agent-harness#250 (N7 CR follow-up, finding 4; hardened per the defect-1
         # CR corroboration by codex+grok): thread the broker-ADMITTED head_sha the
         # same way `base` is already threaded — completed_nodes[...]["admitted_head_sha"]

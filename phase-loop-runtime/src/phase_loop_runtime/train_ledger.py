@@ -198,11 +198,35 @@ def default_ledger_path(coordinator_dir: Path, train_name: str) -> Path:
 # ---------------------------------------------------------------------------
 # Append
 
-def append_record(path: Path, record: LedgerRecord) -> None:
+def _write_all(fd: int, data: bytes) -> None:
+    """Write ALL of ``data`` to ``fd``, looping over partial writes (3b-consumer CR
+    round 2 B3): a bare ``os.write`` may write fewer bytes than requested, and a
+    partial trailing record would either fold the ledger to an OLD state or make the
+    strict resume reader reject the file. The append is the re-admission COMMIT
+    POINT — it must never report success on a truncated record."""
+    view = memoryview(data)
+    written = 0
+    while written < len(view):
+        n = os.write(fd, view[written:])
+        if n <= 0:  # pragma: no cover - defensive; os.write raises rather than returns 0
+            raise OSError("short write to train ledger (0 bytes); refusing to report a partial append")
+        written += n
+
+
+def append_record(path: Path, record: LedgerRecord, *, durable: bool = False) -> None:
     """Atomically append ``record`` to the ledger at ``path``.
 
-    Uses ``O_APPEND`` with a single ``os.write`` call for durability.  The
-    parent directory is created if absent.
+    Uses ``O_APPEND`` with a fully-drained write (``_write_all``) so a partial
+    ``os.write`` can never leave a truncated record.  The parent directory is
+    created if absent.
+
+    ``durable`` (default ``False`` — BYTE/behaviour-neutral for every non-FAB train
+    append; 3b-consumer CR round 2 B6): when ``True`` the append is ``fsync``'d
+    because it is the FAB re-admission COMMIT POINT — a crash must not lose the
+    record that just advanced the admitted head to a gate-passed chain. Only
+    ``_fab_delta_readmit`` passes ``durable=True``; every ordinary train append
+    keeps merged-main's fsync-free posture so its latency/failure behaviour is
+    unchanged.
 
     The caller is responsible for ensuring ``path`` is outside any repo's
     ``.phase-loop/`` directory.
@@ -224,11 +248,9 @@ def append_record(path: Path, record: LedgerRecord) -> None:
     encoded = (json.dumps(record.to_dict(), sort_keys=True) + "\n").encode("utf-8")
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
     try:
-        os.write(fd, encoded)
-        # Durable append (FAB 3b-consumer CR B2): the ledger append is the
-        # re-admission COMMIT POINT — fsync it so a crash cannot lose the record
-        # that just advanced the admitted head to a gate-passed chain.
-        os.fsync(fd)
+        _write_all(fd, encoded)
+        if durable:
+            os.fsync(fd)
     finally:
         os.close(fd)
 
