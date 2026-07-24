@@ -48,13 +48,12 @@ from .fab_canonical import (
 )
 from .fab_gate import (
     FAB_CANDIDATE_EPOCH,
+    REVIEW_ROUND_FILENAME,
     ExpectedSeat,
     append_seat_outcome,
     compose_gate_status,
     finalize_review_round,
-    read_review_round,
     read_seat_outcomes,
-    review_round_path_for_run,
     seat_outcomes_path_for_run,
     write_expected_seats,
 )
@@ -286,6 +285,36 @@ def _rewrite_seat_ledger_dropping_epoch(repo: Path, run_id: str, epoch: int) -> 
     ledger.unlink()
     for record in kept:
         append_seat_outcome(repo, run_id, record)
+
+
+def scope_run_to_epochs(repo: Path, run_id: str, keep_epochs: Sequence[int]) -> None:
+    """Recapture-truncation — the GATE<->CONSUMER epoch-set contract (3b-gate CR
+    round 2, now a hard requirement). The merged gate enforces epoch-set EQUALITY
+    (client chain epochs == durable FINALIZED epochs), NOT subset. So before a
+    fresh delta attempt commits its chain, the consumer MUST remove any STALE
+    durable round record + seat records for an epoch NOT in `keep_epochs` (THIS
+    attempt's chain — the candidate epoch + the delta epochs it resolves in).
+    Otherwise a legitimate retry whose honest chain resolves in FEWER epochs than a
+    prior attempt would false-BLOCK on `{1,2} != {1,2,3}`. Mirrors how
+    `capture_review_at_invocation` truncates the seat ledger for a clean re-capture.
+    Idempotent."""
+    keep = set(int(e) for e in keep_epochs)
+    run_dir = provenance_dir_for_run(repo, run_id)
+    base, _, ext = REVIEW_ROUND_FILENAME.rpartition(".")
+    prefix, suffix = f"{base}.e", f".{ext}"
+    for path in run_dir.glob(f"{base}.e*.{ext}"):
+        try:
+            epoch = int(path.name[len(prefix) : -len(suffix)])
+        except ValueError:
+            continue  # not an epoch-suffixed round record
+        if epoch not in keep:
+            path.unlink()
+    kept = [r for r in read_seat_outcomes(repo, run_id) if r.epoch in keep]
+    ledger = seat_outcomes_path_for_run(repo, run_id)
+    if ledger.exists():
+        ledger.unlink()
+        for record in kept:
+            append_seat_outcome(repo, run_id, record)
 
 
 def capture_delta_review_at_invocation(repo: Path, run_id: str, panel: PanelResult, *, epoch: int) -> None:

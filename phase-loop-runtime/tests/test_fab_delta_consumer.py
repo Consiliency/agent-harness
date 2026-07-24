@@ -79,3 +79,60 @@ class DeltaConsumerRoundTripTest(GitRepoTestCase):
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
         self.assertEqual(gate.equivalence_verified.result, "EQUIVALENT")
+
+    def test_recapture_truncation_lets_a_shorter_retry_pass(self):
+        """Recapture-truncation (gate↔consumer epoch-set contract): a prior attempt
+        finalized epochs {1,2,3}; a clean RETRY resolves in {1,2}. Without scoping,
+        the stale finalized epoch-3 record makes the gate false-BLOCK on
+        `{1,2} != {1,2,3}`; `scope_run_to_epochs({1,2})` removes the stale round →
+        the retry PASSES."""
+        run_id = "fab-delta-retry"
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        base = self.commit("c0 base")
+        self.push_main()
+        self.write("pkg/a.py", "candidate\n")
+        candidate_head = self.commit("c1 candidate")
+        candidate = self.candidate(base, candidate_head)
+        candidate_seats = (_seat("codex:c:high", epoch=1, finding_ids=()),)
+        candidate_artifact = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats)
+        c0 = candidate_artifact.chain_digest
+        fp.write_provenance(self.repo, run_id, candidate_artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, run_id, _durable_from_seat(s))
+        self.write_review_round(run_id, candidate_artifact)
+
+        # ATTEMPT 1 → epochs {1, 2, 3}.
+        self.write("pkg/c.py", "delta 2\n")
+        delta2_head = self.commit("c2 delta")
+        prod.capture_delta_review_at_invocation(self.repo, run_id, _delta_panel(), epoch=2)
+        d2 = prod.build_and_finalize_delta_round(
+            self.repo, run_id, epoch=2, base_sha=base, repo_slug=self.REPO_SLUG,
+            parent_head_sha=candidate_head, parent_patch_digest=candidate.patch_digest, parent_chain_digest=c0,
+            delta_head_sha=delta2_head, findings=(), review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+        )
+        self.write("pkg/d.py", "delta 3\n")
+        delta3_head = self.commit("c3 delta")
+        prod.capture_delta_review_at_invocation(self.repo, run_id, _delta_panel(), epoch=3)
+        prod.build_and_finalize_delta_round(
+            self.repo, run_id, epoch=3, base_sha=base, repo_slug=self.REPO_SLUG,
+            parent_head_sha=delta2_head, parent_patch_digest=d2.resulting_head_digest, parent_chain_digest=d2.chain_digest,
+            delta_head_sha=delta3_head, findings=(), review_scope=fp.ReviewScope(mode=fp.REVIEW_SCOPE_DELTA_ONLY),
+        )
+        # RETRY resolves in {1,2}: the client chain is (d2,) only, but the run store
+        # still holds the stale finalized epoch-3 record → false-BLOCK.
+        retry_artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats, delta_chain=(d2,)
+        )
+        fp.write_provenance(self.repo, run_id, retry_artifact)
+        blocked = fg.compose_gate_status(
+            repo=self.repo, run_id=run_id, live_base_ref_name="main", live_head_sha=delta2_head, origin="fetchsrc"
+        )
+        self.assertEqual(blocked.status, fp.GATE_STATUS_BLOCK)
+        self.assertIn("durable FINALIZED epoch set", blocked.equivalence_verified.reason or "")
+
+        # Scope the run to THIS attempt's chain → the stale epoch-3 record is gone.
+        prod.scope_run_to_epochs(self.repo, run_id, (fg.FAB_CANDIDATE_EPOCH, 2))
+        passed = fg.compose_gate_status(
+            repo=self.repo, run_id=run_id, live_base_ref_name="main", live_head_sha=delta2_head, origin="fetchsrc"
+        )
+        self.assertEqual(passed.status, fp.GATE_STATUS_PASS, passed.equivalence_verified.reason)
