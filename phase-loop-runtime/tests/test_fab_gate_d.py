@@ -620,6 +620,46 @@ class DeltaChainGateTest(GitRepoTestCase):
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
 
+    def test_orphan_out_of_chain_seat_is_gate_harmless(self):
+        """Round 4 (1b invariant the recovery trigger relies on): a COMPLETE orphan
+        seat for an epoch with NO finalized round record (a crash after the epoch-N
+        seat appends but before finalize) is GATE-HARMLESS — the gate keys epoch-set
+        equality on finalized ROUND RECORDS and only consults seats for finalized
+        epochs. This pins the assumption behind `_fab_recover_torn_to_admitted`'s
+        cheap scope trigger (it need NOT scope on orphan seats, only on a torn seat
+        tail or stale round records). If this ever starts BLOCKING, that trigger
+        would under-recover and must be widened to seat epochs."""
+        run_id = "run-orphan-seat"
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        self.write("pkg/a.py", "reviewed a\n")
+        base = self.commit("c0 base")
+        self.push_main()
+        candidate_seats = (_seat("codex:x:high", epoch=1, finding_ids=()),)
+        candidate = self.candidate(base, base)
+        artifact = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats)
+        fp.write_provenance(self.repo, run_id, artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, run_id, _durable_from_seat(s))
+        self.write_review_round(run_id, artifact)  # candidate round record (epoch 1) only
+        self.assertEqual(
+            fg.compose_gate_status(repo=self.repo, run_id=run_id, live_base_ref_name="main",
+                                   live_head_sha=base, origin="fetchsrc").status,
+            fp.GATE_STATUS_PASS,
+        )
+        # Inject a COMPLETE orphan epoch-2 seat + its expected manifest, but NO
+        # finalized round record — the merge re-gate must still PASS at the admitted
+        # head (the orphan is never iterated).
+        orphan = _seat("gemini:d:high", epoch=2, finding_ids=())
+        fg.append_seat_outcome(self.repo, run_id, _durable_from_seat(orphan))
+        fg.write_expected_seats(self.repo, run_id, epoch=2, expected_seats=(
+            fg.ExpectedSeat(seat_instance_id=orphan.seat_instance_id, seat_key=orphan.seat_key,
+                            vendor_leg=orphan.vendor_leg, required=True),
+        ))
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=run_id, live_base_ref_name="main", live_head_sha=base, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
     def test_acceptance_2_unrelated_byte_invalidates(self):
         """A live head that DRIFTED past the reviewed delta (an unrelated extra
         byte) is no longer equivalent to the governing binding — compose BLOCKS

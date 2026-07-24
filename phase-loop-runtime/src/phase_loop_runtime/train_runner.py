@@ -781,7 +781,15 @@ def _delta_commit_author_vendors(workspace: Path, old_sha: str, new_sha: str) ->
     gemini then reviews its own delta. Empty when the range is not attributable to
     any known vendor (e.g. a human push); the caller unions this with the dispatch
     authors and lets `governed_premerge_for_run` fail closed on a genuinely unknown
-    author, matching the candidate path."""
+    author, matching the candidate path.
+
+    KNOWN LIMITATION (accepted for this milestone, agent-harness#191): this rests on
+    SELF-DECLARED git author/committer/trailer identity, which is SPOOFABLE — an
+    attacker can set the author to a vendor they are NOT, or to a non-vendor to evade
+    exclusion. The reviewer≠author exclusion is therefore best-effort against honest
+    misconfiguration / accidental self-review, NOT a defense against a motivated
+    forger. The real fix (trusted / cryptographically-signed attribution) is out of
+    scope here; this is disclosed, not silently assumed sound."""
     out = subprocess.run(
         # author + committer NAME AND EMAIL + Co-authored-by trailers (3b-consumer
         # CR round 2 B5): reading names alone missed a vendor that only appears in
@@ -917,7 +925,7 @@ def _fab_recover_torn_to_admitted(workspace: Path, run_id: str, *, admitted_head
     # Repair a crash-torn seat-ledger tail BEFORE any strict read (round 3 B1).
     # Provenance + round records are written atomically (temp+replace) and cannot
     # tear; only the append-based seat ledger can.
-    fab_gate.repair_torn_seat_ledger_tail(workspace, run_id)
+    repaired = fab_gate.repair_torn_seat_ledger_tail(workspace, run_id)
     try:
         artifact = fab_gate.read_provenance(workspace, run_id)
     except Exception:  # noqa: BLE001 - no readable provenance → nothing to recover; guard handles it
@@ -929,11 +937,23 @@ def _fab_recover_torn_to_admitted(workspace: Path, run_id: str, *, admitted_head
         artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
     )
     if resolved_final == admitted_head_sha:
-        # Provenance already resolves to the admitted head, but a prior crashed
-        # recovery may have left STALE finalized epochs (round 3 B2) — scope
-        # idempotently to guarantee epoch-set completeness before returning.
-        fab_producer.scope_run_to_epochs(workspace, run_id, prefix_epochs)
-        fab_provenance.fsync_run_store_durable(workspace, run_id)
+        # Provenance already resolves to the admitted head. This recovery now runs
+        # for EVERY FAB node before the merge re-gate (round 4 1b), so keep the clean
+        # case CHEAP: only scope when there is actually torn/stale durable state that
+        # would BRICK the strict re-gate — a just-repaired seat tail (`repaired`), or
+        # STALE finalized ROUND RECORDS a prior crashed recovery left (`stale`, round
+        # 3 B2 — these false-block the gate on epoch-set EQUALITY). Complete ORPHAN
+        # out-of-chain SEAT lines (a crash after the epoch-N seat appends but before
+        # finalize wrote the round record) are deliberately NOT a trigger: the gate
+        # keys epoch-set equality on finalized ROUND RECORDS and only consults seats
+        # for finalized epochs, so an epoch with no round record is never iterated and
+        # its orphan seats are gate-HARMLESS (verified: compose_gate_status PASSes with
+        # a complete orphan epoch-2 seat + expected manifest but no round record).
+        # They are swept by the next shortcut attempt's scope_run_to_epochs anyway.
+        stale = fab_producer.finalized_round_epochs(workspace, run_id) - set(prefix_epochs)
+        if repaired or stale:
+            fab_producer.scope_run_to_epochs(workspace, run_id, prefix_epochs)
+            fab_provenance.fsync_run_store_durable(workspace, run_id)
         return
     _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
 
@@ -2753,37 +2773,61 @@ def run_train(
         from .governed_premerge import fab_delta_shortcut_enabled
 
         _fab_run_id_shortcut = completed_nodes[_nid_m].get("fab_run_id")
-        if _fab_run_id_shortcut is not None and fab_delta_shortcut_enabled(fab_delta_shortcut):
-            _admitted_now = completed_nodes[_nid_m].get("admitted_head_sha")
-            _live_now = live_pr_head_sha_fn(_ws_m, _pr_branch_m)
-            if _live_now and _admitted_now and _live_now != _admitted_now:
-                _delta_review = _delta_review_fn if _delta_review_fn is not None else _default_delta_review
-                # The node's OWNED SCOPE for the broker re-check (CR B4): re-resolve
-                # it via the same seam the admission used. When the train carries no
-                # explicit owned-paths resolver (owned scope known only from the
-                # run-loop snapshot, not re-resolvable here), pass None so the
-                # re-admission fails closed rather than fencing on an unprovable scope.
-                _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else None
-                _new_admitted = _fab_delta_readmit(
-                    _ws_m, ledger_path, node_id=_nid_m, run_id=_fab_run_id_shortcut,
-                    branch=_pr_branch_m, pr_url=completed_nodes[_nid_m].get("pr_url"),
-                    merge_order=completed_nodes[_nid_m].get("merge_order"),
-                    admitted_head_sha=_admitted_now, live_head_sha=_live_now,
-                    delta_review_fn=_delta_review, owned_paths=_owned_now,
-                    fab_fetch_origin=fab_fetch_origin,
+        # A raise anywhere in the FAB recovery/re-admission MUST NOT escape run_train
+        # (round 4 1a): both sites live OUTSIDE the merge-call try/except below, so an
+        # uncaught traceback here would abort run_train and violate its
+        # no-uncaught-escape contract (already-merged upstream nodes must stay
+        # recorded, forward-only). Catch → blocked + merge_halted, same as a merge
+        # failure. Gated on `fab_run_id is not None`, so byte-neutral when the FAB
+        # master flag is off (no provenance ⇒ no run_id ⇒ block skipped entirely).
+        if _fab_run_id_shortcut is not None:
+            try:
+                _admitted_now = completed_nodes[_nid_m].get("admitted_head_sha")
+                # UNCONDITIONAL torn-state recovery before the merge re-gate (round 4
+                # 1b): a crashed prior shortcut attempt can leave a torn seat-ledger
+                # tail / torn extended provenance that the STRICT merge-time re-gate
+                # strict-reads and refuses FOREVER — EVEN with the shortcut now
+                # DISABLED (the re-gate runs for every FAB node regardless of opt-in).
+                # So recovery must run on the path the re-gate takes, not only inside
+                # the opt-in-gated shortcut. Recover to the admitted head first.
+                if _admitted_now:
+                    _fab_recover_torn_to_admitted(_ws_m, _fab_run_id_shortcut, admitted_head_sha=_admitted_now)
+                # Then — ONLY with the trusted opt-in — the delta-review shortcut
+                # re-admits a single-commit advance BEFORE the merge.
+                if fab_delta_shortcut_enabled(fab_delta_shortcut):
+                    _live_now = live_pr_head_sha_fn(_ws_m, _pr_branch_m)
+                    if _live_now and _admitted_now and _live_now != _admitted_now:
+                        _delta_review = _delta_review_fn if _delta_review_fn is not None else _default_delta_review
+                        # The node's OWNED SCOPE for the broker re-check (CR B4):
+                        # re-resolve it via the same seam the admission used. When the
+                        # train carries no explicit owned-paths resolver, pass None so
+                        # the re-admission fails closed rather than fencing on an
+                        # unprovable scope.
+                        _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else None
+                        _new_admitted = _fab_delta_readmit(
+                            _ws_m, ledger_path, node_id=_nid_m, run_id=_fab_run_id_shortcut,
+                            branch=_pr_branch_m, pr_url=completed_nodes[_nid_m].get("pr_url"),
+                            merge_order=completed_nodes[_nid_m].get("merge_order"),
+                            admitted_head_sha=_admitted_now, live_head_sha=_live_now,
+                            delta_review_fn=_delta_review, owned_paths=_owned_now,
+                            fab_fetch_origin=fab_fetch_origin,
+                        )
+                        if _new_admitted is not None:
+                            # Re-admission committed (new LedgerRecord appended) —
+                            # advance the in-memory admitted head so the merge pins to it.
+                            completed_nodes[_nid_m]["admitted_head_sha"] = _new_admitted
+                            completed_nodes[_nid_m]["head_sha"] = _new_admitted
+            except Exception as _fab_exc_m:  # noqa: BLE001 - never let FAB recovery/readmit abort run_train (round 4 1a)
+                append_record(
+                    ledger_path,
+                    LedgerRecord(node_id=_nid_m, status="blocked", branch=_pr_branch_m),
                 )
-                if _new_admitted is not None:
-                    # Re-admission committed (new LedgerRecord appended) — advance the
-                    # in-memory admitted head so the merge below pins to it.
-                    completed_nodes[_nid_m]["admitted_head_sha"] = _new_admitted
-                    completed_nodes[_nid_m]["head_sha"] = _new_admitted
-            elif _admitted_now and _live_now == _admitted_now:
-                # RESET-TO-ADMITTED recovery (CR round 2 B1): the live head is back at
-                # the admitted head, so the handled branch above is skipped. If a
-                # crashed prior attempt left a torn EXTENDED provenance, the merge
-                # re-gate would reject forever — scope the durable run store back to
-                # the admitted-chain prefix so the reset-to-admitted converges.
-                _fab_recover_torn_to_admitted(_ws_m, _fab_run_id_shortcut, admitted_head_sha=_admitted_now)
+                return {
+                    "status": "merge_halted",
+                    "node_id": _nid_m,
+                    "reason": "fab_readmit_failed",
+                    "detail": str(_fab_exc_m),
+                }
         # agent-harness#250 (N7 CR follow-up, finding 4; hardened per the defect-1
         # CR corroboration by codex+grok): thread the broker-ADMITTED head_sha the
         # same way `base` is already threaded — completed_nodes[...]["admitted_head_sha"]

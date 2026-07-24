@@ -319,18 +319,34 @@ def append_seat_outcome(repo: Path, run_id: str, record: SeatOutcomeRecord) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        # Fully-drained write (3b-consumer CR round 2 B2): a bare `os.write` may
-        # write fewer bytes than requested; a partial trailing seat record would
-        # make the STRICT `read_seat_outcomes` fail the whole read closed and defeat
-        # scope-back recovery. Loop until every byte lands, then fsync.
-        view = memoryview(raw)
-        written = 0
-        while written < len(view):
-            n = os.write(fd, view[written:])
-            if n <= 0:  # pragma: no cover - defensive; os.write raises rather than returns 0
-                raise ProvenanceInvalid("short write to seat-outcome ledger (0 bytes); refusing a partial trust record")
-            written += n
-        os.fsync(fd)
+        pre_size = os.fstat(fd).st_size
+        try:
+            # Fully-drained write (3b-consumer CR round 2 B2): a bare `os.write` may
+            # write fewer bytes than requested; a partial trailing seat record would
+            # make the STRICT `read_seat_outcomes` fail the whole read closed and
+            # defeat scope-back recovery. Loop until every byte lands, then fsync.
+            view = memoryview(raw)
+            written = 0
+            while written < len(view):
+                n = os.write(fd, view[written:])
+                if n <= 0:  # pragma: no cover - defensive; os.write raises rather than returns 0
+                    raise ProvenanceInvalid("short write to seat-outcome ledger (0 bytes); refusing a partial trust record")
+                written += n
+            os.fsync(fd)
+        except BaseException:
+            # FTRUNCATE-BACK on a failed/short append (round 4 1c): ENOSPC, EIO, a
+            # partial write, or an interrupt would otherwise leave a DURABLE partial
+            # prefix on disk. Roll the file back to its pre-append length so a failed
+            # append leaves NO partial line at all (belt-and-braces with the
+            # recovery-side torn-tail truncation). The seat ledger is single-writer
+            # (harness-only), so truncating to `pre_size` cannot clobber a concurrent
+            # append. Best-effort — never mask the original failure.
+            try:
+                os.ftruncate(fd, pre_size)
+                os.fsync(fd)
+            except OSError:
+                pass
+            raise
     finally:
         os.close(fd)
 

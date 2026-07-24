@@ -291,6 +291,23 @@ def _rewrite_seat_ledger_dropping_epoch(repo: Path, run_id: str, epoch: int) -> 
     rewrite_seat_ledger(repo, run_id, [r for r in read_seat_outcomes(repo, run_id) if r.epoch != epoch])
 
 
+def finalized_round_epochs(repo: Path, run_id: str) -> set[int]:
+    """The set of epochs that have a DURABLE finalized per-epoch round record on
+    disk (the gate's epoch-set-EQUALITY authority). Cheap glob; used by recovery to
+    decide whether a scope-back is actually needed (avoids rewriting a clean run
+    store on every FAB merge)."""
+    run_dir = provenance_dir_for_run(repo, run_id)
+    base, _, ext = REVIEW_ROUND_FILENAME.rpartition(".")
+    prefix, suffix = f"{base}.e", f".{ext}"
+    epochs: set[int] = set()
+    for path in run_dir.glob(f"{base}.e*.{ext}"):
+        try:
+            epochs.add(int(path.name[len(prefix) : -len(suffix)]))
+        except ValueError:
+            continue
+    return epochs
+
+
 def scope_run_to_epochs(repo: Path, run_id: str, keep_epochs: Sequence[int]) -> None:
     """Recapture-truncation — the GATE<->CONSUMER epoch-set contract (3b-gate CR
     round 2, now a hard requirement). The merged gate enforces epoch-set EQUALITY

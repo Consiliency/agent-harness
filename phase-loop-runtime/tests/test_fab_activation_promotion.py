@@ -870,6 +870,77 @@ class TestPiece3aAdmissionBridgeIntegration:
         assert captured == {}, "no node may merge once admission fails closed"
 
 
+class TestPiece3bRecoveryWiring:
+    """Round 4 1a/1b — the FAB torn-state recovery / re-admission wiring in the P4
+    merge loop."""
+
+    def _resume_ledger(self, tmp_path):
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/repo-a",
+            head_sha="sha-a", pr_url="https://gh/a/1", merge_order=0, fab_run_id="run-repo-a"))
+        append_record(ledger, LedgerRecord(
+            node_id="repo-b/specs/plan-b.md", status="pr_open", branch="feat/repo-b",
+            head_sha="sha-b", pr_url="https://gh/b/1", merge_order=1, fab_run_id="run-repo-b"))
+        return roadmap, ws_map, ledger
+
+    def test_recovery_runs_for_fab_nodes_even_with_shortcut_disabled(self, tmp_path: Path, monkeypatch):
+        """1b: the torn-state recovery runs before the merge re-gate for EVERY FAB
+        node, INDEPENDENT of the delta-shortcut opt-in (OFF here) — otherwise a torn
+        seat ledger from a crashed prior attempt would brick the STRICT merge re-gate
+        forever even with the shortcut disabled. The re-gate runs regardless of
+        opt-in, so recovery must too."""
+        from phase_loop_runtime import train_runner as tr
+
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        roadmap, ws_map, ledger = self._resume_ledger(tmp_path)
+
+        recovered: list = []
+        monkeypatch.setattr(
+            tr, "_fab_recover_torn_to_admitted",
+            lambda ws, run_id, *, admitted_head_sha: recovered.append(run_id),
+        )
+        captured: dict = {}
+        result = _p3a_run_train(
+            roadmap, ledger, ws_map,
+            run_loop=lambda *a, **kw: (None, []),  # resume: run_loop not invoked
+            publish=_make_publish_stub({}),
+            merge_fn=_capturing_merge_stub(captured),
+        )
+        assert result["status"] == "merged", result
+        assert set(recovered) == {"run-repo-a", "run-repo-b"}, recovered
+        assert captured == {"repo-a": "run-repo-a", "repo-b": "run-repo-b"}
+
+    def test_raise_in_fab_recovery_is_caught_as_merge_halted(self, tmp_path: Path, monkeypatch):
+        """1a: a raise anywhere in the FAB recovery/re-admission is caught and
+        ledgered as blocked / merge_halted — NEVER an uncaught traceback that aborts
+        run_train (the shortcut sites live outside the merge-call try/except, so
+        without this an exception here would violate run_train's no-uncaught-escape
+        contract)."""
+        from phase_loop_runtime import train_runner as tr
+
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        roadmap, ws_map, ledger = self._resume_ledger(tmp_path)
+
+        def boom(ws, run_id, *, admitted_head_sha):
+            raise OSError("simulated FAB recovery failure")
+
+        monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", boom)
+        captured: dict = {}
+        result = _p3a_run_train(
+            roadmap, ledger, ws_map,
+            run_loop=lambda *a, **kw: (None, []),
+            publish=_make_publish_stub({}),
+            merge_fn=_capturing_merge_stub(captured),
+        )
+        assert result["status"] == "merge_halted", result
+        assert result["reason"] == "fab_readmit_failed", result
+        assert captured == {}, "no node merges once FAB recovery fails closed"
+        assert read_ledger(ledger)["repo-a/specs/plan-a.md"].status == "blocked"
+
+
 class TestPiece3aRegateEndToEnd:
     """A10/11 — the REAL `_live_merge_pr` re-gate fires for an admitted node."""
 
