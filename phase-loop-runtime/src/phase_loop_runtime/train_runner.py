@@ -1140,34 +1140,62 @@ def _fab_delta_readmit(
     return live_head_sha
 
 
-def _live_pr_state(workspace: Path, branch: str) -> Optional[str]:
-    """The PR's raw GitHub ``state`` (``OPEN`` / ``CLOSED`` / ``MERGED``), or ``None``
-    if unreadable. Used by the merge-queue poll (#265) to distinguish a PR still in
-    flight (``OPEN`` — keep polling) from one that left the queue without merging
-    (``CLOSED`` — fail closed). Deliberately does NOT interpret ``mergeStateStatus``:
-    ``MERGED`` and ``CLOSED``-without-merge are the only terminals; everything else
-    is still-in-flight. Bound to the broker-validated repo (`_gh_repo_binding`)."""
+def _live_pr_queue_status(workspace: Path, branch: str) -> Optional[dict]:
+    """The PR's terminal state + merge-QUEUE MEMBERSHIP (#265 CR round 1). A merge
+    queue tracks membership SEPARATELY from PR ``state``: a PR KICKED from the queue
+    by a merge-group CI failure stays ``state=OPEN`` with NO queue entry, and
+    ``gh pr merge`` can leave a pending ``autoMergeRequest`` that re-queues later — so
+    the poll/dequeue MUST read membership, not just state. Returns
+    ``{"state": OPEN|CLOSED|MERGED, "auto_merge": bool, "in_queue": True|False|None}``
+    or ``None`` if the PR itself is unreadable. ``in_queue`` uses GraphQL
+    ``isInMergeQueue`` (NOT exposed by ``gh pr view --json``); it is ``None`` when
+    membership is UNREADABLE — callers treat None fail-closed (keep polling; a dequeue
+    is NOT confirmed on unreadable membership), never as 'not queued'."""
     repo_args, env_override = _gh_repo_binding(workspace)
     try:
-        result = subprocess.run(
-            ["gh", "pr", "view", branch, *repo_args, "--json", "state"],
+        got = subprocess.run(
+            ["gh", "pr", "view", branch, *repo_args, "--json", "number,state,autoMergeRequest"],
             cwd=str(workspace), capture_output=True, text=True, timeout=15, env=env_override,
         )
-        if result.returncode != 0:
+        if got.returncode != 0:
             return None
-        return (json.loads(result.stdout or "{}") or {}).get("state")
-    except Exception:  # noqa: BLE001 - unreadable → None (caller keeps polling / times out)
+        d = json.loads(got.stdout or "{}") or {}
+    except Exception:  # noqa: BLE001 - PR unreadable → None
         return None
+    number = d.get("number")
+    owner_repo = _repo_slug_owner_repo(repo_args)
+    in_queue: Optional[bool] = None
+    if number is not None and owner_repo and "/" in owner_repo:
+        owner, name = owner_repo.split("/", 1)
+        try:
+            q = subprocess.run(
+                ["gh", "api", "graphql", "-f",
+                 f'query=query{{repository(owner:"{owner}",name:"{name}")'
+                 f'{{pullRequest(number:{int(number)}){{isInMergeQueue}}}}}}'],
+                cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
+            )
+            if q.returncode == 0:
+                body = json.loads(q.stdout or "{}")
+                if not body.get("errors"):
+                    pr = (((body.get("data") or {}).get("repository") or {}).get("pullRequest") or {})
+                    val = pr.get("isInMergeQueue")
+                    in_queue = bool(val) if val is not None else None
+        except Exception:  # noqa: BLE001 - membership unreadable → None (fail-closed)
+            in_queue = None
+    return {"state": d.get("state"), "auto_merge": d.get("autoMergeRequest") is not None, "in_queue": in_queue}
 
 
 def _dequeue_pr(workspace: Path, branch: str) -> bool:
-    """BEST-EFFORT dequeue of an enqueued PR via the GraphQL ``dequeuePullRequest``
-    mutation (#265 risk-1 reconciliation). NOTE: the `gh pr merge --disable-auto`
-    FLAG only disables AUTO-MERGE, NOT a merge-QUEUE entry — so a real dequeue needs
-    this mutation (input: the PR node ``id``). Returns True ONLY if the PR is
-    confirmed no longer heading to a merge (state readable and not ``MERGED`` after
-    the mutation). Best-effort by nature: a False result routes the caller to the
-    loud ``merge-queue-unreconciled`` train-halt rather than a silent continue."""
+    """BEST-EFFORT FULL cancellation of a scheduled merge (#265 CR round 1). A merge
+    queue tracks a queue ENTRY and an AUTO-MERGE request SEPARATELY, so a real cancel
+    must remove BOTH: the GraphQL ``dequeuePullRequest`` mutation (the ``gh pr merge
+    --disable-auto`` FLAG only touches auto-merge, NEVER the queue entry) AND
+    ``--disable-auto``. Returns True ONLY when membership CONFIRMS both are gone
+    (``in_queue is False`` AND no ``auto_merge``) and the PR is not MERGED. ANY
+    ambiguity — unreadable PR/membership, a surviving entry or auto-merge, a GraphQL
+    error (even on a zero exit), a still-live requeue — returns False → the caller's
+    loud ``merge-queue-unreconciled`` halt, never a silent 'cancelled' on a still-live
+    mutation (fail-OPEN was the CR blocker)."""
     repo_args, env_override = _gh_repo_binding(workspace)
     try:
         got = subprocess.run(
@@ -1184,10 +1212,26 @@ def _dequeue_pr(workspace: Path, branch: str) -> bool:
              f'query=mutation{{ dequeuePullRequest(input: {{id: "{pr_id}"}}) {{ clientMutationId }} }}'],
             cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
         )
+        # Assert the GraphQL BODY, not just the exit code: gh returns 0 even when the
+        # response carries `errors` / a null payload (the mutation didn't take).
         if mut.returncode != 0:
             return False
-        state = _live_pr_state(workspace, branch)
-        return state is not None and state != "MERGED"
+        try:
+            body = json.loads(mut.stdout or "{}")
+        except Exception:  # noqa: BLE001
+            return False
+        if body.get("errors") or not ((body.get("data") or {}).get("dequeuePullRequest")):
+            return False
+        # Also cancel any AUTO-MERGE request (separate from the queue entry).
+        subprocess.run(
+            ["gh", "pr", "merge", branch, *repo_args, "--disable-auto"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
+        )
+        # CONFIRM both are gone AND the PR is not (already) MERGED.
+        status = _live_pr_queue_status(workspace, branch)
+        if status is None or status.get("state") == "MERGED":
+            return False
+        return status.get("in_queue") is False and not status.get("auto_merge")
     except Exception:  # noqa: BLE001 - any failure → not-confirmed → unreconcilable halt
         return False
 
@@ -1209,14 +1253,17 @@ def _fab_queue_bound_merge_wait(
     it in the ledger). Fail-CLOSED on every non-happy terminal — never record or
     return a merge we did not observe terminalize.
 
-    Terminals: ``MERGED`` (+ the `_live_pr_merged_sha` wrong-head/wrong-base guards +
-    a fresh FAB re-gate) → success; ``CLOSED`` without merge → block; ``OPEN`` → keep
-    polling until the timeout. On TIMEOUT (risk-1): re-read terminal FIRST (the queue
-    may have merged between the last poll and now — never block a merge that
-    happened), then attempt a dequeue; a CONFIRMED dequeue is a clean (retryable)
-    block, and a dequeue that can be neither confirmed nor observed-as-merged is the
-    loud ``merge-queue-unreconciled`` halt (a scheduled mutation we can neither cancel
-    nor observe — the operator must reconcile before resuming)."""
+    Terminals: ``MERGED`` (bound by `_live_pr_merged_sha`'s head/base IDENTITY guards
+    — NOT a second equivalence recompute; see `_terminal_or_none`) → success;
+    ``CLOSED`` without merge → block; OPEN-but-removed-from-queue (no entry, no
+    auto-merge) → early clean block; otherwise (in queue / auto-merge pending /
+    membership unreadable) → keep polling until the timeout. On TIMEOUT: re-read
+    terminal FIRST (the queue may have merged since the last poll — never block a
+    merge that happened), attempt a dequeue, then re-read terminal AGAIN (a merge may
+    land DURING the dequeue call); a CONFIRMED dequeue is a clean (retryable) block,
+    and a dequeue that can be neither confirmed nor observed-as-merged is the loud
+    ``merge-queue-unreconciled`` halt (a scheduled mutation we can neither cancel nor
+    observe — the operator must reconcile before resuming)."""
 
     def _terminal_or_none() -> Optional[str]:
         # DETECTIVE terminal binding = IDENTITY, not a second equivalence recompute.
@@ -1234,27 +1281,56 @@ def _fab_queue_bound_merge_wait(
         return _live_pr_merged_sha(workspace, branch, base=base, head_sha=head_sha)
 
     deadline = clock() + poll_timeout_s
+    seen_live = False  # have we ever OBSERVED a live merge mutation (queue entry / auto-merge)?
     while True:
         sha = _terminal_or_none()
         if sha:
             return sha
-        state = _live_pr_state(workspace, branch)
-        if state == "CLOSED":
-            raise RuntimeError(
-                f"merge-queue-dequeued: PR for branch '{branch}' in '{workspace}' left the merge "
-                f"queue CLOSED without merging (fail-closed); no merge was recorded — safe to retry"
-            )
-        # state == OPEN (or a transient unreadable None) → still in flight.
+        status = _live_pr_queue_status(workspace, branch)
+        if status is not None:
+            if status.get("state") == "CLOSED":
+                raise RuntimeError(
+                    f"merge-queue-dequeued: PR for branch '{branch}' in '{workspace}' left the merge "
+                    f"queue CLOSED without merging (fail-closed); no merge was recorded — safe to retry"
+                )
+            # Latch "live membership seen" the moment a queue entry / auto-merge is
+            # observed. This distinguishes a PR KICKED from the queue (was live, now
+            # absent) from one NOT-YET-ENQUEUED (the enqueue-propagation window right
+            # after `gh pr merge`, where the entry isn't visible yet) — "removed" is a
+            # TRANSITION, so we only early-break AFTER having seen it live.
+            if status.get("in_queue") is True or status.get("auto_merge"):
+                seen_live = True
+            # MEMBERSHIP-aware EARLY BREAK (CR round 1, Blocker A-ii): a PR KICKED from
+            # the queue (e.g. a merge-group check failed) stays OPEN with NO queue entry
+            # AND no pending auto-merge — no live merge mutation, so DON'T hang for the
+            # full timeout; fail closed cleanly NOW. Only when membership was previously
+            # seen live AND is now DEFINITIVELY absent (`in_queue is False`, not
+            # None/unreadable) AND no auto-merge (which would re-queue). The not-yet-
+            # enqueued window (never seen live) rides to the timeout ladder instead —
+            # slower but fail-closed-correct, never a false early-block.
+            elif (seen_live and status.get("state") == "OPEN"
+                    and status.get("in_queue") is False and not status.get("auto_merge")):
+                raise RuntimeError(
+                    f"merge-queue-removed: PR for branch '{branch}' in '{workspace}' was in the merge "
+                    f"queue but is now OPEN with NO queue entry and NO pending auto-merge (kicked from "
+                    f"the queue — e.g. a merge-group check failed); no merge is in flight (fail-closed; "
+                    f"safe to retry)"
+                )
+        # In queue / auto-merge pending / membership unreadable / not-yet-enqueued → still in flight.
         if clock() >= deadline:
             # Re-read terminal FIRST — the queue may have merged since the last poll.
             sha = _terminal_or_none()
             if sha:
                 return sha
-            if dequeue_fn(workspace, branch):
-                # The dequeue may have raced a just-completed merge; re-check once.
-                sha = _terminal_or_none()
-                if sha:
-                    return sha
+            dequeued = dequeue_fn(workspace, branch)
+            # Re-read terminal AFTER the dequeue attempt on BOTH branches (CR round 1,
+            # Blocker B): if the PR MERGED during the dequeue API call the mutation
+            # fails (no longer queued) → dequeued=False — a successfully-merged PR must
+            # be RECORDED, never lost to a false `unreconciled`.
+            sha = _terminal_or_none()
+            if sha:
+                return sha
+            if dequeued:
                 raise RuntimeError(
                     f"merge-queue-timeout-dequeued: the enqueued merge of '{branch}' in '{workspace}' "
                     f"did not terminalize within {poll_timeout_s:.0f}s and was DEQUEUED (fail-closed; "
@@ -1469,22 +1545,6 @@ def _live_merge_pr(
     # `gh pr merge` so the re-check is as close to the real merge as
     # possible, after the cheaper base/head guards above already passed.
     #
-    # MERGE-QUEUE CONSTRAINT (documented, not built here — Consiliency/
-    # agent-harness#265): this re-assertion binds to the DIRECT/synchronous
-    # `gh pr merge` call immediately below — i.e. it re-checks equivalence
-    # and then the very next statement performs the real promotion. FAB's
-    # design recommends running behind a GitHub merge queue, but enabling
-    # `PHASE_LOOP_FAB` together with a merge queue is NOT yet supported:
-    # under a queue, `gh pr merge` only *enqueues* the PR — the actual merge
-    # happens later, asynchronously, once the queue's own checks pass — so a
-    # re-assertion performed here would NOT be bound to the real promotion
-    # event (a TOCTOU window reopens between this check and the eventual
-    # queued merge). Separately, `--delete-branch` below (pre-existing on
-    # main, not new to FAB) is itself rejected by `gh` when the PR merges via
-    # a queue. Both are pre-existing constraints, not introduced by this
-    # milestone; #265 (merge-queue-async) must make the re-assertion bind to
-    # the queued promotion (and handle `--delete-branch`) before FAB +
-    # merge-queue can be combined safely.
     # MERGE-QUEUE: queue-bound re-assertion (Consiliency/agent-harness#265) — this
     # REPLACES piece-2's enforced prohibition (`_fab_merge_queue_prohibition`, now
     # removed). Under a GitHub merge queue a `gh pr merge` only ENQUEUES the PR: the

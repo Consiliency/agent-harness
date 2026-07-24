@@ -276,27 +276,25 @@ def _clock_seq(values):
 
 def _make_queue_gh_fake(
     *, base_ref: str, head, merged_sha: str = "sha-queuemerge",
-    merges_after: int = 1, closes: bool = False, dequeue_ok: bool = True,
-    merged_head: Optional[str] = None, calls: Optional[list] = None,
+    merges_after: int = 1, closes: bool = False, kicked: bool = False,
+    auto_merge: bool = False, dequeue_ok: bool = True, disable_auto_ok: bool = True,
+    merge_during_dequeue: bool = False, membership_unreadable: bool = False,
+    enqueue_after: int = 0, merged_head: Optional[str] = None, calls: Optional[list] = None,
 ):
-    """Fake `gh` simulating a merge QUEUE (#265). `gh pr merge` ENQUEUES (PR stays
-    OPEN, null mergeCommit.oid); after `merges_after` `_live_pr_state` polls the
-    queue produces the terminal MERGED commit. `closes=True` → the PR goes CLOSED
-    without merging (dequeued). `dequeue_ok` drives the GraphQL dequeue result. Real
-    `git` passes through so the FAB re-gate's equivalence recompute runs for real.
-    FAITHFUL POST-MERGE GEOMETRY: when the queue transitions to MERGED the fake first
-    advances `fetchsrc/main` to INCLUDE `head` (as a real queue merge does), so the
-    DETECTIVE terminal re-gate runs against true post-merge geometry (head now in the
-    base), not the pre-merge state a naive fake would leave."""
-    st = {"polls": 0, "advanced": False}
-
-    def _advance_main(cwd):
-        if not st["advanced"] and cwd is not None:
-            _REAL_SUBPROCESS_RUN(
-                ["git", "-C", str(cwd), "push", "-q", "-f", "fetchsrc", f"{head}:refs/heads/main"],
-                capture_output=True, text=True,
-            )
-            st["advanced"] = True
+    """Fake `gh` simulating a merge QUEUE with MEMBERSHIP (#265 CR round 1). Models the
+    queue-entry (`isInMergeQueue`) + auto-merge dimensions SEPARATELY from PR `state`,
+    which is what the round-1 blockers require:
+      * default: enqueue → in-queue → after `merges_after` poll iterations, MERGED.
+      * `closes` → CLOSED without merge.
+      * `kicked` → OPEN, NO queue entry, NO auto-merge (merge-group check failed) →
+        the poll must EARLY-BREAK, not hang.
+      * `auto_merge` → a pending autoMergeRequest (in flight; re-queues).
+      * `dequeue_ok` False / `merge_during_dequeue` → drive the timeout ladder.
+      * `membership_unreadable` → `isInMergeQueue` null (caller stays conservative).
+    The terminal binding is head/base IDENTITY (gh JSON only), so no git advance is
+    needed. Real `git` still passes through for the PREVENTIVE pre-enqueue re-gate."""
+    st = {"iter": 0, "state": "OPEN", "in_queue": True, "auto_merge": auto_merge,
+          "merged": False, "dequeued": False}
 
     def fake(cmd, **kwargs):
         if cmd and cmd[0] == "git":
@@ -307,26 +305,56 @@ def _make_queue_gh_fake(
         label = _gh_subcommand(cmd)
         if label == "view-premerge":
             return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, base_ref, head=head))
+        if "--disable-auto" in cmd:  # dequeue's auto-merge cancel
+            if disable_auto_ok:
+                st["auto_merge"] = False
+            return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
         if label == "merge":
             return _FakeCompletedProcess(returncode=0, stdout="", stderr="")  # ENQUEUE (not merged)
         if label == "view-merged-sha":
-            merged = (not closes) and st["polls"] >= merges_after
-            if merged:
-                _advance_main(kwargs.get("cwd"))  # queue lands head onto main BEFORE the terminal re-gate
+            if st["merged"]:
                 return _FakeCompletedProcess(
                     returncode=0,
                     stdout=_merged_sha_json("MERGED", base_ref, sha=merged_sha, head=(merged_head or head)))
             return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", base_ref, head=head))
-        if cmd[:3] == ["gh", "pr", "view"] and "state" in joined and "mergeCommit" not in joined and "id" not in joined:
-            st["polls"] += 1  # each queue-state poll advances the lifecycle
+        # _live_pr_queue_status step 1: gh pr view --json number,state,autoMergeRequest
+        if cmd[:3] == ["gh", "pr", "view"] and "autoMergeRequest" in joined:
+            st["iter"] += 1  # each poll iteration advances the lifecycle
             if closes:
-                return _FakeCompletedProcess(returncode=0, stdout=json.dumps({"state": "CLOSED"}))
-            state = "MERGED" if st["polls"] > merges_after else "OPEN"
-            return _FakeCompletedProcess(returncode=0, stdout=json.dumps({"state": state}))
+                st["state"] = "CLOSED"
+            elif kicked:
+                # Model the real TRANSITION: in the queue on poll 1 (so the poll latches
+                # "seen live"), then KICKED (removed, no auto-merge) on poll 2+ — proving
+                # the early-break fires on a True→False transition, not an instant-False
+                # (which the seen-live latch would correctly ignore as not-yet-enqueued).
+                st["state"], st["auto_merge"] = "OPEN", False
+                st["in_queue"] = st["iter"] < 2
+            elif st["iter"] > merges_after:
+                st["merged"], st["state"] = True, "MERGED"
+            else:
+                # In-queue once past the enqueue-propagation window, UNLESS a dequeue
+                # removed the entry (which must stick through the confirm).
+                st["in_queue"] = (st["iter"] > enqueue_after) and not st["dequeued"]
+            return _FakeCompletedProcess(returncode=0, stdout=json.dumps(
+                {"number": 123, "state": st["state"],
+                 "autoMergeRequest": {"enabledAt": "t"} if st["auto_merge"] else None}))
+        # _live_pr_queue_status step 2: GraphQL isInMergeQueue
+        if cmd[:2] == ["gh", "api"] and "isInMergeQueue" in joined:
+            val = None if membership_unreadable else st["in_queue"]
+            return _FakeCompletedProcess(returncode=0, stdout=json.dumps(
+                {"data": {"repository": {"pullRequest": {"isInMergeQueue": val}}}}))
         if cmd[:3] == ["gh", "pr", "view"] and "id" in joined:  # _dequeue_pr: PR node id
             return _FakeCompletedProcess(returncode=0, stdout=json.dumps({"id": "PR_node_1"}))
-        if cmd[:2] == ["gh", "api"] and "graphql" in joined:  # _dequeue_pr: dequeuePullRequest
-            return _FakeCompletedProcess(returncode=0 if dequeue_ok else 1, stdout="{}")
+        if cmd[:2] == ["gh", "api"] and "dequeuePullRequest" in joined:  # dequeue mutation
+            if merge_during_dequeue:  # the PR merges DURING the dequeue call → mutation fails
+                st["merged"], st["state"] = True, "MERGED"
+                return _FakeCompletedProcess(returncode=0, stdout=json.dumps({"errors": [{"message": "not queued"}]}))
+            if dequeue_ok:
+                st["dequeued"] = True  # removed from queue (sticks through the confirm poll)
+                return _FakeCompletedProcess(
+                    returncode=0, stdout=json.dumps({"data": {"dequeuePullRequest": {"clientMutationId": None}}}))
+            # zero exit but a GraphQL error → NOT confirmed (fail-open guard)
+            return _FakeCompletedProcess(returncode=0, stdout=json.dumps({"errors": [{"message": "boom"}]}))
         raise AssertionError(f"unexpected gh call reached queue fake: {cmd!r}")
 
     return fake
@@ -655,6 +683,93 @@ class TestLiveMergePrFabPromotion:
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-closed",
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
                 )
+
+    def test_fab_queue_kicked_open_early_blocks_no_hang(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 1 Blocker A-ii: a PR KICKED from the queue (merge-group check
+        failed) stays state=OPEN with NO queue entry and NO auto-merge. The poll must
+        read MEMBERSHIP and EARLY-BREAK (clean block) NOW — not hang for the full
+        timeout. Uses a never-timeout clock (0.0) to prove the break is membership-
+        driven, not the deadline."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-kick")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, kicked=True)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="merge-queue-removed"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-kick",
+                    fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                )
+
+    def test_fab_queue_not_yet_enqueued_window_does_not_false_block(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 1 (advisor): the enqueue-propagation window right after
+        `gh pr merge` — OPEN, `isInMergeQueue` not visible yet, no auto-merge — must
+        NOT trigger the `merge-queue-removed` early-break (that would false-block EVERY
+        queue merge whose entry propagates slower than the first poll). The seen-live
+        latch: never-seen-live → keep polling; the entry then appears → merges."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-window")
+        # Poll 1: not yet in queue (window). Poll 2+: in queue. Merges after poll 2.
+        fake = _make_queue_gh_fake(base_ref="main", head=head, enqueue_after=1, merges_after=2)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            sha = _live_merge_pr(
+                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-window",
+                fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+            )
+        assert sha == "sha-queuemerge", "the not-yet-enqueued window must NOT early-block; it merges once queued"
+
+    def test_fab_queue_surviving_auto_merge_is_not_confirmed_dequeued(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 1 Blocker A-i: dequeue that removes the queue entry but leaves
+        a surviving auto-merge request must NOT read as cancelled — a live merge intent
+        remains. Confirmation requires BOTH no-entry AND no-auto-merge; a surviving
+        auto-merge → the loud unreconciled halt, never a false timeout-dequeued."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-auto")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999,
+                                   auto_merge=True, dequeue_ok=True, disable_auto_ok=False)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-auto",
+                    fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                )
+
+    def test_fab_queue_unreadable_membership_does_not_early_break(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 1: UNREADABLE membership (`isInMergeQueue` null) must NOT be
+        read as 'not queued' — the poll keeps going (no false early-break) and, at the
+        timeout, an unconfirmable dequeue → unreconciled (fail-closed on ambiguity)."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-unreadable")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, membership_unreadable=True)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-unreadable",
+                    fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                )
+
+    def test_fab_queue_merge_during_dequeue_is_recorded_not_halted(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 1 Blocker B: if the PR MERGES during the (now-failing) dequeue
+        call at the timeout boundary, the post-dequeue terminal re-read RECORDS it —
+        a merged PR must never be LOST to a false unreconciled halt."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-race")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, merge_during_dequeue=True)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            sha = _live_merge_pr(
+                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race",
+                fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+            )
+        assert sha == "sha-queuemerge"
 
     def test_fab_queue_timeout_dequeue_confirmed_blocks(self, tmp_path: Path, monkeypatch):
         """#265 risk-1: the queue never terminalizes within the bound; on timeout the
@@ -1199,6 +1314,41 @@ class TestPiece3aRegateEndToEnd:
                 fab_fetch_origin="fetchsrc",
             )
         assert result["status"] == "merged", result
+
+    def test_fab_queue_terminal_sha_recorded_in_ledger_through_run_train(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 1 test-gap: the terminal→ledger integration. THROUGH run_train
+        (real `_live_merge_pr`, queue path), the queue-produced terminal SHA is written
+        into the node's durable `merged` ledger record — not just returned. `time.sleep`
+        is a no-op so the poll spins to the terminal without real time."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        monkeypatch.setattr("phase_loop_runtime.train_runner.time.sleep", lambda _s: None)
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-e2e")
+        roadmap, ws_map, ledger = self._one_node_resume(tmp_path, repo, head, "run-mq-e2e")
+
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merged_sha="sha-queue-terminal", merges_after=1)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            result = run_train(
+                roadmap, ledger, run_mode="governed",
+                resolve_workspace=lambda n: ws_map[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub({}),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_p3a_pr_open,
+                _live_pr_head_sha_fn=lambda ws, br: None,
+                _merge_phase_enabled=True,  # REAL _live_merge_pr → the queue wait runs here
+                _reverify_fn=_reverify_pass,
+                _train_review_fn=_approval_review_fn,
+                fab_fetch_origin="fetchsrc",
+            )
+        assert result["status"] == "merged", result
+        rec = read_ledger(ledger)["repo-a/specs/plan-a.md"]
+        assert rec.status == "merged"
+        assert rec.upstream_merge_sha == "sha-queue-terminal", (
+            "the QUEUE-produced terminal SHA must be recorded in the durable ledger, not lost"
+        )
 
     def test_regate_fail_closes_on_tampered_provenance(self, tmp_path: Path, monkeypatch):
         _git_available()
