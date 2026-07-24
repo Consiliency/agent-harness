@@ -687,6 +687,21 @@ class TestPiece3aResolveAdmissionFabRunId:
         assert bound is None
         assert reason is not None and "fab-admission-provenance-missing" in reason
 
+    def test_unreadable_provenance_fails_closed(self, tmp_path: Path, monkeypatch):
+        """grok 3a follow-up: a plumbed run_id whose provenance is PRESENT but
+        UNREADABLE/tampered (not merely absent) must fail CLOSED — a broken
+        FAB-scoped artifact is never treated as 'non-FAB'."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        # A provenance file EXISTS at the run-store path but is corrupt JSON.
+        path = fp.provenance_path_for_run(repo, "run-corrupt")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ this is not valid provenance json", encoding="utf-8")
+        bound, reason = _resolve_admission_fab_run_id(repo, "sha-whatever", "run-corrupt")
+        assert bound is None
+        assert reason is not None and "fab-admission-provenance-unreadable" in reason
+
     def test_flag_off_is_inert(self, tmp_path: Path, monkeypatch):
         _git_available()
         monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)

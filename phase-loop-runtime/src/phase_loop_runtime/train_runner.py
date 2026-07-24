@@ -1847,6 +1847,14 @@ def run_train(
                 # snapshot guard.  owned_paths come from the committed diff vs
                 # base (or an explicit resolver); publish pushes the existing
                 # branch WITHOUT a new commit (prebuilt=True).
+                #
+                # FAB (agent-harness#191 piece 3a): a prebuilt node does NOT plumb a
+                # fab_run_id (`_node_fab_run_id` stays None — there is no run_loop
+                # closeout summary to read it from). So the merge-time re-gate is
+                # inert for prebuilt nodes today; FAB provenance is produced only on
+                # the EXECUTE path (run_loop closeout). A prebuilt node whose work
+                # was FAB-reviewed elsewhere would need its run_id surfaced through
+                # the prebuilt admission — a documented follow-up, not wired here.
                 if _explicit_owned_paths:
                     owned_paths = list(resolve_owned_paths(node))  # type: ignore[arg-type]
                 else:
