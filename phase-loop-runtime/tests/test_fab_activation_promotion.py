@@ -261,6 +261,77 @@ def _make_gh_fake(*, base_ref: str, head, merged_sha: str = "sha-realmerge", cal
     return fake_run
 
 
+def _clock_seq(values):
+    """A `_clock` seam returning successive `values` (last repeats) — drives the
+    merge-queue poll's deadline deterministically without real time."""
+    box = {"i": 0}
+
+    def _clock():
+        i = box["i"]
+        box["i"] = min(i + 1, len(values) - 1)
+        return values[i]
+
+    return _clock
+
+
+def _make_queue_gh_fake(
+    *, base_ref: str, head, merged_sha: str = "sha-queuemerge",
+    merges_after: int = 1, closes: bool = False, dequeue_ok: bool = True,
+    merged_head: Optional[str] = None, calls: Optional[list] = None,
+):
+    """Fake `gh` simulating a merge QUEUE (#265). `gh pr merge` ENQUEUES (PR stays
+    OPEN, null mergeCommit.oid); after `merges_after` `_live_pr_state` polls the
+    queue produces the terminal MERGED commit. `closes=True` → the PR goes CLOSED
+    without merging (dequeued). `dequeue_ok` drives the GraphQL dequeue result. Real
+    `git` passes through so the FAB re-gate's equivalence recompute runs for real.
+    FAITHFUL POST-MERGE GEOMETRY: when the queue transitions to MERGED the fake first
+    advances `fetchsrc/main` to INCLUDE `head` (as a real queue merge does), so the
+    DETECTIVE terminal re-gate runs against true post-merge geometry (head now in the
+    base), not the pre-merge state a naive fake would leave."""
+    st = {"polls": 0, "advanced": False}
+
+    def _advance_main(cwd):
+        if not st["advanced"] and cwd is not None:
+            _REAL_SUBPROCESS_RUN(
+                ["git", "-C", str(cwd), "push", "-q", "-f", "fetchsrc", f"{head}:refs/heads/main"],
+                capture_output=True, text=True,
+            )
+            st["advanced"] = True
+
+    def fake(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            return _REAL_SUBPROCESS_RUN(cmd, **kwargs)
+        if calls is not None:
+            calls.append(cmd)
+        joined = " ".join(cmd)
+        label = _gh_subcommand(cmd)
+        if label == "view-premerge":
+            return _FakeCompletedProcess(returncode=0, stdout=_premerge_json(False, base_ref, head=head))
+        if label == "merge":
+            return _FakeCompletedProcess(returncode=0, stdout="", stderr="")  # ENQUEUE (not merged)
+        if label == "view-merged-sha":
+            merged = (not closes) and st["polls"] >= merges_after
+            if merged:
+                _advance_main(kwargs.get("cwd"))  # queue lands head onto main BEFORE the terminal re-gate
+                return _FakeCompletedProcess(
+                    returncode=0,
+                    stdout=_merged_sha_json("MERGED", base_ref, sha=merged_sha, head=(merged_head or head)))
+            return _FakeCompletedProcess(returncode=0, stdout=_merged_sha_json("OPEN", base_ref, head=head))
+        if cmd[:3] == ["gh", "pr", "view"] and "state" in joined and "mergeCommit" not in joined and "id" not in joined:
+            st["polls"] += 1  # each queue-state poll advances the lifecycle
+            if closes:
+                return _FakeCompletedProcess(returncode=0, stdout=json.dumps({"state": "CLOSED"}))
+            state = "MERGED" if st["polls"] > merges_after else "OPEN"
+            return _FakeCompletedProcess(returncode=0, stdout=json.dumps({"state": state}))
+        if cmd[:3] == ["gh", "pr", "view"] and "id" in joined:  # _dequeue_pr: PR node id
+            return _FakeCompletedProcess(returncode=0, stdout=json.dumps({"id": "PR_node_1"}))
+        if cmd[:2] == ["gh", "api"] and "graphql" in joined:  # _dequeue_pr: dequeuePullRequest
+            return _FakeCompletedProcess(returncode=0 if dequeue_ok else 1, stdout="{}")
+        raise AssertionError(f"unexpected gh call reached queue fake: {cmd!r}")
+
+    return fake
+
+
 def _git_available():
     if _GIT is None:  # pragma: no cover - CI always has git
         pytest.skip("git not available")
@@ -530,44 +601,125 @@ class TestLiveMergePrFabPromotion:
                 )
         assert sha == "sha-realmerge"
 
-    def test_flag_on_merge_queue_enabled_refuses_merge(self, tmp_path: Path, monkeypatch):
-        """design "Enforced merge-queue prohibition" (piece 2, 2d): flag on +
-        the base branch has a GitHub merge queue → refuse (a queued merge lands
-        asynchronously AFTER this re-assertion, a TOCTOU #265 will close). Even
-        with a run_id whose provenance is perfectly valid, the queue check fires
-        FIRST and no `gh pr merge` is ever issued."""
+    def test_fab_queue_enqueue_polls_to_terminal_and_records(self, tmp_path: Path, monkeypatch):
+        """#265 (replaces piece-2's prohibition): FAB on + a merge QUEUE — the PR is
+        ENQUEUED (still OPEN), the queue-bound wait POLLS to the terminal MERGED
+        commit, re-gates against it, and RETURNS that SHA (the caller records it).
+        The prohibition is gone: `gh pr merge` IS now issued (no `fab-merge-queue-
+        prohibited` refusal)."""
         _git_available()
         monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq")
 
         calls: list = []
-        base_fake = _make_gh_fake(base_ref="main", head=head, calls=calls)
-
-        def fake(cmd, **kwargs):
-            # The base branch DOES have a merge queue enabled.
-            if cmd[:2] == ["gh", "api"]:
-                return _FakeCompletedProcess(returncode=0, stdout=json.dumps([{"type": "merge_queue"}]))
-            return base_fake(cmd, **kwargs)
-
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=1, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="fab-merge-queue-prohibited"):
-                _live_merge_pr(
-                    repo, "feat/pr1", base="main", head_sha=head,
-                    run_id="run-mq", fab_fetch_origin="fetchsrc",
-                )
-        merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
-        assert merge_calls == [], "gh pr merge must never be invoked when a merge queue is enabled under FAB"
+            sha = _live_merge_pr(
+                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq", fab_fetch_origin="fetchsrc",
+                _clock=lambda: 0.0, _sleep=lambda _s: None,  # no real time; never hits the deadline
+            )
+        assert sha == "sha-queuemerge"
+        assert [c for c in calls if _gh_subcommand(c) == "merge"], "the merge (enqueue) must be issued — prohibition removed"
 
-    def test_merge_queue_probe_unbound_identity_fails_closed(self, monkeypatch, tmp_path: Path):
-        """If the repo identity cannot be bound (`repo_args` has no `--repo`)
-        while the flag is on, the probe refuses rather than query an unbound
-        repo's rules (fail-closed)."""
-        from phase_loop_runtime import train_runner as tr
-
+    def test_fab_queue_rewritten_head_fails_closed(self, tmp_path: Path, monkeypatch):
+        """#265 detective binding + known limitation: the terminal re-assertion is
+        head/base IDENTITY (via `_live_pr_merged_sha`). A queue that REWRITES the head
+        (e.g. a rebase-style merge queue) produces a `headRefOid` != the pinned
+        admitted head → `pr-merged-wrong-head` fail-closed. Merge/squash queues (which
+        preserve the head) are supported; a rebase queue fails closed (safe), not
+        silently accepted."""
+        _git_available()
         monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
-        reason = tr._fab_merge_queue_prohibition(tmp_path, "main", [], None)
-        assert reason is not None and "unbound repo" in reason
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-rebase")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merged_head="sha-rebased-by-queue")
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="pr-merged-wrong-head"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-rebase",
+                    fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                )
+
+    def test_fab_queue_closed_without_merge_blocks(self, tmp_path: Path, monkeypatch):
+        """#265 fail-closed: an enqueued PR that goes CLOSED without merging (dequeued
+        upstream) blocks — no merge recorded."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-closed")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, closes=True)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="merge-queue-dequeued"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-closed",
+                    fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                )
+
+    def test_fab_queue_timeout_dequeue_confirmed_blocks(self, tmp_path: Path, monkeypatch):
+        """#265 risk-1: the queue never terminalizes within the bound; on timeout the
+        dequeue is CONFIRMED → a clean (retryable) block, not the loud halt."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-to")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=True)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="merge-queue-timeout-dequeued"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-to",
+                    fab_fetch_origin="fetchsrc", queue_poll_timeout_s=1800.0,
+                    _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                )
+
+    def test_fab_queue_timeout_but_already_merged_records_not_blocks(self, tmp_path: Path, monkeypatch):
+        """#265 risk-1 (do NOT block a merge that happened): the deadline passes, but
+        the re-read-terminal-FIRST shows the queue already MERGED → return + record it,
+        never a spurious block."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-race")
+        # merges_after=1 → after the first state poll, the timeout re-read observes MERGED.
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=1)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            sha = _live_merge_pr(
+                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race",
+                fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+            )
+        assert sha == "sha-queuemerge"
+
+    def test_fab_queue_unreconcilable_halts_loud(self, tmp_path: Path, monkeypatch):
+        """#265 risk-1 crux: the queue never terminalizes AND the dequeue cannot be
+        confirmed → the loud `merge-queue-unreconciled` block (a scheduled mutation we
+        can neither observe nor cancel — the train halts for operator reconciliation)."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-unrec")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=False)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-unrec",
+                    fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                )
+
+    def test_non_fab_queue_node_is_byte_neutral_fail_closed(self, tmp_path: Path, monkeypatch):
+        """Byte-neutral: a NON-FAB node (`run_id=None`) whose merge ENQUEUES (never
+        synchronously MERGED) hits main's UNCHANGED fail-closed raise — the queue-bound
+        wait is a FAB-only capability (it needs the FAB re-gate), so off the FAB path
+        nothing changes."""
+        _git_available()
+        monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-nonfab")
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError, match="could not determine merge commit SHA"):
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc",
+                )
 
     def test_repo_slug_owner_repo_extraction(self):
         from phase_loop_runtime import train_runner as tr
@@ -576,9 +728,10 @@ class TestLiveMergePrFabPromotion:
         assert tr._repo_slug_owner_repo(["--repo", "testorg/testrepo"]) == "testorg/testrepo"
         assert tr._repo_slug_owner_repo([]) is None
 
-    def test_flag_off_merge_queue_not_probed(self, tmp_path: Path, monkeypatch):
-        """Byte-neutral: with the flag OFF, the merge-queue prohibition issues
-        NO `gh api` probe and the merge proceeds even under a would-be queue."""
+    def test_flag_off_no_merge_queue_gh_api(self, tmp_path: Path, monkeypatch):
+        """Byte-neutral: with the flag OFF, a synchronous merge issues NO `gh api`
+        call at all (#265 removed piece-2's pre-merge rules probe; the FAB queue path
+        + its dequeue GraphQL never run off the FAB path) and the merge proceeds."""
         _git_available()
         monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
         repo = _make_fab_repo(tmp_path)
@@ -588,7 +741,7 @@ class TestLiveMergePrFabPromotion:
 
         def fake(cmd, **kwargs):
             if cmd[:2] == ["gh", "api"]:
-                raise AssertionError("gh api merge-queue probe must NOT run while PHASE_LOOP_FAB is off")
+                raise AssertionError("no `gh api` call may run on the byte-neutral flag-off merge path")
             return base_fake(cmd, **kwargs)
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
