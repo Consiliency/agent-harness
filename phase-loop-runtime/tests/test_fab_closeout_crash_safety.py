@@ -449,6 +449,41 @@ def test_durability_failure_blocks_no_advance(tmp_path, monkeypatch):
     assert event.metadata["closeout"].get("closeout_action") == "review_gate_block"
 
 
+def test_fab_push_mode_actually_publishes(tmp_path, monkeypatch):
+    """CR round 10 (DE-MASKED, REAL resolver): a normal FAB-on push-mode closeout
+    must ACTUALLY publish — push the gated candidate to the real upstream remote+
+    ref. The round-9 code captured push ELIGIBILITY pre-gate while the worktree was
+    still dirty → always `post_commit_dirty_worktree` refused → never published."""
+    monkeypatch.setenv("PHASE_LOOP_FAB", "1")
+    repo, roadmap = _setup_repo(tmp_path)
+    _install_governed_panel(monkeypatch)
+    branch = _git(repo, "symbolic-ref", "--short", "HEAD")
+    # Real upstream on the local bare remote, so resolve_closeout_push_target
+    # yields {remote: fetchsrc, push_ref: refs/heads/<branch>} with no stub.
+    subprocess.run(["git", "-C", str(repo), "branch", f"--set-upstream-to=fetchsrc/main"], check=True)
+    monkeypatch.setenv("PHASE_LOOP_TARGET_PUSH_REF", "refs/heads/main")
+    # Exclude the run store so the post-advance worktree is genuinely clean
+    # (the real runtime does this via .git/info/exclude).
+    (repo / ".git" / "info" / "exclude").write_text(".phase-loop/\n")
+    _stage_change(repo)
+
+    status, event = R._perform_phase_closeout(
+        repo, roadmap, "CONTRACT", _snapshot(repo, roadmap),
+        resolve_profile("execute"), action="execute", closeout_mode="push", run_mode="governed",
+    )
+    assert status == "complete", event.metadata.get("closeout", {})
+    assert event.metadata["closeout"].get("closeout_action") == "push", (
+        f"FAB push mode must actually publish (got action={event.metadata['closeout'].get('closeout_action')}, "
+        f"reason={event.metadata['closeout'].get('closeout_refusal_reason')})"
+    )
+    # The gated candidate is now the remote's ref tip.
+    gated = _git(repo, "rev-parse", "HEAD")
+    remote_tip = subprocess.run(
+        ["git", "-C", str(repo), "ls-remote", "fetchsrc", "refs/heads/main"], capture_output=True, text=True
+    ).stdout.split()[0]
+    assert remote_tip == gated, "the pushed remote ref is the exact gated candidate"
+
+
 def test_push_uses_gate_time_coordinates_on_concurrent_switch(tmp_path, monkeypatch):
     """CR round 9 / codex#4: in push mode, a concurrent HEAD switch after gating
     must NOT re-derive the push remote/ref from ambient topology — the gated

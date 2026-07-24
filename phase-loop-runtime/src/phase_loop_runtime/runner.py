@@ -8736,11 +8736,15 @@ def _perform_phase_closeout_impl(
     # None on every non-FAB / noop / declined path. Defined at function scope so
     # the `closeout_mode == "push"` block can push it instead of ambient HEAD.
     fab_gated_sha = None
-    # The COMPLETE push coordinates (remote + destination ref) captured at GATE
-    # time for the FAB path (CR round 9 / codex#4), so a concurrent HEAD switch
-    # after gating can never re-derive the remote/ref from ambient topology and
-    # push the gated candidate to the wrong branch. None on the non-FAB path.
-    fab_push_decision = None
+    # The immutable push COORDINATES (remote + destination ref) captured at GATE
+    # time for the FAB path (CR round 9/10 / codex#4), so a concurrent HEAD switch
+    # after gating can never re-derive the ref from ambient topology and push the
+    # gated candidate to the wrong branch. Only the COORDINATES are pinned here —
+    # the push ELIGIBILITY (clean / not-behind) is judged FRESH post-advance
+    # (pre-gate the worktree is still dirty, so the eligibility would always be
+    # False — the CR round-9 bug that made FAB push mode never publish). None on
+    # the non-FAB path.
+    fab_push_coords = None
 
     def _closeout_event() -> LoopEvent:
         """The single canonical closeout LoopEvent builder, read at call time so
@@ -9191,12 +9195,17 @@ def _perform_phase_closeout_impl(
                     # DECLINES to the non-FAB `git commit` path below (team-lead
                     # decision — never silently skip a blocking check-hook).
                     #
-                    # Capture the COMPLETE push coordinates NOW (pre-advance,
-                    # pre-any-concurrent-switch) for push mode, so the gated
-                    # candidate is later pushed to THIS remote+ref, never one
-                    # re-derived from post-gate ambient topology (CR round 9 #4).
+                    # Capture ONLY the immutable push COORDINATES NOW (pre-advance,
+                    # pre-any-concurrent-switch), so the gated candidate is later
+                    # pushed to THIS remote+ref — never one re-derived from post-gate
+                    # ambient topology (CR round 9/10 #4). Eligibility is NOT captured
+                    # here: pre-gate the worktree is still dirty so it would always
+                    # refuse (the round-9 bug); it is judged fresh post-advance. The
+                    # resolver returns remote/push_ref even for a dirty worktree.
                     if closeout_mode == "push":
-                        fab_push_decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
+                        _coords = resolve_closeout_push_target(repo, collect_git_topology(repo))
+                        if _coords.get("remote") and _coords.get("push_ref"):
+                            fab_push_coords = {"remote": _coords["remote"], "push_ref": _coords["push_ref"]}
                     fab_kind, commit_result, fab_wrote_provenance, fab_gated_sha = _fab_object_gate_commit(
                         repo,
                         fab_run_id=fab_run_id,
@@ -9328,34 +9337,46 @@ def _perform_phase_closeout_impl(
                                     "access_attempts": (),
                                 }
         if closeout_mode == "push":
-            # On a FAB advance, use the COMPLETE push coordinates (remote +
-            # destination ref) captured at GATE time — never re-derive them from
-            # post-gate ambient topology (a concurrent HEAD switch could otherwise
-            # push the gated candidate to the switched-to branch's remote ref).
-            # The non-FAB path re-resolves fresh, byte-for-byte as before.
-            if fab_gated_sha is not None and fab_push_decision is not None:
-                decision = fab_push_decision
+            if fab_gated_sha is not None and fab_push_coords is not None:
+                # FAB advance: push ELIGIBILITY is judged FRESH now (the worktree
+                # is clean relative to the gated HEAD — index == candidate's tree),
+                # but the push COORDINATES are the ones PINNED at gate time, never
+                # re-derived from post-gate ambient topology (a concurrent HEAD
+                # switch could otherwise redirect the push). Source = the gated SHA.
+                eligibility = resolve_closeout_push_target(repo, collect_git_topology(repo))
+                remote, push_ref = fab_push_coords["remote"], fab_push_coords["push_ref"]
+                if eligibility.get("allowed"):
+                    _git(repo, "push", str(remote), f"{fab_gated_sha}:{push_ref}")
+                    metadata["closeout"].update(
+                        {"closeout_action": "push", "closeout_push_ref": f"{remote} {push_ref}"}
+                    )
+                else:
+                    metadata["closeout"].update(
+                        {
+                            "closeout_action": "push_refused",
+                            "closeout_push_ref": push_ref,
+                            "closeout_refusal_reason": eligibility.get("refusal_reason"),
+                        }
+                    )
             else:
+                # Non-FAB path — byte-for-byte unchanged: resolve fresh, push HEAD.
                 decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
-            if decision.get("allowed"):
-                # Push the GATED candidate SHA on a FAB advance (never ambient
-                # HEAD) so published == gated (CR round 8/9); non-FAB pushes HEAD.
-                push_source = fab_gated_sha or "HEAD"
-                _git(repo, "push", str(decision["remote"]), f"{push_source}:{decision['push_ref']}")
-                metadata["closeout"].update(
-                    {
-                        "closeout_action": "push",
-                        "closeout_push_ref": f"{decision['remote']} {decision['push_ref']}",
-                    }
-                )
-            else:
-                metadata["closeout"].update(
-                    {
-                        "closeout_action": "push_refused",
-                        "closeout_push_ref": decision.get("push_ref"),
-                        "closeout_refusal_reason": decision.get("refusal_reason"),
-                    }
-                )
+                if decision.get("allowed"):
+                    _git(repo, "push", str(decision["remote"]), f"HEAD:{decision['push_ref']}")
+                    metadata["closeout"].update(
+                        {
+                            "closeout_action": "push",
+                            "closeout_push_ref": f"{decision['remote']} {decision['push_ref']}",
+                        }
+                    )
+                else:
+                    metadata["closeout"].update(
+                        {
+                            "closeout_action": "push_refused",
+                            "closeout_push_ref": decision.get("push_ref"),
+                            "closeout_refusal_reason": decision.get("refusal_reason"),
+                        }
+                    )
     # OWNFIX #36-item1: if the owned subset committed cleanly but a genuinely-unowned
     # remainder exists, surface it loudly AFTER preserving the owned work. Only fires on
     # commit success (status complete/planned) so it never overrides an earlier block
