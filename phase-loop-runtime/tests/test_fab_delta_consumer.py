@@ -155,3 +155,124 @@ class DeltaConsumerRoundTripTest(GitRepoTestCase):
             repo=self.repo, run_id=run_id, live_base_ref_name="main", live_head_sha=delta2_head, origin="fetchsrc"
         )
         self.assertEqual(passed.status, fp.GATE_STATUS_PASS, passed.equivalence_verified.reason)
+
+
+class DeltaReadmitTransactionTest(GitRepoTestCase):
+    """The atomic re-admission (`_fab_delta_readmit`) — the CR crux: ordering,
+    crash-between fail-closed, and resume convergence."""
+
+    RUN = "fab-readmit"
+
+    def _setup_candidate_and_advance(self):
+        """Real git base→candidate_head→delta_head; a candidate run store admitted at
+        candidate_head; returns (ledger_path, base, candidate_head, delta_head)."""
+        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        base = self.commit("c0 base")
+        self.push_main()
+        self.write("pkg/a.py", "candidate\n")
+        candidate_head = self.commit("c1 candidate")
+        candidate = self.candidate(base, candidate_head)
+        candidate_seats = (_seat("codex:c:high", epoch=1, finding_ids=()),)
+        candidate_artifact = self.build_artifact(base_sha=base, candidate=candidate, seats=candidate_seats)
+        fp.write_provenance(self.repo, self.RUN, candidate_artifact)
+        for s in candidate_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(s))
+        self.write_review_round(self.RUN, candidate_artifact)
+        # The advance: a single commit past the admitted candidate head.
+        self.write("pkg/c.py", "disjoint delta advance\n")
+        delta_head = self.commit("c2 advance")
+        ledger_path = self.repo.parent / "train.ledger.jsonl"
+        append_record(ledger_path, LedgerRecord(
+            node_id="n1", status="pr_open", branch="feat/pr1", head_sha=candidate_head,
+            fab_run_id=self.RUN, merge_order=0))
+        return ledger_path, base, candidate_head, delta_head
+
+    def _review_fn(self, ws, diff):
+        from phase_loop_runtime.governed_premerge import LoopResult
+        return LoopResult(mergeable=True, ran=True, rounds=1, panel=_delta_panel())
+
+    def test_readmit_happy_path_extends_chain_and_commits_ledger(self):
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        ledger_path, base, candidate_head, delta_head = self._setup_candidate_and_advance()
+        new_admitted = tr._fab_delta_readmit(
+            self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+            merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+            delta_review_fn=self._review_fn, fab_fetch_origin="fetchsrc",
+        )
+        self.assertEqual(new_admitted, delta_head)
+        # COMMIT POINT: the ledger now admits the new head with the same fab_run_id.
+        rec = read_ledger(ledger_path)["n1"]
+        self.assertEqual(rec.head_sha, delta_head)
+        self.assertEqual(rec.fab_run_id, self.RUN)
+        # The extended chain (candidate + delta) passes the merged gate at the new head.
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
+    def test_crash_between_fails_closed_then_resume_converges(self):
+        """A crash BETWEEN the provenance overwrite and the ledger append: the
+        ledger still admits the OLD head (fail-closed — the merge guard would fire),
+        yet the durable provenance was extended. Resume re-runs the branch and
+        converges (recapture → scope → rebuild → re-admit), NOT bricked."""
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        ledger_path, base, candidate_head, delta_head = self._setup_candidate_and_advance()
+
+        # ATTEMPT 1 crashes at the commit point: append_record raises after the
+        # provenance overwrite + fsync + gate-verify.
+        import phase_loop_runtime.train_runner as _trmod
+        real_append = _trmod.append_record
+        state = {"crash": True}
+
+        def crashing_append(path, record):
+            if state["crash"] and record.status == "pr_open" and record.head_sha == delta_head:
+                raise OSError("simulated crash at the ledger commit point")
+            return real_append(path, record)
+
+        _trmod.append_record = crashing_append
+        try:
+            with self.assertRaises(OSError):
+                tr._fab_delta_readmit(
+                    self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+                    merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+                    delta_review_fn=self._review_fn, fab_fetch_origin="fetchsrc",
+                )
+            # Fail-closed: the ledger still admits the OLD candidate head.
+            self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
+
+            # RESUME (attempt 2): the append succeeds → converges to the new head.
+            state["crash"] = False
+            new_admitted = tr._fab_delta_readmit(
+                self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+                delta_review_fn=self._review_fn, fab_fetch_origin="fetchsrc",
+            )
+            self.assertEqual(new_admitted, delta_head)
+            self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, delta_head)
+            gate = fg.compose_gate_status(
+                repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+            )
+            self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+        finally:
+            _trmod.append_record = real_append
+
+    def test_multi_commit_advance_is_not_handled(self):
+        """A MULTI-commit advance is out of scope → _fab_delta_readmit returns None
+        (the caller falls through to the unchanged pr-head-advanced guard)."""
+        from phase_loop_runtime import train_runner as tr
+
+        ledger_path, base, candidate_head, delta_head = self._setup_candidate_and_advance()
+        self.write("pkg/e.py", "second advance commit\n")
+        delta_head_2 = self.commit("c3 second advance")  # now 2 commits past candidate
+        result = tr._fab_delta_readmit(
+            self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+            merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head_2,
+            delta_review_fn=self._review_fn, fab_fetch_origin="fetchsrc",
+        )
+        self.assertIsNone(result)
