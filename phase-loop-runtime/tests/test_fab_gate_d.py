@@ -664,6 +664,7 @@ class DeltaChainForgeTest(GitRepoTestCase):
         extra_artifact_delta_seats: tuple[fp.ProvenanceSeat, ...] = (),
         drop_delta_from_artifact: bool = False,
         bind_material: bool = True,
+        empty_material: bool = False,
     ) -> str:
         """Build + persist an otherwise-passing disjoint-clean delta chain, with
         knobs to forge exactly one thing. Returns the delta head (the live head)."""
@@ -683,7 +684,11 @@ class DeltaChainForgeTest(GitRepoTestCase):
                 seat_instance_id=f"codex:x:high@{delta_epoch}",
             ),
         )
-        if bind_material:
+        if empty_material:
+            # B4 (round 3) negative control: a ZERO-file material set with the EMPTY
+            # aggregate digest (non-None) — must NOT be accepted as "material bound".
+            delta_digests, delta_aggregate = (), fp.aggregate_material_digest(())
+        elif bind_material:
             delta_digests, delta_aggregate = self.delta_material(self.RUN, delta_epoch)
         else:
             # B4 negative control: a delta round with NO reviewed-material binding.
@@ -765,6 +770,14 @@ class DeltaChainForgeTest(GitRepoTestCase):
         reviewed-byte binding is exactly the hole. Non-vacuous: the baseline (with
         material) passes."""
         self._assert_blocks(self._fixture(bind_material=False))
+
+    def test_delta_round_with_empty_material_blocks(self):
+        """CR round 3 B4 — a ZERO-file material set with the EMPTY aggregate digest
+        (non-None, so it slips past a None-only check) must ALSO BLOCK: an empty
+        material set makes the re-verify loop over nothing and trivially match, so
+        material isn't genuinely bound. Non-vacuous: the baseline (real material)
+        passes."""
+        self._assert_blocks(self._fixture(empty_material=True))
 
     def test_verdict_flip_blocks(self):
         """The delta seat claims AGREE in the artifact, but the harness durably

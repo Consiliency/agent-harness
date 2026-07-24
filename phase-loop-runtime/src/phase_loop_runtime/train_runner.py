@@ -860,15 +860,21 @@ def _admitted_prefix(artifact, admitted_head_sha: str):
 
 
 def _scope_run_to_admitted_prefix(workspace: Path, run_id: str, artifact, prefix_chain, prefix_epochs):
-    """Recover the durable run store to the admitted-chain prefix (CR B2): rewrite
-    the provenance to `(candidate + prefix_chain)`, scope the per-epoch round
-    records + seat ledger to `prefix_epochs`, and fsync. Re-establishes the
-    invariant "the durable state IS the admitted chain" before any rebuild — so a
-    torn extended state left by a failed / crashed prior attempt can never brick
-    the node (it converges back to a known-good, gate-passing admitted chain, from
-    which the current live head is re-reviewed or the node cleanly stays at the
-    admitted head). Returns the recovered artifact."""
-    from . import fab_producer, fab_provenance
+    """Recover the durable run store to the admitted-chain prefix — RE-ENTRANTLY (CR
+    round 2 B2, round 3 B1/B2). ORDER MATTERS: (1) repair any crash-torn trailing
+    seat-ledger line so the STRICT seat reader can run at all (round 3 B1 — a SIGKILL
+    mid-append otherwise bricks every recovery); (2) remove the stale per-epoch round
+    records + seat records NOT in `prefix_epochs` FIRST; (3) THEN overwrite the
+    provenance to `(candidate + prefix_chain)`; (4) fsync.
+
+    Removing stale epochs BEFORE rewriting provenance makes recovery re-entrant
+    (round 3 B2): a crash between them leaves provenance still resolving PAST the
+    admitted head, so `_admitted_prefix`/the caller re-detects the torn state and
+    re-runs cleanly — never the inverse (admitted-looking provenance + stale
+    finalized rounds that an early-return would skip forever, false-blocking the gate
+    on epoch-set equality). `scope_run_to_epochs` is idempotent. Returns the recovered
+    artifact."""
+    from . import fab_gate, fab_producer, fab_provenance
 
     recovered = fab_provenance.ReviewProvenanceArtifact.build(
         repo=artifact.repo,
@@ -880,8 +886,9 @@ def _scope_run_to_admitted_prefix(workspace: Path, run_id: str, artifact, prefix
         material_digests=artifact.material_digests,
         delta_chain=tuple(prefix_chain),
     )
-    fab_provenance.write_provenance(workspace, run_id, recovered)
+    fab_gate.repair_torn_seat_ledger_tail(workspace, run_id)
     fab_producer.scope_run_to_epochs(workspace, run_id, prefix_epochs)
+    fab_provenance.write_provenance(workspace, run_id, recovered)
     fab_provenance.fsync_run_store_durable(workspace, run_id)
     return recovered
 
@@ -898,21 +905,36 @@ def _fab_recover_torn_to_admitted(workspace: Path, run_id: str, *, admitted_head
     the provenance already resolves to the admitted head, or when the admitted head
     is not in the durable chain (left for the fail-closed guard). Does NOT touch the
     caller's in-memory admitted head — recovery stays at the admitted head; only the
-    handled branch advances it."""
-    from . import fab_gate
+    handled branch advances it.
 
+    RE-ENTRANT (round 3 B1/B2): repairs a crash-torn seat-ledger tail before the
+    strict reader runs, and when the provenance already resolves to the admitted head
+    it STILL scopes epochs idempotently — never an early-return that would skip a
+    prior crashed recovery's stale-epoch cleanup forever (which would false-block the
+    gate on epoch-set equality)."""
+    from . import fab_gate, fab_producer, fab_provenance
+
+    # Repair a crash-torn seat-ledger tail BEFORE any strict read (round 3 B1).
+    # Provenance + round records are written atomically (temp+replace) and cannot
+    # tear; only the append-based seat ledger can.
+    fab_gate.repair_torn_seat_ledger_tail(workspace, run_id)
     try:
         artifact = fab_gate.read_provenance(workspace, run_id)
-    except Exception:  # noqa: BLE001 - unreadable provenance → nothing to recover; guard handles it
+    except Exception:  # noqa: BLE001 - no readable provenance → nothing to recover; guard handles it
         return
+    prefix_chain, prefix_epochs = _admitted_prefix(artifact, admitted_head_sha)
+    if prefix_chain is None:
+        return  # admitted head not in the durable chain → leave for the guard
     resolved_final = (
         artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
     )
     if resolved_final == admitted_head_sha:
-        return  # not torn; nothing to recover
-    prefix_chain, prefix_epochs = _admitted_prefix(artifact, admitted_head_sha)
-    if prefix_chain is None:
-        return  # admitted head not in the durable chain → leave for the guard
+        # Provenance already resolves to the admitted head, but a prior crashed
+        # recovery may have left STALE finalized epochs (round 3 B2) — scope
+        # idempotently to guarantee epoch-set completeness before returning.
+        fab_producer.scope_run_to_epochs(workspace, run_id, prefix_epochs)
+        fab_provenance.fsync_run_store_durable(workspace, run_id)
+        return
     _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
 
 

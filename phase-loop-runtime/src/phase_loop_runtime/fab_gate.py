@@ -389,6 +389,55 @@ def _seat_outcome_from_dict(d: Mapping[str, Any]) -> SeatOutcomeRecord:
         raise ProvenanceInvalid(f"malformed seat-outcome record (fail-closed): {exc}") from exc
 
 
+def repair_torn_seat_ledger_tail(repo: Path, run_id: str) -> bool:
+    """RECOVERY-ONLY crash-torn-tail repair (3b-consumer CR round 3 B1). A SIGKILL
+    mid seat-append can leave a PARTIAL last line (no trailing newline) — un-
+    committed state that the STRICT `read_seat_outcomes` (correctly) rejects for the
+    WHOLE ledger, which would otherwise make every scope-back recovery path fail and
+    BRICK the node. The GATE reader stays strict (a tolerant gate reader could drop
+    a blocking seat); instead RECOVERY explicitly truncates the un-terminated
+    trailing bytes back to the last complete record before it reads+rewrites. Only
+    ever removes an append that never finished (no newline); a committed record is
+    fsync-terminated with ``\\n`` and is never touched. Returns True if it repaired.
+
+    Append-only ⇒ a torn record is always the LAST line, so truncate-to-last-newline
+    preserves every complete record."""
+    path = seat_outcomes_path_for_run(repo, run_id)
+    return _truncate_torn_trailing_line(path)
+
+
+def _truncate_torn_trailing_line(path: Path) -> bool:
+    """Truncate a file's un-terminated (no trailing ``\\n``) partial last line back
+    to the last complete record. No-op when the file is absent, empty, or already
+    ends in a newline. Durable (fsync). Shared by the seat-ledger recovery repair.
+
+    A DELIBERATE parallel minimal copy of `train_ledger._repair_torn_trailing_line`
+    — NOT shared, because `train_ledger` is documented stdlib-only, coordinator-owned
+    infra that must not depend on `fab_gate` (importing this would be a wrong
+    architectural inversion). The two are independent (no agree-requirement between
+    them); if this trust-root logic ever needs to change, change both."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            if size == 0:
+                return False
+            fh.seek(size - 1)
+            if fh.read(1) == b"\n":
+                return False  # clean tail — nothing to repair
+            fh.seek(0)
+            data = fh.read()
+    except FileNotFoundError:
+        return False
+    idx = data.rfind(b"\n")
+    keep = idx + 1 if idx >= 0 else 0
+    with open(path, "r+b") as fh:
+        fh.truncate(keep)
+        fh.flush()
+        os.fsync(fh.fileno())
+    return True
+
+
 def read_seat_outcomes(repo: Path, run_id: str) -> tuple[SeatOutcomeRecord, ...]:
     """The gate's ONLY read path for durable `SeatOutcomeRecord`s (design
     §6.3) — reads exclusively from the trusted run-store ledger for `run_id`,
@@ -1346,17 +1395,27 @@ def _reverify_round_material(
     *,
     require_material: bool = False,
 ) -> None:
+    if require_material and not material_digests:
+        # A DELTA round with ZERO material files is never "nothing to verify"
+        # (3b-consumer CR round 3 B4): an EMPTY `material_digests` makes
+        # `reverify_material` loop over nothing and `aggregate_material_digest(())`
+        # (the empty aggregate) trivially match — so a `None`-only check let an
+        # empty-material delta round pass with NO reviewed-byte binding. Require
+        # NON-EMPTY material for a delta advance. Candidate rounds pass
+        # `require_material=False` (a whole-patch candidate need not record snapshot
+        # material).
+        raise ProvenanceInvalid(
+            "delta round records no reviewed material (fail-closed, 3b-consumer CR round 3 B4): "
+            "a delta round must bind the reviewed bytes over a NON-EMPTY material set; a zero-file / "
+            "empty-aggregate material set is never 'nothing to verify' for a delta advance"
+        )
     if review_scope.reviewed_material_digest is None:
         if require_material:
-            # A DELTA round with NO reviewed-material digest is never "nothing to
-            # verify" (3b-consumer CR round 2 B4): a delta advance must bind the
-            # bytes its seats reviewed, or it authenticates with no reviewed-byte
-            # binding at all. Fail closed. Candidate rounds pass `require_material=
-            # False` (a whole-patch candidate need not record snapshot material).
+            # A delta round that records material but no aggregate digest is
+            # ambiguous — fail closed (B4).
             raise ProvenanceInvalid(
-                "delta round has no reviewed_material_digest (fail-closed, 3b-consumer CR round 2 B4): "
-                "a delta round must bind the reviewed bytes; an absent material digest is never "
-                "'nothing to verify' for a delta advance"
+                "delta round has material but no reviewed_material_digest (fail-closed, 3b-consumer CR B4): "
+                "a delta round must bind the reviewed bytes"
             )
         if material_digests:
             raise ProvenanceInvalid(

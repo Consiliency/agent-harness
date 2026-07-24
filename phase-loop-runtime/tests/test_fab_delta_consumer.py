@@ -578,6 +578,128 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         )
         self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
 
+    def test_crash_torn_seat_ledger_tail_is_repaired_by_recovery(self):
+        """CR round 3 B1 — a SIGKILL mid seat-append leaves a PARTIAL (newline-less)
+        trailing seat record; the STRICT `read_seat_outcomes` then rejects the WHOLE
+        ledger, so WITHOUT repair every recovery path bricks (the old `except:
+        return` swallowed it). Recovery must repair the torn tail (truncate the
+        un-terminated bytes) then scope+converge — the gate PASSES at the admitted
+        head and the committed candidate seats survive."""
+        import subprocess
+
+        from phase_loop_runtime import fab_gate as fgmod
+        from phase_loop_runtime import train_runner as tr
+
+        ledger_path, base, candidate_head, _delta = self._setup_candidate_and_advance()
+        subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
+
+        seat_path = fgmod.seat_outcomes_path_for_run(self.repo, self.RUN)
+        with open(seat_path, "ab") as fh:  # crash mid-append: partial line, no newline
+            fh.write(b'{"seat_key": "codex:d:high", "vendor_le')
+        # Brick precondition: the strict gate reader rejects the WHOLE ledger.
+        with self.assertRaises(fp.ProvenanceInvalid):
+            fgmod.read_seat_outcomes(self.repo, self.RUN)
+
+        # Recovery repairs the torn tail and converges (not a brick).
+        tr._fab_recover_torn_to_admitted(self.repo, self.RUN, admitted_head_sha=candidate_head)
+        seats = fgmod.read_seat_outcomes(self.repo, self.RUN)  # readable again
+        self.assertTrue(any(s.epoch == 1 for s in seats), "committed candidate seats must survive the repair")
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=candidate_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
+    def test_crash_mid_recovery_reruns_cleanly(self):
+        """CR round 3 B2 — a crash DURING recovery (after stale epochs are scoped,
+        before the provenance overwrite lands) must re-run cleanly. Because recovery
+        removes stale epochs BEFORE rewriting provenance, the provenance still
+        resolves PAST the admitted head, so the next attempt re-detects the torn
+        state and converges — never an admitted-looking provenance + stale finalized
+        rounds that an early-return would skip forever (false-blocking the gate on
+        epoch-set equality)."""
+        import subprocess
+
+        from phase_loop_runtime import fab_provenance as fpmod
+        from phase_loop_runtime import train_runner as tr
+
+        ledger_path, base, candidate_head, c2_head = self._setup_candidate_and_advance()
+
+        # Build a torn EXTENDED provenance (crash after the extend overwrite).
+        real_fsync = fpmod.fsync_run_store_durable
+        crashed = {"done": False}
+
+        def crashing_fsync(repo, run_id):
+            art = fg.read_provenance(repo, run_id)
+            if art.delta_chain and not crashed["done"]:
+                crashed["done"] = True
+                raise OSError("crash after the extended-provenance overwrite")
+            return real_fsync(repo, run_id)
+
+        fpmod.fsync_run_store_durable = crashing_fsync
+        try:
+            with self.assertRaises(OSError):
+                tr._fab_delta_readmit(
+                    self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
+                    merge_order=0, admitted_head_sha=candidate_head, live_head_sha=c2_head,
+                    delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+                )
+        finally:
+            fpmod.fsync_run_store_durable = real_fsync
+        subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
+
+        # RECOVERY attempt 1 crashes right after the scope, before the recovered
+        # (candidate-only) provenance write lands.
+        real_wp = fpmod.write_provenance
+
+        def crashing_wp(repo, run_id, artifact):
+            if not artifact.delta_chain:  # the recovered candidate-only write
+                raise OSError("crash mid-recovery: after scope, before provenance write")
+            return real_wp(repo, run_id, artifact)
+
+        fpmod.write_provenance = crashing_wp
+        try:
+            with self.assertRaises(OSError):
+                tr._fab_recover_torn_to_admitted(self.repo, self.RUN, admitted_head_sha=candidate_head)
+        finally:
+            fpmod.write_provenance = real_wp
+        # Still torn: provenance resolves to C2 (the write didn't land), even though
+        # the stale epoch was already scoped.
+        self.assertEqual(fg.read_provenance(self.repo, self.RUN).delta_chain[-1].delta_head_sha, c2_head)
+
+        # RECOVERY attempt 2 re-detects the torn state and converges.
+        tr._fab_recover_torn_to_admitted(self.repo, self.RUN, admitted_head_sha=candidate_head)
+        self.assertEqual(fg.read_provenance(self.repo, self.RUN).delta_chain, ())
+        gate = fg.compose_gate_status(
+            repo=self.repo, run_id=self.RUN, live_base_ref_name="main", live_head_sha=candidate_head, origin="fetchsrc"
+        )
+        self.assertEqual(gate.status, fp.GATE_STATUS_PASS, gate.equivalence_verified.reason)
+
+
+class LedgerTornTailRepairTest(unittest.TestCase):
+    """CR round 3 B3 — a crash-torn (newline-less) trailing train-ledger record must
+    be REPAIRED before the next append, so a new record never fuses onto the partial
+    one into a permanently-unreadable mid-file line (which would also hide the
+    re-admission)."""
+
+    def test_torn_trailing_line_is_repaired_before_append(self):
+        import tempfile
+        from pathlib import Path
+
+        import phase_loop_runtime.train_ledger as tl
+
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "train.ledger.jsonl"
+            tl.append_record(ledger, tl.LedgerRecord(node_id="n", status="pr_open", head_sha="a" * 40))
+            # Crash-torn partial append: a fragment with NO trailing newline.
+            with open(ledger, "ab") as fh:
+                fh.write(b'{"node_id": "n", "status": "pr_o')
+            # The next append must REPAIR the torn tail, not fuse onto it — otherwise
+            # the merged record is lost / the ledger becomes permanently unreadable.
+            tl.append_record(ledger, tl.LedgerRecord(node_id="n", status="merged", head_sha="b" * 40))
+            state = tl.read_ledger(ledger)  # must not raise
+            self.assertEqual(state["n"].status, "merged")
+            self.assertEqual(state["n"].head_sha, "b" * 40)
+
 
 class LedgerDurabilityScopingTest(unittest.TestCase):
     """CR round 2 B6 — the train ledger append fsyncs ONLY at the FAB re-admission
