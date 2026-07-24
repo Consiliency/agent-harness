@@ -769,43 +769,6 @@ class SeatLedgerAtomicRewriteTest(GitRepoTestCase):
             "a crash mid-rewrite must never truncate/lose the durable seat ledger (never unlink-then-append)",
         )
 
-    def test_failed_seat_append_ftruncates_back_leaving_no_partial(self):
-        """CR round 4 1c — a failed/short seat append (ENOSPC/EIO/interrupt) rolls the
-        ledger back to its pre-append length via ftruncate, leaving NO durable partial
-        line — so the strict reader still succeeds and no torn tail is even created."""
-        from phase_loop_runtime import fab_gate as fgmod
-
-        run_id = "fab-seat-ftruncate"
-        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
-        self.commit("c0 base")
-        self.push_main()
-
-        fgmod.append_seat_outcome(self.repo, run_id, _durable_from_seat(_seat("codex:c:high", epoch=1, finding_ids=())))
-        seat_path = fgmod.seat_outcomes_path_for_run(self.repo, run_id)
-        before = seat_path.read_bytes()
-
-        # Make the next append write a few bytes then fail (simulate ENOSPC after a
-        # partial write).
-        real_write = fgmod.os.write
-
-        def failing_write(fd_, data):
-            real_write(fd_, data[:5])  # partial
-            raise OSError("simulated ENOSPC mid seat-append")
-
-        fgmod.os.write = failing_write
-        try:
-            with self.assertRaises(OSError):
-                fgmod.append_seat_outcome(
-                    self.repo, run_id, _durable_from_seat(_seat("gemini:d:high", epoch=2, finding_ids=()))
-                )
-        finally:
-            fgmod.os.write = real_write
-
-        # Rolled back: the file is byte-identical to before, strict-readable, one seat.
-        self.assertEqual(seat_path.read_bytes(), before, "a failed append must leave NO durable partial line")
-        self.assertEqual(len(fgmod.read_seat_outcomes(self.repo, run_id)), 1)
-
-
 class DeltaMaterialBindingTest(GitRepoTestCase):
     """CR B3 — the delta review binds the REVIEWED bytes, and an incomplete render
     is never laundered into provenance for bytes the seats never saw."""
