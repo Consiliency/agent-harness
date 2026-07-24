@@ -279,7 +279,8 @@ def _make_queue_gh_fake(
     merges_after: int = 1, closes: bool = False, kicked: bool = False,
     auto_merge: bool = False, dequeue_ok: bool = True, disable_auto_ok: bool = True,
     merge_during_dequeue: bool = False, membership_unreadable: bool = False,
-    enqueue_after: int = 0, merged_head: Optional[str] = None, calls: Optional[list] = None,
+    enqueue_after: int = 0, race_merge_at: int = 0, merged_head: Optional[str] = None,
+    calls: Optional[list] = None,
 ):
     """Fake `gh` simulating a merge QUEUE with MEMBERSHIP (#265 CR round 1). Models the
     queue-entry (`isInMergeQueue`) + auto-merge dimensions SEPARATELY from PR `state`,
@@ -329,6 +330,15 @@ def _make_queue_gh_fake(
                 # (which the seen-live latch would correctly ignore as not-yet-enqueued).
                 st["state"], st["auto_merge"] = "OPEN", False
                 st["in_queue"] = st["iter"] < 2
+            elif race_merge_at and st["iter"] == race_merge_at:
+                # NON-ATOMIC read race (Blocker 1): this poll's STATE read is stale-OPEN,
+                # then the merge lands right after it — so the subsequent isInMergeQueue
+                # + terminal reads observe MERGED / not-in-queue. Returns OPEN here; flips
+                # merged AFTER, so `_live_pr_queue_status` sees {OPEN, in_queue False}.
+                resp = _FakeCompletedProcess(returncode=0, stdout=json.dumps(
+                    {"number": 123, "state": "OPEN", "autoMergeRequest": None}))
+                st["merged"], st["state"], st["in_queue"] = True, "MERGED", False
+                return resp
             elif st["iter"] > merges_after:
                 st["merged"], st["state"] = True, "MERGED"
             else:
@@ -701,6 +711,53 @@ class TestLiveMergePrFabPromotion:
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-kick",
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
                 )
+
+    def test_fab_queue_merge_between_nonatomic_reads_is_recorded(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 2 Blocker 1: `_live_pr_queue_status` reads `state` and
+        `isInMergeQueue` in TWO calls. If the merge lands BETWEEN them, the poll sees
+        {state: OPEN (stale), in_queue: False} with seen_live latched — the naive
+        early-break would false-`merge-queue-removed` a MERGED PR ('safe to retry').
+        The reconcile terminal re-read must catch it and RECORD the SHA instead."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        repo = _make_fab_repo(tmp_path)
+        _base, head = _reviewed_pr(repo, "run-mq-race2")
+        # iter 1 → in queue (seen_live); iter 2 → merge lands between the state and
+        # membership reads (stale-OPEN + in_queue False).
+        fake = _make_queue_gh_fake(base_ref="main", head=head, race_merge_at=2)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            sha = _live_merge_pr(
+                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race2",
+                fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+            )
+        assert sha == "sha-queuemerge", "a merge racing the non-atomic reads must be RECORDED, not false-removed"
+
+    def test_fab_queue_graphql_pinned_to_broker_host_not_ambient_gh_host(self, tmp_path: Path, monkeypatch):
+        """#265 CR round 2 Blocker 2: `gh api graphql` takes no `--repo` and resolves
+        its host from GH_HOST — so an ambient GH_HOST could redirect the membership
+        read / dequeue mutation to a DIFFERENT host than the `gh pr view --repo
+        github.com/...` REST calls. Both GraphQL calls MUST pin `--hostname` to the
+        broker-validated host, regardless of a conflicting GH_HOST."""
+        _git_available()
+        monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
+        monkeypatch.setenv("GH_HOST", "evil.example.com")  # conflicting ambient host
+        repo = _make_fab_repo(tmp_path)  # origin → github.com/testorg/testrepo
+        _base, head = _reviewed_pr(repo, "run-mq-host")
+        calls: list = []
+        # merges_after high + timeout → drives the dequeue graphql too; membership polls run.
+        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=True, calls=calls)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            with pytest.raises(RuntimeError):  # times out → dequeue ladder; we assert the host binding
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-host",
+                    fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                )
+        graphql_calls = [c for c in calls if c[:2] == ["gh", "api"] and "graphql" in " ".join(c)]
+        assert graphql_calls, "the queue path must issue GraphQL calls"
+        for c in graphql_calls:
+            assert "--hostname" in c and c[c.index("--hostname") + 1] == "github.com", (
+                f"every GraphQL call must pin the broker host, not the ambient GH_HOST: {c!r}"
+            )
 
     def test_fab_queue_not_yet_enqueued_window_does_not_false_block(self, tmp_path: Path, monkeypatch):
         """#265 CR round 1 (advisor): the enqueue-propagation window right after

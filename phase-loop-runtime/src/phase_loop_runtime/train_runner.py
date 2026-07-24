@@ -1140,6 +1140,23 @@ def _fab_delta_readmit(
     return live_head_sha
 
 
+def _gh_host_from_repo_args(repo_args: Sequence[str]) -> Optional[str]:
+    """The GitHub HOST from the broker-validated ``--repo <host>/<owner>/<repo>``
+    binding (#265 CR round 2, Blocker 2). ``gh api graphql`` takes no ``--repo`` and
+    resolves its host from ``GH_HOST``/config — so, unlike the sibling ``gh pr view
+    --repo`` REST calls, an ambient ``GH_HOST`` could silently redirect a GraphQL
+    membership read / dequeue mutation to a DIFFERENT host (a wrong-host fail-open).
+    Pinning ``--hostname`` to THIS host keeps every GraphQL call on the same host the
+    REST calls use. ``None`` when the binding carries no explicit host (``owner/repo``
+    form) — the caller then omits ``--hostname`` and relies on the shared env."""
+    for i, a in enumerate(repo_args):
+        if a == "--repo" and i + 1 < len(repo_args):
+            parts = repo_args[i + 1].split("/")
+            if len(parts) >= 3 and parts[0]:
+                return parts[0]
+    return None
+
+
 def _live_pr_queue_status(workspace: Path, branch: str) -> Optional[dict]:
     """The PR's terminal state + merge-QUEUE MEMBERSHIP (#265 CR round 1). A merge
     queue tracks membership SEPARATELY from PR ``state``: a PR KICKED from the queue
@@ -1164,12 +1181,13 @@ def _live_pr_queue_status(workspace: Path, branch: str) -> Optional[dict]:
         return None
     number = d.get("number")
     owner_repo = _repo_slug_owner_repo(repo_args)
+    host = _gh_host_from_repo_args(repo_args)
     in_queue: Optional[bool] = None
     if number is not None and owner_repo and "/" in owner_repo:
         owner, name = owner_repo.split("/", 1)
         try:
             q = subprocess.run(
-                ["gh", "api", "graphql", "-f",
+                ["gh", "api", "graphql", *(["--hostname", host] if host else []), "-f",
                  f'query=query{{repository(owner:"{owner}",name:"{name}")'
                  f'{{pullRequest(number:{int(number)}){{isInMergeQueue}}}}}}'],
                 cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
@@ -1197,6 +1215,7 @@ def _dequeue_pr(workspace: Path, branch: str) -> bool:
     loud ``merge-queue-unreconciled`` halt, never a silent 'cancelled' on a still-live
     mutation (fail-OPEN was the CR blocker)."""
     repo_args, env_override = _gh_repo_binding(workspace)
+    host = _gh_host_from_repo_args(repo_args)
     try:
         got = subprocess.run(
             ["gh", "pr", "view", branch, *repo_args, "--json", "id"],
@@ -1207,27 +1226,25 @@ def _dequeue_pr(workspace: Path, branch: str) -> bool:
         pr_id = (json.loads(got.stdout or "{}") or {}).get("id")
         if not pr_id:
             return False
-        mut = subprocess.run(
-            ["gh", "api", "graphql", "-f",
+        # ATTEMPT both cancellations best-effort — the membership CONFIRM below is
+        # AUTHORITATIVE (round-2 grok nit: a mutation-body error must NOT short-circuit
+        # to False, e.g. `dequeuePullRequest` errors 'not queued' on an already-kicked
+        # PR that IS cleanly gone). Pin the GraphQL host (Blocker 2). Always try
+        # `--disable-auto` too even if the mutation errored — the queue ENTRY and the
+        # AUTO-MERGE request are separate; both must go.
+        subprocess.run(
+            ["gh", "api", "graphql", *(["--hostname", host] if host else []), "-f",
              f'query=mutation{{ dequeuePullRequest(input: {{id: "{pr_id}"}}) {{ clientMutationId }} }}'],
             cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
         )
-        # Assert the GraphQL BODY, not just the exit code: gh returns 0 even when the
-        # response carries `errors` / a null payload (the mutation didn't take).
-        if mut.returncode != 0:
-            return False
-        try:
-            body = json.loads(mut.stdout or "{}")
-        except Exception:  # noqa: BLE001
-            return False
-        if body.get("errors") or not ((body.get("data") or {}).get("dequeuePullRequest")):
-            return False
-        # Also cancel any AUTO-MERGE request (separate from the queue entry).
         subprocess.run(
             ["gh", "pr", "merge", branch, *repo_args, "--disable-auto"],
             cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
         )
-        # CONFIRM both are gone AND the PR is not (already) MERGED.
+        # CONFIRM (authoritative): BOTH the queue entry AND auto-merge are gone AND the
+        # PR is not (already) MERGED. Unreadable membership / a surviving entry or
+        # auto-merge → False → the caller's loud `unreconciled` halt (never a fail-open
+        # 'cancelled' on a still-live mutation).
         status = _live_pr_queue_status(workspace, branch)
         if status is None or status.get("state") == "MERGED":
             return False
@@ -1280,6 +1297,42 @@ def _fab_queue_bound_merge_wait(
         # PRE-merge property; the terminal check is head/base identity.
         return _live_pr_merged_sha(workspace, branch, base=base, head_sha=head_sha)
 
+    def _reconcile(kind: str) -> str:
+        # RACE GUARD (round-2 Blocker 1) + Blocker-B: the state and membership reads
+        # are NON-ATOMIC, so a merge can land BETWEEN them (or during the dequeue) and
+        # leave a stale `{state: OPEN, in_queue: False}` that would otherwise
+        # false-`removed` a MERGED PR ("safe to retry" while it merged). BOTH the
+        # early-break (removed) and the timeout route through here: re-read terminal
+        # FIRST (record a raced merge), attempt the dequeue, re-read terminal AGAIN (a
+        # merge can land DURING the dequeue call). A CONFIRMED dequeue → a clean
+        # retryable block; anything unconfirmed → the loud `unreconciled` halt — never
+        # an unverified 'safe to retry', never a merged PR lost to a false verdict.
+        sha = _terminal_or_none()
+        if sha:
+            return sha
+        confirmed = dequeue_fn(workspace, branch)
+        sha = _terminal_or_none()
+        if sha:
+            return sha
+        if confirmed:
+            if kind == "removed":
+                raise RuntimeError(
+                    f"merge-queue-removed: PR for branch '{branch}' in '{workspace}' was in the merge "
+                    f"queue but is now OPEN with NO entry and NO auto-merge (kicked — e.g. a merge-group "
+                    f"check failed) and CONFIRMED removed; no merge in flight (fail-closed; safe to retry)"
+                )
+            raise RuntimeError(
+                f"merge-queue-timeout-dequeued: the enqueued merge of '{branch}' in '{workspace}' did not "
+                f"terminalize within {poll_timeout_s:.0f}s and was CONFIRMED DEQUEUED (fail-closed; no "
+                f"merge recorded — safe to retry)"
+            )
+        raise RuntimeError(
+            f"merge-queue-unreconciled: a merge was ENQUEUED for '{branch}' in '{workspace}' and could "
+            f"not be observed-to-terminal NOR confirmed-dequeued — a DEFERRED merge may still land OUTSIDE "
+            f"the coordinator ledger. HALT: reconcile the queue state (dequeue the PR, or confirm its "
+            f"merge and record the SHA) before resuming the train"
+        )
+
     deadline = clock() + poll_timeout_s
     seen_live = False  # have we ever OBSERVED a live merge mutation (queue entry / auto-merge)?
     while True:
@@ -1308,41 +1361,16 @@ def _fab_queue_bound_merge_wait(
             # None/unreadable) AND no auto-merge (which would re-queue). The not-yet-
             # enqueued window (never seen live) rides to the timeout ladder instead —
             # slower but fail-closed-correct, never a false early-block.
+            # MEMBERSHIP-aware EARLY BREAK (Blocker A-ii) — but through _reconcile
+            # (round-2 Blocker 1): a stale-OPEN read whose merge landed between the two
+            # non-atomic reads is caught by _reconcile's terminal re-read and RECORDED,
+            # instead of a false `merge-queue-removed`.
             elif (seen_live and status.get("state") == "OPEN"
                     and status.get("in_queue") is False and not status.get("auto_merge")):
-                raise RuntimeError(
-                    f"merge-queue-removed: PR for branch '{branch}' in '{workspace}' was in the merge "
-                    f"queue but is now OPEN with NO queue entry and NO pending auto-merge (kicked from "
-                    f"the queue — e.g. a merge-group check failed); no merge is in flight (fail-closed; "
-                    f"safe to retry)"
-                )
+                return _reconcile("removed")
         # In queue / auto-merge pending / membership unreadable / not-yet-enqueued → still in flight.
         if clock() >= deadline:
-            # Re-read terminal FIRST — the queue may have merged since the last poll.
-            sha = _terminal_or_none()
-            if sha:
-                return sha
-            dequeued = dequeue_fn(workspace, branch)
-            # Re-read terminal AFTER the dequeue attempt on BOTH branches (CR round 1,
-            # Blocker B): if the PR MERGED during the dequeue API call the mutation
-            # fails (no longer queued) → dequeued=False — a successfully-merged PR must
-            # be RECORDED, never lost to a false `unreconciled`.
-            sha = _terminal_or_none()
-            if sha:
-                return sha
-            if dequeued:
-                raise RuntimeError(
-                    f"merge-queue-timeout-dequeued: the enqueued merge of '{branch}' in '{workspace}' "
-                    f"did not terminalize within {poll_timeout_s:.0f}s and was DEQUEUED (fail-closed; "
-                    f"no merge recorded — safe to retry)"
-                )
-            raise RuntimeError(
-                f"merge-queue-unreconciled: a merge was ENQUEUED for '{branch}' in '{workspace}' and "
-                f"could not be observed-to-terminal within {poll_timeout_s:.0f}s NOR confirmed-dequeued "
-                f"— a DEFERRED merge may still land OUTSIDE the coordinator ledger. HALT: reconcile the "
-                f"queue state (dequeue the PR, or confirm its merge and record the SHA) before resuming "
-                f"the train"
-            )
+            return _reconcile("timeout")
         sleep(poll_interval_s)
 
 
