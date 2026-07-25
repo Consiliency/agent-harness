@@ -54,7 +54,7 @@ PRESERVE_LITERALS: tuple[str, ...] = (
     "claude-opus-5",  # model-id-source: verbatim literal preserved through brand-collapse (heavy tier)
     "claude-fable-5",  # model-id-source: verbatim literal preserved through brand-collapse (ultra tier)
     "claude-sonnet-5",  # model-id-source: verbatim literal preserved through brand-collapse
-    "claude-haiku-4-5",  # model-id-source: verbatim literal preserved through brand-collapse
+    "claude-haiku-4-5-20251001",  # model-id-source: verbatim literal preserved through brand-collapse (lite tier, DATED pin)
     "claude-in-chrome",
     # Display-name model form as it appears in the `Co-Authored-By:` git trailer.
     # Without this the brand collapse (`Claude` -> `Harness`) rewrites the trailer

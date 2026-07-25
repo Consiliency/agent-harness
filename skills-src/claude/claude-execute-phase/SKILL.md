@@ -111,7 +111,7 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 |-----------|--------------------|---------------------------------------------------------------|
 | frontier  | claude-opus-5      | retry escalation ceiling, highest-stakes lanes                |
 | strong    | claude-sonnet-5    | contract-authoring (IF-freeze), schema/migration, algorithmic |
-| fast      | claude-haiku-4-5   | mechanical wiring, small components against frozen types      |
+| fast      | claude-haiku-4-5-20251001 | mechanical wiring, small components against frozen types |
 
 These map to the runtime `model_class` axis: planner = frontier, implementer =
 strong, worker = fast. The shipped `model_policy` dispatches **implementation at

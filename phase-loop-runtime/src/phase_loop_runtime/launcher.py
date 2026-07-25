@@ -774,6 +774,10 @@ def _gemini_cli_model(model: str) -> str:
     if candidate in _GEMINI_MODEL_ID_ALIASES:
         return _GEMINI_MODEL_ID_ALIASES[candidate]
     if candidate.startswith("gemini-"):
+        # FOLLOW-UP (Consiliency/agent-harness#302): this raises at spec-BUILD time, so
+        # an operator model-id typo currently surfaces as a traceback rather than a clean
+        # `blocked` terminal summary. No internal surface emits a non-tier gemini-* id, so
+        # this is operator-typo-only; routing it through the blocked path is tracked there.
         raise ValueError(
             f"unmapped gemini model id {candidate!r}: add it to "
             "_GEMINI_MODEL_ID_ALIASES (never silently coerce a gemini-* id to Pro)"

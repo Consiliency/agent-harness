@@ -155,6 +155,13 @@ DEFAULT_CAPABILITY_REGISTRY = {
         ),
         default_model_profiles={action: _ACTION_DEFAULT_PROFILES[action] for action in ("roadmap", "plan", "execute", "repair", "review")},
         default_claude_execution_mode="solo",
+        # NOTE (design-model-tier-taxonomy.md): `default_model=CLAUDE_HEAVY_MODEL` on the
+        # policies below is METADATA-ONLY — no code reads ClaudeTeamPolicy.default_model
+        # to pick a launch model (the launch model comes from resolve_profile_for_executor
+        # / the execution policy). It records the ambient supervise/session model (heavy =
+        # Opus 5). It is deliberately NOT retargeted per-mode: the subagent/agent_team
+        # modes (execute/repair/review) would map to the regular tier if it were live, but
+        # since nothing consumes it, aligning it would be churn with no behavior change.
         claude_execution_policies=(
             ClaudeTeamPolicy(
                 execution_mode="solo",

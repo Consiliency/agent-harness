@@ -104,12 +104,16 @@ All under `phase-loop-runtime/src/phase_loop_runtime/`.
 5. **`advisor_board/{composition,presets,fixtures}.py`** — no tier change (already
    ultra/heavy correct); update any `claude-opus-4-8` literal only if it denotes heavy.
 6. **`panel_invoker.py`** `DEFAULT_LEG_MODELS` — unchanged (already at ultra-else-heavy).
-7. **Supervisor binding (NET-NEW)** — bind `supervise → heavy` for the run-train
-   coordinator (`train_runner.py`) and the phase-loop runner orchestrator (`runner.py`).
-   In practice the coordinator often *is* the ambient session; the concrete wiring is: a
-   `SUPERVISOR_TIER = "heavy"` default + resolve it at any programmatic coordinator
-   launch (set `model=heavy`), and document that an operator running the supervisor
-   session should be on the heavy model (Opus 5 — now the Claude Code default anyway).
+7. **Supervisor binding (NET-NEW) — ADVISORY PROVENANCE ONLY** (CR round-3
+   correction). The `supervise → heavy` mapping exists (`SUPERVISOR_TIER = "heavy"` +
+   `resolve("supervise", vendor)` via `profiles.supervise_selection`), BUT there is no
+   programmatic coordinator launch that sets a model: the run-train coordinator and the
+   phase-loop-runner orchestrator ARE the CLI/ambient session (per-node `run_loop`
+   launches its own phase executors, each on its own tier model). So the binding does
+   not drive a launch request — the coordinator RECORDS the supervise tier on its review
+   artifact as provenance, and an operator running the supervisor session should be on
+   the heavy model (Opus 5 — now the Claude Code default anyway). Wiring an actual
+   programmatic supervisor-launch model is a future item if such a seam is introduced.
 8. **`scripts/check_model_id_sources.py`** — keep the 6-file allowlist; ensure every new
    literal lives in an allowlisted registry or carries a `# model-id-source:` marker.
 9. **Tests** — update `test_model_id_source_guard.py`, `test_advisor_board_registries.py`,

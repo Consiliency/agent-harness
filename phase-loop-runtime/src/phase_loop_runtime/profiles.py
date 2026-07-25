@@ -22,6 +22,9 @@ from .models import (
 
 
 OPENAI_HEAVY_MODEL = "gpt-5.6-sol"
+# codex regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
+# can reference it. Equals CODEX_REGULAR_MODEL in the tier matrix (single source).
+OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
 OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
@@ -60,6 +63,19 @@ EXECUTOR_MODEL_OVERRIDES = {
         "execute": CLAUDE_REGULAR_MODEL,
         "repair": CLAUDE_REGULAR_MODEL,
         "review": CLAUDE_ULTRA_MODEL,
+    },
+    # codex is the fleet's DEFAULT execute executor. Give it an explicit executor-
+    # default map mirroring claude's (CR round 3): planning/review → heavy (ultra-
+    # else-heavy == gpt-5.6-sol), implementation → the regular model (gpt-5.6-terra).
+    # These constants ARE the tier matrix's codex source (CODEX_HEAVY/REGULAR), so this
+    # AGREES with resolve() — previously codex fell through to DEFAULT_PROFILES (heavy)
+    # and the DELEGATED-CHILD / HARNESS-LANE seams launched implementation on sol.
+    "codex": {
+        "roadmap": OPENAI_HEAVY_MODEL,
+        "plan": OPENAI_HEAVY_MODEL,
+        "execute": OPENAI_IMPLEMENTER_MODEL,
+        "repair": OPENAI_IMPLEMENTER_MODEL,
+        "review": OPENAI_HEAVY_MODEL,
     },
     "opencode": {
         "roadmap": OPENCODE_OPENAI_HEAVY_MODEL,
@@ -106,13 +122,15 @@ EXECUTOR_EFFORT_OVERRIDES = {
 # to its single model (pi). Non-`phase-loop-` model strings pass through
 # `_resolve_policy_model` unchanged for every executor (claude/codex have no
 # model_aliases; gemini/pi pass through non-alias strings), so these resolve.
-# CLAUDE_IMPLEMENTER_MODEL == the regular tier (claude-sonnet-5). Kept as a named
-# constant because panel_invoker imports it; it equals CLAUDE_REGULAR_MODEL. The
-# old CLAUDE_WORKER_MODEL (undated `claude-haiku-4-5`) is RETIRED — the worker class
-# now derives to the lite tier's DATED pin (CLAUDE_LITE_MODEL); an undated id is the
-# floating-alias shape the pin-only rule rejects (design-model-tier-taxonomy.md).
-CLAUDE_IMPLEMENTER_MODEL = "claude-sonnet-5"
-OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
+# CLAUDE_IMPLEMENTER_MODEL is an ALIAS of the regular tier constant (not a second
+# literal) so the two can never drift (CR nit F) — kept as a named symbol only
+# because panel_invoker imports it. The old CLAUDE_WORKER_MODEL (undated
+# `claude-haiku-4-5`) is RETIRED — the worker class now derives to the lite tier's
+# DATED pin (CLAUDE_LITE_MODEL); an undated id is the floating-alias shape the
+# pin-only rule rejects (design-model-tier-taxonomy.md).
+CLAUDE_IMPLEMENTER_MODEL = CLAUDE_REGULAR_MODEL
+# OPENAI_IMPLEMENTER_MODEL is defined near OPENAI_HEAVY_MODEL at the top of this
+# module (hoisted so EXECUTOR_MODEL_OVERRIDES can reference it).
 OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
@@ -304,20 +322,44 @@ def resolve(role: str, vendor: str) -> TierResolution:
 def supervise_selection(vendor: str = "claude") -> TierResolution:
     """The supervise-tier binding for a coordinator/orchestrator on `vendor`.
 
-    Production consumer of `resolve(SUPERVISOR_TIER, vendor)` (design item 7): the
-    run-train coordinator records this so a programmatic coordinator launch binds
-    the heavy model instead of silently inheriting the ambient session's model."""
+    ADVISORY PROVENANCE ONLY (design item 7, CR round-3 correction): there is no
+    programmatic coordinator launch that sets a model — `run_train` launches per-NODE
+    `run_loop` phase executors (each with its own tier model), and the coordinator /
+    phase-loop-runner orchestrator is CLI/ambient-invoked with an OPERATOR-selected
+    model. So this does not BIND a launch; the run-train coordinator records the
+    supervise tier on its review artifact as provenance (the operator running the
+    supervisor session should be on the heavy model, Opus 5)."""
     return resolve(SUPERVISOR_TIER, vendor)
 
 
 # --- class↔tier bridge: derive the legacy class overrides from the matrix -----
 # The MODEL_CLASSES axis (planner/implementer/worker) maps onto model tiers so the
 # class path and the tier path can never DIVERGE on the same decision (the CR's
-# blocker). claude+codex have API-id-shaped class models, so they DERIVE from
-# TIER_MODELS via this bridge. gemini/opencode/pi keep explicit non-API-id routing
-# (CLI aliases `pro`/`auto`, provider-qualified `openai/…`, display labels), and
-# grok keeps its documented SINGLE-MODEL routing (every class → GROK_DEFAULT_MODEL);
-# their live routing is not sourced from the matrix (deferred).
+# blocker). CONVERGED VENDORS — claude + codex: their class models are API-id-shaped,
+# so CLASS_MODEL_OVERRIDES DERIVES from TIER_MODELS via this bridge AND their
+# EXECUTOR_MODEL_OVERRIDES entries use the same tier-matrix constants — so BOTH the
+# class path and the executor-default path agree with resolve() for every action
+# (enforced by tests/test_model_tier_taxonomy.py::TierLiveWiringTest).
+# DEFERRED vendor×path pairs — LIVE routing NOT sourced from the matrix (accurate
+# enumeration; each is intentional, with the reason it can't be a one-line derive):
+#   • gemini class path (CLASS_MODEL_OVERRIDES["gemini"]) AND gemini executor path
+#     (EXECUTOR_MODEL_OVERRIDES["gemini"]) — use agy CLI aliases (`pro`/`auto`) and
+#     agy DISPLAY labels, not the matrix API ids. NAMED DISAGREEMENT (CR blocker D):
+#     the cheap band `["gemini"]["worker"]` = GEMINI_WORKER_MODEL = "Gemini 3.5 Flash
+#     (High)" (Flash), while resolve("worker","gemini") = gemini-3.5-flash-lite
+#     (Flash-Lite). Deferred (not fixed here) because the LIVE agy worker lane runs on
+#     the VALIDATED Flash display string; retargeting it to Flash-Lite needs a
+#     validated agy Flash-Lite model string (the matrix ids only reach agy through
+#     launcher._gemini_cli_model, which the class/executor paths do NOT call), so
+#     changing it blind risks breaking the live lane. Migrated with the rest of
+#     gemini's display-label routing, not piecemeal.
+#   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.5) for every
+#     class/action by grok's documented SINGLE-MODEL design; the per-tier matrix ids
+#     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
+#   • opencode class path — provider-qualified `openai/gpt-5.6-*` (a different transport
+#     prefix than the codex matrix ids); pi class path — the `auto` router alias.
+# All of the above are consulted via resolve() as the target; migrating them wholesale
+# is explicitly out of scope for this change.
 _CLASS_TIER_BRIDGE: dict[str, str] = {
     "planner": "ultra",     # ultra-else-heavy@max via resolve()
     "implementer": "regular",

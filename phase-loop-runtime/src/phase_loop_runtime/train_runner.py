@@ -2042,10 +2042,13 @@ def _build_train_review_bundle(
     Summarises all draft PRs in merge order so the panel can review the
     cross-repo change as one logical unit.
     """
-    # design-model-tier-taxonomy.md item 7: the train coordinator is a SUPERVISE-tier
-    # role. Bind its model programmatically via resolve("supervise", …) and record it
-    # on the coordinator's own review artifact (the production consumer of the
-    # supervise binding; the ambient-session case stays documentation).
+    # design-model-tier-taxonomy.md item 7 (CR round-3 correction): the train
+    # coordinator is a SUPERVISE-tier role, but there is NO programmatic coordinator
+    # launch that sets a model (the coordinator is the CLI/ambient session; per-node
+    # run_loop launches its own phase executors). So this does NOT bind a launch —
+    # it records the supervise tier on the coordinator's review artifact as ADVISORY
+    # PROVENANCE (the operator running the supervisor session should be on the heavy
+    # model, Opus 5).
     from .profiles import supervise_selection
 
     supervise = supervise_selection()

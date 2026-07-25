@@ -132,6 +132,18 @@ class PinOnlyInvariantTest(unittest.TestCase):
         for tier in MODEL_TIERS:
             self.assertTrue(resolve(tier, "grok").volatile, tier)
 
+    def test_claude_lite_uses_dated_snapshot_not_bare_alias(self):
+        # CR nit E: Haiku uses the alias→dated form, so the matrix must pin the DATED
+        # snapshot, never the bare undated `claude-haiku-4-5` (the floating-alias shape
+        # blocker C reintroduced in skill prose). Reject the bare id in every claude cell.
+        import re
+
+        lite = resolve("lite", "claude").model_id
+        self.assertNotEqual(lite, "claude-haiku-4-5")
+        self.assertRegex(lite, r"^claude-haiku-4-5-\d{8}$")
+        for tier in MODEL_TIERS:
+            self.assertNotEqual(resolve(tier, "claude").model_id, "claude-haiku-4-5", tier)
+
 
 class TierLiveWiringTest(unittest.TestCase):
     """Blocker 1g: the LIVE class path must equal the tier path — no divergence."""
@@ -148,19 +160,21 @@ class TierLiveWiringTest(unittest.TestCase):
                     (vendor, model_class),
                 )
 
-    def test_claude_executor_default_agrees_with_tier_path(self):
+    def test_executor_default_agrees_with_tier_path_for_converged_vendors(self):
         # The executor-default path (resolve_profile_for_executor) and the tier path
-        # must not disagree on claude: plan→fable (ultra), execute→sonnet (regular).
+        # must not disagree on the CONVERGED vendors (claude + codex) for ANY action.
+        # This is the invariant the bridge comment claims — enforced, not just prose.
+        # (Regression guard for CR round 3: codex execute/repair previously fell
+        # through to DEFAULT_PROFILES=heavy while resolve() said regular.)
         from phase_loop_runtime.profiles import resolve_profile_for_executor
 
-        self.assertEqual(
-            resolve_profile_for_executor(action="plan", executor="claude").model,
-            resolve("plan", "claude").model_id,
-        )
-        self.assertEqual(
-            resolve_profile_for_executor(action="execute", executor="claude").model,
-            resolve("execute", "claude").model_id,
-        )
+        for vendor in ("claude", "codex"):
+            for action in ("execute", "repair", "roadmap", "plan", "review"):
+                self.assertEqual(
+                    resolve_profile_for_executor(action=action, executor=vendor).model,
+                    resolve(action, vendor).model_id,
+                    (vendor, action),
+                )
 
     def test_gemini_adapter_maps_tier_ids_without_collapsing_flash_to_pro(self):
         # The gemini CLI adapter must map each tier id to the RIGHT agy model — heavy
@@ -194,8 +208,8 @@ class TierLiveWiringTest(unittest.TestCase):
             self.assertEqual(resolve_model_class("grok", model_class), GROK_DEFAULT_MODEL)
 
 
-class SupervisorConsumerTest(unittest.TestCase):
-    def test_supervise_selection_binds_heavy(self):
+class SupervisorProvenanceTest(unittest.TestCase):
+    def test_supervise_selection_resolves_heavy(self):
         from phase_loop_runtime.profiles import supervise_selection
 
         sel = supervise_selection("claude")
@@ -204,8 +218,10 @@ class SupervisorConsumerTest(unittest.TestCase):
         # Non-claude supervise = that vendor's heavy model.
         self.assertEqual(supervise_selection("codex").model_id, "gpt-5.6-sol")
 
-    def test_coordinator_review_bundle_records_supervise_binding(self):
-        # The train coordinator's authored review artifact is the production consumer.
+    def test_coordinator_review_bundle_records_supervise_provenance(self):
+        # ADVISORY PROVENANCE (not a launch binding): the train coordinator's authored
+        # review artifact records the supervise tier. This checks the recorded text
+        # only — no launch request consumes it (the coordinator is the ambient session).
         from phase_loop_runtime.train_runner import _build_train_review_bundle
         from phase_loop_runtime.train_roadmap import TrainRoadmap
 
