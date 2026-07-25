@@ -60,6 +60,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
@@ -462,83 +463,6 @@ def _repo_slug_owner_repo(repo_args: Sequence[str]) -> Optional[str]:
     return None
 
 
-def _fab_merge_queue_prohibition(
-    workspace: Path,
-    base_ref: str,
-    repo_args: Sequence[str],
-    env_override,
-) -> Optional[str]:
-    """design "Enforced merge-queue prohibition" (activation piece 2, 2d).
-
-    Byte-neutral / inert (returns ``None``, no ``gh`` call) unless
-    ``PHASE_LOOP_FAB`` is on. When it IS on, probe whether ``base_ref`` (the PR's
-    already-read current base) has a GitHub merge queue enabled; if so, return a
-    non-``None`` refusal reason (the caller raises). A merge queue creates the
-    final merge commit ASYNCHRONOUSLY after ``gh pr merge`` merely enqueues the
-    PR, so the piece-1/2c promotion re-assertion cannot bind to the real
-    promotion event — a TOCTOU FAB must not proceed through until Consiliency/
-    agent-harness#265 lands queue-bound re-assertion.
-
-    Fail-closed on ambiguity: if the merge-queue state cannot be read while the
-    flag is on, refuse rather than risk enqueuing under a queue we could not
-    rule out. A definitive "no queue" (or the flag being off) proceeds. Reuses
-    the base ref already read by the combined pre-merge ``gh pr view`` (no extra
-    PR read) and makes ONE `gh api` branch-rules call, bound to the
-    broker-validated repo identity (see `_repo_slug_owner_repo`).
-
-    KNOWN LIMITATION (disclosed for the cross-vendor CR, not a silent gap): this
-    detects a merge queue configured via a repository RULESET (the
-    `rules/branches` endpoint's `merge_queue` rule type). A merge queue enabled
-    via CLASSIC branch protection is NOT reported there and would read as a clean
-    rule list → a fail-OPEN. Robust classic-protection detection is deferred to
-    Consiliency/agent-harness#265, which replaces this whole prohibition with
-    queue-bound re-assertion; it is not worth a fragile, over-blocking classic
-    probe here. Ruleset-based queues (the modern default) ARE caught."""
-    from .governed_premerge import fab_promotion_enabled
-
-    if not fab_promotion_enabled():
-        return None
-    if not base_ref:
-        return "fab-merge-queue-unresolvable: PR has no readable base ref (fail-closed)"
-    # Bind the `gh api` probe to the BROKER-VALIDATED repo identity — `gh api`
-    # takes no `--repo`, so (unlike every sibling `gh pr` call that carries
-    # `repo_args`) it would otherwise resolve `{owner}/{repo}` from ambient
-    # context and could misresolve in a detached/worktree checkout to a
-    # DIFFERENT repo's rules (a fail-open). Substitute the resolved owner/repo
-    # into the path explicitly; if the identity cannot be resolved while the
-    # flag is on, refuse rather than probe an unbound repo (fail-closed).
-    owner_repo = _repo_slug_owner_repo(repo_args)
-    if owner_repo is None:
-        return (
-            "fab-merge-queue-unresolvable: could not bind the merge-queue probe to the broker-validated "
-            "repo identity while PHASE_LOOP_FAB is on (fail-closed — refusing to probe an unbound repo)"
-        )
-    # Query the base branch's rules for an enabled merge queue.
-    rules = subprocess.run(
-        ["gh", "api", f"repos/{owner_repo}/rules/branches/{base_ref}"],
-        cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
-    )
-    if rules.returncode != 0:
-        # `gh api` returns non-zero when the rules endpoint is unavailable (e.g.
-        # older GHES) — that is NOT proof a queue is absent; fail closed.
-        return (
-            f"fab-merge-queue-unresolvable: could not read branch rules for '{base_ref}' to rule out a "
-            f"merge queue while PHASE_LOOP_FAB is on (fail-closed): {rules.stderr.strip() or 'gh api failed'}"
-        )
-    try:
-        rule_types = {r.get("type") for r in json.loads(rules.stdout or "[]") if isinstance(r, dict)}
-    except Exception as exc:
-        return f"fab-merge-queue-unresolvable: could not parse branch rules (fail-closed): {exc}"
-    if "merge_queue" in rule_types:
-        return (
-            f"fab-merge-queue-prohibited: base branch '{base_ref}' has a GitHub merge queue enabled and "
-            "PHASE_LOOP_FAB is on — a queued merge creates the final commit asynchronously AFTER this "
-            "re-assertion, reopening a TOCTOU the check cannot bind to. Refusing to merge (non-human; "
-            "TODO Consiliency/agent-harness#265 will bind the re-assertion to the queued promotion)."
-        )
-    return None
-
-
 def _fab_promotion_gate_before_merge(
     workspace: Path,
     run_id: Optional[str],
@@ -562,11 +486,16 @@ def _fab_promotion_gate_before_merge(
     ``None`` — ``run_id`` MUST be sourced by the caller from its own trusted
     runner/train-context bookkeeping (e.g. a future producer's
     ``completed_nodes[node_id]["fab_run_id"]``), never from PR/branch
-    content. ``run_id is None`` is the ONLY inert branch — it means this
-    node was never scoped to FAB, mirroring ``fab_gate_validator``'s branch
-    (i) (agent-harness#191 CR, F3's "run_id trust" doctrine).
+    content. There are TWO inert branches — ``run_id is None`` (this node was
+    never scoped to FAB) AND ``not fab_promotion_enabled()`` (the flag is OFF
+    NOW, e.g. a flag-off RESUME of a run whose ledger persisted a `fab_run_id`
+    from a prior flag-on admission — FAB stays DORMANT/byte-neutral). Callers
+    on the FAB path therefore key on ``fab_active = run_id is not None and
+    fab_promotion_enabled()``, never on ``run_id`` alone (#265 CR round 3).
+    Mirrors ``fab_gate_validator``'s branch (i) (agent-harness#191 CR, F3's
+    "run_id trust" doctrine).
 
-    Once a ``run_id`` IS present, this fails CLOSED, never inert:
+    Once ``run_id`` IS present AND the flag is on, this fails CLOSED, never inert:
 
     * A present ``run_id`` is itself the FAB-scope marker (F3). If provenance
       cannot be read for it — ``fab_provenance.ProvenanceNotFound`` (missing,
@@ -1216,6 +1145,240 @@ def _fab_delta_readmit(
     return live_head_sha
 
 
+def _gh_host_from_repo_args(repo_args: Sequence[str]) -> Optional[str]:
+    """The GitHub HOST from the broker-validated ``--repo <host>/<owner>/<repo>``
+    binding (#265 CR round 2, Blocker 2). ``gh api graphql`` takes no ``--repo`` and
+    resolves its host from ``GH_HOST``/config — so, unlike the sibling ``gh pr view
+    --repo`` REST calls, an ambient ``GH_HOST`` could silently redirect a GraphQL
+    membership read / dequeue mutation to a DIFFERENT host (a wrong-host fail-open).
+    Pinning ``--hostname`` to THIS host keeps every GraphQL call on the same host the
+    REST calls use. ``None`` when the binding carries no explicit host (``owner/repo``
+    form) — the caller then omits ``--hostname`` and relies on the shared env."""
+    for i, a in enumerate(repo_args):
+        if a == "--repo" and i + 1 < len(repo_args):
+            parts = repo_args[i + 1].split("/")
+            if len(parts) >= 3 and parts[0]:
+                return parts[0]
+    return None
+
+
+def _live_pr_queue_status(workspace: Path, branch: str) -> Optional[dict]:
+    """The PR's terminal state + merge-QUEUE MEMBERSHIP (#265 CR round 1). A merge
+    queue tracks membership SEPARATELY from PR ``state``: a PR KICKED from the queue
+    by a merge-group CI failure stays ``state=OPEN`` with NO queue entry, and
+    ``gh pr merge`` can leave a pending ``autoMergeRequest`` that re-queues later — so
+    the poll/dequeue MUST read membership, not just state. Returns
+    ``{"state": OPEN|CLOSED|MERGED, "auto_merge": bool, "in_queue": True|False|None}``
+    or ``None`` if the PR itself is unreadable. ``in_queue`` uses GraphQL
+    ``isInMergeQueue`` (NOT exposed by ``gh pr view --json``); it is ``None`` when
+    membership is UNREADABLE — callers treat None fail-closed (keep polling; a dequeue
+    is NOT confirmed on unreadable membership), never as 'not queued'."""
+    repo_args, env_override = _gh_repo_binding(workspace)
+    try:
+        got = subprocess.run(
+            ["gh", "pr", "view", branch, *repo_args, "--json", "number,state,autoMergeRequest"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=15, env=env_override,
+        )
+        if got.returncode != 0:
+            return None
+        d = json.loads(got.stdout or "{}") or {}
+    except Exception:  # noqa: BLE001 - PR unreadable → None
+        return None
+    number = d.get("number")
+    owner_repo = _repo_slug_owner_repo(repo_args)
+    host = _gh_host_from_repo_args(repo_args)
+    in_queue: Optional[bool] = None
+    if number is not None and owner_repo and "/" in owner_repo:
+        owner, name = owner_repo.split("/", 1)
+        try:
+            q = subprocess.run(
+                ["gh", "api", "graphql", *(["--hostname", host] if host else []), "-f",
+                 f'query=query{{repository(owner:"{owner}",name:"{name}")'
+                 f'{{pullRequest(number:{int(number)}){{isInMergeQueue}}}}}}'],
+                cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
+            )
+            if q.returncode == 0:
+                body = json.loads(q.stdout or "{}")
+                if not body.get("errors"):
+                    pr = (((body.get("data") or {}).get("repository") or {}).get("pullRequest") or {})
+                    val = pr.get("isInMergeQueue")
+                    in_queue = bool(val) if val is not None else None
+        except Exception:  # noqa: BLE001 - membership unreadable → None (fail-closed)
+            in_queue = None
+    return {"state": d.get("state"), "auto_merge": d.get("autoMergeRequest") is not None, "in_queue": in_queue}
+
+
+def _dequeue_pr(workspace: Path, branch: str) -> bool:
+    """BEST-EFFORT FULL cancellation of a scheduled merge (#265 CR round 1). A merge
+    queue tracks a queue ENTRY and an AUTO-MERGE request SEPARATELY, so a real cancel
+    must remove BOTH: the GraphQL ``dequeuePullRequest`` mutation (the ``gh pr merge
+    --disable-auto`` FLAG only touches auto-merge, NEVER the queue entry) AND
+    ``--disable-auto``. Returns True ONLY when membership CONFIRMS both are gone
+    (``in_queue is False`` AND no ``auto_merge``) and the PR is not MERGED. ANY
+    ambiguity — unreadable PR/membership, a surviving entry or auto-merge, a GraphQL
+    error (even on a zero exit), a still-live requeue — returns False → the caller's
+    loud ``merge-queue-unreconciled`` halt, never a silent 'cancelled' on a still-live
+    mutation (fail-OPEN was the CR blocker)."""
+    repo_args, env_override = _gh_repo_binding(workspace)
+    host = _gh_host_from_repo_args(repo_args)
+    try:
+        got = subprocess.run(
+            ["gh", "pr", "view", branch, *repo_args, "--json", "id"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=15, env=env_override,
+        )
+        if got.returncode != 0:
+            return False
+        pr_id = (json.loads(got.stdout or "{}") or {}).get("id")
+        if not pr_id:
+            return False
+        # ATTEMPT both cancellations best-effort — the membership CONFIRM below is
+        # AUTHORITATIVE (round-2 grok nit: a mutation-body error must NOT short-circuit
+        # to False, e.g. `dequeuePullRequest` errors 'not queued' on an already-kicked
+        # PR that IS cleanly gone). Pin the GraphQL host (Blocker 2). Always try
+        # `--disable-auto` too even if the mutation errored — the queue ENTRY and the
+        # AUTO-MERGE request are separate; both must go.
+        subprocess.run(
+            ["gh", "api", "graphql", *(["--hostname", host] if host else []), "-f",
+             f'query=mutation{{ dequeuePullRequest(input: {{id: "{pr_id}"}}) {{ clientMutationId }} }}'],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
+        )
+        subprocess.run(
+            ["gh", "pr", "merge", branch, *repo_args, "--disable-auto"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
+        )
+        # CONFIRM (authoritative): BOTH the queue entry AND auto-merge are gone AND the
+        # PR is not (already) MERGED. Unreadable membership / a surviving entry or
+        # auto-merge → False → the caller's loud `unreconciled` halt (never a fail-open
+        # 'cancelled' on a still-live mutation).
+        status = _live_pr_queue_status(workspace, branch)
+        if status is None or status.get("state") == "MERGED":
+            return False
+        return status.get("in_queue") is False and not status.get("auto_merge")
+    except Exception:  # noqa: BLE001 - any failure → not-confirmed → unreconcilable halt
+        return False
+
+
+def _fab_queue_bound_merge_wait(
+    workspace: Path,
+    branch: str,
+    *,
+    base: str,
+    head_sha: Optional[str],
+    poll_interval_s: float,
+    poll_timeout_s: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    dequeue_fn: Callable[[Path, str], bool],
+) -> str:
+    """#265 queue-bound re-assertion. Poll an ENQUEUED FAB PR to its TERMINAL state,
+    re-gate against the queue-produced commit, and return that SHA (the caller records
+    it in the ledger). Fail-CLOSED on every non-happy terminal — never record or
+    return a merge we did not observe terminalize.
+
+    Terminals: ``MERGED`` (bound by `_live_pr_merged_sha`'s head/base IDENTITY guards
+    — NOT a second equivalence recompute; see `_terminal_or_none`) → success;
+    ``CLOSED`` without merge → block; OPEN-but-removed-from-queue (no entry, no
+    auto-merge) → early clean block; otherwise (in queue / auto-merge pending /
+    membership unreadable) → keep polling until the timeout. On TIMEOUT: re-read
+    terminal FIRST (the queue may have merged since the last poll — never block a
+    merge that happened), attempt a dequeue, then re-read terminal AGAIN (a merge may
+    land DURING the dequeue call); a CONFIRMED dequeue is a clean (retryable) block,
+    and a dequeue that can be neither confirmed nor observed-as-merged is the loud
+    ``merge-queue-unreconciled`` halt (a scheduled mutation we can neither cancel nor
+    observe — the operator must reconcile before resuming)."""
+
+    def _terminal_or_none() -> Optional[str]:
+        # DETECTIVE terminal binding = IDENTITY, not a second equivalence recompute.
+        # `_live_pr_merged_sha` returns the terminal merge SHA only when the PR is
+        # MERGED AND its `headRefOid == head_sha` (the pinned admitted head) AND its
+        # `baseRefName == base` — raising `pr-merged-wrong-head` / `pr-merged-wrong-
+        # base` otherwise. That proves the queue merged EXACTLY the pinned head onto
+        # the expected base, which — combined with the PREVENTIVE pre-enqueue FAB
+        # re-gate (full equivalence) + `--match-head-commit` — is the terminal
+        # re-assertion. We deliberately do NOT re-run `_fab_promotion_gate_before_
+        # merge` here: once the head is IN the base (post-merge), the gate's
+        # base-currency recompute is undefined (`merge-base(head, origin/base)==head
+        # != the reviewed base_sha` → a false `base_sha_mismatch`). Equivalence is a
+        # PRE-merge property; the terminal check is head/base identity.
+        return _live_pr_merged_sha(workspace, branch, base=base, head_sha=head_sha)
+
+    def _reconcile(kind: str) -> str:
+        # RACE GUARD (round-2 Blocker 1) + Blocker-B: the state and membership reads
+        # are NON-ATOMIC, so a merge can land BETWEEN them (or during the dequeue) and
+        # leave a stale `{state: OPEN, in_queue: False}` that would otherwise
+        # false-`removed` a MERGED PR ("safe to retry" while it merged). BOTH the
+        # early-break (removed) and the timeout route through here: re-read terminal
+        # FIRST (record a raced merge), attempt the dequeue, re-read terminal AGAIN (a
+        # merge can land DURING the dequeue call). A CONFIRMED dequeue → a clean
+        # retryable block; anything unconfirmed → the loud `unreconciled` halt — never
+        # an unverified 'safe to retry', never a merged PR lost to a false verdict.
+        sha = _terminal_or_none()
+        if sha:
+            return sha
+        confirmed = dequeue_fn(workspace, branch)
+        sha = _terminal_or_none()
+        if sha:
+            return sha
+        if confirmed:
+            if kind == "removed":
+                raise RuntimeError(
+                    f"merge-queue-removed: PR for branch '{branch}' in '{workspace}' was in the merge "
+                    f"queue but is now OPEN with NO entry and NO auto-merge (kicked — e.g. a merge-group "
+                    f"check failed) and CONFIRMED removed; no merge in flight (fail-closed; safe to retry)"
+                )
+            raise RuntimeError(
+                f"merge-queue-timeout-dequeued: the enqueued merge of '{branch}' in '{workspace}' did not "
+                f"terminalize within {poll_timeout_s:.0f}s and was CONFIRMED DEQUEUED (fail-closed; no "
+                f"merge recorded — safe to retry)"
+            )
+        raise RuntimeError(
+            f"merge-queue-unreconciled: a merge was ENQUEUED for '{branch}' in '{workspace}' and could "
+            f"not be observed-to-terminal NOR confirmed-dequeued — a DEFERRED merge may still land OUTSIDE "
+            f"the coordinator ledger. HALT: reconcile the queue state (dequeue the PR, or confirm its "
+            f"merge and record the SHA) before resuming the train"
+        )
+
+    deadline = clock() + poll_timeout_s
+    seen_live = False  # have we ever OBSERVED a live merge mutation (queue entry / auto-merge)?
+    while True:
+        sha = _terminal_or_none()
+        if sha:
+            return sha
+        status = _live_pr_queue_status(workspace, branch)
+        if status is not None:
+            if status.get("state") == "CLOSED":
+                raise RuntimeError(
+                    f"merge-queue-dequeued: PR for branch '{branch}' in '{workspace}' left the merge "
+                    f"queue CLOSED without merging (fail-closed); no merge was recorded — safe to retry"
+                )
+            # Latch "live membership seen" the moment a queue entry / auto-merge is
+            # observed. This distinguishes a PR KICKED from the queue (was live, now
+            # absent) from one NOT-YET-ENQUEUED (the enqueue-propagation window right
+            # after `gh pr merge`, where the entry isn't visible yet) — "removed" is a
+            # TRANSITION, so we only early-break AFTER having seen it live.
+            if status.get("in_queue") is True or status.get("auto_merge"):
+                seen_live = True
+            # MEMBERSHIP-aware EARLY BREAK (CR round 1, Blocker A-ii): a PR KICKED from
+            # the queue (e.g. a merge-group check failed) stays OPEN with NO queue entry
+            # AND no pending auto-merge — no live merge mutation, so DON'T hang for the
+            # full timeout; fail closed cleanly NOW. Only when membership was previously
+            # seen live AND is now DEFINITIVELY absent (`in_queue is False`, not
+            # None/unreadable) AND no auto-merge (which would re-queue). The not-yet-
+            # enqueued window (never seen live) rides to the timeout ladder instead —
+            # slower but fail-closed-correct, never a false early-block.
+            # MEMBERSHIP-aware EARLY BREAK (Blocker A-ii) — but through _reconcile
+            # (round-2 Blocker 1): a stale-OPEN read whose merge landed between the two
+            # non-atomic reads is caught by _reconcile's terminal re-read and RECORDED,
+            # instead of a false `merge-queue-removed`.
+            elif (seen_live and status.get("state") == "OPEN"
+                    and status.get("in_queue") is False and not status.get("auto_merge")):
+                return _reconcile("removed")
+        # In queue / auto-merge pending / membership unreadable / not-yet-enqueued → still in flight.
+        if clock() >= deadline:
+            return _reconcile("timeout")
+        sleep(poll_interval_s)
+
+
 def _live_merge_pr(
     workspace: Path,
     branch: str,
@@ -1223,6 +1386,12 @@ def _live_merge_pr(
     head_sha: Optional[str] = None,
     run_id: Optional[str] = None,
     fab_fetch_origin: str = "origin",
+    *,
+    queue_poll_interval_s: float = 15.0,
+    queue_poll_timeout_s: float = 1800.0,
+    _clock: Optional[Callable[[], float]] = None,
+    _sleep: Optional[Callable[[float], None]] = None,
+    _dequeue_fn: Optional[Callable[[Path, str], bool]] = None,
 ) -> str:
     """Merge the PR for ``branch`` via the GitHub CLI; return the merge commit SHA.
 
@@ -1409,36 +1578,31 @@ def _live_merge_pr(
     # `gh pr merge` so the re-check is as close to the real merge as
     # possible, after the cheaper base/head guards above already passed.
     #
-    # MERGE-QUEUE CONSTRAINT (documented, not built here — Consiliency/
-    # agent-harness#265): this re-assertion binds to the DIRECT/synchronous
-    # `gh pr merge` call immediately below — i.e. it re-checks equivalence
-    # and then the very next statement performs the real promotion. FAB's
-    # design recommends running behind a GitHub merge queue, but enabling
-    # `PHASE_LOOP_FAB` together with a merge queue is NOT yet supported:
-    # under a queue, `gh pr merge` only *enqueues* the PR — the actual merge
-    # happens later, asynchronously, once the queue's own checks pass — so a
-    # re-assertion performed here would NOT be bound to the real promotion
-    # event (a TOCTOU window reopens between this check and the eventual
-    # queued merge). Separately, `--delete-branch` below (pre-existing on
-    # main, not new to FAB) is itself rejected by `gh` when the PR merges via
-    # a queue. Both are pre-existing constraints, not introduced by this
-    # milestone; #265 (merge-queue-async) must make the re-assertion bind to
-    # the queued promotion (and handle `--delete-branch`) before FAB +
-    # merge-queue can be combined safely.
-    # MERGE-QUEUE PROHIBITION (design "Enforced merge-queue prohibition",
-    # activation piece 2, 2d — NOT just documented). When `PHASE_LOOP_FAB` is on
-    # AND the target repo/PR has a merge queue enabled, a `gh pr merge` only
-    # ENQUEUES the PR: the real merge commit is created later, asynchronously,
-    # AFTER this function's piece-1/2c re-assertions — reopening a TOCTOU the
-    # re-check cannot bind to. Until Consiliency/agent-harness#265 makes the
-    # re-assertion bind to the queued promotion, refuse (non-human) rather than
-    # proceed. Byte-neutral: only consulted when the FAB flag is on (no extra
-    # `gh` call otherwise). TODO(Consiliency/agent-harness#265): replace this
-    # prohibition with queue-bound tracking.
-    queue_refusal = _fab_merge_queue_prohibition(workspace, current_base, repo_args, env_override)
-    if queue_refusal is not None:
-        raise RuntimeError(queue_refusal)
-
+    # MERGE-QUEUE: queue-bound re-assertion (Consiliency/agent-harness#265) — this
+    # REPLACES piece-2's enforced prohibition (`_fab_merge_queue_prohibition`, now
+    # removed). Under a GitHub merge queue a `gh pr merge` only ENQUEUES the PR: the
+    # real merge commit is created later, asynchronously. Rather than pre-probe the
+    # branch rules (piece-2's approach, which fail-OPENED on classic-branch-protection
+    # queues), #265 SELF-DETECTS the enqueue from the merge's actual result (a
+    # synchronous merge is MERGED immediately; an enqueued PR is still OPEN with a
+    # null `mergeCommit.oid`) and, for a FAB node, tracks the queue to its terminal
+    # merged SHA + re-gates against THAT commit (see `_fab_queue_bound_merge_wait`).
+    #
+    # PREVENTIVE vs DETECTIVE (known property of delegating to a queue, distinct from
+    # the synchronous path's purely-PREVENTIVE re-gate): the FAB re-gate below runs
+    # BEFORE enqueue (PREVENTIVE — full equivalence authentication of the admitted
+    # head, pinned via `--match-head-commit`). The terminal check in
+    # `_fab_queue_bound_merge_wait` is DETECTIVE and is head/base IDENTITY, NOT a
+    # second equivalence recompute: once the queue has merged, the head is IN the
+    # base, so `compose_gate_status`'s base-currency recompute is undefined (it would
+    # false-`base_sha_mismatch`). Instead `_live_pr_merged_sha` proves the terminal
+    # merged EXACTLY the pinned head onto the expected base (`pr-merged-wrong-head` /
+    # `pr-merged-wrong-base` otherwise). FAB cannot inject a gate between the queue
+    # SELECTING the PR and MERGING it, so a queue that REWRITES the head (e.g. a
+    # rebase-style queue) is DETECTED post-merge (fail-closed on the head mismatch)
+    # but not PREVENTED. `--match-head-commit` + the pre-enqueue equivalence re-gate
+    # make this narrow: a merge/squash queue preserves the pinned head and passes; a
+    # rebase queue fails closed (safe).
     fab_refusal = _fab_promotion_gate_before_merge(
         workspace, run_id, live_base_ref_name=current_base, live_head_sha=current_head,
         fab_fetch_origin=fab_fetch_origin,
@@ -1450,13 +1614,29 @@ def _live_merge_pr(
     # via GitHub's own atomic --match-head-commit check — closes the gap
     # between any of our own reads above and the merge call itself. `gh pr
     # merge` exits non-zero (raising CalledProcessError below, via
-    # check=True) if the head has advanced past `head_sha`.
+    # check=True) if the head has advanced past `head_sha`. Under a queue it
+    # pins the exact head the queue will merge.
     #
-    # `--delete-branch` (pre-existing, unconditional): incompatible with a
-    # GitHub merge queue (`gh` rejects it when the PR is queued rather than
-    # merged directly) — see the FAB merge-queue constraint noted above this
-    # block and Consiliency/agent-harness#265.
-    merge_cmd = ["gh", "pr", "merge", branch, *repo_args, "--merge", "--delete-branch"]
+    # FAB-ACTIVE gate (#265 CR round 3): FAB behaviour keys on run_id AND the CURRENT
+    # flag, never run_id alone. A flag-ON run persists `fab_run_id` in the ledger; a
+    # RESUME with the flag OFF restores that run_id but the FAB machinery must stay
+    # DORMANT (byte-neutral). Gating the two FAB-path decisions below on `run_id is
+    # None` (not the flag) would half-activate FAB on a flag-off resume — dropping
+    # `--delete-branch` + tracking the queue while the pre-enqueue re-gate is inert
+    # (`_fab_promotion_gate_before_merge` already short-circuits on `not
+    # fab_promotion_enabled()`). `fab_active` keeps all three consistent.
+    from .governed_premerge import fab_promotion_enabled
+
+    fab_active = run_id is not None and fab_promotion_enabled()
+
+    # `--delete-branch`: kept UNLESS the node is FAB-ACTIVE — byte-neutral vs. main
+    # (a non-FAB node, OR a flag-off resume with a stale persisted run_id, keeps it).
+    # DROPPED only when FAB-active (#265): `gh` REJECTS `--delete-branch` when the PR
+    # is enqueued rather than merged directly, which would abort the enqueue; the
+    # post-merge prune hook / repo auto-delete-head-branches handles cleanup then.
+    merge_cmd = ["gh", "pr", "merge", branch, *repo_args, "--merge"]
+    if not fab_active:
+        merge_cmd.append("--delete-branch")
     if head_sha:
         merge_cmd += ["--match-head-commit", head_sha]
 
@@ -1485,13 +1665,31 @@ def _live_merge_pr(
     # not match the base/head admitted for this run, instead of recording an
     # externally-merged, unadmitted head as a success.
     sha = _live_pr_merged_sha(workspace, branch, base=base, head_sha=head_sha)
-    if not sha:
+    if sha:
+        return sha  # merged SYNCHRONOUSLY (no queue) — unchanged path.
+
+    # Not merged synchronously. SELF-DETECT (no pre-probe): the PR was ENQUEUED under
+    # a merge queue (still OPEN, null mergeCommit.oid).
+    if not fab_active:
+        # NON-FAB node (or a flag-OFF resume with a stale persisted run_id): unchanged,
+        # byte-neutral fail-closed. Queue tracking is a FAB-ACTIVE capability (it needs
+        # the FAB re-gate, which is inert when the flag is off); off the active-FAB path
+        # we do not follow a queue and keep main's behaviour exactly.
         raise RuntimeError(
             f"could not determine merge commit SHA for branch '{branch}' in "
             f"'{workspace}' after gh pr merge reported success — the "
             f"post-merge state was not resolvable as a validated MERGED PR"
         )
-    return sha
+
+    # FAB-active node enqueued under a merge queue (#265): track it to the terminal
+    # SHA, re-gate against that commit, and return it (the caller records it in the
+    # ledger) — never leaving a deferred merge outside the coordinator's observation.
+    return _fab_queue_bound_merge_wait(
+        workspace, branch, base=base, head_sha=head_sha,
+        poll_interval_s=queue_poll_interval_s, poll_timeout_s=queue_poll_timeout_s,
+        clock=_clock or time.monotonic, sleep=_sleep or time.sleep,
+        dequeue_fn=_dequeue_fn or _dequeue_pr,
+    )
 
 
 def _resolve_prune_helper() -> Optional[Path]:
