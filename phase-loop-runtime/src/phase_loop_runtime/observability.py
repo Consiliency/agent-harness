@@ -411,13 +411,9 @@ def _selected_execution_policy(execution_policy: dict[str, Any], launch_metadata
     if execution_policy.get("work_unit_kind") or execution_policy.get("model") or execution_policy.get("effort"):
         return execution_policy
     if launch_metadata.get("selected_model") or launch_metadata.get("selected_effort"):
-        # NOTE (CR round-9): this launch_metadata FALLBACK branch is reached only when the
-        # execution_policy carries no selected/resolved/model/effort — but the production path
-        # merges a complete execution_policy into launch_metadata first (runner.py: run_artifacts
-        # then merge_launch_metadata({"execution_policy": ...})), so an EARLIER branch returns and
-        # this fallback is BYPASSED on the production path. A round-8 attempt to stage channel
-        # route context here was therefore dead + bypassed and was removed; threading route context
-        # so the status/metrics `model` shows session-unbound is owned by agent-harness#308.
+        # NOTE: a round-8 attempt to stage channel route context on this fallback branch was
+        # removed — it did not caveat the status/metrics `model`. Threading route context so the
+        # status/metrics model shows session-unbound is owned by agent-harness#308.
         return {
             "executor": launch_metadata.get("executor"),
             "model": launch_metadata.get("selected_model"),

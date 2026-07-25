@@ -313,8 +313,6 @@ class LaunchResult:
     #     run's model shows uncaveated. RESIDUAL LIMIT (round-8; the round-7 "handoff renders no
     #     model" claim was WRONG — the model arrives INDIRECTLY via metrics). Threading route
     #     context into the versioned WorkUnitMetric aggregate is tracked as agent-harness#308.
-    #     (observability._selected_execution_policy's launch_metadata fallback is BYPASSED on the
-    #     production path — a complete execution_policy is merged first — so it is not a fix site.)
     #   • STATE layer — StateSnapshot.model shows a model with NO route context = a second NAMED
     #     residual limit (a state-layer stamp is out of scope).
     claude_route_warnings: tuple[str, ...] = ()
