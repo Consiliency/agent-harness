@@ -433,6 +433,13 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     TRANSPORT-INHERENT carve-out (same logic as the supervise carve-out). The channel
 #     LaunchSpec stamps a `session_model_unbound` provenance warning so selected_model is not
 #     read as a bound guarantee (see launcher._CHANNEL_SESSION_MODEL_UNBOUND_WARNING).
+#   • ESCALATION-CEILING divergence (CR round-8 finding A-ii) — NAMED, not aligned, because the
+#     two ceilings belong to DIFFERENT escalation mechanisms: (1) the governed-premerge class
+#     escalation (governed_premerge._NEXT_CLASS: worker→implementer→planner) tops at the PLANNER
+#     class = the ULTRA model (claude-fable-5); (2) the claude-execute-phase skill's in-lane
+#     retry-tier ladder (fast→strong→frontier) tops at `frontier` = the HEAVY model
+#     (claude-opus-5). One is a cross-round governed-review escalation; the other is a within-lane
+#     Agent-retry ladder — aligning them would conflate two purposes, so they intentionally differ.
 # MODEL-PATH BYPASS CLASS — CLOSED or NAMED across the FOUR phase-executor RESOLUTION seams
 # (main-loop, delegated-child runner.py:4894, harness-lane runner.py:5554, maintenance). These
 # are the only four seams that RESOLVE a model; worker_pool.py executes LaunchSpecs the main

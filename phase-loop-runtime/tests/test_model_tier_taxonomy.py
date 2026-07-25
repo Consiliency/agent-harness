@@ -342,11 +342,12 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, spec.claude_route_warnings)
 
         # CR round-6 blocker C: the stamp must reach the DURABLE record (LaunchResult
-        # .event_metadata — what the status/handoff path reads), not only the spec. Route
-        # through the PRODUCTION spec→result copy (_result_with_spec, launcher.py) rather than
-        # hand-threading the field, so this bites if that threading is deleted (CR round-7
-        # de-tautologization). A consumer reading selected_model must ALSO see the unbound
-        # caveat in the same durable record.
+        # .event_metadata — the EVENT layer), not only the spec. Route through the PRODUCTION
+        # spec→result copy (_result_with_spec, launcher.py) rather than hand-threading the
+        # field, so this bites if that threading is deleted (CR round-7 de-tautologization).
+        # RESIDUE (named): this calls _result_with_spec directly, so deleting the CALL SITE in
+        # _launch_claude_channel would not be caught here; the persisted-artifact test below (via
+        # run_artifacts) exercises a separate production path.
         from phase_loop_runtime.launcher import LaunchResult, _result_with_spec
 
         base = LaunchResult(command=spec.command, returncode=0, executor="claude", claude_route_result={})
@@ -354,6 +355,53 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
         md = result.event_metadata()
         self.assertEqual(md.get("selected_model"), "claude-sonnet-5")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, md.get("claude_route_warnings", []))
+
+    def test_channel_run_persisted_launch_json_carries_the_stamp(self):
+        # CR round-8: launch.json is the DURABLE artifact an auditor reads. It records
+        # selected_model — so it must ALSO carry claude_route + the session_model_unbound
+        # warning, or it misreads a channel run as sonnet-bound. Inspect the PERSISTED file
+        # written by run_artifacts (the production launch.json writer), not just event_metadata.
+        import json
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from phase_loop_runtime import observability
+        from phase_loop_runtime.launcher import build_launch_spec, _CHANNEL_SESSION_MODEL_UNBOUND_WARNING
+        from phase_loop_runtime.observability import run_artifacts
+        from _launchspec_golden_cases import _base_request, _pinned_claude_eligibility
+
+        env = {
+            "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+            "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID": "artifact-session-id",
+        }
+        saved = {k: os.environ.get(k) for k in env}
+        try:
+            for k, v in env.items():
+                os.environ[k] = v
+            spec = build_launch_spec(
+                _base_request("claude", claude_execution_mode="solo", phase_team_eligibility=_pinned_claude_eligibility())
+            )
+            with tempfile.TemporaryDirectory() as td:
+                # Stub the dotfiles-dependent skill-bundle materialization (orthogonal to the
+                # launch.json ROUTE fields under test); run_artifacts still writes the real
+                # launch.json metadata dict.
+                with mock.patch.object(observability, "_materialize_launch_bundle", return_value=None), \
+                        mock.patch.object(observability, "_materialize_task_ledger", return_value=None):
+                    artifacts = run_artifacts(Path(td), "PHASE", "execute", 0, spec)
+                launch_json = json.loads(Path(artifacts["metadata"]).read_text(encoding="utf-8"))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        # The persisted artifact records selected_model AND the route + unbound caveat.
+        self.assertEqual(launch_json.get("selected_model"), "claude-sonnet-5")
+        self.assertEqual(launch_json.get("claude_route"), "claude_channel")
+        self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, launch_json.get("claude_route_warnings", []))
 
 
 if __name__ == "__main__":

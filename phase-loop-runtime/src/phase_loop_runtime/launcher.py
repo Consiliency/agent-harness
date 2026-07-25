@@ -299,15 +299,24 @@ class LaunchResult:
     stalled: bool = False
     claude_route: str | None = None
     claude_route_result: dict[str, Any] | None = None
-    # CR round-5/6/7 finding C: route-level provenance warnings (e.g. the channel route's
-    # session_model_unbound stamp) carried onto the DURABLE record. PRECISE consumer map:
-    #   • EVENT layer (event_metadata → launch event / launch.json): CARRIES this warning
-    #     alongside selected_model + claude_route, so a consumer reading selected_model sees
-    #     the caveat in the same record. (Emitted below in event_metadata.)
-    #   • HANDOFF (handoff.py): renders NEITHER selected_model NOR route_warnings — it shows no
-    #     model at all, so it cannot mislead about the model. No change needed.
-    #   • STATE layer (StateSnapshot.model): shows a model with NO route context and does not
-    #     carry this warning — the one NAMED residual limit (a state-layer stamp is out of scope).
+    # CR round-5/6/7/8 finding C: route-level provenance warnings (e.g. the channel route's
+    # session_model_unbound stamp) carried onto the DURABLE record. PRECISE per-destination
+    # consumer map (each VERIFIED at its source, not described from intent):
+    #   • EVENT layer — LaunchResult.event_metadata (emitted below): CARRIES the warning +
+    #     selected_model + claude_route.
+    #   • LAUNCH.JSON artifact — observability.run_artifacts persists claude_route always and
+    #     claude_route_warnings when present, beside selected_model; and the status projection
+    #     (observability._selected_execution_policy) rides claude_route/warnings alongside the
+    #     projected `model`. So the durable artifact an auditor reads carries the caveat (round-8).
+    #   • HANDOFF / STATUS metrics chain — handoff.py:149 → _metrics_summary_lines → the
+    #     `by_model` bucket (handoff.py:704) and render.py:252 DO surface the model, sourced from
+    #     WorkUnitMetric.model ← launch_metadata["selected_model"]. This aggregate carries NO
+    #     route context — a channel run's model shows uncaveated. RESIDUAL LIMIT (round-8; the
+    #     round-7 "handoff renders no model" claim was WRONG — the model arrives INDIRECTLY via
+    #     metrics). Threading route context into the versioned WorkUnitMetric aggregate is tracked
+    #     as agent-harness#308.
+    #   • STATE layer — StateSnapshot.model shows a model with NO route context = a second NAMED
+    #     residual limit (a state-layer stamp is out of scope).
     claude_route_warnings: tuple[str, ...] = ()
     cleanup_evidence: dict[str, Any] | None = None
 

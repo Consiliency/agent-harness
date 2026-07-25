@@ -131,6 +131,12 @@ def run_artifacts(repo: Path, phase: str, action: str, index: int, command_or_sp
             "wrapped_cwd": command_or_spec.wrapped_cwd,
             "launch_timeout_seconds": command_or_spec.launch_timeout_seconds,
             "claude_execution_mode": command_or_spec.claude_execution_mode,
+            # CR round-8 finding: launch.json is the DURABLE artifact an auditor reads, and it
+            # records selected_model for a channel run. Persist the route context beside it so
+            # selected_model is not read as launch-bound — claude_route travels with it, and the
+            # session_model_unbound warning is written below when present (mirrors
+            # LaunchResult.event_metadata).
+            "claude_route": command_or_spec.claude_route,
             "claude_team_policy": (
                 command_or_spec.claude_team_policy.to_json() if command_or_spec.claude_team_policy else None
             ),
@@ -175,6 +181,10 @@ def run_artifacts(repo: Path, phase: str, action: str, index: int, command_or_sp
             "terminal_path": str(root / "terminal-summary.json"),
             "stop_file": str(stop_file(repo)),
         }
+    # Route-level provenance warnings (e.g. the channel route's session_model_unbound stamp) —
+    # written only when present, mirroring LaunchResult.event_metadata (CR round-8 finding C).
+    if getattr(command_or_spec, "claude_route_warnings", None):
+        metadata["claude_route_warnings"] = list(command_or_spec.claude_route_warnings)
     (root / "launch.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return {
         "root": root,
@@ -401,13 +411,23 @@ def _selected_execution_policy(execution_policy: dict[str, Any], launch_metadata
     if execution_policy.get("work_unit_kind") or execution_policy.get("model") or execution_policy.get("effort"):
         return execution_policy
     if launch_metadata.get("selected_model") or launch_metadata.get("selected_effort"):
-        return {
+        # CR round-8 (b): this projects launch_metadata.selected_model into a status `model`
+        # field. Carry the route context so a channel run's `model` is not read as bound —
+        # claude_route + the session_model_unbound warning ride along when present. (The
+        # launch_request-based fallback below derives from launch_request.model_selection, a
+        # separate source that does not carry these launch.json route fields.)
+        selected = {
             "executor": launch_metadata.get("executor"),
             "model": launch_metadata.get("selected_model"),
             "effort": launch_metadata.get("selected_effort"),
             "source": launch_metadata.get("profile_source"),
             "override_reason": launch_metadata.get("override_reason"),
         }
+        if launch_metadata.get("claude_route"):
+            selected["claude_route"] = launch_metadata["claude_route"]
+        if launch_metadata.get("claude_route_warnings"):
+            selected["claude_route_warnings"] = launch_metadata["claude_route_warnings"]
+        return selected
     request = launch_metadata.get("launch_request")
     if isinstance(request, dict):
         model_selection = request.get("model_selection")
