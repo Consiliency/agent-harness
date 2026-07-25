@@ -342,18 +342,15 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, spec.claude_route_warnings)
 
         # CR round-6 blocker C: the stamp must reach the DURABLE record (LaunchResult
-        # .event_metadata — what the status/handoff path reads), not only the spec. A
-        # consumer reading selected_model must ALSO see the unbound caveat in the same record.
-        from phase_loop_runtime.launcher import LaunchResult
+        # .event_metadata — what the status/handoff path reads), not only the spec. Route
+        # through the PRODUCTION spec→result copy (_result_with_spec, launcher.py) rather than
+        # hand-threading the field, so this bites if that threading is deleted (CR round-7
+        # de-tautologization). A consumer reading selected_model must ALSO see the unbound
+        # caveat in the same durable record.
+        from phase_loop_runtime.launcher import LaunchResult, _result_with_spec
 
-        result = LaunchResult(
-            command=spec.command,
-            returncode=0,
-            executor="claude",
-            claude_route=spec.claude_route,
-            selected_model=spec.selected_model,
-            claude_route_warnings=spec.claude_route_warnings,
-        )
+        base = LaunchResult(command=spec.command, returncode=0, executor="claude", claude_route_result={})
+        result = _result_with_spec(base, spec)
         md = result.event_metadata()
         self.assertEqual(md.get("selected_model"), "claude-sonnet-5")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, md.get("claude_route_warnings", []))

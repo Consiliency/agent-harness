@@ -55,17 +55,22 @@ work). So `resolve(role=ultra, vendor≠claude)` → `(heavy_model, effort=max)`
 | **ultra** | `claude-fable-5` | *(none)* → heavy@max | *(none)* → heavy@max | *(none)* → heavy@max |
 | **heavy** | `claude-opus-5` | `gpt-5.6-sol` | `gemini-3.1-pro-preview` ⚠️PREVIEW | `grok-4.5` |
 | **regular** | `claude-sonnet-5` | `gpt-5.6-terra` | `gemini-3.6-flash` ✓ | `grok-4.3` |
-| **lite** | `claude-haiku-4-5-20251001` | `gpt-5.6-luna` | `gemini-3.5-flash-lite` ✓ | `grok-build-0.1` |
+| **lite** | `claude-haiku-4-5-20251001` | `gpt-5.6-luna` | `gemini-3.5-flash-lite` ⚠️API-only (not live on agy) | `grok-build-0.1` |
 
 Notes:
 - **claude lite** pins the dated snapshot `claude-haiku-4-5-20251001` (Haiku still uses
   alias→dated form; pin the dated one to freeze the snapshot).
 - **gemini heavy** `gemini-3.1-pro-preview` is a **preview** model (Google already
   retired `gemini-3-pro-preview`) → tag it `volatile=True` / `preview` in the registry.
-- **gemini regular/lite** CONFIRMED (live docs, changelog 2026-07-21): regular =
-  `gemini-3.6-flash` (stable GA), lite = `gemini-3.5-flash-lite` (stable GA). No
-  `gemini-3.6-flash-lite` exists — the 3.6-Flash / 3.5-Flash-Lite pairing is intentional;
-  nothing newer than 3.6. Both are true stable ids, safe to pin.
+- **gemini regular/lite** — GOOGLE-API-confirmed (live docs, changelog 2026-07-21): regular =
+  `gemini-3.6-flash` (stable GA), lite = `gemini-3.5-flash-lite` (stable GA). Both are true
+  stable Google-API ids. **FLEET-LIVENESS (CR round-6/7, `agy models` on host):** the agy CLI
+  (the gemini executor) exposes `gemini-3.6-flash-{high,…}` — so REGULAR is LIVE and routes —
+  but exposes NO flash-lite at all. So the **lite cell is ASPIRATIONAL for the fleet**: it is a
+  real Google-API id but NOT reachable through agy, so the live worker band degrades to
+  `gemini-3.5-flash-high` (real 3.5 Flash). Repin the lite cell to a canonical agy id when agy
+  ships a flash-lite. (Note: agy's ids are canonical `gemini-<ver>-<family>-<effort>`, not the
+  bare Google-API ids in this table.)
 - **codex ultra** = `gpt-5.6-sol` at `effort=max` ("Sol Pro" is a reasoning mode, not a
   distinct catalog id).
 

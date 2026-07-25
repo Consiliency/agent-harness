@@ -387,8 +387,10 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #   • gemini — the MODEL-PATH split is FIXED (CR round-4) and the REGULAR VERSION is now
 #     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
 #     uses the canonical agy `gemini-3.6-flash-high` (verified against `agy models`; the
-#     newest GA Flash the operator asked us to adopt), matching the matrix's regular cell —
-#     this is NO LONGER a "representational" or version gap. Two things remain: (a) the PRO/
+#     newest GA Flash the operator asked us to adopt) — the regular tier is VERSION-ALIGNED to
+#     the matrix's gemini-3.6-flash (the only remaining difference is NOTATION: the live id is
+#     the agy-suffixed `gemini-3.6-flash-high`, not the matrix's bare `gemini-3.6-flash`, a form
+#     the adapter maps 1:1). Two things remain: (a) the PRO/
 #     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
 #     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
 #     of this fix's scope; (b) LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so

@@ -299,13 +299,15 @@ class LaunchResult:
     stalled: bool = False
     claude_route: str | None = None
     claude_route_result: dict[str, Any] | None = None
-    # CR round-5/6 finding C: route-level provenance warnings (e.g. the channel route's
-    # session_model_unbound stamp) carried onto the DURABLE record so status/handoff
-    # consumers that read selected_model see the unbound caveat (event_metadata emits it).
-    # SCOPED to the EVENT layer: StateSnapshot.model carries no route context, so state-layer
-    # consumers derive unboundness from the co-recorded claude_route="claude_channel" (which
-    # travels with selected_model in event_metadata), not from this warning. A state-layer
-    # stamp is out of scope — named here as the limit.
+    # CR round-5/6/7 finding C: route-level provenance warnings (e.g. the channel route's
+    # session_model_unbound stamp) carried onto the DURABLE record. PRECISE consumer map:
+    #   • EVENT layer (event_metadata → launch event / launch.json): CARRIES this warning
+    #     alongside selected_model + claude_route, so a consumer reading selected_model sees
+    #     the caveat in the same record. (Emitted below in event_metadata.)
+    #   • HANDOFF (handoff.py): renders NEITHER selected_model NOR route_warnings — it shows no
+    #     model at all, so it cannot mislead about the model. No change needed.
+    #   • STATE layer (StateSnapshot.model): shows a model with NO route context and does not
+    #     carry this warning — the one NAMED residual limit (a state-layer stamp is out of scope).
     claude_route_warnings: tuple[str, ...] = ()
     cleanup_evidence: dict[str, Any] | None = None
 
@@ -786,8 +788,10 @@ _GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
     "gemini-3.5-flash-lite": "gemini-3.5-flash-high",  # model-id-source: agy adapter map (lite ASPIRATIONAL → degrade to real 3.5 Flash; agy has no flash-lite)
 }
 
-# Canonical agy model id shape (`agy models`): gemini-<ver>-<family>-<effort>. These pass
-# through verbatim (they are exactly what agy accepts).
+# Canonical agy model id SHAPE (`agy models`): gemini-<ver>-<family>-<effort>. A match passes
+# through verbatim for agy to validate. NOTE: the shape is broader than the live catalog (it
+# admits e.g. `-thinking` / `gemini-3.1-pro-medium` that a given agy build may not expose) —
+# those still pass through and fail LOUD at agy (exit 1), never silently mis-route.
 _AGY_CANONICAL_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)-(?:high|medium|low|thinking)$")
 
 
@@ -804,7 +808,7 @@ def _gemini_cli_model(model: str) -> str:
     if candidate in _GEMINI_MODEL_ID_ALIASES:
         return _GEMINI_MODEL_ID_ALIASES[candidate]
     if _AGY_CANONICAL_GEMINI.match(candidate):
-        return candidate  # canonical agy id — exactly what agy accepts
+        return candidate  # canonical agy id shape — passed through for agy to validate
     if candidate.startswith("gemini-"):
         # FOLLOW-UP (Consiliency/agent-harness#302): this raises at spec-BUILD time, so
         # an operator model-id typo currently surfaces as a traceback rather than a clean
