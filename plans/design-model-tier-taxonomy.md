@@ -34,8 +34,10 @@ decision). Introduces Opus 5 as the Claude heavy model.
 > test asserts model agreement across seams). The per-tier efforts above are advisory
 > defaults returned by `resolve().effort` (the field is `_TIER_ADVISORY_EFFORT`); where
 > an executor declares an effort override it INTENTIONALLY wins. Known live divergences:
-> claude `execute`/`repair` run `high` (vs regular-tier `medium`); codex
-> `roadmap`/`plan`/`review` run `high` on the executor path (vs ultra-tier `max`).
+> claude runs `high` on every action — `roadmap`/`plan`/`review` (vs ultra-tier `max`)
+> AND `execute`/`repair` (vs regular-tier `medium`); codex `roadmap`/`plan`/`review` run
+> `high` on the executor path (vs ultra-tier `max`). (gemini/grok planning clamp
+> `max`→`high` at their own ceilings anyway.)
 > Effort ladders are a declared non-goal here; the divergence is tracked in
 > agent-harness#304 (effort changes cost/latency fleet-wide and were never ratified the
 > way models were).
@@ -115,7 +117,7 @@ All under `phase-loop-runtime/src/phase_loop_runtime/`.
 5. **`advisor_board/{composition,presets,fixtures}.py`** — no tier change (already
    ultra/heavy correct); update any `claude-opus-4-8` literal only if it denotes heavy.
 6. **`panel_invoker.py`** `DEFAULT_LEG_MODELS` — unchanged (already at ultra-else-heavy).
-7. **Supervisor binding (NET-NEW) — ADVISORY PROVENANCE ONLY** (CR round-3
+7. **Supervisor binding — ADVISORY PROVENANCE ONLY** (CR round-3
    correction). The `supervise → heavy` mapping exists (`SUPERVISOR_TIER = "heavy"` +
    `resolve("supervise", vendor)` via `profiles.supervise_selection`), BUT there is no
    programmatic coordinator launch that sets a model: the run-train coordinator and the

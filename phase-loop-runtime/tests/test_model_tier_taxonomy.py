@@ -1,7 +1,7 @@
 """Model-tier taxonomy (design-model-tier-taxonomy.md) — resolve() matrix lock.
 
 Pins `resolve(role, vendor)` across every tier × vendor: the four Claude tier
-ids, the non-claude ultra→heavy@max fallback, the per-tier canonical efforts, the
+ids, the non-claude ultra→heavy@max fallback, the per-tier ADVISORY efforts, the
 gemini-heavy preview/volatile marker, and the role→tier + supervise bindings.
 Also asserts the PIN-ONLY invariant (no floating aliases in the matrix).
 """
@@ -211,6 +211,36 @@ class TierLiveWiringTest(unittest.TestCase):
                 CLASS_MODEL_OVERRIDES["opencode"][model_class],
                 action,
             )
+
+    def test_gemini_executor_path_agrees_with_class_path(self):
+        # gemini is launch-live but NOT a tier vendor (agy aliases/display labels), so
+        # compare its executor path to its CLASS map (CR round-4 regression guard: gemini
+        # execute/repair previously used the `auto` alias, which _gemini_cli_model
+        # COLLAPSES to the Pro/heavy argv, while the class path resolved Flash).
+        from phase_loop_runtime.profiles import (
+            CLASS_MODEL_OVERRIDES,
+            resolve_profile_for_executor,
+        )
+        from phase_loop_runtime.launcher import _gemini_cli_model
+
+        bridge = {
+            "execute": "implementer",
+            "repair": "implementer",
+            "roadmap": "planner",
+            "plan": "planner",
+            "review": "planner",
+        }
+        for action, model_class in bridge.items():
+            self.assertEqual(
+                resolve_profile_for_executor(action=action, executor="gemini").model,
+                CLASS_MODEL_OVERRIDES["gemini"][model_class],
+                action,
+            )
+        # Anti-collapse guard (the sneaky adapter defect): implementation's argv must NOT
+        # resolve to the Pro/heavy agy model.
+        for action in ("execute", "repair"):
+            argv = _gemini_cli_model(resolve_profile_for_executor(action=action, executor="gemini").model)
+            self.assertNotEqual(argv, "Gemini 3.1 Pro (High)", action)
 
     def test_gemini_adapter_maps_tier_ids_without_collapsing_flash_to_pro(self):
         # The gemini CLI adapter must map each tier id to the RIGHT agy model — heavy

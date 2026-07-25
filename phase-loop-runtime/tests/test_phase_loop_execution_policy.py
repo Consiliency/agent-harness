@@ -12,7 +12,9 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         self.assertEqual(DEFAULT_EXECUTOR_POLICY["execute"], "codex")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="pi").model, "auto")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-sonnet-5")
-        self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "auto")
+        # design-model-tier-taxonomy.md CR round-4: gemini execute now uses the validated
+        # Flash implementer name, NOT `auto` (which the adapter collapses to Pro/heavy).
+        self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "Gemini 3.5 Flash (High)")
 
         roadmap = ExecutionPolicyRule(
             selector="execute",

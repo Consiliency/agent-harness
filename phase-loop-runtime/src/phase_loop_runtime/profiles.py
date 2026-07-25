@@ -32,6 +32,9 @@ OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
 GEMINI_FLASH_MODEL = "Gemini 3.5 Flash (High)"
+# Gemini implementer model = the validated agy Flash display label. Hoisted here so
+# EXECUTOR_MODEL_OVERRIDES below can reference the SAME constant the class map uses.
+GEMINI_IMPLEMENTER_MODEL = GEMINI_FLASH_MODEL
 PI_AUTO_ROUTED_MODEL = "auto"
 # xAI-family grok executor default (GROKEXEC). Single source for the grok live
 # adapter model alias; the grok CLI takes it verbatim via `-m`.
@@ -93,11 +96,16 @@ EXECUTOR_MODEL_OVERRIDES = {
         "repair": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
         "review": OPENCODE_OPENAI_HEAVY_MODEL,
     },
+    # gemini is launch-live. CR round-4: implementation must NOT use the broad `auto`
+    # alias — _gemini_cli_model('auto') collapses to the Pro (HEAVY) argv, so the
+    # delegated-child / harness-lane seams were launching implementation on Pro while
+    # the main seam launched Flash. execute/repair → the validated Flash implementer
+    # name (== the class map), planning/review → `pro` (heavy, agrees with the class map).
     "gemini": {
         "roadmap": GEMINI_PRO_ROUTED_MODEL,
         "plan": GEMINI_PRO_ROUTED_MODEL,
-        "execute": GEMINI_AUTO_ROUTED_MODEL,
-        "repair": GEMINI_AUTO_ROUTED_MODEL,
+        "execute": GEMINI_IMPLEMENTER_MODEL,
+        "repair": GEMINI_IMPLEMENTER_MODEL,
         "review": GEMINI_PRO_ROUTED_MODEL,
     },
     "grok": {
@@ -119,9 +127,9 @@ EXECUTOR_MODEL_OVERRIDES = {
 # Executor-path effort overrides. These INTENTIONALLY win over the per-tier advisory
 # efforts (_TIER_ADVISORY_EFFORT) — effort is a declared non-goal / advisory-only
 # (CR round-4 item I decision (ii)); the model mapping is the enforced axis, not effort.
-# claude execute/repair here run `high` vs the regular-tier advisory `medium`; that
-# divergence (and codex roadmap/plan/review `high` vs ultra `max`) is tracked in
-# agent-harness#304.
+# claude runs `high` on every action here — roadmap/plan/review vs the ultra-tier advisory
+# `max`, and execute/repair vs the regular-tier advisory `medium`; codex roadmap/plan/
+# review also run `high` (vs ultra `max`). All tracked in agent-harness#304.
 EXECUTOR_EFFORT_OVERRIDES = {
     "claude": {
         "roadmap": "high",
@@ -149,9 +157,12 @@ CLAUDE_IMPLEMENTER_MODEL = CLAUDE_REGULAR_MODEL
 OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 # OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
-# Gemini planner stays on the CLI `pro` alias; bounded implementer/worker lanes
-# use the validated agy model name directly rather than the broad `auto` alias.
-GEMINI_IMPLEMENTER_MODEL = GEMINI_FLASH_MODEL
+# Gemini planning (planner class + roadmap/plan/review executor path) stays on the CLI
+# `pro` alias (heavy → agy Pro). Implementation lanes — on BOTH the class path AND the
+# executor path (CR round-4 fix) — use the validated agy Flash model name
+# (GEMINI_IMPLEMENTER_MODEL, hoisted near the top), NOT the broad `auto` alias, which
+# _gemini_cli_model collapses to Pro (heavy). The worker class also uses Flash today
+# (the Flash-vs-Flash-Lite cheap-band gap is the named deferral below).
 GEMINI_WORKER_MODEL = GEMINI_FLASH_MODEL
 
 # CLASS_MODEL_OVERRIDES + resolve_model_class are defined BELOW the tier matrix
@@ -189,10 +200,13 @@ GEMINI_WORKER_MODEL = GEMINI_FLASH_MODEL
 # ladders are a declared non-goal of the taxonomy, and effort changes cost/latency
 # fleet-wide and were never operator-ratified the way MODELS were. Where an executor
 # declares an effort override (EXECUTOR_EFFORT_OVERRIDES) it INTENTIONALLY WINS over
-# these defaults. Named live divergences today: claude execute/repair run `high` (vs the
-# regular-tier advisory `medium`); codex roadmap/plan/review run `high` on the executor
-# path (vs the ultra-tier advisory `max`). resolve().effort returns this advisory value;
-# the wiring test asserts MODEL agreement only, effort is tracked in agent-harness#304.
+# these defaults. Named live divergences today: claude roadmap/plan/review AND
+# execute/repair all run `high` (vs the ultra-tier advisory `max` for planning/review and
+# the regular-tier advisory `medium` for implementation); codex roadmap/plan/review run
+# `high` on the executor path (vs the ultra-tier advisory `max`). (gemini/grok planning
+# clamp `max`→`high` at their own ceilings regardless.) resolve().effort returns this
+# advisory value; the wiring test asserts MODEL agreement only — effort is tracked in
+# agent-harness#304.
 _TIER_ADVISORY_EFFORT: dict[str, str] = {
     "ultra": "max",
     "heavy": "xhigh",
@@ -235,7 +249,7 @@ class TierModel:
 @dataclass(frozen=True)
 class TierResolution:
     """Result of `resolve(role, vendor)`: the resolved tier plus its model id,
-    canonical effort, and volatility marker. `.model_id`/`.effort` are the
+    ADVISORY effort (see _TIER_ADVISORY_EFFORT), and volatility marker. `.model_id`/`.effort` are the
     primary outputs; `.volatile` flags a preview/hot-swappable id (gemini heavy)."""
 
     tier: str
@@ -366,17 +380,17 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # (enforced by tests/test_model_tier_taxonomy.py::TierLiveWiringTest).
 # DEFERRED vendor×path pairs — LIVE routing NOT sourced from the matrix (accurate
 # enumeration; each is intentional, with the reason it can't be a one-line derive):
-#   • gemini class path (CLASS_MODEL_OVERRIDES["gemini"]) AND gemini executor path
-#     (EXECUTOR_MODEL_OVERRIDES["gemini"]) — use agy CLI aliases (`pro`/`auto`) and
-#     agy DISPLAY labels, not the matrix API ids. NAMED DISAGREEMENT (CR blocker D):
-#     the cheap band `["gemini"]["worker"]` = GEMINI_WORKER_MODEL = "Gemini 3.5 Flash
-#     (High)" (Flash), while resolve("worker","gemini") = gemini-3.5-flash-lite
-#     (Flash-Lite). Deferred (not fixed here) because the LIVE agy worker lane runs on
-#     the VALIDATED Flash display string; retargeting it to Flash-Lite needs a
-#     validated agy Flash-Lite model string (the matrix ids only reach agy through
-#     launcher._gemini_cli_model, which the class/executor paths do NOT call), so
-#     changing it blind risks breaking the live lane. Migrated with the rest of
-#     gemini's display-label routing, not piecemeal.
+#   • gemini — the MODEL-PATH split is FIXED (CR round-4): implementation on BOTH the
+#     class path AND the executor path now uses the validated Flash name, and planning
+#     uses `pro` on both (execute/repair no longer collapse to Pro via the `auto`→Pro
+#     adapter path). What remains deferred is (a) REPRESENTATIONAL — gemini routes via
+#     agy CLI aliases (`pro`) and DISPLAY labels ("Gemini 3.5 Flash (High)"), not the
+#     matrix API ids, so it is not DERIVED from TIER_MODELS (the API ids only reach agy
+#     through launcher._gemini_cli_model); and (b) the NAMED cheap-band disagreement —
+#     `["gemini"]["worker"]` = Flash while resolve("worker","gemini") = gemini-3.5-flash-
+#     lite (Flash-Lite): deferred because retargeting the live worker lane to Flash-Lite
+#     needs a validated agy Flash-Lite display string, migrated with the rest of gemini's
+#     display-label routing, not piecemeal.
 #   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.5) for every
 #     class/action by grok's documented SINGLE-MODEL design; the per-tier matrix ids
 #     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
@@ -392,8 +406,14 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     operator template uses `{model}`), but has NO defined tier value (not a tier vendor),
 #     so it stays on the DEFAULT_PROFILES heavy default — SEAM-CONSISTENT (same value on
 #     every seam, no intra-vendor split). Named here as an accepted no-tier case.
-# All of the above are consulted via resolve() as the target where a tier exists; migrating
-# them wholesale is explicitly out of scope for this change.
+# MODEL-PATH BYPASS CLASS — CLOSED for ALL executors. This enumeration is now COMPLETE:
+# it covers every executor across the class path AND the executor path (and the adapter
+# collapse for gemini). No executor launches IMPLEMENTATION on a heavier model than its
+# regular tier on any seam. What remains listed above is either REPRESENTATIONAL (aliases/
+# display labels / provider-prefixes that are tier-consistent but not literally the matrix
+# ids) or the single NAMED effort/cheap-band item — never a silent heavy-model bypass.
+# EFFORT is a separate, ADVISORY axis (see _TIER_ADVISORY_EFFORT); it is intentionally not
+# enforced here. Migrating the representational cases wholesale is out of scope.
 _CLASS_TIER_BRIDGE: dict[str, str] = {
     "planner": "ultra",     # ultra-else-heavy@max via resolve()
     "implementer": "regular",

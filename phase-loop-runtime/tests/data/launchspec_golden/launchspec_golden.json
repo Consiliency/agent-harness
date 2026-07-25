@@ -528,7 +528,7 @@
     "command": [
       "agy",
       "--model",
-      "Gemini 3.1 Pro (High)",
+      "Gemini 3.5 Flash (High)",
       "--dangerously-skip-permissions",
       "--add-dir",
       "/repo",
@@ -559,7 +559,7 @@
     "reason": null,
     "selected_agent": null,
     "selected_effort": "medium",
-    "selected_model": "auto",
+    "selected_model": "Gemini 3.5 Flash (High)",
     "selected_variant": null,
     "terminal_summary_artifact": "terminal-summary.json",
     "timeout_posture": "runner_managed",
