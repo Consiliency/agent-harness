@@ -29,6 +29,17 @@ decision). Introduces Opus 5 as the Claude heavy model.
 | **regular** | implementation (`execute`,`repair`) | `medium` |
 | **lite** | cheap/high-volume subtasks (Haiku-like) | `low` |
 
+> **Effort defaults are ADVISORY, not enforced** (CR round-4, item I decision (ii)).
+> Only the per-tier **MODEL** mapping is operator-ratified and enforced (the wiring
+> test asserts model agreement across seams). The per-tier efforts above are advisory
+> defaults returned by `resolve().effort` (the field is `_TIER_ADVISORY_EFFORT`); where
+> an executor declares an effort override it INTENTIONALLY wins. Known live divergences:
+> claude `execute`/`repair` run `high` (vs regular-tier `medium`); codex
+> `roadmap`/`plan`/`review` run `high` on the executor path (vs ultra-tier `max`).
+> Effort ladders are a declared non-goal here; the divergence is tracked in
+> agent-harness#304 (effort changes cost/latency fleet-wide and were never ratified the
+> way models were).
+
 **Graceful degradation (user rule):** *ultra when available for that vendor, otherwise
 heavy.* Only Claude has a distinct ultra model (`claude-fable-5`). For codex/gemini/grok
 there is no separate ultra model — their "ultra" is **the heavy model at `effort=max`**
@@ -75,7 +86,7 @@ convenience runs — out of scope here.)
 |---|---|---|---|
 | `roadmap`, `plan` | planner (opus) | **ultra** (fable) | Claude planning promoted opus→fable |
 | `review` | planner (opus) | **ultra** (fable) | already fable on panel legs — now unified |
-| *supervise* (coordinator/runner) | *(none — inherits session)* | **heavy** (opus-5) | NET-NEW binding |
+| *supervise* (coordinator/runner) | *(none — inherits session)* | **heavy** (opus-5) | advisory provenance only (no programmatic launch seam — see item 7) |
 | `execute`, `repair` | implementer (sonnet) | **regular** (sonnet) | unchanged |
 | worker / cheap subtasks | worker (haiku) | **lite** (haiku) | rename + cross-vendor formalization |
 

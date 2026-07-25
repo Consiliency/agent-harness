@@ -26,6 +26,9 @@ OPENAI_HEAVY_MODEL = "gpt-5.6-sol"
 # can reference it. Equals CODEX_REGULAR_MODEL in the tier matrix (single source).
 OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
 OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
+# opencode regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
+# can reference it (same reason as OPENAI_IMPLEMENTER_MODEL). Provider-qualified prefix.
+OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
 GEMINI_FLASH_MODEL = "Gemini 3.5 Flash (High)"
@@ -77,11 +80,17 @@ EXECUTOR_MODEL_OVERRIDES = {
         "repair": OPENAI_IMPLEMENTER_MODEL,
         "review": OPENAI_HEAVY_MODEL,
     },
+    # opencode is launch-live (promotion_status="live", first-class --executor opencode,
+    # harness-lane accepts it). Mirror the codex/claude fix (CR round 3): implementation
+    # → the regular model (openai/gpt-5.6-terra), planning/review → heavy — so the
+    # executor path AGREES with CLASS_MODEL_OVERRIDES["opencode"]["implementer"].
+    # Previously all actions mapped to sol, so the harness-lane seam launched
+    # implementation on HEAVY while the main seam resolved terra (intra-vendor split).
     "opencode": {
         "roadmap": OPENCODE_OPENAI_HEAVY_MODEL,
         "plan": OPENCODE_OPENAI_HEAVY_MODEL,
-        "execute": OPENCODE_OPENAI_HEAVY_MODEL,
-        "repair": OPENCODE_OPENAI_HEAVY_MODEL,
+        "execute": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
+        "repair": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
         "review": OPENCODE_OPENAI_HEAVY_MODEL,
     },
     "gemini": {
@@ -107,6 +116,12 @@ EXECUTOR_MODEL_OVERRIDES = {
     },
 }
 
+# Executor-path effort overrides. These INTENTIONALLY win over the per-tier advisory
+# efforts (_TIER_ADVISORY_EFFORT) — effort is a declared non-goal / advisory-only
+# (CR round-4 item I decision (ii)); the model mapping is the enforced axis, not effort.
+# claude execute/repair here run `high` vs the regular-tier advisory `medium`; that
+# divergence (and codex roadmap/plan/review `high` vs ultra `max`) is tracked in
+# agent-harness#304.
 EXECUTOR_EFFORT_OVERRIDES = {
     "claude": {
         "roadmap": "high",
@@ -132,7 +147,7 @@ CLAUDE_IMPLEMENTER_MODEL = CLAUDE_REGULAR_MODEL
 # OPENAI_IMPLEMENTER_MODEL is defined near OPENAI_HEAVY_MODEL at the top of this
 # module (hoisted so EXECUTOR_MODEL_OVERRIDES can reference it).
 OPENAI_WORKER_MODEL = "gpt-5.6-luna"
-OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
+# OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 # Gemini planner stays on the CLI `pro` alias; bounded implementer/worker lanes
 # use the validated agy model name directly rather than the broad `auto` alias.
@@ -169,8 +184,16 @@ GEMINI_WORKER_MODEL = GEMINI_FLASH_MODEL
 # vendor, otherwise heavy".
 # ===========================================================================
 
-# Per-tier default efforts. ultra=max, heavy=xhigh, regular=medium, lite=low.
-_TIER_DEFAULT_EFFORT: dict[str, str] = {
+# Per-tier ADVISORY effort defaults (ultra=max, heavy=xhigh, regular=medium, lite=low).
+# ADVISORY — NOT enforced at the executor path (CR round-4, item I decision (ii)): effort
+# ladders are a declared non-goal of the taxonomy, and effort changes cost/latency
+# fleet-wide and were never operator-ratified the way MODELS were. Where an executor
+# declares an effort override (EXECUTOR_EFFORT_OVERRIDES) it INTENTIONALLY WINS over
+# these defaults. Named live divergences today: claude execute/repair run `high` (vs the
+# regular-tier advisory `medium`); codex roadmap/plan/review run `high` on the executor
+# path (vs the ultra-tier advisory `max`). resolve().effort returns this advisory value;
+# the wiring test asserts MODEL agreement only, effort is tracked in agent-harness#304.
+_TIER_ADVISORY_EFFORT: dict[str, str] = {
     "ultra": "max",
     "heavy": "xhigh",
     "regular": "medium",
@@ -225,20 +248,20 @@ class TierResolution:
 # vendor's ultra resolves to its heavy model @ max via resolve()'s fallback.
 TIER_MODELS: dict[str, dict[str, TierModel]] = {
     "claude": {
-        "ultra": TierModel(CLAUDE_ULTRA_MODEL, _TIER_DEFAULT_EFFORT["ultra"]),
-        "heavy": TierModel(CLAUDE_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"]),
-        "regular": TierModel(CLAUDE_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
-        "lite": TierModel(CLAUDE_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
+        "ultra": TierModel(CLAUDE_ULTRA_MODEL, _TIER_ADVISORY_EFFORT["ultra"]),
+        "heavy": TierModel(CLAUDE_HEAVY_MODEL, _TIER_ADVISORY_EFFORT["heavy"]),
+        "regular": TierModel(CLAUDE_REGULAR_MODEL, _TIER_ADVISORY_EFFORT["regular"]),
+        "lite": TierModel(CLAUDE_LITE_MODEL, _TIER_ADVISORY_EFFORT["lite"]),
     },
     "codex": {
-        "heavy": TierModel(CODEX_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"]),
-        "regular": TierModel(CODEX_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
-        "lite": TierModel(CODEX_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
+        "heavy": TierModel(CODEX_HEAVY_MODEL, _TIER_ADVISORY_EFFORT["heavy"]),
+        "regular": TierModel(CODEX_REGULAR_MODEL, _TIER_ADVISORY_EFFORT["regular"]),
+        "lite": TierModel(CODEX_LITE_MODEL, _TIER_ADVISORY_EFFORT["lite"]),
     },
     "gemini": {
-        "heavy": TierModel(GEMINI_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"], volatile=True),
-        "regular": TierModel(GEMINI_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
-        "lite": TierModel(GEMINI_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
+        "heavy": TierModel(GEMINI_HEAVY_MODEL, _TIER_ADVISORY_EFFORT["heavy"], volatile=True),
+        "regular": TierModel(GEMINI_REGULAR_MODEL, _TIER_ADVISORY_EFFORT["regular"]),
+        "lite": TierModel(GEMINI_LITE_MODEL, _TIER_ADVISORY_EFFORT["lite"]),
     },
     # grok: ALL cells volatile — xAI publishes no dated snapshot, bare ids float to
     # latest stable (blocker 2). NOTE: grok's LIVE class/executor routing stays
@@ -246,19 +269,20 @@ TIER_MODELS: dict[str, dict[str, TierModel]] = {
     # per-tier ids are the taxonomy target, consulted via resolve(), not yet the live
     # grok class path (deferred — see CLASS_MODEL_OVERRIDES: claude+codex derived).
     "grok": {
-        "heavy": TierModel(GROK_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"], volatile=True),
-        "regular": TierModel(GROK_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"], volatile=True),
-        "lite": TierModel(GROK_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"], volatile=True),
+        "heavy": TierModel(GROK_HEAVY_MODEL, _TIER_ADVISORY_EFFORT["heavy"], volatile=True),
+        "regular": TierModel(GROK_REGULAR_MODEL, _TIER_ADVISORY_EFFORT["regular"], volatile=True),
+        "lite": TierModel(GROK_LITE_MODEL, _TIER_ADVISORY_EFFORT["lite"], volatile=True),
     },
 }
 
 TIER_VENDORS: tuple[str, ...] = tuple(TIER_MODELS.keys())
 
-# The supervise role (run-train coordinator + phase-loop runner orchestrator)
-# binds to the heavy tier. NET-NEW binding (design item 7): the coordinator is
-# often the ambient session, so this is the default a programmatic coordinator
-# launch resolves through resolve("supervise", vendor); operators running the
-# supervisor session should be on the heavy model (Opus 5).
+# The supervise role (run-train coordinator + phase-loop runner orchestrator) maps to
+# the heavy tier. ADVISORY PROVENANCE ONLY (design item 7, CR round-3 correction): there
+# is no programmatic coordinator launch that sets a model — the coordinator IS the
+# ambient CLI session (per-node run_loop launches its own phase executors). This tier is
+# recorded on the coordinator's review artifact via supervise_selection(); an operator
+# running the supervisor session should be on the heavy model (Opus 5).
 SUPERVISOR_TIER = "heavy"
 
 # Role -> tier. Roles are the product-loop actions plus `supervise` and the
@@ -307,7 +331,7 @@ def resolve(role: str, vendor: str) -> TierResolution:
         return TierResolution(
             tier="ultra",
             model_id=heavy.model_id,
-            effort=_TIER_DEFAULT_EFFORT["ultra"],
+            effort=_TIER_ADVISORY_EFFORT["ultra"],
             volatile=heavy.volatile,
         )
     cell = vendor_matrix[tier]
@@ -356,10 +380,20 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.5) for every
 #     class/action by grok's documented SINGLE-MODEL design; the per-tier matrix ids
 #     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
-#   • opencode class path — provider-qualified `openai/gpt-5.6-*` (a different transport
-#     prefix than the codex matrix ids); pi class path — the `auto` router alias.
-# All of the above are consulted via resolve() as the target; migrating them wholesale
-# is explicitly out of scope for this change.
+#   • opencode — NO LONGER a bypass: its class AND executor paths now AGREE (both use
+#     the provider-qualified `openai/gpt-5.6-{sol,terra,luna}` at heavy/regular/lite;
+#     execute/repair → terra, planning/review → sol; CR round-4 fix). It is not DERIVED
+#     from TIER_MODELS only because opencode is not a tier-matrix vendor (its ids carry
+#     the `openai/` transport prefix); the mapping is hand-maintained but tier-consistent.
+#   • pi class path AND pi executor path — both the `auto` router alias (pi has no
+#     separate per-tier model; both paths use the single alias, so no intra-vendor split).
+#   • `command` executor — LAUNCH-CAPABLE (its `{model}` is a renderable command-template
+#     placeholder via _render_command_template, so the model CAN reach a live argv when an
+#     operator template uses `{model}`), but has NO defined tier value (not a tier vendor),
+#     so it stays on the DEFAULT_PROFILES heavy default — SEAM-CONSISTENT (same value on
+#     every seam, no intra-vendor split). Named here as an accepted no-tier case.
+# All of the above are consulted via resolve() as the target where a tier exists; migrating
+# them wholesale is explicitly out of scope for this change.
 _CLASS_TIER_BRIDGE: dict[str, str] = {
     "planner": "ultra",     # ultra-else-heavy@max via resolve()
     "implementer": "regular",

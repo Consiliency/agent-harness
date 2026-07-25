@@ -144,6 +144,18 @@ class PinOnlyInvariantTest(unittest.TestCase):
         for tier in MODEL_TIERS:
             self.assertNotEqual(resolve(tier, "claude").model_id, "claude-haiku-4-5", tier)
 
+    def test_advisor_registry_registers_dated_lite_not_bare_alias(self):
+        # CR item H: the advisor-board CompatibilityMatrix only accepts REGISTERED ids,
+        # so the lite tier's DATED pin must be registerable there, and the bare undated
+        # alias must NOT be the registered form (else the lite tier's own id is rejected
+        # by the board while the floating alias is accepted). Scan the registry surface,
+        # not just TIER_MODELS.
+        from phase_loop_runtime.advisor_board.registries import DEFAULT_MODEL_REGISTRY
+
+        ids = {m.model for m in DEFAULT_MODEL_REGISTRY.list_models()}
+        self.assertNotIn("claude-haiku-4-5", ids)  # bare undated alias not registered
+        self.assertIn(resolve("lite", "claude").model_id, ids)  # dated lite pin IS registered
+
 
 class TierLiveWiringTest(unittest.TestCase):
     """Blocker 1g: the LIVE class path must equal the tier path — no divergence."""
@@ -175,6 +187,30 @@ class TierLiveWiringTest(unittest.TestCase):
                     resolve(action, vendor).model_id,
                     (vendor, action),
                 )
+
+    def test_opencode_executor_path_agrees_with_class_path(self):
+        # opencode is launch-live but NOT a tier vendor (provider-qualified ids), so its
+        # executor path must agree with its CLASS map instead of resolve() (CR round-4
+        # regression guard: opencode execute/repair previously launched on heavy sol
+        # while the class path resolved terra).
+        from phase_loop_runtime.profiles import (
+            CLASS_MODEL_OVERRIDES,
+            resolve_profile_for_executor,
+        )
+
+        bridge = {
+            "execute": "implementer",
+            "repair": "implementer",
+            "roadmap": "planner",
+            "plan": "planner",
+            "review": "planner",
+        }
+        for action, model_class in bridge.items():
+            self.assertEqual(
+                resolve_profile_for_executor(action=action, executor="opencode").model,
+                CLASS_MODEL_OVERRIDES["opencode"][model_class],
+                action,
+            )
 
     def test_gemini_adapter_maps_tier_ids_without_collapsing_flash_to_pro(self):
         # The gemini CLI adapter must map each tier id to the RIGHT agy model — heavy

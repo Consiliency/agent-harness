@@ -261,7 +261,7 @@ _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     # opus-4-8 is retained above — still referenced by tests/build_bundle brand-
     # collapse — so both are registered during the migration.
     ("claude-opus-5", "claude", "max"),
-    ("claude-haiku-4-5", "claude", "max"),
+    ("claude-haiku-4-5-20251001", "claude", "max"),
     ("claude-fable-5", "claude", "max"),
     ("Gemini 3.1 Pro", "gemini", "max"),
     ("grok-4.5", "grok", "max"),
