@@ -412,10 +412,13 @@ def _selected_execution_policy(execution_policy: dict[str, Any], launch_metadata
         return execution_policy
     if launch_metadata.get("selected_model") or launch_metadata.get("selected_effort"):
         # CR round-8 (b): this projects launch_metadata.selected_model into a status `model`
-        # field. Carry the route context so a channel run's `model` is not read as bound —
-        # claude_route + the session_model_unbound warning ride along when present. (The
-        # launch_request-based fallback below derives from launch_request.model_selection, a
-        # separate source that does not carry these launch.json route fields.)
+        # field, and STAGES the route context (claude_route + the session_model_unbound warning)
+        # for the metric builder. NOTE (CR round-9): this staging is currently INERT for status
+        # display — WorkUnitMetric does not yet persist these keys and nothing reads them off the
+        # projection, so the projected `model` still shows UNCAVEATED in the by_model bucket
+        # today. The staging is consumed when agent-harness#308 threads route context into the
+        # metric. (The launch_request-based fallback below is a separate source without these
+        # launch.json route fields.)
         selected = {
             "executor": launch_metadata.get("executor"),
             "model": launch_metadata.get("selected_model"),

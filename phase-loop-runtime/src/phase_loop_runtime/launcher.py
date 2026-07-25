@@ -305,9 +305,11 @@ class LaunchResult:
     #   • EVENT layer — LaunchResult.event_metadata (emitted below): CARRIES the warning +
     #     selected_model + claude_route.
     #   • LAUNCH.JSON artifact — observability.run_artifacts persists claude_route always and
-    #     claude_route_warnings when present, beside selected_model; and the status projection
-    #     (observability._selected_execution_policy) rides claude_route/warnings alongside the
-    #     projected `model`. So the durable artifact an auditor reads carries the caveat (round-8).
+    #     claude_route_warnings when present, beside selected_model, so the durable artifact an
+    #     auditor reads carries the caveat (round-8). The status projection
+    #     (observability._selected_execution_policy) STAGES claude_route/warnings for the metric
+    #     builder but that staging is INERT for status display today (nothing reads it; it is
+    #     consumed when #308 threads route context into WorkUnitMetric).
     #   • HANDOFF / STATUS metrics chain — handoff.py:149 → _metrics_summary_lines → the
     #     `by_model` bucket (handoff.py:704) and render.py:252 DO surface the model, sourced from
     #     WorkUnitMetric.model ← launch_metadata["selected_model"]. This aggregate carries NO
