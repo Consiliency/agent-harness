@@ -31,10 +31,13 @@ OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
 OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
-GEMINI_FLASH_MODEL = "Gemini 3.5 Flash (High)"
-# Gemini implementer model = the validated agy Flash display label. Hoisted here so
-# EXECUTOR_MODEL_OVERRIDES below can reference the SAME constant the class map uses.
-GEMINI_IMPLEMENTER_MODEL = GEMINI_FLASH_MODEL
+# Gemini implementer (regular tier) — the CANONICAL agy model id from `agy models`
+# (authoritative list), NOT a display label. CR round-5 finding B: the operator asked us
+# to adopt the newest gemini light/medium models; `agy models` exposes gemini-3.6-flash-*
+# (GA), so the regular tier retargets from the old 3.5 Flash to the newest 3.6 Flash.
+# (agy's ids are `gemini-<ver>-<family>-<effort>`; the old "Gemini 3.5 Flash (High)" display
+# label is NOT in `agy models` — hoisted here so EXECUTOR_MODEL_OVERRIDES can reference it.)
+GEMINI_IMPLEMENTER_MODEL = "gemini-3.6-flash-high"
 PI_AUTO_ROUTED_MODEL = "auto"
 # xAI-family grok executor default (GROKEXEC). Single source for the grok live
 # adapter model alias; the grok CLI takes it verbatim via `-m`.
@@ -158,12 +161,13 @@ OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 # OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 # Gemini planning (planner class + roadmap/plan/review executor path) stays on the CLI
-# `pro` alias (heavy → agy Pro). Implementation lanes — on BOTH the class path AND the
-# executor path (CR round-4 fix) — use the validated agy Flash model name
-# (GEMINI_IMPLEMENTER_MODEL, hoisted near the top), NOT the broad `auto` alias, which
-# _gemini_cli_model collapses to Pro (heavy). The worker class also uses Flash today
-# (the Flash-vs-Flash-Lite cheap-band gap is the named deferral below).
-GEMINI_WORKER_MODEL = GEMINI_FLASH_MODEL
+# `pro` alias (heavy → agy Pro). Implementation (regular, GEMINI_IMPLEMENTER_MODEL) uses the
+# canonical agy `gemini-3.6-flash-high` on BOTH the class and executor paths, NOT the broad
+# `auto` alias (which the adapter collapses to Pro/heavy). Worker (lite) uses the canonical
+# agy 3.5 Flash id: `agy models` exposes NO flash-lite, so the matrix's gemini-3.5-flash-lite
+# lite cell is ASPIRATIONAL (target, not live) — the live worker degrades to real 3.5 Flash,
+# named in the deferral below (a real version/family gap, like grok-4.3, NOT representational).
+GEMINI_WORKER_MODEL = "gemini-3.5-flash-high"
 
 # CLASS_MODEL_OVERRIDES + resolve_model_class are defined BELOW the tier matrix
 # (see "class↔tier bridge"), so the claude/codex class mappings can DERIVE from
@@ -380,17 +384,18 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # (enforced by tests/test_model_tier_taxonomy.py::TierLiveWiringTest).
 # DEFERRED vendor×path pairs — LIVE routing NOT sourced from the matrix (accurate
 # enumeration; each is intentional, with the reason it can't be a one-line derive):
-#   • gemini — the MODEL-PATH split is FIXED (CR round-4): implementation on BOTH the
-#     class path AND the executor path now uses the validated Flash name, and planning
-#     uses `pro` on both (execute/repair no longer collapse to Pro via the `auto`→Pro
-#     adapter path). What remains deferred is (a) REPRESENTATIONAL — gemini routes via
-#     agy CLI aliases (`pro`) and DISPLAY labels ("Gemini 3.5 Flash (High)"), not the
-#     matrix API ids, so it is not DERIVED from TIER_MODELS (the API ids only reach agy
-#     through launcher._gemini_cli_model); and (b) the NAMED cheap-band disagreement —
-#     `["gemini"]["worker"]` = Flash while resolve("worker","gemini") = gemini-3.5-flash-
-#     lite (Flash-Lite): deferred because retargeting the live worker lane to Flash-Lite
-#     needs a validated agy Flash-Lite display string, migrated with the rest of gemini's
-#     display-label routing, not piecemeal.
+#   • gemini — the MODEL-PATH split is FIXED (CR round-4) and the REGULAR VERSION is now
+#     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
+#     uses the canonical agy `gemini-3.6-flash-high` (verified against `agy models`; the
+#     newest GA Flash the operator asked us to adopt), matching the matrix's regular cell —
+#     this is NO LONGER a "representational" or version gap. Two things remain: (a) the PRO/
+#     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
+#     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
+#     of this fix's scope; (b) LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so
+#     the matrix's gemini-3.5-flash-lite lite cell is a TARGET, not live; the live worker
+#     degrades to the real agy 3.5 Flash (gemini-3.5-flash-high). This is a genuine
+#     version/family divergence (like grok-4.3), NOT representational — repin the lite cell
+#     when agy ships a flash-lite id.
 #   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.5) for every
 #     class/action by grok's documented SINGLE-MODEL design; the per-tier matrix ids
 #     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
@@ -405,9 +410,13 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     placeholder via _render_command_template, so the model CAN reach a live argv when an
 #     operator template uses `{model}`), but has NO defined tier value (not a tier vendor),
 #     so it stays on the DEFAULT_PROFILES heavy default — SEAM-CONSISTENT (same value on
-#     every seam, no intra-vendor split). Named here as an accepted no-tier case.
+#     every seam, no intra-vendor split). Named here as an accepted no-tier case. Weaker
+#     channel-class residue (N3): `{model}` is OPTIONAL in a command template (only
+#     `{context_file}` is required), so an operator template that OMITS it records
+#     selected_model while binding nothing, with no unbound stamp — operator-authored, not a
+#     production default; stamping it is tracked as agent-harness#307.
 #   • MAINTENANCE seam (CR round-5 finding 1) — `maintain-skills` runs via
-#     maintenance.py:run_skill_maintenance, which calls resolve_profile("skill-maintenance")
+#     maintenance.py:run_maintenance, which calls resolve_profile("skill-maintenance")
 #     → DEFAULT_PROFILES = (gpt-5.6-sol, high) → build_codex_command, bypassing BOTH the
 #     class path and the executor path (no resolve_profile_for_executor, no policy layer).
 #     It hardwires codex on the HEAVY model. ACCEPTED: maintain-skills is not execute/repair,
@@ -422,15 +431,22 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     TRANSPORT-INHERENT carve-out (same logic as the supervise carve-out). The channel
 #     LaunchSpec stamps a `session_model_unbound` provenance warning so selected_model is not
 #     read as a bound guarantee (see launcher._CHANNEL_SESSION_MODEL_UNBOUND_WARNING).
-# MODEL-PATH BYPASS CLASS — CLOSED or NAMED across the FOUR live launch seams (main,
-# delegated-child, harness-lane, maintenance). No executor SILENTLY launches implementation
-# on a heavier model than its regular tier: for the tier vendors the class + executor paths
-# agree; the remaining listed cases are either REPRESENTATIONAL (aliases / display labels /
-# provider-prefixes that are tier-consistent but not literally the matrix ids), or the named
-# no-tier seams (command, maintenance) and the transport carve-out (channel). EXCEPT grok:
-# grok's intentional SINGLE-MODEL routing runs implementation on grok-4.5 (its HEAVY cell) —
-# NAMED above; the taxonomy's grok-4.3 regular target is not yet live. There are TWO named
-# model disagreements (grok single-model; gemini worker Flash-vs-Flash-Lite), not one.
+# MODEL-PATH BYPASS CLASS — CLOSED or NAMED across the FOUR phase-executor RESOLUTION seams
+# (main-loop, delegated-child runner.py:4894, harness-lane runner.py:5554, maintenance). These
+# are the only four seams that RESOLVE a model; worker_pool.py executes LaunchSpecs the main
+# seam already resolved (a parallel TRANSPORT, no resolution of its own), and the runner
+# resolve_profile calls at runner.py:1358/1458 feed BLOCKED-path snapshots only (no launch).
+# No phase executor SILENTLY launches implementation on a heavier model than its regular tier:
+# for the tier vendors the class + executor paths agree; the remaining listed cases are either
+# REPRESENTATIONAL (aliases / display labels / provider-prefixes that are tier-consistent but
+# not literally the matrix ids), or the named no-tier seams (command, maintenance) and the
+# transport carve-out (channel). EXCEPT grok: grok's intentional SINGLE-MODEL routing runs
+# implementation on grok-4.5 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
+# target is not yet live. There are TWO named model disagreements (grok single-model; gemini
+# LITE aspirational — agy exposes no flash-lite), not one. Panel/advisor legs
+# (panel_invoker.DEFAULT_LEG_MODELS = fable-5 / sol / 3.1-Pro / grok-4.5) are a SEPARATE
+# model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
+# are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
 # EFFORT is a separate, ADVISORY axis (see _TIER_ADVISORY_EFFORT), intentionally not enforced.
 # Migrating the representational cases wholesale is out of scope.
 _CLASS_TIER_BRIDGE: dict[str, str] = {

@@ -213,7 +213,8 @@ class TierLiveWiringTest(unittest.TestCase):
             )
 
     def test_gemini_executor_path_agrees_with_class_path(self):
-        # gemini is launch-live but NOT a tier vendor (agy aliases/display labels), so
+        # gemini IS a tier vendor (in TIER_VENDORS) but its LIVE routing is not matrix-
+        # DERIVED (agy aliases / canonical agy ids, mapped by _gemini_cli_model), so
         # compare its executor path to its CLASS map (CR round-4 regression guard: gemini
         # execute/repair previously used the `auto` alias, which _gemini_cli_model
         # COLLAPSES to the Pro/heavy argv, while the class path resolved Flash).
@@ -339,6 +340,23 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
         # Provenance: selected_model is the INTENDED tier model, explicitly stamped unbound.
         self.assertEqual(spec.selected_model, "claude-sonnet-5")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, spec.claude_route_warnings)
+
+        # CR round-6 blocker C: the stamp must reach the DURABLE record (LaunchResult
+        # .event_metadata — what the status/handoff path reads), not only the spec. A
+        # consumer reading selected_model must ALSO see the unbound caveat in the same record.
+        from phase_loop_runtime.launcher import LaunchResult
+
+        result = LaunchResult(
+            command=spec.command,
+            returncode=0,
+            executor="claude",
+            claude_route=spec.claude_route,
+            selected_model=spec.selected_model,
+            claude_route_warnings=spec.claude_route_warnings,
+        )
+        md = result.event_metadata()
+        self.assertEqual(md.get("selected_model"), "claude-sonnet-5")
+        self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, md.get("claude_route_warnings", []))
 
 
 if __name__ == "__main__":
