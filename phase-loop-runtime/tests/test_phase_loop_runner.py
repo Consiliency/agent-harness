@@ -689,9 +689,10 @@ class PhaseLoopRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot.phases["CONTRACT"], "unplanned")
             self.assertEqual(len(results), 1)
             self.assertTrue(results[0].dry_run)
-            self.assertEqual(results[0].selected_model, "claude-opus-4-8")
+            # design-model-tier-taxonomy.md: Claude roadmap/planning promoted opus→fable (ultra).
+            self.assertEqual(results[0].selected_model, "claude-fable-5")
             self.assertIn("--model", results[0].command)
-            self.assertIn("claude-opus-4-8", results[0].command)
+            self.assertIn("claude-fable-5", results[0].command)
 
     def test_status_snapshot_uses_reconciled_blocked_events(self):
         with tempfile.TemporaryDirectory() as td:

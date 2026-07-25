@@ -29,7 +29,8 @@ def _resolve(action, executor, *, model_policy=False, plan_policy=None,
 
 class ModelClassResolutionTest(unittest.TestCase):
     def test_class_to_model_per_executor(self):
-        self.assertEqual(resolve_model_class("claude", "planner"), "claude-opus-4-8")
+        # design-model-tier-taxonomy.md: Claude planner class promoted opus→fable (ultra).
+        self.assertEqual(resolve_model_class("claude", "planner"), "claude-fable-5")
         self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
         self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5")
         self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.6-terra")
@@ -51,8 +52,9 @@ class EmptyPolicyBackCompatTest(unittest.TestCase):
         self.assertEqual(_resolve("plan", "codex", model_policy=False), ("gpt-5.6-sol", "high"))
 
     def test_execute_claude_unchanged(self):
-        # opus @ high is today's claude execute baseline (the empty-policy path).
-        self.assertEqual(_resolve("execute", "claude", model_policy=False), ("claude-opus-4-8", "high"))
+        # opus @ high is today's claude execute baseline (the empty-policy path);
+        # the heavy SSOT bumped opus-4-8 → opus-5 (design-model-tier-taxonomy.md).
+        self.assertEqual(_resolve("execute", "claude", model_policy=False), ("claude-opus-5", "high"))
 
 
 class ShippedPolicyTest(unittest.TestCase):

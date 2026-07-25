@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .capability_registry import (
     CLAUDE_HEAVY_MODEL,
+    CLAUDE_LITE_MODEL,
+    CLAUDE_REGULAR_MODEL,
+    CLAUDE_ULTRA_MODEL,
     DEFAULT_EXECUTOR,
     default_model_profile_for_executor,
     provider_policy_capabilities,
 )
 from .models import (
     ExecutionPolicyRule,
+    MODEL_TIERS,
     ModelSelection,
     ResolvedExecutionPolicy,
     WorkUnitPolicy,
@@ -45,11 +51,15 @@ ACTION_WORK_UNITS = {
 
 EXECUTOR_MODEL_OVERRIDES = {
     "claude": {
-        "roadmap": CLAUDE_HEAVY_MODEL,
-        "plan": CLAUDE_HEAVY_MODEL,
+        # design-model-tier-taxonomy.md: Claude planning/review promoted to the
+        # ultra model (fable). execute/repair stay on the heavy constant (now
+        # opus-5) — the live migration of implementation to the regular model
+        # (sonnet) is deferred; resolve("execute","claude") encodes that target.
+        "roadmap": CLAUDE_ULTRA_MODEL,
+        "plan": CLAUDE_ULTRA_MODEL,
         "execute": CLAUDE_HEAVY_MODEL,
         "repair": CLAUDE_HEAVY_MODEL,
-        "review": CLAUDE_HEAVY_MODEL,
+        "review": CLAUDE_ULTRA_MODEL,
     },
     "opencode": {
         "roadmap": OPENCODE_OPENAI_HEAVY_MODEL,
@@ -109,7 +119,9 @@ GEMINI_WORKER_MODEL = GEMINI_FLASH_MODEL
 
 CLASS_MODEL_OVERRIDES = {
     "claude": {
-        "planner": CLAUDE_HEAVY_MODEL,
+        # design-model-tier-taxonomy.md: the planner class routes to the ultra
+        # model (fable) — Claude planning/review promoted opus→fable.
+        "planner": CLAUDE_ULTRA_MODEL,
         "implementer": CLAUDE_IMPLEMENTER_MODEL,
         "worker": CLAUDE_WORKER_MODEL,
     },
@@ -146,6 +158,169 @@ CLASS_MODEL_OVERRIDES = {
 def resolve_model_class(executor: str, model_class: str) -> str | None:
     """Map (model_class, executor) -> concrete model, or None if unmapped."""
     return CLASS_MODEL_OVERRIDES.get(executor, {}).get(model_class)
+
+
+# ===========================================================================
+# Model-tier taxonomy (design-model-tier-taxonomy.md)
+#
+# A first-class `role -> tier -> (vendor -> model_id)` resolution, ADDITIVE to
+# (not replacing) the legacy MODEL_CLASSES / CLASS_MODEL_OVERRIDES machinery
+# above — the two coexist during the migration. The four tiers are the vocabulary
+# frozen in `models.MODEL_TIERS`; "tier" here is the model-capability band and is
+# lexically distinct from the audit-evidence `--tier-N` budgets (see the
+# MODEL_TIERS definition-site note in models.py).
+#
+# PIN-ONLY: every id below is a pinned canonical literal (no floating aliases like
+# `gpt-5.6`, `gemini-flash-latest`, `grok-4.5-latest`, `-latest`). A version bump
+# is a single-line edit to one of these constants.
+#
+# NON-CLAUDE ULTRA: only Claude ships a distinct ultra model. For codex/gemini/grok
+# the "ultra" band IS the heavy model run at `effort=max` (OpenAI Sol-Pro, grok
+# high-reasoning, etc. are reasoning MODES, not separate catalog ids). So the
+# vendor matrices below omit an `"ultra"` entry and `resolve()` falls back to
+# `(heavy_model, effort="max")` — the operator rule "ultra when available for that
+# vendor, otherwise heavy".
+# ===========================================================================
+
+# Per-tier default efforts. ultra=max, heavy=xhigh, regular=medium, lite=low.
+_TIER_DEFAULT_EFFORT: dict[str, str] = {
+    "ultra": "max",
+    "heavy": "xhigh",
+    "regular": "medium",
+    "lite": "low",
+}
+
+# codex/OpenAI per-tier ids (reuse the existing single-source constants).
+CODEX_HEAVY_MODEL = OPENAI_HEAVY_MODEL
+CODEX_REGULAR_MODEL = OPENAI_IMPLEMENTER_MODEL
+CODEX_LITE_MODEL = OPENAI_WORKER_MODEL
+
+# gemini/Google per-tier ids — API-style canonical ids (NOT the CLI routing
+# aliases `pro`/`auto` or the display label used by the legacy class overrides).
+# heavy is a PREVIEW model (Google already retired gemini-3-pro-preview) → marked
+# volatile in the matrix; regular/lite are stable GA ids.
+GEMINI_HEAVY_MODEL = "gemini-3.1-pro-preview"
+GEMINI_REGULAR_MODEL = "gemini-3.6-flash"
+GEMINI_LITE_MODEL = "gemini-3.5-flash-lite"
+
+# grok/xAI per-tier ids. heavy reuses the existing GROK_DEFAULT_MODEL SSOT.
+GROK_HEAVY_MODEL = GROK_DEFAULT_MODEL
+GROK_REGULAR_MODEL = "grok-4.3"
+GROK_LITE_MODEL = "grok-build-0.1"
+
+
+@dataclass(frozen=True)
+class TierModel:
+    """One (model_id, effort, volatile) cell of the per-vendor tier matrix."""
+
+    model_id: str
+    effort: str
+    volatile: bool = False
+
+
+@dataclass(frozen=True)
+class TierResolution:
+    """Result of `resolve(role, vendor)`: the resolved tier plus its model id,
+    canonical effort, and volatility marker. `.model_id`/`.effort` are the
+    primary outputs; `.volatile` flags a preview/hot-swappable id (gemini heavy)."""
+
+    tier: str
+    model_id: str
+    effort: str
+    volatile: bool = False
+
+
+# The per-vendor tier matrix. `ultra` is present ONLY for claude; every other
+# vendor's ultra resolves to its heavy model @ max via resolve()'s fallback.
+TIER_MODELS: dict[str, dict[str, TierModel]] = {
+    "claude": {
+        "ultra": TierModel(CLAUDE_ULTRA_MODEL, _TIER_DEFAULT_EFFORT["ultra"]),
+        "heavy": TierModel(CLAUDE_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"]),
+        "regular": TierModel(CLAUDE_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
+        "lite": TierModel(CLAUDE_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
+    },
+    "codex": {
+        "heavy": TierModel(CODEX_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"]),
+        "regular": TierModel(CODEX_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
+        "lite": TierModel(CODEX_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
+    },
+    "gemini": {
+        "heavy": TierModel(GEMINI_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"], volatile=True),
+        "regular": TierModel(GEMINI_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
+        "lite": TierModel(GEMINI_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
+    },
+    "grok": {
+        "heavy": TierModel(GROK_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"]),
+        "regular": TierModel(GROK_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
+        "lite": TierModel(GROK_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
+    },
+}
+
+TIER_VENDORS: tuple[str, ...] = tuple(TIER_MODELS.keys())
+
+# The supervise role (run-train coordinator + phase-loop runner orchestrator)
+# binds to the heavy tier. NET-NEW binding (design item 7): the coordinator is
+# often the ambient session, so this is the default a programmatic coordinator
+# launch resolves through resolve("supervise", vendor); operators running the
+# supervisor session should be on the heavy model (Opus 5).
+SUPERVISOR_TIER = "heavy"
+
+# Role -> tier. Roles are the product-loop actions plus `supervise` and the
+# cheap/worker high-volume band. resolve() ALSO accepts a bare tier name (any
+# member of MODEL_TIERS) as `role`, so callers can address a tier directly.
+ROLE_TIERS: dict[str, str] = {
+    "roadmap": "ultra",
+    "plan": "ultra",
+    "review": "ultra",
+    "advise": "ultra",
+    "supervise": SUPERVISOR_TIER,
+    "execute": "regular",
+    "repair": "regular",
+    "worker": "lite",
+    "cheap": "lite",
+}
+
+
+def tier_for_role(role: str) -> str:
+    """The model tier a role maps to. A bare tier name passes through."""
+    if role in MODEL_TIERS:
+        return role
+    tier = ROLE_TIERS.get(role)
+    if tier is None:
+        raise ValueError(f"unknown model-tier role: {role}")
+    return tier
+
+
+def resolve(role: str, vendor: str) -> TierResolution:
+    """Resolve `(role, vendor)` to `(model_id, effort)` (+ tier + volatile marker).
+
+    `role` is either a product role (roadmap/plan/review/execute/repair/supervise/
+    worker/…) or a bare tier name (ultra/heavy/regular/lite). `vendor` is one of
+    claude/codex/gemini/grok.
+
+    ULTRA FALLBACK: for a non-claude vendor the ultra tier resolves to that
+    vendor's heavy model at `effort=max` (there is no separate ultra catalog id).
+    """
+    if vendor not in TIER_MODELS:
+        raise ValueError(f"unknown model-tier vendor: {vendor}")
+    tier = tier_for_role(role)
+    vendor_matrix = TIER_MODELS[vendor]
+    if tier == "ultra" and "ultra" not in vendor_matrix:
+        # ultra-else-heavy@max for codex/gemini/grok.
+        heavy = vendor_matrix["heavy"]
+        return TierResolution(
+            tier="ultra",
+            model_id=heavy.model_id,
+            effort=_TIER_DEFAULT_EFFORT["ultra"],
+            volatile=heavy.volatile,
+        )
+    cell = vendor_matrix[tier]
+    return TierResolution(
+        tier=tier,
+        model_id=cell.model_id,
+        effort=cell.effort,
+        volatile=cell.volatile,
+    )
 
 
 # Actions that author a final patch. The `worker` class (bounded, high-volume

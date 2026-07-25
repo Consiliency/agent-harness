@@ -38,7 +38,7 @@ class RoutingInvariantsTest(unittest.TestCase):
     # 1 — the empty-policy path is byte-for-byte unchanged (back-compat).
     def test_empty_policy_resolution_unchanged(self):
         self.assertEqual(_resolve("plan", "codex"), ("gpt-5.6-sol", "high"))
-        self.assertEqual(_resolve("execute", "claude"), ("claude-opus-4-8", "high"))
+        self.assertEqual(_resolve("execute", "claude"), ("claude-opus-5", "high"))
 
     # 2 — the worker class never authors a final patch.
     def test_worker_never_authors_a_patch(self):

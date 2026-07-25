@@ -18,7 +18,16 @@ from .state_degradation import active_degraded_executors
 
 DEFAULT_EXECUTOR = "codex"
 DEFAULT_LANE_EXECUTOR = "pi"
-CLAUDE_HEAVY_MODEL = "claude-opus-4-8"  # model-id-source: SSOT constant definition (can't reference itself)
+# Claude per-tier SSOT constants (design-model-tier-taxonomy.md). Each is a pinned
+# canonical model id (no floating aliases). This file is NOT in the model-id-source
+# guard's registry allowlist, so every literal carries a `# model-id-source:` marker.
+# `CLAUDE_HEAVY_MODEL` keeps its historical name (widely imported) but is retargeted
+# from the old opus-4-8 to `claude-opus-5` — the new Claude heavy model, and the
+# ambient default for the supervise tier (see profiles.SUPERVISOR_TIER).
+CLAUDE_ULTRA_MODEL = "claude-fable-5"  # model-id-source: SSOT constant definition (ultra tier)
+CLAUDE_HEAVY_MODEL = "claude-opus-5"  # model-id-source: SSOT constant definition (heavy tier)
+CLAUDE_REGULAR_MODEL = "claude-sonnet-5"  # model-id-source: SSOT constant definition (regular tier)
+CLAUDE_LITE_MODEL = "claude-haiku-4-5-20251001"  # model-id-source: SSOT constant definition (lite tier, dated snapshot)
 _CLAUDE_BASE_ALLOWED_TOOLS = ("Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "LS")
 _CLAUDE_COLLABORATION_TOOLS = (
     "Agent",
