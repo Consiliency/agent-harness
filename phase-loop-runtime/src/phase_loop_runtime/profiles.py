@@ -406,14 +406,33 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     operator template uses `{model}`), but has NO defined tier value (not a tier vendor),
 #     so it stays on the DEFAULT_PROFILES heavy default — SEAM-CONSISTENT (same value on
 #     every seam, no intra-vendor split). Named here as an accepted no-tier case.
-# MODEL-PATH BYPASS CLASS — CLOSED for ALL executors. This enumeration is now COMPLETE:
-# it covers every executor across the class path AND the executor path (and the adapter
-# collapse for gemini). No executor launches IMPLEMENTATION on a heavier model than its
-# regular tier on any seam. What remains listed above is either REPRESENTATIONAL (aliases/
-# display labels / provider-prefixes that are tier-consistent but not literally the matrix
-# ids) or the single NAMED effort/cheap-band item — never a silent heavy-model bypass.
-# EFFORT is a separate, ADVISORY axis (see _TIER_ADVISORY_EFFORT); it is intentionally not
-# enforced here. Migrating the representational cases wholesale is out of scope.
+#   • MAINTENANCE seam (CR round-5 finding 1) — `maintain-skills` runs via
+#     maintenance.py:run_skill_maintenance, which calls resolve_profile("skill-maintenance")
+#     → DEFAULT_PROFILES = (gpt-5.6-sol, high) → build_codex_command, bypassing BOTH the
+#     class path and the executor path (no resolve_profile_for_executor, no policy layer).
+#     It hardwires codex on the HEAVY model. ACCEPTED: maintain-skills is not execute/repair,
+#     ROLE_TIERS defines no tier for it, and it is seam-consistent (fixed codex). Latent
+#     note: resolve_profile_for_executor("maintain-skills", executor≠codex) would return
+#     gpt-5.6-sol via DEFAULT_PROFILES — unreachable today (maintain-skills is codex-fixed)
+#     but live code.
+#   • claude CHANNEL route (CR round-5 finding 3) — the PRODUCTION-DEFAULT interactive route
+#     (`claude-channel send`) binds NO `--model` (the print/agent_view routes DO). A send into
+#     an EXISTING claude session cannot rebind that session's model, so implementation on the
+#     channel route runs on the operator's ambient session model, NOT the resolved tier model.
+#     TRANSPORT-INHERENT carve-out (same logic as the supervise carve-out). The channel
+#     LaunchSpec stamps a `session_model_unbound` provenance warning so selected_model is not
+#     read as a bound guarantee (see launcher._CHANNEL_SESSION_MODEL_UNBOUND_WARNING).
+# MODEL-PATH BYPASS CLASS — CLOSED or NAMED across the FOUR live launch seams (main,
+# delegated-child, harness-lane, maintenance). No executor SILENTLY launches implementation
+# on a heavier model than its regular tier: for the tier vendors the class + executor paths
+# agree; the remaining listed cases are either REPRESENTATIONAL (aliases / display labels /
+# provider-prefixes that are tier-consistent but not literally the matrix ids), or the named
+# no-tier seams (command, maintenance) and the transport carve-out (channel). EXCEPT grok:
+# grok's intentional SINGLE-MODEL routing runs implementation on grok-4.5 (its HEAVY cell) —
+# NAMED above; the taxonomy's grok-4.3 regular target is not yet live. There are TWO named
+# model disagreements (grok single-model; gemini worker Flash-vs-Flash-Lite), not one.
+# EFFORT is a separate, ADVISORY axis (see _TIER_ADVISORY_EFFORT), intentionally not enforced.
+# Migrating the representational cases wholesale is out of scope.
 _CLASS_TIER_BRIDGE: dict[str, str] = {
     "planner": "ultra",     # ultra-else-heavy@max via resolve()
     "implementer": "regular",

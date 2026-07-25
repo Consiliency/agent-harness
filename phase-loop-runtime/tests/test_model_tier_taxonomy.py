@@ -297,5 +297,49 @@ class SupervisorProvenanceTest(unittest.TestCase):
         self.assertIn("claude-opus-5", bundle)
 
 
+class ChannelRouteModelBindingTest(unittest.TestCase):
+    """CR round-5 finding 3(d): exercise the PRODUCTION-DEFAULT claude CHANNEL route (not
+    print — the suite conftest pins print, which is exactly why this defect hid). The
+    channel `send` binds no --model; assert that and the session_model_unbound provenance."""
+
+    def test_channel_route_execute_binds_no_model_and_stamps_unbound(self):
+        import os
+        from phase_loop_runtime.launcher import (
+            build_launch_spec,
+            _CHANNEL_SESSION_MODEL_UNBOUND_WARNING,
+        )
+        from _launchspec_golden_cases import _base_request, _pinned_claude_eligibility
+
+        env = {
+            "PHASE_LOOP_CLAUDE_ROUTE": "channel",
+            "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID": "regression-session-id",
+        }
+        saved = {k: os.environ.get(k) for k in env}
+        try:
+            for k, v in env.items():
+                os.environ[k] = v
+            spec = build_launch_spec(
+                _base_request(
+                    "claude",
+                    claude_execution_mode="solo",
+                    phase_team_eligibility=_pinned_claude_eligibility(),
+                )
+            )
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        # Production-default channel route resolved for an execute action.
+        self.assertEqual(spec.claude_route, "claude_channel")
+        # The `send` transport binds NO --model (print/agent_view routes DO).
+        self.assertNotIn("--model", spec.command)
+        # Provenance: selected_model is the INTENDED tier model, explicitly stamped unbound.
+        self.assertEqual(spec.selected_model, "claude-sonnet-5")
+        self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, spec.claude_route_warnings)
+
+
 if __name__ == "__main__":
     unittest.main()

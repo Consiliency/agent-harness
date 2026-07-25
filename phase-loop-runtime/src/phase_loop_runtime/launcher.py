@@ -532,6 +532,21 @@ CLAUDE_PRINT_BILLING_WARNING = (
     "fallback from Channel or Agent View failure."
 )
 
+# CR round-5 finding 3: the `claude-channel send` transport binds NO `--model` (unlike the
+# print/agent_view routes), and a send into an EXISTING claude session cannot rebind that
+# session's model. So the channel route runs on the operator's AMBIENT session model, not the
+# resolved tier model. This provenance warning is stamped on the channel LaunchSpec so
+# `selected_model` (the INTENDED tier model) is not read as a launch-bound guarantee. This is
+# a transport-inherent carve-out, mirroring the supervise carve-out (a coordinator/session the
+# harness does not spawn has an operator-selected model). Fail-closed session-model
+# verification (record + refuse on mismatch) needs sidecar support that does not exist today —
+# tracked as a follow-up (the sidecar has no model-reporting surface).
+_CHANNEL_SESSION_MODEL_UNBOUND_WARNING = (
+    "session_model_unbound: the claude-channel `send` transport does not bind `--model`; the "
+    "run inherits the operator's ambient claude session model. `selected_model` records the "
+    "INTENDED tier model, NOT a launch-bound one (a send cannot rebind an existing session)."
+)
+
 # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): the flags that make `claude` a real print
 # (billing-sensitive) execution, as opposed to Agent View (`--bg`) or a probe.
 _CLAUDE_PRINT_FLAGS = ("-p", "--print", "--bare")
@@ -1174,6 +1189,10 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             claude_channel_session_id=route_selection.session_id,
         )
     if route_selection.route == "claude_channel":
+        # CR round-5 finding 3: the channel `send` command binds NO `--model` (below) — the
+        # session's model is operator-selected and cannot be rebound by a send. selected_model
+        # still records the INTENDED tier model, but claude_route_warnings carries an explicit
+        # session_model_unbound stamp so provenance is not read as a launch-bound guarantee.
         return LaunchSpec(
             executor="claude",
             command=[
@@ -1203,6 +1222,7 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             selected_effort=request.model_selection.effort,
             profile_source=request.model_selection.source,
             override_reason=request.model_selection.override_reason,
+            claude_route_warnings=(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING,),
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
             claude_execution_mode=execution_mode,
