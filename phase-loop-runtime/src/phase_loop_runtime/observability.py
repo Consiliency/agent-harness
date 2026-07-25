@@ -411,26 +411,20 @@ def _selected_execution_policy(execution_policy: dict[str, Any], launch_metadata
     if execution_policy.get("work_unit_kind") or execution_policy.get("model") or execution_policy.get("effort"):
         return execution_policy
     if launch_metadata.get("selected_model") or launch_metadata.get("selected_effort"):
-        # CR round-8 (b): this projects launch_metadata.selected_model into a status `model`
-        # field, and STAGES the route context (claude_route + the session_model_unbound warning)
-        # for the metric builder. NOTE (CR round-9): this staging is currently INERT for status
-        # display — WorkUnitMetric does not yet persist these keys and nothing reads them off the
-        # projection, so the projected `model` still shows UNCAVEATED in the by_model bucket
-        # today. The staging is consumed when agent-harness#308 threads route context into the
-        # metric. (The launch_request-based fallback below is a separate source without these
-        # launch.json route fields.)
-        selected = {
+        # NOTE (CR round-9): this launch_metadata FALLBACK branch is reached only when the
+        # execution_policy carries no selected/resolved/model/effort — but the production path
+        # merges a complete execution_policy into launch_metadata first (runner.py: run_artifacts
+        # then merge_launch_metadata({"execution_policy": ...})), so an EARLIER branch returns and
+        # this fallback is BYPASSED on the production path. A round-8 attempt to stage channel
+        # route context here was therefore dead + bypassed and was removed; threading route context
+        # so the status/metrics `model` shows session-unbound is owned by agent-harness#308.
+        return {
             "executor": launch_metadata.get("executor"),
             "model": launch_metadata.get("selected_model"),
             "effort": launch_metadata.get("selected_effort"),
             "source": launch_metadata.get("profile_source"),
             "override_reason": launch_metadata.get("override_reason"),
         }
-        if launch_metadata.get("claude_route"):
-            selected["claude_route"] = launch_metadata["claude_route"]
-        if launch_metadata.get("claude_route_warnings"):
-            selected["claude_route_warnings"] = launch_metadata["claude_route_warnings"]
-        return selected
     request = launch_metadata.get("launch_request")
     if isinstance(request, dict):
         model_selection = request.get("model_selection")

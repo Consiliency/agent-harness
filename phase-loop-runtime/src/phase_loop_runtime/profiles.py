@@ -433,13 +433,17 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     TRANSPORT-INHERENT carve-out (same logic as the supervise carve-out). The channel
 #     LaunchSpec stamps a `session_model_unbound` provenance warning so selected_model is not
 #     read as a bound guarantee (see launcher._CHANNEL_SESSION_MODEL_UNBOUND_WARNING).
-#   • ESCALATION-CEILING divergence (CR round-8 finding A-ii) — NAMED, not aligned, because the
-#     two ceilings belong to DIFFERENT escalation mechanisms: (1) the governed-premerge class
-#     escalation (governed_premerge._NEXT_CLASS: worker→implementer→planner) tops at the PLANNER
-#     class = the ULTRA model (claude-fable-5); (2) the claude-execute-phase skill's in-lane
-#     retry-tier ladder (fast→strong→frontier) tops at `frontier` = the HEAVY model
-#     (claude-opus-5). One is a cross-round governed-review escalation; the other is a within-lane
-#     Agent-retry ladder — aligning them would conflate two purposes, so they intentionally differ.
+#   • ESCALATION-CEILING divergence (CR round-8/9 finding A-ii) — NAMED, not aligned, because the
+#     two ladders are DIFFERENT and one is not even applied yet: (1) the class-escalation ladder
+#     (governed_premerge.next_escalation / _NEXT_CLASS: worker→implementer→planner) is a RECORDED
+#     DECISION only — the repair-loop pivot writes it with `applied: False` (runner.py:2788) and
+#     the runner does NOT re-select the model_class off it (the documented remaining thread); its
+#     ceiling WOULD be the PLANNER class = the ULTRA model (claude-fable-5). (2) the
+#     claude-execute-phase skill's in-lane retry-tier ladder (fast→strong→frontier) is the mechanism
+#     that ACTUALLY changes the launched model on retry; it tops at `frontier` = the HEAVY model
+#     (claude-opus-5). So the class ladder is decision-only and the retry-tier ladder is applied —
+#     naming keeps that distinction; aligning would both conflate two purposes and imply the class
+#     ladder switches models (it does not).
 # MODEL-PATH BYPASS CLASS — CLOSED or NAMED across the FOUR phase-executor RESOLUTION seams
 # (main-loop, delegated-child runner.py:4894, harness-lane runner.py:5554, maintenance). These
 # are the only four seams that RESOLVE a model; worker_pool.py executes LaunchSpecs the main

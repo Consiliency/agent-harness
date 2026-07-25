@@ -306,17 +306,15 @@ class LaunchResult:
     #     selected_model + claude_route.
     #   • LAUNCH.JSON artifact — observability.run_artifacts persists claude_route always and
     #     claude_route_warnings when present, beside selected_model, so the durable artifact an
-    #     auditor reads carries the caveat (round-8). The status projection
-    #     (observability._selected_execution_policy) STAGES claude_route/warnings for the metric
-    #     builder but that staging is INERT for status display today (nothing reads it; it is
-    #     consumed when #308 threads route context into WorkUnitMetric).
-    #   • HANDOFF / STATUS metrics chain — handoff.py:149 → _metrics_summary_lines → the
-    #     `by_model` bucket (handoff.py:704) and render.py:252 DO surface the model, sourced from
-    #     WorkUnitMetric.model ← launch_metadata["selected_model"]. This aggregate carries NO
-    #     route context — a channel run's model shows uncaveated. RESIDUAL LIMIT (round-8; the
-    #     round-7 "handoff renders no model" claim was WRONG — the model arrives INDIRECTLY via
-    #     metrics). Threading route context into the versioned WorkUnitMetric aggregate is tracked
-    #     as agent-harness#308.
+    #     auditor reads carries the caveat (round-8; mutation-proven).
+    #   • HANDOFF / STATUS metrics chain — handoff's `_metrics_summary_lines` (the `by_model`
+    #     bucket) and render's Models bucket DO surface the model, sourced from WorkUnitMetric.model
+    #     ← launch_metadata["selected_model"]. This aggregate carries NO route context — a channel
+    #     run's model shows uncaveated. RESIDUAL LIMIT (round-8; the round-7 "handoff renders no
+    #     model" claim was WRONG — the model arrives INDIRECTLY via metrics). Threading route
+    #     context into the versioned WorkUnitMetric aggregate is tracked as agent-harness#308.
+    #     (observability._selected_execution_policy's launch_metadata fallback is BYPASSED on the
+    #     production path — a complete execution_policy is merged first — so it is not a fix site.)
     #   • STATE layer — StateSnapshot.model shows a model with NO route context = a second NAMED
     #     residual limit (a state-layer stamp is out of scope).
     claude_route_warnings: tuple[str, ...] = ()

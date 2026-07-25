@@ -117,12 +117,16 @@ These map to the runtime `model_class` axis: implementer = strong, worker = fast
 (The planner class routes to the ULTRA model `claude-fable-5` — a planning-tier
 model ABOVE this execute table; it is NOT `frontier`, which is the heavy model
 `claude-opus-5`.) The shipped `model_policy` dispatches **implementation at the
-implementer class**; on repeated failure the runtime class escalation steps
-implementer → planner (regular → ultra) before, in **governed** `run_mode` only,
-invoking the advisor panel. NOTE two DISTINCT escalation ceilings: this runtime
-class escalation tops at the ULTRA model (`claude-fable-5`), while the in-lane
-retry-tier ladder below (`fast → strong → frontier`) is an execute-phase-local
-mechanism that tops at `frontier`/heavy (`claude-opus-5`). The default `run_mode` is `autonomous` — no panel,
+implementer class**. On repeated failure the runtime RECORDS a class-escalation
+DECISION (implementer → planner) for observability — `applied: False`
+(runner.py records it but does NOT yet re-select the model_class off it; a
+consumer must not read it as an applied switch) — before, in **governed**
+`run_mode` only, invoking the advisor panel. The mechanism that actually CHANGES
+the launched model on retry is the in-lane retry-tier ladder below
+(`fast → strong → frontier`). NOTE the two ladders have DISTINCT ceilings: the
+(recorded-only) class-escalation decision tops at the ULTRA model
+(`claude-fable-5`); the in-lane retry-tier ladder (which is applied) tops at
+`frontier`/heavy (`claude-opus-5`). The default `run_mode` is `autonomous` — no panel,
 no `human_required`; every governed escalation terminal is a non-human
 `review_gate_block` surfaced in the run-end summary, never a synchronous human
 wait.
