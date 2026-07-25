@@ -125,7 +125,11 @@ All under `phase-loop-runtime/src/phase_loop_runtime/`.
 - [ ] Claude heavy = `claude-opus-5`; Claude planning/review = `claude-fable-5`;
       implementation = `claude-sonnet-5`; lite = `claude-haiku-4-5-20251001`.
 - [ ] gemini heavy carries a `preview`/`volatile` marker.
-- [ ] No floating aliases in the registry; every model ID is a pinned canonical string.
+- [ ] Pinned where the vendor publishes immutable ids (claude dateless per-gen
+      snapshots; codex `gpt-5.6-<name>`); no floating aliases (`gpt-5.6`,
+      `gemini-flash-latest`, `-latest`). gemini heavy (preview) and ALL grok cells
+      are marked `volatile=True` — xAI ships no dated snapshot, so bare grok ids
+      float to latest stable; repin when dated ids exist.
 - [ ] `python3 scripts/check_model_id_sources.py` → exit 0.
 - [ ] Full `pytest` green; new `resolve()` matrix test passes.
 - [ ] Cross-vendor CR converged (public-repo gate) before merge.

@@ -746,15 +746,38 @@ def build_gemini_command(
     return command
 
 
+# Explicit API-id → agy CLI model map (design-model-tier-taxonomy.md CR, blocker 1d).
+# The canonical `gemini-*` tier ids from `profiles.TIER_MODELS` must map to the RIGHT
+# agy model — NOT all collapse to Pro. Pro-preview → the verified "Gemini 3.1 Pro
+# (High)" display; flash/flash-lite → their own display strings (per agy's
+# "Gemini <ver> <family> (High)" naming convention — VERIFY against a live agy build
+# and repin here if it differs). An unmapped `gemini-*` id FAILS LOUD below rather
+# than silently coercing to Pro (the pre-CR bug that would have sent execute to Pro).
+_GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
+    "gemini-3.1-pro-preview": "Gemini 3.1 Pro (High)",  # model-id-source: agy CLI adapter map (heavy tier)
+    "gemini-3.6-flash": "Gemini 3.6 Flash (High)",  # model-id-source: agy CLI adapter map (regular tier)
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite (High)",  # model-id-source: agy CLI adapter map (lite tier)
+}
+
+
 def _gemini_cli_model(model: str) -> str:
-    # Map the phase-loop routing aliases and legacy gemini ids (pro/auto/gemini-*) onto
-    # agy's default Pro model. Any OTHER value — a valid agy model name
+    # Map the phase-loop routing aliases (pro/auto/"") onto agy's default Pro model,
+    # and the canonical `gemini-*` tier ids onto their explicit agy model
+    # (_GEMINI_MODEL_ID_ALIASES). Any OTHER value — a valid agy model name
     # ("Gemini 3.5 Flash (...)", "Claude ...", "GPT-OSS ...") or an explicit operator
     # override — passes through verbatim for agy to validate, rather than being
-    # silently coerced to the default.
+    # silently coerced to the default. An UNKNOWN `gemini-*` API id fails loud (never
+    # silently → Pro), so a future/mistyped tier id surfaces instead of mis-routing.
     candidate = (model or "").strip()
-    if candidate in {"", "auto", "pro"} or candidate.startswith("gemini-"):
+    if candidate in {"", "auto", "pro"}:
         return "Gemini 3.1 Pro (High)"
+    if candidate in _GEMINI_MODEL_ID_ALIASES:
+        return _GEMINI_MODEL_ID_ALIASES[candidate]
+    if candidate.startswith("gemini-"):
+        raise ValueError(
+            f"unmapped gemini model id {candidate!r}: add it to "
+            "_GEMINI_MODEL_ID_ALIASES (never silently coerce a gemini-* id to Pro)"
+        )
     return candidate
 
 

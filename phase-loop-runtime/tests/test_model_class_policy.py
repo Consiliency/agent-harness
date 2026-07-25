@@ -32,7 +32,9 @@ class ModelClassResolutionTest(unittest.TestCase):
         # design-model-tier-taxonomy.md: Claude planner class promoted opus→fable (ultra).
         self.assertEqual(resolve_model_class("claude", "planner"), "claude-fable-5")
         self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
-        self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5")
+        # design-model-tier-taxonomy.md: worker class → the lite tier's DATED pin
+        # (was the undated claude-haiku-4-5, a floating-alias shape).
+        self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5-20251001")
         self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.6-terra")
         # Gemini keeps `pro` for planning while implementer/worker route through
         # the validated agy Flash model name.
@@ -52,9 +54,10 @@ class EmptyPolicyBackCompatTest(unittest.TestCase):
         self.assertEqual(_resolve("plan", "codex", model_policy=False), ("gpt-5.6-sol", "high"))
 
     def test_execute_claude_unchanged(self):
-        # opus @ high is today's claude execute baseline (the empty-policy path);
-        # the heavy SSOT bumped opus-4-8 → opus-5 (design-model-tier-taxonomy.md).
-        self.assertEqual(_resolve("execute", "claude", model_policy=False), ("claude-opus-5", "high"))
+        # design-model-tier-taxonomy.md (operator-ratified): claude execute uses the
+        # regular tier (sonnet-5) on the empty-policy path too — the executor-default
+        # and tier/class paths agree (opus-4-8 → sonnet-5).
+        self.assertEqual(_resolve("execute", "claude", model_policy=False), ("claude-sonnet-5", "high"))
 
 
 class ShippedPolicyTest(unittest.TestCase):

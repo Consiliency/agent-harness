@@ -51,14 +51,14 @@ ACTION_WORK_UNITS = {
 
 EXECUTOR_MODEL_OVERRIDES = {
     "claude": {
-        # design-model-tier-taxonomy.md: Claude planning/review promoted to the
-        # ultra model (fable). execute/repair stay on the heavy constant (now
-        # opus-5) — the live migration of implementation to the regular model
-        # (sonnet) is deferred; resolve("execute","claude") encodes that target.
+        # design-model-tier-taxonomy.md (operator-ratified): planning/review use the
+        # ultra model (fable); implementation (execute/repair) uses the regular model
+        # (sonnet). This makes the executor-default path AGREE with the tier/class
+        # path — resolve("plan","claude")=fable, resolve("execute","claude")=sonnet.
         "roadmap": CLAUDE_ULTRA_MODEL,
         "plan": CLAUDE_ULTRA_MODEL,
-        "execute": CLAUDE_HEAVY_MODEL,
-        "repair": CLAUDE_HEAVY_MODEL,
+        "execute": CLAUDE_REGULAR_MODEL,
+        "repair": CLAUDE_REGULAR_MODEL,
         "review": CLAUDE_ULTRA_MODEL,
     },
     "opencode": {
@@ -106,8 +106,12 @@ EXECUTOR_EFFORT_OVERRIDES = {
 # to its single model (pi). Non-`phase-loop-` model strings pass through
 # `_resolve_policy_model` unchanged for every executor (claude/codex have no
 # model_aliases; gemini/pi pass through non-alias strings), so these resolve.
+# CLAUDE_IMPLEMENTER_MODEL == the regular tier (claude-sonnet-5). Kept as a named
+# constant because panel_invoker imports it; it equals CLAUDE_REGULAR_MODEL. The
+# old CLAUDE_WORKER_MODEL (undated `claude-haiku-4-5`) is RETIRED — the worker class
+# now derives to the lite tier's DATED pin (CLAUDE_LITE_MODEL); an undated id is the
+# floating-alias shape the pin-only rule rejects (design-model-tier-taxonomy.md).
 CLAUDE_IMPLEMENTER_MODEL = "claude-sonnet-5"
-CLAUDE_WORKER_MODEL = "claude-haiku-4-5"
 OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
 OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
@@ -117,47 +121,9 @@ OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 GEMINI_IMPLEMENTER_MODEL = GEMINI_FLASH_MODEL
 GEMINI_WORKER_MODEL = GEMINI_FLASH_MODEL
 
-CLASS_MODEL_OVERRIDES = {
-    "claude": {
-        # design-model-tier-taxonomy.md: the planner class routes to the ultra
-        # model (fable) — Claude planning/review promoted opus→fable.
-        "planner": CLAUDE_ULTRA_MODEL,
-        "implementer": CLAUDE_IMPLEMENTER_MODEL,
-        "worker": CLAUDE_WORKER_MODEL,
-    },
-    "codex": {
-        "planner": OPENAI_HEAVY_MODEL,
-        "implementer": OPENAI_IMPLEMENTER_MODEL,
-        "worker": OPENAI_WORKER_MODEL,
-    },
-    "opencode": {
-        "planner": OPENCODE_OPENAI_HEAVY_MODEL,
-        "implementer": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
-        "worker": OPENCODE_OPENAI_WORKER_MODEL,
-    },
-    "gemini": {
-        "planner": GEMINI_PRO_ROUTED_MODEL,
-        "implementer": GEMINI_IMPLEMENTER_MODEL,
-        "worker": GEMINI_WORKER_MODEL,
-    },
-    # grok exposes no separate implementer/worker tier — every class maps to its
-    # single model (like pi), passed through the CLI's `-m` verbatim.
-    "grok": {
-        "planner": GROK_DEFAULT_MODEL,
-        "implementer": GROK_DEFAULT_MODEL,
-        "worker": GROK_DEFAULT_MODEL,
-    },
-    "pi": {
-        "planner": PI_AUTO_ROUTED_MODEL,
-        "implementer": PI_AUTO_ROUTED_MODEL,
-        "worker": PI_AUTO_ROUTED_MODEL,
-    },
-}
-
-
-def resolve_model_class(executor: str, model_class: str) -> str | None:
-    """Map (model_class, executor) -> concrete model, or None if unmapped."""
-    return CLASS_MODEL_OVERRIDES.get(executor, {}).get(model_class)
+# CLASS_MODEL_OVERRIDES + resolve_model_class are defined BELOW the tier matrix
+# (see "class↔tier bridge"), so the claude/codex class mappings can DERIVE from
+# TIER_MODELS instead of duplicating literals (design-model-tier-taxonomy.md CR).
 
 
 # ===========================================================================
@@ -170,9 +136,12 @@ def resolve_model_class(executor: str, model_class: str) -> str | None:
 # lexically distinct from the audit-evidence `--tier-N` budgets (see the
 # MODEL_TIERS definition-site note in models.py).
 #
-# PIN-ONLY: every id below is a pinned canonical literal (no floating aliases like
-# `gpt-5.6`, `gemini-flash-latest`, `grok-4.5-latest`, `-latest`). A version bump
-# is a single-line edit to one of these constants.
+# PIN where the vendor publishes immutable ids: claude (dateless per-gen snapshots)
+# and codex (gpt-5.6-<name>) are pinned canonical literals — no floating aliases
+# (`gpt-5.6`, `gemini-flash-latest`, `-latest`). Two exceptions are marked
+# `volatile=True` in the matrix: gemini heavy (a PREVIEW id) and ALL grok cells (xAI
+# ships no dated snapshot; bare ids float to latest stable — blocker 2). A version
+# bump is a single-line edit to one of these constants.
 #
 # NON-CLAUDE ULTRA: only Claude ships a distinct ultra model. For codex/gemini/grok
 # the "ultra" band IS the heavy model run at `effort=max` (OpenAI Sol-Pro, grok
@@ -204,6 +173,10 @@ GEMINI_REGULAR_MODEL = "gemini-3.6-flash"
 GEMINI_LITE_MODEL = "gemini-3.5-flash-lite"
 
 # grok/xAI per-tier ids. heavy reuses the existing GROK_DEFAULT_MODEL SSOT.
+# VOLATILE: xAI publishes NO dated snapshot for these — a bare `grok-4.5`/`grok-4.3`
+# id tracks the latest stable build per xAI docs, so these are NOT immutable pins.
+# All grok tier cells are marked volatile below; repin to dated ids when xAI ships
+# them (design-model-tier-taxonomy.md CR, blocker 2).
 GROK_HEAVY_MODEL = GROK_DEFAULT_MODEL
 GROK_REGULAR_MODEL = "grok-4.3"
 GROK_LITE_MODEL = "grok-build-0.1"
@@ -249,10 +222,15 @@ TIER_MODELS: dict[str, dict[str, TierModel]] = {
         "regular": TierModel(GEMINI_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
         "lite": TierModel(GEMINI_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
     },
+    # grok: ALL cells volatile — xAI publishes no dated snapshot, bare ids float to
+    # latest stable (blocker 2). NOTE: grok's LIVE class/executor routing stays
+    # single-model (GROK_DEFAULT_MODEL = grok-4.5) by grok's documented design; these
+    # per-tier ids are the taxonomy target, consulted via resolve(), not yet the live
+    # grok class path (deferred — see CLASS_MODEL_OVERRIDES: claude+codex derived).
     "grok": {
-        "heavy": TierModel(GROK_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"]),
-        "regular": TierModel(GROK_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"]),
-        "lite": TierModel(GROK_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"]),
+        "heavy": TierModel(GROK_HEAVY_MODEL, _TIER_DEFAULT_EFFORT["heavy"], volatile=True),
+        "regular": TierModel(GROK_REGULAR_MODEL, _TIER_DEFAULT_EFFORT["regular"], volatile=True),
+        "lite": TierModel(GROK_LITE_MODEL, _TIER_DEFAULT_EFFORT["lite"], volatile=True),
     },
 }
 
@@ -323,6 +301,75 @@ def resolve(role: str, vendor: str) -> TierResolution:
     )
 
 
+def supervise_selection(vendor: str = "claude") -> TierResolution:
+    """The supervise-tier binding for a coordinator/orchestrator on `vendor`.
+
+    Production consumer of `resolve(SUPERVISOR_TIER, vendor)` (design item 7): the
+    run-train coordinator records this so a programmatic coordinator launch binds
+    the heavy model instead of silently inheriting the ambient session's model."""
+    return resolve(SUPERVISOR_TIER, vendor)
+
+
+# --- class↔tier bridge: derive the legacy class overrides from the matrix -----
+# The MODEL_CLASSES axis (planner/implementer/worker) maps onto model tiers so the
+# class path and the tier path can never DIVERGE on the same decision (the CR's
+# blocker). claude+codex have API-id-shaped class models, so they DERIVE from
+# TIER_MODELS via this bridge. gemini/opencode/pi keep explicit non-API-id routing
+# (CLI aliases `pro`/`auto`, provider-qualified `openai/…`, display labels), and
+# grok keeps its documented SINGLE-MODEL routing (every class → GROK_DEFAULT_MODEL);
+# their live routing is not sourced from the matrix (deferred).
+_CLASS_TIER_BRIDGE: dict[str, str] = {
+    "planner": "ultra",     # ultra-else-heavy@max via resolve()
+    "implementer": "regular",
+    "worker": "lite",
+}
+
+
+def _class_model_from_tier(vendor: str, model_class: str) -> str:
+    """The concrete model for `(vendor, model_class)`, sourced from TIER_MODELS."""
+    return resolve(_CLASS_TIER_BRIDGE[model_class], vendor).model_id
+
+
+def _derived_class_overrides(vendor: str) -> dict[str, str]:
+    return {mc: _class_model_from_tier(vendor, mc) for mc in _CLASS_TIER_BRIDGE}
+
+
+CLASS_MODEL_OVERRIDES = {
+    # claude + codex: DERIVED from the tier matrix (planner←ultra, implementer←
+    # regular, worker←lite) so the class and tier paths agree by construction.
+    "claude": _derived_class_overrides("claude"),
+    "codex": _derived_class_overrides("codex"),
+    "opencode": {
+        "planner": OPENCODE_OPENAI_HEAVY_MODEL,
+        "implementer": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
+        "worker": OPENCODE_OPENAI_WORKER_MODEL,
+    },
+    "gemini": {
+        "planner": GEMINI_PRO_ROUTED_MODEL,
+        "implementer": GEMINI_IMPLEMENTER_MODEL,
+        "worker": GEMINI_WORKER_MODEL,
+    },
+    # grok exposes no separate implementer/worker tier — every class maps to its
+    # single model (like pi), passed through the CLI's `-m` verbatim. Its per-tier
+    # matrix ids (grok-4.3/grok-build-0.1) are the taxonomy target, not yet live.
+    "grok": {
+        "planner": GROK_DEFAULT_MODEL,
+        "implementer": GROK_DEFAULT_MODEL,
+        "worker": GROK_DEFAULT_MODEL,
+    },
+    "pi": {
+        "planner": PI_AUTO_ROUTED_MODEL,
+        "implementer": PI_AUTO_ROUTED_MODEL,
+        "worker": PI_AUTO_ROUTED_MODEL,
+    },
+}
+
+
+def resolve_model_class(executor: str, model_class: str) -> str | None:
+    """Map (model_class, executor) -> concrete model, or None if unmapped."""
+    return CLASS_MODEL_OVERRIDES.get(executor, {}).get(model_class)
+
+
 # Actions that author a final patch. The `worker` class (bounded, high-volume
 # subtasks) must never own these — enforced as a routing invariant (P5).
 PATCH_AUTHORING_ACTIONS: tuple[str, ...] = ("execute", "repair")
@@ -373,7 +420,9 @@ SHIPPED_MODEL_POLICY = {
     "plan": {"model_class": "planner", "effort": "max", "clamp": True},
     "execute": {"model_class": "implementer", "effort": "medium"},
     "repair": {"model_class": "implementer", "effort": "medium"},
-    "review": {"model_class": "planner", "effort": "high", "clamp": True},
+    # design-model-tier-taxonomy.md: review is an ULTRA-tier role → max effort (was
+    # high). clamp=True still resolves a sub-max provider's `max` to its ceiling.
+    "review": {"model_class": "planner", "effort": "max", "clamp": True},
 }
 
 

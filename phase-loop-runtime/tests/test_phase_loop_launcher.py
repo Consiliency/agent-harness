@@ -48,8 +48,8 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(selection.model, "claude-fable-5")
         self.assertEqual(selection.effort, "high")
         execute_selection = resolve_profile_for_executor(action="execute", executor="claude")
-        # execute stays on the heavy constant (bumped opus-4-8 → opus-5).
-        self.assertEqual(execute_selection.model, "claude-opus-5")
+        # design-model-tier-taxonomy.md (operator-ratified): implementation → regular (sonnet-5).
+        self.assertEqual(execute_selection.model, "claude-sonnet-5")
         self.assertEqual(execute_selection.effort, "high")
         self.assertEqual(selection.source, "claude_default")
 

@@ -2042,9 +2042,20 @@ def _build_train_review_bundle(
     Summarises all draft PRs in merge order so the panel can review the
     cross-repo change as one logical unit.
     """
+    # design-model-tier-taxonomy.md item 7: the train coordinator is a SUPERVISE-tier
+    # role. Bind its model programmatically via resolve("supervise", …) and record it
+    # on the coordinator's own review artifact (the production consumer of the
+    # supervise binding; the ambient-session case stays documentation).
+    from .profiles import supervise_selection
+
+    supervise = supervise_selection()
     lines: List[str] = [
         "# Train-level bundle review\n\n",
         f"**Train:** `{roadmap.title}`\n\n",
+        (
+            f"_Coordinator supervise tier: `{supervise.tier}` "
+            f"(model `{supervise.model_id}`, effort `{supervise.effort}`)._\n\n"
+        ),
         "## Draft PRs (merge order)\n\n",
         "Review the following PRs as **one logical cross-repo change**.\n",
         "Approve (AGREE) only if the change is correct as a unit.\n\n",

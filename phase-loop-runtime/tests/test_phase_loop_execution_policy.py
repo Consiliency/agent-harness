@@ -11,7 +11,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
     def test_dfparsoak_policy_precedence_keeps_execute_default_and_explicit_fallbacks(self):
         self.assertEqual(DEFAULT_EXECUTOR_POLICY["execute"], "codex")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="pi").model, "auto")
-        self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-opus-5")
+        self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-sonnet-5")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "auto")
 
         roadmap = ExecutionPolicyRule(
