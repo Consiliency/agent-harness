@@ -68,8 +68,10 @@ def fab_promotion_enabled(env: Mapping[str, str] | None = None) -> bool:
 # fenced OFF BY CONSTRUCTION so the broker gap cannot be reached even if an operator
 # turns both opt-ins on — an advanced head then falls through to the UNCHANGED
 # `pr-head-advanced` guard (pre-FAB behaviour, byte-identical). This gates ONLY the
-# ENGAGE; the torn-state recovery safety net (`_fab_recover_torn_to_admitted`, gated
-# on `fab_run_id`) is unaffected and simply becomes a no-op when engage never ran.
+# ENGAGE; the torn-state recovery safety net (`_fab_recover_torn_to_admitted`, gated on
+# `fab_run_id is not None AND fab_promotion_enabled()` since ah#299 — a stale ledger
+# run_id alone must NOT activate it on a flag-off resume) is unaffected and simply
+# becomes a no-op when engage never ran.
 # Landing #288 = implement broker re-admission AND flip this to True.
 _FAB_DELTA_BROKER_READMIT_READY = False
 
