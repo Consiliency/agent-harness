@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from .capability_registry import (
     CLAUDE_HEAVY_MODEL,
@@ -19,6 +20,9 @@ from .models import (
     WorkUnitPolicy,
     require_literal,
 )
+
+if TYPE_CHECKING:
+    from .governed_premerge import EscalationDecision
 
 
 OPENAI_HEAVY_MODEL = "gpt-5.6-sol"
@@ -420,10 +424,10 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     read as a bound guarantee (see launcher._CHANNEL_SESSION_MODEL_UNBOUND_WARNING).
 #   • ESCALATION-CEILING divergence (CR round-8/9 finding A-ii) — NAMED, not aligned, because the
 #     two ladders are DIFFERENT with different CEILINGS: (1) the class-escalation ladder
-#     (governed_premerge.next_escalation / _NEXT_CLASS: worker→implementer→planner) is a RECORDED
-#     DECISION only — the repair-loop pivot writes it with `applied: False` (runner.py:2788) and
-#     the runner does NOT re-select the model_class off it (the documented remaining thread); its
-#     ceiling is the PLANNER class = the HEAVY model (claude-opus-5). (2) the
+#     (governed_premerge.next_escalation / _NEXT_CLASS: worker→implementer→planner) is applied
+#     by the repair-loop policy boundary after repeated governed failures, unless an explicit
+#     operator model wins; its ceiling is the PLANNER class = the HEAVY model
+#     (claude-opus-5). (2) the
 #     claude-execute-phase skill's in-lane retry-tier ladder (fast→strong→frontier) has a
 #     ceiling of `frontier` = the HEAVY model (claude-opus-5). This comment states the two
 #     CEILINGS only — it makes NO claim about when/whether the retry-tier ladder takes effect
@@ -502,6 +506,77 @@ CLASS_MODEL_OVERRIDES = {
 def resolve_model_class(executor: str, model_class: str) -> str | None:
     """Map (model_class, executor) -> concrete model, or None if unmapped."""
     return CLASS_MODEL_OVERRIDES.get(executor, {}).get(model_class)
+
+
+@dataclass(frozen=True)
+class ModelClassEscalationApplication:
+    policy: ResolvedExecutionPolicy
+    applied: bool
+    action: str
+    from_model_class: str | None
+    model_class: str
+    from_model: str
+    effective_model: str
+    reason: str
+    not_applied_reason: str | None = None
+
+
+def apply_model_class_escalation(
+    policy: ResolvedExecutionPolicy,
+    *,
+    executor: str,
+    decision: "EscalationDecision",
+    from_model_class: str | None,
+    operator_model_present: bool,
+) -> ModelClassEscalationApplication:
+    """Apply one typed model-class escalation without weakening operator precedence."""
+    if decision.action != "escalate_class":
+        return ModelClassEscalationApplication(
+            policy=policy,
+            applied=False,
+            action=decision.action,
+            from_model_class=from_model_class,
+            model_class=decision.model_class,
+            from_model=policy.model,
+            effective_model=policy.model,
+            reason=decision.reason,
+            not_applied_reason="action_not_escalate_class",
+        )
+    if operator_model_present:
+        return ModelClassEscalationApplication(
+            policy=policy,
+            applied=False,
+            action=decision.action,
+            from_model_class=from_model_class,
+            model_class=decision.model_class,
+            from_model=policy.model,
+            effective_model=policy.model,
+            reason=decision.reason,
+            not_applied_reason="explicit_operator_model",
+        )
+    escalated_model = resolve_model_class(executor, decision.model_class)
+    if escalated_model is None:
+        raise ValueError(
+            f"executor {executor!r} has no model mapping for escalated class "
+            f"{decision.model_class!r}"
+        )
+    escalated = replace(
+        policy,
+        model=escalated_model,
+        model_class=decision.model_class,
+        model_source="runtime model-class escalation",
+        execution_policy_override_reason=decision.reason,
+    )
+    return ModelClassEscalationApplication(
+        policy=escalated,
+        applied=True,
+        action=decision.action,
+        from_model_class=from_model_class,
+        model_class=decision.model_class,
+        from_model=policy.model,
+        effective_model=escalated_model,
+        reason=decision.reason,
+    )
 
 
 # Actions that author a final patch. The `worker` class (bounded, high-volume

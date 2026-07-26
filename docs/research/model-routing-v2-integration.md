@@ -6,9 +6,21 @@
 > unless another file is named. v1 shipped the governed machinery fully unit-tested but **not
 > live-threaded**; v2 wires it in.
 
-## 0. Headline finding: `run_mode` enters the runner and dies
+## 0. Historical finding and current integration status
 
-`run_mode` is a `run_loop` parameter (`runner.py:1105`), validated at `runner.py:1111-1112`, and then **never used again**. `governed_premerge_for_run` (`runner.py:7742`) and `next_escalation` (imported `runner.py:170`) are both **defined/imported but never called**. The v1 work is a fully-built, unit-tested island with zero live edges into the dispatch loop. v2 is entirely about adding **three call sites and one real-spawn implementation** — no rewrite of existing machinery.
+This note began when `run_mode` entered the runner but had no live call sites.
+The planning and pre-merge gates are now threaded, and Consiliency/agent-harness#310
+applies the repair model-class decision as well: after two matching governed repair
+failures, `implementer -> planner` re-resolves the concrete model on the selected
+executor before launch. The event ledger records the prior/effective class and
+model, application status, reason, and failure fingerprint. An explicit operator
+model remains authoritative and records `not_applied_reason=explicit_operator_model`.
+Applied history is reused only for the same executor, failure fingerprint, roadmap
+digest, and phase digest.
+
+The planner-terminal `invoke_panel` decision is still recorded and blocks through
+the existing repairable non-human terminal path; this change does not consume it
+by starting another panel.
 
 ---
 
@@ -62,7 +74,15 @@ The existing repair re-dispatch — the exact analog the governed loop must reus
 
 This reuses the *entire* existing repair path verbatim; the only new thing is folding panel `block` findings into `repair_context`. The bound `max_rounds=3` (`governed_premerge.py:34`) is independent of (and additive to) the existing repair-pivot cap.
 
-**`next_escalation` binding (the model-class ladder on top of the existing pivot):** today `repair_loop_pivot` (`runner.py:2334-2374`) escalates the **executor (vendor)**. `next_escalation` (`governed_premerge.py:59`) adds the orthogonal **model_class** ladder `implementer→planner→[governed: invoke_panel | autonomous: non-human terminal]`. v2 should call it at the same decision point (`runner.py:2334-2339`), feeding `failed_tests/patch_retries` from `_recent_repeated_repair_failures` / the verification history, so a planner-tier repeated failure in governed mode routes into the panel rather than only swapping vendors.
+**`next_escalation` binding (the model-class ladder on top of the existing pivot):**
+`repair_loop_pivot` may still change the **executor (vendor)**, while
+`next_escalation` controls the orthogonal **model_class** ladder
+`implementer→planner→[governed: invoke_panel | autonomous: non-human terminal]`.
+The runner now applies `escalate_class` after layered policy resolution and before
+launch selection, whether it stays on the current executor or pivots. It fails
+closed when that executor lacks the target mapping. A proven launched planner-class
+repair advances the next governed retry to the terminal `invoke_panel` decision;
+pre-launch blocks and stale/malformed ledger records do not.
 
 ---
 
@@ -143,8 +163,10 @@ Insert the `run_mode=="governed"` hook at `runner.py:1838` before `_perform_phas
 **Phase v2-P2 — Real panel spawn (fail-closed, 2 CLI legs + Claude TUI path).**
 `panel_invoker._default_spawn` — per-leg Codex/Gemini subprocesses with the `run_cli_panels.sh` flags, timeouts, and auth-signature grep; Claude leg through local Claude Code TUI and canonical scratch output file. No runner change. Reconcile `PANEL_LEGS` (3) vs script (2).
 
-**Phase v2-P3 — Planning-stage gate + escalation ladder.**
-Hook `governed_planning_gate` at `runner.py:1956`; bind `next_escalation` (`governed_premerge.py:59`) into the repair-pivot decision (`runner.py:2334-2339`) so model_class escalation (implementer→planner→panel) sits atop the existing executor pivot.
+**Phase v2-P3 — Planning-stage gate + escalation ladder (delivered).**
+`governed_planning_gate` is live, and Consiliency/agent-harness#310 applies the
+regular-to-heavy repair switch with durable launch provenance. The terminal
+`invoke_panel` action remains a recorded blocker rather than a second panel launch.
 
 **Phase v2-P4 (optional) — Concurrent-wave coverage.**
 `_dispatch_concurrent_wave` (`3925`) merge-back path; apply the same pre-merge gate at the parent-closeout merge. Deferred because worktree isolation + `run_phase_worker_pool` make the diff/fix-round semantics more complex.

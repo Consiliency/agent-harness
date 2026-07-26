@@ -7,7 +7,9 @@ repo's default (planning at max, implementation at the implementer model).
 import unittest
 
 from phase_loop_runtime.models import ExecutionPolicyRule
+from phase_loop_runtime.governed_premerge import next_escalation
 from phase_loop_runtime.profiles import (
+    apply_model_class_escalation,
     resolve_execution_policy,
     resolve_model_class,
     resolve_profile_for_executor,
@@ -157,6 +159,51 @@ class MaxEffortPlannerGuardTest(unittest.TestCase):
             selector="plan", action="plan", model_class="planner", effort="max", source="phase-plan policy"
         )
         self.assertEqual(_resolve("plan", "codex", plan_policy=plan)[1], "max")
+
+
+class AppliedModelClassEscalationTest(unittest.TestCase):
+    def _apply(self, executor, *, operator_model_present=False):
+        policy = _resolved("repair", executor, model_policy=True)
+        decision = next_escalation(model_class="implementer", failed_tests=2, run_mode="governed")
+        return policy, apply_model_class_escalation(
+            policy,
+            executor=executor,
+            decision=decision,
+            from_model_class="implementer",
+            operator_model_present=operator_model_present,
+        )
+
+    def test_claude_escalates_to_opus_and_preserves_other_policy_fields(self):
+        policy, result = self._apply("claude")
+        self.assertTrue(result.applied)
+        self.assertEqual(result.policy.model, "claude-opus-5")
+        self.assertEqual(result.policy.model_class, "planner")
+        self.assertEqual(result.policy.model_source, "runtime model-class escalation")
+        self.assertEqual(result.policy.effort, policy.effort)
+        self.assertEqual(result.policy.fallback, policy.fallback)
+        self.assertEqual(result.policy.fallback_applied, policy.fallback_applied)
+
+    def test_codex_and_manual_map_provider_resolve_their_planner_models(self):
+        self.assertEqual(self._apply("codex")[1].effective_model, "gpt-5.6-sol")
+        self.assertEqual(self._apply("gemini")[1].effective_model, "pro")
+
+    def test_explicit_operator_model_is_not_overridden(self):
+        policy, result = self._apply("claude", operator_model_present=True)
+        self.assertFalse(result.applied)
+        self.assertEqual(result.policy, policy)
+        self.assertEqual(result.not_applied_reason, "explicit_operator_model")
+
+    def test_unmapped_target_class_fails_closed(self):
+        policy = _resolved("repair", "command", model_policy=False)
+        decision = next_escalation(model_class="implementer", failed_tests=2, run_mode="governed")
+        with self.assertRaisesRegex(ValueError, "no model mapping"):
+            apply_model_class_escalation(
+                policy,
+                executor="command",
+                decision=decision,
+                from_model_class="implementer",
+                operator_model_present=False,
+            )
 
 
 if __name__ == "__main__":

@@ -29,7 +29,18 @@ from phase_loop_runtime.observability import read_work_unit_metrics
 from phase_loop_runtime.prompts import build_prompt
 from phase_loop_runtime.provenance import event_provenance
 from phase_loop_runtime.runtime_paths import phase_loop_stop_file
-from phase_loop_runtime.runner import _build_repair_context, _classify_dirty_paths, _detect_dirty_renames, _write_deterministic_closeout, launch_delegated_child, launch_harness_lane_work_unit, run_loop, status_snapshot
+from phase_loop_runtime.runner import (
+    _build_repair_context,
+    _classify_dirty_paths,
+    _detect_dirty_renames,
+    _latest_applied_repair_model_class,
+    _recent_repeated_repair_failures,
+    _write_deterministic_closeout,
+    launch_delegated_child,
+    launch_harness_lane_work_unit,
+    run_loop,
+    status_snapshot,
+)
 from phase_loop_runtime.runner import _ensure_pipeline_branch_before_dispatch
 from phase_loop_runtime.state import load_work_unit_state, write_state
 from phase_loop_runtime.state_degradation import load_degradation
@@ -2622,14 +2633,19 @@ automation:
                         **event_provenance(roadmap, "CONTRACT"),
                     ),
                 )
-            launched: list[str] = []
+            launched: list[tuple[str, str | None]] = []
 
             def fake_launch(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
-                launched.append(spec.executor)
+                launched.append((spec.executor, spec.selected_model))
                 return LaunchResult(
                     command=spec.command,
                     returncode=0,
-                    output=build_fake_automation_output(status="complete", verification_status="passed"),
+                    output=build_fake_automation_output(
+                        status="blocked",
+                        blocker_class="repeated_verification_failure",
+                        blocker_summary="Gemini repair emitted the same malformed closeout.",
+                        verification_status="blocked",
+                    ),
                     executor=spec.executor,
                 )
 
@@ -2643,15 +2659,21 @@ automation:
                     phase="CONTRACT",
                     executor="gemini",
                     fallback_executors=("claude",),
+                    run_mode="governed",
                 )
 
             self.assertEqual(len(results), 1)
-            self.assertEqual(launched, ["claude"])
-            self.assertEqual(snapshot.phases["CONTRACT"], "complete")
+            self.assertEqual(launched, [("claude", "claude-opus-5")])
+            self.assertEqual(snapshot.phases["CONTRACT"], "blocked")
             event = read_events(repo)[-1]
             self.assertEqual(event["metadata"]["repair_loop_guard"]["status"], "pivoted")
             self.assertEqual(event["metadata"]["repair_loop_guard"]["from_executor"], "gemini")
             self.assertEqual(event["metadata"]["repair_loop_guard"]["to_executor"], "claude")
+            escalation = event["metadata"]["repair_loop_guard"]["model_class_escalation"]
+            self.assertTrue(escalation["applied"])
+            self.assertEqual(escalation["from_model_class"], "implementer")
+            self.assertEqual(escalation["model_class"], "planner")
+            self.assertEqual(escalation["effective_model"], "claude-opus-5")
 
     def test_repeated_repair_failure_blocks_without_configured_fallback_executor(self):
         with tempfile.TemporaryDirectory() as td:
@@ -2709,7 +2731,255 @@ automation:
             self.assertEqual(snapshot.phases["CONTRACT"], "blocked")
             event = read_events(repo)[-1]
             self.assertEqual(event["metadata"]["repair_loop_guard"]["status"], "blocked")
-            self.assertIn("no fallback executor was configured", event["blocker"]["blocker_summary"])
+            self.assertIn("no runnable executor/model-class escalation remained", event["blocker"]["blocker_summary"])
+
+    def test_governed_repeated_repair_escalates_on_current_executor_without_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+            subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "add repair plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            blocker = {
+                "human_required": False,
+                "blocker_class": "repeated_verification_failure",
+                "blocker_summary": "Claude repair emitted the same malformed closeout.",
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+            for _ in range(2):
+                append_event(
+                    repo,
+                    LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase="CONTRACT",
+                        action="run",
+                        status="blocked",
+                        model="claude-sonnet-5",
+                        reasoning_effort="high",
+                        source="fixture",
+                        blocker=blocker,
+                        metadata={
+                            "launch_request": {
+                                "executor": "claude",
+                                "action": "repair",
+                                "repo": str(repo),
+                                "roadmap": str(roadmap),
+                                "phase": "CONTRACT",
+                                "plan": str(plan),
+                            },
+                            "terminal_summary": {
+                                "terminal_status": "blocked",
+                                "verification_status": "blocked",
+                                "next_action": "Retry repair on the heavy class.",
+                                "dirty_paths": [],
+                            },
+                        },
+                        selected_executor="claude",
+                        **event_provenance(roadmap, "CONTRACT"),
+                    ),
+                )
+            launched_models: list[str | None] = []
+
+            def fake_launch(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+                launched_models.append(spec.selected_model)
+                return LaunchResult(
+                    command=spec.command,
+                    returncode=0,
+                    output=build_fake_automation_output(
+                        status="blocked",
+                        blocker_class="repeated_verification_failure",
+                        blocker_summary="Claude repair emitted the same malformed closeout.",
+                        verification_status="blocked",
+                    ),
+                    executor=spec.executor,
+                )
+
+            with patch(
+                "phase_loop_runtime.runner.run_auth_preflight",
+                return_value=type("Preflight", (), {"ok": True, "metadata": {"probes": []}})(),
+            ), patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch):
+                snapshot, results = run_loop(
+                    repo,
+                    roadmap,
+                    phase="CONTRACT",
+                    executor="claude",
+                    run_mode="governed",
+                )
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(launched_models, ["claude-opus-5"])
+            self.assertEqual(snapshot.phases["CONTRACT"], "blocked")
+            event = read_events(repo)[-1]
+            self.assertEqual(event["model"], "claude-opus-5")
+            escalation = event["metadata"]["repair_loop_guard"]["model_class_escalation"]
+            self.assertTrue(escalation["applied"])
+            self.assertEqual(escalation["from_model"], "claude-sonnet-5")
+            self.assertEqual(escalation["effective_model"], "claude-opus-5")
+            self.assertEqual(event["metadata"]["execution_policy"]["model_source"], "runtime model-class escalation")
+
+            with patch("phase_loop_runtime.runner.launch_with_spec") as second_launch:
+                next_snapshot, next_results = run_loop(
+                    repo,
+                    roadmap,
+                    phase="CONTRACT",
+                    executor="claude",
+                    run_mode="governed",
+                )
+
+            second_launch.assert_not_called()
+            self.assertEqual(next_results, [])
+            self.assertEqual(next_snapshot.phases["CONTRACT"], "blocked")
+            terminal_escalation = read_events(repo)[-1]["metadata"]["repair_loop_guard"]["model_class_escalation"]
+            self.assertFalse(terminal_escalation["applied"])
+            self.assertEqual(terminal_escalation["from_model_class"], "planner")
+            self.assertEqual(terminal_escalation["action"], "invoke_panel")
+            self.assertEqual(terminal_escalation["not_applied_reason"], "terminal_class_action")
+
+    def test_explicit_operator_model_is_recorded_and_not_overridden_by_repair_escalation(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+            subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "add repair plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            blocker_summary = "Claude repair emitted the same malformed closeout."
+            for _ in range(2):
+                append_event(
+                    repo,
+                    LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase="CONTRACT",
+                        action="run",
+                        status="blocked",
+                        model="claude-sonnet-5",
+                        reasoning_effort="high",
+                        source="fixture",
+                        blocker={
+                            "human_required": False,
+                            "blocker_class": "repeated_verification_failure",
+                            "blocker_summary": blocker_summary,
+                        },
+                        metadata={
+                            "launch_request": {
+                                "executor": "claude",
+                                "action": "repair",
+                                "repo": str(repo),
+                                "roadmap": str(roadmap),
+                                "phase": "CONTRACT",
+                                "plan": str(plan),
+                            },
+                            "terminal_summary": {
+                                "terminal_status": "blocked",
+                                "verification_status": "blocked",
+                                "next_action": "Retry repair without overriding the governed class decision.",
+                                "dirty_paths": [],
+                            },
+                        },
+                        selected_executor="claude",
+                        **event_provenance(roadmap, "CONTRACT"),
+                    ),
+                )
+
+            with patch("phase_loop_runtime.runner.launch_with_spec") as fake_launch:
+                snapshot, results = run_loop(
+                    repo,
+                    roadmap,
+                    phase="CONTRACT",
+                    executor="claude",
+                    model="claude-sonnet-5",
+                    run_mode="governed",
+                )
+
+            fake_launch.assert_not_called()
+            self.assertEqual(results, [])
+            self.assertEqual(snapshot.phases["CONTRACT"], "blocked")
+            event = read_events(repo)[-1]
+            self.assertIn("repair_loop_guard", event["metadata"], event)
+            escalation = event["metadata"]["repair_loop_guard"]["model_class_escalation"]
+            self.assertFalse(escalation["applied"])
+            self.assertEqual(escalation["not_applied_reason"], "explicit_operator_model")
+            self.assertEqual(escalation["effective_model"], "claude-sonnet-5")
+
+    def test_applied_repair_escalation_history_is_fingerprint_executor_and_provenance_bound(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+            blocker_summary = "Claude repair emitted the same malformed closeout."
+            snapshot = replace(
+                status_snapshot(repo, roadmap),
+                blocker_class="repeated_verification_failure",
+                blocker_summary=blocker_summary,
+            )
+            fingerprint = f"repeated_verification_failure:{blocker_summary.lower()}"
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="CONTRACT",
+                    action="run",
+                    status="blocked",
+                    model="claude-opus-5",
+                    reasoning_effort="high",
+                    source="model_policy",
+                    blocker={
+                        "human_required": False,
+                        "blocker_class": "repeated_verification_failure",
+                        "blocker_summary": blocker_summary,
+                    },
+                    metadata={
+                        "launch": {"returncode": 0},
+                        "launch_request": {
+                            "executor": "claude",
+                            "action": "repair",
+                            "model_selection": {
+                                "model": "claude-opus-5",
+                                "model_class": "planner",
+                            },
+                        },
+                        "repair_loop_guard": {
+                            "failure_fingerprint": fingerprint,
+                            "model_class_escalation": {
+                                "applied": True,
+                                "action": "escalate_class",
+                                "from_model_class": "implementer",
+                                "model_class": "planner",
+                                "from_model": "claude-sonnet-5",
+                                "effective_model": "claude-opus-5",
+                                "reason": "implementer failed threshold",
+                            },
+                        },
+                    },
+                    selected_executor="claude",
+                    **event_provenance(roadmap, "CONTRACT"),
+                ),
+            )
+
+            recovered = _latest_applied_repair_model_class(repo, roadmap, "CONTRACT", "claude", snapshot)
+            self.assertEqual(recovered["model_class"], "planner")
+            self.assertIsNone(_latest_applied_repair_model_class(repo, roadmap, "CONTRACT", "codex", snapshot))
+            changed_fingerprint = replace(snapshot, blocker_summary="A different failure.")
+            self.assertIsNone(
+                _latest_applied_repair_model_class(repo, roadmap, "CONTRACT", "claude", changed_fingerprint)
+            )
+            self.assertEqual(
+                _recent_repeated_repair_failures(repo, roadmap, "CONTRACT", "claude", snapshot),
+                1,
+            )
+
+            roadmap.write_text("# roadmap revision\n" + roadmap.read_text(encoding="utf-8"), encoding="utf-8")
+            self.assertIsNone(_latest_applied_repair_model_class(repo, roadmap, "CONTRACT", "claude", snapshot))
+            self.assertEqual(
+                _recent_repeated_repair_failures(repo, roadmap, "CONTRACT", "claude", snapshot),
+                0,
+            )
 
     def test_non_human_blocked_phase_without_trusted_repair_context_stays_blocked(self):
         with tempfile.TemporaryDirectory() as td:
