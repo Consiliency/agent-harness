@@ -2799,7 +2799,7 @@ def _default_spawn_via_provider(
     env: Mapping[str, str] | None = None,
     brief_ref: str | None = None,
     timeout_s: int | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str] | tuple[str, str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
     # (leg, artifact, repo_dir, mode, model) — the CS-0.8 same-signature guard.
@@ -2814,11 +2814,25 @@ def _default_spawn_via_provider(
         extra["brief_ref"] = brief_ref
     if timeout_s is not None:
         extra["timeout_s"] = timeout_s
-    provider = HomebrewAgentRuntimeProvider(
-        spawn=lambda request, register_process=None: _default_spawn(
+    # The provider seam's `send_turn` unpacks a 2-TUPLE (agent_runtime_provider.py).
+    # `_default_spawn` may return a 3-tuple carrying a failure DIAGNOSTIC, so hand the
+    # seam the 2-tuple it expects and carry the diagnostic around it in a closure cell.
+    # Without this the 3-tuple raises ValueError INSIDE the seam, whose fail-closed
+    # handler then puts "too many values to unpack (expected 2)" into TEXT — which
+    # `governed_review._findings_from_panel` reads as a nonconforming review and turns
+    # into a promotion BLOCK for every routine timeout, while the real diagnostic is lost.
+    _diagnostic: list[str | None] = [None]
+
+    def _spawn_2tuple(request, register_process=None):
+        spawned = _default_spawn(
             leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
         )
-    )
+        if isinstance(spawned, tuple) and len(spawned) == 3:
+            status_, text_, _diagnostic[0] = spawned
+            return status_, text_
+        return spawned
+
+    provider = HomebrewAgentRuntimeProvider(spawn=_spawn_2tuple)
     session = provider.create_session(
         CreateSessionRequest(target_harness=leg, idempotency_key=f"panel-{leg}", title=f"panel-leg-{leg}")
     )
@@ -2832,6 +2846,10 @@ def _default_spawn_via_provider(
         elif event.type in ("runtime.turn.completed", "runtime.turn.failed"):
             status = event.payload.get("status", status)
     provider.close_session(session.id)
+    # Re-attach the diagnostic the seam could not carry, so the operator still learns WHY
+    # a leg failed — and it stays in `detail`, never `text`.
+    if _diagnostic[0]:
+        return status, text, _diagnostic[0]
     return status, text
 
 
@@ -3436,13 +3454,21 @@ def invoke_board(
             return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
         try:
             if spawn is not None:
-                status, text = spawn(leg, artifact)
+                spawned = spawn(leg, artifact)
             else:
-                status, text = _default_spawn_via_provider(
+                spawned = _default_spawn_via_provider(
                     leg, artifact, repo_dir=repo_dir, mode=mode,
                     model=seat.model, effort=seat.effort, env=seat_env,
                     brief_ref=brief_ref, timeout_s=leg_timeouts.get(leg),
                 )
+            # 2-or-3 tuple, same contract as `_run_leg`: a 3-tuple carries a failure
+            # DIAGNOSTIC bound for `detail`, never `text` (a diagnostic in text is read
+            # by the governed classifier as a nonconforming review and BLOCKS promotion).
+            seat_detail: str | None = None
+            if isinstance(spawned, tuple) and len(spawned) == 3:
+                status, text, seat_detail = spawned
+            else:
+                status, text = spawned
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
             return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
         try:
@@ -3463,7 +3489,7 @@ def invoke_board(
         # the runtime legs — `_resolve_brief` gives the exact `review-instructions.md`
         # the other seats got). None for every other leg (golden byte-identity holds).
         text_value = str(text)
-        detail = None
+        detail = seat_detail
         if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
             detail, text_value = text_value, ""
         result = PanelLegResult(

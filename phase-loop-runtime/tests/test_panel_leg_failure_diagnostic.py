@@ -77,7 +77,11 @@ def test_operational_failure_stays_a_warn_not_a_governed_block(monkeypatch):
     from phase_loop_runtime import governed_review as gr
 
     monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (124, "", "timeout after 900s"))
-    panel = pi.invoke_panel("ARTIFACT", ["gemini"], spawn=pi._default_spawn)
+    # NO spawn kwarg — drives the PRODUCTION path through `_default_spawn_via_provider`.
+    # Injecting `spawn=pi._default_spawn` bypasses that seam, and doing so is exactly why
+    # this test passed while the production path was returning
+    # text="too many values to unpack (expected 2)" and BLOCKING promotion.
+    panel = pi.invoke_panel("ARTIFACT", ["gemini"])
     findings = gr._findings_from_panel(panel)
     codes = {f.code for f in findings}
     assert "panel_nonconforming" not in codes, (
@@ -134,3 +138,15 @@ def test_denial_is_attempted_once_not_retried_as_a_stall(monkeypatch, staged):
     monkeypatch.setattr(pi, "_run_leg_with_liveness", _fake)
     pi._exec_leg("gemini", review_dir, out_dir, timeout_s=60, artifact="A", env={})
     assert len(calls) == 1, f"denial retried {len(calls)}x; it is not transient"
+
+
+def test_production_spawn_path_keeps_text_empty_and_carries_detail(monkeypatch):
+    """The seam this PR's first revision missed. `invoke_panel` with NO spawn kwarg goes
+    through `_default_spawn_via_provider`, whose provider unpacks a 2-TUPLE — a raw
+    3-tuple raises there and the fail-closed handler puts the ValueError text into
+    `text`, which the governed classifier reads as a nonconforming review and BLOCKS."""
+    monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (124, "", "timeout after 900s"))
+    leg = pi.invoke_panel("ARTIFACT", ["gemini"]).legs[0]
+    assert "unpack" not in (leg.text or ""), "the 3-tuple broke the provider seam"
+    assert not (leg.text or "").strip(), "diagnostic leaked into text on the production path"
+    assert "timeout" in (leg.detail or ""), "the reason never reached the operator"
