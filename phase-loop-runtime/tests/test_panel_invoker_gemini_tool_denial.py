@@ -1,13 +1,22 @@
 """Gemini/agy headless TOOL-DENIAL regression (panel_invoker).
 
-Root cause found while diagnosing the gemini seat returning EMPTY in 6 of 11 rounds
-of the model-tier review: `agy` running headless cannot prompt for a tool permission,
-so it AUTO-DENIES, prints its reason on stderr, and exits rc==0 with a ZERO-BYTE body.
-The panel classified that as an anonymous soft-empty and dropped the leg silently.
+Root cause found while diagnosing the gemini seat returning EMPTY in 6 of 11 rounds of
+the model-tier review (#309): the shared leg prompt is a POINTER to files staged under
+``review_dir``, and `agy` running headless cannot READ them — it auto-denies the
+permission, prints its reason on stderr, and exits rc==0 with a ZERO-BYTE body. The
+panel classified that as an anonymous soft-empty and dropped the leg silently.
+
+These tests drive the PRODUCTION path (`_exec_leg`) with a faked subprocess runner so
+that deleting either fix makes them FAIL. An earlier revision of this module asserted on
+strings concatenated inside the test body and never invoked `_exec_leg` at all — it was
+tautological and both the codex and gemini review legs flagged it. Do not reintroduce
+that shape: assert on the argv the production code actually builds.
 """
 from __future__ import annotations
 
-import re
+from pathlib import Path
+
+import pytest
 
 from phase_loop_runtime import panel_invoker as pi
 
@@ -20,37 +29,123 @@ _REAL_AGY_STDERR = (
 )
 
 
+class _FakeProc:
+    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:
+        self.stdout, self.stderr, self.returncode = stdout, stderr, returncode
+
+
+@pytest.fixture()
+def staged(tmp_path: Path) -> tuple[Path, Path]:
+    """A review_dir staged the way the panel stages it, plus an out_dir."""
+    review_dir, out_dir = tmp_path / "review", tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    (review_dir / "review-instructions.md").write_text(
+        "INSTRUCTIONS-SENTINEL: be rigorous.", encoding="utf-8"
+    )
+    (review_dir / "review-bundle.md").write_text(
+        "BUNDLE-SENTINEL: the diff under review.", encoding="utf-8"
+    )
+    return review_dir, out_dir
+
+
+def _run_gemini(monkeypatch, staged, *, proc: _FakeProc) -> tuple[list[str], tuple]:
+    """Invoke the real `_exec_leg` gemini branch; capture the argv it builds."""
+    review_dir, out_dir = staged
+    seen: list[list[str]] = []
+
+    def _fake_runner(cmd, **kwargs):
+        seen.append(list(cmd))
+        return proc
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", _fake_runner)
+    result = pi._exec_leg(
+        "gemini", review_dir, out_dir, timeout_s=60, artifact="ARTIFACT", env={}
+    )
+    return (seen[0] if seen else []), result
+
+
+def _prompt_of(argv: list[str]) -> str:
+    return argv[argv.index("-p") + 1]
+
+
+def test_production_argv_inlines_the_staged_material(monkeypatch, staged):
+    """FIX 1. Deleting the inlining in `_exec_leg` must fail this.
+
+    The pointer form alone is unreadable to a headless agy, so the staged files must
+    reach the leg through the prompt itself.
+    """
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    prompt = _prompt_of(argv)
+    assert "INSTRUCTIONS-SENTINEL" in prompt, "staged instructions never reached the leg"
+    assert "BUNDLE-SENTINEL" in prompt, "staged bundle never reached the leg"
+
+
+def test_production_argv_puts_the_constraint_before_the_untrusted_material(
+    monkeypatch, staged
+):
+    """Ordering is load-bearing: the operating constraint must precede the bundle,
+    which is UNTRUSTED material under review."""
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    prompt = _prompt_of(argv)
+    assert prompt.startswith(pi._NO_TOOL_PREAMBLE), "preamble is not first"
+    assert prompt.index(pi._NO_TOOL_PREAMBLE) < prompt.index("BUNDLE-SENTINEL")
+
+
+def test_headless_denial_returns_nonzero_with_the_cli_reason(monkeypatch, staged):
+    """FIX 2. Deleting the denial branch must fail this.
+
+    rc==0 + empty body + the CLI's auto-denied marker must surface as a DIAGNOSABLE
+    failure carrying the CLI's own explanation — never an anonymous empty.
+    """
+    argv, (rc, text, log) = _run_gemini(
+        monkeypatch, staged, proc=_FakeProc(stdout="", stderr=_REAL_AGY_STDERR)
+    )
+    assert rc != 0, "a headless tool-denial must not be reported as success"
+    assert text == ""
+    assert "TOOL-DENIAL" in log, "the failure reason was not surfaced"
+    assert "auto-denied" in log, "the CLI's own explanation was discarded"
+
+
+def test_denial_is_not_retried_as_a_transient_stall(monkeypatch, staged):
+    """The permission is absent, not flaky — retrying reproduces it exactly. The denial
+    check must run BEFORE the soft-empty/stall path, so only ONE attempt is made."""
+    review_dir, out_dir = staged
+    calls: list[list[str]] = []
+
+    def _fake_runner(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _FakeProc(stdout="", stderr=_REAL_AGY_STDERR)
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", _fake_runner)
+    pi._exec_leg("gemini", review_dir, out_dir, timeout_s=60, artifact="A", env={})
+    assert len(calls) == 1, f"denial was retried {len(calls)}x; it is not transient"
+
+
+def test_oversize_bundle_keeps_the_pointer_rather_than_truncating(monkeypatch, staged):
+    """Past the cap we must NOT truncate material a reviewer is meant to judge —
+    a silently half-inlined bundle would be worse than the pointer form."""
+    review_dir, _out = staged
+    (review_dir / "review-bundle.md").write_text(
+        "X" * (pi._GEMINI_INLINE_MAX_BYTES + 1), encoding="utf-8"
+    )
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    prompt = _prompt_of(argv)
+    assert "XXXX" not in prompt, "oversize bundle was inlined (or truncated) anyway"
+    assert not prompt.startswith(pi._NO_TOOL_PREAMBLE), "should fall back to pointer form"
+
+
 def test_tool_denial_regex_matches_the_real_agy_stderr():
-    # Captured verbatim from a live `agy` run; the classifier must recognise it.
     assert pi._TOOL_DENIED_RE.search(_REAL_AGY_STDERR)
 
 
-def test_tool_denial_is_not_misread_as_a_transient_stall():
-    # Retrying a denied permission reproduces it exactly — it must NOT be retried
-    # through the transient-stall path.
+def test_tool_denial_is_not_classified_as_a_transient_stall():
     assert not pi._GEMINI_TRANSIENT_RE.search(_REAL_AGY_STDERR)
 
 
 def test_tool_denial_regex_does_not_fire_on_a_review_that_merely_discusses_it():
-    # This panel reviews code about permissions/tooling; a real review body that
-    # QUOTES the phrase must not be discarded as a failure. The classifier only runs
-    # on an EMPTY body, but keep the phrasing distinct enough to be safe.
+    """This panel reviews code about permissions and tooling; a real review body that
+    QUOTES the phrase must not be discarded. (The classifier only consults it on an
+    EMPTY body, but keep the phrasing distinct enough to be safe.)"""
     body = "The adapter should fail loudly rather than let a tool call be silently dropped."
     assert not pi._TOOL_DENIED_RE.search(body)
-
-
-def test_no_tool_preamble_states_the_constraint_and_forbids_fake_verification():
-    p = pi._NO_TOOL_PREAMBLE
-    assert "auto-denied" in p
-    # Must tell the leg what to do INSTEAD, or it will silently claim it verified things.
-    assert "do not claim to have" in p.lower()
-    assert re.search(r"could NOT verify", p)
-
-
-def test_gemini_cmd_prepends_the_preamble_before_the_prompt():
-    # Prepended, not appended: the constraint has to be read before the instructions
-    # that would otherwise trigger a tool call.
-    prompt = "Review this and run the guard to verify."
-    combined = pi._NO_TOOL_PREAMBLE + prompt
-    assert combined.startswith(pi._NO_TOOL_PREAMBLE)
-    assert combined.endswith(prompt)
