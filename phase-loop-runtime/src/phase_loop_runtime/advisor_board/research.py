@@ -412,6 +412,8 @@ def _validated_records(config: ResearchSeatConfig) -> tuple[list[dict[str, Any]]
         raise ResearchAuditError("audit_unreadable") from exc
     if not records:
         raise ResearchAuditError("audit_empty")
+    if not all(isinstance(record, dict) for record in records):
+        raise ResearchAuditError("audit_record_invalid")
     if [record.get("sequence") for record in records] != list(
         range(1, len(records) + 1)
     ):
@@ -459,6 +461,7 @@ def reduce_research_audit(config: ResearchSeatConfig, seat_text: str) -> Researc
         )
 
     invocations: list[ResearchInvocation] = []
+    correlation_mismatch = False
     for record in records:
         if (
             record.get("event") != "audit.invocation"
@@ -474,6 +477,7 @@ def reduce_research_audit(config: ResearchSeatConfig, seat_text: str) -> Researc
             and record.get("seat_correlation_id") == config.seat_correlation_id
             and evidence_digest == config.evidence_label_digest
         )
+        correlation_mismatch = correlation_mismatch or not correlated
         verified = (
             correlated
             and terminal_status == "success"
@@ -496,7 +500,10 @@ def reduce_research_audit(config: ResearchSeatConfig, seat_text: str) -> Researc
             )
         )
     statuses = {entry.terminal_status for entry in invocations}
-    if any(entry.claim_status == "verified" for entry in invocations):
+    detail = "audit_correlation_mismatch" if correlation_mismatch else None
+    if correlation_mismatch:
+        status = "failed"
+    elif any(entry.claim_status == "verified" for entry in invocations):
         status = "success"
     elif "denied" in statuses:
         status = "denied"
@@ -509,6 +516,7 @@ def reduce_research_audit(config: ResearchSeatConfig, seat_text: str) -> Researc
         "policy_digest": config.policy_digest,
         "audit_digest": audit_digest,
         "invocations": [entry.to_safe_dict() for entry in invocations],
+        "detail": detail,
     }
     return ResearchLedger(
         status=status,
@@ -516,4 +524,5 @@ def reduce_research_audit(config: ResearchSeatConfig, seat_text: str) -> Researc
         audit_digest=audit_digest,
         ledger_digest=_digest_json(ledger_payload),
         invocations=tuple(invocations),
+        detail=detail,
     )

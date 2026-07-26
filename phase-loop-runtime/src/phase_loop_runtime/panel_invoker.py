@@ -1062,7 +1062,9 @@ def _claude_tui_command(
     research_seat: ResearchSeatConfig | None = None,
 ) -> list[str]:
     add_dirs = [review_dir]
-    if repo_dir.resolve() != review_dir.resolve():
+    # A research seat may write only its isolated output workspace. Granting the
+    # live repo as an add-dir would combine network access with pre-approved Write.
+    if research_seat is None and repo_dir.resolve() != review_dir.resolve():
         add_dirs.append(repo_dir)
     # ABDHOME: effort is plumbed per-seat. ``effort is None`` (legacy/default path)
     # keeps today's hard-coded ``--effort max`` byte-for-byte; a board seat renders

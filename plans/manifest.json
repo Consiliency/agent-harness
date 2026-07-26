@@ -65,6 +65,21 @@
             "verification_summary": "PASS - isolated Codex dual-provider denial proof and Claude subscription-TUI PMCP proof passed with the complete standalone suite."
           },
           "transition": "completed"
+        },
+        {
+          "at": "2026-07-26T10:42:05Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "final five-seat dissent reconciled and reverified",
+            "full_suite": "3521 passed, 640 skipped, 4 warnings, 634 subtests passed",
+            "panel_reconciliation": "research Claude live-repo add-dir removed; any mismatched invocation correlation now fails the whole ledger; malformed non-object audit records fail typed",
+            "run_id": "20260726T081646Z-06-310-advisor-research-integration",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-advisor-research-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - final panel blockers closed; both supported-client live proofs and complete standalone suite passed after repair."
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -75,7 +90,7 @@
       "status": "completed",
       "task_summary": "Integrate audited Firecrawl and Bright Data research into advisor panels after PMCP.",
       "type": "detailed",
-      "updated_at": "2026-07-26T10:11:35Z"
+      "updated_at": "2026-07-26T10:42:05Z"
     },
     {
       "acceptance_criteria_count": 10,

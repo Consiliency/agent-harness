@@ -156,6 +156,13 @@ class PerSeatIsolationTests(unittest.TestCase):
                 self.assertIn("--strict-mcp-config", claude_command)
                 self.assertNotIn("--safe-mode", claude_command)
                 self.assertIn("--no-chrome", claude_command)
+                add_dirs = [
+                    claude_command[index + 1]
+                    for index, value in enumerate(claude_command)
+                    if value == "--add-dir"
+                ]
+                self.assertEqual(add_dirs, [str(Path(td) / "review")])
+                self.assertNotIn(str(Path(td)), add_dirs)
                 self.assertEqual(
                     tuple(
                         json.loads(
@@ -368,6 +375,23 @@ class AuditReductionTests(unittest.TestCase):
                 unjoined = reduce_research_audit(config, "same prose, missing label")
                 self.assertEqual(unjoined.status, "failed")
                 self.assertEqual(unjoined.invocations[0].claim_status, "unverified")
+
+                mismatched = {
+                    **invocation,
+                    "seat_correlation_id": "other-seat",
+                }
+                _write_audit(
+                    config, _audit_records(config, [invocation, mismatched])
+                )
+                mixed = reduce_research_audit(
+                    config, f"Source-backed result {config.evidence_label}"
+                )
+                self.assertEqual(mixed.status, "failed")
+                self.assertEqual(mixed.detail, "audit_correlation_mismatch")
+                self.assertEqual(
+                    [entry.claim_status for entry in mixed.invocations],
+                    ["verified", "unverified"],
+                )
             finally:
                 run.close()
 
@@ -401,6 +425,14 @@ class AuditReductionTests(unittest.TestCase):
                 _write_audit(config, records)
                 self.assertEqual(
                     reduce_research_audit(config, "").detail, "audit_sequence_gap"
+                )
+
+                records = _audit_records(config, [denied])
+                records[1] = None
+                _write_audit(config, records)
+                self.assertEqual(
+                    reduce_research_audit(config, "").detail,
+                    "audit_record_invalid",
                 )
 
                 records = _audit_records(config, [denied])

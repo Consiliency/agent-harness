@@ -210,13 +210,15 @@ absent or denied. The runtime supplies run-local, highest-precedence definitions
 both approved providers plus a final manifest overlay, and strips inherited `PMCP_*`
 controls before launch. Codex native web search/apps and Claude's Chrome integration
 are disabled. Claude receives the same four PMCP controls in its tool-availability and
-pre-approval CLI lists and remains subscription-TUI only; research does not introduce
-an API, SDK, direct-HTTP, gateway, or native Task fallback for Claude seats.
+pre-approval CLI lists, receives only the staged review directory rather than the live
+repository, and remains subscription-TUI only; research does not introduce an API,
+SDK, direct-HTTP, gateway, or native Task fallback for Claude seats.
 
 Each seat gets a unique lock directory, audit file, and typed run/seat/evidence
 correlations. A seat cannot claim successful research from its prose: the runtime
 waits for PMCP's fsynced `audit.completed` record, validates the contiguous audit,
-and attaches only a privacy-safe ledger plus policy/audit/ledger digests. Source
+fails the whole research ledger if any invocation has mismatched run/seat/evidence
+correlations, and attaches only a privacy-safe ledger plus policy/audit/ledger digests. Source
 references are hashed; raw queries, results, credentials, and authorization headers
 are not emitted through observability. Gemini's `agy` adapter, Grok (which lacks a
 proven session-local user-config isolation switch), Omnigent seats, native host

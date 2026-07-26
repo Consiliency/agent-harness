@@ -103,3 +103,6 @@ research seats omit MCP-disabling safe mode, disable the Chrome integration, and
 the strict MCP/tool allowlists on the existing first-party subscription TUI route.
 Regression coverage proves a pre-existing caller directory survives failed
 materialization. Live subscription proofs passed for both Codex and Claude TUI.
+The final dissent repair also withholds the live repository add-directory from a
+research-enabled Claude seat and makes any mismatched invocation correlation fail
+the whole research ledger, even when another invocation verified successfully.
