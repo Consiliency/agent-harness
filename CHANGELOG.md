@@ -6,13 +6,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### CI: pyflakes (ruff F) lint gate honors its config instead of overriding it (Consiliency/agent-harness#334)
+### CI: a pyflakes (ruff F) lint gate, and the defects it found (Consiliency/agent-harness#334)
 
-- The `test` workflow's lint step now runs `ruff check .` so it reads the root
-  `pyproject.toml` selection (`select = ["F"]`, `ignore = ["F841"]`). The prior
-  `ruff check . --select F` passed a command-line `--select`, which overrides the
-  config's `ignore` and re-enabled F841, failing the gate on the 28 unused-variable
-  findings that ah#334 deliberately defers to a follow-up.
+- **CI now runs a linter.** Previously it ran none — no ruff config, no workflow step.
+  That is how an undefined name in a type annotation shipped past a green suite on all
+  three Python versions (ah#291): `from __future__ import annotations` defers evaluation,
+  so the name is never resolved at runtime and only a linter or `typing.get_type_hints()`
+  can observe it.
+- **Two live production defects of that same class are fixed.** `governed_premerge`
+  annotated a field with `PanelResult` and `train_runner` a return with `LoopResult`,
+  neither imported. Both were runtime-observable:
+  `typing.get_type_hints(governed_premerge.LoopResult)` raised
+  `NameError: name 'PanelResult' is not defined` and now resolves.
+- A dead annotation in the test suite referenced `StubExecutor`, a class that exists
+  nowhere, with a `# type: ignore[return-value]` masking the mismatch; replaced with the
+  callable's real signature. A loop variable in `phase_loop_drift_audit` shadowed the
+  `dataclasses.field` import used elsewhere in that module.
+- 120 further findings (unused imports, redefinitions, placeholder-free f-strings) were
+  auto-fixed with safe fixes only.
+- The gate runs as its own `lint` job reading the root `ruff.toml`
+  (`select = ["F"]`, `ignore = ["F841"]`), with ruff pinned. `F841` is deliberately
+  deferred: of its 28 occurrences at least two are load-bearing rather than dead, so a
+  bulk unsafe fix would delete a call that exists to raise.
 
 ## [0.7.13] - 2026-07-26
 
