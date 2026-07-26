@@ -4,8 +4,8 @@ This is the gate that protects every existing caller of the panel (the governed
 gates in ``governed_review``/``governed_premerge`` and standalone use). It fills in
 the FULL golden dimensions the ABDFREEZE scaffold
 (``tests/test_advisor_board_backcompat.py::DeferredGoldenDimensionsScaffold``)
-deferred to ABDVERIFY, proving the ``default`` board reproduces today's 3-leg
-``invoke_panel`` behavior byte-for-byte — NOT just seat count.
+deferred to ABDVERIFY. The explicit ``invoke_panel`` path remains three-leg while
+the model-first ``default`` board deliberately adds Grok as a fourth vendor.
 
 The proof is deliberately split into two complementary halves so it maps cleanly
 onto the real code paths (the three legs do NOT hit the subprocess boundary
@@ -18,11 +18,9 @@ auth preflight before the leg cmd), rather than one fragile global
   ``resolve_seat_env``), produce the exact argv + scrubbed env + timeout of the
   legacy effort/env-absent path. Captured at each leg's real launcher.
 * **Proof B — whole-board behavior (launch order / statuses / text / result keys
-  / failure semantics).** One shared recording ``spawn`` drives the full
-  ``invoke_panel(artifact, PANEL_LEGS)`` and ``invoke_board(DEFAULT_BOARD)`` and
-  asserts the two ``PanelResult``s agree on ``leg`` / ``status`` / ``text`` /
-  ``detail`` and on failure classification (raise → DEGRADED, empty-on-OK →
-  EMPTY, unknown status → DEGRADED).
+  / failure semantics).** One shared recording ``spawn`` drives both entrypoints,
+  proves parity for their three shared legs, and independently proves the fourth
+  Grok board seat follows the same classification and ordering rules.
 
 **The one contract-sanctioned delta — ``seat_key``.** ``invoke_panel`` leaves
 ``PanelLegResult.seat_key`` unset, so it defaults to the bare ``leg`` (e.g.
@@ -55,7 +53,7 @@ from unittest.mock import patch
 
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import Seat, resolve_seat_env
-from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, DEFAULT_BOARD_VENDOR_ORDER
 
 
 @contextmanager
@@ -115,13 +113,12 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
         # anchor: the codex effort literal really is in the argv both ways.
         self.assertIn("model_reasoning_effort=xhigh", seam["cmd"])
 
-    def test_gemini_argv_env_and_timeout_equal_legacy(self) -> None:
+    def test_gemini_default_board_and_legacy_panel_share_flash_invocation(self) -> None:
         legacy, seam = self._exec_leg_pair("gemini", stdout="AGREE")
         self.assertEqual(legacy["cmd"], seam["cmd"])
         self.assertEqual(legacy["env"], seam["env"])
         self.assertEqual(legacy["deadline_s"], seam["deadline_s"])
-        # anchor: the agy leg bakes effort INTO the model name, both ways.
-        self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "Gemini 3.1 Pro (High)")
+        self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "gemini-3.6-flash-high")
 
     def test_claude_argv_and_env_equal_legacy(self) -> None:
         seat = _default_seat("claude")
@@ -185,12 +182,14 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         board = pi.invoke_board(DEFAULT_BOARD, self.ARTIFACT, spawn=board_spawn)
         return panel, board, panel_spawn, board_spawn
 
-    def _assert_leg_status_text_parity(self, panel, board) -> None:
-        # Byte-for-byte on the fields every existing caller reads.
-        self.assertEqual([r.leg for r in panel.legs], [r.leg for r in board.legs])
-        self.assertEqual([r.status for r in panel.legs], [r.status for r in board.legs])
-        self.assertEqual([r.text for r in panel.legs], [r.text for r in board.legs])
-        self.assertEqual([r.detail for r in panel.legs], [r.detail for r in board.legs])
+    def _assert_shared_leg_status_text_parity(self, panel, board) -> None:
+        # The three legacy legs retain identical classification. The model-first
+        # board deliberately appends grok as its fourth independent vendor.
+        shared = board.legs[:len(pi.PANEL_LEGS)]
+        self.assertEqual([r.leg for r in panel.legs], [r.leg for r in shared])
+        self.assertEqual([r.status for r in panel.legs], [r.status for r in shared])
+        self.assertEqual([r.text for r in panel.legs], [r.text for r in shared])
+        self.assertEqual([r.detail for r in panel.legs], [r.detail for r in shared])
 
     def test_every_leg_launched_once_and_results_in_order_both_paths(self) -> None:
         # Legs now fan out CONCURRENTLY, so wall-clock launch order is no longer a
@@ -199,19 +198,18 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         # come back in canonical PANEL_LEGS / seat order (positional re-key + the
         # order/content assertions below depend on this, NOT on scheduling order).
         panel, board, ps, bs = self._run_both(lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        self.assertEqual(sorted(leg for leg, _ in ps.calls), sorted(pi.PANEL_LEGS))
+        self.assertEqual(sorted(leg for leg, _ in bs.calls), sorted(DEFAULT_BOARD_VENDOR_ORDER))
         for spawn in (ps, bs):
-            self.assertEqual(
-                sorted(leg for leg, _ in spawn.calls), sorted(pi.PANEL_LEGS)
-            )  # each leg launched exactly once (set + count)
             self.assertTrue(all(art == self.ARTIFACT for _, art in spawn.calls))
         # RESULT order is the load-bearing invariant and is preserved deterministically.
         self.assertEqual([r.leg for r in panel.legs], list(pi.PANEL_LEGS))
-        self.assertEqual([r.leg for r in board.legs], list(pi.PANEL_LEGS))
-        self._assert_leg_status_text_parity(panel, board)
+        self.assertEqual([r.leg for r in board.legs], list(DEFAULT_BOARD_VENDOR_ORDER))
+        self._assert_shared_leg_status_text_parity(panel, board)
 
     def test_ok_results_are_byte_identical_except_seat_key(self) -> None:
         panel, board, _, _ = self._run_both(lambda leg, art: ("OK", f"{leg}\nAGREE"))
-        self._assert_leg_status_text_parity(panel, board)
+        self._assert_shared_leg_status_text_parity(panel, board)
         self.assertTrue(all(r.status == "OK" for r in board.legs))
 
     def test_seat_key_is_the_sole_documented_delta(self) -> None:
@@ -222,7 +220,8 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         self.assertEqual([r.seat_key for r in panel.legs], list(pi.PANEL_LEGS))
         self.assertEqual(
             [r.seat_key for r in board.legs],
-            ["codex:gpt-5.6-sol:max", "gemini:Gemini 3.1 Pro:high", "claude:claude-fable-5:max"],
+            ["codex:gpt-5.6-sol:max", "gemini:gemini-3.6-flash:high",
+             "claude:claude-fable-5:max", "grok:grok-4.5:max"],
         )
         for p, b in zip(panel.legs, board.legs):
             self.assertEqual(p.leg, b.leg)             # bare vendor lane unchanged
@@ -233,17 +232,17 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
             raise RuntimeError(f"{leg} boom")
         panel, board, _, _ = self._run_both(_raise)
         self.assertTrue(all(r.status == "DEGRADED" for r in panel.legs))
-        self._assert_leg_status_text_parity(panel, board)
+        self._assert_shared_leg_status_text_parity(panel, board)
 
     def test_failure_semantics_empty_on_ok_becomes_empty_both_paths(self) -> None:
         panel, board, _, _ = self._run_both(lambda leg, art: ("OK", "   "))
         self.assertTrue(all(r.status == "EMPTY" for r in panel.legs))
-        self._assert_leg_status_text_parity(panel, board)
+        self._assert_shared_leg_status_text_parity(panel, board)
 
     def test_failure_semantics_unknown_status_degrades_both_paths(self) -> None:
         panel, board, _, _ = self._run_both(lambda leg, art: ("NONSENSE", "body"))
         self.assertTrue(all(r.status == "DEGRADED" for r in panel.legs))
-        self._assert_leg_status_text_parity(panel, board)
+        self._assert_shared_leg_status_text_parity(panel, board)
 
     def test_mixed_per_leg_outcomes_classify_identically(self) -> None:
         # A heterogeneous board run: one OK, one empty-on-OK, one raising — the two
@@ -255,23 +254,23 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
             }.get(leg) or (_ for _ in ()).throw(RuntimeError("claude down"))
         panel, board, _, _ = self._run_both(_reply)
         self.assertEqual([r.status for r in panel.legs], ["OK", "EMPTY", "DEGRADED"])
-        self._assert_leg_status_text_parity(panel, board)
+        self._assert_shared_leg_status_text_parity(panel, board)
 
 
 class GoldenApiStabilityTests(unittest.TestCase):
-    """The ``invoke_panel`` API and the default-board result cardinality are frozen
-    (the release contract the governed gates depend on)."""
+    """The legacy API stays frozen while the model-first default has four seats."""
 
-    def test_default_board_yields_exactly_three_legs_in_panel_order(self) -> None:
+    def test_default_board_yields_four_legs_in_board_order(self) -> None:
         board = pi.invoke_board(DEFAULT_BOARD, "x", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
-        self.assertEqual(tuple(r.leg for r in board.legs), pi.PANEL_LEGS)
+        self.assertEqual(tuple(r.leg for r in board.legs), DEFAULT_BOARD_VENDOR_ORDER)
 
     def test_invoke_board_default_matches_invoke_panel_usable_semantics(self) -> None:
         # .usable (status OK + non-empty text) is what governed_review keys on.
         reply = lambda leg, art: ("OK", f"{leg}\nAGREE")
         panel = pi.invoke_panel("x", pi.PANEL_LEGS, spawn=lambda leg, art: reply(leg, art))
         board = pi.invoke_board(DEFAULT_BOARD, "x", spawn=lambda leg, art: reply(leg, art))
-        self.assertEqual([r.usable for r in panel.legs], [r.usable for r in board.legs])
+        self.assertEqual([r.usable for r in panel.legs], [r.usable for r in board.legs[:3]])
+        self.assertTrue(board.legs[3].usable)
 
 
 class ConcurrencyProofTests(unittest.TestCase):
@@ -308,7 +307,7 @@ class ConcurrencyProofTests(unittest.TestCase):
             f"a leg did not run concurrently (barrier timed out): "
             f"{[(r.leg, r.status) for r in res.legs]}",
         )
-        self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))  # order preserved
+        self.assertEqual([r.leg for r in res.legs], list(DEFAULT_BOARD_VENDOR_ORDER))
 
     def test_invoke_panel_runs_legs_concurrently(self) -> None:
         n = len(pi.PANEL_LEGS)
@@ -318,7 +317,7 @@ class ConcurrencyProofTests(unittest.TestCase):
             f"a leg did not run concurrently (barrier timed out): "
             f"{[(r.leg, r.status) for r in res.legs]}",
         )
-        self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))  # order preserved
+        self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))
 
     # --- the opt-in escape hatch: max_concurrency=1 forces SEQUENTIAL --------
 
@@ -346,7 +345,7 @@ class ConcurrencyProofTests(unittest.TestCase):
             f"max_concurrency=1 must serialize (barrier unsatisfiable ⇒ DEGRADED): "
             f"{[(r.leg, r.status) for r in res.legs]}",
         )
-        self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))  # order preserved
+        self.assertEqual([r.leg for r in res.legs], list(DEFAULT_BOARD_VENDOR_ORDER))
 
     def test_invoke_panel_max_concurrency_1_is_sequential(self) -> None:
         n = len(pi.PANEL_LEGS)
@@ -366,7 +365,7 @@ class ConcurrencyProofTests(unittest.TestCase):
         reply = lambda leg, art: ("OK", f"{leg}\nAGREE")
         par = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=reply)
         seq = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=reply, max_concurrency=1)
-        self.assertEqual([r.leg for r in seq.legs], list(pi.PANEL_LEGS))
+        self.assertEqual([r.leg for r in seq.legs], list(DEFAULT_BOARD_VENDOR_ORDER))
         self.assertTrue(all(r.status == "OK" for r in seq.legs))
         for p, s in zip(par.legs, seq.legs):
             self.assertEqual((p.leg, p.status, p.text, p.seat_key), (s.leg, s.status, s.text, s.seat_key))

@@ -28,8 +28,9 @@ equivalence is proven by a test (not asserted in prose).
   the **agy/gemini leg where effort is embedded in the model-name string**
   (`render_gemini_model`, panel_invoker.py:1016). Built-3 lanes are concrete;
   breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
-  Round-trip (proven): claude→`--effort max` (:324), codex→
-  `-c model_reasoning_effort=xhigh` (:992), gemini→`"Gemini 3.1 Pro (High)"` (:1016).
+  Round-trip (proven): claude→`--effort max`, codex→
+  `-c model_reasoning_effort=xhigh`, Gemini Flash→`gemini-3.6-flash-high`;
+  explicit legacy Pro display names remain compatible.
 - **Seat identity for result re-keying** — `Seat.seat_key` is a stable LABEL over
   every distinguishing field (lane, model, effort, lens), so lens-only-different
   seats get distinct keys. It is not a guaranteed-unique id — a board may hold two
@@ -80,12 +81,10 @@ equivalence is proven by a test (not asserted in prose).
 
 ## IF-0-ABDFREEZE-4 — Back-compat contract · `fixtures.py` + `tests/test_advisor_board_backcompat.py`
 
-- The `default` board (`DEFAULT_BOARD`) resolves to today's three seats in
-  `PANEL_LEGS` order, and each seat renders to today's exact model string + effort
-  args (cross-checked against `panel_invoker.DEFAULT_LEG_MODELS` and the
-  codex/claude/agy arg forms). Full assertions (launch order, payloads, env/auth,
-  timeout/retry, result keys, output formatting, failure semantics, `invoke_panel`
-  API) land in ABDVERIFY; this ships the **scaffold + the default-board fixture**.
+- The model-first `default` board (`DEFAULT_BOARD`) resolves four vendors in
+  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash high, Claude/Fable, and
+  Grok 4.5. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
+  API remain the frozen three-leg Codex/Gemini/Claude boundary.
 - `advisor-panel` stays a working alias of `advisor-board` — the rename + alias is
   ABDRESOLVE; this contract only *states* the invariant.
 - **Behavior-neutrality proof:** `git diff` on `panel_invoker.py` is empty and the
@@ -179,9 +178,9 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   implementer stays Sonnet. The `default` board (`fixtures.DEFAULT_BOARD`) is
   byte-pinned to this Fable `invoke_panel` panel by the golden proof
   (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
-- **`code-review` = three frontier vendors, always.** codex `gpt-5.6-sol`,
-  `Gemini 3.1 Pro`, and `claude-fable-5`, each on the `adversarial` lens (supersedes
-  the prior two-seat codex+sonnet composition).
+- **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
+  `gemini-3.6-flash` at its `high` ceiling alongside Sol, Fable, and Grok 4.5;
+  `code-review` preserves availability-aware backfill and distinct lenses.
 - **Divergent-thinking boards keep Sonnet.** `brainstorm` / `doc-edit` /
   `legal-brainstorm` deliberately retain `claude-sonnet-5` — a diverse voice, a
   low-stakes copyedit, a cheap aggressive ideation seat — where it is the right tool.
@@ -190,7 +189,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`schema.py`), so the legal lenses/purposes need no enum extension.
 - **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
   limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
-  (three frontier vendors — gpt-5.6-sol/adversarial, Gemini 3.1 Pro/alternative,
+  (three frontier vendors — gpt-5.6-sol/adversarial, gemini-3.6-flash/alternative,
   claude-fable-5/completeness — hand it any task + brief), and `solo` is the
   single-MEMBER form (one `claude-fable-5` seat) for a quick top-end opinion when a
   panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like

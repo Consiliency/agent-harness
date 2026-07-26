@@ -94,7 +94,7 @@ _LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-5.6-sol",  # model-id-source: panel per-leg default (single source of truth)
-    "gemini": "Gemini 3.1 Pro (High)",
+    "gemini": "gemini-3.6-flash-high",  # model-id-source: panel per-leg default
     "claude": "claude-fable-5",  # model-id-source: panel per-leg default (single source of truth)
     "grok": "grok-4.5",  # model-id-source: panel per-leg default (single source of truth)
 }
@@ -2413,13 +2413,15 @@ def _exec_leg(
     if leg == "gemini":
         out_file = out_dir / "panel-gemini.txt"
         # ABDHOME: the agy leg bakes effort INTO the model name. effort-absent keeps
-        # today's ``model or "Gemini 3.1 Pro (High)"`` verbatim; a seat renders
+        # the shared default model verbatim; a seat renders
         # ``(base, effort)`` -> ``"<base> (Word)"`` (idempotent on an already-baked
-        # string), so a ``"Gemini 3.1 Pro"`` + ``high`` seat yields the same literal.
+        # string), so a ``gemini-3.6-flash`` + ``high`` seat yields the canonical id.
         gemini_model = (
-            model or "Gemini 3.1 Pro (High)"
+            model or DEFAULT_LEG_MODELS["gemini"]
             if effort is None
-            else render_seat_invocation("gemini", model or "Gemini 3.1 Pro", effort).model
+            else render_seat_invocation(
+                "gemini", model or "gemini-3.6-flash", effort  # model-id-source: board base default
+            ).model
         )
         # BUGFIX: the prompt MUST be passed inline as the ``-p`` argv value, NOT via
         # ``-p -`` + ``input=prompt`` on stdin. Empirically ``agy -p -`` IGNORES stdin
@@ -3126,9 +3128,9 @@ def invoke_board(
     * the native host leg is never routed through a gateway
       (``enforce_native_host_leg`` raises on a host-leg omnigent seat).
 
-    The ``default`` board reproduces today's 3-leg panel byte-for-byte: each
-    subscription/homebrew built-3 seat renders to today's exact model + effort
-    literals and scrubs to exactly ``_subscription_env()``.
+    The model-first ``default`` board has four subscription/homebrew seats. The
+    separate explicit ``invoke_panel(PANEL_LEGS)`` path retains its frozen
+    three-leg API and ordering.
 
     **Observability (ABDOBS).** When ``sink`` is given, the natively-launched
     board *emits* its runtime events as the frozen ``AdvisorBoardEvent`` envelope

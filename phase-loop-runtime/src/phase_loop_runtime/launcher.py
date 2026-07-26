@@ -18,6 +18,7 @@ from queue import Empty, Queue
 from typing import Any, Callable
 
 from .capability_registry import capability_registry
+from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
 from .claude_agent_view import ClaudeAgentViewAdapter, AgentViewLifecycleResult, workspace_trust_state
 from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult, is_loopback_http_url
 from .discovery import classify_phase_team_eligibility
@@ -794,68 +795,9 @@ def build_gemini_command(
     return command
 
 
-# Map the matrix `gemini-*` tier ids (profiles.TIER_MODELS) → the agy model each runs on.
-# agy's AUTHORITATIVE `agy models` list uses canonical `gemini-<ver>-<family>-<effort>` ids
-# (e.g. gemini-3.6-flash-high) and exposes NO flash-lite. CR round-5 finding B: the FLASH
-# (regular/lite implementation) ids therefore map to the canonical agy Flash ids — 3.6 Flash
-# for regular (newest GA), and 3.5 Flash for lite (agy has no flash-lite, so the matrix's
-# gemini-3.5-flash-lite lite cell is ASPIRATIONAL and degrades to real 3.5 Flash here). The
-# PRO/heavy id keeps its display string (unchanged — planning is out of this fix's scope; the
-# `pro` alias + display-label convention for the Pro path is a separate pre-existing question).
-# An unmapped `gemini-*` id that is neither a matrix id nor a canonical agy id FAILS LOUD.
-_GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
-    "gemini-3.1-pro-preview": "Gemini 3.1 Pro (High)",  # model-id-source: agy adapter map (heavy/Pro; display, planning path)
-    "gemini-3.5-flash-lite": "gemini-3.5-flash-high",  # model-id-source: agy adapter map (lite ASPIRATIONAL → degrade to real 3.5 Flash; agy has no flash-lite)
-}
-
-# Canonical agy model id SHAPE (`agy models`): gemini-<ver>-<family>-<effort>. A match passes
-# through verbatim for agy to validate. NOTE: the shape is broader than the live catalog (it
-# admits e.g. `-thinking` / `gemini-3.1-pro-medium` that a given agy build may not expose) —
-# those still pass through and fail LOUD at agy (exit 1), never silently mis-route.
-_AGY_CANONICAL_GEMINI = re.compile(
-    r"^(gemini-\d+\.\d+-(?:flash|pro))-(high|medium|low|thinking)$"
-)
-_AGY_BASE_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)$")
-
-
 def _gemini_cli_model(model: str, effort: str | None = None) -> str:
-    # Map the phase-loop routing aliases (pro/auto/"") onto agy's default Pro model, and the
-    # matrix `gemini-*` tier ids onto their agy model (_GEMINI_MODEL_ID_ALIASES). A canonical
-    # agy id (gemini-3.6-flash-high, ...) passes through verbatim. Any OTHER value — a display
-    # label ("Gemini 3.1 Pro (High)"), "Claude ...", or an explicit operator override — passes
-    # through for agy to validate. An UNKNOWN `gemini-*` id that is neither a matrix id nor a
-    # canonical agy id fails loud (never silently → Pro).
-    candidate = (model or "").strip()
-    if _AGY_BASE_GEMINI.match(candidate):
-        rendered_effort = effort or "high"
-        if rendered_effort not in {"high", "medium", "low", "thinking"}:
-            raise ValueError(
-                f"gemini base model {candidate!r} requires a supported agy effort; got {effort!r}"
-            )
-        return f"{candidate}-{rendered_effort}"
-    if candidate in {"", "auto", "pro"}:
-        return "Gemini 3.1 Pro (High)"
-    if candidate in _GEMINI_MODEL_ID_ALIASES:
-        return _GEMINI_MODEL_ID_ALIASES[candidate]
-    canonical = _AGY_CANONICAL_GEMINI.match(candidate)
-    if canonical:
-        embedded_effort = canonical.group(2)
-        if effort is not None and effort != embedded_effort:
-            raise ValueError(
-                f"gemini model {candidate!r} embeds effort {embedded_effort!r}, "
-                f"which conflicts with requested effort {effort!r}"
-            )
-        return candidate  # canonical agy id shape — passed through for agy to validate
-    if candidate.startswith("gemini-"):
-        # FOLLOW-UP (Consiliency/agent-harness#302): this raises at spec-BUILD time, so
-        # an operator model-id typo currently surfaces as a traceback rather than a clean
-        # `blocked` terminal summary. No internal surface emits a non-tier gemini-* id, so
-        # this is operator-typo-only; routing it through the blocked path is tracked there.
-        raise ValueError(
-            f"unmapped gemini model id {candidate!r}: add it to "
-            "_GEMINI_MODEL_ID_ALIASES (never silently coerce a gemini-* id to Pro)"
-        )
-    return candidate
+    """Compatibility wrapper around the shared advisor-board/launcher renderer."""
+    return render_agy_model(model, effort)
 
 
 def _adapter_effective_effort(
@@ -873,11 +815,7 @@ def _adapter_effective_effort(
         return _grok_cli_effort(policy_effort)
     if executor == "gemini":
         rendered = _gemini_cli_model(model or "", policy_effort)
-        canonical = _AGY_CANONICAL_GEMINI.match(rendered)
-        if canonical:
-            return canonical.group(2)
-        display = re.search(r"\((High|Medium|Low|Thinking)\)$", rendered)
-        return display.group(1).lower() if display else policy_effort
+        return agy_model_effort(rendered) or policy_effort
     if executor == "opencode":
         return _opencode_variant(action or "plan", policy_effort) or policy_effort
     return policy_effort

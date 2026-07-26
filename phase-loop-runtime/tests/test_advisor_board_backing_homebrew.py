@@ -41,7 +41,11 @@ from phase_loop_runtime.advisor_board import (
     resolve_seat_env,
 )
 from phase_loop_runtime.advisor_board import SeatValidationError, resolve_board
-from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, TWO_SAME_VENDOR_BOARD
+from phase_loop_runtime.advisor_board.fixtures import (
+    DEFAULT_BOARD,
+    DEFAULT_BOARD_VENDOR_ORDER,
+    TWO_SAME_VENDOR_BOARD,
+)
 from phase_loop_runtime.advisor_board.harness_mapping import render_gemini_model
 
 
@@ -168,10 +172,11 @@ class DefaultBoardByteEquivalenceTests(unittest.TestCase):
         with patch.object(pi, "_default_spawn", return_value=("OK", "AGREE")) as ds:
             pi.invoke_board(DEFAULT_BOARD, "artifact", base_env=base)
         by_leg = {c.args[0]: c.kwargs for c in ds.call_args_list}
-        self.assertEqual(set(by_leg), {"codex", "gemini", "claude"})
+        self.assertEqual(set(by_leg), set(DEFAULT_BOARD_VENDOR_ORDER))
         self.assertEqual(by_leg["codex"]["effort"], "max")
         self.assertEqual(by_leg["gemini"]["effort"], "high")
         self.assertEqual(by_leg["claude"]["effort"], "max")
+        self.assertEqual(by_leg["grok"]["effort"], "max")
         for leg, kwargs in by_leg.items():
             for var in pi._API_KEY_VARS:
                 self.assertNotIn(var, kwargs["env"], f"{leg} env leaked {var}")
@@ -292,7 +297,7 @@ class NativeHostLegStaysNativeTests(unittest.TestCase):
         self.assertIsNone(pi.enforce_native_host_leg(DEFAULT_BOARD, None))
         res = pi.invoke_board(DEFAULT_BOARD, "artifact", host=None,
                               spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
-        self.assertEqual(tuple(l.leg for l in res.legs), ("codex", "gemini", "claude"))
+        self.assertEqual(tuple(l.leg for l in res.legs), DEFAULT_BOARD_VENDOR_ORDER)
         self.assertTrue(all(l.status == "OK" for l in res.legs))
 
     def test_inside_claude_the_claude_seat_is_the_host_leg(self) -> None:

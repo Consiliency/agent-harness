@@ -12,6 +12,7 @@ import unittest
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import (
     DEFAULT_BOARD,
+    DEFAULT_BOARD_VENDOR_ORDER,
     TWO_SAME_VENDOR_BOARD,
     Board,
     BoardResolutionError,
@@ -160,7 +161,7 @@ class SeatValidationTests(unittest.TestCase):
 
     def test_default_board_validates_clean(self) -> None:
         verdicts = validate_board(DEFAULT_BOARD, MATRIX)
-        self.assertEqual(len(verdicts), 3)
+        self.assertEqual(len(verdicts), 4)
 
     def test_effort_ceiling_gate_rejects_over_ceiling_seat(self) -> None:
         # The effort-ceiling gate folded in from matrix.validate_seat: a seat above
@@ -242,8 +243,7 @@ class LegToSeatRekeyTests(unittest.TestCase):
 
 
 class DefaultBoardBackCompatResolutionTests(unittest.TestCase):
-    """Resolution-level proof: the `default` board reproduces today's 3-leg panel
-    (the full golden proof is ABDFREEZE-4 / ABDVERIFY)."""
+    """Resolution-level proof for the four-vendor model-first default."""
 
     def test_default_and_alias_and_bare_all_resolve_to_default(self) -> None:
         resolver = BoardResolver()
@@ -251,12 +251,10 @@ class DefaultBoardBackCompatResolutionTests(unittest.TestCase):
         self.assertEqual(resolver.resolve("advisor-panel"), DEFAULT_BOARD)
         self.assertEqual(resolver.resolve(), DEFAULT_BOARD)
 
-    def test_resolved_default_reproduces_todays_three_legs_in_order(self) -> None:
+    def test_resolved_default_uses_four_vendor_order(self) -> None:
         board = BoardResolver().resolve()
-        # seats project to the exact PANEL_LEGS vendor order, each rendering to
-        # today's live DEFAULT_LEG_MODELS string + effort form.
         self.assertEqual(
-            tuple(s.vendor_family for s in board.seats), pi.PANEL_LEGS
+            tuple(s.vendor_family for s in board.seats), DEFAULT_BOARD_VENDOR_ORDER
         )
         for seat in board.seats:
             inv = render_seat_invocation(seat.harness, seat.model, seat.effort)
