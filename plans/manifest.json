@@ -1,6 +1,31 @@
 {
   "plans": [
     {
+      "acceptance_criteria_count": 0,
+      "created_at": "2026-07-26T21:30:00+00:00",
+      "file": "plans/detailed-288-fab-broker-readmission-20260726.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-26T21:30:00+00:00",
+          "by": "claude-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": "~/.codex/skills/claude-plan-detailed/reflections/637369a25984/chore-plan-288-amendment-2/run-288-amendment-2.md",
+      "roadmap_ref": null,
+      "slug": "288-fab-broker-readmission-amendment-2",
+      "status": "committed",
+      "task_summary": "CR AMENDMENT 2: Change A (caller-supplied lease_epoch fencing) SUPERSEDED after 4 failed CR rounds; replaced by broker-owned per-target versioned-head CAS. Records the verified crux that the current tip is not derivable from existing durable state.",
+      "type": "detailed",
+      "updated_at": "2026-07-26T21:30:00+00:00"
+    },
+    {
       "acceptance_criteria_count": 8,
       "created_at": "2026-07-26T02:19:35Z",
       "file": "plans/detailed-310-advisor-research-integration-after-pmcp-20260726.md",
@@ -1052,6 +1077,7 @@
       "updated_at": "2026-07-13T04:12:58Z"
     },
     {
+      "acceptance_criteria_count": null,
       "created_at": "2026-07-13T04:58:00Z",
       "file": "plans/phase-plan-vergence-v1-INTEG.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260713T044745Z-01-integ-plan.md",
@@ -1107,6 +1133,7 @@
       },
       "slug": "vergence-v1-INTEG",
       "status": "completed",
+      "task_summary": null,
       "type": "phase",
       "updated_at": "2026-07-13T05:07:04Z"
     },
