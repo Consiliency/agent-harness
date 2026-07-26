@@ -156,11 +156,11 @@ PYTHONPATH=src python -c "from phase_loop_runtime.advisor_board.harness_mapping 
 
 ## Acceptance criteria
 
-- [ ] `gemini-3.6-flash` is registered on the Gemini lane with ceiling high.
-- [ ] Base and canonical Flash forms render exactly to `gemini-3.6-flash-high`; no parenthetical or double-effort artifact is possible.
-- [ ] Unknown or effort-conflicting `gemini-*` IDs fail loudly.
-- [ ] The model-first default review board contains Fable 5, Sol, Gemini 3.6 Flash high, and Grok 4.5 with distinct lenses.
-- [ ] Review/general presets no longer default to Gemini 3.1 Pro Preview.
-- [ ] Legacy `PANEL_LEGS == ("codex", "gemini", "claude")` and explicit `invoke_panel` behavior remain compatible.
-- [ ] Launcher and advisor-board paths share one Gemini rendering implementation.
-- [ ] No default or fixture names the nonexistent Grok 5.5 model.
+- [x] `gemini-3.6-flash` is registered on the Gemini lane with ceiling high.
+- [x] Base and canonical Flash forms render exactly to `gemini-3.6-flash-high`; no parenthetical or double-effort artifact is possible.
+- [x] Unknown or effort-conflicting `gemini-*` IDs fail loudly.
+- [x] The model-first default review board contains Fable 5, Sol, Gemini 3.6 Flash high, and Grok 4.5 with distinct lenses.
+- [x] Review/general presets no longer default to Gemini 3.1 Pro Preview.
+- [x] Legacy `PANEL_LEGS == ("codex", "gemini", "claude")` and explicit `invoke_panel` behavior remain compatible.
+- [x] Launcher and advisor-board paths share one Gemini rendering implementation.
+- [x] No default or fixture names the nonexistent Grok 5.5 model.

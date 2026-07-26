@@ -165,14 +165,14 @@ PYTHONPATH=src:tests python -m pytest tests/test_launchspec_golden.py tests/test
 
 ## Acceptance criteria
 
-- [ ] `MODEL_CLASSES` includes `reviewer`, and every supported provider resolves it explicitly.
-- [ ] `resolve("plan", "claude")` and `resolve("roadmap", "claude")` select `claude-opus-5`.
-- [ ] `resolve("review", "claude")` selects `claude-fable-5` before and after planner retiering.
-- [ ] `resolve("execute", "claude")` and `resolve("repair", "claude")` select `claude-sonnet-5`.
-- [ ] `resolve("supervise", "claude")` remains `claude-opus-5`; `advise` and `security` resolve to the ultra/Fable tier.
-- [ ] Claude authoring/review requests max effort and execution/repair requests high; provider clamps remain recorded rather than overclaimed.
-- [ ] Resolved policy carries requested and policy effort; launch metadata carries final adapter-effective effort.
-- [ ] Grok max-to-high and Codex max-to-xhigh argv clamps are recorded without falsely setting policy fallback.
-- [ ] Gemini stores a base Flash model for default routing, so an effort-only operator override renders a matching canonical agy ID.
-- [ ] Operator model/effort overrides retain precedence.
-- [ ] The tier matrix and lite/economy pins remain unchanged.
+- [x] `MODEL_CLASSES` includes `reviewer`, and every supported provider resolves it explicitly.
+- [x] `resolve("plan", "claude")` and `resolve("roadmap", "claude")` select `claude-opus-5`.
+- [x] `resolve("review", "claude")` selects `claude-fable-5` before and after planner retiering.
+- [x] `resolve("execute", "claude")` and `resolve("repair", "claude")` select `claude-sonnet-5`.
+- [x] `resolve("supervise", "claude")` remains `claude-opus-5`; `advise` and `security` resolve to the ultra/Fable tier.
+- [x] Claude authoring/review requests max effort and execution/repair requests high; provider clamps remain recorded rather than overclaimed.
+- [x] Resolved policy carries requested and policy effort; launch metadata carries final adapter-effective effort.
+- [x] Grok max-to-high and Codex max-to-xhigh argv clamps are recorded without falsely setting policy fallback.
+- [x] Gemini stores a base Flash model for default routing, so an effort-only operator override renders a matching canonical agy ID.
+- [x] Operator model/effort overrides retain precedence.
+- [x] The tier matrix and lite/economy pins remain unchanged.

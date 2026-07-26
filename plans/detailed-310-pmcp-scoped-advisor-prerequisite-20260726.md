@@ -81,11 +81,11 @@ pytest -q
 
 ## Acceptance criteria
 
-- [ ] Explicit policy failure exits non-zero; permissive defaults are never retained.
-- [ ] Gateway controls are filtered in discovery and dispatch.
-- [ ] Invoke can reach only allowlisted Firecrawl/Bright Data research tools.
-- [ ] Four concurrent stdio instances operate with unique lock dirs.
-- [ ] Structured audit proves tool/status/policy/run/seat correlation and privacy-safe source evidence.
-- [ ] `scoped_advisor_audit.v1` JSONL has explicit sink/config, typed correlation inputs, sequence/count completeness, and a flushed terminal marker.
-- [ ] Audit contains no raw query, URL, arguments, credentials, or result body.
-- [ ] A released capability/version probe lets agent-harness fail closed on older PMCP.
+- [x] Explicit policy failure exits non-zero; permissive defaults are never retained.
+- [x] Gateway controls are filtered in discovery and dispatch.
+- [x] Invoke can reach only allowlisted Firecrawl/Bright Data research tools.
+- [x] Four concurrent stdio instances operate with unique lock dirs.
+- [x] Structured audit proves tool/status/policy/run/seat correlation and privacy-safe source evidence.
+- [x] `scoped_advisor_audit.v1` JSONL has explicit sink/config, typed correlation inputs, sequence/count completeness, and a flushed terminal marker.
+- [x] Audit contains no raw query, URL, arguments, credentials, or result body.
+- [x] A released capability/version probe lets agent-harness fail closed on older PMCP.

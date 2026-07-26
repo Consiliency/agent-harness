@@ -144,13 +144,13 @@ PYTHONPATH=src:tests python -m pytest tests/test_phase_loop_runner.py tests/test
 
 ## Acceptance criteria
 
-- [ ] A governed repair below the threshold launches the regular implementer model.
-- [ ] Repeated matching verification failure records and applies `implementer -> planner`.
-- [ ] Model-class escalation proceeds on the current executor when no fallback executor is configured.
-- [ ] The resulting Claude repair launch uses `claude-opus-5`; the equivalent provider-specific heavy model is used on other supported executors.
-- [ ] Event metadata distinguishes requested class, effective class/model, source, and whether application occurred.
-- [ ] An explicit operator model is never silently overridden and is recorded as the non-applied reason.
-- [ ] Unmapped target classes fail closed rather than falling back silently.
-- [ ] A later retry recognizes the last actually-launched applied planner class for the same phase/executor/fingerprint even when that repair ended blocked.
-- [ ] Escalation history is reused only when current roadmap and phase digests also match.
-- [ ] Planner-terminal escalation is recorded honestly and is not misreported as an applied second switch.
+- [x] A governed repair below the threshold launches the regular implementer model.
+- [x] Repeated matching verification failure records and applies `implementer -> planner`.
+- [x] Model-class escalation proceeds on the current executor when no fallback executor is configured.
+- [x] The resulting Claude repair launch uses `claude-opus-5`; the equivalent provider-specific heavy model is used on other supported executors.
+- [x] Event metadata distinguishes requested class, effective class/model, source, and whether application occurred.
+- [x] An explicit operator model is never silently overridden and is recorded as the non-applied reason.
+- [x] Unmapped target classes fail closed rather than falling back silently.
+- [x] A later retry recognizes the last actually-launched applied planner class for the same phase/executor/fingerprint even when that repair ended blocked.
+- [x] Escalation history is reused only when current roadmap and phase digests also match.
+- [x] Planner-terminal escalation is recorded honestly and is not misreported as an applied second switch.
