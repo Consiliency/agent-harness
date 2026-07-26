@@ -93,8 +93,21 @@ token (`gemini-3.6-flash-high`; legacy display names such as
 **Auth is subscription-default, never-silent-key.** A subscription seat actively
 scrubs *every* vendor API-key var from the subprocess env / gateway payload; an
 api-key seat is reachable only behind `Board.allow_api_key_fallback` and injects
-ONLY its own vendor's key. A board can't even be constructed holding an api-key
-seat without opting in.
+ONLY its own vendor's key. Claude Fable/Opus seats are stricter: API-key fallback
+is forbidden, custom request headers and alternate endpoint/cloud-provider/helper selectors are scrubbed,
+run-isolated settings disable API-key helpers, and the TUI launches only after a
+metadata-only auth probe proves a first-party `claude.ai` subscription. A board
+can't even be constructed holding an api-key seat without opting in.
+
+**Claude execution is TUI-only.** Fable and Opus require the homebrew backing and
+use the existing Claude Code self-PTY adapter with the exact requested model.
+An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct
+HTTP, or native Task/subagent path may fulfill those seats. A host that cannot
+run the adapter reports `tui_adapter_required`; an unproven subscription reports
+`subscription_auth_unproven`. Today's adapter has no typed classifier-refusal
+capability, so refusal-looking text never triggers fallback. The bounded future
+policy permits one Opus TUI retry only for typed classifier refusal plus an
+independent defensive-security attestation, then fails closed.
 
 ---
 

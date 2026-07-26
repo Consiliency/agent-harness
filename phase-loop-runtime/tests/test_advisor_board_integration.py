@@ -63,10 +63,13 @@ class _FakeOmnigent:
     def __init__(self, catalog, *, down: bool = False):
         self._catalog = frozenset(catalog)
         self._down = down
+        self.catalog_calls = 0
+        self.run_calls = 0
 
     def catalog_harnesses(self):
         from phase_loop_runtime.advisor_board import OmnigentGatewayUnavailable
 
+        self.catalog_calls += 1
         if self._down:
             raise OmnigentGatewayUnavailable("gateway down")
         return self._catalog
@@ -74,6 +77,7 @@ class _FakeOmnigent:
     def run_seat(self, seat, artifact, *, base_env, allow_api_key_fallback):
         from phase_loop_runtime.advisor_board import resolve_seat_env
 
+        self.run_calls += 1
         # never-silent-key: an api-key seat without the board opt-in raises (→ DEGRADED),
         # exactly like the homebrew leg.
         resolve_seat_env(seat, base_env, allow_api_key_fallback=allow_api_key_fallback)
@@ -252,6 +256,23 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
         res = pi.invoke_board(board, "artifact", gateway_available=True)
         self.assertEqual(res.legs[0].status, "UNAVAILABLE")
         self.assertIn("ABDOMNI", res.legs[0].detail)
+
+    def test_fable_and_opus_reject_omnigent_before_gateway_access(self) -> None:
+        for model in ("claude-fable-5", "claude-opus-5"):
+            board = Board(name="claude-guard", purpose="x", seats=(
+                Seat(
+                    model=model,
+                    effort="max",
+                    harness="claude",
+                    backing=BACKING_OMNIGENT,
+                ),
+            ))
+            omni = _FakeOmnigent({"claude"})
+            res = pi.invoke_board(board, "artifact", omnigent=omni)
+            self.assertEqual(res.legs[0].status, "UNAVAILABLE")
+            self.assertEqual(res.legs[0].detail, "tui_backing_required")
+            self.assertEqual(omni.catalog_calls, 0)
+            self.assertEqual(omni.run_calls, 0)
 
 
 class ObservabilityLegJoinsMatrixTests(unittest.TestCase):

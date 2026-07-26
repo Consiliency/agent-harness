@@ -101,10 +101,12 @@ from .config import (
     load_boards,
 )
 from .backing import (
+    CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS,
     VENDOR_API_KEY_VARS,
     BackingDecision,
     all_vendor_key_vars,
     resolve_seat_env,
+    scrub_subscription_env,
     select_backing,
 )
 from .backing_omnigent import (
@@ -242,7 +244,9 @@ __all__ = [
     "load_boards",
     # backing + auth
     "VENDOR_API_KEY_VARS",
+    "CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS",
     "all_vendor_key_vars",
+    "scrub_subscription_env",
     "BackingDecision",
     "select_backing",
     "resolve_seat_env",

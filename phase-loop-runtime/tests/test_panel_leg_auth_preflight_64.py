@@ -10,6 +10,7 @@ the genuinely-transient soft empty-turn without hammering a hard failure.
 from __future__ import annotations
 
 import types
+import json
 
 import phase_loop_runtime.panel_invoker as pi
 
@@ -59,6 +60,90 @@ def test_auth_probe_missing_cli_fails_open(monkeypatch):
     monkeypatch.setattr(pi.subprocess, "run", boom)
     ok, _ = pi._leg_auth_ok("codex", {})
     assert ok  # a flaky/absent probe must never block the leg
+
+
+# --- strict Claude.ai subscription preflight -----------------------------------
+
+def _claude_auth_payload(**overrides):
+    payload = {
+        "loggedIn": True,
+        "authMethod": "claude.ai",
+        "apiProvider": "firstParty",
+        "subscriptionType": "max",
+        "email": "private@example.invalid",
+        "orgId": "org-secret",
+        "orgName": "private org",
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+def test_claude_subscription_auth_accepts_only_proven_first_party(monkeypatch):
+    monkeypatch.setattr(
+        pi.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout=_claude_auth_payload(), stderr=""
+        ),
+    )
+    ok, detail = pi._claude_subscription_auth_ok({"PATH": "/usr/bin"})
+    assert ok and detail == ""
+
+
+def test_claude_subscription_auth_rejects_every_unproven_shape(monkeypatch):
+    rejected = (
+        _claude_auth_payload(loggedIn=False),
+        _claude_auth_payload(authMethod="apiKey"),
+        _claude_auth_payload(apiProvider="bedrock"),
+        _claude_auth_payload(subscriptionType=""),
+        _claude_auth_payload(subscriptionType=None),
+        "not-json",
+    )
+    for raw in rejected:
+        monkeypatch.setattr(
+            pi.subprocess,
+            "run",
+            lambda *a, _raw=raw, **k: types.SimpleNamespace(
+                returncode=0, stdout=_raw, stderr="private@example.invalid"
+            ),
+        )
+        assert pi._claude_subscription_auth_ok({}) == (
+            False,
+            "subscription_auth_unproven",
+        )
+
+
+def test_claude_subscription_auth_does_not_return_or_persist_identity(monkeypatch, caplog):
+    monkeypatch.setattr(
+        pi.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout=_claude_auth_payload(), stderr=""
+        ),
+    )
+    result = pi._claude_subscription_auth_ok({})
+    evidence = repr(result) + caplog.text
+    assert "private@example.invalid" not in evidence
+    assert "org-secret" not in evidence
+    assert "private org" not in evidence
+
+
+def test_claude_unproven_auth_never_launches_tui(tmp_path, monkeypatch):
+    review_dir, out_dir = _stage(tmp_path)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(
+        pi,
+        "_claude_subscription_auth_ok",
+        lambda env: (False, "subscription_auth_unproven"),
+    )
+    launched = []
+    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kwargs: launched.append(kwargs))
+    status, detail = pi._exec_claude_tui_leg(
+        review_dir, out_dir, 60, "bundle", env={}
+    )
+    assert (status, detail) == ("UNAVAILABLE", "subscription_auth_unproven")
+    assert launched == []
 
 
 # --- _exec_leg codex path ------------------------------------------------------

@@ -87,6 +87,36 @@ class EnvelopeEmitTests(unittest.TestCase):
         self.assertIn("seat.completed", by_kind)  # codex OK
         self.assertIn("seat.skipped", by_kind)    # opencode UNAVAILABLE
 
+    def test_refusal_and_fallback_observability_is_metadata_only(self) -> None:
+        sink = obs.CollectingSink()
+        observer = obs.BoardObserver(sink, board_name="b")
+        seat = Seat(model="claude-fable-5", effort="max", harness="claude")
+        result = pi.attach_provider_refusal_state(
+            pi.PanelLegResult(
+                leg="claude", status="DEGRADED", text="PRIVATE TRANSCRIPT", detail="typed"
+            ),
+            provider_refusal_kind="classifier_refusal",
+            fallback_used=True,
+            adapter_originated=True,
+        )
+        observer.seat_result(seat, result)
+        event = sink.events[-1]
+        self.assertEqual(event.payload["provider_refusal_kind"], "classifier_refusal")
+        self.assertTrue(event.payload["fallback_used"])
+        serialized = json.dumps(event.payload)
+        self.assertNotIn("PRIVATE TRANSCRIPT", serialized)
+
+    def test_legacy_result_emits_no_new_metadata_keys(self) -> None:
+        sink = obs.CollectingSink()
+        observer = obs.BoardObserver(sink, board_name="b")
+        observer.seat_result(
+            Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
+            pi.PanelLegResult(leg="codex", status="OK", text="AGREE"),
+        )
+        payload = sink.events[-1].payload
+        self.assertNotIn("provider_refusal_kind", payload)
+        self.assertNotIn("fallback_used", payload)
+
 
 # ---------------------------------------------------------------------------
 # 1b. Async / best-effort: NEVER delays or fails the native leg.

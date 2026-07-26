@@ -75,6 +75,13 @@ equivalence is proven by a test (not asserted in prose).
   API-key var; an api-key seat (only behind the board opt-in) scrubs everything
   then injects **only the seat vendor's** key(s). Never silent — an api-key seat
   without the opt-in raises.
+- **Claude Fable/Opus = subscription TUI only** — the shared scrub additionally
+  removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
+  Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
+  disable `apiKeyHelper`; `claude auth status --json` must prove first-party
+  `claude.ai` subscription auth before the exact-model self-PTY launch. The
+  homebrew backing is mandatory; alternate backings fail before gateway access.
+  API-key fallback and native Task/subagent fulfillment are forbidden.
 - **`VENDOR_API_KEY_VARS`** — the flat `_API_KEY_VARS` tuple re-keyed by vendor
   family; its union equals today's tuple (proven), so scrubbing stays
   byte-equivalent.

@@ -42,7 +42,7 @@ from .agent_runtime_provider import (
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL
-from .advisor_board.backing import resolve_seat_env, select_backing
+from .advisor_board.backing import resolve_seat_env, scrub_subscription_env, select_backing
 from .advisor_board.backing_omnigent import (
     OmnigentBacking,
     OmnigentGatewayUnavailable,
@@ -253,6 +253,16 @@ class PanelLegResult:
     def needs_native_agent(self) -> "NativeAgentLegRequest | None":
         return getattr(self, "_needs_native_agent", None)
 
+    @property
+    def provider_refusal_kind(self) -> str | None:
+        """Typed provider refusal supplied by an adapter, never transcript text."""
+        return getattr(self, "_provider_refusal_kind", None)
+
+    @property
+    def fallback_used(self) -> bool:
+        """Whether a bounded, typed provider fallback produced this result."""
+        return bool(getattr(self, "_fallback_used", False))
+
 
 def attach_native_agent_request(
     leg: PanelLegResult, request: "NativeAgentLegRequest"
@@ -263,6 +273,84 @@ def attach_native_agent_request(
     Returns ``leg`` for call-site convenience."""
     object.__setattr__(leg, "_needs_native_agent", request)
     return leg
+
+
+_PROVIDER_REFUSAL_KINDS = frozenset({"classifier_refusal"})
+CLAUDE_TUI_TYPED_REFUSAL_SUPPORTED = False
+_TYPED_UNAVAILABLE_DETAILS = frozenset(
+    {"subscription_auth_unproven", "tui_adapter_required", "tui_backing_required"}
+)
+
+
+def _claude_tui_policy_model(model: str | None) -> bool:
+    resolved = (model or DEFAULT_LEG_MODELS["claude"]).lower()
+    return resolved.startswith("claude-fable-") or resolved.startswith("claude-opus-")
+
+
+def attach_provider_refusal_state(
+    leg: PanelLegResult,
+    *,
+    provider_refusal_kind: str | None = None,
+    fallback_used: bool = False,
+    adapter_originated: bool = False,
+) -> PanelLegResult:
+    """Attach metadata-only provider state without changing dataclass schemas.
+
+    Refusal kinds are accepted only from an explicit adapter-originated call.
+    No caller may derive this state from transcript, stderr, PTY-tail, or verdict
+    prose. The non-field storage preserves ``dataclasses.asdict`` compatibility.
+    """
+    if provider_refusal_kind is not None:
+        if not adapter_originated:
+            raise ValueError("provider refusal state must be adapter-originated")
+        if provider_refusal_kind not in _PROVIDER_REFUSAL_KINDS:
+            raise ValueError(f"unknown provider refusal kind {provider_refusal_kind!r}")
+        object.__setattr__(leg, "_provider_refusal_kind", provider_refusal_kind)
+    if fallback_used:
+        object.__setattr__(leg, "_fallback_used", True)
+    return leg
+
+
+def apply_claude_refusal_fallback(
+    result: PanelLegResult,
+    *,
+    defensive_security_attested: bool,
+    retry_opus: Callable[[], PanelLegResult],
+    typed_capability_supported: bool = CLAUDE_TUI_TYPED_REFUSAL_SUPPORTED,
+) -> PanelLegResult:
+    """Apply the future bounded Fable-to-Opus classifier-refusal policy.
+
+    Today's TUI adapter declares typed refusal support false, making this path
+    unreachable in production. A future adapter may request exactly one retry,
+    and only for independently attested defensive-security work. The retry
+    result remains degraded because the requested reviewer changed; metadata
+    records the fallback without mutating review text.
+    """
+    if (
+        not typed_capability_supported
+        or not defensive_security_attested
+        or result.provider_refusal_kind != "classifier_refusal"
+        or result.fallback_used
+    ):
+        return result
+    retried = retry_opus()
+    detail = "opus_fallback_used"
+    if retried.provider_refusal_kind == "classifier_refusal":
+        detail = "opus_fallback_classifier_refusal"
+    bounded = PanelLegResult(
+        leg=retried.leg,
+        status="DEGRADED",
+        text=retried.text,
+        detail=detail,
+        seat_key=retried.seat_key,
+    )
+    if retried.provider_refusal_kind is not None:
+        attach_provider_refusal_state(
+            bounded,
+            provider_refusal_kind=retried.provider_refusal_kind,
+            adapter_originated=True,
+        )
+    return attach_provider_refusal_state(bounded, fallback_used=True)
 
 
 @dataclass(frozen=True)
@@ -871,6 +959,10 @@ def _claude_tui_command(
         *effort_args,
         "--permission-mode",
         "default",
+        "--setting-sources",
+        "",
+        "--settings",
+        json.dumps({"apiKeyHelper": ""}),
         "--strict-mcp-config",
         "--mcp-config",
         json.dumps({"mcpServers": {}}),
@@ -891,12 +983,9 @@ def _claude_tui_command(
     return command
 
 
-def _subscription_env() -> dict[str, str]:
-    """Child env with provider API keys removed — forces subscription auth."""
-    env = dict(os.environ)
-    for var in _API_KEY_VARS:
-        env.pop(var, None)
-    return env
+def _subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Child env restricted to local subscription authentication."""
+    return scrub_subscription_env(os.environ if base_env is None else base_env)
 
 
 # #64: cheap per-leg auth preflight. A logged-out CLI fails obliquely (codex
@@ -930,6 +1019,44 @@ def _leg_auth_ok(leg: str, env: Mapping[str, str], timeout_s: int = 20) -> tuple
     if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
         return False, f"{leg} not logged in — run `{probe[0]} login` (auth preflight failed)"
     return True, ""
+
+
+def _claude_subscription_auth_ok(
+    env: Mapping[str, str], timeout_s: int = 20
+) -> tuple[bool, str]:
+    """Prove first-party Claude.ai subscription auth without retaining PII.
+
+    Claude is a strict exception to the legacy fail-open probe: a missing,
+    malformed, timed-out, or non-subscription response fails closed before the
+    TUI launches. Raw JSON and identity fields are neither logged nor returned.
+    """
+    try:
+        proc = subprocess.run(
+            ["claude", "auth", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=dict(env),
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False, "subscription_auth_unproven"
+    if proc.returncode != 0:
+        return False, "subscription_auth_unproven"
+    try:
+        status = json.loads(proc.stdout or "")
+    except (json.JSONDecodeError, TypeError):
+        return False, "subscription_auth_unproven"
+    proven = (
+        isinstance(status, dict)
+        and status.get("loggedIn") is True
+        and status.get("authMethod") == "claude.ai"
+        and status.get("apiProvider") == "firstParty"
+        and isinstance(status.get("subscriptionType"), str)
+        and bool(status["subscriptionType"].strip())
+    )
+    return (True, "") if proven else (False, "subscription_auth_unproven")
 
 
 def _claude_code_version_tuple(text: str) -> tuple[int, int, int] | None:
@@ -2014,11 +2141,17 @@ def native_agent_leg_request(
     default. All default ``None`` — the bare standalone call is byte-unchanged
     (#125 callers/tests unaffected).
     """
+    resolved_model = model or DEFAULT_LEG_MODELS.get(leg, DEFAULT_LEG_MODELS["claude"])
+    if leg == "claude" and _claude_tui_policy_model(resolved_model):
+        raise ValueError(
+            "Fable and Opus seats require the Claude Code subscription TUI adapter; "
+            "native agent fulfillment is forbidden"
+        )
     reason, detail = _claude_leg_deferred_reason(env)
     verdict_required = mode != "advisory"
     return NativeAgentLegRequest(
         leg=leg,
-        model=model or DEFAULT_LEG_MODELS.get(leg, DEFAULT_LEG_MODELS["claude"]),
+        model=resolved_model,
         mode=mode,
         reason=reason,
         detail=detail,
@@ -2088,44 +2221,24 @@ def _exec_claude_tui_leg(
     ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
     real launch.
     """
-    # CR F4: the under-Claude-Code deferral MUST come BEFORE the local-CLI support
-    # check. Inside Claude Code the driving session fulfills the leg as its own
-    # native Task Agent (its authed session), which does NOT depend on a standalone
-    # `claude` CLI being installed/current on the host. Checking support first would
-    # return `UNAVAILABLE` + a NON-empty support detail on a Claude-Code host that
-    # lacks the local CLI — and `_run_seat`'s deferral signature is UNAVAILABLE +
-    # EMPTY text, so the native-fill request would never be attached: a silent drop.
-    # Defer first (empty text, native request emitted), THEN check local support for
-    # the run path.
+    env = _subscription_env(env)
+    # A governed Claude seat never falls through to a native Task/subagent. Inside
+    # Claude Code the nested self-PTY adapter is unavailable, so fail closed with a
+    # typed reason. A caller may retry from a host where the TUI adapter can run.
     if _under_claude_code(env):
-        # #92: INSIDE Claude Code, do NOT spawn a SECOND Claude TUI we cannot
-        # drive. Degrade cleanly with the existing UNAVAILABLE status and EMPTY
-        # review text — the empty text is load-bearing (A4): an UNAVAILABLE leg
-        # with empty text becomes a non-gating `panel_leg_degraded` warn, never a
-        # block, and `usable` (status=="OK") never counts it as an AGREE. The
-        # driving Claude Code session supplies this leg natively (a Task Agent) —
-        # see the `needs_native_agent` request the board attaches at the
-        # invoke_board layer (ABDNATIVE / #183).
-        #
-        # #183 (owner-confirmed reconciliation): a merely non-TTY parent is NOT a
-        # defer reason. `_run_claude_tui_session` SELF-ALLOCATES its own PTY
-        # (pty.openpty), so a headless NON-Claude caller (e.g. Codex Desktop) with
-        # valid Claude Max OAuth runs the leg RIGHT HERE — the old `_tui_capable`
-        # parent-tty gate over-blocked that case. `native_adapter_required` is now
-        # an AFFORDANCE/fallback (via native_agent_leg_request()) for a host that
-        # cannot drive the TUI or prefers its own sub-agent, NOT the default that
-        # silently dropped the seat.
-        reason_code, reason_detail = _claude_leg_deferred_reason(env)
         logging.getLogger(__name__).warning(
-            "advisor-panel claude leg deferred [%s]: %s", reason_code, reason_detail
+            "advisor-panel claude leg unavailable [tui_adapter_required]"
         )
-        return "UNAVAILABLE", ""
+        return "UNAVAILABLE", "tui_adapter_required"
 
     supported, support_detail = _claude_code_support_status()
     if not supported:
         return "UNAVAILABLE", support_detail
 
-    env = _subscription_env() if env is None else dict(env)
+    authed, auth_detail = _claude_subscription_auth_ok(env)
+    if not authed:
+        return "UNAVAILABLE", auth_detail
+
     output_file = out_dir / "panel-claude.txt"
     prompt = _render_claude_tui_prompt(artifact, review_dir, output_file, mode)
     rc, review_text, log_text, pty_tail = _run_claude_tui_session(
@@ -2913,7 +3026,11 @@ def invoke_panel(
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
-        return PanelLegResult(leg=leg, status=status, text=str(text))
+        text_value = str(text)
+        detail = None
+        if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
+            detail, text_value = text_value, ""
+        return PanelLegResult(leg=leg, status=status, text=text_value, detail=detail)
 
     results = _run_legs_ordered(
         list(legs), _run_leg, max_concurrency=max_concurrency,
@@ -3181,7 +3298,11 @@ def invoke_board(
     # explicit ``gateway_available`` bool wins for the skip decision; a gateway that is
     # actually down (fetch raises) is ground truth and forces False.
     omnigent_catalog: frozenset[str] | None = None
-    if omnigent is not None and gateway_available is not False:
+    routable_omnigent_seat = any(
+        seat.backing == BACKING_OMNIGENT and not _claude_tui_policy_model(seat.model)
+        for seat in board.seats
+    )
+    if omnigent is not None and gateway_available is not False and routable_omnigent_seat:
         try:
             omnigent_catalog = omnigent.catalog_harnesses()
             if gateway_available is None:
@@ -3218,6 +3339,18 @@ def invoke_board(
         # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
         # runs on its default lane instead of skipping on an empty ('') lane.
         leg = (seat.harness or "").lower()
+        if (
+            leg == "claude"
+            and _claude_tui_policy_model(seat.model)
+            and seat.backing != BACKING_HOMEBREW
+        ):
+            return PanelLegResult(
+                leg=leg,
+                status="UNAVAILABLE",
+                text="",
+                detail="tui_backing_required",
+                seat_key=seat.seat_key,
+            )
         decision = select_backing(seat, gateway_available=gateway_available)
         if decision.skip:
             return _skip(seat, leg, f"skip: {decision.reason}")
@@ -3275,8 +3408,23 @@ def invoke_board(
         # (CR F5: the native seat must review under the SAME acceptance contract as
         # the runtime legs — `_resolve_brief` gives the exact `review-instructions.md`
         # the other seats got). None for every other leg (golden byte-identity holds).
-        result = PanelLegResult(leg=leg, status=status, text=str(text), seat_key=seat.seat_key)
-        if leg == "claude" and status == "UNAVAILABLE" and not str(text).strip():
+        text_value = str(text)
+        detail = None
+        if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
+            detail, text_value = text_value, ""
+        result = PanelLegResult(
+            leg=leg,
+            status=status,
+            text=text_value,
+            detail=detail,
+            seat_key=seat.seat_key,
+        )
+        if (
+            leg == "claude"
+            and not _claude_tui_policy_model(seat.model)
+            and status == "UNAVAILABLE"
+            and not str(text).strip()
+        ):
             try:
                 effective_instructions = _resolve_brief(mode, brief_ref)
             except (ValueError, OSError):

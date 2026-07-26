@@ -29,7 +29,13 @@ class ClaudeTuiLegTest(unittest.TestCase):
             captured["env"] = env
             return 0, "Repo-grounded review.\nAGREE", "claude_tui_file_output", ""
 
-        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}):
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+            os.environ,
+            {
+                "ANTHROPIC_API_KEY": "secret",
+                "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer api-secret",
+            },
+        ):
             review_dir = Path(td) / "review"
             out_dir = Path(td) / "out"
             repo_dir = Path(td) / "repo"
@@ -39,6 +45,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
                 patch("phase_loop_runtime.panel_invoker._under_claude_code", return_value=False),
+                patch("phase_loop_runtime.panel_invoker._claude_subscription_auth_ok", return_value=(True, "")),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(
@@ -56,6 +63,15 @@ class ClaudeTuiLegTest(unittest.TestCase):
         self.assertEqual(captured["output_file"], out_dir / "panel-claude.txt")
         self.assertEqual(captured["timeout_s"], 600)
         self.assertNotIn("ANTHROPIC_API_KEY", captured["env"])
+        self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", captured["env"])
+        for blocked in (
+            "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_MANTLE",
+            "CLAUDE_CODE_USE_ANTHROPIC_AWS", "AWS_BEARER_TOKEN_BEDROCK",
+            "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+        ):
+            self.assertNotIn(blocked, captured["env"])
         self.assertEqual(command[0], "claude")
         self.assertIn("--ax-screen-reader", command)
         self.assertIn("--safe-mode", command)
@@ -69,6 +85,11 @@ class ClaudeTuiLegTest(unittest.TestCase):
         self.assertEqual(command[command.index("--effort") + 1], "max")
         self.assertIn("--permission-mode", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "default")
+        self.assertEqual(command[command.index("--setting-sources") + 1], "")
+        self.assertEqual(
+            json.loads(command[command.index("--settings") + 1]),
+            {"apiKeyHelper": ""},
+        )
         add_dirs = [command[index + 1] for index, value in enumerate(command) if value == "--add-dir"]
         self.assertIn(str(review_dir), add_dirs)
         self.assertIn(str(repo_dir), add_dirs)
@@ -143,6 +164,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
                 patch("phase_loop_runtime.panel_invoker._under_claude_code", return_value=False),
+                patch("phase_loop_runtime.panel_invoker._claude_subscription_auth_ok", return_value=(True, "")),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 777, "SECRET-SENTINEL")
@@ -163,6 +185,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
                 patch("phase_loop_runtime.panel_invoker._under_claude_code", return_value=False),
+                patch("phase_loop_runtime.panel_invoker._claude_subscription_auth_ok", return_value=(True, "")),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
                 status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle")
@@ -179,11 +202,8 @@ class ClaudeTuiLegTest(unittest.TestCase):
         exec_claude.assert_called_once()
 
 
-class ClaudeLegDeferredUnderClaudeCodeTest(unittest.TestCase):
-    """#92 — under Claude Code / no-tty, the claude leg must NOT spawn a TUI it
-    cannot drive. It degrades to UNAVAILABLE with EMPTY text (never the reason as
-    text — that would be a `panel_nonconforming` BLOCK), and is never counted as
-    an AGREE."""
+class ClaudeLegUnavailableUnderClaudeCodeTest(unittest.TestCase):
+    """A governed Claude seat never bypasses the TUI through native Task fill."""
 
     def test_headless_degrades_without_spawning_tui(self):
         # env={"CLAUDECODE":"1"} injected through the guard's seam so the assertion
@@ -201,7 +221,7 @@ class ClaudeLegDeferredUnderClaudeCodeTest(unittest.TestCase):
                     review_dir, out_dir, 600, "bundle", env={"CLAUDECODE": "1"}
                 )
         self.assertEqual(status, "UNAVAILABLE")
-        self.assertEqual(text, "")  # EMPTY text is load-bearing (A4)
+        self.assertEqual(text, "tui_adapter_required")
         run_tui.assert_not_called()  # no PTY, no deadline wait
 
     def test_under_claude_code_detection(self):
@@ -260,6 +280,7 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
             out_dir.mkdir()
             with (
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
+                patch("phase_loop_runtime.panel_invoker._claude_subscription_auth_ok", return_value=(True, "")),
                 patch(
                     "phase_loop_runtime.panel_invoker._run_claude_tui_session",
                     return_value=(0, "Headless review.\nAGREE", "claude_tui_file_output", ""),
@@ -273,10 +294,19 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         self.assertIn("AGREE", text)
         run_tui.assert_called_once()  # ran the self-PTY session, did NOT defer
 
+    def test_fable_and_opus_commands_use_only_the_tui_adapter(self):
+        for model in ("claude-fable-5", "claude-opus-5"):
+            command = pi._claude_tui_command(Path("/tmp/review"), Path("/tmp/repo"), model, "max")
+            self.assertEqual(command[0], "claude")
+            self.assertEqual(command[command.index("--model") + 1], model)
+            self.assertNotIn("-p", command)
+            self.assertNotIn("--fallback-model", command)
+            self.assertNotIn("anthropic", " ".join(command).lower())
+
     def test_native_agent_leg_request_review_shape(self):
-        req = pi.native_agent_leg_request(mode="review", env={})
+        req = pi.native_agent_leg_request(mode="review", env={}, model="custom-reviewer")
         self.assertEqual(req.leg, "claude")
-        self.assertEqual(req.model, pi.DEFAULT_LEG_MODELS["claude"])
+        self.assertEqual(req.model, "custom-reviewer")
         self.assertEqual(req.reason, "native_adapter_required")
         self.assertTrue(req.verdict_required)
         self.assertIn("AGREE", req.verdict_contract)
@@ -295,8 +325,8 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         # ABDNATIVE (#183): when the board supplies the seat cognition, to_dict()
         # ADDS exactly the set (non-None) optional keys — never a null placeholder.
         req = pi.native_agent_leg_request(
-            mode="review", env={"CLAUDECODE": "1"}, model="claude-fable-5",
-            seat_key="claude:claude-fable-5:max:correctness", effort="max",
+            mode="review", env={"CLAUDECODE": "1"}, model="custom-reviewer",
+            seat_key="claude:custom-reviewer:max:correctness", effort="max",
             lens="correctness", artifact_ref="/tmp/bundle.md", brief_ref="/tmp/brief.md",
             instructions="CUSTOM BRIEF BODY",
         )
@@ -307,7 +337,7 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
              "lens", "mode", "model", "reason", "seat_key", "verdict_contract",
              "verdict_required"],
         )
-        self.assertEqual(d["seat_key"], "claude:claude-fable-5:max:correctness")
+        self.assertEqual(d["seat_key"], "claude:custom-reviewer:max:correctness")
         self.assertEqual(d["effort"], "max")
         self.assertEqual(d["lens"], "correctness")
         self.assertEqual(d["artifact_ref"], "/tmp/bundle.md")
@@ -316,7 +346,7 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         self.assertEqual(req.reason, "under_claude_code")
 
     def test_native_agent_leg_request_advisory_has_no_verdict(self):
-        req = pi.native_agent_leg_request(mode="advisory", env={})
+        req = pi.native_agent_leg_request(mode="advisory", env={}, model="custom-reviewer")
         self.assertFalse(req.verdict_required)
         self.assertIn("no AGREE", req.verdict_contract)
         self.assertIn("recommendation", req.verdict_contract)
@@ -324,13 +354,20 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
 
     def test_native_agent_leg_request_reason_tracks_host(self):
         self.assertEqual(
-            pi.native_agent_leg_request(env={"CLAUDECODE": "1"}).reason,
+            pi.native_agent_leg_request(
+                env={"CLAUDECODE": "1"}, model="custom-reviewer"
+            ).reason,
             "under_claude_code",
         )
         self.assertEqual(
-            pi.native_agent_leg_request(env={}).reason,
+            pi.native_agent_leg_request(env={}, model="custom-reviewer").reason,
             "native_adapter_required",
         )
+
+    def test_native_agent_leg_request_rejects_fable_and_opus(self):
+        for model in (None, "claude-fable-5", "claude-opus-5"):
+            with self.assertRaisesRegex(ValueError, "subscription TUI adapter"):
+                pi.native_agent_leg_request(env={}, model=model)
 
 
 class StatusMappingTest(unittest.TestCase):

@@ -101,7 +101,8 @@ def test_wedged_stall_marker_classifies_degraded(tmp_path, monkeypatch):
     # Run the leg RIGHT HERE (headless self-PTY path): not under Claude Code, CLI supported.
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, ""))
-    monkeypatch.setattr(pi, "_subscription_env", lambda: {"PATH": "/usr/bin:/bin"})
+    monkeypatch.setattr(pi, "_subscription_env", lambda env=None: {"PATH": "/usr/bin:/bin"})
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
     # The session reclaims a genuinely-wedged leg: non-zero rc, no verdict, stall marker.
     monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kwargs: (1, "", "claude_tui_stalled", ""))
 
@@ -112,6 +113,103 @@ def test_wedged_stall_marker_classifies_degraded(tmp_path, monkeypatch):
         f"not a bare ERROR/silent OK; got {status!r}"
     )
     assert status in pi.LEG_STATUSES
+
+
+def test_refusal_looking_tui_text_stays_degraded_without_typed_fallback(tmp_path, monkeypatch):
+    review_dir = tmp_path / "review-refusal"
+    out_dir = tmp_path / "out-refusal"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, ""))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(
+        pi,
+        "_run_claude_tui_session",
+        lambda **kwargs: (1, "I cannot help with that request", "classifier refusal", "refused"),
+    )
+    status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 120, "bundle", env={})
+    assert status == "ERROR"
+    assert "cannot help" in text
+    result = pi.PanelLegResult(leg="claude", status=status, text=text)
+    calls = []
+    reduced = pi.apply_claude_refusal_fallback(
+        result,
+        defensive_security_attested=True,
+        retry_opus=lambda: calls.append(1),
+    )
+    assert reduced is result
+    assert calls == []
+    assert result.provider_refusal_kind is None
+
+
+def test_typed_refusal_retries_opus_once_only_for_attested_defensive_work():
+    initial = pi.attach_provider_refusal_state(
+        pi.PanelLegResult(leg="claude", status="DEGRADED", text=""),
+        provider_refusal_kind="classifier_refusal",
+        adapter_originated=True,
+    )
+    calls = []
+
+    def retry():
+        calls.append("claude-opus-5")
+        return pi.PanelLegResult(leg="claude", status="OK", text="Opus review\nAGREE")
+
+    result = pi.apply_claude_refusal_fallback(
+        initial,
+        defensive_security_attested=True,
+        typed_capability_supported=True,
+        retry_opus=retry,
+    )
+    assert calls == ["claude-opus-5"]
+    assert result.status == "DEGRADED"
+    assert result.detail == "opus_fallback_used"
+    assert result.fallback_used
+    assert "Opus review" in result.text
+    second = pi.apply_claude_refusal_fallback(
+        result,
+        defensive_security_attested=True,
+        typed_capability_supported=True,
+        retry_opus=retry,
+    )
+    assert second is result
+    assert calls == ["claude-opus-5"]
+
+
+def test_typed_refusal_fails_closed_on_second_refusal_and_non_defensive_never_retries():
+    initial = pi.attach_provider_refusal_state(
+        pi.PanelLegResult(leg="claude", status="DEGRADED", text=""),
+        provider_refusal_kind="classifier_refusal",
+        adapter_originated=True,
+    )
+    calls = []
+
+    def refused_again():
+        calls.append(1)
+        return pi.attach_provider_refusal_state(
+            pi.PanelLegResult(leg="claude", status="DEGRADED", text=""),
+            provider_refusal_kind="classifier_refusal",
+            adapter_originated=True,
+        )
+
+    untouched = pi.apply_claude_refusal_fallback(
+        initial,
+        defensive_security_attested=False,
+        typed_capability_supported=True,
+        retry_opus=refused_again,
+    )
+    assert untouched is initial and calls == []
+    result = pi.apply_claude_refusal_fallback(
+        initial,
+        defensive_security_attested=True,
+        typed_capability_supported=True,
+        retry_opus=refused_again,
+    )
+    assert calls == [1]
+    assert result.status == "DEGRADED"
+    assert result.detail == "opus_fallback_classifier_refusal"
+    assert result.provider_refusal_kind == "classifier_refusal"
+    assert result.fallback_used
 
 
 def test_slow_but_progressing_pty_leg_is_not_killed(tmp_path, monkeypatch):

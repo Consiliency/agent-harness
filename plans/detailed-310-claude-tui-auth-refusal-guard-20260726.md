@@ -25,7 +25,7 @@ PMCP prerequisite and advisor-integration plans.
   `_subscription_env()` and `advisor_board.backing.resolve_seat_env()`; the
   model-first `invoke_board` path passes the latter explicitly and must not bypass
   the same restrictions. Remove `ANTHROPIC_API_KEY`,
-  `ANTHROPIC_AUTH_TOKEN`, alternate Anthropic base-URL/provider/gateway variables,
+  `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, alternate Anthropic base-URL/provider/gateway variables,
   `CLAUDE_CODE_USE_BEDROCK`/Vertex/Foundry selectors, and configured API-key-helper
   inputs. Use run-isolated Claude settings that
   cannot select an API helper or alternate LLM gateway.
@@ -108,13 +108,13 @@ PYTHONPATH=src:tests python -m pytest \
 
 ## Acceptance criteria
 
-- [ ] Every Claude advisor seat proves `claude.ai` first-party subscription auth before launch.
-- [ ] API token/helper/base-URL/gateway alternatives are scrubbed or isolated and cannot become fallback auth.
-- [ ] Legacy panel and model-first board paths apply the identical subscription scrub.
-- [ ] Fable and Opus run only through the existing Claude Code TUI adapter.
-- [ ] Under-Claude/default seats cannot bypass the TUI/auth preflight through native Task fill.
-- [ ] No Anthropic API, SDK, Messages, API-key, or direct HTTP path exists.
-- [ ] Transcript strings cannot create a typed refusal or trigger fallback.
-- [ ] Today's untyped TUI refusal/stall remains preserved and degraded without retry.
-- [ ] Synthetic typed capability permits at most one attributed Opus TUI retry for attested defensive work, then fails closed.
-- [ ] New telemetry is metadata-only and legacy results remain compatible.
+- [x] Every Claude advisor seat proves `claude.ai` first-party subscription auth before launch.
+- [x] API token/helper/custom-header/base-URL/gateway alternatives are scrubbed or isolated and cannot become fallback auth.
+- [x] Legacy panel and model-first board paths apply the identical subscription scrub.
+- [x] Fable and Opus run only through the existing Claude Code TUI adapter.
+- [x] Under-Claude/default seats cannot bypass the TUI/auth preflight through native Task fill.
+- [x] No Anthropic API, SDK, Messages, API-key, or direct HTTP path exists.
+- [x] Transcript strings cannot create a typed refusal or trigger fallback.
+- [x] Today's untyped TUI refusal/stall remains preserved and degraded without retry.
+- [x] Synthetic typed capability permits at most one attributed Opus TUI retry for attested defensive work, then fails closed.
+- [x] New telemetry is metadata-only and legacy results remain compatible.

@@ -39,15 +39,15 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 
 ## Use
 
-**On a Harness Code host, run the claude/Fable leg as a NATIVE Agent, not the runtime TUI.** When you are *inside* Harness Code, the runtime runs the non-<harness> board legs (`grok`, `codex`, `gemini` — whichever are available AND authenticated) and returns the `claude` leg as `UNAVAILABLE` ("deferred to native Agent") by design — it must not spawn a second Harness TUI. Supply the <harness> leg yourself with the Task tool (a Fable review Agent given the same `review-instructions.md` + `review-bundle.md`), require it to end with `AGREE`/`PARTIALLY AGREE`/`DISAGREE`, and reconcile it with ALL the runtime legs (do NOT drop `grok` — the board is 4-vendor, not the old 3-leg panel). A `UNAVAILABLE` <harness> leg is a *gap to fill*, not an acceptable board short a seat.
+**Fable and Opus seats are subscription-TUI only.** The runtime requires the homebrew self-PTY backing and rejects alternate backings before gateway access. It launches the exact requested model only after a metadata-only probe proves a logged-in first-party subscription, scrubs tokens, API helpers, custom request headers, alternate endpoints, and cloud-provider selectors, and isolates user/project/local settings. Never fill the seat with a native Task Agent and never add an API/SDK/direct-HTTP fallback. Inside a driving host session where the nested TUI adapter cannot run, the seat fails closed as `UNAVAILABLE/tui_adapter_required`; retry from a host where the adapter can run.
 
-**Fill the deferred seat from the typed request — do not silently run a degraded board.** A deferred seat now carries a machine-readable `needs_native_agent` request on the RESULT (`result.legs[i].needs_native_agent`, also `result.native_fill_requests`, and per-leg + under `shortfall` in `advisor-board --json`). It packages `{seat_key, model, effort, lens, reason, instructions, verdict_contract, artifact_ref}` — everything you need to fill the seat, so filling is the obvious next step, not prose to decode. When a seat has `needs_native_agent`, the DEFAULT action is: run a native Fable review Agent with the Task tool (`model: fable`, at the request's `lens` and `effort`), give it the staged `review-instructions.md` + `review-bundle.md` (the `artifact_ref` names the material), require the `verdict_contract` terminal verdict, and reconcile that verdict with the runtime legs in your own context. The runtime does NOT merge the native verdict back for you — the result marks the gap; you fill it. Under-running the board (accepting the shortfall) is allowed only as an EXPLICIT, provenance-tagged choice — record which requested seats you left unfilled and why — never a silent 3-of-4. The requested-vs-delivered shortfall (`requested_seats` / `delivered_seats` / `natively_fillable_seats`) is the loud signal that you are short a seat.
+Today's TUI adapter has no typed classifier-refusal capability. Refusal-looking transcript text remains degraded/error evidence and cannot trigger fallback. A future typed adapter may allow one Opus TUI retry only for independently attested defensive-security work, then fails closed on a second refusal.
 
 1. Prefer the repo's governed phase-loop path when reviewing phase execution or pre-merge work.
 2. For a standalone smoke or diagnostic, run `phase-loop advisor-board <artifact>` (or, in-process, compose with `compose_review_board` and pass the material's path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_board`).
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
-5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
+5. Keep provider API keys and custom authorization headers out of the environment; the runtime strips known API-key variables and request-header overrides and uses local subscription CLIs.
 
 ## Standalone Smoke Shape
 
@@ -61,9 +61,6 @@ board = compose_review_board()
 result = invoke_board(board, "", artifact_ref="path/to/bundle.md")
 for leg in result.legs:
     print(leg.seat_key, leg.status)
-    if leg.needs_native_agent:  # deferred seat → fill with a native Fable Task Agent
-        req = leg.needs_native_agent
-        print("  fill natively:", req.model, req.effort, req.lens, req.reason)
 ```
 
-Under Harness Code, expect the `claude` leg to report `UNAVAILABLE` (deferred to the native Agent) and carry a `needs_native_agent` request — the runtime does not spawn a Harness TUI here. Fill the seat with a native Fable Task Agent (`model: fable`, at `req.lens` / `req.effort`), then reconcile its verdict with ALL the runtime legs (`grok` + `codex` + `gemini`, whichever are up and authed) — the board is 4-vendor, so do not drop `grok`. Leaving the seat unfilled is an explicit, provenance-tagged choice, never a silent short-a-seat board.
+Under Harness Code, expect a default Harness seat to report `UNAVAILABLE` with `detail="tui_adapter_required"` and no native-fill request. This is an explicit unavailable seat, not authorization to bypass the TUI/auth boundary.
