@@ -176,6 +176,7 @@ vacuous evidence) — the ones that would activate an unverified re-admission if
 Recommend **three** bounded changes; the interlock flip MUST be its own step:
 
 - **Change A — decoupled-admit broker primitive** (self-contained in `convergence/broker/`).
+  **SUPERSEDED — see `## CR AMENDMENT 2`; the epoch-fencing approach is replaced by per-target CAS.**
   Add a `readmit_advanced_head(...) -> ReadmitResult` method to the `BrokerClient` Protocol, `BrokerService`,
   and `_RoutingBrokerService`, plus a `ReadmitResult` dataclass. Unit-testable in isolation against a
   file-backed `LinearizableAdmissionStore` + `BrokerEvidenceStore`. Encapsulates the epoch-bump binding,
@@ -210,6 +211,11 @@ as the mechanism.** Rationale:
 ## Changes (file · entity · action · reason)
 
 ### Change A — `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py` (modify)
+> **SUPERSEDED by `## CR AMENDMENT 2` (2026-07-26) — DO NOT IMPLEMENT AS WRITTEN.**
+> The `lease_epoch`-fencing design below failed four cross-vendor CR rounds
+> (PR Consiliency/agent-harness#337, parked draft). Read `## CR AMENDMENT 2` at the
+> end of this document first: Change A is replaced by a per-target versioned-head CAS.
+
 - **Add** frozen dataclass `ReadmitResult(accepted: bool, granted_epoch: int, idempotency_key: str, reason:
   str = "")`. Reason: a typed, minimal result the readmit seam can verify field-by-field (never a bare bool).
 - **Add** method `BrokerClient.readmit_advanced_head(self, *, repo, node_id, train_id, new_head_sha,
@@ -232,6 +238,11 @@ as the mechanism.** Rationale:
   advance is already pushed; this is the "decouple admit from publish" the issue calls for.
 
 ### Change A — `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py` (modify)
+> **SUPERSEDED by `## CR AMENDMENT 2` (2026-07-26) — DO NOT IMPLEMENT AS WRITTEN.**
+> The `lease_epoch`-fencing design below failed four cross-vendor CR rounds
+> (PR Consiliency/agent-harness#337, parked draft). Read `## CR AMENDMENT 2` at the
+> end of this document first: Change A is replaced by a per-target versioned-head CAS.
+
 - **Add** `_RoutingBrokerService.readmit_advanced_head(self, *, repo, **kw)` delegating to
   `self._service_for(repo).readmit_advanced_head(repo=repo, **kw)` (search for `class _RoutingBrokerService`
   / `def execute`). Reason: multi-repo routing must reach the per-repo admission+evidence store (the same
@@ -430,3 +441,168 @@ strictly above"; the store rejects only `< max`.
 ### Anchor re-grounding
 `convergence/broker/admission.py:23-56` VERIFIED EXACT. runner.py call-site anchors have
 drifted ~100 lines (that file absorbed the #324/#325/#326 merges) — re-locate by symbol.
+
+---
+
+## CR AMENDMENT 2 — 2026-07-26 (design panel: codex + grok, advisory)
+
+**Change A as specified above is SUPERSEDED.** Do not implement it. The
+`lease_epoch`-fencing design failed FOUR cross-vendor CR rounds; PR
+Consiliency/agent-harness#337 is parked as a draft at `c1da62a`. Every round produced a
+real, reproduced defect, and every fix RELOCATED the failure:
+
+| round | fix attempted | what broke |
+|---|---|---|
+| 1 | epoch fence in the readmit verb, repo-wide | nodes sharing a repo collide |
+| 2 | node-scoped the fence | store's global `< max` still fences a lagging node |
+| 3 | delimited the scope match | `node_id` is caller-supplied ⇒ lineage self-asserted |
+| 4 | broker allocates the epoch (`max+1`) | a later-added node's PUBLISH is rejected |
+
+Round-4 reproduction against real stores:
+```
+publish A: True
+readmit A -> granted_epoch: 2
+publish B -> PermissionError: stale epoch
+```
+
+### Root cause — one integer, four jobs
+
+`LinearizableAdmissionStore.admit` treats every epoch in a repo as ONE total order
+(`admission.py:49`: `if records and request.lease_epoch < max(...)`), while callers
+generate epochs by unrelated conventions. The same integer is being asked to express:
+repo-wide admission order; freshness of one branch/PR lineage; FAB review-round
+progression; and convergence-event ordering. Three consumers already disagree:
+
+- `train_runner.py:136` — publish, **hardcoded** `lease_epoch=1`, so an N-node train
+  holds N distinct admissions at epoch 1. (This is why tightening the store to reject
+  `<= max` is unavailable: node 2 would fail.)
+- `convergence/refresh.py:61` — publish, **variable** `lease_epoch`. So "publish is
+  always epoch 1" is NOT true across the codebase.
+- `convergence/event_log.py:124` — an **independent** monotonicity rule flagging
+  `"epoch regression"` over the same values.
+
+### CRUX FACT (verified, and it partially adjudicates the panel split)
+
+**The current tip is NOT derivable from existing durable state.** Evidence keys are a
+one-way `sha256(repo\0branch\0head)` (`verbs.py:25`) and `EvidenceRecord` carries only
+`(idempotency_key, state, evidence_reference)` (`evidence.py:13-16`). You can CHECK
+whether a specific head was published; you cannot ASK what the current head is.
+
+Consequence: **any** design needs new durable state. The panel split on whether publish
+must change — grok argued readmit could fence off existing evidence, codex argued new
+broker-owned target state is required. This fact shows grok's option is not free; it
+narrows the disagreement to *who writes* the state, not *whether* it is needed.
+
+### The replacement design — per-target versioned-head CAS
+
+Re-admission does not need a repository-global epoch. It needs proof that the request
+advances the uniquely current admission.
+
+Add a broker-owned **admission-target journal**, keyed by canonical provider repository
+ID + immutable PR identity, holding per target:
+
+```
+target_id
+current_admission_record_id
+current_admitted_head_sha
+generation
+canonical repo / PR identity
+last terminal publish evidence
+```
+
+`generation` is REQUIRED even though heads are SHAs: it prevents ABA. A branch can move
+`H0 -> H1 -> H0`, which makes a stale `expected_head=H0` request look current again.
+
+Readmit becomes an atomic, idempotent transition under one lock:
+
+```
+expected_record_id, prior_head  ->  new_head, approval_digest
+```
+
+1. Resolve `target_id` from the broker's own durable record.
+2. Require current record id AND head to equal the expected predecessor.
+3. Verify the provider currently exposes `new_head` on that exact PR.
+4. Verify ancestry / approval bound to `(target, prior, new)`.
+5. Append the successor record; increment ONLY that target's generation.
+
+**Idempotency key** must cover the whole transition:
+`(target_id, predecessor_record_id, prior_head, new_head, approval_digest, action)`.
+The parked implementation's `(node_id, new_head_sha)` is too weak — it replays an old
+success after the predecessor, branch, approval, or target context has changed.
+
+### `node_id` is NOT an authority boundary — drop it
+
+Both panel seats said so independently. `node_id`, `train_id`, `workspace_id`, worktree
+paths and free-text scopes are caller-supplied metadata, not authority: a caller presents
+an unused identity, has no history, and passes any "higher than your last" rule. Authority
+comes from durable evidence + head lineage.
+
+NOTE (out of scope, record only): if callers are treated as MALICIOUS rather than merely
+stale or buggy, no caller-supplied field suffices — that needs authenticated principals or
+a broker-issued capability. The default policy admits any structurally valid request
+(`broker/live.py::_default_admission_policy`), and fence tokens are deterministic
+caller-computable hashes. This plan assumes stale/buggy, not hostile. Say so explicitly
+rather than implying a boundary that does not exist.
+
+### `event_log` must participate
+
+Its train-global regression rule (`event_log.py:124`) is incompatible with per-target
+generations. This legitimate interleaving would be flagged today:
+
+```
+intent  target-A generation 2
+intent  target-B generation 3
+outcome target-A generation 2     <-- currently "epoch regression"
+```
+
+Required: keep append order as a distinct `event_sequence`; record `target_id` +
+`target_generation` separately; check regression ONLY within one target lineage. The
+coordinator event log must reconcile against the broker journal, never invent fencing
+truth independently.
+
+### Sequencing — satisfies BOTH panel seats
+
+The bridge between codex's "publish must participate" and grok's "do not touch merged
+publish" is that publish's change is **ADDITIVE, with no behavioural change**:
+
+1. **Land the target journal + event-schema change, readmit still DISABLED.** On terminal
+   publish success, SHADOW-WRITE structured target metadata (canonical identity, current
+   admitted head). External publish behaviour, return values and callers unchanged.
+2. **Migrate both publish producers** into the metadata contract — `train_runner.py:136`
+   (hardcoded) and `convergence/refresh.py:61` (variable). Stores lacking target records
+   must fail CLOSED for readmit, or undergo an explicit provider-reconciled migration.
+   Never reconstruct authority from caller assertions.
+3. **Land and enable CAS readmit LAST**, still behind `_FAB_DELTA_BROKER_READMIT_READY`.
+   Requires expected predecessor record, exact provider head, bound approval, ancestry,
+   revocation, durable successor append. Flip only after stale / concurrent / ABA /
+   crash-recovery tests pass.
+
+Mixed allocation is unsafe: never introduce allocator- or CAS-based readmit into a store
+still accepting hardcoded publish epochs.
+
+### Salvage from PR#337 (re-use, do not rewrite)
+
+- The **prior-publish baseline** keyed on `(repo, branch, prior_head)`, plus the empty-log,
+  foreign-tenant and lost-admission-log refusals. The store-divergence case is what makes
+  the empty-log guard reachable at all (admission and evidence are separate files).
+- The **shared admission+evidence lock**, which closes a revocation race that PREDATES this
+  PR — `execute()` has had the same check-then-admit shape since `6ff8c8a` (#199).
+- The **mutation-tested fail-closed matrix** (6 branches, each with a killing mutation).
+
+### Two defects I introduced that generalize
+
+1. **Deleting a guard while writing a sibling primitive.** `admit` refuses a replay whose
+   details differ (`admission.py:47`: `if record.request != request: raise ValueError(...)`).
+   `admit_next` de-duped on `attempt_id` and never rebuilt or compared the request, so a
+   different authority scope got the prior admission returned as ACCEPTED. **When writing a
+   sibling of an existing function, diff the two for dropped checks.**
+2. **Ordering inside a rewritten lock body.** `admit_next` returned a de-dup hit BEFORE its
+   in-lock `epoch_blocked()` check, so a resume could report success against a durably
+   blocked epoch. **Revocation must precede deduplication.**
+
+### Panel provenance
+
+codex + grok, advisory mode. gemini unavailable throughout (ah#335 — expired OAuth;
+`~/.gemini/oauth_creds.json` absent). Across the four CR rounds codex DISAGREE'd 4/4 with
+every finding real and reproduced; grok AGREE'd 4/4. On the design question they split, and
+the crux fact above was verified against source to adjudicate it rather than counting votes.
