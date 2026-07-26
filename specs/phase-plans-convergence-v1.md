@@ -21,9 +21,16 @@
 > so status also presents it as the active effort. Recent real work has been the FAB
 > milestone (#191) and the model-tier taxonomy (#309).
 >
-> DECISION REQUIRED (maintainer): (a) RESUME RUNTIME + BROKER as real work, or (b) RETIRE
-> them as superseded. Nothing is deleted pending that call — plan files and manifest
-> entries are preserved intact. The FREEZE status contradiction should be reconciled either way.
+> **DECISION (maintainer, 2026-07-26): RESUME.** RUNTIME and BROKER are live work again,
+> not superseded. Their plan files (`plans/phase-plan-vergence-v1-{RUNTIME,BROKER}.md`) and
+> `imported` manifest entries stand as the starting point; they need re-grounding against
+> current main before execution, since they were authored 2026-07-13 and the runtime has
+> moved considerably (FAB milestone #191, model-tier taxonomy #309).
+>
+> Consequence: this roadmap being SELECTED by discovery is now CORRECT, not a mis-pick.
+> The FREEZE status contradiction (#312) still needs reconciling — status reports
+> `executing` for a phase the manifest records `completed`, which will misdirect a resumed
+> run's dispatch decisions.
 
 ## Context
 
