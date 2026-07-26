@@ -26,7 +26,6 @@ from phase_loop_runtime.advisor_board import (
     mcp_tool_names,
     probe_research_capability,
     reduce_research_audit,
-    write_grok_project_config,
 )
 from phase_loop_runtime.advisor_board.research import ResearchUnavailable
 
@@ -163,6 +162,13 @@ class PerSeatIsolationTests(unittest.TestCase):
                     ),
                     ("pmcp_advisor",),
                 )
+                tools = claude_command[claude_command.index("--tools") + 1]
+                allowed = claude_command[
+                    claude_command.index("--allowedTools") + 1
+                ]
+                self.assertEqual(tools, allowed)
+                for tool_name in mcp_tool_names():
+                    self.assertIn(tool_name, allowed.split(","))
 
                 review = Path(td) / "codex-review"
                 output = Path(td) / "codex-output"
@@ -172,6 +178,7 @@ class PerSeatIsolationTests(unittest.TestCase):
 
                 def fake_run(command, **kwargs):
                     captured["command"] = command
+                    captured["env"] = kwargs["env"]
                     out_path = Path(
                         command[command.index("--output-last-message") + 1]
                     )
@@ -191,6 +198,12 @@ class PerSeatIsolationTests(unittest.TestCase):
                         "advisory",
                         "gpt-5.6-sol",
                         deadline_s=60,
+                        env={
+                            "PATH": "/usr/bin",
+                            "PMCP_POLICY": "ambient-policy",
+                            "PMCP_AUDIT_JSONL": "ambient-audit",
+                            "PMCP_LOCK_DIR": "ambient-lock",
+                        },
                         research_seat=seat,
                     )
                 self.assertEqual(rc, 0)
@@ -201,6 +214,13 @@ class PerSeatIsolationTests(unittest.TestCase):
                 )
                 self.assertIn("--ignore-user-config", command)
                 self.assertIn("--strict-config", command)
+                self.assertIn('web_search="disabled"', command)
+                self.assertIn("features.apps=false", command)
+                self.assertIn("features.remote_plugin=false", command)
+                self.assertFalse(
+                    {"PMCP_POLICY", "PMCP_AUDIT_JSONL", "PMCP_LOCK_DIR"}
+                    & set(captured["env"])
+                )
             finally:
                 run.close()
 
@@ -223,15 +243,13 @@ class PerSeatIsolationTests(unittest.TestCase):
                 codex = codex_mcp_args(seat)
                 self.assertIn("--ignore-user-config", codex)
                 self.assertIn("--strict-config", codex)
+                self.assertIn('web_search="disabled"', codex)
+                self.assertIn("features.apps=false", codex)
+                self.assertIn("features.remote_plugin=false", codex)
                 self.assertTrue(any("pmcp==1.20.0" in arg for arg in codex))
                 self.assertTrue(any("default_tools_approval_mode" in arg and "approve" in arg for arg in codex))
                 self.assertTrue(any("enabled_tools" in arg and "gateway.invoke" in arg for arg in codex))
 
-                review_dir = Path(td) / "review"
-                review_dir.mkdir()
-                grok = write_grok_project_config(seat, review_dir).read_text()
-                self.assertIn("[mcp_servers.pmcp_advisor]", grok)
-                self.assertIn("pmcp==1.20.0", grok)
                 self.assertEqual(
                     mcp_tool_names(),
                     (
@@ -243,6 +261,23 @@ class PerSeatIsolationTests(unittest.TestCase):
                 )
             finally:
                 run.close()
+
+    def test_materialization_failure_is_typed_and_cleans_partial_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "research-run"
+            with (
+                patch.object(Path, "write_text", side_effect=OSError("read-only")),
+                self.assertRaisesRegex(
+                    ResearchUnavailable, "research_materialization_failed"
+                ),
+            ):
+                materialize_research_run(
+                    ResearchPolicy(enabled=True),
+                    [("codex", "c")],
+                    root=root,
+                    probe_run=lambda *args, **kwargs: _probe_result(),
+                )
+            self.assertFalse(root.exists())
 
 
 class AuditReductionTests(unittest.TestCase):
@@ -388,7 +423,83 @@ class InvocationAndCompatibilityTests(unittest.TestCase):
         self.assertEqual(payload["research_audit_digest"], "2" * 64)
         self.assertNotIn("PRIVATE", json.dumps(payload))
 
-    def test_gemini_and_custom_spawn_fail_closed_when_research_is_enabled(self) -> None:
+    def test_board_research_maps_configs_and_cleans_the_run_root(self) -> None:
+        policy = ResearchPolicy(enabled=True)
+        board = Board(
+            name="research-board",
+            purpose="advisory",
+            research_policy=policy,
+            seats=(
+                Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
+                Seat(model="claude-opus-5", effort="max", harness="claude"),
+                Seat(model="grok-4.5", effort="max", harness="grok"),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            run = materialize_research_run(
+                policy,
+                [(seat.harness or "", seat.seat_key) for seat in board.seats],
+                root=Path(td) / "research-run",
+                probe_run=lambda *args, **kwargs: _probe_result(),
+            )
+            seen = []
+
+            def fake_provider(leg, artifact, **kwargs):
+                config = kwargs["research_seat"]
+                seen.append(
+                    (
+                        leg,
+                        config.seat_correlation_id,
+                        kwargs["brief_append"],
+                        artifact,
+                    )
+                )
+                source_hash = hashlib.sha256(f"source-{leg}".encode()).hexdigest()
+                _write_audit(
+                    config,
+                    _audit_records(
+                        config,
+                        [
+                            {
+                                "event": "audit.invocation",
+                                "gateway_tool": "gateway.invoke",
+                                "run_correlation_id": config.run_correlation_id,
+                                "seat_correlation_id": config.seat_correlation_id,
+                                "evidence_label_digest": config.evidence_label_digest,
+                                "downstream_tool_id": "firecrawl::firecrawl_search",
+                                "terminal_status": "success",
+                                "source_reference_hash": source_hash,
+                            }
+                        ],
+                    ),
+                )
+                return "OK", f"Grounded {leg}: {config.evidence_label}"
+
+            with (
+                patch.object(pi, "materialize_research_run", return_value=run),
+                patch.object(
+                    pi, "_default_spawn_via_provider", side_effect=fake_provider
+                ),
+            ):
+                result = pi.invoke_board(board, "material under review")
+
+            self.assertEqual(
+                [(leg.status, leg.research_status) for leg in result.legs],
+                [("OK", "success"), ("OK", "success"), ("UNAVAILABLE", "unavailable")],
+            )
+            self.assertEqual(
+                {(leg, seat_id) for leg, seat_id, _, _ in seen},
+                {("codex", "seat-0000"), ("claude", "seat-0001")},
+            )
+            self.assertTrue(
+                all("## Governed advisor research" in brief for _, _, brief, _ in seen)
+            )
+            self.assertTrue(
+                all("Governed advisor research" not in artifact for _, _, _, artifact in seen)
+            )
+            self.assertFalse(run.root.exists())
+
+    def test_gemini_grok_and_custom_spawn_fail_closed_when_research_is_enabled(self) -> None:
         policy = ResearchPolicy(enabled=True)
         with patch.object(pi, "materialize_research_run") as materialize:
             custom = pi.invoke_panel(
@@ -414,6 +525,21 @@ class InvocationAndCompatibilityTests(unittest.TestCase):
             self.assertEqual(
                 result.legs[0].detail, "research_profile_unenforceable"
             )
+
+        for leg in ("gemini", "grok"):
+            with tempfile.TemporaryDirectory() as td:
+                run = materialize_research_run(
+                    policy,
+                    [(leg, leg)],
+                    root=Path(td) / "research-run",
+                    probe_run=lambda *args, **kwargs: _probe_result(),
+                )
+                with patch.object(pi, "materialize_research_run", return_value=run):
+                    result = pi.invoke_panel("a", (leg,), research_policy=policy)
+                self.assertEqual(result.legs[0].status, "UNAVAILABLE")
+                self.assertEqual(
+                    result.legs[0].detail, "research_profile_unenforceable"
+                )
 
     def test_research_is_additive_keyword_only(self) -> None:
         parameter = inspect.signature(pi.invoke_panel).parameters["research_policy"]

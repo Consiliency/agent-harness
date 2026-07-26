@@ -45,11 +45,12 @@ For current external evidence, opt in with `ResearchPolicy(enabled=True)` on the
 board. The runtime requires the exact published `pmcp==1.20.0`
 `scoped_advisor_audit.v1` capability, creates unique per-seat locks/audits, and
 exposes only PMCP health/catalog/describe/invoke backed by Firecrawl and Bright
-Data research tools. It derives success from the completed correlated audit, not
-the model's prose, and emits only privacy-safe tool IDs, statuses, source hashes,
-and digests. Claude still runs only through the subscription TUI adapter—never an
-API, SDK, direct HTTP call, gateway backing, or native Task Agent. Gemini/agy,
-Omnigent, native-host, and custom-spawn research seats fail closed as
+Data research tools. It disables Harness native web search/apps, derives success
+from the completed correlated audit rather than model prose, and emits only
+privacy-safe tool IDs, statuses, source hashes, and digests. Claude still runs
+only through the subscription TUI adapter—never an API, SDK, direct HTTP call,
+gateway backing, or native Task Agent. Gemini/agy, Grok, Omnigent, native-host,
+and custom-spawn research seats fail closed as
 `research_profile_unenforceable`.
 
 1. Prefer the repo's governed phase-loop path when reviewing phase execution or pre-merge work.

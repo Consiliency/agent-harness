@@ -200,13 +200,15 @@ the knob through, defaulting to parallel.
 
 ### Opt-in governed web research
 
-`ResearchPolicy(enabled=True)` gives enforceable homebrew Codex, Claude TUI, and
-Grok seats session-local access to PMCP `scoped_advisor_audit.v1`. The integration
+`ResearchPolicy(enabled=True)` gives enforceable homebrew Codex and Claude TUI
+seats session-local access to PMCP `scoped_advisor_audit.v1`. The integration
 pins `pmcp==1.20.0`, requires its exact capability declaration, and exposes only
 `gateway.health`, `gateway.catalog_search`, `gateway.describe`, and
 `gateway.invoke`. PMCP then permits only Firecrawl and Bright Data search/scrape/
 crawl/query tools. Resources, prompts, ambient MCP servers, and mutation tools are
-absent or denied. Claude remains subscription-TUI only; research does not introduce
+absent or denied. Codex native web search/apps are disabled. Claude's authoritative
+brief pre-approves only the four PMCP controls, and Claude remains subscription-TUI
+only; research does not introduce
 an API, SDK, direct-HTTP, gateway, or native Task fallback for Claude seats.
 
 Each seat gets a unique lock directory, audit file, and typed run/seat/evidence
@@ -214,8 +216,9 @@ correlations. A seat cannot claim successful research from its prose: the runtim
 waits for PMCP's fsynced `audit.completed` record, validates the contiguous audit,
 and attaches only a privacy-safe ledger plus policy/audit/ledger digests. Source
 references are hashed; raw queries, results, credentials, and authorization headers
-are not emitted through observability. Gemini's `agy` adapter, Omnigent seats,
-native host legs, and custom spawn callbacks currently report
+are not emitted through observability. Gemini's `agy` adapter, Grok (which lacks a
+proven session-local user-config isolation switch), Omnigent seats, native host
+legs, and custom spawn callbacks currently report
 `UNAVAILABLE/research_profile_unenforceable` when research is enabled.
 
 ```python

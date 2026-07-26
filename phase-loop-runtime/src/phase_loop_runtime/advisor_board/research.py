@@ -17,7 +17,10 @@ from typing import Any, Mapping, Sequence
 from .schema import ResearchPolicy
 
 MCP_SERVER_NAME = "pmcp_advisor"
-RESEARCH_CAPABLE_LANES = frozenset({"claude", "codex", "grok"})
+RESEARCH_CAPABLE_LANES = frozenset({"claude", "codex"})
+_RESEARCH_ENV_KEYS = frozenset(
+    {"PMCP_POLICY", "PMCP_AUDIT_JSONL", "PMCP_LOCK_DIR"}
+)
 _ACTIVATION_REQUIREMENTS = frozenset(
     {
         "explicit_policy",
@@ -147,9 +150,10 @@ def _policy_payload(policy: ResearchPolicy) -> dict[str, Any]:
     }
 
 
-def _probe_env(env: Mapping[str, str] | None) -> dict[str, str]:
+def scrub_research_env(env: Mapping[str, str] | None) -> dict[str, str]:
+    """Remove ambient PMCP controls before a governed probe or seat launch."""
     result = dict(os.environ if env is None else env)
-    for key in ("PMCP_POLICY", "PMCP_AUDIT_JSONL", "PMCP_LOCK_DIR"):
+    for key in _RESEARCH_ENV_KEYS:
         result.pop(key, None)
     return result
 
@@ -168,7 +172,7 @@ def probe_research_capability(
             text=True,
             timeout=30,
             check=False,
-            env=_probe_env(env),
+            env=scrub_research_env(env),
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -207,49 +211,57 @@ def materialize_research_run(
     if not policy.enabled:
         raise ValueError("cannot materialize disabled research policy")
     probe_research_capability(policy, env=env, run=probe_run)
-    run_root = (
-        Path(root)
-        if root is not None
-        else Path(tempfile.mkdtemp(prefix="pl-board-research-"))
-    )
-    if root is not None:
-        run_root.mkdir(parents=True, exist_ok=False, mode=0o700)
-    policy_payload = _policy_payload(policy)
-    policy_bytes = json.dumps(policy_payload, separators=(",", ":"), ensure_ascii=True)
-    policy_path = run_root / "policy.json"
-    policy_path.write_text(policy_bytes + "\n", encoding="utf-8")
-    policy_path.chmod(0o400)
-    policy_digest = hashlib.sha256(policy_bytes.encode("utf-8")).hexdigest()
-    run_id = f"research-{uuid.uuid4().hex}"
-    seat_configs: list[ResearchSeatConfig] = []
-    for index, (lane, _seat_key) in enumerate(seats):
-        seat_id = f"seat-{index:04d}"
-        evidence_label = f"research-evidence-{index:04d}"
-        seat_root = run_root / seat_id
-        lock_dir = seat_root / "lock"
-        lock_dir.mkdir(parents=True, mode=0o700)
-        seat_configs.append(
-            ResearchSeatConfig(
-                lane=lane,
-                run_correlation_id=run_id,
-                seat_correlation_id=seat_id,
-                evidence_label=evidence_label,
-                evidence_label_digest=hashlib.sha256(
-                    evidence_label.encode("utf-8")
-                ).hexdigest(),
-                policy_path=policy_path,
-                policy_digest=policy_digest,
-                lock_dir=lock_dir,
-                audit_path=seat_root / "audit.jsonl",
-                pmcp_command=policy.pmcp_command,
-            )
+    run_root: Path | None = None
+    try:
+        run_root = (
+            Path(root)
+            if root is not None
+            else Path(tempfile.mkdtemp(prefix="pl-board-research-"))
         )
-    return ResearchRunConfig(
-        root=run_root,
-        run_correlation_id=run_id,
-        policy_digest=policy_digest,
-        seats=tuple(seat_configs),
-    )
+        if root is not None:
+            run_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+        policy_payload = _policy_payload(policy)
+        policy_bytes = json.dumps(
+            policy_payload, separators=(",", ":"), ensure_ascii=True
+        )
+        policy_path = run_root / "policy.json"
+        policy_path.write_text(policy_bytes + "\n", encoding="utf-8")
+        policy_path.chmod(0o400)
+        policy_digest = hashlib.sha256(policy_bytes.encode("utf-8")).hexdigest()
+        run_id = f"research-{uuid.uuid4().hex}"
+        seat_configs: list[ResearchSeatConfig] = []
+        for index, (lane, _seat_key) in enumerate(seats):
+            seat_id = f"seat-{index:04d}"
+            evidence_label = f"research-evidence-{index:04d}"
+            seat_root = run_root / seat_id
+            lock_dir = seat_root / "lock"
+            lock_dir.mkdir(parents=True, mode=0o700)
+            seat_configs.append(
+                ResearchSeatConfig(
+                    lane=lane,
+                    run_correlation_id=run_id,
+                    seat_correlation_id=seat_id,
+                    evidence_label=evidence_label,
+                    evidence_label_digest=hashlib.sha256(
+                        evidence_label.encode("utf-8")
+                    ).hexdigest(),
+                    policy_path=policy_path,
+                    policy_digest=policy_digest,
+                    lock_dir=lock_dir,
+                    audit_path=seat_root / "audit.jsonl",
+                    pmcp_command=policy.pmcp_command,
+                )
+            )
+        return ResearchRunConfig(
+            root=run_root,
+            run_correlation_id=run_id,
+            policy_digest=policy_digest,
+            seats=tuple(seat_configs),
+        )
+    except OSError as exc:
+        if run_root is not None:
+            shutil.rmtree(run_root, ignore_errors=True)
+        raise ResearchUnavailable("research_materialization_failed") from exc
 
 
 def research_instructions(config: ResearchSeatConfig) -> str:
@@ -289,6 +301,12 @@ def codex_mcp_args(config: ResearchSeatConfig) -> tuple[str, ...]:
         "--ignore-user-config",
         "--strict-config",
         "-c",
+        'web_search="disabled"',
+        "-c",
+        "features.apps=false",
+        "-c",
+        "features.remote_plugin=false",
+        "-c",
         f"{prefix}.command={json.dumps(config.pmcp_command[0])}",
         "-c",
         f"{prefix}.args={json.dumps(list(config.pmcp_args), separators=(',', ':'))}",
@@ -306,21 +324,6 @@ def codex_mcp_args(config: ResearchSeatConfig) -> tuple[str, ...]:
 def configured_gateway_tool_names() -> tuple[str, ...]:
     """Names as advertised by PMCP over MCP, without client-specific prefixes."""
     return ("gateway.health", "gateway.catalog_search", "gateway.describe", "gateway.invoke")
-
-
-def write_grok_project_config(config: ResearchSeatConfig, review_dir: Path) -> Path:
-    config_dir = Path(review_dir) / ".grok"
-    config_dir.mkdir(mode=0o700)
-    path = config_dir / "config.toml"
-    args = ",".join(json.dumps(arg) for arg in config.pmcp_args)
-    path.write_text(
-        f"[mcp_servers.{MCP_SERVER_NAME}]\n"
-        f"command = {json.dumps(config.pmcp_command[0])}\n"
-        f"args = [{args}]\n",
-        encoding="utf-8",
-    )
-    path.chmod(0o400)
-    return path
 
 
 def unavailable_ledger(detail: str) -> ResearchLedger:

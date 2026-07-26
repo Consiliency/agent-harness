@@ -152,8 +152,8 @@ from .research import (
     probe_research_capability,
     reduce_research_audit,
     research_instructions,
+    scrub_research_env,
     unavailable_ledger,
-    write_grok_project_config,
 )
 from .observability import (
     LEDGER_RECORD_KIND,
@@ -307,8 +307,8 @@ __all__ = [
     "research_instructions",
     "claude_mcp_config",
     "codex_mcp_args",
-    "write_grok_project_config",
     "mcp_tool_names",
+    "scrub_research_env",
     "reduce_research_audit",
     "unavailable_ledger",
     # events

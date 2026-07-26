@@ -78,8 +78,8 @@ from .advisor_board.research import (
     mcp_tool_names,
     reduce_research_audit,
     research_instructions,
+    scrub_research_env,
     unavailable_ledger,
-    write_grok_project_config,
 )
 from ._proc_cpu import group_cpu_ticks
 from .advisor_board.validation import validate_seat
@@ -1109,7 +1109,7 @@ def _claude_tui_command(
             # Path-scoped Write(...) currently prompts in the TUI route because Claude
             # normalizes the file as a relative cwd path. Run from the isolated out-dir
             # and ingest only the deterministic panel-claude.txt file.
-            "Read,Write",
+            allowed_tools,
         ]
     )
     return command
@@ -2484,6 +2484,8 @@ def _exec_claude_tui_leg(
     real launch.
     """
     env = _subscription_env(env)
+    if research_seat is not None:
+        env = scrub_research_env(env)
     # A governed Claude seat never falls through to a native Task/subagent. Inside
     # Claude Code the nested self-PTY adapter is unavailable, so fail closed with a
     # typed reason. A caller may retry from a host where the TUI adapter can run.
@@ -2722,6 +2724,10 @@ def _exec_leg(
     baked into the model string). ``env is None`` keeps ``_subscription_env()``.
     """
     env = _subscription_env() if env is None else dict(env)
+    if research_seat is not None:
+        env = scrub_research_env(env)
+        if leg not in RESEARCH_CAPABLE_LANES:
+            return 1, "", "research_profile_unenforceable"
     # #64: auth preflight BEFORE the expensive leg. A logged-out CLI otherwise
     # fails obliquely (empty-turn, then rate-limit errors) and the panel silently
     # degrades. Fail fast + fail-closed as DEGRADED (the detail carries an auth
@@ -2932,11 +2938,7 @@ def _exec_leg(
         grok_effort_args = render_seat_invocation(
             "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "max"
         ).effort_args
-        if research_seat is not None:
-            write_grok_project_config(research_seat, review_dir)
         grok_tools = GROK_REVIEW_READONLY_TOOLS
-        if research_seat is not None:
-            grok_tools += "," + ",".join(mcp_tool_names())
         cmd = [
             "grok",
             "-p",
@@ -3003,6 +3005,7 @@ def _default_spawn(
     brief_ref: str | None = None,
     timeout_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    brief_append: str | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -3032,8 +3035,11 @@ def _default_spawn(
     out_dir.mkdir()
     try:
         (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
+        resolved_brief = _resolve_brief(mode, brief_ref)
+        if brief_append is not None:
+            resolved_brief += brief_append
         (review_dir / "review-instructions.md").write_text(
-            _resolve_brief(mode, brief_ref), encoding="utf-8"
+            resolved_brief, encoding="utf-8"
         )
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
         # explicit override bounds the leg. This is the ONE place that knows whether the
@@ -3102,6 +3108,7 @@ def _default_spawn_via_provider(
     brief_ref: str | None = None,
     timeout_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    brief_append: str | None = None,
 ) -> tuple[str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
@@ -3119,6 +3126,8 @@ def _default_spawn_via_provider(
         extra["timeout_s"] = timeout_s
     if research_seat is not None:
         extra["research_seat"] = research_seat
+    if brief_append is not None:
+        extra["brief_append"] = brief_append
     provider = HomebrewAgentRuntimeProvider(
         spawn=lambda request, register_process=None: _default_spawn(
             leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
@@ -3406,17 +3415,17 @@ def invoke_panel(
                     seat_key=leg,
                     detail="research_profile_unenforceable",
                 )
-            panel_artifact = artifact + research_instructions(config)
             try:
                 status, text = _default_spawn_via_provider(
                     leg,
-                    panel_artifact,
+                    artifact,
                     repo_dir=repo_dir,
                     mode=mode,
                     model=leg_models.get(leg),
                     brief_ref=brief_ref,
                     timeout_s=leg_timeouts.get(leg),
                     research_seat=config,
+                    brief_append=research_instructions(config),
                 )
             except Exception as exc:
                 result = PanelLegResult(
@@ -3940,17 +3949,15 @@ def invoke_board(
             if spawn is not None:
                 status, text = spawn(leg, artifact)
             else:
-                panel_artifact = (
-                    artifact + research_instructions(research_seat)
-                    if research_seat is not None
-                    else artifact
-                )
                 research_extra: dict[str, object] = {}
                 if research_seat is not None:
                     research_extra["research_seat"] = research_seat
+                    research_extra["brief_append"] = research_instructions(
+                        research_seat
+                    )
                 status, text = _default_spawn_via_provider(
                     leg,
-                    panel_artifact,
+                    artifact,
                     repo_dir=repo_dir,
                     mode=mode,
                     model=seat.model,

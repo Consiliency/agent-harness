@@ -45,11 +45,12 @@ For current external evidence, opt in with `ResearchPolicy(enabled=True)` on the
 board. The runtime requires the exact published `pmcp==1.20.0`
 `scoped_advisor_audit.v1` capability, creates unique per-seat locks/audits, and
 exposes only PMCP health/catalog/describe/invoke backed by Firecrawl and Bright
-Data research tools. It derives success from the completed correlated audit, not
-the model's prose, and emits only privacy-safe tool IDs, statuses, source hashes,
-and digests. Claude still runs only through the subscription TUI adapter—never an
-API, SDK, direct HTTP call, gateway backing, or native Task Agent. Gemini/agy,
-Omnigent, native-host, and custom-spawn research seats fail closed as
+Data research tools. It disables Codex native web search/apps, derives success
+from the completed correlated audit rather than model prose, and emits only
+privacy-safe tool IDs, statuses, source hashes, and digests. Claude still runs
+only through the subscription TUI adapter—never an API, SDK, direct HTTP call,
+gateway backing, or native Task Agent. Gemini/agy, Grok, Omnigent, native-host,
+and custom-spawn research seats fail closed as
 `research_profile_unenforceable`.
 
 **Fable and Opus seats are subscription-TUI only.** The runtime requires the homebrew self-PTY backing and rejects alternate backings before gateway access. It launches the exact requested model only after a metadata-only probe proves a logged-in first-party subscription, scrubs tokens, API helpers, custom request headers, alternate endpoints, and cloud-provider selectors, and isolates user/project/local settings. Never fill the seat with a native Task Agent and never add an API/SDK/direct-HTTP fallback. Inside a driving host session where the nested TUI adapter cannot run, the seat fails closed as `UNAVAILABLE/tui_adapter_required`; retry from a host where the adapter can run.

@@ -7,8 +7,8 @@ import os
 import unittest
 from pathlib import Path
 
-from phase_loop_runtime.advisor_board import ResearchPolicy
-from phase_loop_runtime.panel_invoker import invoke_panel
+from phase_loop_runtime.advisor_board import Board, ResearchPolicy, Seat
+from phase_loop_runtime.panel_invoker import invoke_board
 
 
 @unittest.skipUnless(
@@ -29,13 +29,19 @@ If either research provider has a transient failure, correct the arguments and r
 provider at most once. Do not answer until both research calls succeeded and the denied
 mutation was attempted. Include the exact required evidence label in the final answer and
 end with a clear recommendation."""
-        result = invoke_panel(
-            prompt,
-            ("codex",),
-            mode="advisory",
-            models={"codex": "gpt-5.6-sol"},
-            timeouts_by_leg={"codex": 900},
+        board = Board(
+            name="live-governed-research",
+            purpose="advisory",
             research_policy=ResearchPolicy(enabled=True),
+            seats=(
+                Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
+            ),
+        )
+        result = invoke_board(
+            board,
+            prompt,
+            mode="advisory",
+            timeouts_by_leg={"codex": 900},
         )
         leg = result.legs[0]
         self.assertEqual(leg.status, "OK", leg.detail)

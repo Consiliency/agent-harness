@@ -18,17 +18,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and exposes only health/catalog/describe/invoke for Firecrawl and Bright Data
   research tools. Mutation tools, resources, prompts, and ambient MCP servers are
   absent or denied.
-- Codex, Claude subscription TUI, and Grok receive strict run-local PMCP config.
-  Gemini/agy, Omnigent, native-host, and custom-spawn research seats fail closed
+- Codex and Claude subscription TUI receive strict run-local PMCP config. Codex
+  native web search/apps are disabled, and Claude pre-approves only the four PMCP
+  controls in its authoritative brief. Gemini/agy, Grok, Omnigent, native-host,
+  and custom-spawn research seats fail closed
   as `research_profile_unenforceable`. Claude remains TUI-only with no API, SDK,
   direct-HTTP, gateway, or native Task fallback.
 - Seat research status is reduced from PMCP's completed correlated audit rather
   than model prose. Observability carries only status and ledger/audit digests;
   source references are hashed and raw queries, results, and credentials are not
   retained.
-- An opt-in live test proves one real subscription Codex seat successfully calls
-  both Firecrawl and Bright Data and receives a policy denial for an attempted
-  GitHub mutation.
+- An opt-in live board test proves one real subscription Codex seat successfully
+  calls both Firecrawl and Bright Data and receives a policy denial for an
+  attempted GitHub mutation.
 
 ### Role-aware model and effort defaults (Consiliency/agent-harness#310)
 
