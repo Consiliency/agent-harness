@@ -72,7 +72,10 @@ def test_down_converter_annotations_resolve():
     name in a signature survives import and every call — it only surfaces via
     get_type_hints() or a linter. This repo runs NO linter in CI, so this test is the
     only guard. Mutation: drop `Mapping` from launcher.py's typing import -> NameError."""
-    from typing import get_type_hints
+    from typing import Any, Mapping, get_type_hints
 
     hints = get_type_hints(launcher._claude_json_schema)
-    assert hints["schema"] is not None
+    # Pin the resolved types, not just non-None: this additionally catches a silent
+    # widening of the signature (e.g. to `Any`) that would still resolve cleanly.
+    assert hints["schema"] == Mapping[str, Any]
+    assert hints["return"] == dict[str, Any]
