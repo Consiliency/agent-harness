@@ -591,6 +591,34 @@ _GEMINI_TRANSIENT_RE = re.compile(
     r"please try again|connection reset|backend (?:error|stall)",
     re.IGNORECASE,
 )
+# The gemini/agy leg runs HEADLESS, where a tool permission cannot be prompted for and is
+# auto-denied — the CLI then produces NO output at all and exits rc==0, so the whole leg
+# silently vanishes. (That is how the gemini seat stayed dead for 6 of 11 rounds of the
+# model-tier review, #309, and got misread as flakiness for the entire milestone.)
+#
+# The denial is specifically the "command" permission — NOT file access. `agy` reads the
+# staged review-instructions.md / review-bundle.md perfectly well through `--add-dir`;
+# what it cannot do is RUN things. Our review prompts routinely ask a leg to verify by
+# EXECUTING ("run the guard", "reproduce the mutation", "run the suite yourself"), and
+# that request is what triggers the auto-denied command tool.
+#
+# So the fix is to tell this leg what it may and may not do — NOT to restructure how the
+# material reaches it. Reading stays on the existing pointer form (bundle staged as a
+# file, never pasted into the prompt), which keeps untrusted material out of the leg's own
+# instruction channel and leaves the shared-prompt golden for every other leg untouched.
+#
+# Measured on the artifact that returned EMPTY in #309: pointer form alone -> EMPTY (0B);
+# pointer form + this preamble -> OK, a real 4112-byte review with a conforming verdict.
+_NO_COMMAND_PREAMBLE = (
+    "OPERATING CONSTRAINT — read this before anything else.\n"
+    "You are running HEADLESS. You MAY read the staged files named below with your file "
+    "tools — that is expected and required. You may NOT run shell commands, tests, "
+    "scripts, or any other executable tool: a command attempt is auto-denied and destroys "
+    "your ENTIRE response (you would return nothing at all).\n"
+    "Where the material asks you to verify something by RUNNING it, do not attempt to run "
+    "it. Reason from the staged evidence instead, and state plainly which claims you could "
+    "NOT verify. Do not claim to have run anything.\n\n"
+)
 # Subscription auth only: strip provider API keys from the child environment.
 _API_KEY_VARS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
@@ -2545,7 +2573,7 @@ def _exec_leg(
         # is bounded.
         cmd = [
             "agy", "--model", gemini_model, "--add-dir", str(review_dir),
-            "--print-timeout", f"{timeout_s}s", "-p", prompt,
+            "--print-timeout", f"{timeout_s}s", "-p", _NO_COMMAND_PREAMBLE + prompt,
         ]
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
