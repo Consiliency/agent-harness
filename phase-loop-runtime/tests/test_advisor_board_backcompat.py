@@ -1,8 +1,8 @@
 """ABDFREEZE — back-compat golden-test SCAFFOLD (IF-0-ABDFREEZE-4).
 
-This proves the ``default`` board fixture resolves to TODAY'S three legs — cross-
-checked against the LIVE ``panel_invoker`` constants, not a re-baselined copy — so
-a future drift in the panel constants trips here. The FULL golden assertions
+This proves the four-vendor model-first ``default`` board renders against the live
+``panel_invoker`` constants while the three-leg explicit panel order stays frozen.
+The FULL golden assertions
 (launch order, prompt/input payloads, env/auth, timeout/retry, result keys, output
 formatting, failure semantics) land in ABDVERIFY; this file is the scaffold + the
 default-board equivalence anchor, plus the auth-scrub byte-equivalence proof.
@@ -22,6 +22,7 @@ from phase_loop_runtime.advisor_board import (
     AUTH_API_KEY,
     CANONICAL_LEG_ORDER,
     DEFAULT_BOARD,
+    DEFAULT_BOARD_VENDOR_ORDER,
     DEFAULT_SEAT_EFFORT_ARGS,
     DEFAULT_SEAT_RENDERED_MODEL,
     Seat,
@@ -34,9 +35,12 @@ from phase_loop_runtime.advisor_board.backing import VENDOR_API_KEY_VARS
 
 
 class DefaultBoardReproducesTodayTests(unittest.TestCase):
-    def test_default_board_is_three_seats_in_panel_leg_order(self) -> None:
-        self.assertEqual(len(DEFAULT_BOARD.seats), 3)
-        self.assertEqual(tuple(seat_vendor_family(s) for s in DEFAULT_BOARD.seats), pi.PANEL_LEGS)
+    def test_default_board_is_four_seats_while_legacy_panel_order_is_frozen(self) -> None:
+        self.assertEqual(len(DEFAULT_BOARD.seats), 4)
+        self.assertEqual(
+            tuple(seat_vendor_family(s) for s in DEFAULT_BOARD.seats),
+            DEFAULT_BOARD_VENDOR_ORDER,
+        )
         self.assertEqual(CANONICAL_LEG_ORDER, pi.PANEL_LEGS)
 
     def test_each_seat_renders_to_todays_default_leg_model(self) -> None:
@@ -60,7 +64,7 @@ class DefaultBoardReproducesTodayTests(unittest.TestCase):
         src = Path(pi.__file__).read_text(encoding="utf-8")
         self.assertIn("model_reasoning_effort=xhigh", src)  # codex :992
         self.assertIn('"--effort",', src)                    # claude --effort ...
-        self.assertIn('"Gemini 3.1 Pro (High)"', src)        # agy effort-in-name :1016
+        self.assertIn('"gemini-3.6-flash-high"', src)       # canonical agy effort suffix
 
 
 class AuthScrubByteEquivalenceTests(unittest.TestCase):

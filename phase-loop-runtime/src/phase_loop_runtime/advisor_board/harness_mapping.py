@@ -1,23 +1,15 @@
 """Per-harness model/effort -> invocation mapping (IF-0-ABDFREEZE-1).
 
-The v5 panel-verification found that **per-leg effort is NOT supported today** —
-it is hard-coded per leg (claude ``--effort max`` panel_invoker.py:324, codex
-``model_reasoning_effort=xhigh`` :992) and for the agy/gemini leg **effort is
-baked into the model-name string** (``"Gemini 3.1 Pro (High)"`` :51/:1016). The
-model-first ``{model, effort}`` split therefore needs a per-harness mapping that
-turns a canonical ``(model, effort)`` back into each harness's actual invocation.
-
-This module freezes that contract. ABDHOME does the plumbing (reaching the real
-CLI arg lists in `panel_invoker`); it codes against ``render_seat_invocation``.
-The freeze is load-bearing for back-compat: the ``default`` board's three seats
-MUST render to today's exact literals —
+Effort reaches each subscription CLI differently. The model-first
+``{model, effort}`` split therefore needs one per-harness mapping that turns a
+canonical pair into the exact invocation token shared by launcher and board paths:
 
     claude  -> effort flag        ``--effort max``
     codex   -> config override    ``-c model_reasoning_effort=xhigh``
-    gemini  -> model-name embed   ``Gemini 3.1 Pro (High)``
+    gemini  -> model-name embed   ``gemini-3.6-flash-high``
+    grok    -> effort flag        ``--reasoning-effort high``
 
-— proven by ``tests/test_advisor_board_backcompat.py`` against the live
-`panel_invoker` constants (`DEFAULT_LEG_MODELS`, the codex/claude/agy arg forms).
+Legacy Gemini Pro display names remain supported for explicit boards.
 """
 from __future__ import annotations
 
@@ -99,8 +91,7 @@ def _grok_panel_effort(effort: str) -> str:
     return _GROK_EFFORT_OVERRIDES.get(effort, effort)
 
 
-# canonical effort -> the ``(Word)`` token agy/gemini bakes into the model name
-# (panel_invoker.py:1016 uses ``(High)``).
+# canonical effort -> the ``(Word)`` token used by agy's legacy display names.
 _GEMINI_EFFORT_WORD: dict[str, str] = {
     "low": "Low",
     "medium": "Medium",
@@ -116,17 +107,79 @@ _GEMINI_EFFORT_WORD: dict[str, str] = {
 # never silently rewritten to a lower effort.
 _GEMINI_EMBED_RE = re.compile(r"\s*\((?:Low|Medium|High|Max)\)\s*$")
 
+# Canonical agy model ids embed effort as a suffix. Keep the phase-loop matrix
+# aliases here too: launcher and advisor-board seats must share one renderer so a
+# given (model, effort) pair cannot select different Gemini models by entrypoint.
+_AGY_CANONICAL_GEMINI = re.compile(
+    r"^(gemini-\d+\.\d+-(?:flash|pro))-(high|medium|low|thinking)$"
+)
+_AGY_BASE_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)$")
+_GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
+    "gemini-3.1-pro-preview": "Gemini 3.1 Pro (High)",  # model-id-source: shared agy compatibility alias
+    "gemini-3.5-flash-lite": "gemini-3.5-flash-high",  # model-id-source: shared agy capability fallback
+}
+
 
 def gemini_base_model(model: str) -> str:
     """Return the gemini model with any trailing ``(Effort)`` embed removed."""
     return _GEMINI_EMBED_RE.sub("", model or "").strip()
 
 
-def render_gemini_model(model: str, effort: str) -> str:
-    """``("Gemini 3.1 Pro", "high") -> "Gemini 3.1 Pro (High)"`` — the agy leg's
-    effort-in-the-model-name special case. Idempotent on an already-baked model."""
+def render_agy_model(model: str, effort: str | None = None) -> str:
+    """Render a Gemini model for agy's effort-in-model-name convention.
+
+    Canonical ids such as ``gemini-3.6-flash`` become
+    ``gemini-3.6-flash-high``. Legacy display names retain their parenthesized
+    effort spelling, and the established routing aliases remain compatible.
+    Unknown ``gemini-*`` ids fail loud instead of silently selecting Pro.
+    """
+    candidate = (model or "").strip()
+    if _AGY_BASE_GEMINI.match(candidate):
+        rendered_effort = effort or "high"
+        if rendered_effort not in {"high", "medium", "low", "thinking"}:
+            raise ValueError(
+                f"gemini base model {candidate!r} requires a supported agy effort; got {effort!r}"
+            )
+        return f"{candidate}-{rendered_effort}"
+    if candidate in {"", "auto", "pro"}:
+        return "Gemini 3.1 Pro (High)"
+    if candidate in _GEMINI_MODEL_ID_ALIASES:
+        return _GEMINI_MODEL_ID_ALIASES[candidate]
+    canonical = _AGY_CANONICAL_GEMINI.match(candidate)
+    if canonical:
+        embedded_effort = canonical.group(2)
+        if effort is not None and effort != embedded_effort:
+            raise ValueError(
+                f"gemini model {candidate!r} embeds effort {embedded_effort!r}, "
+                f"which conflicts with requested effort {effort!r}"
+            )
+        return candidate
+    if candidate.startswith("gemini-"):
+        raise ValueError(
+            f"unmapped gemini model id {candidate!r}: add it to "
+            "_GEMINI_MODEL_ID_ALIASES (never silently coerce a gemini-* id to Pro)"
+        )
+    # Explicit non-Gemini operator overrides are opaque agy tokens. Preserve
+    # them verbatim even when the routing policy supplies effort; only legacy
+    # human-readable Gemini display names use the parenthesized convention.
+    if effort is None or not candidate.lower().startswith("gemini "):
+        return candidate
     _require_effort(effort)
-    return f"{gemini_base_model(model)} ({_GEMINI_EFFORT_WORD[effort]})"
+    return f"{gemini_base_model(candidate)} ({_GEMINI_EFFORT_WORD[effort]})"
+
+
+def agy_model_effort(model: str) -> str | None:
+    """Return the effort embedded in a rendered agy model, when present."""
+    canonical = _AGY_CANONICAL_GEMINI.match(model)
+    if canonical:
+        return canonical.group(2)
+    display = re.search(r"\((High|Medium|Low|Thinking|Max)\)$", model)
+    return display.group(1).lower() if display else None
+
+
+def render_gemini_model(model: str, effort: str) -> str:
+    """Compatibility name for the shared agy renderer."""
+    return render_agy_model(model, effort)
 
 
 def _require_effort(effort: str) -> None:

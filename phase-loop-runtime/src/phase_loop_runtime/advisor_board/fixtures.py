@@ -5,11 +5,9 @@ populates *from* and ABDRESOLVE / ABDHOME test *against* — so the parallel lan
 never diverge into a mock-vs-real integration cliff.
 
 The values here are **golden expectations**, deliberately hard-coded (not derived
-from ``panel_invoker``) so a change to today's panel constants trips
-``tests/test_advisor_board_backcompat.py`` instead of silently re-baselining. The
-back-compat proof re-derives each default seat's invocation and asserts it equals
-today's literals in ``panel_invoker`` (``DEFAULT_LEG_MODELS`` +
-``_API_KEY_VARS``).
+from ``panel_invoker``) so a change to model-first board defaults trips tests
+instead of silently re-baselining. The legacy three-leg order remains a separate
+fixture for explicit ``invoke_panel`` compatibility.
 """
 from __future__ import annotations
 
@@ -20,27 +18,32 @@ from .schema import (
     Seat,
 )
 
-# The built-3 panel legs, in ``panel_invoker.PANEL_LEGS`` order — the order the
-# default board's seats MUST preserve for byte-for-byte back-compat.
+# The legacy built-3 panel legs, in ``panel_invoker.PANEL_LEGS`` order. This
+# compatibility fixture remains frozen even though the model-first default board
+# now has four vendors.
 CANONICAL_LEG_ORDER: tuple[str, ...] = ("codex", "gemini", "claude")
+DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "grok")
 
-# The default board's three seats — model-first, effort split out of the model
-# name. These reconstruct today's ``DEFAULT_LEG_MODELS`` under
+# The default board's four seats — model-first, effort split out of the model
+# name. These reconstruct ``DEFAULT_LEG_MODELS`` under
 # ``harness_mapping.render_seat_invocation``:
 #   codex  gpt-5.6-sol           + effort max  -> ``-c model_reasoning_effort=xhigh``
-#   gemini "Gemini 3.1 Pro"  + effort high -> model ``"Gemini 3.1 Pro (High)"``
+#   gemini gemini-3.6-flash   + effort high -> model ``gemini-3.6-flash-high``
 #   claude claude-fable-5    + effort max  -> ``--effort max``
+#   grok   grok-4.5           + effort max  -> ``--reasoning-effort high``
 #
 # The claude seat runs Fable (``claude-fable-5``): pre-merge review is a mid-tier
 # decision where being wrong is expensive, so the default review board reviews on
 # Fable, not on the implementer model ``claude-sonnet-5``. This is byte-pinned to
 # ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` (also Fable) by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
-    Seat(model="gpt-5.6-sol", effort="max", harness="codex",
+    Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="red-team",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini",
+    Seat(model="gemini-3.6-flash", effort="high", harness="gemini", lens="alternative-approach",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="claude-fable-5", effort="max", harness="claude",
+    Seat(model="claude-fable-5", effort="max", harness="claude", lens="correctness",
+         auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
+    Seat(model="grok-4.5", effort="max", harness="grok", lens="adversarial",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
 )
 
@@ -55,13 +58,15 @@ DEFAULT_BOARD: Board = Board(
 # back-compat test against the live ``panel_invoker`` constants).
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
     "codex": "gpt-5.6-sol",
-    "gemini": "Gemini 3.1 Pro (High)",
+    "gemini": "gemini-3.6-flash-high",
     "claude": "claude-fable-5",
+    "grok": "grok-4.5",
 }
 DEFAULT_SEAT_EFFORT_ARGS: dict[str, tuple[str, ...]] = {
     "codex": ("-c", "model_reasoning_effort=xhigh"),
     "gemini": (),
     "claude": ("--effort", "max"),
+    "grok": ("--reasoning-effort", "high"),
 }
 
 # Canonical (model x harness) pairs ABDREG's matrix + ABDRESOLVE's validation test
@@ -72,6 +77,7 @@ CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("gpt-5.6-sol", "opencode"),
     ("claude-sonnet-5", "claude"),
     ("Gemini 3.1 Pro", "gemini"),
+    ("gemini-3.6-flash", "gemini"),
     ("grok-4.5", "grok"),  # xAI-family model on the grok lane (4-vendor board)
 )
 CANONICAL_INVALID_PAIRS: tuple[tuple[str, str], ...] = (

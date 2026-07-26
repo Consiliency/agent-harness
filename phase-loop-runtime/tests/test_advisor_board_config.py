@@ -43,11 +43,11 @@ class PresetSelfValidationTests(unittest.TestCase):
             },
         )
 
-    def test_default_board_resolves_to_todays_three_seats(self) -> None:
+    def test_default_board_resolves_to_four_vendor_seats(self) -> None:
         cfg = load_boards(Path("/nonexistent/advisor-boards.toml"), matrix=_MATRIX)
         self.assertIs(cfg.get("default"), DEFAULT_BOARD)
         self.assertIs(cfg.get(), DEFAULT_BOARD)  # bare advisor-board -> default
-        self.assertEqual(len(cfg.get().seats), 3)
+        self.assertEqual(len(cfg.get().seats), 4)
 
 
 class CodeReviewAvailabilityAwareTests(unittest.TestCase):

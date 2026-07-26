@@ -18,6 +18,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `max/max/high`, and Gemini records its explicit policy clamp.
 - Gemini Flash defaults store the base `gemini-3.6-flash` model and render the
   policy effort into the canonical agy model id at launch.
+- The model-first `default` Advisor Board now runs four subscription-backed
+  vendors in deterministic order: GPT-5.6 Sol, Gemini 3.6 Flash high, Claude
+  Fable 5, and Grok 4.5. The explicit legacy `PANEL_LEGS`/`invoke_panel` API
+  remains the frozen three-leg Codex/Gemini/Claude boundary.
+- Launcher and Advisor Board Gemini paths now share one agy model renderer, so
+  base Flash IDs become exactly `gemini-3.6-flash-high`; unknown or conflicting
+  `gemini-*` IDs fail loudly and explicit legacy Pro boards remain supported.
+- Default-board seats carry four distinct review lenses, and opaque non-Gemini
+  operator model overrides remain verbatim even when routing policy supplies an
+  effort value.
 - Governed repair now applies the existing repeated-failure ladder: two matching
   regular-tier failures re-resolve the selected executor's `planner` model before
   launch, including the no-fallback-executor case. The launch event persists the

@@ -1,6 +1,6 @@
 """ABDREG — board presets (Phase 2, lane 4).
 
-The keystone: the ``default`` preset IS today's three seats (it is the shared
+The keystone: the ``default`` preset IS the shared four-vendor fixture
 ``DEFAULT_BOARD`` fixture by identity, not a re-declared copy), so back-compat
 holds by construction.
 """
@@ -35,7 +35,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(general.seats), 3)
         self.assertEqual(
             {s.model for s in general.seats},
-            {"gpt-5.6-sol", "Gemini 3.1 Pro", "claude-fable-5"},
+            {"gpt-5.6-sol", "gemini-3.6-flash", "claude-fable-5"},
         )
         solo = PRESETS["solo"]
         self.assertEqual(len(solo.seats), 1)  # a 1-seat board is fully valid
@@ -47,7 +47,7 @@ class PresetTests(unittest.TestCase):
             validate_board(board, default_matrix())  # both pass matrix validation
 
     def test_default_preset_is_the_shared_default_board_fixture(self) -> None:
-        # Identity, not equality: the preset reconstructs today's exact 3 seats.
+        # Identity, not equality: the preset is the canonical four-vendor default.
         # The claude seat runs Fable (review-path model), not the implementer.
         self.assertIs(PRESETS["default"], DEFAULT_BOARD)
         self.assertIs(get_preset("default"), DEFAULT_BOARD)
@@ -55,10 +55,16 @@ class PresetTests(unittest.TestCase):
             tuple((s.model, s.effort, s.harness) for s in PRESETS["default"].seats),
             (
                 ("gpt-5.6-sol", "max", "codex"),
-                ("Gemini 3.1 Pro", "high", "gemini"),
+                ("gemini-3.6-flash", "high", "gemini"),
                 ("claude-fable-5", "max", "claude"),
+                ("grok-4.5", "max", "grok"),
             ),
         )
+        self.assertEqual(
+            tuple(s.lens for s in PRESETS["default"].seats),
+            ("red-team", "alternative-approach", "correctness", "adversarial"),
+        )
+        self.assertEqual(len({s.lens for s in PRESETS["default"].seats}), 4)
 
     def test_all_presets_default_to_no_api_key_fallback(self) -> None:
         for name in PRESET_NAMES:
@@ -76,7 +82,7 @@ class PresetTests(unittest.TestCase):
                 ("grok-4.5", "max", "grok", "adversarial"),
                 ("claude-fable-5", "max", "claude", "correctness"),
                 ("gpt-5.6-sol", "max", "codex", "red-team"),
-                ("Gemini 3.1 Pro", "high", "gemini", "alternative-approach"),
+                ("gemini-3.6-flash", "high", "gemini", "alternative-approach"),
             ),
         )
 
@@ -96,7 +102,7 @@ class PresetTests(unittest.TestCase):
             "brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "adversarial"),
                 ("gpt-5.6-sol", "high", "codex", "supportive"),
-                ("Gemini 3.1 Pro", "high", "gemini", "lateral"),
+                ("gemini-3.6-flash", "high", "gemini", "lateral"),
             ),
             "doc-edit": (
                 ("claude-sonnet-5", "medium", "claude", "copyedit"),
@@ -114,18 +120,18 @@ class PresetTests(unittest.TestCase):
         legal = {
             "legal-review": (
                 ("gpt-5.6-sol", "max", "codex", "opposing-counsel"),
-                ("Gemini 3.1 Pro", "high", "gemini", "risk-liability"),
+                ("gemini-3.6-flash", "high", "gemini", "risk-liability"),
                 ("claude-fable-5", "max", "claude", "authority-verification"),
             ),
             "legal-strategy-review": (
                 ("gpt-5.6-sol", "max", "codex", "red-team"),
-                ("Gemini 3.1 Pro", "high", "gemini", "alternatives"),
+                ("gemini-3.6-flash", "high", "gemini", "alternatives"),
                 ("claude-fable-5", "max", "claude", "downside-ethics"),
             ),
             "legal-brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "aggressive"),
                 ("gpt-5.6-sol", "high", "codex", "conservative"),
-                ("Gemini 3.1 Pro", "high", "gemini", "creative"),
+                ("gemini-3.6-flash", "high", "gemini", "creative"),
             ),
         }
         for name, expected in legal.items():

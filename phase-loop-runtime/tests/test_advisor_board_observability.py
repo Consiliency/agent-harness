@@ -49,11 +49,11 @@ class EnvelopeEmitTests(unittest.TestCase):
         res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
         self.assertTrue(all(l.status == "OK" for l in res.legs))
         kinds = [e.kind for e in sink.events]
-        # board brackets the run; each of the 3 seats emits started + a terminal.
+        # board brackets the run; every seat emits started + a terminal.
         self.assertEqual(kinds[0], "board.started")
         self.assertEqual(kinds[-1], "board.completed")
-        self.assertEqual(kinds.count("seat.started"), 3)
-        self.assertEqual(kinds.count("seat.completed"), 3)
+        self.assertEqual(kinds.count("seat.started"), len(DEFAULT_BOARD.seats))
+        self.assertEqual(kinds.count("seat.completed"), len(DEFAULT_BOARD.seats))
         # every emitted kind is a frozen EVENT_KIND; sequence is monotonic.
         self.assertTrue(all(k in EVENT_KINDS for k in kinds))
         seqs = [e.sequence for e in sink.events]
@@ -99,7 +99,7 @@ class NeverFailsTheLegTests(unittest.TestCase):
                 raise RuntimeError("sink boom")
 
         res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=RaisingSink())
-        self.assertEqual(tuple(l.leg for l in res.legs), ("codex", "gemini", "claude"))
+        self.assertEqual(tuple(l.leg for l in res.legs), tuple(s.harness for s in DEFAULT_BOARD.seats))
         self.assertTrue(all(l.status == "OK" for l in res.legs))  # leg unaffected
 
     def test_async_wrapping_a_raising_sink_drains_without_crashing(self) -> None:
@@ -157,7 +157,7 @@ class NeverFailsTheLegTests(unittest.TestCase):
         kinds = [e.kind for e in collecting.events]
         self.assertEqual(kinds[0], "board.started")
         self.assertEqual(kinds[-1], "board.completed")
-        self.assertEqual(kinds.count("seat.completed"), 3)
+        self.assertEqual(kinds.count("seat.completed"), len(DEFAULT_BOARD.seats))
 
 
 # ---------------------------------------------------------------------------

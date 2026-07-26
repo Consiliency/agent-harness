@@ -32,7 +32,7 @@ import unittest
 from pathlib import Path
 
 from phase_loop_runtime import panel_invoker as pi
-from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, DEFAULT_BOARD_VENDOR_ORDER
 
 
 class _Leg:
@@ -187,7 +187,7 @@ class InvokeStreamingOptInTests(unittest.TestCase):
             self.assertEqual(sorted(seen), sorted(r.leg for r in res.legs))
             self.assertEqual(len(list(Path(d).glob("*.verdict.json"))), len(res.legs))
             # Consolidated return still in canonical seat order.
-            self.assertEqual([r.leg for r in res.legs], list(pi.PANEL_LEGS))
+            self.assertEqual([r.leg for r in res.legs], list(DEFAULT_BOARD_VENDOR_ORDER))
 
     def test_invoke_panel_streams_when_opted_in(self) -> None:
         with tempfile.TemporaryDirectory() as d:

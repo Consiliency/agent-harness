@@ -1283,9 +1283,19 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(_gemini_cli_model("gemini-3.1-pro-preview"), "Gemini 3.1 Pro (High)")
         self.assertEqual(_gemini_cli_model("Gemini 3.5 Flash (High)"), "Gemini 3.5 Flash (High)")
         self.assertEqual(_gemini_cli_model("gpt-5-codex"), "gpt-5-codex")
+        self.assertEqual(_gemini_cli_model("gpt-5-codex", "high"), "gpt-5-codex")
+        override = build_gemini_command(
+            Path("/repo"), ModelSelection(profile="review", model="gpt-5-codex", effort="high"),
+            action="review", context_file="X",
+        )
+        self.assertEqual(override[override.index("--model") + 1], "gpt-5-codex")
+        self.assertEqual(_gemini_cli_model("gemini-3.6-flash", "high"), "gemini-3.6-flash-high")
+        self.assertEqual(_gemini_cli_model("gemini-3.6-flash-high", "high"), "gemini-3.6-flash-high")
         self.assertEqual(_gemini_cli_model("gemini-3.6-flash", "medium"), "gemini-3.6-flash-medium")
         with self.assertRaisesRegex(ValueError, "conflicts with requested effort"):
             _gemini_cli_model("gemini-3.6-flash-high", "medium")
+        with self.assertRaisesRegex(ValueError, "unmapped gemini model id"):
+            _gemini_cli_model("gemini-9.9-unknown", "high")
 
     def test_opencode_executor_builds_live_launch_spec(self):
         selection = resolve_profile_for_executor(action="plan", executor="opencode")

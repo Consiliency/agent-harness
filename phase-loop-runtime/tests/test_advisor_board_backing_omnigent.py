@@ -440,14 +440,14 @@ class BuiltThreeAndNativeUnaffectedTests(unittest.TestCase):
                 pi.invoke_board(board, "review", host=host, omnigent=srv.backing(), base_env={})
 
     def test_default_board_stays_all_homebrew_even_with_omnigent_wired(self) -> None:
-        from phase_loop_runtime.advisor_board import DEFAULT_BOARD
+        from phase_loop_runtime.advisor_board import DEFAULT_BOARD, DEFAULT_BOARD_VENDOR_ORDER
         with FakeOmnigentServer() as srv:
             res = pi.invoke_board(DEFAULT_BOARD, "review", omnigent=srv.backing(),
                                   spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
             # No session was ever created on the gateway — the default board is
             # all-homebrew, so the omnigent transport is never consulted.
             self.assertEqual(srv.session_requests(), [])
-        self.assertEqual(tuple(l.leg for l in res.legs), ("codex", "gemini", "claude"))
+        self.assertEqual(tuple(l.leg for l in res.legs), DEFAULT_BOARD_VENDOR_ORDER)
         self.assertTrue(all(l.status == "OK" for l in res.legs))
 
 

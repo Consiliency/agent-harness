@@ -43,7 +43,7 @@ from phase_loop_runtime.advisor_board import (
     validate_board,
 )
 from phase_loop_runtime.advisor_board.events import EVENT_KINDS
-from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, DEFAULT_BOARD_VENDOR_ORDER
 from phase_loop_runtime.advisor_board.observability import CollectingSink
 from phase_loop_runtime.advisor_board.presets import PRESET_NAMES, PRESETS
 
@@ -88,7 +88,7 @@ class EndToEndHomebrewIntegrationTests(unittest.TestCase):
         board = resolve_board("default", matrix=default_matrix())
         validate_board(board, matrix=default_matrix())
         res = pi.invoke_board(board, "artifact", spawn=_ok_spawn)
-        self.assertEqual(tuple(r.leg for r in res.legs), pi.PANEL_LEGS)
+        self.assertEqual(tuple(r.leg for r in res.legs), DEFAULT_BOARD_VENDOR_ORDER)
         self.assertTrue(all(r.status == "OK" for r in res.legs))
         self.assertTrue(all(r.seat_key for r in res.legs))
 
@@ -288,7 +288,7 @@ class ObservabilityLegJoinsMatrixTests(unittest.TestCase):
                 raise RuntimeError("sink exploded")
 
         res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=_BoomSink())
-        self.assertEqual(tuple(r.leg for r in res.legs), pi.PANEL_LEGS)
+        self.assertEqual(tuple(r.leg for r in res.legs), DEFAULT_BOARD_VENDOR_ORDER)
         self.assertTrue(all(r.status == "OK" for r in res.legs))
 
 

@@ -20,7 +20,7 @@ def test_default_leg_models_exposed():
     assert pi.DEFAULT_LEG_MODELS["claude"] == "claude-fable-5"
     assert pi.DEFAULT_LEG_MODELS["claude"] != pi.CLAUDE_IMPLEMENTER_MODEL
     assert pi.DEFAULT_LEG_MODELS["codex"] == "gpt-5.6-sol"
-    assert "Gemini" in pi.DEFAULT_LEG_MODELS["gemini"]
+    assert pi.DEFAULT_LEG_MODELS["gemini"] == "gemini-3.6-flash-high"
 
 
 def test_claude_tui_command_model_override(tmp_path):

@@ -81,11 +81,14 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `claude-haiku-4-5-20251001`| claude | `claude`     | claude            | max            |
 | `claude-fable-5` | claude        | `claude`     | claude            | max            |
 | `Gemini 3.1 Pro` | gemini        | `gemini`     | gemini            | max            |
+| `gemini-3.6-flash` | gemini      | `gemini`     | gemini            | high           |
+| `grok-4.5`       | grok          | `grok`       | grok              | max            |
 
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →
 `-c model_reasoning_effort=<xhigh|high|…>`, `gemini` → effort baked into the model
-string (`"Gemini 3.1 Pro (High)"`). Canonical effort levels: `low, medium, high, max`.
+token (`gemini-3.6-flash-high`; legacy display names such as
+`"Gemini 3.1 Pro (High)"` remain accepted). Canonical effort levels: `low, medium, high, max`.
 
 **Auth is subscription-default, never-silent-key.** A subscription seat actively
 scrubs *every* vendor API-key var from the subprocess env / gateway payload; an
@@ -103,14 +106,14 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-5.5 · max · codex · — ; Gemini 3.1 Pro · high · gemini · — ; claude-fable-5 · max · claude · — |
-| `code-review`           | code-review           | gpt-5.5 · max · codex · adversarial ; Gemini 3.1 Pro · high · gemini · adversarial ; claude-fable-5 · max · claude · adversarial |
-| `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-5.5 · high · codex · supportive ; Gemini 3.1 Pro · high · gemini · lateral |
+| `default`               | premerge-review       | gpt-5.6-sol · max · codex · red-team ; gemini-3.6-flash · high · gemini · alternative-approach ; claude-fable-5 · max · claude · correctness ; grok-4.5 · max · grok · adversarial |
+| `code-review`           | code-review           | grok-4.5 · max · grok · adversarial ; claude-fable-5 · max · claude · correctness ; gpt-5.6-sol · max · codex · red-team ; gemini-3.6-flash · high · gemini · alternative-approach |
+| `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-5.6-sol · high · codex · supportive ; gemini-3.6-flash · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-5.5 · medium · codex · structure |
-| `legal-review`          | legal-review          | gpt-5.5 · max · codex · opposing-counsel ; Gemini 3.1 Pro · high · gemini · risk-liability ; claude-fable-5 · max · claude · authority-verification |
-| `legal-strategy-review` | legal-strategy-review | gpt-5.5 · max · codex · red-team ; Gemini 3.1 Pro · high · gemini · alternatives ; claude-fable-5 · max · claude · downside-ethics |
-| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-5.5 · high · codex · conservative ; Gemini 3.1 Pro · high · gemini · creative |
-| `general`               | general               | gpt-5.5 · max · codex · adversarial ; Gemini 3.1 Pro · high · gemini · alternative ; claude-fable-5 · max · claude · completeness |
+| `legal-review`          | legal-review          | gpt-5.6-sol · max · codex · opposing-counsel ; gemini-3.6-flash · high · gemini · risk-liability ; claude-fable-5 · max · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-5.6-sol · max · codex · red-team ; gemini-3.6-flash · high · gemini · alternatives ; claude-fable-5 · max · claude · downside-ethics |
+| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-5.6-sol · high · codex · conservative ; gemini-3.6-flash · high · gemini · creative |
+| `general`               | general               | gpt-5.6-sol · max · codex · adversarial ; gemini-3.6-flash · high · gemini · alternative ; claude-fable-5 · max · claude · completeness |
 | `solo`                  | general               | claude-fable-5 · max · claude · completeness |
 
 **Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
@@ -138,10 +141,9 @@ right tool. The legal boards encode the PRIMARY review lens per seat; the richer
 citation-verification treatment is a documented deep-seat follow-on
 (`advisor_board/CONTRACTS.md`), not yet built.
 
-`default` **is** the shared fixture board (`fixtures.DEFAULT_BOARD`), so the
-back-compat keystone holds by construction: a bare `advisor-board` invocation
-resolves to today's exact three seats and reproduces the legacy 3-leg panel
-byte-for-byte on Fable (proven in `tests/test_advisor_board_golden.py`).
+`default` **is** the shared four-vendor fixture board (`fixtures.DEFAULT_BOARD`).
+The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
+separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
 ### Invoking a board
 
