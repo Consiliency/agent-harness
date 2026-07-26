@@ -17,6 +17,7 @@ import mimetypes
 import os
 import pty
 import re
+import resource
 import secrets
 import select
 import shutil
@@ -719,11 +720,19 @@ def _inline_epilogue(nonce: str, *, mode: str = "review") -> str:
             "verdict line.\n"
         )
     )
-# Bound the inlined payload. `agy` accepts a large `-p` argv (measured OK at 56KB), and
-# ARG_MAX is ~2MB, but an unbounded bundle would eventually hit E2BIG — which would look
-# like yet another silent leg failure. Past the cap we keep the pointer form and say so,
-# rather than truncating the material a reviewer is meant to judge.
-_GEMINI_INLINE_MAX_BYTES = 600_000
+# Bound the inlined prompt by the REAL kernel limit (CR round 3, codex). A single argv
+# element is capped at MAX_ARG_STRLEN = 32 * PAGE_SIZE = 131072 bytes on Linux — NOT the
+# ~2MB total ARG_MAX. Verified on this host: a 131_000-byte arg succeeds, 131_072 raises
+# OSError E2BIG. The previous cap (600_000) was 4.5x over that AND counted CHARACTERS
+# rather than encoded bytes, so multibyte content halved the real budget again (70_000
+# chars of "é" = 140_000 bytes). Net effect: any bundle between ~128KB and the old cap
+# would have raised E2BIG BEFORE `agy` started, instead of taking the pointer fallback —
+# i.e. a hard crash where the design intends graceful degradation.
+#
+# So bound the COMPLETE ASSEMBLED PROMPT in ENCODED BYTES, with headroom for the rest of
+# the argv and the environment.
+_ARGV_ELEMENT_LIMIT_BYTES = 32 * resource.getpagesize()  # MAX_ARG_STRLEN
+_GEMINI_INLINE_MAX_BYTES = _ARGV_ELEMENT_LIMIT_BYTES - 8192  # headroom
 # Subscription auth only: strip provider API keys from the child environment.
 _API_KEY_VARS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
@@ -2700,15 +2709,29 @@ def _exec_leg(
                 ("review-bundle.md", review_dir / "review-bundle.md"),
             ]
             payload = [(n, p.read_text(encoding="utf-8")) for n, p in staged if p.is_file()]
-            total = sum(len(t) for _n, t in payload)
-            if payload and total <= _GEMINI_INLINE_MAX_BYTES:
+            if payload:
                 for name, text in payload:
                     section_names.append(name)
                     inline_parts.append(
                         f"\n\n=== BEGIN INLINED {name} [{inline_nonce}] ===\n{text}"
                         f"\n=== END INLINED {name} [{inline_nonce}] ==="
                     )
-                inlined_ok = True
+                # Gate on the COMPLETE assembled prompt measured in ENCODED BYTES — the
+                # thing the kernel actually limits — not on payload character count.
+                _candidate = (
+                    _no_tool_preamble(
+                        inline_nonce, section_names, mode=mode,
+                        has_context_refs=any(
+                            _CONTEXT_REFS_HEADER in text for _n, text in payload
+                        ),
+                    )
+                    + prompt
+                    + "".join(inline_parts)
+                    + _inline_epilogue(inline_nonce, mode=mode)
+                )
+                inlined_ok = len(_candidate.encode("utf-8")) <= _GEMINI_INLINE_MAX_BYTES
+                if not inlined_ok:
+                    section_names, inline_parts = [], []
         except OSError:
             inlined_ok = False  # fall back to the pointer form; the denial classifier
             # below still surfaces the failure loudly rather than degrading silently.

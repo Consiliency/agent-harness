@@ -251,3 +251,40 @@ def test_no_by_reference_clause_when_there_are_no_refs(monkeypatch, staged):
     argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
     head = _prompt_of(argv).split("BUNDLE-SENTINEL")[0]
     assert "UNVERIFIED" not in head
+
+
+def test_assembled_prompt_never_exceeds_the_argv_element_limit(monkeypatch, staged):
+    """CR round 3 (codex): the kernel caps a SINGLE argv element at MAX_ARG_STRLEN
+    (32*PAGE_SIZE = 131072 on Linux) — not the ~2MB total ARG_MAX. The previous cap was
+    600_000 CHARACTERS, so a bundle between ~128KB and 600KB raised OSError E2BIG BEFORE
+    agy started instead of taking the pointer fallback. Sweep across the boundary and
+    assert the emitted argv element is always executable."""
+    review_dir, _out = staged
+    for size in (50_000, 120_000, 131_071, 131_072, 300_000):
+        (review_dir / "review-bundle.md").write_text("B" * size, encoding="utf-8")
+        argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+        emitted = _prompt_of(argv).encode("utf-8")
+        assert len(emitted) < pi._ARGV_ELEMENT_LIMIT_BYTES, (
+            f"bundle={size}B produced a {len(emitted)}B argv element — E2BIG at exec"
+        )
+
+
+def test_multibyte_bundle_is_measured_in_bytes_not_characters(monkeypatch, staged):
+    """A char-count gate under-measures multibyte content 2x ("é" = 2 bytes). The gate
+    must be byte-based or a multibyte bundle sails past it into E2BIG."""
+    review_dir, _out = staged
+    (review_dir / "review-bundle.md").write_text("é" * 70_000, encoding="utf-8")  # 140KB
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    prompt = _prompt_of(argv)
+    assert len(prompt.encode("utf-8")) < pi._ARGV_ELEMENT_LIMIT_BYTES
+    assert "é" * 100 not in prompt, "oversize multibyte bundle was inlined anyway"
+
+
+def test_oversize_bundle_is_actually_executable_end_to_end(staged, monkeypatch):
+    """The real proof: whatever argv the gemini branch emits must survive exec(). Runs
+    /bin/true with the produced element — E2BIG would raise here."""
+    import subprocess as _sp
+    review_dir, _out = staged
+    (review_dir / "review-bundle.md").write_text("B" * 400_000, encoding="utf-8")
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    _sp.run(["/bin/true", _prompt_of(argv)], check=True, timeout=30)
