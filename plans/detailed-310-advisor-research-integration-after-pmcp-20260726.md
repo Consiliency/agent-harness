@@ -85,11 +85,11 @@ PHASE_LOOP_LIVE_RESEARCH=1 PYTHONPATH=src:tests python -m pytest \
 
 ## Acceptance criteria
 
-- [ ] Research stays disabled on unsupported/older PMCP.
-- [ ] One effective policy governs board and legacy request paths; mismatches fail closed.
-- [ ] Every capable seat uses strict session-local PMCP and a unique lock/audit directory.
-- [ ] Only Firecrawl/Bright Data research tools are callable; mutation/control tools are absent or denied.
-- [ ] Ledger success is derived from correlated PMCP audit evidence, not seat prose.
-- [ ] A real version-pinned board+PMCP smoke proves successful Firecrawl and Bright Data calls plus denied mutation in one evidence artifact.
-- [ ] Unenforceable clients and failed/cancelled/denied calls remain explicit failures.
-- [ ] Disabled boards remain byte-compatible.
+- [x] Research stays disabled on unsupported/older PMCP.
+- [x] One effective policy governs board and legacy request paths; mismatches fail closed.
+- [x] Every capable seat uses strict session-local PMCP and a unique lock/audit directory.
+- [x] Only Firecrawl/Bright Data research tools are callable; mutation/control tools are absent or denied.
+- [x] Ledger success is derived from correlated PMCP audit evidence, not seat prose.
+- [x] A real version-pinned board+PMCP smoke proves successful Firecrawl and Bright Data calls plus denied mutation in one evidence artifact.
+- [x] Unenforceable clients and failed/cancelled/denied calls remain explicit failures.
+- [x] Disabled boards remain byte-compatible.
