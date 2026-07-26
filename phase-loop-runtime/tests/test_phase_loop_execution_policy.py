@@ -11,8 +11,10 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
     def test_dfparsoak_policy_precedence_keeps_execute_default_and_explicit_fallbacks(self):
         self.assertEqual(DEFAULT_EXECUTOR_POLICY["execute"], "codex")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="pi").model, "auto")
-        self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-opus-4-8")
-        self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "auto")
+        self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-sonnet-5")
+        # gemini execute uses the canonical agy 3.6 Flash id (CR round-5 finding B — newest
+        # GA), NOT `auto` (which the adapter collapses to Pro/heavy).
+        self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "gemini-3.6-flash-high")
 
         roadmap = ExecutionPolicyRule(
             selector="execute",

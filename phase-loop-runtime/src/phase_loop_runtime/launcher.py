@@ -299,6 +299,23 @@ class LaunchResult:
     stalled: bool = False
     claude_route: str | None = None
     claude_route_result: dict[str, Any] | None = None
+    # CR round-5/6/7/8 finding C: route-level provenance warnings (e.g. the channel route's
+    # session_model_unbound stamp) carried onto the DURABLE record. PRECISE per-destination
+    # consumer map (each VERIFIED at its source, not described from intent):
+    #   • EVENT layer — LaunchResult.event_metadata (emitted below): CARRIES the warning +
+    #     selected_model + claude_route.
+    #   • LAUNCH.JSON artifact — observability.run_artifacts persists claude_route always and
+    #     claude_route_warnings when present, beside selected_model, so the durable artifact an
+    #     auditor reads carries the caveat (round-8; mutation-proven).
+    #   • HANDOFF / STATUS metrics chain — handoff's `_metrics_summary_lines` (the `by_model`
+    #     bucket) and render's Models bucket DO surface the model, sourced from WorkUnitMetric.model
+    #     ← launch_metadata["selected_model"]. This aggregate carries NO route context — a channel
+    #     run's model shows uncaveated. RESIDUAL LIMIT (round-8; the round-7 "handoff renders no
+    #     model" claim was WRONG — the model arrives INDIRECTLY via metrics). Threading route
+    #     context into the versioned WorkUnitMetric aggregate is tracked as agent-harness#308.
+    #   • STATE layer — StateSnapshot.model shows a model with NO route context = a second NAMED
+    #     residual limit (a state-layer stamp is out of scope).
+    claude_route_warnings: tuple[str, ...] = ()
     cleanup_evidence: dict[str, Any] | None = None
 
     @property
@@ -353,6 +370,8 @@ class LaunchResult:
             data["stalled"] = self.stalled
         if self.claude_route is not None:
             data["claude_route"] = self.claude_route
+        if self.claude_route_warnings:
+            data["claude_route_warnings"] = list(self.claude_route_warnings)
         if self.claude_route_result is not None:
             data["claude_route_result"] = self.claude_route_result
         if self.cleanup_evidence:
@@ -530,6 +549,21 @@ CLAUDE_PRINT_BILLING_WARNING = (
     "claude_print is a billing-sensitive compatibility route: it runs `claude -p` "
     "and spends API/usage credit. It is an explicit operator/CI selection, not a "
     "fallback from Channel or Agent View failure."
+)
+
+# CR round-5 finding 3: the `claude-channel send` transport binds NO `--model` (unlike the
+# print/agent_view routes), and a send into an EXISTING claude session cannot rebind that
+# session's model. So the channel route runs on the operator's AMBIENT session model, not the
+# resolved tier model. This provenance warning is stamped on the channel LaunchSpec so
+# `selected_model` (the INTENDED tier model) is not read as a launch-bound guarantee. This is
+# a transport-inherent carve-out, mirroring the supervise carve-out (a coordinator/session the
+# harness does not spawn has an operator-selected model). Fail-closed session-model
+# verification (record + refuse on mismatch) needs sidecar support that does not exist today —
+# tracked as a follow-up (the sidecar has no model-reporting surface).
+_CHANNEL_SESSION_MODEL_UNBOUND_WARNING = (
+    "session_model_unbound: the claude-channel `send` transport does not bind `--model`; the "
+    "run inherits the operator's ambient claude session model. `selected_model` records the "
+    "INTENDED tier model, NOT a launch-bound one (a send cannot rebind an existing session)."
 )
 
 # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): the flags that make `claude` a real print
@@ -746,15 +780,51 @@ def build_gemini_command(
     return command
 
 
+# Map the matrix `gemini-*` tier ids (profiles.TIER_MODELS) → the agy model each runs on.
+# agy's AUTHORITATIVE `agy models` list uses canonical `gemini-<ver>-<family>-<effort>` ids
+# (e.g. gemini-3.6-flash-high) and exposes NO flash-lite. CR round-5 finding B: the FLASH
+# (regular/lite implementation) ids therefore map to the canonical agy Flash ids — 3.6 Flash
+# for regular (newest GA), and 3.5 Flash for lite (agy has no flash-lite, so the matrix's
+# gemini-3.5-flash-lite lite cell is ASPIRATIONAL and degrades to real 3.5 Flash here). The
+# PRO/heavy id keeps its display string (unchanged — planning is out of this fix's scope; the
+# `pro` alias + display-label convention for the Pro path is a separate pre-existing question).
+# An unmapped `gemini-*` id that is neither a matrix id nor a canonical agy id FAILS LOUD.
+_GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
+    "gemini-3.1-pro-preview": "Gemini 3.1 Pro (High)",  # model-id-source: agy adapter map (heavy/Pro; display, planning path)
+    "gemini-3.6-flash": "gemini-3.6-flash-high",  # model-id-source: agy adapter map (regular tier; canonical agy id)
+    "gemini-3.5-flash-lite": "gemini-3.5-flash-high",  # model-id-source: agy adapter map (lite ASPIRATIONAL → degrade to real 3.5 Flash; agy has no flash-lite)
+}
+
+# Canonical agy model id SHAPE (`agy models`): gemini-<ver>-<family>-<effort>. A match passes
+# through verbatim for agy to validate. NOTE: the shape is broader than the live catalog (it
+# admits e.g. `-thinking` / `gemini-3.1-pro-medium` that a given agy build may not expose) —
+# those still pass through and fail LOUD at agy (exit 1), never silently mis-route.
+_AGY_CANONICAL_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)-(?:high|medium|low|thinking)$")
+
+
 def _gemini_cli_model(model: str) -> str:
-    # Map the phase-loop routing aliases and legacy gemini ids (pro/auto/gemini-*) onto
-    # agy's default Pro model. Any OTHER value — a valid agy model name
-    # ("Gemini 3.5 Flash (...)", "Claude ...", "GPT-OSS ...") or an explicit operator
-    # override — passes through verbatim for agy to validate, rather than being
-    # silently coerced to the default.
+    # Map the phase-loop routing aliases (pro/auto/"") onto agy's default Pro model, and the
+    # matrix `gemini-*` tier ids onto their agy model (_GEMINI_MODEL_ID_ALIASES). A canonical
+    # agy id (gemini-3.6-flash-high, ...) passes through verbatim. Any OTHER value — a display
+    # label ("Gemini 3.1 Pro (High)"), "Claude ...", or an explicit operator override — passes
+    # through for agy to validate. An UNKNOWN `gemini-*` id that is neither a matrix id nor a
+    # canonical agy id fails loud (never silently → Pro).
     candidate = (model or "").strip()
-    if candidate in {"", "auto", "pro"} or candidate.startswith("gemini-"):
+    if candidate in {"", "auto", "pro"}:
         return "Gemini 3.1 Pro (High)"
+    if candidate in _GEMINI_MODEL_ID_ALIASES:
+        return _GEMINI_MODEL_ID_ALIASES[candidate]
+    if _AGY_CANONICAL_GEMINI.match(candidate):
+        return candidate  # canonical agy id shape — passed through for agy to validate
+    if candidate.startswith("gemini-"):
+        # FOLLOW-UP (Consiliency/agent-harness#302): this raises at spec-BUILD time, so
+        # an operator model-id typo currently surfaces as a traceback rather than a clean
+        # `blocked` terminal summary. No internal surface emits a non-tier gemini-* id, so
+        # this is operator-typo-only; routing it through the blocked path is tracked there.
+        raise ValueError(
+            f"unmapped gemini model id {candidate!r}: add it to "
+            "_GEMINI_MODEL_ID_ALIASES (never silently coerce a gemini-* id to Pro)"
+        )
     return candidate
 
 
@@ -1147,6 +1217,10 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             claude_channel_session_id=route_selection.session_id,
         )
     if route_selection.route == "claude_channel":
+        # CR round-5 finding 3: the channel `send` command binds NO `--model` (below) — the
+        # session's model is operator-selected and cannot be rebound by a send. selected_model
+        # still records the INTENDED tier model, but claude_route_warnings carries an explicit
+        # session_model_unbound stamp so provenance is not read as a launch-bound guarantee.
         return LaunchSpec(
             executor="claude",
             command=[
@@ -1176,6 +1250,7 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             selected_effort=request.model_selection.effort,
             profile_source=request.model_selection.source,
             override_reason=request.model_selection.override_reason,
+            claude_route_warnings=(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING,),
             wrapped_cwd=str(request.repo),
             launch_timeout_seconds=request.launch_timeout_seconds,
             claude_execution_mode=execution_mode,
@@ -1937,7 +2012,9 @@ def _launch_claude_channel(spec: LaunchSpec, *, log_path: Path | None) -> Launch
         terminal_path=str(log_path.parent / "terminal-summary.json") if log_path else None,
         started_at=started_at,
         finished_at=_utc_now(),
+        selected_model=spec.selected_model,
         claude_route="claude_channel",
+        claude_route_warnings=spec.claude_route_warnings,
         claude_route_result=payload,
     )
 
@@ -3188,6 +3265,7 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         interrupted=result.interrupted,
         stalled=result.stalled,
         claude_route=spec.claude_route,
+        claude_route_warnings=spec.claude_route_warnings,
         claude_route_result=result.claude_route_result,
         cleanup_evidence=result.cleanup_evidence,
     )

@@ -39,7 +39,7 @@
         "notes": "Native solo launch keeps team fanout at zero."
       },
       "default_effort": "high",
-      "default_model": "claude-opus-4-8",
+      "default_model": "claude-opus-5",
       "direct_teammate_messaging_allowed": false,
       "disallowed_actions": [],
       "disallowed_tools": [
@@ -77,7 +77,7 @@
       "--cwd",
       "/repo",
       "--model",
-      "claude-opus-4-8",
+      "claude-sonnet-5",
       "--effort",
       "high",
       "--permission-mode",
@@ -120,7 +120,7 @@
     "reason": null,
     "selected_agent": null,
     "selected_effort": "high",
-    "selected_model": "claude-opus-4-8",
+    "selected_model": "claude-sonnet-5",
     "selected_variant": null,
     "terminal_summary_artifact": "terminal-summary.json",
     "timeout_posture": "runner_managed",
@@ -140,7 +140,9 @@
     "claude_fallback_posture": "none",
     "claude_route": "claude_channel",
     "claude_route_reason": "explicit_channel",
-    "claude_route_warnings": [],
+    "claude_route_warnings": [
+      "session_model_unbound: the claude-channel `send` transport does not bind `--model`; the run inherits the operator's ambient claude session model. `selected_model` records the INTENDED tier model, NOT a launch-bound one (a send cannot rebind an existing session)."
+    ],
     "claude_sidecar_url": "http://127.0.0.1:8765",
     "claude_team_policy": {
       "allowed_actions": [
@@ -166,7 +168,7 @@
         "notes": "Native solo launch keeps team fanout at zero."
       },
       "default_effort": "high",
-      "default_model": "claude-opus-4-8",
+      "default_model": "claude-opus-5",
       "direct_teammate_messaging_allowed": false,
       "disallowed_actions": [],
       "disallowed_tools": [
@@ -242,7 +244,7 @@
     "reason": null,
     "selected_agent": null,
     "selected_effort": "high",
-    "selected_model": "claude-opus-4-8",
+    "selected_model": "claude-sonnet-5",
     "selected_variant": null,
     "terminal_summary_artifact": "terminal-summary.json",
     "timeout_posture": "runner_managed",
@@ -290,7 +292,7 @@
         "notes": "Native solo launch keeps team fanout at zero."
       },
       "default_effort": "high",
-      "default_model": "claude-opus-4-8",
+      "default_model": "claude-opus-5",
       "direct_teammate_messaging_allowed": false,
       "disallowed_actions": [],
       "disallowed_tools": [
@@ -345,7 +347,7 @@
       "--add-dir",
       "/repo",
       "--model",
-      "claude-opus-4-8",
+      "claude-sonnet-5",
       "--effort",
       "high",
       "--json-schema",
@@ -388,7 +390,7 @@
     "reason": null,
     "selected_agent": null,
     "selected_effort": "high",
-    "selected_model": "claude-opus-4-8",
+    "selected_model": "claude-sonnet-5",
     "selected_variant": null,
     "terminal_summary_artifact": "terminal-summary.json",
     "timeout_posture": "runner_managed",
@@ -418,7 +420,7 @@
       "--cd",
       "/repo",
       "--model",
-      "gpt-5.6-sol",
+      "gpt-5.6-terra",
       "-c",
       "model_reasoning_effort=\"medium\"",
       "--sandbox",
@@ -438,10 +440,10 @@
     "launch_timeout_seconds": 1800,
     "live_proof_gate": "none",
     "output_capture_format": "json_stream",
-    "override_reason": null,
+    "override_reason": "codex live adapter default model alias",
     "permission_posture": "explicit",
     "phase_team_eligibility": null,
-    "profile_source": "default",
+    "profile_source": "codex_default",
     "promotion_requirements": [
       "shared launch contract",
       "shared terminal summary contract"
@@ -450,7 +452,7 @@
     "reason": null,
     "selected_agent": null,
     "selected_effort": "medium",
-    "selected_model": "gpt-5.6-sol",
+    "selected_model": "gpt-5.6-terra",
     "selected_variant": null,
     "terminal_summary_artifact": "terminal-summary.json",
     "timeout_posture": "runner_managed",
@@ -528,7 +530,7 @@
     "command": [
       "agy",
       "--model",
-      "Gemini 3.1 Pro (High)",
+      "gemini-3.6-flash-high",
       "--dangerously-skip-permissions",
       "--add-dir",
       "/repo",
@@ -559,7 +561,7 @@
     "reason": null,
     "selected_agent": null,
     "selected_effort": "medium",
-    "selected_model": "auto",
+    "selected_model": "gemini-3.6-flash-high",
     "selected_variant": null,
     "terminal_summary_artifact": "terminal-summary.json",
     "timeout_posture": "runner_managed",
@@ -642,7 +644,7 @@
       "--agent",
       "build",
       "--model",
-      "openai/gpt-5.6-sol",
+      "openai/gpt-5.6-terra",
       "--format",
       "json"
     ],
@@ -670,7 +672,7 @@
     "reason": null,
     "selected_agent": "build",
     "selected_effort": "medium",
-    "selected_model": "openai/gpt-5.6-sol",
+    "selected_model": "openai/gpt-5.6-terra",
     "selected_variant": null,
     "terminal_summary_artifact": "terminal-summary.json",
     "timeout_posture": "runner_managed",

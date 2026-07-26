@@ -204,12 +204,12 @@ class SkillsCanonParityTest(unittest.TestCase):
 
         sample = (
             "Run `claude-execute-phase`; route via `claude-config/claude-skills`. "
-            "Models: claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5. "
+            "Models: claude-opus-5, claude-sonnet-5, claude-haiku-4-5-20251001. "
             "Screenshot with claude-in-chrome. Claude Code drives it."
         )
         out = _neutralize_skill(sample, harness="claude", skill="execute-phase")
         # Concrete literals preserved verbatim.
-        for literal in ("claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5", "claude-in-chrome"):
+        for literal in ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-in-chrome"):
             self.assertIn(literal, out, f"{literal} must survive neutralization")
         # Harness-variant tokens collapsed.
         self.assertIn("<harness>-execute-phase", out)
@@ -217,7 +217,7 @@ class SkillsCanonParityTest(unittest.TestCase):
         self.assertNotIn("claude-execute-phase", out)
         self.assertNotIn("claude-config", out)
         # Brand prose collapsed; but never a corrupted model/tool form.
-        self.assertNotIn("<harness>-opus-4-8", out)
+        self.assertNotIn("<harness>-opus-5", out)
         self.assertNotIn("<harness>-in-chrome", out)
 
     def test_other_harnesses_do_not_leak_claude_only_skillname_refs(self):

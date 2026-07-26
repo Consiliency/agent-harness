@@ -200,7 +200,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`adversarial`/`alternative`/`completeness`) and purpose (`general`) are free-form
   strings, so no enum extension.
 - **Deep-seat FOLLOW-ON (documented, NOT built here).** The richer legal treatment —
-  four lenses per seat, an apex-Opus (`claude-opus-4-8`) seat, a verify-round, and
+  four lenses per seat, an apex-Opus (`claude-opus-5`) seat, a verify-round, and
   retrieval-grounded citation-verification — is a deliberate follow-on. The current
   legal boards ship the single-primary-lens-per-seat form; the deep-seat form layers
   onto the same seat/board schema (no schema change) when built.

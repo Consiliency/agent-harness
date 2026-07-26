@@ -28,6 +28,18 @@ EXECUTORS = ("codex", "claude", "gemini", "grok", "opencode", "pi", "command", "
 # Vendor-agnostic model roles (model-routing-v1). "class" not "tier" — tier
 # already denotes evidence-audit budgets (--tier-2/--tier-3).
 MODEL_CLASSES = ("planner", "implementer", "worker")
+# Model-capability tiers (design-model-tier-taxonomy.md). ultra=planning/review/
+# advising, heavy=supervising long-running workflows, regular=implementation,
+# lite=cheap/high-volume subtasks. The concrete `tier -> (vendor -> model_id)`
+# matrix and the `resolve(role, vendor)` core live in `profiles.py`.
+#
+# LEXICAL-COLLISION NOTE — this "tier" is DISTINCT from the audit-evidence "tier"
+# vocabulary elsewhere in this module: the audit `--tier-2/--tier-3` budgets are
+# INTEGER evidence-depth levels, while MODEL_TIERS members are the four STRING
+# band names below. The two never share a symbol (audit tiers are never spelled
+# "ultra"/"heavy"/"regular"/"lite"; model tiers are never integers), so a reader
+# can always tell which axis a "tier" refers to by its value shape.
+MODEL_TIERS = ("ultra", "heavy", "regular", "lite")
 WORK_UNIT_KINDS = (
     "roadmap_build",
     "phase_plan",

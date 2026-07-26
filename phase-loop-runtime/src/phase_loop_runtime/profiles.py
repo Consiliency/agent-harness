@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .capability_registry import (
     CLAUDE_HEAVY_MODEL,
+    CLAUDE_LITE_MODEL,
+    CLAUDE_REGULAR_MODEL,
+    CLAUDE_ULTRA_MODEL,
     DEFAULT_EXECUTOR,
     default_model_profile_for_executor,
     provider_policy_capabilities,
 )
 from .models import (
     ExecutionPolicyRule,
+    MODEL_TIERS,
     ModelSelection,
     ResolvedExecutionPolicy,
     WorkUnitPolicy,
@@ -16,10 +22,22 @@ from .models import (
 
 
 OPENAI_HEAVY_MODEL = "gpt-5.6-sol"
+# codex regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
+# can reference it. Equals CODEX_REGULAR_MODEL in the tier matrix (single source).
+OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
 OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
+# opencode regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
+# can reference it (same reason as OPENAI_IMPLEMENTER_MODEL). Provider-qualified prefix.
+OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
-GEMINI_FLASH_MODEL = "Gemini 3.5 Flash (High)"
+# Gemini implementer (regular tier) — the CANONICAL agy model id from `agy models`
+# (authoritative list), NOT a display label. CR round-5 finding B: the operator asked us
+# to adopt the newest gemini light/medium models; `agy models` exposes gemini-3.6-flash-*
+# (GA), so the regular tier retargets from the old 3.5 Flash to the newest 3.6 Flash.
+# (agy's ids are `gemini-<ver>-<family>-<effort>`; the old "Gemini 3.5 Flash (High)" display
+# label is NOT in `agy models` — hoisted here so EXECUTOR_MODEL_OVERRIDES can reference it.)
+GEMINI_IMPLEMENTER_MODEL = "gemini-3.6-flash-high"
 PI_AUTO_ROUTED_MODEL = "auto"
 # xAI-family grok executor default (GROKEXEC). Single source for the grok live
 # adapter model alias; the grok CLI takes it verbatim via `-m`.
@@ -45,24 +63,52 @@ ACTION_WORK_UNITS = {
 
 EXECUTOR_MODEL_OVERRIDES = {
     "claude": {
-        "roadmap": CLAUDE_HEAVY_MODEL,
-        "plan": CLAUDE_HEAVY_MODEL,
-        "execute": CLAUDE_HEAVY_MODEL,
-        "repair": CLAUDE_HEAVY_MODEL,
-        "review": CLAUDE_HEAVY_MODEL,
+        # design-model-tier-taxonomy.md (operator-ratified): planning/review use the
+        # ultra model (fable); implementation (execute/repair) uses the regular model
+        # (sonnet). This makes the executor-default path AGREE with the tier/class
+        # path — resolve("plan","claude")=fable, resolve("execute","claude")=sonnet.
+        "roadmap": CLAUDE_ULTRA_MODEL,
+        "plan": CLAUDE_ULTRA_MODEL,
+        "execute": CLAUDE_REGULAR_MODEL,
+        "repair": CLAUDE_REGULAR_MODEL,
+        "review": CLAUDE_ULTRA_MODEL,
     },
+    # codex is the fleet's DEFAULT execute executor. Give it an explicit executor-
+    # default map mirroring claude's (CR round 3): planning/review → heavy (ultra-
+    # else-heavy == gpt-5.6-sol), implementation → the regular model (gpt-5.6-terra).
+    # These constants ARE the tier matrix's codex source (CODEX_HEAVY/REGULAR), so this
+    # AGREES with resolve() — previously codex fell through to DEFAULT_PROFILES (heavy)
+    # and the DELEGATED-CHILD / HARNESS-LANE seams launched implementation on sol.
+    "codex": {
+        "roadmap": OPENAI_HEAVY_MODEL,
+        "plan": OPENAI_HEAVY_MODEL,
+        "execute": OPENAI_IMPLEMENTER_MODEL,
+        "repair": OPENAI_IMPLEMENTER_MODEL,
+        "review": OPENAI_HEAVY_MODEL,
+    },
+    # opencode is launch-live (promotion_status="live", first-class --executor opencode,
+    # harness-lane accepts it). Mirror the codex/claude fix (CR round 3): implementation
+    # → the regular model (openai/gpt-5.6-terra), planning/review → heavy — so the
+    # executor path AGREES with CLASS_MODEL_OVERRIDES["opencode"]["implementer"].
+    # Previously all actions mapped to sol, so the harness-lane seam launched
+    # implementation on HEAVY while the main seam resolved terra (intra-vendor split).
     "opencode": {
         "roadmap": OPENCODE_OPENAI_HEAVY_MODEL,
         "plan": OPENCODE_OPENAI_HEAVY_MODEL,
-        "execute": OPENCODE_OPENAI_HEAVY_MODEL,
-        "repair": OPENCODE_OPENAI_HEAVY_MODEL,
+        "execute": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
+        "repair": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
         "review": OPENCODE_OPENAI_HEAVY_MODEL,
     },
+    # gemini is launch-live. CR round-4: implementation must NOT use the broad `auto`
+    # alias — _gemini_cli_model('auto') collapses to the Pro (HEAVY) argv, so the
+    # delegated-child / harness-lane seams were launching implementation on Pro while
+    # the main seam launched Flash. execute/repair → the validated Flash implementer
+    # name (== the class map), planning/review → `pro` (heavy, agrees with the class map).
     "gemini": {
         "roadmap": GEMINI_PRO_ROUTED_MODEL,
         "plan": GEMINI_PRO_ROUTED_MODEL,
-        "execute": GEMINI_AUTO_ROUTED_MODEL,
-        "repair": GEMINI_AUTO_ROUTED_MODEL,
+        "execute": GEMINI_IMPLEMENTER_MODEL,
+        "repair": GEMINI_IMPLEMENTER_MODEL,
         "review": GEMINI_PRO_ROUTED_MODEL,
     },
     "grok": {
@@ -81,6 +127,12 @@ EXECUTOR_MODEL_OVERRIDES = {
     },
 }
 
+# Executor-path effort overrides. These INTENTIONALLY win over the per-tier advisory
+# efforts (_TIER_ADVISORY_EFFORT) — effort is a declared non-goal / advisory-only
+# (CR round-4 item I decision (ii)); the model mapping is the enforced axis, not effort.
+# claude runs `high` on every action here — roadmap/plan/review vs the ultra-tier advisory
+# `max`, and execute/repair vs the regular-tier advisory `medium`; codex roadmap/plan/
+# review also run `high` (vs ultra `max`). All tracked in agent-harness#304.
 EXECUTOR_EFFORT_OVERRIDES = {
     "claude": {
         "roadmap": "high",
@@ -96,28 +148,340 @@ EXECUTOR_EFFORT_OVERRIDES = {
 # to its single model (pi). Non-`phase-loop-` model strings pass through
 # `_resolve_policy_model` unchanged for every executor (claude/codex have no
 # model_aliases; gemini/pi pass through non-alias strings), so these resolve.
-CLAUDE_IMPLEMENTER_MODEL = "claude-sonnet-5"
-CLAUDE_WORKER_MODEL = "claude-haiku-4-5"
-OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
+# CLAUDE_IMPLEMENTER_MODEL is an ALIAS of the regular tier constant (not a second
+# literal) so the two can never drift (CR nit F) — kept as a named symbol only
+# because panel_invoker imports it. The old CLAUDE_WORKER_MODEL (undated
+# `claude-haiku-4-5`) is RETIRED — the worker class now derives to the lite tier's
+# DATED pin (CLAUDE_LITE_MODEL); an undated id is the floating-alias shape the
+# pin-only rule rejects (design-model-tier-taxonomy.md).
+CLAUDE_IMPLEMENTER_MODEL = CLAUDE_REGULAR_MODEL
+# OPENAI_IMPLEMENTER_MODEL is defined near OPENAI_HEAVY_MODEL at the top of this
+# module (hoisted so EXECUTOR_MODEL_OVERRIDES can reference it).
 OPENAI_WORKER_MODEL = "gpt-5.6-luna"
-OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
+# OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
-# Gemini planner stays on the CLI `pro` alias; bounded implementer/worker lanes
-# use the validated agy model name directly rather than the broad `auto` alias.
-GEMINI_IMPLEMENTER_MODEL = GEMINI_FLASH_MODEL
-GEMINI_WORKER_MODEL = GEMINI_FLASH_MODEL
+# Gemini planning (planner class + roadmap/plan/review executor path) stays on the CLI
+# `pro` alias (heavy → agy Pro). Implementation (regular, GEMINI_IMPLEMENTER_MODEL) uses the
+# canonical agy `gemini-3.6-flash-high` on BOTH the class and executor paths, NOT the broad
+# `auto` alias (which the adapter collapses to Pro/heavy). Worker (lite) uses the canonical
+# agy 3.5 Flash id: `agy models` exposes NO flash-lite, so the matrix's gemini-3.5-flash-lite
+# lite cell is ASPIRATIONAL (target, not live) — the live worker degrades to real 3.5 Flash,
+# named in the deferral below (a real version/family gap, like grok-4.3, NOT representational).
+GEMINI_WORKER_MODEL = "gemini-3.5-flash-high"
 
-CLASS_MODEL_OVERRIDES = {
+# CLASS_MODEL_OVERRIDES + resolve_model_class are defined BELOW the tier matrix
+# (see "class↔tier bridge"), so the claude/codex class mappings can DERIVE from
+# TIER_MODELS instead of duplicating literals (design-model-tier-taxonomy.md CR).
+
+
+# ===========================================================================
+# Model-tier taxonomy (design-model-tier-taxonomy.md)
+#
+# A first-class `role -> tier -> (vendor -> model_id)` resolution, ADDITIVE to
+# (not replacing) the legacy MODEL_CLASSES / CLASS_MODEL_OVERRIDES machinery
+# above — the two coexist during the migration. The four tiers are the vocabulary
+# frozen in `models.MODEL_TIERS`; "tier" here is the model-capability band and is
+# lexically distinct from the audit-evidence `--tier-N` budgets (see the
+# MODEL_TIERS definition-site note in models.py).
+#
+# PIN where the vendor publishes immutable ids: claude (dateless per-gen snapshots)
+# and codex (gpt-5.6-<name>) are pinned canonical literals — no floating aliases
+# (`gpt-5.6`, `gemini-flash-latest`, `-latest`). Two exceptions are marked
+# `volatile=True` in the matrix: gemini heavy (a PREVIEW id) and ALL grok cells (xAI
+# ships no dated snapshot; bare ids float to latest stable — blocker 2). A version
+# bump is a single-line edit to one of these constants.
+#
+# NON-CLAUDE ULTRA: only Claude ships a distinct ultra model. For codex/gemini/grok
+# the "ultra" band IS the heavy model run at `effort=max` (OpenAI Sol-Pro, grok
+# high-reasoning, etc. are reasoning MODES, not separate catalog ids). So the
+# vendor matrices below omit an `"ultra"` entry and `resolve()` falls back to
+# `(heavy_model, effort="max")` — the operator rule "ultra when available for that
+# vendor, otherwise heavy".
+# ===========================================================================
+
+# Per-tier ADVISORY effort defaults (ultra=max, heavy=xhigh, regular=medium, lite=low).
+# ADVISORY — NOT enforced at the executor path (CR round-4, item I decision (ii)): effort
+# ladders are a declared non-goal of the taxonomy, and effort changes cost/latency
+# fleet-wide and were never operator-ratified the way MODELS were. Where an executor
+# declares an effort override (EXECUTOR_EFFORT_OVERRIDES) it INTENTIONALLY WINS over
+# these defaults. Named live divergences today: claude roadmap/plan/review AND
+# execute/repair all run `high` (vs the ultra-tier advisory `max` for planning/review and
+# the regular-tier advisory `medium` for implementation); codex roadmap/plan/review run
+# `high` on the executor path (vs the ultra-tier advisory `max`). (gemini/grok planning
+# clamp `max`→`high` at their own ceilings regardless.) resolve().effort returns this
+# advisory value; the wiring test asserts MODEL agreement only — effort is tracked in
+# agent-harness#304.
+_TIER_ADVISORY_EFFORT: dict[str, str] = {
+    "ultra": "max",
+    "heavy": "xhigh",
+    "regular": "medium",
+    "lite": "low",
+}
+
+# codex/OpenAI per-tier ids (reuse the existing single-source constants).
+CODEX_HEAVY_MODEL = OPENAI_HEAVY_MODEL
+CODEX_REGULAR_MODEL = OPENAI_IMPLEMENTER_MODEL
+CODEX_LITE_MODEL = OPENAI_WORKER_MODEL
+
+# gemini/Google per-tier ids — API-style canonical ids (NOT the CLI routing
+# aliases `pro`/`auto` or the display label used by the legacy class overrides).
+# heavy is a PREVIEW model (Google already retired gemini-3-pro-preview) → marked
+# volatile in the matrix; regular/lite are stable GA ids.
+GEMINI_HEAVY_MODEL = "gemini-3.1-pro-preview"
+GEMINI_REGULAR_MODEL = "gemini-3.6-flash"
+GEMINI_LITE_MODEL = "gemini-3.5-flash-lite"
+
+# grok/xAI per-tier ids. heavy reuses the existing GROK_DEFAULT_MODEL SSOT.
+# VOLATILE: xAI publishes NO dated snapshot for these — a bare `grok-4.5`/`grok-4.3`
+# id tracks the latest stable build per xAI docs, so these are NOT immutable pins.
+# All grok tier cells are marked volatile below; repin to dated ids when xAI ships
+# them (design-model-tier-taxonomy.md CR, blocker 2).
+GROK_HEAVY_MODEL = GROK_DEFAULT_MODEL
+GROK_REGULAR_MODEL = "grok-4.3"
+GROK_LITE_MODEL = "grok-build-0.1"
+
+
+@dataclass(frozen=True)
+class TierModel:
+    """One (model_id, effort, volatile) cell of the per-vendor tier matrix."""
+
+    model_id: str
+    effort: str
+    volatile: bool = False
+
+
+@dataclass(frozen=True)
+class TierResolution:
+    """Result of `resolve(role, vendor)`: the resolved tier plus its model id,
+    ADVISORY effort (see _TIER_ADVISORY_EFFORT), and volatility marker. `.model_id`/`.effort` are the
+    primary outputs; `.volatile` flags a preview/hot-swappable id (gemini heavy)."""
+
+    tier: str
+    model_id: str
+    effort: str
+    volatile: bool = False
+
+
+# The per-vendor tier matrix. `ultra` is present ONLY for claude; every other
+# vendor's ultra resolves to its heavy model @ max via resolve()'s fallback.
+TIER_MODELS: dict[str, dict[str, TierModel]] = {
     "claude": {
-        "planner": CLAUDE_HEAVY_MODEL,
-        "implementer": CLAUDE_IMPLEMENTER_MODEL,
-        "worker": CLAUDE_WORKER_MODEL,
+        "ultra": TierModel(CLAUDE_ULTRA_MODEL, _TIER_ADVISORY_EFFORT["ultra"]),
+        "heavy": TierModel(CLAUDE_HEAVY_MODEL, _TIER_ADVISORY_EFFORT["heavy"]),
+        "regular": TierModel(CLAUDE_REGULAR_MODEL, _TIER_ADVISORY_EFFORT["regular"]),
+        "lite": TierModel(CLAUDE_LITE_MODEL, _TIER_ADVISORY_EFFORT["lite"]),
     },
     "codex": {
-        "planner": OPENAI_HEAVY_MODEL,
-        "implementer": OPENAI_IMPLEMENTER_MODEL,
-        "worker": OPENAI_WORKER_MODEL,
+        "heavy": TierModel(CODEX_HEAVY_MODEL, _TIER_ADVISORY_EFFORT["heavy"]),
+        "regular": TierModel(CODEX_REGULAR_MODEL, _TIER_ADVISORY_EFFORT["regular"]),
+        "lite": TierModel(CODEX_LITE_MODEL, _TIER_ADVISORY_EFFORT["lite"]),
     },
+    "gemini": {
+        "heavy": TierModel(GEMINI_HEAVY_MODEL, _TIER_ADVISORY_EFFORT["heavy"], volatile=True),
+        "regular": TierModel(GEMINI_REGULAR_MODEL, _TIER_ADVISORY_EFFORT["regular"]),
+        "lite": TierModel(GEMINI_LITE_MODEL, _TIER_ADVISORY_EFFORT["lite"]),
+    },
+    # grok: ALL cells volatile — xAI publishes no dated snapshot, bare ids float to
+    # latest stable (blocker 2). NOTE: grok's LIVE class/executor routing stays
+    # single-model (GROK_DEFAULT_MODEL = grok-4.5) by grok's documented design; these
+    # per-tier ids are the taxonomy target, consulted via resolve(), not yet the live
+    # grok class path (deferred — see CLASS_MODEL_OVERRIDES: claude+codex derived).
+    "grok": {
+        "heavy": TierModel(GROK_HEAVY_MODEL, _TIER_ADVISORY_EFFORT["heavy"], volatile=True),
+        "regular": TierModel(GROK_REGULAR_MODEL, _TIER_ADVISORY_EFFORT["regular"], volatile=True),
+        "lite": TierModel(GROK_LITE_MODEL, _TIER_ADVISORY_EFFORT["lite"], volatile=True),
+    },
+}
+
+TIER_VENDORS: tuple[str, ...] = tuple(TIER_MODELS.keys())
+
+# The supervise role (run-train coordinator + phase-loop runner orchestrator) maps to
+# the heavy tier. ADVISORY PROVENANCE ONLY (design item 7, CR round-3 correction): there
+# is no programmatic coordinator launch that sets a model — the coordinator IS the
+# ambient CLI session (per-node run_loop launches its own phase executors). This tier is
+# recorded on the coordinator's review artifact via supervise_selection(); an operator
+# running the supervisor session should be on the heavy model (Opus 5).
+SUPERVISOR_TIER = "heavy"
+
+# Role -> tier. Roles are the product-loop actions plus `supervise` and the
+# cheap/worker high-volume band. resolve() ALSO accepts a bare tier name (any
+# member of MODEL_TIERS) as `role`, so callers can address a tier directly.
+ROLE_TIERS: dict[str, str] = {
+    "roadmap": "ultra",
+    "plan": "ultra",
+    "review": "ultra",
+    "advise": "ultra",
+    "supervise": SUPERVISOR_TIER,
+    "execute": "regular",
+    "repair": "regular",
+    "worker": "lite",
+    "cheap": "lite",
+}
+
+
+def tier_for_role(role: str) -> str:
+    """The model tier a role maps to. A bare tier name passes through."""
+    if role in MODEL_TIERS:
+        return role
+    tier = ROLE_TIERS.get(role)
+    if tier is None:
+        raise ValueError(f"unknown model-tier role: {role}")
+    return tier
+
+
+def resolve(role: str, vendor: str) -> TierResolution:
+    """Resolve `(role, vendor)` to `(model_id, effort)` (+ tier + volatile marker).
+
+    `role` is either a product role (roadmap/plan/review/execute/repair/supervise/
+    worker/…) or a bare tier name (ultra/heavy/regular/lite). `vendor` is one of
+    claude/codex/gemini/grok.
+
+    ULTRA FALLBACK: for a non-claude vendor the ultra tier resolves to that
+    vendor's heavy model at `effort=max` (there is no separate ultra catalog id).
+    """
+    if vendor not in TIER_MODELS:
+        raise ValueError(f"unknown model-tier vendor: {vendor}")
+    tier = tier_for_role(role)
+    vendor_matrix = TIER_MODELS[vendor]
+    if tier == "ultra" and "ultra" not in vendor_matrix:
+        # ultra-else-heavy@max for codex/gemini/grok.
+        heavy = vendor_matrix["heavy"]
+        return TierResolution(
+            tier="ultra",
+            model_id=heavy.model_id,
+            effort=_TIER_ADVISORY_EFFORT["ultra"],
+            volatile=heavy.volatile,
+        )
+    cell = vendor_matrix[tier]
+    return TierResolution(
+        tier=tier,
+        model_id=cell.model_id,
+        effort=cell.effort,
+        volatile=cell.volatile,
+    )
+
+
+def supervise_selection(vendor: str = "claude") -> TierResolution:
+    """The supervise-tier binding for a coordinator/orchestrator on `vendor`.
+
+    ADVISORY PROVENANCE ONLY (design item 7, CR round-3 correction): there is no
+    programmatic coordinator launch that sets a model — `run_train` launches per-NODE
+    `run_loop` phase executors (each with its own tier model), and the coordinator /
+    phase-loop-runner orchestrator is CLI/ambient-invoked with an OPERATOR-selected
+    model. So this does not BIND a launch; the run-train coordinator records the
+    supervise tier on its review artifact as provenance (the operator running the
+    supervisor session should be on the heavy model, Opus 5)."""
+    return resolve(SUPERVISOR_TIER, vendor)
+
+
+# --- class↔tier bridge: derive the legacy class overrides from the matrix -----
+# The MODEL_CLASSES axis (planner/implementer/worker) maps onto model tiers so the
+# class path and the tier path can never DIVERGE on the same decision (the CR's
+# blocker). CONVERGED VENDORS — claude + codex: their class models are API-id-shaped,
+# so CLASS_MODEL_OVERRIDES DERIVES from TIER_MODELS via this bridge AND their
+# EXECUTOR_MODEL_OVERRIDES entries use the same tier-matrix constants — so BOTH the
+# class path and the executor-default path agree with resolve() for every action
+# (enforced by tests/test_model_tier_taxonomy.py::TierLiveWiringTest).
+# DEFERRED vendor×path pairs — LIVE routing NOT sourced from the matrix (accurate
+# enumeration; each is intentional, with the reason it can't be a one-line derive):
+#   • gemini — the MODEL-PATH split is FIXED (CR round-4) and the REGULAR VERSION is now
+#     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
+#     uses the canonical agy `gemini-3.6-flash-high` (verified against `agy models`; the
+#     newest GA Flash the operator asked us to adopt) — the regular tier is VERSION-ALIGNED to
+#     the matrix's gemini-3.6-flash (the only remaining difference is NOTATION: the live id is
+#     the agy-suffixed `gemini-3.6-flash-high`, not the matrix's bare `gemini-3.6-flash`, a form
+#     the adapter maps 1:1). Two things remain: (a) the PRO/
+#     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
+#     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
+#     of this fix's scope; (b) LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so
+#     the matrix's gemini-3.5-flash-lite lite cell is a TARGET, not live; the live worker
+#     degrades to the real agy 3.5 Flash (gemini-3.5-flash-high). This is a genuine
+#     version/family divergence (like grok-4.3), NOT representational — repin the lite cell
+#     when agy ships a flash-lite id.
+#   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.5) for every
+#     class/action by grok's documented SINGLE-MODEL design; the per-tier matrix ids
+#     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
+#   • opencode — NO LONGER a bypass: its class AND executor paths now AGREE (both use
+#     the provider-qualified `openai/gpt-5.6-{sol,terra,luna}` at heavy/regular/lite;
+#     execute/repair → terra, planning/review → sol; CR round-4 fix). It is not DERIVED
+#     from TIER_MODELS only because opencode is not a tier-matrix vendor (its ids carry
+#     the `openai/` transport prefix); the mapping is hand-maintained but tier-consistent.
+#   • pi class path AND pi executor path — both the `auto` router alias (pi has no
+#     separate per-tier model; both paths use the single alias, so no intra-vendor split).
+#   • `command` executor — LAUNCH-CAPABLE (its `{model}` is a renderable command-template
+#     placeholder via _render_command_template, so the model CAN reach a live argv when an
+#     operator template uses `{model}`), but has NO defined tier value (not a tier vendor),
+#     so it stays on the DEFAULT_PROFILES heavy default — SEAM-CONSISTENT (same value on
+#     every seam, no intra-vendor split). Named here as an accepted no-tier case. Weaker
+#     channel-class residue (N3): `{model}` is OPTIONAL in a command template (only
+#     `{context_file}` is required), so an operator template that OMITS it records
+#     selected_model while binding nothing, with no unbound stamp — operator-authored, not a
+#     production default; stamping it is tracked as agent-harness#307.
+#   • MAINTENANCE seam (CR round-5 finding 1) — `maintain-skills` runs via
+#     maintenance.py:run_maintenance, which calls resolve_profile("skill-maintenance")
+#     → DEFAULT_PROFILES = (gpt-5.6-sol, high) → build_codex_command, bypassing BOTH the
+#     class path and the executor path (no resolve_profile_for_executor, no policy layer).
+#     It hardwires codex on the HEAVY model. ACCEPTED: maintain-skills is not execute/repair,
+#     ROLE_TIERS defines no tier for it, and it is seam-consistent (fixed codex). Latent
+#     note: resolve_profile_for_executor("maintain-skills", executor≠codex) would return
+#     gpt-5.6-sol via DEFAULT_PROFILES — unreachable today (maintain-skills is codex-fixed)
+#     but live code.
+#   • claude CHANNEL route (CR round-5 finding 3) — the PRODUCTION-DEFAULT interactive route
+#     (`claude-channel send`) binds NO `--model` (the print/agent_view routes DO). A send into
+#     an EXISTING claude session cannot rebind that session's model, so implementation on the
+#     channel route runs on the operator's ambient session model, NOT the resolved tier model.
+#     TRANSPORT-INHERENT carve-out (same logic as the supervise carve-out). The channel
+#     LaunchSpec stamps a `session_model_unbound` provenance warning so selected_model is not
+#     read as a bound guarantee (see launcher._CHANNEL_SESSION_MODEL_UNBOUND_WARNING).
+#   • ESCALATION-CEILING divergence (CR round-8/9 finding A-ii) — NAMED, not aligned, because the
+#     two ladders are DIFFERENT with different CEILINGS: (1) the class-escalation ladder
+#     (governed_premerge.next_escalation / _NEXT_CLASS: worker→implementer→planner) is a RECORDED
+#     DECISION only — the repair-loop pivot writes it with `applied: False` (runner.py:2788) and
+#     the runner does NOT re-select the model_class off it (the documented remaining thread); its
+#     ceiling WOULD be the PLANNER class = the ULTRA model (claude-fable-5). (2) the
+#     claude-execute-phase skill's in-lane retry-tier ladder (fast→strong→frontier) has a
+#     ceiling of `frontier` = the HEAVY model (claude-opus-5). This comment states the two
+#     CEILINGS only — it makes NO claim about when/whether the retry-tier ladder takes effect
+#     (that is skill/runner behavior it does not own; see the skill for its retry semantics).
+# MODEL-PATH BYPASS CLASS — CLOSED or NAMED across the FOUR phase-executor RESOLUTION seams
+# (main-loop, delegated-child runner.py:4894, harness-lane runner.py:5554, maintenance). These
+# are the only four seams that RESOLVE a model; worker_pool.py executes LaunchSpecs the main
+# seam already resolved (a parallel TRANSPORT, no resolution of its own), and the runner
+# resolve_profile calls at runner.py:1358/1458 feed BLOCKED-path snapshots only (no launch).
+# No phase executor SILENTLY launches implementation on a heavier model than its regular tier:
+# for the tier vendors the class + executor paths agree; the remaining listed cases are either
+# REPRESENTATIONAL (aliases / display labels / provider-prefixes that are tier-consistent but
+# not literally the matrix ids), or the named no-tier seams (command, maintenance) and the
+# transport carve-out (channel). EXCEPT grok: grok's intentional SINGLE-MODEL routing runs
+# implementation on grok-4.5 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
+# target is not yet live. There are TWO named model disagreements (grok single-model; gemini
+# LITE aspirational — agy exposes no flash-lite), not one. Panel/advisor legs
+# (panel_invoker.DEFAULT_LEG_MODELS = fable-5 / sol / 3.1-Pro / grok-4.5) are a SEPARATE
+# model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
+# are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
+# EFFORT is a separate, ADVISORY axis (see _TIER_ADVISORY_EFFORT), intentionally not enforced.
+# Migrating the representational cases wholesale is out of scope.
+_CLASS_TIER_BRIDGE: dict[str, str] = {
+    "planner": "ultra",     # ultra-else-heavy@max via resolve()
+    "implementer": "regular",
+    "worker": "lite",
+}
+
+
+def _class_model_from_tier(vendor: str, model_class: str) -> str:
+    """The concrete model for `(vendor, model_class)`, sourced from TIER_MODELS."""
+    return resolve(_CLASS_TIER_BRIDGE[model_class], vendor).model_id
+
+
+def _derived_class_overrides(vendor: str) -> dict[str, str]:
+    return {mc: _class_model_from_tier(vendor, mc) for mc in _CLASS_TIER_BRIDGE}
+
+
+CLASS_MODEL_OVERRIDES = {
+    # claude + codex: DERIVED from the tier matrix (planner←ultra, implementer←
+    # regular, worker←lite) so the class and tier paths agree by construction.
+    "claude": _derived_class_overrides("claude"),
+    "codex": _derived_class_overrides("codex"),
     "opencode": {
         "planner": OPENCODE_OPENAI_HEAVY_MODEL,
         "implementer": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
@@ -129,7 +493,8 @@ CLASS_MODEL_OVERRIDES = {
         "worker": GEMINI_WORKER_MODEL,
     },
     # grok exposes no separate implementer/worker tier — every class maps to its
-    # single model (like pi), passed through the CLI's `-m` verbatim.
+    # single model (like pi), passed through the CLI's `-m` verbatim. Its per-tier
+    # matrix ids (grok-4.3/grok-build-0.1) are the taxonomy target, not yet live.
     "grok": {
         "planner": GROK_DEFAULT_MODEL,
         "implementer": GROK_DEFAULT_MODEL,
@@ -198,7 +563,9 @@ SHIPPED_MODEL_POLICY = {
     "plan": {"model_class": "planner", "effort": "max", "clamp": True},
     "execute": {"model_class": "implementer", "effort": "medium"},
     "repair": {"model_class": "implementer", "effort": "medium"},
-    "review": {"model_class": "planner", "effort": "high", "clamp": True},
+    # design-model-tier-taxonomy.md: review is an ULTRA-tier role → max effort (was
+    # high). clamp=True still resolves a sub-max provider's `max` to its ceiling.
+    "review": {"model_class": "planner", "effort": "max", "clamp": True},
 }
 
 

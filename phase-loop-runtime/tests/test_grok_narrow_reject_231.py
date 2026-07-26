@@ -145,12 +145,15 @@ class GrokMaxEffortPlannerEligibilityTest(unittest.TestCase):
         self.assertIsNone(caps["pi"].planner_max_class)      # derives False (narrow)
         self.assertIs(caps["grok"].planner_max_class, False)  # the one explicit override
 
-    # 2 — grok still runs at its own real max everywhere it actually runs: as a
-    # planner for a non-max effort.
-    def test_grok_still_usable_as_non_max_planner(self):
+    # 2 — grok resolves cleanly under the shipped review policy. Review is now an
+    # ULTRA-tier role → max effort (design-model-tier-taxonomy.md blocker 1f), and
+    # grok (broad supported_efforts + planner_max_class=False) HONORS `max` at the
+    # policy layer, translating it to grok's real `high` ceiling only at CLI-emit.
+    def test_grok_still_usable_as_review_planner(self):
         model, effort = _resolve("review", "grok", model_policy=True)
-        self.assertEqual(effort, "high")  # SHIPPED_MODEL_POLICY review effort, no clamp needed
+        self.assertEqual(effort, "max")  # shipped review = max; grok honors it at policy layer
         self.assertTrue(model)  # resolves to a concrete grok model, no exception
+        self.assertEqual(launcher._grok_cli_effort(effort), "high")  # real ceiling at CLI emit
 
     # 3 — an explicit `max` request for grok is HONORED at the policy layer (stays
     # `max`, never crashes, because grok keeps a broad supported_efforts) and is

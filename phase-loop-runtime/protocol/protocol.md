@@ -588,7 +588,7 @@ The accepted syntax is line-oriented markdown:
 ## Execution Policy
 - work-unit defaults: work-unit=`lane_execute`, effort=`medium`, unsupported=`inherit_default`, inherit-default=`true`
 - execute: executor=`pi`, model=`auto`, effort=`medium`, work-unit=`lane_execute`, reason=`simple bounded lane default`
-- repair: executor=`claude`, model=`claude-opus-4-8`, effort=`high`, work-unit=`repair`
+- repair: executor=`claude`, model=`claude-sonnet-5`, effort=`medium`, work-unit=`repair`
 - SL-2: executor=`gemini`, model=`phase-loop-execute-medium`, effort=`medium`, work-unit=`lane_execute`, unsupported=`fallback`, fallback=`phase-loop-execute-medium`
 ```
 

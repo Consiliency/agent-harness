@@ -29,15 +29,19 @@ def _resolve(action, executor, *, model_policy=False, plan_policy=None,
 
 class ModelClassResolutionTest(unittest.TestCase):
     def test_class_to_model_per_executor(self):
-        self.assertEqual(resolve_model_class("claude", "planner"), "claude-opus-4-8")
+        # design-model-tier-taxonomy.md: Claude planner class promoted opus→fable (ultra).
+        self.assertEqual(resolve_model_class("claude", "planner"), "claude-fable-5")
         self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
-        self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5")
+        # design-model-tier-taxonomy.md: worker class → the lite tier's DATED pin
+        # (was the undated claude-haiku-4-5, a floating-alias shape).
+        self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5-20251001")
         self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.6-terra")
-        # Gemini keeps `pro` for planning while implementer/worker route through
-        # the validated agy Flash model name.
+        # Gemini keeps `pro` for planning; implementer uses the canonical agy 3.6 Flash id
+        # (newest GA, CR round-5 finding B), worker the agy 3.5 Flash id (agy has no flash-lite
+        # → the matrix's gemini-3.5-flash-lite lite cell is aspirational).
         self.assertEqual(resolve_model_class("gemini", "planner"), "pro")
-        self.assertEqual(resolve_model_class("gemini", "implementer"), "Gemini 3.5 Flash (High)")
-        self.assertEqual(resolve_model_class("gemini", "worker"), "Gemini 3.5 Flash (High)")
+        self.assertEqual(resolve_model_class("gemini", "implementer"), "gemini-3.6-flash-high")
+        self.assertEqual(resolve_model_class("gemini", "worker"), "gemini-3.5-flash-high")
         self.assertIsNone(resolve_model_class("claude", "bogus"))
 
     def test_model_class_field_validates(self):
@@ -51,8 +55,10 @@ class EmptyPolicyBackCompatTest(unittest.TestCase):
         self.assertEqual(_resolve("plan", "codex", model_policy=False), ("gpt-5.6-sol", "high"))
 
     def test_execute_claude_unchanged(self):
-        # opus @ high is today's claude execute baseline (the empty-policy path).
-        self.assertEqual(_resolve("execute", "claude", model_policy=False), ("claude-opus-4-8", "high"))
+        # design-model-tier-taxonomy.md (operator-ratified): claude execute uses the
+        # regular tier (sonnet-5) on the empty-policy path too — the executor-default
+        # and tier/class paths agree (opus-4-8 → sonnet-5).
+        self.assertEqual(_resolve("execute", "claude", model_policy=False), ("claude-sonnet-5", "high"))
 
 
 class ShippedPolicyTest(unittest.TestCase):

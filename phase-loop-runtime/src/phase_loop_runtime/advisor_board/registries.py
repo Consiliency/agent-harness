@@ -257,7 +257,12 @@ _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     ("gpt-5.6-sol", "codex", "max"),
     ("claude-sonnet-5", "claude", "max"),
     ("claude-opus-4-8", "claude", "max"),
-    ("claude-haiku-4-5", "claude", "max"),
+    # design-model-tier-taxonomy.md: claude-opus-5 is the new Claude heavy model.
+    # opus-4-8 is retained above — still referenced by tests (advisor_board_schema) —
+    # so both are registered during the migration. (The build_bundle PRESERVE_LITERALS
+    # referent was retired in CR round 1; the test reference is what keeps this justified.)
+    ("claude-opus-5", "claude", "max"),
+    ("claude-haiku-4-5-20251001", "claude", "max"),
     ("claude-fable-5", "claude", "max"),
     ("Gemini 3.1 Pro", "gemini", "max"),
     ("grok-4.5", "grok", "max"),

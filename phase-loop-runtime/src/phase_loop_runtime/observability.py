@@ -131,6 +131,12 @@ def run_artifacts(repo: Path, phase: str, action: str, index: int, command_or_sp
             "wrapped_cwd": command_or_spec.wrapped_cwd,
             "launch_timeout_seconds": command_or_spec.launch_timeout_seconds,
             "claude_execution_mode": command_or_spec.claude_execution_mode,
+            # CR round-8 finding: launch.json is the DURABLE artifact an auditor reads, and it
+            # records selected_model for a channel run. Persist the route context beside it so
+            # selected_model is not read as launch-bound — claude_route travels with it, and the
+            # session_model_unbound warning is written below when present (mirrors
+            # LaunchResult.event_metadata).
+            "claude_route": command_or_spec.claude_route,
             "claude_team_policy": (
                 command_or_spec.claude_team_policy.to_json() if command_or_spec.claude_team_policy else None
             ),
@@ -175,6 +181,10 @@ def run_artifacts(repo: Path, phase: str, action: str, index: int, command_or_sp
             "terminal_path": str(root / "terminal-summary.json"),
             "stop_file": str(stop_file(repo)),
         }
+    # Route-level provenance warnings (e.g. the channel route's session_model_unbound stamp) —
+    # written only when present, mirroring LaunchResult.event_metadata (CR round-8 finding C).
+    if getattr(command_or_spec, "claude_route_warnings", None):
+        metadata["claude_route_warnings"] = list(command_or_spec.claude_route_warnings)
     (root / "launch.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return {
         "root": root,
@@ -401,6 +411,9 @@ def _selected_execution_policy(execution_policy: dict[str, Any], launch_metadata
     if execution_policy.get("work_unit_kind") or execution_policy.get("model") or execution_policy.get("effort"):
         return execution_policy
     if launch_metadata.get("selected_model") or launch_metadata.get("selected_effort"):
+        # NOTE: a round-8 attempt to stage channel route context on this fallback branch was
+        # removed — it did not caveat the status/metrics `model`. Threading route context so the
+        # status/metrics model shows session-unbound is owned by agent-harness#308.
         return {
             "executor": launch_metadata.get("executor"),
             "model": launch_metadata.get("selected_model"),

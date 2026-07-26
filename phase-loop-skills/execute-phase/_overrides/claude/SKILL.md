@@ -109,15 +109,19 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 
 | Tier      | Model              | Use for                                                       |
 |-----------|--------------------|---------------------------------------------------------------|
-| frontier  | claude-opus-4-8    | retry escalation ceiling, highest-stakes lanes                |
+| frontier  | claude-opus-5      | retry escalation ceiling, highest-stakes lanes                |
 | strong    | claude-sonnet-5    | contract-authoring (IF-freeze), schema/migration, algorithmic |
-| fast      | claude-haiku-4-5   | mechanical wiring, small components against frozen types      |
+| fast      | claude-haiku-4-5-20251001 | mechanical wiring, small components against frozen types |
 
-These map to the runtime `model_class` axis: planner = frontier, implementer =
-strong, worker = fast. The shipped `model_policy` dispatches **implementation at
-the implementer class**; on repeated failure the escalation ladder steps the
-class up (implementer → planner) before, in **governed** `run_mode` only,
-invoking the advisor panel. The default `run_mode` is `autonomous` — no panel,
+These map to the runtime `model_class` axis: implementer = strong, worker = fast.
+(The planner class routes to the ULTRA model `claude-fable-5` — a planning-tier
+model ABOVE this execute table; it is NOT `frontier`, which is the heavy model
+`claude-opus-5`.) The shipped `model_policy` dispatches **implementation at the
+implementer class**. The runtime's `model_class`-escalation bookkeeping is
+runner-internal and is NOT applied to the launched model — see
+`governed_premerge.next_escalation` / `runner.py` for its current status. This
+skill's own retry-tier ladder is `fast → strong → frontier` (below).
+The default `run_mode` is `autonomous` — no panel,
 no `human_required`; every governed escalation terminal is a non-human
 `review_gate_block` surfaced in the run-end summary, never a synchronous human
 wait.

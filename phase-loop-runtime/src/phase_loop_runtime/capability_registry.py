@@ -18,7 +18,16 @@ from .state_degradation import active_degraded_executors
 
 DEFAULT_EXECUTOR = "codex"
 DEFAULT_LANE_EXECUTOR = "pi"
-CLAUDE_HEAVY_MODEL = "claude-opus-4-8"  # model-id-source: SSOT constant definition (can't reference itself)
+# Claude per-tier SSOT constants (design-model-tier-taxonomy.md). Each is a pinned
+# canonical model id (no floating aliases). This file is NOT in the model-id-source
+# guard's registry allowlist, so every literal carries a `# model-id-source:` marker.
+# `CLAUDE_HEAVY_MODEL` keeps its historical name (widely imported) but is retargeted
+# from the old opus-4-8 to `claude-opus-5` — the new Claude heavy model, and the
+# ambient default for the supervise tier (see profiles.SUPERVISOR_TIER).
+CLAUDE_ULTRA_MODEL = "claude-fable-5"  # model-id-source: SSOT constant definition (ultra tier)
+CLAUDE_HEAVY_MODEL = "claude-opus-5"  # model-id-source: SSOT constant definition (heavy tier)
+CLAUDE_REGULAR_MODEL = "claude-sonnet-5"  # model-id-source: SSOT constant definition (regular tier)
+CLAUDE_LITE_MODEL = "claude-haiku-4-5-20251001"  # model-id-source: SSOT constant definition (lite tier, dated snapshot)
 _CLAUDE_BASE_ALLOWED_TOOLS = ("Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "LS")
 _CLAUDE_COLLABORATION_TOOLS = (
     "Agent",
@@ -146,6 +155,13 @@ DEFAULT_CAPABILITY_REGISTRY = {
         ),
         default_model_profiles={action: _ACTION_DEFAULT_PROFILES[action] for action in ("roadmap", "plan", "execute", "repair", "review")},
         default_claude_execution_mode="solo",
+        # NOTE (design-model-tier-taxonomy.md): `default_model=CLAUDE_HEAVY_MODEL` on the
+        # policies below is METADATA-ONLY — no code reads ClaudeTeamPolicy.default_model
+        # to pick a launch model (the launch model comes from resolve_profile_for_executor
+        # / the execution policy). It records the ambient supervise/session model (heavy =
+        # Opus 5). It is deliberately NOT retargeted per-mode: the subagent/agent_team
+        # modes (execute/repair/review) would map to the regular tier if it were live, but
+        # since nothing consumes it, aligning it would be churn with no behavior change.
         claude_execution_policies=(
             ClaudeTeamPolicy(
                 execution_mode="solo",
@@ -481,8 +497,8 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         requires_run_local_user_scope=True,
         notes=(
             "Gemini CLI fallback stays CLI-based and reason-coded; API-key execution requires an explicit command adapter.",
-            "Gemini CLI defaults use built-in routing aliases (`pro` for planning/review and `auto` for execution/repair) to preserve CLI fallback behavior.",
-            "Model-routing-v3 uses explicit `Gemini 3.5 Flash (High)` for implementer/worker model_class routing, but Gemini remains capped at high effort and is not max-effort planner-of-record eligible.",
+            "Gemini defaults: `pro` for planning/review; implementation uses the canonical agy Flash ids — implementer `gemini-3.6-flash-high` (newest GA), worker `gemini-3.5-flash-high` — NOT the broad `auto` alias which the adapter collapses to Pro/heavy (design-model-tier-taxonomy.md CR round-4, retargeted to 3.6 in round-6). agy exposes no flash-lite, so the matrix's gemini-3.5-flash-lite lite cell is aspirational (worker degrades to real 3.5 Flash).",  # model-id-source: capability note mirroring profiles.GEMINI_IMPLEMENTER/WORKER_MODEL
+            "Model-routing-v3 routes implementer to `gemini-3.6-flash-high` and worker to `gemini-3.5-flash-high` (canonical agy ids), but Gemini remains capped at high effort and is not max-effort planner-of-record eligible.",  # model-id-source: capability note mirroring profiles.GEMINI_IMPLEMENTER/WORKER_MODEL
             "Run-local user-scope modelConfigs.customAliases remain available only for explicit phase-loop thinking-level proof runs.",
             "thinkingConfig.thinkingLevel is carried by custom aliases and is not exposed as a CLI flag.",
         ),
