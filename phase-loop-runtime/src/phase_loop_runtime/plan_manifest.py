@@ -535,7 +535,7 @@ def _extract_lanes(path: Path) -> tuple[str, ...]:
 # unstarted phase and would drown the real signal.
 _MANIFEST_DONE = {"completed"}
 _MANIFEST_IN_FLIGHT = {"executing"}
-_SNAPSHOT_DONE = {"complete", "executed"}
+_SNAPSHOT_DONE = {"complete"}
 # `blocked` is IN-FLIGHT: the runner is saying work is outstanding / needs repair. A
 # manifest that records the same phase `completed` is the motivating harm class exactly —
 # resume/repair would act on a phase the other store believes finished, and status alone
@@ -550,7 +550,14 @@ _SNAPSHOT_DONE = {"complete", "executed"}
 # `awaiting_phase_closeout` belongs with `blocked` for the same reason: resume acts on it
 # (handoff.py), and handoff couples the two as a pair at three separate sites. Admitting
 # one member of that pair and not its constant companion was a gap in the same matrix.
-_SNAPSHOT_IN_FLIGHT = {"executing", "planned", "blocked", "awaiting_phase_closeout"}
+# `executed` is likewise RESUME-ACTIONABLE: runner.py relaunches the execute action for
+# `status in {"planned", "executed"}`, i.e. acceptance/evidence is still unresolved. A
+# manifest recording that same phase `completed` is the motivating harm class again.
+# (Kept `awaiting_phase_closeout` here rather than on the done side: handoff.py treats it
+# as needing action, pairing it with `blocked` at three sites.)
+_SNAPSHOT_IN_FLIGHT = {
+    "executing", "planned", "blocked", "awaiting_phase_closeout", "executed",
+}
 
 
 def phase_status_disagreements(

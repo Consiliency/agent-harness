@@ -216,3 +216,12 @@ def test_status_json_omits_the_key_when_the_stores_agree(monkeypatch, tmp_path):
 
     out = _json.loads(render.render_status(_Snap(), as_json=True))
     assert "state_disagreements" not in out
+
+
+def test_manifest_done_vs_snapshot_executed_is_reported():
+    """CR final round (codex): `executed` is resume-actionable — runner.py relaunches the
+    execute action for `status in {"planned", "executed"}`, i.e. acceptance/evidence is
+    still unresolved. A manifest recording that phase `completed` is the motivating harm
+    class. It had been classified DONE, which silenced the pair."""
+    out = phase_status_disagreements({"P": "executed"}, [_entry("P", "completed")])
+    assert out == [("P", "executed", "completed")]
