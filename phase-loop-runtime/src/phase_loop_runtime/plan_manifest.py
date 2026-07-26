@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -513,3 +514,59 @@ def _extract_if_gates(path: Path) -> tuple[str, ...]:
 def _extract_lanes(path: Path) -> tuple[str, ...]:
     text = path.read_text(encoding="utf-8")
     return tuple(dict.fromkeys(re.findall(r"^###\s+(SL-\d+[A-Z]?)\b", text, re.MULTILINE)))
+
+
+# ---------------------------------------------------------------------------
+# ah#312: phase state lives in TWO stores with no reconciliation between them —
+# the runner's snapshot (what `phase-loop status` prints) and this plan manifest.
+# They share an execution vocabulary (`executing`, `completed`/`complete`), so when
+# they disagree one of them is lying to whoever reads it. Observed on
+# specs/phase-plans-convergence-v1.md: status printed `FREEZE: executing` while the
+# manifest recorded that phase `completed`.
+#
+# A phase stuck at `executing` that is actually finished is exactly the state that
+# makes resume/dispatch do the wrong thing, and it is indistinguishable — from status
+# alone — from a genuinely in-flight phase. So SURFACE the disagreement rather than
+# silently rendering one store and discarding the other.
+#
+# Deliberately CONSERVATIVE: only a DONE-vs-IN-FLIGHT pair is a contradiction. A plan
+# that is merely `imported`/`committed` (document written, never executed) says nothing
+# about execution state and must not warn — that is the normal case for a planned-but-
+# unstarted phase and would drown the real signal.
+_MANIFEST_DONE = {"completed"}
+_MANIFEST_IN_FLIGHT = {"executing"}
+_SNAPSHOT_DONE = {"complete", "executed"}
+_SNAPSHOT_IN_FLIGHT = {"executing", "planned"}
+
+
+def phase_status_disagreements(
+    snapshot_phases: Mapping[str, str],
+    entries: Sequence[DotfilesPlanEntry],
+    *,
+    roadmap_slug: str | None = None,
+) -> list[tuple[str, str, str]]:
+    """Phases where the runner snapshot and the plan manifest CONTRADICT each other.
+
+    Returns ``[(phase_alias, snapshot_status, manifest_status), ...]``, empty when the
+    two stores agree or say nothing comparable. Pure — no I/O — so it is testable
+    without a repo.
+    """
+    out: list[tuple[str, str, str]] = []
+    for entry in entries:
+        alias = getattr(entry, "phase_alias", None)
+        if not alias or alias not in snapshot_phases:
+            continue
+        if roadmap_slug is not None:
+            ref = getattr(entry, "roadmap_ref", None)
+            ref_slug = getattr(ref, "slug", None) if ref else None
+            if ref_slug is not None and ref_slug != roadmap_slug:
+                continue
+        snap = snapshot_phases[alias]
+        man = getattr(entry, "status", "")
+        contradiction = (
+            (man in _MANIFEST_DONE and snap in _SNAPSHOT_IN_FLIGHT)
+            or (man in _MANIFEST_IN_FLIGHT and snap in _SNAPSHOT_DONE)
+        )
+        if contradiction:
+            out.append((alias, snap, man))
+    return out
