@@ -546,7 +546,11 @@ _SNAPSHOT_DONE = {"complete", "executed"}
 # outcome disagreement, outside this detector's declared done-vs-in-flight scope, and it
 # has a legitimate staleness reading — a failed plan superseded by a re-plan should be
 # marked orphaned rather than flagged here. Tracked separately rather than widened silently.
-_SNAPSHOT_IN_FLIGHT = {"executing", "planned", "blocked"}
+#
+# `awaiting_phase_closeout` belongs with `blocked` for the same reason: resume acts on it
+# (handoff.py), and handoff couples the two as a pair at three separate sites. Admitting
+# one member of that pair and not its constant companion was a gap in the same matrix.
+_SNAPSHOT_IN_FLIGHT = {"executing", "planned", "blocked", "awaiting_phase_closeout"}
 
 
 def phase_status_disagreements(

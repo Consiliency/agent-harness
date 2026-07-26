@@ -147,3 +147,13 @@ def test_null_roadmap_ref_is_skipped_when_the_alias_is_ambiguous():
     out = phase_status_disagreements({"FREEZE": "executing"}, dupes,
                                      roadmap_slug="phase-plans-convergence-v1")
     assert out == []
+
+
+def test_manifest_done_vs_snapshot_awaiting_closeout_is_reported():
+    """CR round 2: `awaiting_phase_closeout` is in-flight for exactly the reason `blocked`
+    is — resume acts on it, and handoff.py couples the two as a pair at three separate
+    sites. Admitting one and not its constant companion left a real contradiction silent."""
+    out = phase_status_disagreements(
+        {"P": "awaiting_phase_closeout"}, [_entry("P", "completed")]
+    )
+    assert out == [("P", "awaiting_phase_closeout", "completed")]
