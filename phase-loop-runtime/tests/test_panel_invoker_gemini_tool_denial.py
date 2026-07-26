@@ -198,3 +198,43 @@ def test_denial_marker_on_stderr_does_not_discard_a_REAL_review(monkeypatch, sta
     )
     assert rc == 0, "a real review was discarded because stderr mentioned auto-denied"
     assert "VERDICT: AGREE" in text
+
+
+def test_advisory_mode_does_not_demand_a_structured_verdict(monkeypatch, staged):
+    """CR round 2 (codex): `verdict_required = mode != "advisory"` — advisory mode's
+    contract is substantial prose with NO verdict required. The preamble must not
+    contradict the mode the leg is running in."""
+    review_dir, out_dir = staged
+    seen: list[list[str]] = []
+    monkeypatch.setattr(
+        pi, "_run_leg_with_liveness",
+        lambda cmd, **kw: (seen.append(list(cmd)), _FakeProc(stdout="prose"))[1],
+    )
+    pi._exec_leg("gemini", review_dir, out_dir, timeout_s=60, artifact="A",
+                 mode="advisory", env={})
+    head = _prompt_of(seen[0]).split("BUNDLE-SENTINEL")[0]
+    assert "no verdict" in head.lower(), "advisory run still demands a verdict"
+    assert "must END with the structured verdict line" not in head
+
+
+def test_by_reference_material_must_be_declared_unverified(monkeypatch, staged):
+    """CR round 2 (codex): the by-reference contract tells legs to OPEN referenced paths
+    (contents deliberately not inlined). This leg cannot. It must DECLARE the gap rather
+    than review without the material and stay silent about it."""
+    review_dir, _out = staged
+    (review_dir / "review-bundle.md").write_text(
+        "BUNDLE-SENTINEL\n\n" + pi._CONTEXT_REFS_HEADER + "\n\n- /some/spec.pdf\n",
+        encoding="utf-8",
+    )
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    head = _prompt_of(argv).split("BUNDLE-SENTINEL")[0]
+    assert "UNVERIFIED" in head, "by-reference gap is not required to be declared"
+    assert "cannot" in head.lower() or "CANNOT" in head
+
+
+def test_no_by_reference_clause_when_there_are_no_refs(monkeypatch, staged):
+    """Don't tell a leg to declare UNVERIFIED paths when the bundle has none — that
+    would invite a spurious section in every ordinary review."""
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    head = _prompt_of(argv).split("BUNDLE-SENTINEL")[0]
+    assert "UNVERIFIED" not in head
