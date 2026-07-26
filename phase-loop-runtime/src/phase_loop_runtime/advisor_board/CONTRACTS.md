@@ -79,8 +79,9 @@ equivalence is proven by a test (not asserted in prose).
   removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
   Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
   disable `apiKeyHelper`; `claude auth status --json` must prove first-party
-  `claude.ai` subscription auth before the exact-model self-PTY launch. API-key
-  fallback and native Task/subagent fulfillment are forbidden for these seats.
+  `claude.ai` subscription auth before the exact-model self-PTY launch. The
+  homebrew backing is mandatory; alternate backings fail before gateway access.
+  API-key fallback and native Task/subagent fulfillment are forbidden.
 - **`VENDOR_API_KEY_VARS`** — the flat `_API_KEY_VARS` tuple re-keyed by vendor
   family; its union equals today's tuple (proven), so scrubbing stays
   byte-equivalent.

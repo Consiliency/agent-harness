@@ -39,7 +39,7 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 
 ## Use
 
-**Fable and Opus seats are subscription-TUI only.** The runtime launches the exact requested model through the existing self-PTY adapter only after a metadata-only probe proves a logged-in first-party subscription. It scrubs tokens, API helpers, alternate endpoints, and cloud-provider selectors and isolates user/project/local settings. Never fill the seat with a native Task Agent and never add an API/SDK/direct-HTTP fallback. Inside a driving host session where the nested TUI adapter cannot run, the seat fails closed as `UNAVAILABLE/tui_adapter_required`; retry from a host where the adapter can run.
+**Fable and Opus seats are subscription-TUI only.** The runtime requires the homebrew self-PTY backing and rejects alternate backings before gateway access. It launches the exact requested model only after a metadata-only probe proves a logged-in first-party subscription, scrubs tokens, API helpers, alternate endpoints, and cloud-provider selectors, and isolates user/project/local settings. Never fill the seat with a native Task Agent and never add an API/SDK/direct-HTTP fallback. Inside a driving host session where the nested TUI adapter cannot run, the seat fails closed as `UNAVAILABLE/tui_adapter_required`; retry from a host where the adapter can run.
 
 Today's TUI adapter has no typed classifier-refusal capability. Refusal-looking transcript text remains degraded/error evidence and cannot trigger fallback. A future typed adapter may allow one Opus TUI retry only for independently attested defensive-security work, then fails closed on a second refusal.
 

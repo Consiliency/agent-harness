@@ -278,7 +278,7 @@ def attach_native_agent_request(
 _PROVIDER_REFUSAL_KINDS = frozenset({"classifier_refusal"})
 CLAUDE_TUI_TYPED_REFUSAL_SUPPORTED = False
 _TYPED_UNAVAILABLE_DETAILS = frozenset(
-    {"subscription_auth_unproven", "tui_adapter_required"}
+    {"subscription_auth_unproven", "tui_adapter_required", "tui_backing_required"}
 )
 
 
@@ -3298,7 +3298,11 @@ def invoke_board(
     # explicit ``gateway_available`` bool wins for the skip decision; a gateway that is
     # actually down (fetch raises) is ground truth and forces False.
     omnigent_catalog: frozenset[str] | None = None
-    if omnigent is not None and gateway_available is not False:
+    routable_omnigent_seat = any(
+        seat.backing == BACKING_OMNIGENT and not _claude_tui_policy_model(seat.model)
+        for seat in board.seats
+    )
+    if omnigent is not None and gateway_available is not False and routable_omnigent_seat:
         try:
             omnigent_catalog = omnigent.catalog_harnesses()
             if gateway_available is None:
@@ -3335,6 +3339,18 @@ def invoke_board(
         # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
         # runs on its default lane instead of skipping on an empty ('') lane.
         leg = (seat.harness or "").lower()
+        if (
+            leg == "claude"
+            and _claude_tui_policy_model(seat.model)
+            and seat.backing != BACKING_HOMEBREW
+        ):
+            return PanelLegResult(
+                leg=leg,
+                status="UNAVAILABLE",
+                text="",
+                detail="tui_backing_required",
+                seat_key=seat.seat_key,
+            )
         decision = select_backing(seat, gateway_available=gateway_available)
         if decision.skip:
             return _skip(seat, leg, f"skip: {decision.reason}")

@@ -44,7 +44,7 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
-6. Every Fable or Opus seat uses only the Claude Code self-PTY adapter after a metadata-only probe proves first-party `claude.ai` subscription auth. Never substitute an API, SDK, direct HTTP call, or native Task/subagent; `subscription_auth_unproven` and `tui_adapter_required` fail closed.
+6. Every Fable or Opus seat requires the homebrew Claude Code self-PTY adapter after a metadata-only probe proves first-party `claude.ai` subscription auth. Never substitute a gateway, API, SDK, direct HTTP call, or native Task/subagent; `tui_backing_required`, `subscription_auth_unproven`, and `tui_adapter_required` fail closed.
 
 ## Standalone Smoke Shape
 
