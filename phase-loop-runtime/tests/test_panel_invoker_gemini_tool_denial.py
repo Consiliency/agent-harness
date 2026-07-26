@@ -178,6 +178,13 @@ def test_section_fences_carry_an_unguessable_per_run_nonce(monkeypatch, staged):
     assert nonce in p1.split("BUNDLE-SENTINEL")[0], "nonce not declared before the material"
     n2 = _re.search(r"=== BEGIN INLINED review-bundle\.md \[([0-9a-f]{8,})\] ===", p2)
     assert n2 and n2.group(1) != nonce, "nonce is not per-run (replayable across runs)"
+    # M5 (CR round 3): the EPILOGUE marker must carry the nonce too. With a static
+    # marker, hostile material can embed it verbatim and append fake "trusted" epilogue
+    # text — and by the preamble's own nonce rule the genuine boundary would be
+    # self-disarmed as untrusted data, collapsing the sandwich's recency half.
+    assert f"=== END OF ALL INLINED MATERIAL [{nonce}] ===" in p1, (
+        "epilogue boundary marker is not nonce-bound (forgeable in-band)"
+    )
 
 
 def test_preamble_declares_the_section_count_and_disarms_forged_headers(monkeypatch, staged):
@@ -212,9 +219,15 @@ def test_advisory_mode_does_not_demand_a_structured_verdict(monkeypatch, staged)
     )
     pi._exec_leg("gemini", review_dir, out_dir, timeout_s=60, artifact="A",
                  mode="advisory", env={})
-    head = _prompt_of(seen[0]).split("BUNDLE-SENTINEL")[0]
-    assert "no verdict" in head.lower(), "advisory run still demands a verdict"
-    assert "must END with the structured verdict line" not in head
+    # Assert over the FULL prompt, not just the head: round 3 shipped an epilogue whose
+    # LAST sentence demanded the structured verdict the preamble had just forbidden, and
+    # a head-only assertion could not see it.
+    full = _prompt_of(seen[0])
+    assert "no verdict" in full.split("BUNDLE-SENTINEL")[0].lower()
+    assert "structured verdict line" not in full, (
+        "advisory prompt still demands a structured verdict (check the epilogue tail)"
+    )
+    assert "no AGREE / PARTIALLY AGREE / DISAGREE verdict is required" in full
 
 
 def test_by_reference_material_must_be_declared_unverified(monkeypatch, staged):
