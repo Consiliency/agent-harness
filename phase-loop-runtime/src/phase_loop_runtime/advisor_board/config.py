@@ -18,12 +18,13 @@ built-in ``presets``. Contract:
 
 A missing config file is not an error: the built-in presets load on their own.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:  # Python 3.11+
     import tomllib  # type: ignore[import-not-found]
@@ -37,6 +38,7 @@ from .schema import (
     AUTH_LANES,
     PROVIDER_BACKINGS,
     Board,
+    ResearchPolicy,
     Seat,
     board_config_path,
 )
@@ -44,7 +46,7 @@ from .schema import (
 # Recognised keys — anything else is a hard error (no silent drop).
 _KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards"})
 _KNOWN_BOARD_KEYS: frozenset[str] = frozenset(
-    {"name", "purpose", "allow_api_key_fallback", "seats"}
+    {"name", "purpose", "allow_api_key_fallback", "research_enabled", "seats"}
 )
 _KNOWN_SEAT_KEYS: frozenset[str] = frozenset(
     {"model", "effort", "harness", "lens", "auth", "backing", "host_leg"}
@@ -114,7 +116,9 @@ def _parse_seat(raw: Mapping[str, Any], where: str) -> Seat:
     if "model" not in raw:
         raise BoardConfigError(f"{where} is missing the required 'model' key")
     if "effort" not in raw:
-        raise BoardConfigError(f"{where} (model={raw['model']!r}) is missing the required 'effort' key")
+        raise BoardConfigError(
+            f"{where} (model={raw['model']!r}) is missing the required 'effort' key"
+        )
     auth = raw.get("auth", AUTH_LANES[0])
     backing = raw.get("backing", PROVIDER_BACKINGS[0])
     try:
@@ -145,7 +149,8 @@ def _parse_board(raw: Mapping[str, Any], index: int) -> Board:
     if not isinstance(seats_raw, list):
         raise BoardConfigError(f"board {name!r} 'seats' must be a list of seat tables")
     seats = tuple(
-        _parse_seat(seat, f"board {name!r} seats[{i}]") for i, seat in enumerate(seats_raw)
+        _parse_seat(seat, f"board {name!r} seats[{i}]")
+        for i, seat in enumerate(seats_raw)
     )
     try:
         return Board(
@@ -154,6 +159,9 @@ def _parse_board(raw: Mapping[str, Any], index: int) -> Board:
             seats=seats,
             allow_api_key_fallback=_require_bool(
                 raw, "allow_api_key_fallback", False, where
+            ),
+            research_policy=ResearchPolicy(
+                enabled=_require_bool(raw, "research_enabled", False, where)
             ),
         )
     except (ValueError, TypeError) as exc:
@@ -203,7 +211,9 @@ def load_boards(
     # Availability-aware code-review (before the user overlay so a user override wins).
     compose_probe = is_available
     if compose_probe is None and matrix is not None:
-        compose_probe = getattr(getattr(matrix, "harnesses", None), "is_available", None)
+        compose_probe = getattr(
+            getattr(matrix, "harnesses", None), "is_available", None
+        )
     # #151: the LIVE convening path is auth-aware by DEFAULT — a PATH-present but
     # unauthenticated vendor is dropped and backfilled. Pass an explicit ``auth_ok``
     # so the composer never falls through to its is_available-injected pass-through
@@ -211,7 +221,9 @@ def load_boards(
     # gate short-circuits for vendors that fail the availability probe, so a host
     # with no vendor CLI never shells out.
     compose_auth = auth_ok if auth_ok is not None else default_board_auth_ok
-    composed_review = compose_review_board(is_available=compose_probe, auth_ok=compose_auth)
+    composed_review = compose_review_board(
+        is_available=compose_probe, auth_ok=compose_auth
+    )
     boards[composed_review.name] = composed_review
 
     cfg_path = path if path is not None else board_config_path(env)
