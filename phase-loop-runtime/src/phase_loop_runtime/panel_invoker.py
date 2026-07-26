@@ -591,6 +591,50 @@ _GEMINI_TRANSIENT_RE = re.compile(
     r"please try again|connection reset|backend (?:error|stall)",
     re.IGNORECASE,
 )
+# HEADLESS TOOL-DENIAL: a leg CLI running non-interactively cannot prompt for a tool
+# permission, so it AUTO-DENIES and returns rc==0 with a ZERO-BYTE body. Observed on
+# `agy` (jetski): "no output produced — a tool required the "command" permission that
+# headless mode cannot prompt for, so it was auto-denied."
+#
+# This is NOT a transient stall (retrying is guaranteed to fail the same way) and NOT
+# an anonymous empty turn: the CLI told us exactly why it produced nothing. Left
+# unclassified it degraded the whole leg SILENTLY — the gemini seat returned EMPTY in
+# 6 of 11 rounds of the model-tier review and was misread as flakiness/contention for
+# the entire milestone. Classify it so the reason SURFACES instead of being discarded.
+_TOOL_DENIED_RE = re.compile(
+    r"no output produced.*?tool required|"
+    r"tool required the .* permission that headless mode cannot prompt for|"
+    r"auto-denied|permission denied by headless",
+    re.IGNORECASE | re.DOTALL,
+)
+# Review legs are READ-ONLY by contract: they must reason from the staged bundle, never
+# execute. Review prompts routinely ASK for verification ("run the guard", "reproduce
+# the mutation") — which makes a tool-capable CLI attempt a command call that headless
+# mode then auto-denies, yielding the silent empty above. Telling the leg up front that
+# tools are unavailable keeps it answering from the material instead.
+#
+# Deliberately NOT fixed with `--dangerously-skip-permissions`: auto-approving every
+# tool in a REVIEW leg is the review-leg isolation defect tracked in
+# Consiliency/agent-harness#248 / #259, and would let a leg mutate the tree it reviews.
+_NO_TOOL_PREAMBLE = (
+    "OPERATING CONSTRAINT — read this before anything else. You are running HEADLESS with "
+    "NO tool permissions: any file read or shell command you attempt is auto-denied and "
+    "yields NO output at all (your whole response is lost). You do NOT need tools here: "
+    "the staged instructions and bundle that the prompt below refers to are REPRODUCED "
+    "INLINE at the end of this message, under `=== INLINED …` headers. Read them there. "
+    "Ignore any instruction to open a path or 'inspect source files directly'. Do not "
+    "claim to have run or read anything. Where you are asked to verify something by "
+    "running it, reason from the inlined evidence and say plainly which claims you could "
+    "NOT verify.\n"
+    "FORMAT: your response must END with the structured verdict line and nothing after "
+    "it — no trailing summary, no closing remarks. A review that buries the verdict "
+    "mid-body is classified non-conforming and its findings are discounted.\n\n"
+)
+# Bound the inlined payload. `agy` accepts a large `-p` argv (measured OK at 56KB), and
+# ARG_MAX is ~2MB, but an unbounded bundle would eventually hit E2BIG — which would look
+# like yet another silent leg failure. Past the cap we keep the pointer form and say so,
+# rather than truncating the material a reviewer is meant to judge.
+_GEMINI_INLINE_MAX_BYTES = 600_000
 # Subscription auth only: strip provider API keys from the child environment.
 _API_KEY_VARS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
@@ -2543,9 +2587,41 @@ def _exec_leg(
         # every run. Inline it exactly like the grok leg (`-p prompt`); the prompt is
         # the small staged-bundle POINTER (files live under --add-dir), so argv length
         # is bounded.
+        # HEADLESS TOOL-DENIAL fix. The shared prompt is a POINTER: it stages
+        # review-instructions.md / review-bundle.md under `review_dir` and tells the leg
+        # to READ them. Every other leg's harness can; `agy` headless CANNOT — it
+        # auto-denies the file-read permission, prints its reason on stderr and exits
+        # rc==0 with ZERO bytes (see `_TOOL_DENIED_RE`). That is why the gemini seat
+        # returned EMPTY in 6 of 11 rounds of the model-tier review.
+        #
+        # So remove the tool NEED instead of asking for the tool: INLINE the staged
+        # files into this leg's prompt. (Telling it "don't use tools" alone is WRONG and
+        # was measured to be: the leg then correctly reports it has no material and
+        # returns a non-review — a false-green OK.) Other legs are untouched, so the
+        # byte-identical shared-prompt golden still holds.
+        inline_parts, inlined_ok = [], False
+        try:
+            staged = [
+                ("INLINED review-instructions.md", review_dir / "review-instructions.md"),
+                ("INLINED review-bundle.md", review_dir / "review-bundle.md"),
+            ]
+            payload = [(h, p.read_text(encoding="utf-8")) for h, p in staged if p.is_file()]
+            total = sum(len(t) for _h, t in payload)
+            if payload and total <= _GEMINI_INLINE_MAX_BYTES:
+                for header, text in payload:
+                    inline_parts.append(f"\n\n=== {header} ===\n{text}")
+                inlined_ok = True
+        except OSError:
+            inlined_ok = False  # fall back to the pointer form; the denial classifier
+            # below still surfaces the failure loudly rather than degrading silently.
+        gemini_prompt = (
+            (_NO_TOOL_PREAMBLE + prompt + "".join(inline_parts))
+            if inlined_ok
+            else prompt
+        )
         cmd = [
             "agy", "--model", gemini_model, "--add-dir", str(review_dir),
-            "--print-timeout", f"{timeout_s}s", "-p", prompt,
+            "--print-timeout", f"{timeout_s}s", "-p", gemini_prompt,
         ]
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
@@ -2571,6 +2647,20 @@ def _exec_leg(
             review_text = proc.stdout or ""
             rc = proc.returncode
             log_text = proc.stderr or ""
+            # HEADLESS TOOL-DENIAL: rc==0 + empty body + the CLI's own auto-denied
+            # marker. Retrying is guaranteed to reproduce it (the permission is absent,
+            # not flaky), and reporting it as an anonymous EMPTY is what let this hide
+            # for a whole milestone. Return a NON-ZERO rc carrying the CLI's own
+            # explanation so the leg surfaces as a DIAGNOSABLE failure, never silent
+            # degradation. Checked BEFORE `soft_empty` so it can't be retried as a stall.
+            if rc == 0 and not review_text.strip() and _TOOL_DENIED_RE.search(log_text):
+                return 1, "", (
+                    "gemini leg: headless TOOL-DENIAL — the CLI auto-denied a tool "
+                    "permission it cannot prompt for and produced NO output. Not "
+                    "transient: the prompt must avoid tool calls (see _NO_TOOL_PREAMBLE) "
+                    "or the tool needs an explicit allow-rule. "
+                    f"CLI said: {log_text.strip()[:400]}"
+                )
             soft_empty = rc == 0 and not review_text.strip()
             # A transient stall shows up as an ERROR on stderr, or as a SHORT/empty body —
             # never inside a substantial successful review. Matching the transient regex
