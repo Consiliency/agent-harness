@@ -101,6 +101,45 @@ end with a clear recommendation."""
         )
         evidence_path.write_text(serialized + "\n", encoding="utf-8")
 
+    @unittest.skipUnless(
+        os.environ.get("PHASE_LOOP_LIVE_RESEARCH_CLAUDE") == "1",
+        "set PHASE_LOOP_LIVE_RESEARCH_CLAUDE=1 for the Claude TUI MCP proof",
+    )
+    def test_real_claude_tui_seat_can_use_session_local_pmcp(self) -> None:
+        board = Board(
+            name="live-claude-governed-research",
+            purpose="advisory",
+            research_policy=ResearchPolicy(enabled=True),
+            seats=(
+                Seat(model="claude-opus-5", effort="max", harness="claude"),
+            ),
+        )
+        result = invoke_board(
+            board,
+            """Use only the session-local `pmcp_advisor` MCP server. Read the governed
+research section and put its exact three correlation fields at the TOP LEVEL of every
+gateway.invoke call. Discover the Firecrawl search tool, invoke it once for
+`site:python.org Python downloads`, include the required evidence label, and recommend
+whether the provider is operational. Do not use any other MCP server or mutation tool.""",
+            mode="advisory",
+            timeouts_by_leg={"claude": 900},
+        )
+        leg = result.legs[0]
+        self.assertEqual(leg.status, "OK", leg.detail)
+        self.assertEqual(leg.research_status, "success")
+        self.assertIsNotNone(leg.research_ledger)
+        ledger = leg.research_ledger
+        assert ledger is not None
+        self.assertTrue(
+            any(
+                entry.downstream_tool_id == "firecrawl::firecrawl_search"
+                and entry.terminal_status == "success"
+                and entry.claim_status == "verified"
+                for entry in ledger.invocations
+            ),
+            ledger.to_safe_dict(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

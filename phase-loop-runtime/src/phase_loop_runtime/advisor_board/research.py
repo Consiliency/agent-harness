@@ -18,9 +18,6 @@ from .schema import ResearchPolicy
 
 MCP_SERVER_NAME = "pmcp_advisor"
 RESEARCH_CAPABLE_LANES = frozenset({"claude", "codex"})
-_RESEARCH_ENV_KEYS = frozenset(
-    {"PMCP_POLICY", "PMCP_AUDIT_JSONL", "PMCP_LOCK_DIR"}
-)
 _ACTIVATION_REQUIREMENTS = frozenset(
     {
         "explicit_policy",
@@ -50,6 +47,8 @@ class ResearchSeatConfig:
     evidence_label: str
     evidence_label_digest: str
     policy_path: Path
+    provider_config_path: Path
+    manifest_path: Path
     policy_digest: str
     lock_dir: Path
     audit_path: Path
@@ -59,6 +58,10 @@ class ResearchSeatConfig:
     def pmcp_args(self) -> tuple[str, ...]:
         return (
             *self.pmcp_command[1:],
+            "--project",
+            str(self.policy_path.parent),
+            "--config",
+            str(self.provider_config_path),
             "--policy",
             str(self.policy_path),
             "--lock-dir",
@@ -74,7 +77,7 @@ class ResearchSeatConfig:
             "type": "stdio",
             "command": self.pmcp_command[0],
             "args": list(self.pmcp_args),
-            "env": {},
+            "env": {"PMCP_MANIFEST_PATH": str(self.manifest_path)},
         }
 
 
@@ -153,9 +156,52 @@ def _policy_payload(policy: ResearchPolicy) -> dict[str, Any]:
 def scrub_research_env(env: Mapping[str, str] | None) -> dict[str, str]:
     """Remove ambient PMCP controls before a governed probe or seat launch."""
     result = dict(os.environ if env is None else env)
-    for key in _RESEARCH_ENV_KEYS:
-        result.pop(key, None)
-    return result
+    return {key: value for key, value in result.items() if not key.startswith("PMCP_")}
+
+
+def _provider_config_payload() -> dict[str, Any]:
+    return {
+        "mcpServers": {
+            "firecrawl": {
+                "command": "npx",
+                "args": ["-y", "firecrawl-mcp"],
+            },
+            "brightdata": {
+                "command": "npx",
+                "args": ["-y", "@brightdata/mcp"],
+            },
+        }
+    }
+
+
+def _manifest_payload() -> dict[str, Any]:
+    platforms = ("mac", "wsl", "linux", "windows")
+    firecrawl_install = ["npx", "-y", "firecrawl-mcp"]
+    brightdata_install = ["npx", "-y", "@brightdata/mcp"]
+    return {
+        "version": "1.0",
+        "servers": {
+            "firecrawl": {
+                "description": "Firecrawl MCP",
+                "keywords": ["firecrawl", "scraping", "crawling", "extract"],
+                "install": {name: firecrawl_install for name in platforms},
+                "command": "npx",
+                "args": ["-y", "firecrawl-mcp"],
+                "requires_api_key": True,
+                "env_var": "FIRECRAWL_API_KEY",
+            },
+            "brightdata": {
+                "description": "Bright Data MCP",
+                "keywords": ["brightdata", "scraping", "web research"],
+                "install": {name: brightdata_install for name in platforms},
+                "command": "npx",
+                "args": ["-y", "@brightdata/mcp"],
+                "requires_api_key": True,
+                "env_var": "API_TOKEN",
+                "secret_key": "BRIGHTDATA_API_TOKEN",
+            },
+        },
+    }
 
 
 def probe_research_capability(
@@ -212,14 +258,15 @@ def materialize_research_run(
         raise ValueError("cannot materialize disabled research policy")
     probe_research_capability(policy, env=env, run=probe_run)
     run_root: Path | None = None
+    created_by_us = False
     try:
-        run_root = (
-            Path(root)
-            if root is not None
-            else Path(tempfile.mkdtemp(prefix="pl-board-research-"))
-        )
-        if root is not None:
+        if root is None:
+            run_root = Path(tempfile.mkdtemp(prefix="pl-board-research-"))
+            created_by_us = True
+        else:
+            run_root = Path(root)
             run_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            created_by_us = True
         policy_payload = _policy_payload(policy)
         policy_bytes = json.dumps(
             policy_payload, separators=(",", ":"), ensure_ascii=True
@@ -227,6 +274,20 @@ def materialize_research_run(
         policy_path = run_root / "policy.json"
         policy_path.write_text(policy_bytes + "\n", encoding="utf-8")
         policy_path.chmod(0o400)
+        provider_config_path = run_root / ".mcp.json"
+        provider_config_path.write_text(
+            json.dumps(_provider_config_payload(), separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        provider_config_path.chmod(0o400)
+        manifest_dir = run_root / ".pmcp"
+        manifest_dir.mkdir(mode=0o700)
+        manifest_path = manifest_dir / "manifest.yaml"
+        manifest_path.write_text(
+            json.dumps(_manifest_payload(), separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        manifest_path.chmod(0o400)
         policy_digest = hashlib.sha256(policy_bytes.encode("utf-8")).hexdigest()
         run_id = f"research-{uuid.uuid4().hex}"
         seat_configs: list[ResearchSeatConfig] = []
@@ -246,6 +307,8 @@ def materialize_research_run(
                         evidence_label.encode("utf-8")
                     ).hexdigest(),
                     policy_path=policy_path,
+                    provider_config_path=provider_config_path,
+                    manifest_path=manifest_path,
                     policy_digest=policy_digest,
                     lock_dir=lock_dir,
                     audit_path=seat_root / "audit.jsonl",
@@ -259,7 +322,7 @@ def materialize_research_run(
             seats=tuple(seat_configs),
         )
     except OSError as exc:
-        if run_root is not None:
+        if run_root is not None and created_by_us:
             shutil.rmtree(run_root, ignore_errors=True)
         raise ResearchUnavailable("research_materialization_failed") from exc
 

@@ -206,9 +206,11 @@ pins `pmcp==1.20.0`, requires its exact capability declaration, and exposes only
 `gateway.health`, `gateway.catalog_search`, `gateway.describe`, and
 `gateway.invoke`. PMCP then permits only Firecrawl and Bright Data search/scrape/
 crawl/query tools. Resources, prompts, ambient MCP servers, and mutation tools are
-absent or denied. Codex native web search/apps are disabled. Claude's authoritative
-brief pre-approves only the four PMCP controls, and Claude remains subscription-TUI
-only; research does not introduce
+absent or denied. The runtime supplies run-local, highest-precedence definitions for
+both approved providers plus a final manifest overlay, and strips inherited `PMCP_*`
+controls before launch. Codex native web search/apps and Claude's Chrome integration
+are disabled. Claude receives the same four PMCP controls in its tool-availability and
+pre-approval CLI lists and remains subscription-TUI only; research does not introduce
 an API, SDK, direct-HTTP, gateway, or native Task fallback for Claude seats.
 
 Each seat gets a unique lock directory, audit file, and typed run/seat/evidence

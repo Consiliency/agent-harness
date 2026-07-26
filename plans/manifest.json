@@ -50,6 +50,21 @@
             "verification_summary": "PASS - exact-head dissent reconciled; real board PMCP proof and complete standalone suite passed."
           },
           "transition": "completed"
+        },
+        {
+          "at": "2026-07-26T10:11:35Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "second exact-head panel blockers reconciled and reverified",
+            "full_suite": "3521 passed, 640 skipped, 4 warnings, 634 subtests passed",
+            "panel_reconciliation": "run-local PMCP provider and manifest precedence added; all ambient PMCP controls scrubbed; Claude MCP safe-mode removed for research and Chrome disabled; caller-owned root preserved",
+            "run_id": "20260726T081646Z-06-310-advisor-research-integration",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-advisor-research-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - isolated Codex dual-provider denial proof and Claude subscription-TUI PMCP proof passed with the complete standalone suite."
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -60,7 +75,7 @@
       "status": "completed",
       "task_summary": "Integrate audited Firecrawl and Bright Data research into advisor panels after PMCP.",
       "type": "detailed",
-      "updated_at": "2026-07-26T09:34:39Z"
+      "updated_at": "2026-07-26T10:11:35Z"
     },
     {
       "acceptance_criteria_count": 10,

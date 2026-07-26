@@ -1085,7 +1085,8 @@ def _claude_tui_command(
     command = [
         "claude",
         "--ax-screen-reader",
-        "--safe-mode",
+        *(("--safe-mode",) if research_seat is None else ()),
+        *(("--no-chrome",) if research_seat is not None else ()),
         "--model",
         model or DEFAULT_LEG_MODELS["claude"],
         *effort_args,

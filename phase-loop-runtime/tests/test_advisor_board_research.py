@@ -154,6 +154,8 @@ class PerSeatIsolationTests(unittest.TestCase):
                     Path(td) / "review", Path(td), research_seat=seat
                 )
                 self.assertIn("--strict-mcp-config", claude_command)
+                self.assertNotIn("--safe-mode", claude_command)
+                self.assertIn("--no-chrome", claude_command)
                 self.assertEqual(
                     tuple(
                         json.loads(
@@ -203,6 +205,9 @@ class PerSeatIsolationTests(unittest.TestCase):
                             "PMCP_POLICY": "ambient-policy",
                             "PMCP_AUDIT_JSONL": "ambient-audit",
                             "PMCP_LOCK_DIR": "ambient-lock",
+                            "PMCP_CONFIG": "ambient-config",
+                            "PMCP_MANIFEST_PATH": "ambient-manifest",
+                            "PMCP_AUTH_TOKEN": "ambient-auth",
                         },
                         research_seat=seat,
                     )
@@ -218,8 +223,7 @@ class PerSeatIsolationTests(unittest.TestCase):
                 self.assertIn("features.apps=false", command)
                 self.assertIn("features.remote_plugin=false", command)
                 self.assertFalse(
-                    {"PMCP_POLICY", "PMCP_AUDIT_JSONL", "PMCP_LOCK_DIR"}
-                    & set(captured["env"])
+                    any(key.startswith("PMCP_") for key in captured["env"])
                 )
             finally:
                 run.close()
@@ -238,6 +242,23 @@ class PerSeatIsolationTests(unittest.TestCase):
                 self.assertEqual(tuple(claude["mcpServers"]), ("pmcp_advisor",))
                 self.assertEqual(
                     claude["mcpServers"]["pmcp_advisor"]["command"], "uvx"
+                )
+                server = claude["mcpServers"]["pmcp_advisor"]
+                self.assertEqual(
+                    server["env"],
+                    {"PMCP_MANIFEST_PATH": str(seat.manifest_path)},
+                )
+                self.assertIn("--project", server["args"])
+                self.assertIn(str(run.root), server["args"])
+                self.assertIn("--config", server["args"])
+                self.assertIn(str(seat.provider_config_path), server["args"])
+                providers = json.loads(seat.provider_config_path.read_text())
+                self.assertEqual(
+                    tuple(providers["mcpServers"]), ("firecrawl", "brightdata")
+                )
+                manifest = json.loads(seat.manifest_path.read_text())
+                self.assertEqual(
+                    tuple(manifest["servers"]), ("firecrawl", "brightdata")
                 )
 
                 codex = codex_mcp_args(seat)
@@ -278,6 +299,29 @@ class PerSeatIsolationTests(unittest.TestCase):
                     probe_run=lambda *args, **kwargs: _probe_result(),
                 )
             self.assertFalse(root.exists())
+
+    def test_existing_root_is_never_removed_on_materialization_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "research-run"
+            root.mkdir()
+            sentinel = root / "caller-owned.txt"
+            sentinel.write_text("preserve")
+            with self.assertRaisesRegex(
+                ResearchUnavailable, "research_materialization_failed"
+            ):
+                materialize_research_run(
+                    ResearchPolicy(enabled=True),
+                    [("codex", "c")],
+                    root=root,
+                    probe_run=lambda *args, **kwargs: _probe_result(),
+                )
+            self.assertEqual(sentinel.read_text(), "preserve")
+
+    def test_disabled_claude_command_retains_safe_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            command = pi._claude_tui_command(Path(td), Path(td))
+        self.assertIn("--safe-mode", command)
+        self.assertNotIn("--no-chrome", command)
 
 
 class AuditReductionTests(unittest.TestCase):

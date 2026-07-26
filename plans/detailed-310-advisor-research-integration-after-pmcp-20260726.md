@@ -93,3 +93,13 @@ PHASE_LOOP_LIVE_RESEARCH=1 PYTHONPATH=src:tests python -m pytest \
 - [x] A real version-pinned board+PMCP smoke proves successful Firecrawl and Bright Data calls plus denied mutation in one evidence artifact.
 - [x] Unenforceable clients and failed/cancelled/denied calls remain explicit failures.
 - [x] Disabled boards remain byte-compatible.
+
+## Exact-head reconciliation addendum
+
+The final implementation also materializes highest-precedence run-local provider
+definitions and a final PMCP manifest overlay for exactly Firecrawl and Bright Data,
+passes both paths explicitly, and removes every inherited `PMCP_*` control. Claude
+research seats omit MCP-disabling safe mode, disable the Chrome integration, and keep
+the strict MCP/tool allowlists on the existing first-party subscription TUI route.
+Regression coverage proves a pre-existing caller directory survives failed
+materialization. Live subscription proofs passed for both Codex and Claude TUI.
