@@ -3031,7 +3031,7 @@ def run_train(
         # fail-closed pr-head-advanced guard in `_live_merge_pr` — this is a pure
         # ADDITION gated entirely by the trusted opt-in, never a weakening. Byte-
         # neutral when off (no live-head read, no re-admission).
-        from .governed_premerge import fab_delta_shortcut_enabled
+        from .governed_premerge import fab_delta_shortcut_enabled, fab_promotion_enabled
 
         _fab_run_id_shortcut = completed_nodes[_nid_m].get("fab_run_id")
         # A raise anywhere in the FAB recovery/re-admission MUST NOT escape run_train
@@ -3039,9 +3039,23 @@ def run_train(
         # uncaught traceback here would abort run_train and violate its
         # no-uncaught-escape contract (already-merged upstream nodes must stay
         # recorded, forward-only). Catch → blocked + merge_halted, same as a merge
-        # failure. Gated on `fab_run_id is not None`, so byte-neutral when the FAB
-        # master flag is off (no provenance ⇒ no run_id ⇒ block skipped entirely).
-        if _fab_run_id_shortcut is not None:
+        # failure.
+        #
+        # ah#299: gated on `fab_run_id is not None` AND the CURRENT flag. The original
+        # comment claimed byte-neutrality from the run_id alone — "no provenance ⇒ no
+        # run_id ⇒ block skipped" — but that premise is FALSE on the resume path: a
+        # flag-ON admission persists `fab_run_id` to the ledger, and a later flag-OFF
+        # RESUME restores it unconditionally. So with the flag off this block still ran,
+        # mutating the run store via torn-recovery and, on exception, halting with
+        # `fab_readmit_failed` instead of taking the ordinary non-FAB merge path — a
+        # flag-off byte-neutrality leak. Same false premise the #265 CR disproved for
+        # `_live_merge_pr`, which is why that site now keys on `fab_active`.
+        #
+        # Skipping recovery when the flag is off is SAFE: torn-recovery exists only to
+        # unblock the strict merge-time re-gate, and that re-gate is itself inert when
+        # the flag is off (`_fab_promotion_gate_before_merge` short-circuits on
+        # `not fab_promotion_enabled()`). No live consumer is left unserved.
+        if _fab_run_id_shortcut is not None and fab_promotion_enabled():
             try:
                 _admitted_now = completed_nodes[_nid_m].get("admitted_head_sha")
                 # UNCONDITIONAL torn-state recovery before the merge re-gate (round 4
