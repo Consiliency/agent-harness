@@ -26,6 +26,7 @@ and the ``LedgerWriter`` cross-language transport seam. This is the one place th
 package touches ``panel_invoker`` — an OPT-IN ``sink=`` on ``invoke_board``;
 ``sink=None`` stays byte-neutral.
 """
+
 from __future__ import annotations
 
 from .schema import (
@@ -37,8 +38,14 @@ from .schema import (
     CONFIG_RELATIVE_PATH,
     EFFORT_LEVELS,
     PROVIDER_BACKINGS,
+    SCOPED_RESEARCH_CAPABILITY,
+    SCOPED_RESEARCH_GATEWAY_TOOLS,
+    SCOPED_RESEARCH_PMCP_VERSION,
+    SCOPED_RESEARCH_SERVERS,
+    SCOPED_RESEARCH_TOOL_PATTERNS,
     Board,
     HostContext,
+    ResearchPolicy,
     Seat,
     board_config_path,
     identify_host_leg,
@@ -129,6 +136,25 @@ from .events import (
     NullSink,
     best_effort_forward,
 )
+from .research import (
+    MCP_SERVER_NAME,
+    RESEARCH_CAPABLE_LANES,
+    ResearchAuditError,
+    ResearchInvocation,
+    ResearchLedger,
+    ResearchRunConfig,
+    ResearchSeatConfig,
+    ResearchUnavailable,
+    claude_mcp_config,
+    codex_mcp_args,
+    materialize_research_run,
+    mcp_tool_names,
+    probe_research_capability,
+    reduce_research_audit,
+    research_instructions,
+    scrub_research_env,
+    unavailable_ledger,
+)
 from .observability import (
     LEDGER_RECORD_KIND,
     LEDGER_RECORD_SCHEMA,
@@ -181,6 +207,7 @@ __all__ = [
     "Seat",
     "Board",
     "HostContext",
+    "ResearchPolicy",
     "EFFORT_LEVELS",
     "AUTH_LANES",
     "AUTH_SUBSCRIPTION",
@@ -189,6 +216,11 @@ __all__ = [
     "BACKING_HOMEBREW",
     "BACKING_OMNIGENT",
     "CONFIG_RELATIVE_PATH",
+    "SCOPED_RESEARCH_CAPABILITY",
+    "SCOPED_RESEARCH_PMCP_VERSION",
+    "SCOPED_RESEARCH_SERVERS",
+    "SCOPED_RESEARCH_GATEWAY_TOOLS",
+    "SCOPED_RESEARCH_TOOL_PATTERNS",
     "board_config_path",
     "identify_host_leg",
     "seat_vendor_family",
@@ -261,6 +293,24 @@ __all__ = [
     "OmnigentGatewayUnavailable",
     "SeatRunOutcome",
     "classify_http_failure",
+    # governed PMCP research
+    "MCP_SERVER_NAME",
+    "RESEARCH_CAPABLE_LANES",
+    "ResearchUnavailable",
+    "ResearchAuditError",
+    "ResearchSeatConfig",
+    "ResearchRunConfig",
+    "ResearchInvocation",
+    "ResearchLedger",
+    "probe_research_capability",
+    "materialize_research_run",
+    "research_instructions",
+    "claude_mcp_config",
+    "codex_mcp_args",
+    "mcp_tool_names",
+    "scrub_research_env",
+    "reduce_research_audit",
+    "unavailable_ledger",
     # events
     "AdvisorBoardEvent",
     "EventSink",

@@ -120,12 +120,15 @@ class InvokePanelApiStabilityTests(unittest.TestCase):
              "context_refs", "context_refs_soft_warn", "timeouts_by_leg",
              # REVIEWGOV IF-0-REVIEWGOV-2 additive, keyword-only, defaulted: opt-in
              # streaming verdict delivery (default None ⇒ byte-identical golden path).
-             "on_leg_complete", "stream_dir"],
+             "on_leg_complete", "stream_dir",
+             # agent-harness#310 additive, keyword-only, defaulted: opt-in governed
+             # PMCP research. None keeps the frozen disabled path byte-identical.
+             "research_policy"],
         )
         # The additions are keyword-only with defaults (the real back-compat guarantee).
         for name in ("models", "max_concurrency", "artifact_ref", "brief_ref",
                      "context_refs", "context_refs_soft_warn", "timeouts_by_leg",
-                     "on_leg_complete", "stream_dir"):
+                     "on_leg_complete", "stream_dir", "research_policy"):
             self.assertEqual(sig.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
             self.assertIsNot(sig.parameters[name].default, inspect.Parameter.empty)
 

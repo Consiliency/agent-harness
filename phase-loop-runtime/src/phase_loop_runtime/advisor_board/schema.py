@@ -30,6 +30,7 @@ behavior exactly (proven by ``tests/test_advisor_board_schema.py`` and
   defaults ``False`` and ``identify_host_leg`` returns ``None`` for the default
   board — today's behavior, untouched.
 """
+
 from __future__ import annotations
 
 import os
@@ -56,6 +57,29 @@ AUTH_LANES: tuple[str, ...] = (AUTH_SUBSCRIPTION, AUTH_API_KEY)
 BACKING_HOMEBREW = "homebrew"
 BACKING_OMNIGENT = "omnigent"
 PROVIDER_BACKINGS: tuple[str, ...] = (BACKING_HOMEBREW, BACKING_OMNIGENT)
+
+SCOPED_RESEARCH_CAPABILITY = "scoped_advisor_audit.v1"
+SCOPED_RESEARCH_PMCP_VERSION = "1.20.0"
+SCOPED_RESEARCH_SERVERS: tuple[str, ...] = ("firecrawl", "brightdata")
+SCOPED_RESEARCH_GATEWAY_TOOLS: tuple[str, ...] = (
+    "gateway.health",
+    "gateway.catalog_search",
+    "gateway.describe",
+    "gateway.invoke",
+)
+SCOPED_RESEARCH_TOOL_PATTERNS: tuple[str, ...] = (
+    "firecrawl::*search*",
+    "firecrawl::*scrape*",
+    "firecrawl::*crawl*",
+    "firecrawl::*map*",
+    "firecrawl::*extract*",
+    "brightdata::*search*",
+    "brightdata::*scrape*",
+    "brightdata::*crawl*",
+    "brightdata::*query*",
+    "brightdata::*fetch*",
+    "brightdata::*unlocker*",
+)
 
 # Board config format + location (IF-0-ABDFREEZE-1). Honors ``XDG_CONFIG_HOME``.
 CONFIG_RELATIVE_PATH = "agent-harness/advisor-boards.toml"
@@ -113,7 +137,12 @@ def vendor_of_model(model: str) -> str:
         return "gemini"
     if m.startswith("grok") or m.startswith("xai/"):
         return "grok"  # the grok panel leg runs the xAI-family model
-    if m.startswith("gpt") or m.startswith("o1") or m.startswith("o3") or m.startswith("openai/"):
+    if (
+        m.startswith("gpt")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("openai/")
+    ):
         return "codex"  # the codex panel leg runs the openai-family model
     return ""
 
@@ -169,7 +198,9 @@ class Seat:
         if self.auth not in AUTH_LANES:
             raise ValueError(f"seat.auth {self.auth!r} not in {AUTH_LANES}")
         if self.backing not in PROVIDER_BACKINGS:
-            raise ValueError(f"seat.backing {self.backing!r} not in {PROVIDER_BACKINGS}")
+            raise ValueError(
+                f"seat.backing {self.backing!r} not in {PROVIDER_BACKINGS}"
+            )
 
     @property
     def vendor_family(self) -> str:
@@ -195,6 +226,56 @@ class Seat:
 
 
 @dataclass(frozen=True)
+class ResearchPolicy:
+    """Fail-closed, opt-in advisor research policy.
+
+    The shipped profile is intentionally not a general PMCP configuration
+    surface. Its servers, controls, downstream patterns, audit requirement, and
+    capability/version contract are fixed. ``pmcp_command`` is injectable for a
+    packaged test double; the production default executes the exact PyPI pin.
+    """
+
+    enabled: bool = False
+    pmcp_command: tuple[str, ...] = (
+        "uvx",
+        "--from",
+        "pmcp==1.20.0",
+        "pmcp",
+    )
+    required_version: str = SCOPED_RESEARCH_PMCP_VERSION
+    required_capability: str = SCOPED_RESEARCH_CAPABILITY
+    servers: tuple[str, ...] = SCOPED_RESEARCH_SERVERS
+    gateway_tools: tuple[str, ...] = SCOPED_RESEARCH_GATEWAY_TOOLS
+    tool_patterns: tuple[str, ...] = SCOPED_RESEARCH_TOOL_PATTERNS
+    audit_required: bool = True
+    all_seats_capable: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.pmcp_command, tuple) or not self.pmcp_command:
+            raise ValueError("research pmcp_command must be a non-empty tuple")
+        if self.required_version != SCOPED_RESEARCH_PMCP_VERSION:
+            raise ValueError("research requires the released PMCP 1.20.0 contract")
+        if self.required_capability != SCOPED_RESEARCH_CAPABILITY:
+            raise ValueError("research capability must be scoped_advisor_audit.v1")
+        if self.servers != SCOPED_RESEARCH_SERVERS:
+            raise ValueError(
+                "research servers must be exactly firecrawl and brightdata"
+            )
+        if self.gateway_tools != SCOPED_RESEARCH_GATEWAY_TOOLS:
+            raise ValueError(
+                "research gateway controls do not match the scoped profile"
+            )
+        if self.tool_patterns != SCOPED_RESEARCH_TOOL_PATTERNS:
+            raise ValueError(
+                "research downstream patterns do not match the scoped profile"
+            )
+        if not self.audit_required or not self.all_seats_capable:
+            raise ValueError(
+                "research requires audit and explicit all-seat capability handling"
+            )
+
+
+@dataclass(frozen=True)
 class Board:
     """A named, purpose-tagged, open-ended list of seats.
 
@@ -206,6 +287,7 @@ class Board:
     purpose: str
     seats: tuple[Seat, ...]
     allow_api_key_fallback: bool = False
+    research_policy: ResearchPolicy = ResearchPolicy()
 
     def __post_init__(self) -> None:
         if not self.name or not str(self.name).strip():
@@ -216,13 +298,14 @@ class Board:
         for seat in self.seats:
             if not isinstance(seat, Seat):
                 raise TypeError(f"board.seats entries must be Seat, got {type(seat)!r}")
+        if not isinstance(self.research_policy, ResearchPolicy):
+            raise TypeError("board.research_policy must be ResearchPolicy")
         if not self.allow_api_key_fallback:
             offenders = [s for s in self.seats if s.auth == AUTH_API_KEY]
             if offenders:
                 raise ValueError(
                     "board has api_key seats but allow_api_key_fallback is False "
-                    "(never-silent-key): "
-                    + ", ".join(s.seat_key for s in offenders)
+                    "(never-silent-key): " + ", ".join(s.seat_key for s in offenders)
                 )
 
     def seat_vendor_families(self) -> tuple[str, ...]:
