@@ -69,11 +69,16 @@ def build_github_broker_client(
         A :class:`BrokerService` bound to the global (verb-gated) contracts, so
         only ``publish_committed_branch``/``github`` can execute.
     """
+    evidence_store = BrokerEvidenceStore(Path(broker_root))
+    # ah#288: evaluate revocation INSIDE the admission lock. Checking `epoch_blocked` in
+    # the caller races `BrokerEvidenceStore._append`, which records a permanent block
+    # WITHOUT holding the admission lock — a block could become durable after the check
+    # and before the append, and the admission would still be accepted.
     admission_store = LinearizableAdmissionStore(
         Path(broker_root),
         admission_policy or _default_admission_policy,
+        epoch_blocked=lambda: evidence_store.epoch_blocked,
     )
-    evidence_store = BrokerEvidenceStore(Path(broker_root))
     adapter = GitHubBrokerAdapter(Path(repo_path), run=run)
     return BrokerService(
         admission_store,
@@ -135,9 +140,13 @@ class _RoutingBrokerService:
         service = self._services.get(repo)
         if service is None:
             root = self._broker_root / _repo_store_slug(repo)
+            evidence = BrokerEvidenceStore(root)
             service = BrokerService(
-                LinearizableAdmissionStore(root, self._admission_policy),
-                BrokerEvidenceStore(root),
+                LinearizableAdmissionStore(
+                    root, self._admission_policy,
+                    epoch_blocked=lambda: evidence.epoch_blocked,  # ah#288: in-lock revocation
+                ),
+                evidence,
                 GitHubBrokerAdapter(Path(repo), run=self._run, allowed_hosts=self._allowed_hosts),
                 contracts=self._contracts,
             )

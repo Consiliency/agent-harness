@@ -108,27 +108,44 @@ class BrokerService:
             train_id=train_id, node_id=node_id, action="readmit", lease_epoch=next_epoch,
             attempt_id=readmit_attempt_id(node_id, new_head_sha, next_epoch),
         )
+        # The fence must be NODE-scoped, not repo-scoped: a per-repo store is shared by
+        # every node in that repo (train nodes are identified by `(repo, roadmap)`, so one
+        # repo may hold several). A repo-wide epoch fence would make node B's first
+        # readmit — also deterministically epoch 2 — collide with node A's. Stamping the
+        # node into the admission's own authority domain lets the precondition filter to
+        # exactly this node's readmit lineage, with no change to the shared
+        # `AdmissionRequest` contract.
+        readmit_scope = f"{authority_domain_scope}\0readmit\0{node_id}"
         request = factory.create(
             lease=lease, approval=approval,
             expected_version_predicate=expected_version_predicate,
-            authority_domain_scope=authority_domain_scope,
+            authority_domain_scope=readmit_scope,
         )
 
         def _precondition(records) -> str | None:
-            # Evaluated INSIDE the store's lock, before any append.
-            #   (a) empty log ⇒ no baseline can exist. `admit` would otherwise skip epoch
-            #       fencing entirely via its `if records and ...` short-circuit.
-            #   (b) STRICTLY ABOVE (#288 CR A2): the store itself rejects only
-            #       `lease_epoch < max`, so a DIFFERENT request at the CURRENT epoch is
-            #       admissible — which contradicts this verb's contract.
+            # Evaluated INSIDE the store's lock, immediately before any append.
             #
-            #       Enforced HERE and not in `LinearizableAdmissionStore` on purpose:
-            #       every publish admits at `lease_epoch=1` (train_runner `action="publish"`),
-            #       so an N-node train holds N distinct admissions at epoch 1. Tightening
-            #       the shared store to reject `<= max` would fail every node after the
-            #       first. Readmit is the only verb that requires a monotonic bump.
-            if not records: return "no_admission_baseline"
-            if next_epoch <= max(r.epoch for r in records): return "epoch_not_advanced"
+            # (a) BASELINE. Require a durable admission from THIS train/workspace
+            #     authority — not "any record". A partial restore that retains some
+            #     unrelated tenant's admission must not baseline this readmit. Node
+            #     binding comes from the publish-evidence check above, which is keyed on
+            #     (repo, BRANCH, prior_head) and a branch is owned by exactly one node.
+            #     Also closes `admit`'s `if records and ...` short-circuit, under which an
+            #     EMPTY log skips epoch fencing entirely and the first writer sets the
+            #     baseline.
+            # (b) STRICTLY ABOVE, scoped to this node's readmit lineage (#288 CR A2). The
+            #     store itself rejects only `lease_epoch < max`, so a DIFFERENT request at
+            #     the CURRENT epoch is admissible — contradicting this verb's contract.
+            #
+            #     NOT enforced in `LinearizableAdmissionStore`: every publish admits at
+            #     `lease_epoch=1`, so an N-node train holds N distinct admissions at epoch
+            #     1 and tightening the shared store to `<= max` would fail every node
+            #     after the first. Readmit is the only verb needing a monotonic bump.
+            if not any(r.request.authority_domain_scope.startswith(authority_domain_scope) for r in records):
+                return "no_admission_baseline"
+            mine = [r for r in records if r.request.authority_domain_scope == readmit_scope]
+            if mine and next_epoch <= max(r.epoch for r in mine):
+                return "epoch_not_advanced"
             return None
 
         record = self.admission_store.admit(request, precondition=_precondition)

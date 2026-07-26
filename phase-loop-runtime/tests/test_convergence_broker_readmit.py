@@ -84,9 +84,12 @@ class _PublishAdapter:
 
 
 def _service(tmp_path, *, policy=lambda _: True):
+    evidence = BrokerEvidenceStore(tmp_path)
     return BrokerService(
-        LinearizableAdmissionStore(tmp_path, policy),
-        BrokerEvidenceStore(tmp_path),
+        # `epoch_blocked` wired exactly as the production builders wire it, so revocation
+        # is evaluated INSIDE the admission lock rather than racing it.
+        LinearizableAdmissionStore(tmp_path, policy, epoch_blocked=lambda: evidence.epoch_blocked),
+        evidence,
         _PublishAdapter(),
         contracts=_SUPPORTED_PCB,
     )
@@ -297,3 +300,107 @@ def test_attempt_id_is_delimited_and_domain_tagged():
     assert readmit_attempt_id("a", "bc", 1) != readmit_attempt_id("ab", "c", 1)
     assert readmit_attempt_id("n", "s", 1) != readmit_attempt_id("n", "s", 2)
     assert readmit_attempt_id("n", "s", 1) == readmit_attempt_id("n", "s", 1)
+
+
+# --- ah#288 CR round 2 (codex DISAGREE) --------------------------------------------
+
+def test_two_nodes_in_one_repo_both_readmit_at_the_same_epoch(tmp_path):
+    """CR-2 finding 1. Train nodes are identified by `(repo, roadmap)`, so ONE repo may
+    hold several nodes — and they share that repo's single admission store. A repo-wide
+    epoch fence merely relocates the multi-node regression it was meant to avoid: node B's
+    first readmit is also deterministically epoch 2 and would collide with node A's.
+
+    Mutation: scope the precondition's epoch check to ALL records instead of this node's
+    readmit lineage -> node B raises `epoch_not_advanced`.
+    """
+    svc = _service(tmp_path)
+    assert _publish(svc, branch="feat/node-a", head="sha-a-prior", key="pub-a").accepted
+    assert _publish(svc, branch="feat/node-b", head="sha-b-prior", key="pub-b").accepted
+
+    a = _readmit(svc, node_id="node-a", branch="feat/node-a", prior_head="sha-a-prior",
+                 new_head="sha-a-new", next_epoch=2)
+    b = _readmit(svc, node_id="node-b", branch="feat/node-b", prior_head="sha-b-prior",
+                 new_head="sha-b-new", next_epoch=2)
+
+    assert a.accepted and b.accepted, "one repo's nodes must not fence each other"
+    assert a.idempotency_key != b.idempotency_key
+
+    # ...and the fence still bites WITHIN a node.
+    with pytest.raises(PermissionError, match="epoch_not_advanced"):
+        _readmit(svc, node_id="node-a", branch="feat/node-a", prior_head="sha-a-prior",
+                 new_head="sha-a-yet-another", next_epoch=2)
+
+
+def test_foreign_tenant_admission_does_not_baseline_this_readmit(tmp_path):
+    """CR-2 finding 2. The in-lock baseline required only that SOME record existed, so a
+    partial restore retaining an unrelated tenant's admission plus this target's publish
+    evidence would be admitted. It must require a record from THIS authority.
+
+    This is the case the truncation test does NOT cover: the log is non-empty, but nothing
+    in it belongs to us. Mutation: revert the precondition to `if not records` -> passes.
+    """
+    svc = _service(tmp_path)
+    assert _publish(svc).accepted                      # writes evidence AND an admission
+    svc.admission_store.path.write_text("", encoding="utf-8")   # lose OUR admission history
+
+    foreign = AdmissionRequest("attempt-foreign", 1, "fence", "digest", "predicate",
+                               "some-other-tenant", "foreign-key")
+    svc.admission_store.admit(foreign)                 # a surviving UNRELATED record
+    assert len(svc.admission_store.replay()) == 1
+
+    with pytest.raises(PermissionError, match="no_admission_baseline"):
+        _readmit(svc)
+
+
+def test_conflicting_request_under_the_same_key_raises_value_error(tmp_path):
+    """M5, explicitly required by the plan and missing from round 1: the store raises
+    ValueError (not PermissionError) when a DIFFERENT request arrives under an already
+    admitted idempotency key. The verb must not catch it — Change B maps it to None.
+
+    Mutation: catch Exception around `admit` in the verb -> this fails.
+    """
+    svc = _service(tmp_path)
+    assert _publish(svc).accepted
+    accepted = _readmit(svc, next_epoch=2)
+    assert accepted.accepted
+
+    admitted = next(r for r in svc.admission_store.replay()
+                    if r.request.idempotency_key == accepted.idempotency_key)
+    forged = AdmissionRequest(
+        admitted.request.attempt_id, admitted.request.lease_epoch, admitted.request.fence_token,
+        "a-DIFFERENT-approval-digest", admitted.request.expected_version_predicate,
+        admitted.request.authority_domain_scope, admitted.request.idempotency_key,
+    )
+    with pytest.raises(ValueError):
+        svc.admission_store.admit(forged)
+
+
+def test_revocation_is_evaluated_inside_the_admission_lock(tmp_path):
+    """CR-2 finding 3. Checking `epoch_blocked` only in the verb races
+    `BrokerEvidenceStore._append`, which records a permanent block WITHOUT the admission
+    lock — a block could land between the check and the append and still be accepted.
+
+    The store's own `epoch_blocked` hook runs inside the lock; production now wires it.
+    Mutation: construct `LinearizableAdmissionStore` without `epoch_blocked=` (as both
+    builders did before this round) -> the admission is accepted on a blocked epoch.
+    """
+    svc = _service(tmp_path)
+    assert _publish(svc).accepted
+
+    class _Boom:
+        def execute(self, request): raise RuntimeError("provider blew up")
+
+    svc.adapter = _Boom()
+    _publish(svc, head="sha-will-blow", key="pub-boom")
+    assert svc.evidence_store.epoch_blocked
+
+    # Bypass the verb's own pre-store gate to prove the STORE refuses independently.
+    factory = FencedAdmissionFactory()
+    lease = factory.lease(train_id="t", node_id="n", action="readmit", lease_epoch=9,
+                          attempt_id="a" * 32)
+    request = factory.create(
+        lease=lease, approval=_approval(),
+        expected_version_predicate="head == committed", authority_domain_scope="scope",
+    )
+    with pytest.raises(PermissionError):
+        svc.admission_store.admit(request)
