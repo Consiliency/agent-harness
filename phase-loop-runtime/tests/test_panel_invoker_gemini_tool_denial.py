@@ -88,8 +88,8 @@ def test_production_argv_puts_the_constraint_before_the_untrusted_material(
     which is UNTRUSTED material under review."""
     argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
     prompt = _prompt_of(argv)
-    assert prompt.startswith(pi._NO_TOOL_PREAMBLE), "preamble is not first"
-    assert prompt.index(pi._NO_TOOL_PREAMBLE) < prompt.index("BUNDLE-SENTINEL")
+    assert prompt.startswith("OPERATING CONSTRAINT"), "constraint is not first"
+    assert prompt.index("OPERATING CONSTRAINT") < prompt.index("BUNDLE-SENTINEL")
 
 
 def test_headless_denial_returns_nonzero_with_the_cli_reason(monkeypatch, staged):
@@ -132,7 +132,7 @@ def test_oversize_bundle_keeps_the_pointer_rather_than_truncating(monkeypatch, s
     argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
     prompt = _prompt_of(argv)
     assert "XXXX" not in prompt, "oversize bundle was inlined (or truncated) anyway"
-    assert not prompt.startswith(pi._NO_TOOL_PREAMBLE), "should fall back to pointer form"
+    assert not prompt.startswith("OPERATING CONSTRAINT"), "should fall back to pointer form"
 
 
 def test_tool_denial_regex_matches_the_real_agy_stderr():
@@ -149,3 +149,52 @@ def test_tool_denial_regex_does_not_fire_on_a_review_that_merely_discusses_it():
     EMPTY body, but keep the phrasing distinct enough to be safe.)"""
     body = "The adapter should fail loudly rather than let a tool call be silently dropped."
     assert not pi._TOOL_DENIED_RE.search(body)
+
+
+def test_untrusted_material_never_has_the_last_word(monkeypatch, staged):
+    """INJECTION (CR round 2). Constraint-first defends PRIMACY; without an epilogue the
+    untrusted bundle owns RECENCY — and the verdict-format rule tells a tail-injection
+    exactly what shape to imitate. The prompt must END with the authority re-assertion."""
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    prompt = _prompt_of(argv)
+    assert prompt.rstrip().endswith("ending with the structured verdict line."), (
+        "untrusted material has the last word — epilogue missing or not last"
+    )
+    assert prompt.index("BUNDLE-SENTINEL") < prompt.index("END OF ALL INLINED MATERIAL")
+
+
+def test_section_fences_carry_an_unguessable_per_run_nonce(monkeypatch, staged):
+    """A PR author controls the diff, therefore the bundle bytes, therefore could forge a
+    STATIC section header. Fences must carry a per-run nonce the material cannot know,
+    and the nonce must differ between runs."""
+    import re as _re
+    argv1, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    argv2, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    p1, p2 = _prompt_of(argv1), _prompt_of(argv2)
+    n1 = _re.search(r"=== BEGIN INLINED review-bundle\.md \[([0-9a-f]{8,})\] ===", p1)
+    assert n1, "bundle fence carries no nonce"
+    nonce = n1.group(1)
+    assert f"=== END INLINED review-bundle.md [{nonce}] ===" in p1, "no closing fence"
+    assert nonce in p1.split("BUNDLE-SENTINEL")[0], "nonce not declared before the material"
+    n2 = _re.search(r"=== BEGIN INLINED review-bundle\.md \[([0-9a-f]{8,})\] ===", p2)
+    assert n2 and n2.group(1) != nonce, "nonce is not per-run (replayable across runs)"
+
+
+def test_preamble_declares_the_section_count_and_disarms_forged_headers(monkeypatch, staged):
+    argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
+    head = _prompt_of(argv).split("BUNDLE-SENTINEL")[0]
+    assert "exactly 2 section(s)" in head, "section count not declared"
+    assert "FINDING TO REPORT" in head, "in-material instructions not disarmed"
+
+
+def test_denial_marker_on_stderr_does_not_discard_a_REAL_review(monkeypatch, staged):
+    """M4 (surviving mutation found by the CR): the denial branch must require an EMPTY
+    body. A genuine review whose stderr merely carries auto-denied chatter must pass
+    through as success, not be discarded as a leg failure."""
+    _argv, (rc, text, _log) = _run_gemini(
+        monkeypatch,
+        staged,
+        proc=_FakeProc(stdout="A real review body.\n\nVERDICT: AGREE", stderr=_REAL_AGY_STDERR),
+    )
+    assert rc == 0, "a real review was discarded because stderr mentioned auto-denied"
+    assert "VERDICT: AGREE" in text
