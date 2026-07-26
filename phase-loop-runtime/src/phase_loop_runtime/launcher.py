@@ -15,7 +15,7 @@ import urllib.parse
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model

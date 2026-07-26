@@ -65,3 +65,14 @@ def test_built_claude_command_carries_no_2020_12_schema():
         "build_claude_command emitted a schema the CLI rejects at arg-parse time"
     )
     assert emitted == {k: v for k, v in CLOSEOUT_SCHEMA.items() if k != "$schema"}
+
+
+def test_down_converter_annotations_resolve():
+    """`from __future__ import annotations` defers annotation evaluation, so an undefined
+    name in a signature survives import and every call — it only surfaces via
+    get_type_hints() or a linter. This repo runs NO linter in CI, so this test is the
+    only guard. Mutation: drop `Mapping` from launcher.py's typing import -> NameError."""
+    from typing import get_type_hints
+
+    hints = get_type_hints(launcher._claude_json_schema)
+    assert hints["schema"] is not None
