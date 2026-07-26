@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-07-26
+
+### Native Windows import safety (Consiliency/agent-harness#327)
+
+- The phase-loop CLI entrypoint now imports on native Windows by treating the
+  POSIX PTY stack as optional at module load time.
+- Claude remains subscription-TUI-only; hosts without the POSIX PTY stack return
+  `claude_tui_unsupported_platform` and never fall back to an API or native Task.
+- `0.7.12` was not published because tag/version validation rejected the release
+  before build or upload.
+
 ## [0.7.11] - 2026-07-26
 
 ### Governed advisor research through PMCP (Consiliency/agent-harness#310)
