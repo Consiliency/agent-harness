@@ -3517,8 +3517,14 @@ def invoke_panel(
                     seat_key=leg,
                     detail="research_profile_unenforceable",
                 )
+            spawn_detail: str | None = None
             try:
-                status, text = _default_spawn_via_provider(
+                # 2-or-3 tuple, same contract as `_run_leg` / `_run_seat`: a 3-tuple
+                # carries a failure DIAGNOSTIC bound for `detail`. Unpacking a raw
+                # 2-tuple here collapsed the real status to DEGRADED and replaced the
+                # reason with "too many values to unpack" — this PR's own defect class,
+                # on the research-enabled panel path.
+                spawned = _default_spawn_via_provider(
                     leg,
                     artifact,
                     repo_dir=repo_dir,
@@ -3529,6 +3535,10 @@ def invoke_panel(
                     research_seat=config,
                     brief_append=research_instructions(config),
                 )
+                if isinstance(spawned, tuple) and len(spawned) == 3:
+                    status, text, spawn_detail = spawned
+                else:
+                    status, text = spawned
             except Exception as exc:
                 result = PanelLegResult(
                     leg=leg,
@@ -3544,7 +3554,7 @@ def invoke_panel(
                 if status == "OK" and not str(text).strip():
                     status = "EMPTY"
                 text_value = str(text)
-                detail = None
+                detail = spawn_detail
                 if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
                     detail, text_value = text_value, ""
                 result = PanelLegResult(

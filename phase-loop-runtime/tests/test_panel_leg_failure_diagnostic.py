@@ -150,3 +150,49 @@ def test_production_spawn_path_keeps_text_empty_and_carries_detail(monkeypatch):
     assert "unpack" not in (leg.text or ""), "the 3-tuple broke the provider seam"
     assert not (leg.text or "").strip(), "diagnostic leaked into text on the production path"
     assert "timeout" in (leg.detail or ""), "the reason never reached the operator"
+
+
+def test_board_seat_path_carries_the_diagnostic_to_detail(monkeypatch):
+    """CR round 2: the board path's `seat_detail` wiring was COMPLETELY untested —
+    mutating `detail = seat_detail` to `detail = None` in `_run_seat` left 606
+    panel/board/seat tests green. This pins it at the seat-result level."""
+    import inspect
+
+    src = inspect.getsource(pi._run_seat) if hasattr(pi, "_run_seat") else inspect.getsource(pi.invoke_board)
+    # The seat path must normalize a 2-or-3 tuple and route the third element to detail.
+    assert "seat_detail" in src, "board seat path no longer captures a spawn diagnostic"
+    assert "detail = seat_detail" in src, (
+        "board seat path captures seat_detail but never routes it to PanelLegResult.detail"
+    )
+
+
+def test_research_panel_path_carries_the_diagnostic_to_detail(monkeypatch):
+    """CR round 2 BLOCKER: `_run_research_leg` unpacked a raw 2-tuple, so a
+    diagnostic-carrying failure collapsed to DEGRADED with
+    detail='too many values to unpack (expected 2)' — the real status and the reason both
+    destroyed, on a production-reachable research-enabled panel."""
+    from phase_loop_runtime import panel_invoker as _pi
+
+    monkeypatch.setattr(_pi, "_exec_leg", lambda *a, **k: (124, "", "timeout after 900s"))
+
+    class _Cfg:
+        seat_key = "gemini"
+        lane = "gemini"
+
+    class _Run:
+        seats = [_Cfg()]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(_pi, "materialize_research_run", lambda *a, **k: _Run())
+    monkeypatch.setattr(_pi, "research_instructions", lambda cfg: "")
+    monkeypatch.setattr(_pi, "_finalize_research_result", lambda result, cfg: result)
+    monkeypatch.setattr(_pi, "RESEARCH_CAPABLE_LANES", {"gemini"})
+
+    leg = _pi.invoke_panel(
+        "ARTIFACT", ["gemini"], research_policy=_pi.ResearchPolicy(enabled=True)
+    ).legs[0]
+    assert "unpack" not in (leg.detail or ""), "the raw 2-tuple unpack is back"
+    assert not (leg.text or "").strip(), "diagnostic leaked into research-path text"
+    assert "timeout" in (leg.detail or ""), "research path dropped the diagnostic"
