@@ -57,6 +57,7 @@ CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
     "ANTHROPIC_BEDROCK_BASE_URL",
     "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
     "ANTHROPIC_VERTEX_BASE_URL",
@@ -94,8 +95,9 @@ def scrub_subscription_env(base_env: Mapping[str, str]) -> dict[str, str]:
     """Return a subscription-only child environment.
 
     All vendor API keys are removed. Claude-specific credential helpers,
-    alternate endpoints, and cloud-provider selectors are removed as well so a
-    Claude seat cannot silently escape the first-party subscription lane.
+    custom request headers, alternate endpoints, and cloud-provider selectors
+    are removed as well so a Claude seat cannot silently escape the first-party
+    subscription lane.
     """
     blocked = set(all_vendor_key_vars()) | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
     return {key: value for key, value in base_env.items() if key not in blocked}

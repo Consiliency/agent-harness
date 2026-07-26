@@ -43,12 +43,12 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 2. For a standalone smoke or diagnostic, run `phase-loop advisor-board <artifact>` (or, in-process, compose with `compose_review_board` and pass the material's path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_board`).
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
-5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
+5. Keep provider API keys and custom authorization headers out of the environment; the runtime strips known API-key variables and request-header overrides and uses local subscription CLIs.
 6. Every Fable or Opus seat requires the homebrew Claude Code self-PTY adapter after `claude auth status --json` proves a first-party `claude.ai` subscription. `tui_backing_required`, `subscription_auth_unproven`, and `tui_adapter_required` are unavailable seats, never invitations to substitute a gateway, API, or native Task Agent.
 
 ## Claude Subscription TUI Boundary
 
-Fable and Opus have one execution route: the homebrew installed Claude Code TUI in a self-allocated PTY. An alternate backing fails before gateway access. The launch pins the exact requested model, disables fallback-model selection, supplies run-isolated settings with no API-key helper, and uses a scrubbed environment. The auth probe accepts only a logged-in, first-party `claude.ai` subscription. Identity fields and raw probe output are not retained.
+Fable and Opus have one execution route: the homebrew installed Claude Code TUI in a self-allocated PTY. An alternate backing fails before gateway access. The launch pins the exact requested model, disables fallback-model selection, supplies run-isolated settings with no API-key helper, and uses an environment scrubbed of credentials, custom request headers, alternate endpoints, and cloud-provider selectors. The auth probe accepts only a logged-in, first-party `claude.ai` subscription. Identity fields and raw probe output are not retained.
 
 On a headless non-Claude host, the self-PTY route remains valid. Inside Claude Code, where a nested TUI cannot be driven safely, the seat returns `UNAVAILABLE` with `detail="tui_adapter_required"`. Do not fill it through the host's Task/subagent primitive; retry the board from a host where the TUI adapter can run.
 

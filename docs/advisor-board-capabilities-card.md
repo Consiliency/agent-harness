@@ -94,7 +94,7 @@ token (`gemini-3.6-flash-high`; legacy display names such as
 scrubs *every* vendor API-key var from the subprocess env / gateway payload; an
 api-key seat is reachable only behind `Board.allow_api_key_fallback` and injects
 ONLY its own vendor's key. Claude Fable/Opus seats are stricter: API-key fallback
-is forbidden, alternate endpoint/cloud-provider/helper selectors are scrubbed,
+is forbidden, custom request headers and alternate endpoint/cloud-provider/helper selectors are scrubbed,
 run-isolated settings disable API-key helpers, and the TUI launches only after a
 metadata-only auth probe proves a first-party `claude.ai` subscription. A board
 can't even be constructed holding an api-key seat without opting in.

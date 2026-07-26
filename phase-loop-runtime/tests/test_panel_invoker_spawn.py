@@ -29,7 +29,13 @@ class ClaudeTuiLegTest(unittest.TestCase):
             captured["env"] = env
             return 0, "Repo-grounded review.\nAGREE", "claude_tui_file_output", ""
 
-        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}):
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+            os.environ,
+            {
+                "ANTHROPIC_API_KEY": "secret",
+                "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer api-secret",
+            },
+        ):
             review_dir = Path(td) / "review"
             out_dir = Path(td) / "out"
             repo_dir = Path(td) / "repo"
@@ -57,6 +63,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
         self.assertEqual(captured["output_file"], out_dir / "panel-claude.txt")
         self.assertEqual(captured["timeout_s"], 600)
         self.assertNotIn("ANTHROPIC_API_KEY", captured["env"])
+        self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", captured["env"])
         for blocked in (
             "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",

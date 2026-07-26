@@ -113,6 +113,21 @@
             "verification_summary": "PASS - Fable/Opus alternate backings now fail before gateway access; focused reconciliation and full suite passed."
           },
           "transition": "completed"
+        },
+        {
+          "at": "2026-07-26T06:17:09Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "second exact-head panel blocker reconciled and reverified",
+            "full_suite": "3504 passed, 638 skipped, 4 warnings, 634 subtests passed",
+            "panel_reconciliation": "Codex DISAGREE on ANTHROPIC_CUSTOM_HEADERS escape fixed at TUI session boundary",
+            "run_id": "20260726T052000Z-04-310-claude-tui-guard",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-claude-tui-guard-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - custom authorization headers now join the central subscription scrub; focused regression and full suite passed."
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -123,7 +138,7 @@
       "status": "completed",
       "task_summary": "Enforce subscription TUI-only Claude execution and typed refusal handling.",
       "type": "detailed",
-      "updated_at": "2026-07-26T05:57:45Z"
+      "updated_at": "2026-07-26T06:17:09Z"
     },
     {
       "acceptance_criteria_count": 8,

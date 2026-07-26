@@ -43,7 +43,7 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 2. For a standalone smoke or diagnostic, run `phase-loop advisor-board <artifact>` (or, in-process, compose with `compose_review_board` and pass the material's path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_board`).
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
-5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
+5. Keep provider API keys and custom authorization headers out of the environment; the runtime strips known API-key variables and request-header overrides and uses local subscription CLIs.
 6. Every Fable or Opus seat requires the homebrew Claude Code self-PTY adapter after a metadata-only probe proves first-party `claude.ai` subscription auth. Never substitute a gateway, API, SDK, direct HTTP call, or native Task/subagent; `tui_backing_required`, `subscription_auth_unproven`, and `tui_adapter_required` fail closed.
 
 ## Standalone Smoke Shape
