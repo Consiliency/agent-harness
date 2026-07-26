@@ -17,7 +17,7 @@ class BrokerClient(Protocol):
     def execute(self, request: BrokerRequest) -> "BrokerExecutionResult": ...
     def readmit_advanced_head(
         self, *, repo: str, branch: str, train_id: str, node_id: str, prior_head_sha: str,
-        new_head_sha: str, next_epoch: int, approval, expected_version_predicate: str,
+        new_head_sha: str, approval, expected_version_predicate: str,
         authority_domain_scope: str,
     ) -> "ReadmitResult": ...
 
@@ -43,14 +43,17 @@ class ReadmitResult:
 def publish_committed_branch_idempotency_key(repo: str, branch: str, head_sha: str) -> str:
     return hashlib.sha256(f"{repo}\0{branch}\0{head_sha}".encode()).hexdigest()
 
-def readmit_attempt_id(node_id: str, new_head_sha: str, next_epoch: int) -> str:
+def readmit_attempt_id(node_id: str, new_head_sha: str) -> str:
     """Deterministic attempt id for a re-admission, so a resume of the SAME advance
-    reproduces the SAME idempotency key and de-dups instead of admitting twice.
+    de-dups instead of admitting twice.
+
+    Deliberately does NOT encode the epoch: the broker allocates that inside the lock, so
+    a resume must be able to find its own earlier record BEFORE an epoch exists.
 
     NUL-delimited and domain-tagged: the fields are variable-length, so plain
     concatenation would let `(node="a", sha="bc")` and `(node="ab", sha="c")` collide.
     """
-    return hashlib.sha256(f"fab-readmit\0{node_id}\0{new_head_sha}\0{next_epoch}".encode()).hexdigest()
+    return hashlib.sha256(f"fab-readmit\0{node_id}\0{new_head_sha}".encode()).hexdigest()
 
 class BrokerService:
     def __init__(self, admission_store, evidence_store: BrokerEvidenceStore, adapter: BrokerProviderAdapter, contracts=PROVIDER_COMPLETION_CLASSIFICATIONS) -> None:
@@ -81,93 +84,67 @@ class BrokerService:
 
     def readmit_advanced_head(
         self, *, repo: str, branch: str, train_id: str, node_id: str, prior_head_sha: str,
-        new_head_sha: str, next_epoch: int, approval, expected_version_predicate: str,
+        new_head_sha: str, approval, expected_version_predicate: str,
         authority_domain_scope: str,
     ) -> ReadmitResult:
         """ah#288: re-admit an ADVANCED head without publishing (the advance is already
         pushed). Deliberately does NOT touch the provider adapter.
 
-        Fail-closed on every branch. `PermissionError`/`ValueError` from the store
-        PROPAGATE — the seam caller maps them to a `None` result and recovers the
-        admitted prefix; swallowing them here would report a refusal as a clean outcome.
+        The epoch is ALLOCATED BY THE BROKER, not supplied by the caller. Three CR rounds
+        established why: with a caller-chosen epoch AND a caller-declared node identity,
+        "must be higher than this node's last" is self-asserted — a caller presents an
+        unused identity, has no history, and passes. Removing both levers deletes that
+        whole class, and with it the node-lineage bookkeeping earlier rounds added.
+
+        Fail-closed on every branch. `PermissionError`/`ValueError` PROPAGATE; the seam
+        maps them to `None` and recovers the admitted prefix.
         """
         if self.evidence_store.epoch_blocked:
-            return ReadmitResult(False, next_epoch, "", "revoked")
+            return ReadmitResult(False, 0, "", "revoked")
 
-        # BASELINE (#288 CR A1): require a COMPLETED publish for this exact
-        # (repo, branch, prior_head) — not merely "some earlier record". Read from the
-        # evidence store, whose terminal states are permanent and append-only, so this
-        # cannot become false between here and the admit below.
+        # BASELINE: require a COMPLETED publish for this exact (repo, branch, prior_head).
+        # Evidence terminal states are permanent and append-only, so this cannot become
+        # false before the admit below.
         publish_key = f"{BrokerVerb.PUBLISH_COMMITTED_BRANCH.value}\0{publish_committed_branch_idempotency_key(repo, branch, prior_head_sha)}"
         prior = self.evidence_store.replay().get(publish_key)
         if prior is None or prior.state is not TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED:
-            return ReadmitResult(False, next_epoch, "", "no_prior_publish")
+            return ReadmitResult(False, 0, "", "no_prior_publish")
 
         factory = FencedAdmissionFactory()
-        lease = factory.lease(
-            train_id=train_id, node_id=node_id, action="readmit", lease_epoch=next_epoch,
-            attempt_id=readmit_attempt_id(node_id, new_head_sha, next_epoch),
-        )
-        # The fence must be NODE-scoped, not repo-scoped: a per-repo store is shared by
-        # every node in that repo (train nodes are identified by `(repo, roadmap)`, so one
-        # repo may hold several). A repo-wide epoch fence would make node B's first
-        # readmit — also deterministically epoch 2 — collide with node A's. Stamping the
-        # node into the admission's own authority domain lets the precondition filter to
-        # exactly this node's readmit lineage, with no change to the shared
-        # `AdmissionRequest` contract.
-        readmit_scope = f"{authority_domain_scope}\0readmit\0{node_id}"
-        request = factory.create(
-            lease=lease, approval=approval,
-            expected_version_predicate=expected_version_predicate,
-            authority_domain_scope=readmit_scope,
-        )
+        attempt_id = readmit_attempt_id(node_id, new_head_sha)
+
+        def _make_request(epoch: int):
+            lease = factory.lease(train_id=train_id, node_id=node_id, action="readmit",
+                                  lease_epoch=epoch, attempt_id=attempt_id)
+            return factory.create(
+                lease=lease, approval=approval,
+                expected_version_predicate=expected_version_predicate,
+                authority_domain_scope=authority_domain_scope,
+            )
 
         def _precondition(records) -> str | None:
-            # Evaluated INSIDE the store's lock, immediately before any append.
-            #
-            # (a) BASELINE. Require a durable admission from THIS train/workspace
-            #     authority — not "any record". A partial restore that retains some
-            #     unrelated tenant's admission must not baseline this readmit. Node
-            #     binding comes from the publish-evidence check above, which is keyed on
-            #     (repo, BRANCH, prior_head) and a branch is owned by exactly one node.
-            #     Also closes `admit`'s `if records and ...` short-circuit, under which an
-            #     EMPTY log skips epoch fencing entirely and the first writer sets the
-            #     baseline.
-            # (b) STRICTLY ABOVE, scoped to this node's readmit lineage (#288 CR A2). The
-            #     store itself rejects only `lease_epoch < max`, so a DIFFERENT request at
-            #     the CURRENT epoch is admissible — contradicting this verb's contract.
-            #
-            #     NOT enforced in `LinearizableAdmissionStore`: every publish admits at
-            #     `lease_epoch=1`, so an N-node train holds N distinct admissions at epoch
-            #     1 and tightening the shared store to `<= max` would fail every node
-            #     after the first. Readmit is the only verb needing a monotonic bump.
-            # Exact, or delimited-prefix — never a bare `startswith`. Authority scopes are
-            # caller-supplied free text, so `"train-1"` would otherwise prefix-match
-            # `"train-10\0readmit\0node-x"` and let a DIFFERENT tenant's admission baseline
-            # this one. The NUL is the same delimiter `readmit_scope` is built with, and
-            # cannot occur inside a scope segment.
+            # Runs inside the store lock, before any append. An admission from THIS
+            # authority must already exist: an empty log (loss/truncation/partial restore)
+            # or a log holding only some other tenant's records is not a baseline.
+            # Exact-or-delimited, never a bare prefix — "train-1" must not match "train-10".
             def _ours(scope: str) -> bool:
                 return scope == authority_domain_scope or scope.startswith(f"{authority_domain_scope}\0")
-
             if not any(_ours(r.request.authority_domain_scope) for r in records):
                 return "no_admission_baseline"
-            mine = [r for r in records if r.request.authority_domain_scope == readmit_scope]
-            if mine and next_epoch <= max(r.epoch for r in mine):
-                return "epoch_not_advanced"
             return None
 
-        record = self.admission_store.admit(request, precondition=_precondition)
+        record = self.admission_store.admit_next(
+            _make_request, attempt_id=attempt_id, precondition=_precondition,
+        )
 
-        # ANTI-VACUITY re-read: verify the DURABLE record, not the return value — a store
-        # that accepted without persisting must not read as accepted.
+        # ANTI-VACUITY re-read: verify the DURABLE record, not the return value.
         durable = next(
-            (r for r in self.admission_store.replay()
-             if r.request.idempotency_key == request.idempotency_key),
+            (r for r in self.admission_store.replay() if r.request.attempt_id == attempt_id),
             None,
         )
-        if durable is None or durable.epoch != next_epoch or durable.sequence != record.sequence:
-            return ReadmitResult(False, next_epoch, "", "admission_not_durable")
-        return ReadmitResult(True, next_epoch, request.idempotency_key)
+        if durable is None or durable.epoch != record.epoch:
+            return ReadmitResult(False, record.epoch, "", "admission_not_durable")
+        return ReadmitResult(True, record.epoch, record.request.idempotency_key)
 
     def execute(self, request: BrokerRequest) -> BrokerExecutionResult:
         key = self._dedup_key(request)

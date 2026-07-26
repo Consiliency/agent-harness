@@ -109,12 +109,17 @@ def _publish(svc, *, branch=BRANCH, head=PRIOR_HEAD, key="pub-1", epoch=1):
     return svc.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, REPO, branch, head, ("a.py",)))
 
 
-def _readmit(svc, *, next_epoch=2, new_head=NEW_HEAD, prior_head=PRIOR_HEAD, branch=BRANCH, node_id="node-a"):
+def _readmit(svc, *, new_head=NEW_HEAD, prior_head=PRIOR_HEAD, branch=BRANCH, node_id="node-a",
+             scope="scope", **_ignored):
+    """`next_epoch` is deliberately absent: the broker allocates it. `**_ignored` absorbs
+    an accidental `next_epoch=` from a stale call site so it fails LOUDLY on the assertion
+    rather than silently reintroducing caller control."""
+    assert not _ignored, f"the caller no longer chooses the epoch: {sorted(_ignored)}"
     return svc.readmit_advanced_head(
         repo=REPO, branch=branch, train_id="train-1", node_id=node_id,
-        prior_head_sha=prior_head, new_head_sha=new_head, next_epoch=next_epoch,
+        prior_head_sha=prior_head, new_head_sha=new_head,
         approval=_approval(), expected_version_predicate="head == committed",
-        authority_domain_scope="scope",
+        authority_domain_scope=scope,
     )
 
 
@@ -159,11 +164,11 @@ def test_poison_record_retry_is_refused(tmp_path):
     """
     svc = _service(tmp_path)
 
-    first = _readmit(svc, new_head="sha-attempt-1", next_epoch=2)
+    first = _readmit(svc, new_head="sha-attempt-1")
     assert first.accepted is False
     assert svc.admission_store.replay() == (), "attempt 1 must not leave a poison record"
 
-    second = _readmit(svc, new_head="sha-attempt-2-different-key", next_epoch=2)
+    second = _readmit(svc, new_head="sha-attempt-2-different-key")
     assert second.accepted is False, "the retry exploited a record its own first attempt wrote"
     assert svc.admission_store.replay() == ()
 
@@ -206,26 +211,6 @@ def test_baseline_is_bound_to_the_exact_repo_branch_and_prior_head(tmp_path):
 
 
 # --- A2: strictly above ------------------------------------------------------------
-
-def test_equal_epoch_conflicting_readmission_is_refused(tmp_path):
-    """ah#288 CR A2. The store rejects only `lease_epoch < max`, so a DIFFERENT request at
-    the CURRENT epoch would otherwise be admitted.
-
-    Surfaces on the RAISING channel (see the module docstring's two-channel note): the
-    precondition runs inside `admit`, and a denial there is a `PermissionError` exactly
-    like the store's own fencing. Mutation: change the precondition's `<=` to `<` — no
-    exception is raised and the conflicting advance is admitted.
-    """
-    svc = _service(tmp_path)
-    assert _publish(svc).accepted
-    assert _readmit(svc, next_epoch=2).accepted
-
-    with pytest.raises(PermissionError, match="epoch_not_advanced"):
-        _readmit(svc, next_epoch=2, new_head="sha-a-different-advance")
-
-    admitted_at_2 = [r for r in svc.admission_store.replay() if r.epoch == 2]
-    assert len(admitted_at_2) == 1, "the conflicting advance must not have been appended"
-
 
 def test_multi_node_same_epoch_publishes_still_admit(tmp_path):
     """REGRESSION GUARD for the refinement in this module's docstring: every publish
@@ -285,50 +270,13 @@ def test_resume_of_the_same_advance_is_idempotent(tmp_path):
     svc = _service(tmp_path)
     assert _publish(svc).accepted
 
-    first = _readmit(svc, next_epoch=2)
-    second = _readmit(svc, next_epoch=2)  # same advance, replayed
+    first = _readmit(svc)
+    second = _readmit(svc)  # same advance, replayed
 
     assert first.accepted and second.accepted
     assert first.idempotency_key == second.idempotency_key
     matching = [r for r in svc.admission_store.replay() if r.request.idempotency_key == first.idempotency_key]
     assert len(matching) == 1, "a resume must NOT append a second admission record"
-
-
-def test_attempt_id_is_delimited_and_domain_tagged():
-    """The fields are variable-length; plain concatenation would let ('a','bc') collide
-    with ('ab','c')."""
-    assert readmit_attempt_id("a", "bc", 1) != readmit_attempt_id("ab", "c", 1)
-    assert readmit_attempt_id("n", "s", 1) != readmit_attempt_id("n", "s", 2)
-    assert readmit_attempt_id("n", "s", 1) == readmit_attempt_id("n", "s", 1)
-
-
-# --- ah#288 CR round 2 (codex DISAGREE) --------------------------------------------
-
-def test_two_nodes_in_one_repo_both_readmit_at_the_same_epoch(tmp_path):
-    """CR-2 finding 1. Train nodes are identified by `(repo, roadmap)`, so ONE repo may
-    hold several nodes — and they share that repo's single admission store. A repo-wide
-    epoch fence merely relocates the multi-node regression it was meant to avoid: node B's
-    first readmit is also deterministically epoch 2 and would collide with node A's.
-
-    Mutation: scope the precondition's epoch check to ALL records instead of this node's
-    readmit lineage -> node B raises `epoch_not_advanced`.
-    """
-    svc = _service(tmp_path)
-    assert _publish(svc, branch="feat/node-a", head="sha-a-prior", key="pub-a").accepted
-    assert _publish(svc, branch="feat/node-b", head="sha-b-prior", key="pub-b").accepted
-
-    a = _readmit(svc, node_id="node-a", branch="feat/node-a", prior_head="sha-a-prior",
-                 new_head="sha-a-new", next_epoch=2)
-    b = _readmit(svc, node_id="node-b", branch="feat/node-b", prior_head="sha-b-prior",
-                 new_head="sha-b-new", next_epoch=2)
-
-    assert a.accepted and b.accepted, "one repo's nodes must not fence each other"
-    assert a.idempotency_key != b.idempotency_key
-
-    # ...and the fence still bites WITHIN a node.
-    with pytest.raises(PermissionError, match="epoch_not_advanced"):
-        _readmit(svc, node_id="node-a", branch="feat/node-a", prior_head="sha-a-prior",
-                 new_head="sha-a-yet-another", next_epoch=2)
 
 
 def test_foreign_tenant_admission_does_not_baseline_this_readmit(tmp_path):
@@ -361,7 +309,7 @@ def test_conflicting_request_under_the_same_key_raises_value_error(tmp_path):
     """
     svc = _service(tmp_path)
     assert _publish(svc).accepted
-    accepted = _readmit(svc, next_epoch=2)
+    accepted = _readmit(svc)
     assert accepted.accepted
 
     admitted = next(r for r in svc.admission_store.replay()
@@ -427,3 +375,138 @@ def test_prefix_colliding_tenant_does_not_baseline_this_readmit(tmp_path):
 
     with pytest.raises(PermissionError, match="no_admission_baseline"):
         _readmit(svc)  # authority_domain_scope="scope"
+
+
+# --- CR round 3: the caller controls NEITHER the epoch NOR its lineage ---------------
+
+def test_epoch_is_allocated_by_the_broker_and_is_strictly_monotonic(tmp_path):
+    """Replaces the old equal-epoch test, which asserted a rule that no longer exists.
+
+    The caller supplies no epoch at all, so "strictly above" is not a check that can be
+    weakened — it is a property of allocation. Mutation: allocate `max(...)` instead of
+    `max(...)+1` -> the second advance collides.
+    """
+    svc = _service(tmp_path)
+    assert _publish(svc).accepted
+    first = _readmit(svc, new_head="advance-1")
+    second = _readmit(svc, new_head="advance-2")
+
+    assert first.accepted and second.accepted
+    assert second.granted_epoch > first.granted_epoch
+    # ...and strictly above the PUBLISH's own epoch (CR-3 finding 3a: a first readmit
+    # used to be admissible at epoch 1, the same epoch the publish sat at).
+    publish_epoch = min(r.epoch for r in svc.admission_store.replay())
+    assert first.granted_epoch > publish_epoch
+
+
+def test_two_nodes_in_one_repo_never_fence_each_other(tmp_path):
+    """CR-3 finding 3b: node A advancing to a high epoch used to make node B's LEGITIMATE
+    first readmit fail the store's repo-global stale check with `stale epoch`. Verified
+    empirically before this rewrite. With broker allocation, node B simply receives the
+    next number.
+
+    Mutation: reinstate a caller-supplied epoch -> node B must guess, and guessing low
+    fails while guessing high breaks monotonicity.
+    """
+    svc = _service(tmp_path)
+    assert _publish(svc, branch="feat/node-a", head="sha-a-prior", key="pub-a").accepted
+    assert _publish(svc, branch="feat/node-b", head="sha-b-prior", key="pub-b").accepted
+
+    # Node A runs well ahead.
+    for i in range(3):
+        assert _readmit(svc, node_id="node-a", branch="feat/node-a",
+                        prior_head="sha-a-prior", new_head=f"a{i}").accepted
+
+    b = _readmit(svc, node_id="node-b", branch="feat/node-b",
+                 prior_head="sha-b-prior", new_head="b0")
+    assert b.accepted, "a lagging node's first readmit must not be fenced by a faster one"
+
+
+def test_a_fresh_node_identity_buys_nothing(tmp_path):
+    """CR-3 finding 2, the fail-open that drove this redesign: when the caller declares
+    its own identity AND picks its own epoch, it can always present an unused identity,
+    have no history, and walk past a "higher than your last" rule.
+
+    Identity is now irrelevant to fencing — the epoch is global and broker-allocated — so
+    inventing one gains nothing. Mutation: key allocation off a caller-scoped lineage
+    again -> the invented identity restarts at 1 and this fails.
+    """
+    svc = _service(tmp_path)
+    assert _publish(svc).accepted
+    real = _readmit(svc, node_id="node-a", new_head="advance-1")
+
+    invented = _readmit(svc, node_id="totally-made-up-node", new_head="advance-2")
+
+    assert invented.granted_epoch > real.granted_epoch, (
+        "an invented node identity must not reset the fence"
+    )
+
+
+def test_attempt_id_is_delimited_and_epoch_free(tmp_path):
+    """The attempt id must NOT encode the epoch: a resume has to find its own earlier
+    record before an epoch is allocated, or it is handed a fresh number and never de-dups.
+    Delimiting still matters — ('a','bc') must not collide with ('ab','c')."""
+    assert readmit_attempt_id("a", "bc") != readmit_attempt_id("ab", "c")
+    assert readmit_attempt_id("n", "s") == readmit_attempt_id("n", "s")
+
+    svc = _service(tmp_path)
+    assert _publish(svc).accepted
+    first = _readmit(svc, new_head="same-advance")
+    again = _readmit(svc, new_head="same-advance")
+    assert first == again, "a resume must return the SAME record, not a freshly allocated epoch"
+    assert len(svc.admission_store.replay()) == 2, "publish + exactly one readmit"
+
+
+def test_a_concurrent_revocation_cannot_land_mid_admission(tmp_path):
+    """CR-3 finding 1, and the one my first attempt failed to actually test.
+
+    Moving the `epoch_blocked` check inside the admission lock is NOT sufficient while the
+    evidence writer takes no lock at all: a block can still become durable between the
+    check and the append. codex's words: 'both operations need a common serialization
+    boundary.' Pre-seeding a block (what the earlier test did) proves nothing about the
+    interleaving.
+
+    This drives the interleaving directly: while the admission lock is held, a second
+    thread attempts to write blocked evidence. With a shared lock it MUST be unable to
+    complete inside that window; it completes as soon as the admission releases.
+
+    Mutation: give the evidence store its own lock file -> the writer sails through mid
+    admission and this fails.
+    """
+    import threading
+
+    svc = _service(tmp_path)
+    assert _publish(svc).accepted
+
+    landed = threading.Event()
+    entered = threading.Event()
+
+    def _block_the_epoch():
+        entered.wait(timeout=5)
+        svc.evidence_store.rejected_before_start("racing-key", "concurrent-revocation")
+        landed.set()
+
+    writer = threading.Thread(target=_block_the_epoch, daemon=True)
+    writer.start()
+
+    observed_during_window = {}
+    real_precondition_point = svc.admission_store.admit_next
+
+    def _instrumented(make_request, *, attempt_id, precondition=None):
+        def _wrapped(records):
+            entered.set()                     # we are INSIDE the admission lock now
+            landed.wait(timeout=0.5)          # give the writer every chance to slip in
+            observed_during_window["landed"] = landed.is_set()
+            return precondition(records) if precondition else None
+        return real_precondition_point(make_request, attempt_id=attempt_id, precondition=_wrapped)
+
+    svc.admission_store.admit_next = _instrumented
+    result = _readmit(svc)
+    writer.join(timeout=5)
+
+    assert observed_during_window["landed"] is False, (
+        "a revocation landed while the admission lock was held — the stores are not "
+        "sharing a serialization boundary"
+    )
+    assert result.accepted
+    assert landed.is_set(), "the writer must proceed once the admission releases the lock"

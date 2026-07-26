@@ -70,4 +70,39 @@ class LinearizableAdmissionStore:
                 return record
             finally: fcntl.flock(lock, fcntl.LOCK_UN)
 
+    def admit_next(self, make_request: Callable[[int], AdmissionRequest], *, attempt_id: str,
+                   precondition: AdmissionPrecondition | None = None) -> AdmissionRecord:
+        """ah#288: admit at a BROKER-ALLOCATED epoch.
+
+        `admit` takes the epoch from the caller, which makes fencing self-asserted: a
+        caller picks its own number AND its own identity, so it can always present a
+        combination with no prior history and walk past any "must be higher than before"
+        rule. Here the epoch is `max+1` computed INSIDE the lock — the caller has no say,
+        so "strictly above" holds by construction and there is no lineage to forge.
+
+        Idempotency is keyed on `attempt_id`, which must NOT encode the epoch: a resume
+        has to find its own earlier record BEFORE an epoch is allocated, or it would be
+        handed a fresh number every time and never de-dup.
+        """
+        import fcntl
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                records = self._records()
+                for record in records:
+                    if record.request.attempt_id == attempt_id:
+                        return record  # idempotent resume, before any allocation
+                if precondition is not None:
+                    denial = precondition(tuple(records))
+                    if denial: raise PermissionError(denial)
+                epoch = (max(r.epoch for r in records) if records else 0) + 1
+                request = make_request(epoch)
+                if self.epoch_blocked() or self.policy is None or not self.policy(request):
+                    raise PermissionError("broker admission denied")
+                record = AdmissionRecord(len(records) + 1, epoch, request)
+                with self.path.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(asdict(record), sort_keys=True) + "\n"); stream.flush(); os.fsync(stream.fileno())
+                return record
+            finally: fcntl.flock(lock, fcntl.LOCK_UN)
+
     def replay(self) -> tuple[AdmissionRecord, ...]: return tuple(self._records())

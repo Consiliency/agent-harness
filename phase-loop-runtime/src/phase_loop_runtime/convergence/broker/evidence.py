@@ -19,6 +19,16 @@ class EvidenceRecord:
 class BrokerEvidenceStore:
     def __init__(self, root: Path) -> None:
         self.root = root; root.mkdir(parents=True, exist_ok=True); self.path = root / "evidence.jsonl"
+        # ah#288: the SAME lock file LinearizableAdmissionStore uses. A revocation
+        # (outcome_ambiguous_blocked) written here must not be able to land between an
+        # admission's `epoch_blocked` check and its append — checking inside the admission
+        # lock is not enough while the writer takes no lock at all. Sharing one boundary
+        # makes "is the epoch blocked?" and "block the epoch" mutually exclusive.
+        #
+        # Safe against deadlock only because no evidence write happens while the admission
+        # lock is held: BrokerService.execute admits and THEN records intent/terminal, and
+        # the readmit precondition only reads records.
+        self.lock_path = root / "admissions.lock"
     def replay(self) -> dict[str, EvidenceRecord]:
         result: dict[str, EvidenceRecord] = {}
         if self.path.exists():
@@ -41,6 +51,14 @@ class BrokerEvidenceStore:
     def rejected_before_start(self, key: str, evidence_reference: str) -> EvidenceRecord:
         return self._append(EvidenceRecord(key, TerminalOutcomeState.REJECTED_BEFORE_START, evidence_reference))
     def _append(self, record: EvidenceRecord) -> EvidenceRecord:
+        import fcntl
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                return self._append_locked(record)
+            finally: fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _append_locked(self, record: EvidenceRecord) -> EvidenceRecord:
         # Storage-layer permanence: no write may transition OUT of a terminal
         # outcome_ambiguous_blocked record.  This is self-enforcing regardless of
         # caller path (record_terminal, rejected_before_start, record_intent), so a
