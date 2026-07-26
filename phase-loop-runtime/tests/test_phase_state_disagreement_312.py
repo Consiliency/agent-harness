@@ -157,3 +157,62 @@ def test_manifest_done_vs_snapshot_awaiting_closeout_is_reported():
         {"P": "awaiting_phase_closeout"}, [_entry("P", "completed")]
     )
     assert out == [("P", "awaiting_phase_closeout", "completed")]
+
+
+def test_status_json_also_carries_the_disagreement(monkeypatch, tmp_path):
+    """CR round 2 (codex): automation reads `status --json` — repair and handoff flows
+    rely on it — so a text-only reconciliation leaves every machine consumer blind.
+    Additive key: absent when the stores agree, so no existing consumer changes."""
+    import json as _json
+
+    from phase_loop_runtime import render
+    import phase_loop_runtime.plan_manifest as pm
+
+    monkeypatch.setattr(render, "attach_git_topology", lambda repo, snap: snap)
+    monkeypatch.setattr(
+        pm, "read_manifest",
+        lambda repo: type("M", (), {"plans": [_entry("FREEZE", "completed")]})(),
+    )
+
+    class _Snap:
+        repo = str(tmp_path)
+        roadmap = "specs/phase-plans-convergence-v1.md"
+        phases = {"FREEZE": "executing"}
+        current_phase = None
+        ledger_warnings: list = []
+        ledger_duplicates_skipped: list = []
+        def to_json(self):
+            return {"roadmap": self.roadmap, "phases": dict(self.phases)}
+
+    out = _json.loads(render.render_status(_Snap(), as_json=True))
+    assert "state_disagreements" in out, "status --json is blind to the contradiction"
+    assert out["state_disagreements"] == [
+        {"phase": "FREEZE", "status": "executing", "manifest": "completed"}
+    ]
+
+
+def test_status_json_omits_the_key_when_the_stores_agree(monkeypatch, tmp_path):
+    """Additive-only: a clean run's JSON must be unchanged for existing consumers."""
+    import json as _json
+
+    from phase_loop_runtime import render
+    import phase_loop_runtime.plan_manifest as pm
+
+    monkeypatch.setattr(render, "attach_git_topology", lambda repo, snap: snap)
+    monkeypatch.setattr(
+        pm, "read_manifest",
+        lambda repo: type("M", (), {"plans": [_entry("FREEZE", "completed")]})(),
+    )
+
+    class _Snap:
+        repo = str(tmp_path)
+        roadmap = "specs/phase-plans-convergence-v1.md"
+        phases = {"FREEZE": "complete"}          # agrees with the manifest
+        current_phase = None
+        ledger_warnings: list = []
+        ledger_duplicates_skipped: list = []
+        def to_json(self):
+            return {"roadmap": self.roadmap, "phases": dict(self.phases)}
+
+    out = _json.loads(render.render_status(_Snap(), as_json=True))
+    assert "state_disagreements" not in out
