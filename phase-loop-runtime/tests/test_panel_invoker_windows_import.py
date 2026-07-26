@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import builtins
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -9,7 +9,12 @@ import phase_loop_runtime.panel_invoker as panel_invoker
 
 
 def test_panel_invoker_imports_without_posix_pty_modules() -> None:
-    package_root = Path(__file__).resolve().parents[1] / "src"
+    # Resolve the directory that makes ``phase_loop_runtime`` importable in *this*
+    # interpreter. In the repo that is the ``src/`` layout; in the Gate A
+    # clean-room (only ``tests/`` is copied, package installed from a wheel) it is
+    # the venv's site-packages. Deriving it from the imported module keeps this
+    # test layout-independent instead of assuming a sibling ``src/`` dir.
+    package_parent = Path(panel_invoker.__file__).resolve().parents[1]
     script = """
 import builtins
 
@@ -23,10 +28,17 @@ def guarded_import(name, *args, **kwargs):
 builtins.__import__ = guarded_import
 import phase_loop_runtime.panel_invoker
 """
+    # Inherit the real environment (so site-packages / PYTHONNOUSERSITE stay
+    # intact under the clean-room) and just make sure the package parent is on
+    # PYTHONPATH.
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(package_parent), existing] if existing else [str(package_parent)]
+    )
     completed = subprocess.run(
         [sys.executable, "-c", script],
-        cwd=package_root,
-        env={"PYTHONPATH": str(package_root)},
+        env=env,
         capture_output=True,
         text=True,
         check=False,
