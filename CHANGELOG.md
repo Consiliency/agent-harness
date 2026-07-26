@@ -18,6 +18,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `max/max/high`, and Gemini records its explicit policy clamp.
 - Gemini Flash defaults store the base `gemini-3.6-flash` model and render the
   policy effort into the canonical agy model id at launch.
+- Governed repair now applies the existing repeated-failure ladder: two matching
+  regular-tier failures re-resolve the selected executor's `planner` model before
+  launch, including the no-fallback-executor case. The launch event persists the
+  requested and effective class/model plus fingerprint- and provenance-bound
+  recovery state. Explicit operator models remain authoritative, unmapped target
+  classes fail closed, and terminal `invoke_panel` remains recorded but unconsumed.
 
 ### FAB activation piece 3a — durable admission bridge (Consiliency/agent-harness#191)
 

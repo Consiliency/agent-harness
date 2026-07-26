@@ -182,7 +182,14 @@ from .phase_worktree_executor import (
 )
 from .plan_ir import iter_waves
 from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
-from .profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile, resolve_profile_for_executor, shipped_model_policy_rule
+from .profiles import (
+    apply_model_class_escalation,
+    resolve_execution_policy,
+    resolve_model_selection_from_policy,
+    resolve_profile,
+    resolve_profile_for_executor,
+    shipped_model_policy_rule,
+)
 from .prompts import build_prompt
 from .provenance import event_provenance, snapshot_provenance
 from .governed_review import (
@@ -2749,11 +2756,26 @@ def run_loop(
             if rotation_state is not None and rotation_state.mode == "phase" and rotation_preferred_executor is not None:
                 rotation_state.advance(dispatch_decision.selected_executor)
             repair_loop_pivot: dict[str, object] | None = None
+            model_class_escalation_decision = None
+            model_class_escalation_from_class: str | None = None
+            repeated_repair_failures = 0
             if (
                 launch_action == "repair"
                 and not dispatch_decision.blocked
                 and dispatch_decision.selected_executor
-                and _recent_repeated_repair_failures(repo, alias, dispatch_decision.selected_executor, snapshot) >= 2
+            ):
+                repeated_repair_failures = _recent_repeated_repair_failures(
+                    repo,
+                    roadmap,
+                    alias,
+                    dispatch_decision.selected_executor,
+                    snapshot,
+                )
+            if (
+                launch_action == "repair"
+                and not dispatch_decision.blocked
+                and dispatch_decision.selected_executor
+                and repeated_repair_failures >= 2
             ):
                 pivot_executor = _repair_fallback_candidate(
                     dispatch_decision,
@@ -2766,36 +2788,43 @@ def run_loop(
                     "from_executor": dispatch_decision.selected_executor,
                     "to_executor": pivot_executor,
                     "reason": "repeated_repair_failure_fingerprint",
+                    "failure_fingerprint": _repair_failure_fingerprint(
+                        snapshot.blocker_class, snapshot.blocker_summary
+                    ),
                     "blocker_class": snapshot.blocker_class,
                     "blocker_summary": snapshot.blocker_summary,
                 }
-                # model-routing-v2 P3: bind the model_class ladder ATOP the
-                # executor pivot. In governed mode a repeated repair failure
-                # consults next_escalation (implementer→planner; a failing planner
-                # routes to panel/terminal). Recorded on the pivot metadata so the
-                # decision is live and observable; the full model_class re-selection
-                # application is the documented remaining thread (next_escalation is
-                # a pure, unit-tested function). Uses its own failure count — the
-                # governed pre-merge loop's round bound is separate.
                 if run_mode == "governed":
-                    _esc = next_escalation(
-                        model_class=str(getattr(selection, "model_class", "") or "implementer"),
-                        patch_retries=_recent_repeated_repair_failures(
-                            repo, alias, dispatch_decision.selected_executor, snapshot
-                        ),
+                    prior_escalation = _latest_applied_repair_model_class(
+                        repo,
+                        roadmap,
+                        alias,
+                        dispatch_decision.selected_executor,
+                        snapshot,
+                    )
+                    model_class_escalation_from_class = str(
+                        (prior_escalation or {}).get("model_class") or "implementer"
+                    )
+                    model_class_escalation_decision = next_escalation(
+                        model_class=model_class_escalation_from_class,
+                        patch_retries=repeated_repair_failures,
                         run_mode="governed",
                     )
                     repair_loop_pivot["model_class_escalation"] = {
-                        # `applied: False` is load-bearing honesty: this records the
-                        # ladder's DECISION for observability, but the runner does not
-                        # yet re-select the model_class off it (the documented remaining
-                        # thread). A consumer must not read this as an applied switch.
                         "applied": False,
-                        "action": _esc.action,
-                        "model_class": _esc.model_class,
-                        "reason": _esc.reason,
+                        "action": model_class_escalation_decision.action,
+                        "from_model_class": model_class_escalation_from_class,
+                        "model_class": model_class_escalation_decision.model_class,
+                        "from_model": selection.model,
+                        "effective_model": selection.model,
+                        "reason": model_class_escalation_decision.reason,
+                        "not_applied_reason": "pending_policy_resolution",
                     }
-                if pivot_executor:
+                terminal_class_action = bool(
+                    model_class_escalation_decision is not None
+                    and model_class_escalation_decision.action != "escalate_class"
+                )
+                if pivot_executor and not terminal_class_action:
                     operator_dispatch_hints = DispatchHints(
                         preferred_executors=(pivot_executor,),
                         allowed_executors=dispatch_decision.allowed_executors,
@@ -2815,14 +2844,27 @@ def run_loop(
                         plan=None,
                         roadmap=None,
                     )
+                elif (
+                    model_class_escalation_decision is not None
+                    and model_class_escalation_decision.action == "escalate_class"
+                    and model is None
+                ):
+                    repair_loop_pivot["status"] = "model_class_escalated"
                 else:
                     classifications[alias] = "blocked"
+                    escalation_record = repair_loop_pivot.get("model_class_escalation")
+                    if isinstance(escalation_record, dict):
+                        escalation_record["not_applied_reason"] = (
+                            "explicit_operator_model"
+                            if model is not None and not terminal_class_action
+                            else "terminal_class_action"
+                        )
                     loop_blocker = {
                         "human_required": False,
                         "blocker_class": "repeated_verification_failure",
                         "blocker_summary": (
                             f"Repair launch for {alias} repeated the same {dispatch_decision.selected_executor} "
-                            "failure fingerprint twice and no fallback executor was configured."
+                            "failure fingerprint twice and no runnable executor/model-class escalation remained."
                         ),
                         "required_human_inputs": (),
                         "access_attempts": (),
@@ -2928,6 +2970,36 @@ def run_loop(
                     roadmap_policy=roadmap_execution_policy,
                     model_policy_rule=shipped_model_policy_rule(launch_action),
                 )
+                if model_class_escalation_decision is not None:
+                    escalation_application = apply_model_class_escalation(
+                        execution_policy,
+                        executor=resolved_executor,
+                        decision=model_class_escalation_decision,
+                        from_model_class=model_class_escalation_from_class,
+                        operator_model_present=model is not None,
+                    )
+                    execution_policy = escalation_application.policy
+                    escalation_record = (
+                        repair_loop_pivot.get("model_class_escalation")
+                        if repair_loop_pivot is not None
+                        else None
+                    )
+                    if isinstance(escalation_record, dict):
+                        escalation_record.update(
+                            {
+                                "applied": escalation_application.applied,
+                                "action": escalation_application.action,
+                                "from_model_class": escalation_application.from_model_class,
+                                "model_class": escalation_application.model_class,
+                                "from_model": escalation_application.from_model,
+                                "effective_model": escalation_application.effective_model,
+                                "reason": escalation_application.reason,
+                            }
+                        )
+                        if escalation_application.not_applied_reason is None:
+                            escalation_record.pop("not_applied_reason", None)
+                        else:
+                            escalation_record["not_applied_reason"] = escalation_application.not_applied_reason
                 selection = resolve_model_selection_from_policy(
                     profile=selection.profile,
                     resolved_policy=execution_policy,
@@ -7136,6 +7208,7 @@ def _repair_completion_success(automation: dict[str, object]) -> bool:
 
 def _recent_repeated_repair_failures(
     repo: Path,
+    roadmap: Path,
     phase: str,
     executor: str,
     snapshot: StateSnapshot,
@@ -7145,9 +7218,15 @@ def _recent_repeated_repair_failures(
     fingerprint = _repair_failure_fingerprint(snapshot.blocker_class, snapshot.blocker_summary)
     if not fingerprint:
         return 0
+    current_provenance = event_provenance(roadmap, phase)
     count = 0
     for event in reversed(read_events(repo)):
         if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        if (
+            event.get("roadmap_sha256") != current_provenance["roadmap_sha256"]
+            or event.get("phase_sha256") != current_provenance["phase_sha256"]
+        ):
             continue
         metadata = event.get("metadata")
         launch_request = metadata.get("launch_request") if isinstance(metadata, dict) else None
@@ -7166,6 +7245,59 @@ def _recent_repeated_repair_failures(
         if count >= threshold:
             return count
     return count
+
+
+def _latest_applied_repair_model_class(
+    repo: Path,
+    roadmap: Path,
+    phase: str,
+    executor: str,
+    snapshot: StateSnapshot,
+) -> dict[str, object] | None:
+    """Recover the last provenance-bound class escalation that reached launch."""
+    fingerprint = _repair_failure_fingerprint(snapshot.blocker_class, snapshot.blocker_summary)
+    if not fingerprint:
+        return None
+    current_provenance = event_provenance(roadmap, phase)
+    for event in reversed(read_events(repo)):
+        if str(event.get("phase", "")).upper() != phase.upper():
+            continue
+        if event.get("selected_executor") != executor:
+            continue
+        if (
+            event.get("roadmap_sha256") != current_provenance["roadmap_sha256"]
+            or event.get("phase_sha256") != current_provenance["phase_sha256"]
+        ):
+            continue
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("launch"), dict):
+            continue
+        launch_request = metadata.get("launch_request")
+        if not isinstance(launch_request, dict):
+            continue
+        if launch_request.get("action") != "repair" or launch_request.get("executor") != executor:
+            continue
+        repair_guard = metadata.get("repair_loop_guard")
+        escalation = repair_guard.get("model_class_escalation") if isinstance(repair_guard, dict) else None
+        if not isinstance(escalation, dict) or escalation.get("applied") is not True:
+            continue
+        if repair_guard.get("failure_fingerprint") != fingerprint:
+            continue
+        model_class = escalation.get("model_class")
+        effective_model = escalation.get("effective_model")
+        model_selection = launch_request.get("model_selection")
+        if not isinstance(model_class, str) or not isinstance(effective_model, str):
+            continue
+        if not isinstance(model_selection, dict):
+            continue
+        if (
+            model_selection.get("model_class") != model_class
+            or model_selection.get("model") != effective_model
+            or event.get("model") != effective_model
+        ):
+            continue
+        return dict(escalation)
+    return None
 
 
 def _repair_failure_fingerprint(blocker_class: object, blocker_summary: object) -> str | None:
