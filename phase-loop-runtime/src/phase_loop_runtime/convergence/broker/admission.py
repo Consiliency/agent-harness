@@ -19,6 +19,10 @@ class AdmissionRecord:
 
 BrokerAdmissionPolicy = Callable[[AdmissionRequest], bool]
 
+# ah#288: returns a denial REASON (truthy) to refuse admission, or None/"" to allow.
+# Receives the durable log as it stands inside the lock, immediately before mutation.
+AdmissionPrecondition = Callable[[tuple["AdmissionRecord", ...]], str | None]
+
 
 class LinearizableAdmissionStore:
     """Append-only admission log guarded by an OS advisory lock."""
@@ -34,7 +38,7 @@ class LinearizableAdmissionStore:
             raw = json.loads(line); raw["request"] = AdmissionRequest(**raw["request"]); records.append(AdmissionRecord(**raw))
         return records
 
-    def admit(self, request: AdmissionRequest) -> AdmissionRecord:
+    def admit(self, request: AdmissionRequest, *, precondition: AdmissionPrecondition | None = None) -> AdmissionRecord:
         import fcntl
         with self.lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -46,6 +50,19 @@ class LinearizableAdmissionStore:
                     if record.request.idempotency_key == request.idempotency_key:
                         if record.request != request: raise ValueError("conflicting idempotency key")
                         return record
+                # ah#288: a caller-supplied gate over the DURABLE LOG, evaluated INSIDE the
+                # advisory lock and BEFORE any mutation. `policy` cannot express this: it
+                # sees only the request, never the records. Checking the log outside
+                # `admit` would be a TOCTOU — `admit` appends sequence 1 unconditionally,
+                # so a post-admit "baseline" test is satisfied by the caller's OWN write
+                # (the retry/poison-record exploit the #288 CR flushed out).
+                #
+                # Placed AFTER dedup on purpose: an idempotent resume of an already
+                # admitted request must still return its prior record without re-proving
+                # a baseline that its own admission has since changed.
+                if precondition is not None:
+                    denial = precondition(tuple(records))
+                    if denial: raise PermissionError(denial)
                 if records and request.lease_epoch < max(r.epoch for r in records): raise PermissionError("stale epoch")
                 record = AdmissionRecord(len(records) + 1, request.lease_epoch, request)
                 with self.path.open("a", encoding="utf-8") as stream:

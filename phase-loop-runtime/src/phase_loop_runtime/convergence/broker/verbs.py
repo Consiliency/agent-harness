@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerTerminalEvidence, BrokerVerb, PublishCommittedBranchResult
+from phase_loop_runtime.convergence.fencing import FencedAdmissionFactory
 from phase_loop_runtime.convergence.provider_contracts import PROVIDER_COMPLETION_CLASSIFICATIONS, ProviderCompletionClassification, TerminalOutcomeState
 from .evidence import BrokerEvidenceStore, EvidenceRecord
 
@@ -14,6 +15,11 @@ class BrokerProviderAdapter(Protocol):
     def execute(self, request: BrokerRequest) -> tuple[PublishCommittedBranchResult | None, BrokerTerminalEvidence]: ...
 class BrokerClient(Protocol):
     def execute(self, request: BrokerRequest) -> "BrokerExecutionResult": ...
+    def readmit_advanced_head(
+        self, *, repo: str, branch: str, train_id: str, node_id: str, prior_head_sha: str,
+        new_head_sha: str, next_epoch: int, approval, expected_version_predicate: str,
+        authority_domain_scope: str,
+    ) -> "ReadmitResult": ...
 
 @dataclass(frozen=True)
 class BrokerExecutionResult:
@@ -22,8 +28,29 @@ class BrokerExecutionResult:
     publish_result: PublishCommittedBranchResult | None = None
     reason: str = ""
 
+@dataclass(frozen=True)
+class ReadmitResult:
+    """ah#288: the typed outcome of a decoupled admit (admit WITHOUT publish).
+
+    Never a bare bool — the seam verifies field-by-field, and `reason` distinguishes a
+    refusal (fail-closed, expected) from an exception (fail-closed, exceptional).
+    """
+    accepted: bool
+    granted_epoch: int
+    idempotency_key: str
+    reason: str = ""
+
 def publish_committed_branch_idempotency_key(repo: str, branch: str, head_sha: str) -> str:
     return hashlib.sha256(f"{repo}\0{branch}\0{head_sha}".encode()).hexdigest()
+
+def readmit_attempt_id(node_id: str, new_head_sha: str, next_epoch: int) -> str:
+    """Deterministic attempt id for a re-admission, so a resume of the SAME advance
+    reproduces the SAME idempotency key and de-dups instead of admitting twice.
+
+    NUL-delimited and domain-tagged: the fields are variable-length, so plain
+    concatenation would let `(node="a", sha="bc")` and `(node="ab", sha="c")` collide.
+    """
+    return hashlib.sha256(f"fab-readmit\0{node_id}\0{new_head_sha}\0{next_epoch}".encode()).hexdigest()
 
 class BrokerService:
     def __init__(self, admission_store, evidence_store: BrokerEvidenceStore, adapter: BrokerProviderAdapter, contracts=PROVIDER_COMPLETION_CLASSIFICATIONS) -> None:
@@ -51,6 +78,71 @@ class BrokerService:
             else None
         )
         return BrokerExecutionResult(observed, BrokerTerminalEvidence(key, current.state.value, current.evidence_reference), result)
+
+    def readmit_advanced_head(
+        self, *, repo: str, branch: str, train_id: str, node_id: str, prior_head_sha: str,
+        new_head_sha: str, next_epoch: int, approval, expected_version_predicate: str,
+        authority_domain_scope: str,
+    ) -> ReadmitResult:
+        """ah#288: re-admit an ADVANCED head without publishing (the advance is already
+        pushed). Deliberately does NOT touch the provider adapter.
+
+        Fail-closed on every branch. `PermissionError`/`ValueError` from the store
+        PROPAGATE — the seam caller maps them to a `None` result and recovers the
+        admitted prefix; swallowing them here would report a refusal as a clean outcome.
+        """
+        if self.evidence_store.epoch_blocked:
+            return ReadmitResult(False, next_epoch, "", "revoked")
+
+        # BASELINE (#288 CR A1): require a COMPLETED publish for this exact
+        # (repo, branch, prior_head) — not merely "some earlier record". Read from the
+        # evidence store, whose terminal states are permanent and append-only, so this
+        # cannot become false between here and the admit below.
+        publish_key = f"{BrokerVerb.PUBLISH_COMMITTED_BRANCH.value}\0{publish_committed_branch_idempotency_key(repo, branch, prior_head_sha)}"
+        prior = self.evidence_store.replay().get(publish_key)
+        if prior is None or prior.state is not TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED:
+            return ReadmitResult(False, next_epoch, "", "no_prior_publish")
+
+        factory = FencedAdmissionFactory()
+        lease = factory.lease(
+            train_id=train_id, node_id=node_id, action="readmit", lease_epoch=next_epoch,
+            attempt_id=readmit_attempt_id(node_id, new_head_sha, next_epoch),
+        )
+        request = factory.create(
+            lease=lease, approval=approval,
+            expected_version_predicate=expected_version_predicate,
+            authority_domain_scope=authority_domain_scope,
+        )
+
+        def _precondition(records) -> str | None:
+            # Evaluated INSIDE the store's lock, before any append.
+            #   (a) empty log ⇒ no baseline can exist. `admit` would otherwise skip epoch
+            #       fencing entirely via its `if records and ...` short-circuit.
+            #   (b) STRICTLY ABOVE (#288 CR A2): the store itself rejects only
+            #       `lease_epoch < max`, so a DIFFERENT request at the CURRENT epoch is
+            #       admissible — which contradicts this verb's contract.
+            #
+            #       Enforced HERE and not in `LinearizableAdmissionStore` on purpose:
+            #       every publish admits at `lease_epoch=1` (train_runner `action="publish"`),
+            #       so an N-node train holds N distinct admissions at epoch 1. Tightening
+            #       the shared store to reject `<= max` would fail every node after the
+            #       first. Readmit is the only verb that requires a monotonic bump.
+            if not records: return "no_admission_baseline"
+            if next_epoch <= max(r.epoch for r in records): return "epoch_not_advanced"
+            return None
+
+        record = self.admission_store.admit(request, precondition=_precondition)
+
+        # ANTI-VACUITY re-read: verify the DURABLE record, not the return value — a store
+        # that accepted without persisting must not read as accepted.
+        durable = next(
+            (r for r in self.admission_store.replay()
+             if r.request.idempotency_key == request.idempotency_key),
+            None,
+        )
+        if durable is None or durable.epoch != next_epoch or durable.sequence != record.sequence:
+            return ReadmitResult(False, next_epoch, "", "admission_not_durable")
+        return ReadmitResult(True, next_epoch, request.idempotency_key)
 
     def execute(self, request: BrokerRequest) -> BrokerExecutionResult:
         key = self._dedup_key(request)

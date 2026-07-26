@@ -147,6 +147,13 @@ class _RoutingBrokerService:
     def execute(self, request):
         return self._service_for(request.repo).execute(request)
 
+    def readmit_advanced_head(self, *, repo, **kw):
+        # ah#288: route on the SAME per-repo key as `execute`, so a re-admission reads the
+        # admission + evidence stores its own publish wrote. Routing this to a shared or
+        # differently-keyed store would make the prior-publish baseline unverifiable —
+        # the readmit would look unbaselined even though its publish completed.
+        return self._service_for(repo).readmit_advanced_head(repo=repo, **kw)
+
 
 def build_routing_broker_client(
     *,
