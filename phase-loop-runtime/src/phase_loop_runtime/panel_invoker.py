@@ -11,6 +11,7 @@ status so a verbose auth error is never mistaken for a real review.
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import logging
 import mimetypes
@@ -733,6 +734,10 @@ def _inline_epilogue(nonce: str, *, mode: str = "review") -> str:
 # the argv and the environment.
 _ARGV_ELEMENT_LIMIT_BYTES = 32 * resource.getpagesize()  # MAX_ARG_STRLEN
 _GEMINI_INLINE_MAX_BYTES = _ARGV_ELEMENT_LIMIT_BYTES - 8192  # headroom
+# RESIDUAL (named, not fixed): Linux also caps argv+env TOTAL at RLIMIT_STACK/4, so a
+# pathologically low `ulimit -s` could still E2BIG under this per-element bound. Any
+# such OSError is contained by the leg's `except Exception -> DEGRADED` handler: a loud
+# per-leg failure, never a panel crash and never a silent empty.
 # Subscription auth only: strip provider API keys from the child environment.
 _API_KEY_VARS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
@@ -2731,30 +2736,16 @@ def _exec_leg(
                 )
                 inlined_ok = len(_candidate.encode("utf-8")) <= _GEMINI_INLINE_MAX_BYTES
                 if not inlined_ok:
-                    section_names, inline_parts = [], []
+                    section_names, inline_parts, _candidate = [], [], None
         except OSError:
             inlined_ok = False  # fall back to the pointer form; the denial classifier
             # below still surfaces the failure loudly rather than degrading silently.
         # Sandwich: constraint FIRST (primacy) and epilogue LAST (recency), so the
         # untrusted bundle never has the final word.
-        gemini_prompt = (
-            (
-                _no_tool_preamble(
-                    inline_nonce,
-                    section_names,
-                    mode=mode,
-                    # The by-reference manifest rides INSIDE the inlined bundle text.
-                    has_context_refs=any(
-                        _CONTEXT_REFS_HEADER in text for _n, text in payload
-                    ),
-                )
-                + prompt
-                + "".join(inline_parts)
-                + _inline_epilogue(inline_nonce, mode=mode)
-            )
-            if inlined_ok
-            else prompt
-        )
+        # Emit the EXACT bytes that were measured (CR round 4 nit): re-assembling here
+        # would let the measured and emitted prompts drift apart, and the whole point of
+        # the gate is that what we measured is what we exec.
+        gemini_prompt = _candidate if inlined_ok else prompt
         cmd = [
             "agy", "--model", gemini_model, "--add-dir", str(review_dir),
             "--print-timeout", f"{timeout_s}s", "-p", gemini_prompt,
@@ -2774,6 +2765,25 @@ def _exec_leg(
                 # agy streams its review to STDOUT; the liveness heartbeat rides stdout
                 # (with a secondary CPU reset covering the ~20s silent "thinking" phase).
                 # Prompt is inline on argv (see the gemini cmd BUGFIX) — no stdin.
+                proc = _run_leg_with_liveness(
+                    cmd, cwd=review_dir, env=env, deadline_s=deadline_s,
+                )
+            except OSError as exc:
+                # E2BIG BACKSTOP (CR round 4, codex). The per-element byte gate above
+                # bounds what WE control, but the kernel also caps argv+env in TOTAL
+                # (Linux: RLIMIT_STACK/4), and the MAX_ARG_STRLEN formula is
+                # Linux-derived — a low ulimit, a fat environment, or a platform whose
+                # real ceiling is lower can still refuse the exec. Rather than lose the
+                # seat to a DEGRADED leg, RETRY ONCE with the bounded pointer prompt:
+                # that is the same graceful degradation the size gate intends, just
+                # reached reactively when the predictive bound was not enough.
+                #
+                # NOTE: this trigger was NOT reproducible on the dev host (probed down to
+                # a 64KB stack); it is deliberate insurance for the class, not a fix for
+                # a demonstrated failure.
+                if exc.errno != errno.E2BIG or cmd[-1] == prompt:
+                    raise
+                cmd = list(cmd[:-1]) + [prompt]  # pointer form — bounded by construction
                 proc = _run_leg_with_liveness(
                     cmd, cwd=review_dir, env=env, deadline_s=deadline_s,
                 )

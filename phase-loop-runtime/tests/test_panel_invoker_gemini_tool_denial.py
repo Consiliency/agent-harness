@@ -288,3 +288,26 @@ def test_oversize_bundle_is_actually_executable_end_to_end(staged, monkeypatch):
     (review_dir / "review-bundle.md").write_text("B" * 400_000, encoding="utf-8")
     argv, _ = _run_gemini(monkeypatch, staged, proc=_FakeProc(stdout="a review"))
     _sp.run(["/bin/true", _prompt_of(argv)], check=True, timeout=30)
+
+
+def test_e2big_at_exec_falls_back_to_the_pointer_prompt(monkeypatch, staged):
+    """CR round 4 (codex): the per-element gate bounds what we control, but the kernel
+    also caps argv+env in TOTAL and the formula is Linux-derived. If exec still refuses,
+    retry once with the bounded pointer prompt rather than losing the review seat."""
+    review_dir, out_dir = staged
+    calls: list[list[str]] = []
+
+    def _fake_runner(cmd, **kwargs):
+        calls.append(list(cmd))
+        if len(calls) == 1:
+            raise OSError(7, "Argument list too long")  # E2BIG on the inline attempt
+        return _FakeProc(stdout="a review from the pointer form")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", _fake_runner)
+    rc, text, _log = pi._exec_leg(
+        "gemini", review_dir, out_dir, timeout_s=60, artifact="A", env={}
+    )
+    assert len(calls) == 2, "no pointer-form retry after E2BIG"
+    assert "BUNDLE-SENTINEL" in _prompt_of(calls[0]), "first attempt was not the inline form"
+    assert "BUNDLE-SENTINEL" not in _prompt_of(calls[1]), "retry did not use the pointer form"
+    assert rc == 0 and "pointer form" in text, "the seat was lost instead of recovered"
