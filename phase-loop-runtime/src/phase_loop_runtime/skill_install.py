@@ -5,7 +5,7 @@ import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS, current_harness, resolve_skill_bundle_root
+from .skill_paths import current_harness, resolve_skill_bundle_root
 
 
 REQUIRED_SKILLS: tuple[str, ...] = (

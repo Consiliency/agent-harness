@@ -1,6 +1,5 @@
 import contextlib
 import io
-import subprocess
 import sys
 import tempfile
 import unittest

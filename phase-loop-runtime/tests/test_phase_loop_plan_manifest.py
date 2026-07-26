@@ -10,7 +10,6 @@ from phase_loop_runtime.baml_modular import BamlValidationError, export_function
 from phase_loop_runtime.plan_manifest import (
     DotfilesPlanEntry,
     DotfilesPlanLifecycleEvent,
-    DotfilesPlanRef,
     append_entry,
     import_existing_phase_plans,
     read_manifest,

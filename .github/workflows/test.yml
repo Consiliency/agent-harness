@@ -33,6 +33,19 @@ jobs:
         # instead of erroring at test time (agent-harness#91 round-4 CR).
         run: python -m pip install "./phase-loop-runtime[visual]" pytest
 
+      - name: Lint — pyflakes (F) via ruff
+        # ah#334: before this step CI ran NO linter at all. That is how an undefined
+        # name in an annotation (F821) shipped past a green suite on all three Python
+        # versions: `from __future__ import annotations` defers evaluation, so the name
+        # is never resolved at runtime and only a linter or get_type_hints() can see it.
+        # Scoped to pyflakes (F) — real-defect rules, not style — so the gate stays
+        # signal. Runs once (3.12) rather than per-matrix-version: the findings are
+        # version-independent and three identical runs would just be noise.
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m pip install ruff
+          ruff check . --select F
+
       - name: Guard — no scattered/duplicated hardcoded model IDs
         # Enforces the "reference the central constant, don't inline the model ID"
         # convention (model-id-source hybrid: registry allowlist + per-line marker).

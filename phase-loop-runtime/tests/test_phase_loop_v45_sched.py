@@ -19,7 +19,6 @@ wiring, not real-executor commit/closeout integration semantics (a follow-up).
 """
 from __future__ import annotations
 
-import os
 import re
 import tempfile
 import textwrap

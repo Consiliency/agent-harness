@@ -7,6 +7,8 @@ manifest read matters — no mocked git."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import shutil
 import subprocess
 import tempfile

@@ -19,7 +19,6 @@ from typing import Any, Iterator
 
 from phase_loop_runtime.launcher import build_launch_request, build_launch_spec
 from phase_loop_runtime.models import (
-    ClaudeTeamPolicy,
     CommandAdapterConfig,
     PhaseTeamEligibility,
 )

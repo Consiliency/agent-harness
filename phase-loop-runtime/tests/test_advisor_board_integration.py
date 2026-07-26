@@ -23,11 +23,9 @@ The per-leg argv/env byte-equivalence keystone lives in
 """
 from __future__ import annotations
 
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import (

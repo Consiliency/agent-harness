@@ -25,7 +25,6 @@ from .models import (
     ExecutionPolicyParseError,
     ExecutionPolicyRule,
     LaneIRDiagnostic,
-    PHASE_SCHEDULER_MODES,
     PHASE_SOURCE_BUNDLE_SCHEMA,
     PHASE_STATUSES,
     PhaseSourceBundle,

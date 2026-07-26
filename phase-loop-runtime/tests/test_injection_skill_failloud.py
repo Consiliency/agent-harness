@@ -22,7 +22,6 @@ from phase_loop_runtime.injection import (
     _bundle_sha256,
     _resolve_pack_skill_dirs,
     _skill_bodies,
-    materialize_claude_plugin_bundle,
 )
 
 

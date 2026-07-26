@@ -47,7 +47,6 @@ import tempfile
 import threading
 import unittest
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 

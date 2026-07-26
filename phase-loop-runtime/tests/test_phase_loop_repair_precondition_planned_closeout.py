@@ -19,7 +19,6 @@ requires repair.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 from phase_loop_runtime.events import append_event

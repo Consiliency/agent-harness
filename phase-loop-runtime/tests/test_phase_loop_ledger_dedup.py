@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from phase_loop_runtime.provenance import event_provenance, phase_sha256, roadmap_sha256
+from phase_loop_runtime.provenance import phase_sha256, roadmap_sha256
 from phase_loop_runtime.reconcile import _event_dedup_key, reconcile
 from phase_loop_test_utils import make_repo, utc_now, write_phase_plan
 

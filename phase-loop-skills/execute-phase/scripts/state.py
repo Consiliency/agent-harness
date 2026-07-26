@@ -54,7 +54,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 DEFAULT_STATE_PATH = ".claude/claude-execute-phase-state.json"

@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import shutil
@@ -8,7 +7,6 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
 
 from phase_loop_runtime.adoption_bundle import adoption_bundle_status, refresh_adoption_bundle
 from phase_loop_runtime.cli import build_parser, main

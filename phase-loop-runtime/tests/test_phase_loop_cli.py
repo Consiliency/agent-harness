@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from phase_loop_test_utils import ROOT, make_code_index_blocker_fixture, make_greenfield_closeout_fixture, make_repo
+from phase_loop_test_utils import make_code_index_blocker_fixture, make_greenfield_closeout_fixture, make_repo
 from phase_loop_test_utils import provenanced_event, provenanced_state
 from phase_loop_test_utils import write_phase_plan
 from test_phase_loop_pipeline_bundle import _write_bundle, _write_protected_source

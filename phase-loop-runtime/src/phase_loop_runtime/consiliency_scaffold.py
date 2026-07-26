@@ -42,7 +42,6 @@ from .consiliency_layout import (
     MODIFIER_IDS,
     RequiredDocRow,
     compose_required_documents,
-    consiliency_root,
     contract_version_status_schema,
     find_consiliency_manifest,
     installed_contract_version,

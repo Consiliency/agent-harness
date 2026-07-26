@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from phase_loop_runtime.events import append_event, event_path
+from phase_loop_runtime.events import append_event
 from phase_loop_runtime.fleet_metrics import (
     append_fleet_metric,
     derive_fleet_metric_series,

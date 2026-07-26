@@ -38,8 +38,6 @@ from phase_loop_runtime.advisor_board import (
     Board,
     HostContext,
     OmnigentBacking,
-    OmnigentGatewayUnavailable,
-    OmnigentHttpClient,
     Seat,
     classify_http_failure,
 )

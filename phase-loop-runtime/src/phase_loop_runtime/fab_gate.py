@@ -207,7 +207,6 @@ from .fab_provenance import (
     _req_int,
     _req_str,
     _strict_object_pairs_hook,  # reused strict-parse discipline, not reimplemented
-    _tuple_str,
     aggregate_material_digest,  # noqa: F401 - re-exported for callers/tests
     atomic_write_text_durable,
     provenance_dir_for_run,

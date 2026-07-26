@@ -490,7 +490,7 @@ def test_fab_push_mode_actually_publishes(tmp_path, monkeypatch):
     branch = _git(repo, "symbolic-ref", "--short", "HEAD")
     # Real upstream on the local bare remote, so resolve_closeout_push_target
     # yields {remote: fetchsrc, push_ref: refs/heads/<branch>} with no stub.
-    subprocess.run(["git", "-C", str(repo), "branch", f"--set-upstream-to=fetchsrc/main"], check=True)
+    subprocess.run(["git", "-C", str(repo), "branch", "--set-upstream-to=fetchsrc/main"], check=True)
     monkeypatch.setenv("PHASE_LOOP_TARGET_PUSH_REF", "refs/heads/main")
     # Exclude the run store so the post-advance worktree is genuinely clean
     # (the real runtime does this via .git/info/exclude).

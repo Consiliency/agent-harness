@@ -24,15 +24,12 @@ Test matrix:
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, List, Tuple
 
 import pytest
 
 from phase_loop_runtime.cross_repo_channel import (
-    ChannelDescriptor,
     parse_channel_line,
     set_upstream_ref,
 )
@@ -45,7 +42,6 @@ from phase_loop_runtime.train_ledger import (
 )
 from phase_loop_runtime.train_roadmap import (
     TrainNode,
-    TrainRoadmap,
     parse_train_roadmap,
     validate_train,
 )
@@ -321,13 +317,13 @@ class TestParseChannelLine:
 class TestSetUpstreamRef:
     """set_upstream_ref re-resolves each channel kind via a stubbed executor."""
 
-    def _make_stub(self) -> Tuple[List[Tuple], "StubExecutor"]:
+    def _make_stub(self) -> Tuple[List[Tuple], Callable[[Path, str, dict, str], None]]:
         calls: List[Tuple] = []
 
         def stub(workspace: Path, kind: str, params: dict, ref: str) -> None:
             calls.append((workspace, kind, params, ref))
 
-        return calls, stub  # type: ignore[return-value]
+        return calls, stub
 
     def test_submodule_calls_executor(self, tmp_path: Path) -> None:
         calls, stub = self._make_stub()
