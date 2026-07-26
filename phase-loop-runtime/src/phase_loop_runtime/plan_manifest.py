@@ -536,7 +536,17 @@ def _extract_lanes(path: Path) -> tuple[str, ...]:
 _MANIFEST_DONE = {"completed"}
 _MANIFEST_IN_FLIGHT = {"executing"}
 _SNAPSHOT_DONE = {"complete", "executed"}
-_SNAPSHOT_IN_FLIGHT = {"executing", "planned"}
+# `blocked` is IN-FLIGHT: the runner is saying work is outstanding / needs repair. A
+# manifest that records the same phase `completed` is the motivating harm class exactly —
+# resume/repair would act on a phase the other store believes finished, and status alone
+# cannot tell it from a genuinely blocked one. (CR: omitting it left a real contradiction
+# silent, which this detector's own bar rates worse than a false positive.)
+#
+# Deliberately still EXCLUDED: manifest `failed` vs a done snapshot. That is a DONE-vs-DONE
+# outcome disagreement, outside this detector's declared done-vs-in-flight scope, and it
+# has a legitimate staleness reading — a failed plan superseded by a re-plan should be
+# marked orphaned rather than flagged here. Tracked separately rather than widened silently.
+_SNAPSHOT_IN_FLIGHT = {"executing", "planned", "blocked"}
 
 
 def phase_status_disagreements(

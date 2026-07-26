@@ -38,6 +38,21 @@ def test_manifest_done_vs_snapshot_executing_is_reported():
     assert out == [("FREEZE", "executing", "completed")]
 
 
+def test_manifest_done_vs_snapshot_blocked_is_reported():
+    """CR blocker: `blocked` means the runner has outstanding work / needs repair. A
+    manifest recording that same phase `completed` is the motivating harm class — this
+    stayed SILENT in the first revision."""
+    out = phase_status_disagreements({"P": "blocked"}, [_entry("P", "completed")])
+    assert out == [("P", "blocked", "completed")]
+
+
+def test_manifest_failed_vs_snapshot_done_is_deliberately_silent():
+    """Documents a DELIBERATE exclusion: done-vs-done outcome disagreement is outside this
+    detector's declared scope and has a legitimate staleness reading (a superseded failed
+    plan should be orphaned). Pinned so widening it later is a conscious choice."""
+    assert phase_status_disagreements({"P": "complete"}, [_entry("P", "failed")]) == []
+
+
 def test_manifest_executing_vs_snapshot_complete_is_reported():
     """The mirror case — neither store is privileged."""
     out = phase_status_disagreements({"X": "complete"}, [_entry("X", "executing")])
