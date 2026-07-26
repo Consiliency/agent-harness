@@ -404,3 +404,26 @@ def test_revocation_is_evaluated_inside_the_admission_lock(tmp_path):
     )
     with pytest.raises(PermissionError):
         svc.admission_store.admit(request)
+
+
+def test_prefix_colliding_tenant_does_not_baseline_this_readmit(tmp_path):
+    """Self-caught while hardening CR-2 finding 2: a bare `startswith` on the authority
+    domain lets `"train-1"` prefix-match `"train-10\\0readmit\\0node-x"`, so a DIFFERENT
+    tenant's admission would baseline this readmit — reopening the finding it was meant to
+    close. Authority scopes are caller-supplied free text, so this is reachable, not
+    theoretical.
+
+    Mutation: revert `_ours` to a bare `scope.startswith(authority_domain_scope)` -> the
+    foreign record baselines us and no PermissionError is raised.
+    """
+    svc = _service(tmp_path)
+    assert _publish(svc).accepted
+    svc.admission_store.path.write_text("", encoding="utf-8")
+
+    # A neighbouring tenant whose scope merely PREFIX-matches ours ("scope" vs "scope-2").
+    neighbour = AdmissionRequest("attempt-neighbour", 1, "fence", "digest", "predicate",
+                                 "scope-2\0readmit\0node-x", "neighbour-key")
+    svc.admission_store.admit(neighbour)
+
+    with pytest.raises(PermissionError, match="no_admission_baseline"):
+        _readmit(svc)  # authority_domain_scope="scope"

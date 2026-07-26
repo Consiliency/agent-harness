@@ -141,7 +141,15 @@ class BrokerService:
             #     `lease_epoch=1`, so an N-node train holds N distinct admissions at epoch
             #     1 and tightening the shared store to `<= max` would fail every node
             #     after the first. Readmit is the only verb needing a monotonic bump.
-            if not any(r.request.authority_domain_scope.startswith(authority_domain_scope) for r in records):
+            # Exact, or delimited-prefix — never a bare `startswith`. Authority scopes are
+            # caller-supplied free text, so `"train-1"` would otherwise prefix-match
+            # `"train-10\0readmit\0node-x"` and let a DIFFERENT tenant's admission baseline
+            # this one. The NUL is the same delimiter `readmit_scope` is built with, and
+            # cannot occur inside a scope segment.
+            def _ours(scope: str) -> bool:
+                return scope == authority_domain_scope or scope.startswith(f"{authority_domain_scope}\0")
+
+            if not any(_ours(r.request.authority_domain_scope) for r in records):
                 return "no_admission_baseline"
             mine = [r for r in records if r.request.authority_domain_scope == readmit_scope]
             if mine and next_epoch <= max(r.epoch for r in mine):
