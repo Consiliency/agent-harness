@@ -591,6 +591,22 @@ _GEMINI_TRANSIENT_RE = re.compile(
     r"please try again|connection reset|backend (?:error|stall)",
     re.IGNORECASE,
 )
+# HEADLESS TOOL-DENIAL: a leg CLI running non-interactively cannot prompt for a tool
+# permission, so it AUTO-DENIES and returns rc==0 with a ZERO-BYTE body. Observed on
+# `agy` (jetski): "no output produced — a tool required the "command" permission that
+# headless mode cannot prompt for, so it was auto-denied."
+#
+# This is NOT a transient stall (retrying reproduces it exactly — the permission is
+# absent, not flaky) and NOT an anonymous empty turn: the CLI told us precisely why it
+# produced nothing. Left unclassified it degraded the leg SILENTLY — the gemini seat
+# returned EMPTY in 6 of 11 rounds of the model-tier review (#309) and was misread as
+# flakiness/contention for that whole milestone. Classify it so the reason SURFACES.
+_TOOL_DENIED_RE = re.compile(
+    r"no output produced.*?tool required|"
+    r"tool required the .* permission that headless mode cannot prompt for|"
+    r"auto-denied|permission denied by headless",
+    re.IGNORECASE | re.DOTALL,
+)
 # Subscription auth only: strip provider API keys from the child environment.
 _API_KEY_VARS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
@@ -2571,6 +2587,18 @@ def _exec_leg(
             review_text = proc.stdout or ""
             rc = proc.returncode
             log_text = proc.stderr or ""
+            # HEADLESS TOOL-DENIAL: rc==0 + empty body + the CLI's own auto-denied
+            # marker. Retrying reproduces it exactly, and reporting it as an anonymous
+            # EMPTY is what let this hide for a whole milestone. Return a NON-ZERO rc
+            # carrying the CLI's explanation so the leg surfaces as a DIAGNOSABLE
+            # failure. Checked BEFORE `soft_empty` so it is never retried as a stall.
+            if rc == 0 and not review_text.strip() and _TOOL_DENIED_RE.search(log_text):
+                return 1, "", (
+                    "gemini leg: headless TOOL-DENIAL — the CLI auto-denied a tool "
+                    "permission it cannot prompt for and produced NO output. Not "
+                    "transient; the review prompt must not require RUNNING commands. "
+                    f"CLI said: {log_text.strip()[:400]}"
+                )
             soft_empty = rc == 0 and not review_text.strip()
             # A transient stall shows up as an ERROR on stderr, or as a SHORT/empty body —
             # never inside a substantial successful review. Matching the transient regex
@@ -2728,7 +2756,23 @@ def _default_spawn(
             leg, review_dir, out_dir, leg_timeout, artifact, mode, model,
             deadline_s=leg_deadline, **extra,
         )
-        return _classify_leg(rc, review_text, log_text, mode), review_text
+        status = _classify_leg(rc, review_text, log_text, mode)
+        # DIAGNOSTIC PROPAGATION. `_exec_leg` reports WHY a leg failed in `log_text`, and
+        # this boundary used to drop it — so a headless tool-denial reached the operator
+        # as an anonymous ERROR with no reason at all.
+        #
+        # The reason goes in `detail`, NEVER in `text`.
+        # `governed_review._findings_from_panel` keys BLOCK-vs-WARN on `leg.text.strip()`
+        # for an unusable leg: non-empty text ⇒ `panel_nonconforming` BLOCK (a review that
+        # violated the verdict contract); empty text ⇒ the non-gating `panel_leg_degraded`
+        # WARN. Stamping a diagnostic into text would turn EVERY operational failure
+        # (timeout / auth / tool-denial / rc!=0) into a promotion BLOCK — and timeouts are
+        # routine under shared-subscription contention. The claude TUI leg is engineered
+        # specifically not to do this; `detail` already carries diagnostics everywhere
+        # else and is serialized into the streaming verdict JSON.
+        if status != "OK" and not str(review_text).strip() and str(log_text).strip():
+            return status, review_text, str(log_text).strip()[:2000]
+        return status, review_text
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
     finally:
@@ -3017,9 +3061,19 @@ def invoke_panel(
         # future.result() never raises). This is the exact per-leg body as before —
         # only the surrounding loop is now a concurrent, order-preserving fan-out.
         try:
-            status, text = runner(leg, artifact)
+            spawned = runner(leg, artifact)
         except Exception as exc:
             return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200])
+        # A spawn returns the legacy 2-tuple (status, text) or, when it has a failure
+        # DIAGNOSTIC to report, a 3-tuple (status, text, detail). The len-2 path is
+        # byte-identical to previous behavior, so every existing and monkeypatched spawn
+        # keeps working — and the diagnostic never lands in `text`, which is the channel
+        # the governed BLOCK-vs-WARN classification keys on.
+        spawn_detail: str | None = None
+        if isinstance(spawned, tuple) and len(spawned) == 3:
+            status, text, spawn_detail = spawned
+        else:
+            status, text = spawned
         try:
             status = normalize_leg_status(status)
         except ValueError:
@@ -3027,7 +3081,7 @@ def invoke_panel(
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
         text_value = str(text)
-        detail = None
+        detail = spawn_detail
         if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
             detail, text_value = text_value, ""
         return PanelLegResult(leg=leg, status=status, text=text_value, detail=detail)
