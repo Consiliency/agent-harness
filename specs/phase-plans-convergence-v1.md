@@ -1,5 +1,37 @@
 # Phase Plans — Convergence: Crash-Safe Cross-Repo Train + Credential Broker (v1)
 
+> **STATUS (2026-07-26): PARTIALLY EXECUTED — genuinely unfinished work, not just stale bookkeeping.**
+> Authored 2026-07-13. Verified against `plans/manifest.json` + the phase-plan files:
+>
+> | Phase | Plan file | Manifest status |
+> |---|---|---|
+> | FREEZE | yes | **completed** |
+> | RUNTIME | yes | `imported` — planned, NEVER EXECUTED (empty lifecycle, no handoff) |
+> | BROKER | yes | `imported` — planned, NEVER EXECUTED (empty lifecycle, no handoff) |
+> | INTEG | yes | **completed** |
+> | FAULTS | yes | **committed** |
+> | PILOT | — | not planned |
+> | RELEASE | — | not planned |
+>
+> So 3 of 7 phases landed and TWO PLANNED PHASES (RUNTIME, BROKER) remain unexecuted.
+>
+> KNOWN INCONSISTENCY: `phase-loop status` reports `FREEZE: executing` while the manifest
+> records FREEZE as **completed** — the runner's phase state and the plan manifest DISAGREE.
+> Because the two `imported` entries are still open, discovery keeps selecting this roadmap,
+> so status also presents it as the active effort. Recent real work has been the FAB
+> milestone (#191) and the model-tier taxonomy (#309).
+>
+> **DECISION (maintainer, 2026-07-26): RESUME.** RUNTIME and BROKER are live work again,
+> not superseded. Their plan files (`plans/phase-plan-vergence-v1-{RUNTIME,BROKER}.md`) and
+> `imported` manifest entries stand as the starting point; they need re-grounding against
+> current main before execution, since they were authored 2026-07-13 and the runtime has
+> moved considerably (FAB milestone #191, model-tier taxonomy #309).
+>
+> Consequence: this roadmap being SELECTED by discovery is now CORRECT, not a mis-pick.
+> The FREEZE status contradiction (#312) still needs reconciling — status reports
+> `executing` for a phase the manifest records `completed`, which will misdirect a resumed
+> run's dispatch decisions.
+
 ## Context
 
 Long-lived interactive coordinator sessions (esp. multi-repo Codex trains) fail to
