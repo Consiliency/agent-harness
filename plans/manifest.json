@@ -25,44 +25,16 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [
-        {
-          "at": "2026-07-26T03:50:14Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "branch": "codex/310-applied-repair-escalation",
-            "plan_file": "plans/detailed-310-applied-repair-model-escalation-20260726.md",
-            "run_id": "20260726T035100Z-02-310-applied-repair-escalation"
-          },
-          "transition": "executing"
-        },
-        {
-          "at": "2026-07-26T04:13:10Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "acceptance_status": "satisfied",
-            "diagnostic": "verified and ready for publication",
-            "dirty_path_classification": "all tracked changes plan-owned",
-            "doc_delta_decision": "docs_updated",
-            "full_suite": "3491 passed, 637 skipped, 4 warnings, 634 subtests passed",
-            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/79a3bdc1/codex-310-applied-repair-escalation/20260726T035100Z-02-310-applied-repair-escalation.md",
-            "run_id": "20260726T035100Z-02-310-applied-repair-escalation",
-            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-repair-verification.md",
-            "verification_status": "passed",
-            "verification_summary": "PASS - policy, real repair-dispatch, continuation, provenance, plan suites, and the full dependency-complete repository suite passed."
-          },
-          "transition": "completed"
-        }
-      ],
+      "lifecycle": [],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-applied-repair-model-escalation-20260726",
-      "status": "completed",
+      "status": "imported",
       "task_summary": "Escalate repeated applied repair failures to the stronger authoring model with bound provenance.",
       "type": "detailed",
-      "updated_at": "2026-07-26T04:13:10Z"
+      "updated_at": "2026-07-26T02:19:35Z"
     },
     {
       "acceptance_criteria_count": 10,
@@ -71,74 +43,16 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [
-        {
-          "at": "2026-07-26T05:20:00Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "branch": "codex/310-claude-tui-guard",
-            "plan_file": "plans/detailed-310-claude-tui-auth-refusal-guard-20260726.md",
-            "run_id": "20260726T052000Z-04-310-claude-tui-guard"
-          },
-          "transition": "executing"
-        },
-        {
-          "at": "2026-07-26T05:40:58Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "acceptance_status": "satisfied",
-            "diagnostic": "verified and ready for publication",
-            "dirty_path_classification": "all tracked changes plan-owned",
-            "doc_delta_decision": "docs_and_skills_updated",
-            "full_suite": "3503 passed, 638 skipped, 4 warnings, 634 subtests passed",
-            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/f10ff375/codex-310-claude-tui-guard/20260726T052000Z-04-310-claude-tui-guard.md",
-            "run_id": "20260726T052000Z-04-310-claude-tui-guard",
-            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-claude-tui-guard-verification.md",
-            "verification_status": "passed",
-            "verification_summary": "PASS - first-party Claude.ai subscription proof, shared scrub, TUI-only Fable/Opus execution, native-fill refusal, typed fallback gating, telemetry, generated skills, and full suite passed."
-          },
-          "transition": "completed"
-        },
-        {
-          "at": "2026-07-26T05:57:45Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "acceptance_status": "satisfied",
-            "diagnostic": "exact-head panel blocker reconciled and reverified",
-            "full_suite": "3504 passed, 638 skipped, 4 warnings, 634 subtests passed",
-            "panel_reconciliation": "Codex DISAGREE on Omnigent bypass fixed; Grok AGREE; Claude subscription spend-limit DEGRADED; Gemini EMPTY",
-            "run_id": "20260726T052000Z-04-310-claude-tui-guard",
-            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-claude-tui-guard-verification.md",
-            "verification_status": "passed",
-            "verification_summary": "PASS - Fable/Opus alternate backings now fail before gateway access; focused reconciliation and full suite passed."
-          },
-          "transition": "completed"
-        },
-        {
-          "at": "2026-07-26T06:17:09Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "acceptance_status": "satisfied",
-            "diagnostic": "second exact-head panel blocker reconciled and reverified",
-            "full_suite": "3504 passed, 638 skipped, 4 warnings, 634 subtests passed",
-            "panel_reconciliation": "Codex DISAGREE on ANTHROPIC_CUSTOM_HEADERS escape fixed at TUI session boundary",
-            "run_id": "20260726T052000Z-04-310-claude-tui-guard",
-            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-claude-tui-guard-verification.md",
-            "verification_status": "passed",
-            "verification_summary": "PASS - custom authorization headers now join the central subscription scrub; focused regression and full suite passed."
-          },
-          "transition": "completed"
-        }
-      ],
+      "lifecycle": [],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-claude-tui-auth-refusal-guard-20260726",
-      "status": "completed",
+      "status": "imported",
       "task_summary": "Enforce subscription TUI-only Claude execution and typed refusal handling.",
       "type": "detailed",
-      "updated_at": "2026-07-26T06:17:09Z"
+      "updated_at": "2026-07-26T02:19:35Z"
     },
     {
       "acceptance_criteria_count": 8,
@@ -147,39 +61,16 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [
-        {
-          "at": "2026-07-26T04:17:10Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "branch": "codex/310-gemini-flash-board",
-            "plan_file": "plans/detailed-310-gemini-flash-review-board-default-20260726.md",
-            "run_id": "20260726T041800Z-03-310-gemini-flash-board"
-          },
-          "transition": "executing"
-        },
-        {
-          "at": "2026-07-26T05:06:35Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "branch": "codex/310-gemini-flash-board",
-            "plan_file": "plans/detailed-310-gemini-flash-review-board-default-20260726.md",
-            "run_id": "20260726T041800Z-03-310-gemini-flash-board",
-            "verification_artifact": "/tmp/codex-execute-detailed-agent-harness-310-gemini-flash-verification.md",
-            "review_repair": "resolved Codex DISAGREE findings for distinct default lenses, opaque model passthrough, and non-skipped launcher boundary coverage"
-          },
-          "transition": "completed"
-        }
-      ],
+      "lifecycle": [],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/f10ff375/codex-310-gemini-flash-board/20260726T041800Z-03-310-gemini-flash-board.md",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-gemini-flash-review-board-default-20260726",
-      "status": "completed",
+      "status": "imported",
       "task_summary": "Adopt Gemini 3.6 Flash high as the Gemini review-board default.",
       "type": "detailed",
-      "updated_at": "2026-07-26T05:06:35Z"
+      "updated_at": "2026-07-26T02:19:35Z"
     },
     {
       "acceptance_criteria_count": 8,
@@ -206,44 +97,16 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [
-        {
-          "at": "2026-07-26T03:16:22Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "branch": "codex/310-role-routing-defaults",
-            "plan_file": "plans/detailed-310-role-routing-defaults-20260726.md",
-            "run_id": "20260726T031600Z-01-310-role-routing-defaults"
-          },
-          "transition": "executing"
-        },
-        {
-          "at": "2026-07-26T03:45:17Z",
-          "by": "codex-execute-detailed",
-          "metadata": {
-            "acceptance_status": "satisfied",
-            "diagnostic": "verified and ready for publication",
-            "dirty_path_classification": "all tracked changes plan-owned; ignored virtualenv only",
-            "doc_delta_decision": "docs_updated",
-            "full_suite": "3487 passed, 634 skipped, 4 warnings, 634 subtests passed",
-            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/f1285fec/codex-310-role-routing-defaults/20260726T031600Z-01-310-role-routing-defaults.md",
-            "run_id": "20260726T031600Z-01-310-role-routing-defaults",
-            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-verification.md",
-            "verification_status": "passed",
-            "verification_summary": "PASS - targeted acceptance tests, model ID guard, full dependency-complete suite, and diff hygiene all passed."
-          },
-          "transition": "completed"
-        }
-      ],
+      "lifecycle": [],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-role-routing-defaults-20260726",
-      "status": "completed",
+      "status": "imported",
       "task_summary": "Make role-aware model and effort routing explicit for Consiliency/agent-harness#310.",
       "type": "detailed",
-      "updated_at": "2026-07-26T03:45:17Z"
+      "updated_at": "2026-07-26T02:19:35Z"
     },
     {
       "acceptance_criteria_count": 4,
