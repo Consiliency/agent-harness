@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: pyflakes (ruff F) lint gate honors its config instead of overriding it (Consiliency/agent-harness#334)
+
+- The `test` workflow's lint step now runs `ruff check .` so it reads the root
+  `pyproject.toml` selection (`select = ["F"]`, `ignore = ["F841"]`). The prior
+  `ruff check . --select F` passed a command-line `--select`, which overrides the
+  config's `ignore` and re-enabled F841, failing the gate on the 28 unused-variable
+  findings that ah#334 deliberately defers to a follow-up.
+
 ## [0.7.13] - 2026-07-26
 
 ### Native Windows import safety (Consiliency/agent-harness#327)
