@@ -85,11 +85,24 @@ PHASE_LOOP_LIVE_RESEARCH=1 PYTHONPATH=src:tests python -m pytest \
 
 ## Acceptance criteria
 
-- [ ] Research stays disabled on unsupported/older PMCP.
-- [ ] One effective policy governs board and legacy request paths; mismatches fail closed.
-- [ ] Every capable seat uses strict session-local PMCP and a unique lock/audit directory.
-- [ ] Only Firecrawl/Bright Data research tools are callable; mutation/control tools are absent or denied.
-- [ ] Ledger success is derived from correlated PMCP audit evidence, not seat prose.
-- [ ] A real version-pinned board+PMCP smoke proves successful Firecrawl and Bright Data calls plus denied mutation in one evidence artifact.
-- [ ] Unenforceable clients and failed/cancelled/denied calls remain explicit failures.
-- [ ] Disabled boards remain byte-compatible.
+- [x] Research stays disabled on unsupported/older PMCP.
+- [x] One effective policy governs board and legacy request paths; mismatches fail closed.
+- [x] Every capable seat uses strict session-local PMCP and a unique lock/audit directory.
+- [x] Only Firecrawl/Bright Data research tools are callable; mutation/control tools are absent or denied.
+- [x] Ledger success is derived from correlated PMCP audit evidence, not seat prose.
+- [x] A real version-pinned board+PMCP smoke proves successful Firecrawl and Bright Data calls plus denied mutation in one evidence artifact.
+- [x] Unenforceable clients and failed/cancelled/denied calls remain explicit failures.
+- [x] Disabled boards remain byte-compatible.
+
+## Exact-head reconciliation addendum
+
+The final implementation also materializes highest-precedence run-local provider
+definitions and a final PMCP manifest overlay for exactly Firecrawl and Bright Data,
+passes both paths explicitly, and removes every inherited `PMCP_*` control. Claude
+research seats omit MCP-disabling safe mode, disable the Chrome integration, and keep
+the strict MCP/tool allowlists on the existing first-party subscription TUI route.
+Regression coverage proves a pre-existing caller directory survives failed
+materialization. Live subscription proofs passed for both Codex and Claude TUI.
+The final dissent repair also withholds the live repository add-directory from a
+research-enabled Claude seat and makes any mismatched invocation correlation fail
+the whole research ledger, even when another invocation verified successfully.

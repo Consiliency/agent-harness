@@ -7,16 +7,90 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-26T08:16:46Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "branch": "codex/310-advisor-research-integration",
+            "dependency": "Consiliency/pmcp v1.20.0 published and capability-probed",
+            "plan_file": "plans/detailed-310-advisor-research-integration-after-pmcp-20260726.md",
+            "run_id": "20260726T081646Z-06-310-advisor-research-integration"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-07-26T09:06:35Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "verified and ready for exact-head review",
+            "doc_delta_decision": "docs_and_skills_updated",
+            "full_suite": "3517 passed, 38 skipped, 601 deselected, 4 warnings, 634 subtests passed",
+            "live_research": "Firecrawl and Bright Data verified; GitHub mutation denied; privacy-safe PMCP audit complete",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/6071bf5c/codex-310-advisor-research/20260726T081646Z-06-310-advisor-research-integration.md",
+            "run_id": "20260726T081646Z-06-310-advisor-research-integration",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-advisor-research-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - strict scoped PMCP, audit-derived evidence, live dual-provider proof, denied mutation, package build, isolated install, and full suite passed."
+          },
+          "transition": "completed"
+        },
+        {
+          "at": "2026-07-26T09:34:39Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "exact-head panel blockers reconciled and reverified",
+            "full_suite": "3519 passed, 38 skipped, 601 deselected, 4 warnings, 634 subtests passed",
+            "panel_reconciliation": "Claude MCP pre-approval fixed; Codex alternate retrieval disabled; live proof moved to invoke_board; Grok narrowed to research_profile_unenforceable",
+            "run_id": "20260726T081646Z-06-310-advisor-research-integration",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-advisor-research-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - exact-head dissent reconciled; real board PMCP proof and complete standalone suite passed."
+          },
+          "transition": "completed"
+        },
+        {
+          "at": "2026-07-26T10:11:35Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "second exact-head panel blockers reconciled and reverified",
+            "full_suite": "3521 passed, 640 skipped, 4 warnings, 634 subtests passed",
+            "panel_reconciliation": "run-local PMCP provider and manifest precedence added; all ambient PMCP controls scrubbed; Claude MCP safe-mode removed for research and Chrome disabled; caller-owned root preserved",
+            "run_id": "20260726T081646Z-06-310-advisor-research-integration",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-advisor-research-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - isolated Codex dual-provider denial proof and Claude subscription-TUI PMCP proof passed with the complete standalone suite."
+          },
+          "transition": "completed"
+        },
+        {
+          "at": "2026-07-26T10:42:05Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "final five-seat dissent reconciled and reverified",
+            "full_suite": "3521 passed, 640 skipped, 4 warnings, 634 subtests passed",
+            "panel_reconciliation": "research Claude live-repo add-dir removed; any mismatched invocation correlation now fails the whole ledger; malformed non-object audit records fail typed",
+            "run_id": "20260726T081646Z-06-310-advisor-research-integration",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-advisor-research-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - final panel blockers closed; both supported-client live proofs and complete standalone suite passed after repair."
+          },
+          "transition": "completed"
+        }
+      ],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-advisor-research-integration-after-pmcp-20260726",
-      "status": "imported",
+      "status": "completed",
       "task_summary": "Integrate audited Firecrawl and Bright Data research into advisor panels after PMCP.",
       "type": "detailed",
-      "updated_at": "2026-07-26T02:19:35Z"
+      "updated_at": "2026-07-26T10:42:05Z"
     },
     {
       "acceptance_criteria_count": 10,
@@ -25,16 +99,44 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-26T03:50:14Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "branch": "codex/310-applied-repair-escalation",
+            "plan_file": "plans/detailed-310-applied-repair-model-escalation-20260726.md",
+            "run_id": "20260726T035100Z-02-310-applied-repair-escalation"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-07-26T04:13:10Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "verified and ready for publication",
+            "dirty_path_classification": "all tracked changes plan-owned",
+            "doc_delta_decision": "docs_updated",
+            "full_suite": "3491 passed, 637 skipped, 4 warnings, 634 subtests passed",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/79a3bdc1/codex-310-applied-repair-escalation/20260726T035100Z-02-310-applied-repair-escalation.md",
+            "run_id": "20260726T035100Z-02-310-applied-repair-escalation",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-repair-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - policy, real repair-dispatch, continuation, provenance, plan suites, and the full dependency-complete repository suite passed."
+          },
+          "transition": "completed"
+        }
+      ],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-applied-repair-model-escalation-20260726",
-      "status": "imported",
+      "status": "completed",
       "task_summary": "Escalate repeated applied repair failures to the stronger authoring model with bound provenance.",
       "type": "detailed",
-      "updated_at": "2026-07-26T02:19:35Z"
+      "updated_at": "2026-07-26T04:13:10Z"
     },
     {
       "acceptance_criteria_count": 10,
@@ -43,16 +145,74 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-26T05:20:00Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "branch": "codex/310-claude-tui-guard",
+            "plan_file": "plans/detailed-310-claude-tui-auth-refusal-guard-20260726.md",
+            "run_id": "20260726T052000Z-04-310-claude-tui-guard"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-07-26T05:40:58Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "verified and ready for publication",
+            "dirty_path_classification": "all tracked changes plan-owned",
+            "doc_delta_decision": "docs_and_skills_updated",
+            "full_suite": "3503 passed, 638 skipped, 4 warnings, 634 subtests passed",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/f10ff375/codex-310-claude-tui-guard/20260726T052000Z-04-310-claude-tui-guard.md",
+            "run_id": "20260726T052000Z-04-310-claude-tui-guard",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-claude-tui-guard-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - first-party Claude.ai subscription proof, shared scrub, TUI-only Fable/Opus execution, native-fill refusal, typed fallback gating, telemetry, generated skills, and full suite passed."
+          },
+          "transition": "completed"
+        },
+        {
+          "at": "2026-07-26T05:57:45Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "exact-head panel blocker reconciled and reverified",
+            "full_suite": "3504 passed, 638 skipped, 4 warnings, 634 subtests passed",
+            "panel_reconciliation": "Codex DISAGREE on Omnigent bypass fixed; Grok AGREE; Claude subscription spend-limit DEGRADED; Gemini EMPTY",
+            "run_id": "20260726T052000Z-04-310-claude-tui-guard",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-claude-tui-guard-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - Fable/Opus alternate backings now fail before gateway access; focused reconciliation and full suite passed."
+          },
+          "transition": "completed"
+        },
+        {
+          "at": "2026-07-26T06:17:09Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "second exact-head panel blocker reconciled and reverified",
+            "full_suite": "3504 passed, 638 skipped, 4 warnings, 634 subtests passed",
+            "panel_reconciliation": "Codex DISAGREE on ANTHROPIC_CUSTOM_HEADERS escape fixed at TUI session boundary",
+            "run_id": "20260726T052000Z-04-310-claude-tui-guard",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-claude-tui-guard-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - custom authorization headers now join the central subscription scrub; focused regression and full suite passed."
+          },
+          "transition": "completed"
+        }
+      ],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-claude-tui-auth-refusal-guard-20260726",
-      "status": "imported",
+      "status": "completed",
       "task_summary": "Enforce subscription TUI-only Claude execution and typed refusal handling.",
       "type": "detailed",
-      "updated_at": "2026-07-26T02:19:35Z"
+      "updated_at": "2026-07-26T06:17:09Z"
     },
     {
       "acceptance_criteria_count": 8,
@@ -61,16 +221,39 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-26T04:17:10Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "branch": "codex/310-gemini-flash-board",
+            "plan_file": "plans/detailed-310-gemini-flash-review-board-default-20260726.md",
+            "run_id": "20260726T041800Z-03-310-gemini-flash-board"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-07-26T05:06:35Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "branch": "codex/310-gemini-flash-board",
+            "plan_file": "plans/detailed-310-gemini-flash-review-board-default-20260726.md",
+            "review_repair": "resolved Codex DISAGREE findings for distinct default lenses, opaque model passthrough, and non-skipped launcher boundary coverage",
+            "run_id": "20260726T041800Z-03-310-gemini-flash-board",
+            "verification_artifact": "/tmp/codex-execute-detailed-agent-harness-310-gemini-flash-verification.md"
+          },
+          "transition": "completed"
+        }
+      ],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/f10ff375/codex-310-gemini-flash-board/20260726T041800Z-03-310-gemini-flash-board.md",
       "roadmap_ref": null,
       "slug": "310-gemini-flash-review-board-default-20260726",
-      "status": "imported",
+      "status": "completed",
       "task_summary": "Adopt Gemini 3.6 Flash high as the Gemini review-board default.",
       "type": "detailed",
-      "updated_at": "2026-07-26T02:19:35Z"
+      "updated_at": "2026-07-26T05:06:35Z"
     },
     {
       "acceptance_criteria_count": 8,
@@ -79,16 +262,43 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-26T12:05:32Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "branch": "codex/310-plan-closeout",
+            "dependency_pr": "Consiliency/pmcp#104",
+            "dependency_release": "pmcp==1.20.0",
+            "plan_file": "plans/detailed-310-pmcp-scoped-advisor-prerequisite-20260726.md",
+            "run_id": "20260726T120000Z-310-completion-audit"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-07-26T12:08:51Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "dependency_pr": "Consiliency/pmcp#104",
+            "dependency_release": "pmcp==1.20.0",
+            "diagnostic": "completion audit reconciled",
+            "full_suite": "2251 passed, 3 skipped, 24 deselected",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/2f753127/codex-310-plan-closeout/20260726T120803Z-310-plan-closeout.md",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-plan-closeout-verification.md"
+          },
+          "transition": "completed"
+        }
+      ],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-pmcp-scoped-advisor-prerequisite-20260726",
-      "status": "imported",
+      "status": "completed",
       "task_summary": "Add the fail-closed scoped PMCP audit prerequisite for advisor research.",
       "type": "detailed",
-      "updated_at": "2026-07-26T02:19:35Z"
+      "updated_at": "2026-07-26T12:08:51Z"
     },
     {
       "acceptance_criteria_count": 11,
@@ -97,16 +307,44 @@
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260726T021603Z-01-agent-harness-310.md",
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-26T03:16:22Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "branch": "codex/310-role-routing-defaults",
+            "plan_file": "plans/detailed-310-role-routing-defaults-20260726.md",
+            "run_id": "20260726T031600Z-01-310-role-routing-defaults"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-07-26T03:45:17Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied",
+            "diagnostic": "verified and ready for publication",
+            "dirty_path_classification": "all tracked changes plan-owned; ignored virtualenv only",
+            "doc_delta_decision": "docs_updated",
+            "full_suite": "3487 passed, 634 skipped, 4 warnings, 634 subtests passed",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/f1285fec/codex-310-role-routing-defaults/20260726T031600Z-01-310-role-routing-defaults.md",
+            "run_id": "20260726T031600Z-01-310-role-routing-defaults",
+            "verification_artifact_path": "/tmp/codex-execute-detailed-agent-harness-310-verification.md",
+            "verification_status": "passed",
+            "verification_summary": "PASS - targeted acceptance tests, model ID guard, full dependency-complete suite, and diff hygiene all passed."
+          },
+          "transition": "completed"
+        }
+      ],
       "owner_skill": "codex-plan-detailed",
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6071bf5c/chore-plan-bookkeeping/20260726T021603Z-01-agent-harness-310.md",
       "roadmap_ref": null,
       "slug": "310-role-routing-defaults-20260726",
-      "status": "imported",
+      "status": "completed",
       "task_summary": "Make role-aware model and effort routing explicit for Consiliency/agent-harness#310.",
       "type": "detailed",
-      "updated_at": "2026-07-26T02:19:35Z"
+      "updated_at": "2026-07-26T03:45:17Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -814,7 +1052,6 @@
       "updated_at": "2026-07-13T04:12:58Z"
     },
     {
-      "acceptance_criteria_count": 9,
       "created_at": "2026-07-13T04:58:00Z",
       "file": "plans/phase-plan-vergence-v1-INTEG.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260713T044745Z-01-integ-plan.md",
@@ -870,7 +1107,6 @@
       },
       "slug": "vergence-v1-INTEG",
       "status": "completed",
-      "task_summary": "Execution-ready INTEG coordinator integration phase plan",
       "type": "phase",
       "updated_at": "2026-07-13T05:07:04Z"
     },

@@ -33,6 +33,7 @@ reference transport that appends the exact ``state_ledger_record.v0.1`` records
 the TS ``AppendOnlyStore`` ingests. It does NOT reimplement ledger internals
 (retention / replay / compaction stay TS-side).
 """
+
 from __future__ import annotations
 
 import json
@@ -59,10 +60,12 @@ WORKLOAD_BOARD = "advisor_board"
 WORKLOAD_PHASE_EXECUTION = "phase_execution"
 
 # omniagent-plus wire schemas we target (owned by us; frozen upstream).
-LEDGER_RECORD_SCHEMA = "state_ledger_record.v0.1"  # packages/core-contracts state-ledger.ts
-RUNTIME_EVENT_SCHEMA = "runtime_event.v0.1"        # packages/core-contracts events.ts
-RUNTIME_FAILURE_SCHEMA = "runtime_failure.v0.1"    # packages/core-contracts errors.ts
-LEDGER_RECORD_KIND = "runtime_event"               # AuditLedger.appendRuntimeEvent kind
+LEDGER_RECORD_SCHEMA = (
+    "state_ledger_record.v0.1"  # packages/core-contracts state-ledger.ts
+)
+RUNTIME_EVENT_SCHEMA = "runtime_event.v0.1"  # packages/core-contracts events.ts
+RUNTIME_FAILURE_SCHEMA = "runtime_failure.v0.1"  # packages/core-contracts errors.ts
+LEDGER_RECORD_KIND = "runtime_event"  # AuditLedger.appendRuntimeEvent kind
 
 # Our envelope kind -> the omniagent runtime.* event type it maps to. A board run
 # projects to a session; each seat projects to a turn within that session.
@@ -131,7 +134,10 @@ def _runtime_payload(event: AdvisorBoardEvent) -> dict[str, Any]:
         # {"reason": ...} would fail zod. A board-seat failure is a non-retryable,
         # harness-scoped, turn-level failure; the message is the leg's detail.
         raw = dict(p.get("failure") or {})
-        message = str(raw.get("message") or raw.get("reason") or p.get("status") or "failed") or "failed"
+        message = (
+            str(raw.get("message") or raw.get("reason") or p.get("status") or "failed")
+            or "failed"
+        )
         return {
             "outcome": "failed",
             "failure": {
@@ -159,7 +165,9 @@ def map_event_to_runtime_event(
     runtime_type = _KIND_TO_RUNTIME_TYPE.get(event.kind)
     if runtime_type is None:  # pragma: no cover - EVENT_KINDS is closed
         raise ValueError(f"no runtime.* mapping for kind {event.kind!r}")
-    redaction = "content_allowed" if event.kind == "seat.text.delta" else "metadata_only"
+    redaction = (
+        "content_allowed" if event.kind == "seat.text.delta" else "metadata_only"
+    )
     envelope: dict[str, Any] = {
         "schema": RUNTIME_EVENT_SCHEMA,
         "eventId": f"event-{uuid.uuid4().hex[:12]}",
@@ -337,7 +345,9 @@ class AsyncForwardingSink:
         never called on the leg's critical path)."""
         if not self._started:
             return True
-        deadline_join = self._queue.join  # join has no timeout; used via close for hard drain
+        deadline_join = (
+            self._queue.join
+        )  # join has no timeout; used via close for hard drain
         if timeout is None:
             deadline_join()
             return True
@@ -465,6 +475,15 @@ class BoardObserver:
             payload["provider_refusal_kind"] = str(refusal_kind)
         if bool(getattr(result, "fallback_used", False)):
             payload["fallback_used"] = True
+        research_status = getattr(result, "research_status", None)
+        if research_status:
+            payload["research_status"] = str(research_status)
+            ledger_digest = getattr(result, "research_ledger_digest", None)
+            audit_digest = getattr(result, "research_audit_digest", None)
+            if ledger_digest:
+                payload["research_ledger_digest"] = str(ledger_digest)
+            if audit_digest:
+                payload["research_audit_digest"] = str(audit_digest)
         self._emit(kind, payload=payload, **fields)
 
 

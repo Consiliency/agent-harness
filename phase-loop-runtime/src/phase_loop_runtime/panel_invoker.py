@@ -9,13 +9,12 @@ Real CLI execution is a single injectable seam (`spawn`); the test suite mocks
 it and never calls a frontier model. Each leg's result carries an explicit
 status so a verbose auth error is never mistaken for a real review.
 """
+
 from __future__ import annotations
 
-import fcntl
 import logging
 import mimetypes
 import os
-import pty
 import re
 import select
 import shutil
@@ -24,7 +23,6 @@ import struct
 import subprocess
 import sys
 import tempfile
-import termios
 import time
 import json
 import threading
@@ -34,6 +32,15 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, cast
 
+try:
+    import fcntl
+    import pty
+    import termios
+except ImportError:  # Native Windows has no POSIX PTY stack.
+    fcntl = None  # type: ignore[assignment]
+    pty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+
 from .agent_runtime_provider import (
     CreateSessionRequest,
     HomebrewAgentRuntimeProvider,
@@ -41,8 +48,12 @@ from .agent_runtime_provider import (
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .launcher import GROK_REVIEW_READONLY_TOOLS
-from .profiles import CLAUDE_IMPLEMENTER_MODEL
-from .advisor_board.backing import resolve_seat_env, scrub_subscription_env, select_backing
+from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
+from .advisor_board.backing import (
+    resolve_seat_env,
+    scrub_subscription_env,
+    select_backing,
+)
 from .advisor_board.backing_omnigent import (
     OmnigentBacking,
     OmnigentGatewayUnavailable,
@@ -57,8 +68,24 @@ from .advisor_board.schema import (
     BACKING_OMNIGENT,
     Board,
     HostContext,
+    ResearchPolicy,
     Seat,
     identify_host_leg,
+)
+from .advisor_board.research import (
+    RESEARCH_CAPABLE_LANES,
+    ResearchLedger,
+    ResearchRunConfig,
+    ResearchSeatConfig,
+    ResearchUnavailable,
+    claude_mcp_config,
+    codex_mcp_args,
+    materialize_research_run,
+    mcp_tool_names,
+    reduce_research_audit,
+    research_instructions,
+    scrub_research_env,
+    unavailable_ledger,
 )
 from ._proc_cpu import group_cpu_ticks
 from .advisor_board.validation import validate_seat
@@ -72,7 +99,14 @@ PANEL_LEGS: tuple[str, ...] = ("codex", "gemini", "claude")
 # gemini/agy leg is down reaches a 4th independent vendor without a hand-rolled grok CLI,
 # while a host without the grok CLI still returns the exact frozen 3-tuple.
 _AVAILABLE_PANEL_LEGS: tuple[str, ...] = PANEL_LEGS + ("grok",)
-LEG_STATUSES: tuple[str, ...] = ("OK", "EMPTY", "TIMEOUT", "ERROR", "DEGRADED", "UNAVAILABLE")
+LEG_STATUSES: tuple[str, ...] = (
+    "OK",
+    "EMPTY",
+    "TIMEOUT",
+    "ERROR",
+    "DEGRADED",
+    "UNAVAILABLE",
+)
 _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES} | {
     status.lower(): status for status in LEG_STATUSES
 }
@@ -80,7 +114,12 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 # Which CLI binary backs each leg (used for metadata-only liveness preflight).
 # grok is NOT in ``PANEL_LEGS`` (the default 3-leg panel is byte-frozen) but IS a
 # registered homebrew lane a board seat can run on (the 4-vendor code-review board).
-_LEG_CLI: dict[str, str] = {"codex": "codex", "gemini": "agy", "claude": "claude", "grok": "grok"}
+_LEG_CLI: dict[str, str] = {
+    "codex": "codex",
+    "gemini": "agy",
+    "claude": "claude",
+    "grok": "grok",
+}
 
 # #66: the default model per leg. `invoke_panel(..., models={"claude": "claude-sonnet-5"})`
 # overrides any subset per-leg without an in-process monkeypatch.
@@ -127,7 +166,7 @@ _MAX_LEG_TIMEOUT_S = _LEG_TIMEOUT_MAX_S
 # — reliable stall detection is exactly what makes that generous backstop safe.
 _LEG_STALL_THRESHOLD_S = 180
 _LEG_LIVENESS_READ_INTERVAL_S = 0.5  # select() slice; also the idle-sleep granularity
-_LEG_LIVENESS_CPU_SAMPLE_S = 5.0     # /proc CPU sampling cadence (secondary reset only)
+_LEG_LIVENESS_CPU_SAMPLE_S = 5.0  # /proc CPU sampling cadence (secondary reset only)
 # Once the leg LEADER exits but a descendant still holds the stdout/stderr pipe open
 # (an inherited-fd outliver), the leg's real work is done — reclaim the group after a
 # short idle grace instead of burning the full wall-clock backstop. Reset by any late
@@ -179,7 +218,11 @@ _LEG_TIMEOUT_BOUNDS: dict[str, tuple[int, int]] = {
 
 def normalize_leg_status(status: str) -> str:
     value = str(status).strip()
-    canonical = _LEG_STATUS_ALIASES.get(value) or _LEG_STATUS_ALIASES.get(value.upper()) or _LEG_STATUS_ALIASES.get(value.lower())
+    canonical = (
+        _LEG_STATUS_ALIASES.get(value)
+        or _LEG_STATUS_ALIASES.get(value.upper())
+        or _LEG_STATUS_ALIASES.get(value.lower())
+    )
     if canonical is None:
         raise ValueError(f"invalid panel leg status: {status!r}")
     return canonical
@@ -187,7 +230,9 @@ def normalize_leg_status(status: str) -> str:
 
 def panel_leg_timeout_seconds(leg: str, artifact: str) -> int:
     """Input-scaled leg timeout, bounded per vendor."""
-    minimum, maximum = _LEG_TIMEOUT_BOUNDS.get(leg, (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S))
+    minimum, maximum = _LEG_TIMEOUT_BOUNDS.get(
+        leg, (_DEFAULT_LEG_TIMEOUT_S, _MAX_LEG_TIMEOUT_S)
+    )
     artifact_bytes = len((artifact or "").encode("utf-8", errors="replace"))
     extra_kb = artifact_bytes // 1024
     return min(maximum, max(minimum, minimum + extra_kb * _LEG_TIMEOUT_PER_KB_S))
@@ -206,10 +251,13 @@ class PanelRequest:
     # path out of fail-closed into a logged warning + UNREADABLE manifest entry.
     context_refs: tuple[str, ...] | None = None
     context_refs_soft_warn: bool = False
+    research_policy: ResearchPolicy = ResearchPolicy()
 
     def __post_init__(self) -> None:
         if self.redaction_posture != "metadata_only":
             raise ValueError("panel requests must use metadata_only redaction posture")
+        if not isinstance(self.research_policy, ResearchPolicy):
+            raise TypeError("panel request research_policy must be ResearchPolicy")
 
     def timeout_seconds_for_leg(self, leg: str) -> int:
         if leg in self.timeout_seconds_by_leg:
@@ -219,8 +267,8 @@ class PanelRequest:
 
 @dataclass(frozen=True)
 class PanelLegResult:
-    leg: str            # vendor: codex | gemini | claude
-    status: str         # one of LEG_STATUSES
+    leg: str  # vendor: codex | gemini | claude
+    status: str  # one of LEG_STATUSES
     text: str = ""
     detail: str | None = None
     # ABDRESOLVE leg->seat re-key: `leg` alone keys by vendor, so a board with two
@@ -263,6 +311,25 @@ class PanelLegResult:
         """Whether a bounded, typed provider fallback produced this result."""
         return bool(getattr(self, "_fallback_used", False))
 
+    @property
+    def research_status(self) -> str | None:
+        ledger = getattr(self, "_research_ledger", None)
+        return ledger.status if ledger is not None else None
+
+    @property
+    def research_ledger_digest(self) -> str | None:
+        ledger = getattr(self, "_research_ledger", None)
+        return ledger.ledger_digest if ledger is not None else None
+
+    @property
+    def research_audit_digest(self) -> str | None:
+        ledger = getattr(self, "_research_ledger", None)
+        return ledger.audit_digest if ledger is not None else None
+
+    @property
+    def research_ledger(self) -> ResearchLedger | None:
+        return getattr(self, "_research_ledger", None)
+
 
 def attach_native_agent_request(
     leg: PanelLegResult, request: "NativeAgentLegRequest"
@@ -273,6 +340,48 @@ def attach_native_agent_request(
     Returns ``leg`` for call-site convenience."""
     object.__setattr__(leg, "_needs_native_agent", request)
     return leg
+
+
+def attach_research_ledger(
+    leg: PanelLegResult, ledger: ResearchLedger
+) -> PanelLegResult:
+    """Attach privacy-safe research state without changing dataclass serializers."""
+    object.__setattr__(leg, "_research_ledger", ledger)
+    return leg
+
+
+def _effective_research_policy(
+    owned: ResearchPolicy, supplied: ResearchPolicy | None
+) -> ResearchPolicy:
+    if supplied is not None and supplied != owned:
+        raise ValueError("research policy mismatch")
+    return owned if supplied is None else supplied
+
+
+def _research_unavailable_result(
+    *, leg: str, seat_key: str | None, detail: str
+) -> PanelLegResult:
+    return attach_research_ledger(
+        PanelLegResult(
+            leg=leg,
+            status="UNAVAILABLE",
+            text="",
+            detail=detail,
+            seat_key=seat_key,
+        ),
+        unavailable_ledger(detail),
+    )
+
+
+def _finalize_research_result(
+    result: PanelLegResult, config: ResearchSeatConfig
+) -> PanelLegResult:
+    ledger = reduce_research_audit(config, result.text)
+    attach_research_ledger(result, ledger)
+    if result.status == "OK" and ledger.status != "success":
+        object.__setattr__(result, "status", "DEGRADED")
+        object.__setattr__(result, "detail", f"research_audit_{ledger.status}")
+    return result
 
 
 _PROVIDER_REFUSAL_KINDS = frozenset({"classifier_refusal"})
@@ -368,7 +477,9 @@ class PanelResult:
         A non-empty result means the board is SHORT those seats until they are
         filled — the loud requested-vs-delivered signal the caller must not miss."""
         return tuple(
-            leg.needs_native_agent for leg in self.legs if leg.needs_native_agent is not None
+            leg.needs_native_agent
+            for leg in self.legs
+            if leg.needs_native_agent is not None
         )
 
 
@@ -443,7 +554,9 @@ def serialize_seat_outcome(record: SeatOutcomeRecord) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def persist_seat_outcome(record: SeatOutcomeRecord, append_sink: Callable[[str], None]) -> None:
+def persist_seat_outcome(
+    record: SeatOutcomeRecord, append_sink: Callable[[str], None]
+) -> None:
     """Persist exactly the serialized outcome through an injected coordinator sink."""
     append_sink(serialize_seat_outcome(record))
 
@@ -513,7 +626,7 @@ def terminal_verdict(text: str) -> str | None:
             continue
         s = _LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
         if s.upper().startswith("VERDICT:"):
-            s = s[len("VERDICT:"):].strip().strip("*`").strip()
+            s = s[len("VERDICT:") :].strip().strip("*`").strip()
         s = _LEADING_MARKUP_RE.sub("", s).strip()
         m = _VERDICT_RE.match(s)
         return re.sub(r"\s+", " ", m.group(1).upper()) if m else None
@@ -575,6 +688,8 @@ def _completion_ok(text: str, mode: str = "review") -> bool:
     if mode == "advisory":
         return len((text or "").strip()) >= 40
     return terminal_verdict(text) is not None
+
+
 # Auth/error stderr signatures → `degraded` so a verbose auth error is never read
 # as a real review (mirrors run_cli_panels.sh).
 _AUTH_SIGNATURE = re.compile(
@@ -593,8 +708,11 @@ _GEMINI_TRANSIENT_RE = re.compile(
 )
 # Subscription auth only: strip provider API keys from the child environment.
 _API_KEY_VARS = (
-    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-    "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
 )
 
 _REVIEW_INSTRUCTIONS = (
@@ -733,7 +851,9 @@ def _maybe_warn_inline_size(artifact: str, *, from_ref: bool) -> None:
 # The instruction line + header injected into the bundle. The file CONTENTS are
 # never read into this text — only path/size/sha256/type metadata — so a sentinel
 # string inside a referenced file is ABSENT from the rendered bundle/prompt.
-_CONTEXT_REFS_HEADER = "## Referenced context files (BY REFERENCE — contents NOT inlined)"
+_CONTEXT_REFS_HEADER = (
+    "## Referenced context files (BY REFERENCE — contents NOT inlined)"
+)
 _CONTEXT_REFS_INSTRUCTION = (
     "The files below are provided BY REFERENCE ONLY: their raw contents are "
     "intentionally NOT included anywhere in this bundle or prompt. When you need "
@@ -772,7 +892,9 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
     if not path.is_file():
         msg = f"context_refs path does not exist or is not a file (fail-closed, not silent-empty): {p}"
         if soft_warn:
-            logging.getLogger(__name__).warning("%s — emitting UNREADABLE entry (soft-warn)", msg)
+            logging.getLogger(__name__).warning(
+                "%s — emitting UNREADABLE entry (soft-warn)", msg
+            )
             return f"- path: {json.dumps(str(p))}\n  status: MISSING (soft-warn enabled; leg should skip or note it)"
         raise ValueError(msg)
     # Stream the hash + size in chunks so a large ref'd file is never buffered whole.
@@ -786,7 +908,9 @@ def _context_ref_entry(p: str, *, soft_warn: bool) -> str | None:
     except OSError as exc:
         msg = f"context_refs path is not readable (fail-closed, not silent-empty): {p} ({exc})"
         if soft_warn:
-            logging.getLogger(__name__).warning("%s — emitting UNREADABLE entry (soft-warn)", msg)
+            logging.getLogger(__name__).warning(
+                "%s — emitting UNREADABLE entry (soft-warn)", msg
+            )
             return f"- path: {json.dumps(str(path.resolve()))}\n  status: UNREADABLE (soft-warn enabled)"
         raise ValueError(msg)
     digest = h.hexdigest()
@@ -937,10 +1061,16 @@ def _render_claude_tui_prompt(
 
 
 def _claude_tui_command(
-    review_dir: Path, repo_dir: Path, model: str | None = None, effort: str | None = None
+    review_dir: Path,
+    repo_dir: Path,
+    model: str | None = None,
+    effort: str | None = None,
+    research_seat: ResearchSeatConfig | None = None,
 ) -> list[str]:
     add_dirs = [review_dir]
-    if repo_dir.resolve() != review_dir.resolve():
+    # A research seat may write only its isolated output workspace. Granting the
+    # live repo as an add-dir would combine network access with pre-approved Write.
+    if research_seat is None and repo_dir.resolve() != review_dir.resolve():
         add_dirs.append(repo_dir)
     # ABDHOME: effort is plumbed per-seat. ``effort is None`` (legacy/default path)
     # keeps today's hard-coded ``--effort max`` byte-for-byte; a board seat renders
@@ -948,12 +1078,23 @@ def _claude_tui_command(
     effort_args = (
         ("--effort", "max")
         if effort is None
-        else render_seat_invocation("claude", model or DEFAULT_LEG_MODELS["claude"], effort).effort_args
+        else render_seat_invocation(
+            "claude", model or DEFAULT_LEG_MODELS["claude"], effort
+        ).effort_args
     )
+    mcp_config = (
+        claude_mcp_config(research_seat)
+        if research_seat is not None
+        else json.dumps({"mcpServers": {}})
+    )
+    allowed_tools = "Read,Write"
+    if research_seat is not None:
+        allowed_tools += "," + ",".join(mcp_tool_names())
     command = [
         "claude",
         "--ax-screen-reader",
-        "--safe-mode",
+        *(("--safe-mode",) if research_seat is None else ()),
+        *(("--no-chrome",) if research_seat is not None else ()),
         "--model",
         model or DEFAULT_LEG_MODELS["claude"],
         *effort_args,
@@ -965,19 +1106,19 @@ def _claude_tui_command(
         json.dumps({"apiKeyHelper": ""}),
         "--strict-mcp-config",
         "--mcp-config",
-        json.dumps({"mcpServers": {}}),
+        mcp_config,
     ]
     for add_dir in add_dirs:
         command.extend(["--add-dir", str(add_dir)])
     command.extend(
         [
             "--tools",
-            "Read,Write",
+            allowed_tools,
             "--allowedTools",
             # Path-scoped Write(...) currently prompts in the TUI route because Claude
             # normalizes the file as a relative cwd path. Run from the isolated out-dir
             # and ingest only the deterministic panel-claude.txt file.
-            "Read,Write",
+            allowed_tools,
         ]
     )
     return command
@@ -997,7 +1138,9 @@ def _subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, st
 _LEG_AUTH_PROBE: dict[str, list[str]] = {"codex": ["codex", "login", "status"]}
 
 
-def _leg_auth_ok(leg: str, env: Mapping[str, str], timeout_s: int = 20) -> tuple[bool, str]:
+def _leg_auth_ok(
+    leg: str, env: Mapping[str, str], timeout_s: int = 20
+) -> tuple[bool, str]:
     """Return ``(ok, detail)`` for a leg's auth preflight.
 
     A missing or inconclusive probe (CLI absent / probe times out) fails OPEN
@@ -1010,14 +1153,22 @@ def _leg_auth_ok(leg: str, env: Mapping[str, str], timeout_s: int = 20) -> tuple
         return True, ""
     try:
         proc = subprocess.run(
-            probe, capture_output=True, text=True, timeout=timeout_s,
-            check=False, stdin=subprocess.DEVNULL, env=dict(env),
+            probe,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=dict(env),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return True, ""  # probe unavailable/slow → don't block; the leg fail-closes
     combined = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
-        return False, f"{leg} not logged in — run `{probe[0]} login` (auth preflight failed)"
+        return (
+            False,
+            f"{leg} not logged in — run `{probe[0]} login` (auth preflight failed)",
+        )
     return True, ""
 
 
@@ -1087,11 +1238,19 @@ def _claude_code_support_status(claude_bin: str = "claude") -> tuple[bool, str]:
     if version is None:
         return False, "claude_version_unparseable"
     if version < _CLAUDE_CODE_MIN_VERSION:
-        return False, f"claude_code_version_below_minimum:{'.'.join(str(part) for part in version)}"
-    return True, f"claude_code_version_supported:{'.'.join(str(part) for part in version)}"
+        return (
+            False,
+            f"claude_code_version_below_minimum:{'.'.join(str(part) for part in version)}",
+        )
+    return (
+        True,
+        f"claude_code_version_supported:{'.'.join(str(part) for part in version)}",
+    )
 
 
-def _classify_leg(rc: int, review_text: str, log_text: str, mode: str = "review") -> str:
+def _classify_leg(
+    rc: int, review_text: str, log_text: str, mode: str = "review"
+) -> str:
     """Map a leg's exit code + outputs to a fail-closed status.
 
     Only a leg that ENDS with a conforming structured verdict (see
@@ -1174,10 +1333,18 @@ def _claude_agent_session_id(output: str) -> str | None:
 
 def _claude_agent_state(output: str, session_id: str, cwd: str) -> str | None:
     for record in _claude_agent_records(output):
-        identifiers = {str(record.get(key) or "") for key in ("id", "agent_id", "sessionId", "session_id")}
-        if session_id not in identifiers and str(record.get("cwd") or record.get("workspace") or "") != cwd:
+        identifiers = {
+            str(record.get(key) or "")
+            for key in ("id", "agent_id", "sessionId", "session_id")
+        }
+        if (
+            session_id not in identifiers
+            and str(record.get("cwd") or record.get("workspace") or "") != cwd
+        ):
             continue
-        return _normalize_claude_agent_state(record.get("state") or record.get("status"))
+        return _normalize_claude_agent_state(
+            record.get("state") or record.get("status")
+        )
     return None
 
 
@@ -1207,7 +1374,9 @@ def _claude_matching_agent_ids(output: str, *, name: str, cwd: str) -> tuple[str
             continue
         if str(record.get("cwd") or record.get("workspace") or "") != cwd:
             continue
-        state = _normalize_claude_agent_state(record.get("state") or record.get("status"))
+        state = _normalize_claude_agent_state(
+            record.get("state") or record.get("status")
+        )
         if state in {"done", "failed", "stopped"}:
             continue
         agent_id = _claude_agent_record_id(record)
@@ -1218,7 +1387,11 @@ def _claude_matching_agent_ids(output: str, *, name: str, cwd: str) -> tuple[str
 
 def _timeout_expired_text(exc: subprocess.TimeoutExpired) -> str:
     chunks: list[str] = []
-    for value in (getattr(exc, "output", None), getattr(exc, "stdout", None), getattr(exc, "stderr", None)):
+    for value in (
+        getattr(exc, "output", None),
+        getattr(exc, "stdout", None),
+        getattr(exc, "stderr", None),
+    ):
         if value is None:
             continue
         if isinstance(value, bytes):
@@ -1257,14 +1430,21 @@ def _cleanup_claude_launch_timeout(
         list_proc = None
         cleanup_status = "cleanup_list_error"
     else:
-        cleanup_status = "cleanup_list_failed" if list_proc.returncode != 0 else "cleanup_none"
+        cleanup_status = (
+            "cleanup_list_failed" if list_proc.returncode != 0 else "cleanup_none"
+        )
     if list_proc is not None and list_proc.returncode == 0:
-        for agent_id in _claude_matching_agent_ids(list_proc.stdout or "", name=_CLAUDE_AGENT_NAME, cwd=cwd):
+        for agent_id in _claude_matching_agent_ids(
+            list_proc.stdout or "", name=_CLAUDE_AGENT_NAME, cwd=cwd
+        ):
             if agent_id not in session_ids:
                 session_ids.append(agent_id)
     if not session_ids:
         return cleanup_status
-    stop_statuses = [f"{agent_id}:{_stop_claude_agent(adapter, agent_id, cwd, env)}" for agent_id in session_ids]
+    stop_statuses = [
+        f"{agent_id}:{_stop_claude_agent(adapter, agent_id, cwd, env)}"
+        for agent_id in session_ids
+    ]
     return "cleanup=" + ",".join(stop_statuses)
 
 
@@ -1288,7 +1468,11 @@ def _assistant_text_from_jsonl(path: Path) -> str:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
         for item in message.get("content") or []:
-            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "text"
+                and isinstance(item.get("text"), str)
+            ):
                 texts.append(item["text"])
     return "\n".join(texts).strip()
 
@@ -1300,9 +1484,13 @@ def _claude_agent_transcript_text(session_id: str, cwd: str) -> str:
     if exact.exists():
         candidates.append(exact)
     candidates.extend(
-        path for path in project_dir.glob(f"{session_id}*.jsonl") if path not in candidates
+        path
+        for path in project_dir.glob(f"{session_id}*.jsonl")
+        if path not in candidates
     )
-    for path in sorted(candidates, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+    for path in sorted(
+        candidates, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True
+    ):
         text = _assistant_text_from_jsonl(path)
         if text:
             return text
@@ -1336,7 +1524,9 @@ def _read_review_output(path: Path) -> str:
         return ""
 
 
-def _terminate_process_group(proc: subprocess.Popen[bytes], *, force_group: bool = False) -> None:
+def _terminate_process_group(
+    proc: subprocess.Popen[bytes], *, force_group: bool = False
+) -> None:
     """Terminate the leg's process group (pgid == proc.pid, launched start_new_session).
 
     Default: no-op once the leader is reaped — the group is presumed empty and its pgid
@@ -1422,6 +1612,7 @@ def _run_leg_with_liveness(
         start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
     )
     if input_text is not None and proc.stdin is not None:
+
         def _feed() -> None:
             try:
                 proc.stdin.write(input_text.encode("utf-8", errors="replace"))
@@ -1459,7 +1650,9 @@ def _run_leg_with_liveness(
                 )
             else:
                 readable = []
-                time.sleep(_LEG_LIVENESS_READ_INTERVAL_S)  # avoid busy-spin when both EOF
+                time.sleep(
+                    _LEG_LIVENESS_READ_INTERVAL_S
+                )  # avoid busy-spin when both EOF
             for fd in readable:
                 try:
                     chunk = os.read(fd, 65536)
@@ -1484,7 +1677,11 @@ def _run_leg_with_liveness(
                 if not open_fds:
                     # clean exit — both pipes drained to EOF.
                     out_s, err_s = _decode()
-                    return _LegRun(proc.returncode if proc.returncode is not None else 0, out_s, err_s)
+                    return _LegRun(
+                        proc.returncode if proc.returncode is not None else 0,
+                        out_s,
+                        err_s,
+                    )
                 # Leader exited but a descendant still holds stdout/stderr open. The leg's
                 # real work is done; reclaim after a short IDLE grace (reset by any late
                 # flush or descendant CPU) instead of burning the wall-clock backstop.
@@ -1493,7 +1690,11 @@ def _run_leg_with_liveness(
                 if time.monotonic() - last_heartbeat >= _LEG_POST_EXIT_GRACE_S:
                     _terminate_process_group(proc, force_group=True)
                     out_s, err_s = _decode()
-                    return _LegRun(proc.returncode if proc.returncode is not None else 0, out_s, err_s)
+                    return _LegRun(
+                        proc.returncode if proc.returncode is not None else 0,
+                        out_s,
+                        err_s,
+                    )
             # (5) stall: silent AND CPU-flat past the threshold while still running.
             elif time.monotonic() - last_heartbeat >= stall_threshold_s:
                 _terminate_process_group(proc)
@@ -1633,7 +1834,10 @@ def _tui_trust_modal_present(screen: str, cwd_tokens: Sequence[str]) -> bool:
     exact directory the harness allocated (never derived from PR/branch content)."""
     if _CLAUDE_TUI_TRUST_HEADER not in screen:
         return False
-    if _CLAUDE_TUI_TRUST_PROMPT not in screen and _CLAUDE_TUI_TRUST_CHOICE not in screen:
+    if (
+        _CLAUDE_TUI_TRUST_PROMPT not in screen
+        and _CLAUDE_TUI_TRUST_CHOICE not in screen
+    ):
         return False
     return any(tok in screen for tok in cwd_tokens) if cwd_tokens else True
 
@@ -1650,7 +1854,9 @@ def _sanitized_pty_tail(terminal_bytes: bytes, max_chars: int = 200) -> str:
     REDACT THE WHOLE TEXT, then keep the FINAL ``max_chars`` — redacting after slicing
     could expose a secret whose key sits just before the cut, and the informative bytes
     (the modal / reject / stall context) live at the END of the buffer."""
-    from .runner import _redacted_stderr_excerpt  # lazy: avoid a panel_invoker<->runner cycle
+    from .runner import (
+        _redacted_stderr_excerpt,
+    )  # lazy: avoid a panel_invoker<->runner cycle
 
     text = terminal_bytes.decode("utf-8", errors="replace")
     text = _ANSI_OSC_RE.sub("", text)
@@ -1672,6 +1878,9 @@ def _run_claude_tui_session(
     mode: str = "review",
     backstop_s: int | None = None,
 ) -> tuple[int, str, str, str]:
+    if fcntl is None or pty is None or termios is None:
+        return 1, "", "claude_tui_unsupported_platform", ""
+
     start_monotonic = time.monotonic()
     start_wall = time.time()
     # Leg-liveness: like the print-mode legs, the claude TUI leg is bounded by heartbeat
@@ -1697,7 +1906,9 @@ def _run_claude_tui_session(
     # incidental CPU. ``seen_tui_lines`` accumulates de-animated visible lines so a
     # wedged TUI's finite animation vocabulary saturates and stops resetting it.
     seen_tui_lines: set[str] = set()
-    tui_carry = bytearray()  # #188 CR: trailing partial line held across os.read boundaries
+    tui_carry = (
+        bytearray()
+    )  # #188 CR: trailing partial line held across os.read boundaries
     last_review_len = 0
     last_transcript_len = 0
     # ah#196/#223 startup state machine: STARTING -> (TRUST_MODAL answered) ->
@@ -1705,18 +1916,23 @@ def _run_claude_tui_session(
     # once, strictly PRE-SUBMIT; gate the paste on editor quiescence AFTER real
     # post-gate output (never on pre-output silence, which would race a late modal).
     detector_armed = True  # trust auto-answer live ONLY until we paste
-    trust_seen = False  # our path-scoped conjunction matched + we answered
     trust_answered = False
     gate_signature_seen = False  # a trust-gate signature appeared (recognized OR not)
     ready_since_output = False  # >=1 novel content event AFTER the gate resolved
     last_novel = start_monotonic
-    cwd_tokens = _cwd_trust_tokens(cwd)  # run-unique FULL-path tokens (not the bare basename)
+    cwd_tokens = _cwd_trust_tokens(
+        cwd
+    )  # run-unique FULL-path tokens (not the bare basename)
 
     def _finish(rc: int, text: str, log: str) -> tuple[int, str, str, str]:
         # Attach a bounded, redacted, control-stripped PTY tail to every NON-OK
         # return so a startup/liveness failure is diagnosable (ah#196/#223); an OK
         # file verdict carries no tail.
-        tail = "" if log == "claude_tui_file_output" else _sanitized_pty_tail(terminal_bytes)
+        tail = (
+            ""
+            if log == "claude_tui_file_output"
+            else _sanitized_pty_tail(terminal_bytes)
+        )
         return rc, text, log, tail
 
     try:
@@ -1758,7 +1974,9 @@ def _run_claude_tui_session(
         while time.monotonic() < deadline:
             novel_this_iter = False  # substantive new content arrived this iteration
             if master_fd is not None:
-                readable, _, _ = select.select([master_fd], [], [], _CLAUDE_TUI_READ_INTERVAL_S)
+                readable, _, _ = select.select(
+                    [master_fd], [], [], _CLAUDE_TUI_READ_INTERVAL_S
+                )
                 if readable:
                     try:
                         chunk = os.read(master_fd, 8192)
@@ -1775,7 +1993,9 @@ def _run_claude_tui_session(
                         # boundaries so a novel line split by ``os.read`` is scanned
                         # WHOLE (only complete lines are evaluated).
                         complete = _tui_take_complete_lines(tui_carry, chunk)
-                        if complete and _tui_chunk_has_novel_content(complete, seen_tui_lines):
+                        if complete and _tui_chunk_has_novel_content(
+                            complete, seen_tui_lines
+                        ):
                             now_novel = time.monotonic()
                             last_heartbeat = now_novel
                             last_novel = now_novel
@@ -1797,8 +2017,11 @@ def _run_claude_tui_session(
                         review_text = _read_review_output(output_file)
                         if _completion_ok(review_text, mode):
                             return _finish(0, review_text, "claude_tui_file_output")
-                        transcript_text = transcript_salvage or _latest_claude_transcript_text(
-                            str(cwd), since=start_wall
+                        transcript_text = (
+                            transcript_salvage
+                            or _latest_claude_transcript_text(
+                                str(cwd), since=start_wall
+                            )
                         )
                         return _finish(
                             proc.poll() or 1,
@@ -1816,11 +2039,17 @@ def _run_claude_tui_session(
                 # while a gate signature is present and UNCLEARED we must NOT arm
                 # readiness (an unrecognized/version-drifted modal must fail CLOSED —
                 # never paste the review into its y/n field, the reproduced bug).
-                if _CLAUDE_TUI_TRUST_HEADER in screen or _CLAUDE_TUI_TRUST_PROMPT in screen:
+                if (
+                    _CLAUDE_TUI_TRUST_HEADER in screen
+                    or _CLAUDE_TUI_TRUST_PROMPT in screen
+                ):
                     gate_signature_seen = True
                 answered_this_iter = False
-                if detector_armed and not trust_answered and _tui_trust_modal_present(screen, cwd_tokens):
-                    trust_seen = True
+                if (
+                    detector_armed
+                    and not trust_answered
+                    and _tui_trust_modal_present(screen, cwd_tokens)
+                ):
                     try:
                         os.write(master_fd, _CLAUDE_TUI_TRUST_ANSWER)
                     except OSError:
@@ -1832,11 +2061,17 @@ def _run_claude_tui_session(
                 # Editor-readiness ARMS on post-gate novel content: only once no gate
                 # signature is blocking (or we cleared it), and never on the modal's own
                 # render (the answer this iteration is excluded).
-                if novel_this_iter and not answered_this_iter and (trust_answered or not gate_signature_seen):
+                if (
+                    novel_this_iter
+                    and not answered_this_iter
+                    and (trust_answered or not gate_signature_seen)
+                ):
                     ready_since_output = True
                 # Our ``y`` was rejected (or a stuck modal): fail closed, typed, before 180s.
                 if trust_answered and _CLAUDE_TUI_TRUST_REJECT in screen:
-                    return _finish(proc.poll() or 1, "", "claude_tui_workspace_trust_blocked")
+                    return _finish(
+                        proc.poll() or 1, "", "claude_tui_workspace_trust_blocked"
+                    )
                 # Readiness deadline, evaluated BEFORE the generic stall so a startup
                 # gate is never mislabeled ``claude_tui_stalled``. A gate signature we
                 # never cleared (unanswered/unrecognized) -> trust_blocked; otherwise
@@ -1862,7 +2097,12 @@ def _run_claude_tui_session(
                 ):
                     detector_armed = False
                     try:
-                        os.write(master_fd, b"\x1b[200~" + prompt.encode("utf-8", errors="replace") + b"\x1b[201~")
+                        os.write(
+                            master_fd,
+                            b"\x1b[200~"
+                            + prompt.encode("utf-8", errors="replace")
+                            + b"\x1b[201~",
+                        )
                         time.sleep(0.5)
                         os.write(master_fd, b"\x1bOM")
                         prompt_sent = True
@@ -1877,7 +2117,9 @@ def _run_claude_tui_session(
                 return _finish(0, review_text, "claude_tui_file_output")
             if now >= next_transcript_check:
                 next_transcript_check = now + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
-                transcript_text = _latest_claude_transcript_text(str(cwd), since=start_wall)
+                transcript_text = _latest_claude_transcript_text(
+                    str(cwd), since=start_wall
+                )
                 # #188: the session transcript growing (tool calls, streamed
                 # messages) is genuine progress even before a file verdict lands.
                 if len(transcript_text) > last_transcript_len:
@@ -1887,11 +2129,15 @@ def _run_claude_tui_session(
                     transcript_salvage = transcript_text
             if proc.poll() is not None:
                 review_text = _read_review_output(output_file)
-                transcript_text = transcript_salvage or _latest_claude_transcript_text(str(cwd), since=start_wall)
+                transcript_text = transcript_salvage or _latest_claude_transcript_text(
+                    str(cwd), since=start_wall
+                )
                 if _completion_ok(review_text, mode):
                     return _finish(0, review_text, "claude_tui_file_output")
                 detail = "claude_tui_missing_canonical_output"
-                return _finish(proc.returncode or 1, review_text or transcript_text, detail)
+                return _finish(
+                    proc.returncode or 1, review_text or transcript_text, detail
+                )
             # #188: NO CPU heartbeat on the TUI path. Unlike the print-mode legs, a
             # Node CLI blocked in ep_poll still trickles libuv/GC CPU, so a CPU-advance
             # reset would keep a genuinely-wedged TUI alive forever (the ~2s-CPU/17-min
@@ -1908,10 +2154,18 @@ def _run_claude_tui_session(
                 transcript_text = transcript_salvage or _latest_claude_transcript_text(
                     str(cwd), since=start_wall
                 )
-                return _finish(proc.poll() or 1, review_text or transcript_text, "claude_tui_stalled")
+                return _finish(
+                    proc.poll() or 1,
+                    review_text or transcript_text,
+                    "claude_tui_stalled",
+                )
         review_text = _read_review_output(output_file)
-        transcript_text = transcript_salvage or _latest_claude_transcript_text(str(cwd), since=start_wall)
-        return _finish(124, review_text or transcript_text, f"timeout after {backstop_s}s")
+        transcript_text = transcript_salvage or _latest_claude_transcript_text(
+            str(cwd), since=start_wall
+        )
+        return _finish(
+            124, review_text or transcript_text, f"timeout after {backstop_s}s"
+        )
     finally:
         if proc is not None:
             _terminate_process_group(proc)
@@ -1922,7 +2176,9 @@ def _run_claude_tui_session(
                 pass
 
 
-def _stop_claude_agent(adapter: ClaudeAgentViewAdapter, session_id: str, cwd: str, env: Mapping[str, str]) -> str:
+def _stop_claude_agent(
+    adapter: ClaudeAgentViewAdapter, session_id: str, cwd: str, env: Mapping[str, str]
+) -> str:
     try:
         proc = subprocess.run(
             adapter.stop_command(session_id),
@@ -1945,7 +2201,14 @@ def _normalize_claude_agent_state(value: object) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_")
     if normalized in {"running", "started", "starting", "active", "working"}:
         return "running"
-    if normalized in {"done", "complete", "completed", "success", "succeeded", "finished"}:
+    if normalized in {
+        "done",
+        "complete",
+        "completed",
+        "success",
+        "succeeded",
+        "finished",
+    }:
         return "done"
     if normalized in {"blocked", "waiting", "needs_input", "permission_required"}:
         return "blocked"
@@ -2000,7 +2263,9 @@ _CLAUDE_LEG_DEFERRED_REASONS: dict[str, str] = {
 }
 
 
-def _claude_leg_deferred_reason(env: Mapping[str, str] | None = None) -> tuple[str, str]:
+def _claude_leg_deferred_reason(
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
     """Return ``(reason_code, detail)`` for a deferred claude leg in this host.
 
     The code is machine-branchable (#125): ``under_claude_code`` when we are
@@ -2155,7 +2420,9 @@ def native_agent_leg_request(
         mode=mode,
         reason=reason,
         detail=detail,
-        instructions=instructions if instructions is not None else _mode_instructions(mode),
+        instructions=instructions
+        if instructions is not None
+        else _mode_instructions(mode),
         verdict_required=verdict_required,
         verdict_contract=(
             _REVIEW_VERDICT_CONTRACT if verdict_required else _ADVISORY_VERDICT_CONTRACT
@@ -2173,7 +2440,9 @@ def _under_claude_code(env: Mapping[str, str] | None = None) -> bool:
     spawn a second Claude TUI). Keyed on CLAUDECODE=1 (the harness's own marker);
     corroborated by CLAUDE_CODE_ENTRYPOINT. Env is injectable for tests."""
     e = os.environ if env is None else env
-    return str(e.get("CLAUDECODE", "")).strip() == "1" or bool(e.get("CLAUDE_CODE_ENTRYPOINT"))
+    return str(e.get("CLAUDECODE", "")).strip() == "1" or bool(
+        e.get("CLAUDE_CODE_ENTRYPOINT")
+    )
 
 
 def _tui_capable(
@@ -2188,7 +2457,11 @@ def _tui_capable(
     genuinely want to know whether the parent is terminal-attached."""
     if _under_claude_code(env):
         return False
-    check = isatty if isatty is not None else (lambda: sys.stdin.isatty() and sys.stdout.isatty())
+    check = (
+        isatty
+        if isatty is not None
+        else (lambda: sys.stdin.isatty() and sys.stdout.isatty())
+    )
     try:
         return check()
     except Exception:
@@ -2207,6 +2480,7 @@ def _exec_claude_tui_leg(
     effort: str | None = None,
     env: Mapping[str, str] | None = None,
     backstop_s: int | None = None,
+    research_seat: ResearchSeatConfig | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -2222,6 +2496,8 @@ def _exec_claude_tui_leg(
     real launch.
     """
     env = _subscription_env(env)
+    if research_seat is not None:
+        env = scrub_research_env(env)
     # A governed Claude seat never falls through to a native Task/subagent. Inside
     # Claude Code the nested self-PTY adapter is unavailable, so fail closed with a
     # typed reason. A caller may retry from a host where the TUI adapter can run.
@@ -2242,7 +2518,13 @@ def _exec_claude_tui_leg(
     output_file = out_dir / "panel-claude.txt"
     prompt = _render_claude_tui_prompt(artifact, review_dir, output_file, mode)
     rc, review_text, log_text, pty_tail = _run_claude_tui_session(
-        command=_claude_tui_command(review_dir, repo_dir or Path.cwd(), model, effort),
+        command=_claude_tui_command(
+            review_dir,
+            repo_dir or Path.cwd(),
+            model,
+            effort,
+            research_seat,
+        ),
         cwd=out_dir,
         prompt=prompt,
         output_file=output_file,
@@ -2272,7 +2554,9 @@ def _exec_claude_tui_leg(
     }
     if log_text in _typed_operational and status != "OK":
         status = "DEGRADED"
-        text = review_text  # real review content only (empty ⇒ governed WARN, not block)
+        text = (
+            review_text  # real review content only (empty ⇒ governed WARN, not block)
+        )
     else:
         text = review_text or log_text
     # R3: preserve the bounded, redacted, control-stripped PTY tail as DIAGNOSABLE
@@ -2318,7 +2602,9 @@ def _exec_claude_agent_view_attempt(
             input=prompt,
         )
     except subprocess.TimeoutExpired as exc:
-        cleanup_status = _cleanup_claude_launch_timeout(adapter, cwd=str(review_dir), env=env, exc=exc)
+        cleanup_status = _cleanup_claude_launch_timeout(
+            adapter, cwd=str(review_dir), env=env, exc=exc
+        )
         return "TIMEOUT", f"timeout after {timeout_s}s; {cleanup_status}"
     except FileNotFoundError:
         return "UNAVAILABLE", "missing_claude_cli"
@@ -2435,6 +2721,7 @@ def _exec_leg(
     env: Mapping[str, str] | None = None,
     *,
     deadline_s: int | None = None,
+    research_seat: ResearchSeatConfig | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -2449,6 +2736,10 @@ def _exec_leg(
     baked into the model string). ``env is None`` keeps ``_subscription_env()``.
     """
     env = _subscription_env() if env is None else dict(env)
+    if research_seat is not None:
+        env = scrub_research_env(env)
+        if leg not in RESEARCH_CAPABLE_LANES:
+            return 1, "", "research_profile_unenforceable"
     # #64: auth preflight BEFORE the expensive leg. A logged-out CLI otherwise
     # fails obliquely (empty-turn, then rate-limit errors) and the panel silently
     # degrades. Fail fast + fail-closed as DEGRADED (the detail carries an auth
@@ -2466,8 +2757,14 @@ def _exec_leg(
     if deadline_s is None:
         timeout_s, deadline_s = _leg_deadline_from(timeout_s, review_dir)
     else:
-        timeout_s = _leg_timeout_for(review_dir) if timeout_s is None else int(timeout_s)
-    artifact = _read_review_output(review_dir / "review-bundle.md") if artifact is None else artifact
+        timeout_s = (
+            _leg_timeout_for(review_dir) if timeout_s is None else int(timeout_s)
+        )
+    artifact = (
+        _read_review_output(review_dir / "review-bundle.md")
+        if artifact is None
+        else artifact
+    )
     prompt = _render_leg_prompt(artifact, review_dir, mode)
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
@@ -2476,13 +2773,30 @@ def _exec_leg(
         codex_effort_args = (
             ("-c", "model_reasoning_effort=xhigh")
             if effort is None
-            else render_seat_invocation("codex", model or DEFAULT_LEG_MODELS["codex"], effort).effort_args
+            else render_seat_invocation(
+                "codex", model or DEFAULT_LEG_MODELS["codex"], effort
+            ).effort_args
         )
         cmd = [
-            "codex", "exec", "--cd", str(review_dir), "--skip-git-repo-check",
-            "--sandbox", "read-only", "--model", model or DEFAULT_LEG_MODELS["codex"],
+            "codex",
+            *(
+                ("--ask-for-approval", "never")
+                if research_seat is not None
+                else ()
+            ),
+            "exec",
+            "--cd",
+            str(review_dir),
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "--model",
+            model or DEFAULT_LEG_MODELS["codex"],
             *codex_effort_args,
-            "--output-last-message", str(out_file), "-",
+            *(codex_mcp_args(research_seat) if research_seat is not None else ()),
+            "--output-last-message",
+            str(out_file),
+            "-",
         ]
         # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
         # NOT retry a hard failure (rc!=0 = rate-limit/error) — that would hammer
@@ -2499,12 +2813,18 @@ def _exec_leg(
                 # final message), so the liveness heartbeat rides stderr. Prompt on
                 # stdin ("-").
                 proc = _run_leg_with_liveness(
-                    cmd, cwd=review_dir, env=env, deadline_s=deadline_s, input_text=prompt,
+                    cmd,
+                    cwd=review_dir,
+                    env=env,
+                    deadline_s=deadline_s,
+                    input_text=prompt,
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
             _elapsed = time.monotonic() - _t0
-            review_text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+            review_text = (
+                out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+            )
             rc = proc.returncode
             # ah#252: codex echoes BOTH the user prompt and its own final message
             # into the stderr transcript (verified empirically against codex-cli
@@ -2533,7 +2853,9 @@ def _exec_leg(
             model or DEFAULT_LEG_MODELS["gemini"]
             if effort is None
             else render_seat_invocation(
-                "gemini", model or "gemini-3.6-flash", effort  # model-id-source: board base default
+                "gemini",
+                model or "gemini-3.6-flash",  # model-id-source: board base default
+                effort,
             ).model
         )
         # BUGFIX: the prompt MUST be passed inline as the ``-p`` argv value, NOT via
@@ -2544,8 +2866,15 @@ def _exec_leg(
         # the small staged-bundle POINTER (files live under --add-dir), so argv length
         # is bounded.
         cmd = [
-            "agy", "--model", gemini_model, "--add-dir", str(review_dir),
-            "--print-timeout", f"{timeout_s}s", "-p", prompt,
+            "agy",
+            "--model",
+            gemini_model,
+            "--add-dir",
+            str(review_dir),
+            "--print-timeout",
+            f"{timeout_s}s",
+            "-p",
+            prompt,
         ]
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
@@ -2563,7 +2892,10 @@ def _exec_leg(
                 # (with a secondary CPU reset covering the ~20s silent "thinking" phase).
                 # Prompt is inline on argv (see the gemini cmd BUGFIX) — no stdin.
                 proc = _run_leg_with_liveness(
-                    cmd, cwd=review_dir, env=env, deadline_s=deadline_s,
+                    cmd,
+                    cwd=review_dir,
+                    env=env,
+                    deadline_s=deadline_s,
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
@@ -2580,7 +2912,10 @@ def _exec_leg(
             # only when the body is too short to be a real review.
             stall = bool(
                 _GEMINI_TRANSIENT_RE.search(log_text)
-                or (len(review_text.strip()) < 200 and _GEMINI_TRANSIENT_RE.search(review_text))
+                or (
+                    len(review_text.strip()) < 200
+                    and _GEMINI_TRANSIENT_RE.search(review_text)
+                )
             )
             if not (soft_empty or stall):
                 break  # real output OR hard non-transient error → stop (never hammer)
@@ -2615,11 +2950,20 @@ def _exec_leg(
         grok_effort_args = render_seat_invocation(
             "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "max"
         ).effort_args
+        grok_tools = GROK_REVIEW_READONLY_TOOLS
         cmd = [
-            "grok", "-p", prompt, "--output-format", "plain",
-            "--cwd", str(review_dir), "-m", model or DEFAULT_LEG_MODELS["grok"],
+            "grok",
+            "-p",
+            prompt,
+            "--output-format",
+            "plain",
+            "--cwd",
+            str(review_dir),
+            "-m",
+            model or DEFAULT_LEG_MODELS["grok"],
             *grok_effort_args,
-            "--tools", GROK_REVIEW_READONLY_TOOLS,
+            "--tools",
+            grok_tools,
         ]
         # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn
         # OR a transient-marker body, but NOT a hard subprocess timeout (124) and NOT
@@ -2632,7 +2976,10 @@ def _exec_leg(
                 # grok streams its plain review to STDOUT; heartbeat rides stdout.
                 # Prompt is inline on argv (-p) — no stdin.
                 proc = _run_leg_with_liveness(
-                    cmd, cwd=review_dir, env=env, deadline_s=deadline_s,
+                    cmd,
+                    cwd=review_dir,
+                    env=env,
+                    deadline_s=deadline_s,
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
@@ -2643,7 +2990,10 @@ def _exec_leg(
             soft_empty = rc == 0 and not review_text.strip()
             stall = bool(
                 _GEMINI_TRANSIENT_RE.search(log_text)
-                or (len(review_text.strip()) < 200 and _GEMINI_TRANSIENT_RE.search(review_text))
+                or (
+                    len(review_text.strip()) < 200
+                    and _GEMINI_TRANSIENT_RE.search(review_text)
+                )
             )
             if not (soft_empty or stall):
                 break
@@ -2666,6 +3016,8 @@ def _default_spawn(
     env: Mapping[str, str] | None = None,
     brief_ref: str | None = None,
     timeout_s: int | None = None,
+    research_seat: ResearchSeatConfig | None = None,
+    brief_append: str | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -2695,8 +3047,11 @@ def _default_spawn(
     out_dir.mkdir()
     try:
         (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
+        resolved_brief = _resolve_brief(mode, brief_ref)
+        if brief_append is not None:
+            resolved_brief += brief_append
         (review_dir / "review-instructions.md").write_text(
-            _resolve_brief(mode, brief_ref), encoding="utf-8"
+            resolved_brief, encoding="utf-8"
         )
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
         # explicit override bounds the leg. This is the ONE place that knows whether the
@@ -2712,6 +3067,8 @@ def _default_spawn(
             extra["effort"] = effort
         if env is not None:
             extra["env"] = env
+        if research_seat is not None:
+            extra["research_seat"] = research_seat
         if leg == "claude":
             return _exec_claude_tui_leg(
                 review_dir,
@@ -2725,8 +3082,15 @@ def _default_spawn(
                 **extra,
             )
         rc, review_text, log_text = _exec_leg(
-            leg, review_dir, out_dir, leg_timeout, artifact, mode, model,
-            deadline_s=leg_deadline, **extra,
+            leg,
+            review_dir,
+            out_dir,
+            leg_timeout,
+            artifact,
+            mode,
+            model,
+            deadline_s=leg_deadline,
+            **extra,
         )
         return _classify_leg(rc, review_text, log_text, mode), review_text
     except Exception as exc:  # fail-closed
@@ -2755,6 +3119,8 @@ def _default_spawn_via_provider(
     env: Mapping[str, str] | None = None,
     brief_ref: str | None = None,
     timeout_s: int | None = None,
+    research_seat: ResearchSeatConfig | None = None,
+    brief_append: str | None = None,
 ) -> tuple[str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
@@ -2770,16 +3136,24 @@ def _default_spawn_via_provider(
         extra["brief_ref"] = brief_ref
     if timeout_s is not None:
         extra["timeout_s"] = timeout_s
+    if research_seat is not None:
+        extra["research_seat"] = research_seat
+    if brief_append is not None:
+        extra["brief_append"] = brief_append
     provider = HomebrewAgentRuntimeProvider(
         spawn=lambda request, register_process=None: _default_spawn(
             leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
         )
     )
     session = provider.create_session(
-        CreateSessionRequest(target_harness=leg, idempotency_key=f"panel-{leg}", title=f"panel-leg-{leg}")
+        CreateSessionRequest(
+            target_harness=leg, idempotency_key=f"panel-{leg}", title=f"panel-leg-{leg}"
+        )
     )
     provider.send_turn(
-        SendTurnRequest(session_id=session.id, idempotency_key=f"panel-{leg}-turn", message=artifact)
+        SendTurnRequest(
+            session_id=session.id, idempotency_key=f"panel-{leg}-turn", message=artifact
+        )
     )
     status, text = "DEGRADED", ""
     for event in provider.read_history(session.id).events:
@@ -2791,7 +3165,9 @@ def _default_spawn_via_provider(
     return status, text
 
 
-def _write_incremental_verdict(review_dir: Path, index: int, result: "PanelLegResult") -> None:
+def _write_incremental_verdict(
+    review_dir: Path, index: int, result: "PanelLegResult"
+) -> None:
     """Write one leg's verdict to ``review_dir`` the moment it lands (streaming).
 
     Best-effort / fail-OPEN: an unwritable ``review_dir`` (missing, read-only, race)
@@ -2826,7 +3202,9 @@ def _write_incremental_verdict(review_dir: Path, index: int, result: "PanelLegRe
         except Exception:
             pass
         logging.getLogger(__name__).warning(
-            "streaming verdict write failed for leg %s", getattr(result, "leg", "?"), exc_info=True
+            "streaming verdict write failed for leg %s",
+            getattr(result, "leg", "?"),
+            exc_info=True,
         )
 
 
@@ -2909,14 +3287,18 @@ def _run_legs_ordered(
                     on_leg_complete(result)
                 except Exception:  # fail-open: a raising callback never breaks the pool
                     logging.getLogger(__name__).warning(
-                        "on_leg_complete callback raised for leg %s", result.leg, exc_info=True
+                        "on_leg_complete callback raised for leg %s",
+                        result.leg,
+                        exc_info=True,
                     )
         # Every future produced a result (run_one is fail-closed). Fail LOUD if a
         # slot stayed None rather than silently shrinking the list — a length change
         # would break the positional ``result[i] ↔ items[i]`` contract worse than a
         # crash would.
         if any(r is None for r in results):
-            raise RuntimeError("streaming fan-out lost a leg result (positional contract broken)")
+            raise RuntimeError(
+                "streaming fan-out lost a leg result (positional contract broken)"
+            )
         return cast("list[PanelLegResult]", results)
 
 
@@ -2936,6 +3318,7 @@ def invoke_panel(
     timeouts_by_leg: Mapping[str, int] | None = None,
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     stream_dir: Path | str | None = None,
+    research_policy: ResearchPolicy | None = None,
 ) -> PanelResult:
     """Run the requested panel legs through the spawn boundary, fail-closed.
 
@@ -2999,14 +3382,110 @@ def invoke_panel(
     # #114 TRUE by-reference: append a path+metadata manifest (NEVER file contents).
     # Applied AFTER the inline-size warn so the manifest never trips it. No
     # context_refs ⇒ artifact byte-for-byte (golden-neutral).
-    artifact = _apply_context_refs(artifact, context_refs, soft_warn=context_refs_soft_warn)
+    artifact = _apply_context_refs(
+        artifact, context_refs, soft_warn=context_refs_soft_warn
+    )
     leg_models = dict(models or {})
     leg_timeouts = dict(timeouts_by_leg or {})
+    effective_research = research_policy or ResearchPolicy()
+    if effective_research.enabled:
+        if spawn is not None:
+            return PanelResult(
+                legs=tuple(
+                    _research_unavailable_result(
+                        leg=leg,
+                        seat_key=leg,
+                        detail="research_profile_unenforceable",
+                    )
+                    for leg in legs
+                )
+            )
+        try:
+            research_run = materialize_research_run(
+                effective_research,
+                [(leg, leg) for leg in legs],
+            )
+        except ResearchUnavailable as exc:
+            detail = f"research_profile_unavailable:{exc}"
+            return PanelResult(
+                legs=tuple(
+                    _research_unavailable_result(
+                        leg=leg,
+                        seat_key=leg,
+                        detail=detail,
+                    )
+                    for leg in legs
+                )
+            )
+
+        def _run_research_leg(item: tuple[int, str]) -> PanelLegResult:
+            index, leg = item
+            config = research_run.seats[index]
+            if leg not in RESEARCH_CAPABLE_LANES:
+                return _research_unavailable_result(
+                    leg=leg,
+                    seat_key=leg,
+                    detail="research_profile_unenforceable",
+                )
+            try:
+                status, text = _default_spawn_via_provider(
+                    leg,
+                    artifact,
+                    repo_dir=repo_dir,
+                    mode=mode,
+                    model=leg_models.get(leg),
+                    brief_ref=brief_ref,
+                    timeout_s=leg_timeouts.get(leg),
+                    research_seat=config,
+                    brief_append=research_instructions(config),
+                )
+            except Exception as exc:
+                result = PanelLegResult(
+                    leg=leg,
+                    status="DEGRADED",
+                    text="",
+                    detail=str(exc)[:200],
+                )
+            else:
+                try:
+                    status = normalize_leg_status(status)
+                except ValueError:
+                    status = "DEGRADED"
+                if status == "OK" and not str(text).strip():
+                    status = "EMPTY"
+                text_value = str(text)
+                detail = None
+                if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
+                    detail, text_value = text_value, ""
+                result = PanelLegResult(
+                    leg=leg,
+                    status=status,
+                    text=text_value,
+                    detail=detail,
+                )
+            return _finalize_research_result(result, config)
+
+        try:
+            research_results = _run_legs_ordered(
+                list(enumerate(legs)),
+                _run_research_leg,
+                max_concurrency=max_concurrency,
+                on_leg_complete=on_leg_complete,
+                review_dir=Path(stream_dir) if stream_dir is not None else None,
+            )
+            return PanelResult(legs=tuple(research_results))
+        finally:
+            research_run.close()
     if spawn is None:
+
         def runner(leg: str, panel_artifact: str) -> tuple[str, str]:
             return _default_spawn_via_provider(
-                leg, panel_artifact, repo_dir=repo_dir, mode=mode,
-                model=leg_models.get(leg), brief_ref=brief_ref,
+                leg,
+                panel_artifact,
+                repo_dir=repo_dir,
+                mode=mode,
+                model=leg_models.get(leg),
+                brief_ref=brief_ref,
                 timeout_s=leg_timeouts.get(leg),
             )
     else:
@@ -3019,7 +3498,9 @@ def invoke_panel(
         try:
             status, text = runner(leg, artifact)
         except Exception as exc:
-            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200])
+            return PanelLegResult(
+                leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]
+            )
         try:
             status = normalize_leg_status(status)
         except ValueError:
@@ -3033,7 +3514,9 @@ def invoke_panel(
         return PanelLegResult(leg=leg, status=status, text=text_value, detail=detail)
 
     results = _run_legs_ordered(
-        list(legs), _run_leg, max_concurrency=max_concurrency,
+        list(legs),
+        _run_leg,
+        max_concurrency=max_concurrency,
         on_leg_complete=on_leg_complete,
         review_dir=Path(stream_dir) if stream_dir is not None else None,
     )
@@ -3048,6 +3531,7 @@ def invoke_panel_request(
     mode: str = "review",
     models: Mapping[str, str] | None = None,
     max_concurrency: int | None = None,
+    research_policy: ResearchPolicy | None = None,
 ) -> PanelResult:
     """Run a panel from a ``PanelRequest`` value object (documented skill entry point).
 
@@ -3072,6 +3556,9 @@ def invoke_panel_request(
     threaded through so the value object is a complete entry point (they were
     previously declared-but-inert on the request).
     """
+    effective_research = _effective_research_policy(
+        request.research_policy, research_policy
+    )
     return invoke_panel(
         request.artifact,
         request.legs,
@@ -3083,7 +3570,10 @@ def invoke_panel_request(
         artifact_ref=request.artifact_ref,
         context_refs=request.context_refs,
         context_refs_soft_warn=request.context_refs_soft_warn,
-        timeouts_by_leg=dict(request.timeout_seconds_by_leg) if request.timeout_seconds_by_leg else None,
+        timeouts_by_leg=dict(request.timeout_seconds_by_leg)
+        if request.timeout_seconds_by_leg
+        else None,
+        research_policy=effective_research,
     )
 
 
@@ -3144,7 +3634,9 @@ def _resolve_and_validate_board(board: Board, matrix: CompatibilityMatrix) -> Bo
     resolved: list[Seat] = []
     for seat in board.seats:
         verdict = validate_seat(seat, matrix)
-        resolved.append(seat if seat.harness else replace(seat, harness=verdict.harness))
+        resolved.append(
+            seat if seat.harness else replace(seat, harness=verdict.harness)
+        )
     return replace(board, seats=tuple(resolved))
 
 
@@ -3175,16 +3667,27 @@ def _route_omnigent_seat(
         return skip(seat, leg, f"skip: harness {leg!r} not in live Omnigent catalog")
     try:
         outcome = omnigent.run_seat(
-            seat, artifact, base_env=base_env,
+            seat,
+            artifact,
+            base_env=base_env,
             allow_api_key_fallback=board.allow_api_key_fallback,
         )
     except OmnigentGatewayUnavailable:
         return skip(seat, leg, "skip: omnigent gateway unavailable")
     except ValueError as exc:  # never-silent-key
-        return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
+        return PanelLegResult(
+            leg=leg,
+            status="DEGRADED",
+            text="",
+            detail=str(exc)[:200],
+            seat_key=seat.seat_key,
+        )
     return PanelLegResult(
-        leg=leg, status=outcome.status, text=outcome.text,
-        detail=outcome.detail or None, seat_key=seat.seat_key,
+        leg=leg,
+        status=outcome.status,
+        text=outcome.text,
+        detail=outcome.detail or None,
+        seat_key=seat.seat_key,
     )
 
 
@@ -3209,6 +3712,7 @@ def invoke_board(
     timeouts_by_leg: Mapping[str, int] | None = None,
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     stream_dir: Path | str | None = None,
+    research_policy: ResearchPolicy | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -3277,6 +3781,9 @@ def invoke_board(
     can reconcile as seats return; the consolidated ``PanelResult`` stays in seat
     order. Both ``None`` (default) is the byte-identical historical path.
     """
+    effective_research = _effective_research_policy(
+        board.research_policy, research_policy
+    )
     if mode is None:
         mode = _mode_for_purpose(board.purpose)
     if mode not in PANEL_MODES:
@@ -3289,7 +3796,9 @@ def invoke_board(
     _maybe_warn_inline_size(artifact, from_ref=artifact_ref is not None)
     # #114 TRUE by-reference manifest (path+metadata ONLY, never file contents);
     # applied after the inline-size warn. No context_refs ⇒ byte-for-byte (golden).
-    artifact = _apply_context_refs(artifact, context_refs, soft_warn=context_refs_soft_warn)
+    artifact = _apply_context_refs(
+        artifact, context_refs, soft_warn=context_refs_soft_warn
+    )
     leg_timeouts = dict(timeouts_by_leg or {})
     observer = BoardObserver(sink, board_name=board.name) if sink is not None else None
     # Tri-state gateway availability + a SINGLE catalog fetch. ``catalog_harnesses``
@@ -3302,7 +3811,11 @@ def invoke_board(
         seat.backing == BACKING_OMNIGENT and not _claude_tui_policy_model(seat.model)
         for seat in board.seats
     )
-    if omnigent is not None and gateway_available is not False and routable_omnigent_seat:
+    if (
+        omnigent is not None
+        and gateway_available is not False
+        and routable_omnigent_seat
+    ):
         try:
             omnigent_catalog = omnigent.catalog_harnesses()
             if gateway_available is None:
@@ -3315,18 +3828,33 @@ def invoke_board(
     # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
     # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
     board = _resolve_and_validate_board(board, matrix or default_matrix(env=base_env))
-    enforce_native_host_leg(board, host)
+    host_seat = enforce_native_host_leg(board, host)
     env_source: Mapping[str, str] = os.environ if base_env is None else base_env
+    research_run: ResearchRunConfig | None = None
+    research_unavailable_detail: str | None = None
+    if effective_research.enabled:
+        try:
+            research_run = materialize_research_run(
+                effective_research,
+                [((seat.harness or "").lower(), seat.seat_key) for seat in board.seats],
+                env=env_source,
+            )
+        except ResearchUnavailable as exc:
+            research_unavailable_detail = f"research_profile_unavailable:{exc}"
 
     def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
         return PanelLegResult(
-            leg=leg, status="UNAVAILABLE", text="", detail=detail, seat_key=seat.seat_key
+            leg=leg,
+            status="UNAVAILABLE",
+            text="",
+            detail=detail,
+            seat_key=seat.seat_key,
         )
 
     if observer is not None:
         observer.board_started()
 
-    def _run_seat(seat: Seat) -> PanelLegResult:
+    def _run_seat(item: Seat | tuple[int, Seat]) -> PanelLegResult:
         # The full per-seat body — backing decision → skip / omnigent / homebrew →
         # render + resolve_seat_env → spawn → normalize — runs INSIDE the pool task,
         # so both the skip decisions and the spawn happen concurrently per seat. It
@@ -3338,7 +3866,32 @@ def invoke_board(
         #
         # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
         # runs on its default lane instead of skipping on an empty ('') lane.
+        if effective_research.enabled:
+            index, seat = cast("tuple[int, Seat]", item)
+        else:
+            index, seat = -1, cast(Seat, item)
         leg = (seat.harness or "").lower()
+        research_seat: ResearchSeatConfig | None = None
+        if effective_research.enabled:
+            if research_unavailable_detail is not None or research_run is None:
+                return _research_unavailable_result(
+                    leg=leg,
+                    seat_key=seat.seat_key,
+                    detail=research_unavailable_detail
+                    or "research_profile_unavailable",
+                )
+            research_seat = research_run.seats[index]
+            if (
+                spawn is not None
+                or seat.backing != BACKING_HOMEBREW
+                or leg not in RESEARCH_CAPABLE_LANES
+                or (host_seat is not None and seat == host_seat)
+            ):
+                return _research_unavailable_result(
+                    leg=leg,
+                    seat_key=seat.seat_key,
+                    detail="research_profile_unenforceable",
+                )
         if (
             leg == "claude"
             and _claude_tui_policy_model(seat.model)
@@ -3360,13 +3913,31 @@ def invoke_board(
             # the seat routes through Omnigent v0.4.0 iff the LIVE catalog reports
             # its harness (the DISTINCT dynamic cursor/amp gate).
             if omnigent is None:
-                return _skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)")
+                return _skip(
+                    seat,
+                    leg,
+                    f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)",
+                )
             return _route_omnigent_seat(
-                omnigent, omnigent_catalog or frozenset(), seat, leg, artifact, env_source, board, _skip)
+                omnigent,
+                omnigent_catalog or frozenset(),
+                seat,
+                leg,
+                artifact,
+                env_source,
+                board,
+                _skip,
+            )
         if decision.backing != BACKING_HOMEBREW:
-            return _skip(seat, leg, f"skip: backing {decision.backing!r} not served by homebrew")
+            return _skip(
+                seat, leg, f"skip: backing {decision.backing!r} not served by homebrew"
+            )
         if leg not in _HOMEBREW_LANES:
-            return _skip(seat, leg, f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)")
+            return _skip(
+                seat,
+                leg,
+                f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)",
+            )
         # Render effort (proves the mapping is frozen for this lane) + resolve the
         # actively-scrubbed env BEFORE spawning. A breadth lane raises
         # EffortMappingError → skip; a never-silent-key violation raises ValueError
@@ -3379,18 +3950,48 @@ def invoke_board(
         except EffortMappingError as exc:
             return _skip(seat, leg, f"skip: {exc}")
         except ValueError as exc:  # never-silent-key
-            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
+            return PanelLegResult(
+                leg=leg,
+                status="DEGRADED",
+                text="",
+                detail=str(exc)[:200],
+                seat_key=seat.seat_key,
+            )
         try:
             if spawn is not None:
                 status, text = spawn(leg, artifact)
             else:
+                research_extra: dict[str, object] = {}
+                if research_seat is not None:
+                    research_extra["research_seat"] = research_seat
+                    research_extra["brief_append"] = research_instructions(
+                        research_seat
+                    )
                 status, text = _default_spawn_via_provider(
-                    leg, artifact, repo_dir=repo_dir, mode=mode,
-                    model=seat.model, effort=seat.effort, env=seat_env,
-                    brief_ref=brief_ref, timeout_s=leg_timeouts.get(leg),
+                    leg,
+                    artifact,
+                    repo_dir=repo_dir,
+                    mode=mode,
+                    model=seat.model,
+                    effort=seat.effort,
+                    env=seat_env,
+                    brief_ref=brief_ref,
+                    timeout_s=leg_timeouts.get(leg),
+                    **research_extra,
                 )
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
-            return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200], seat_key=seat.seat_key)
+            result = PanelLegResult(
+                leg=leg,
+                status="DEGRADED",
+                text="",
+                detail=str(exc)[:200],
+                seat_key=seat.seat_key,
+            )
+            return (
+                _finalize_research_result(result, research_seat)
+                if research_seat is not None
+                else result
+            )
         try:
             status = normalize_leg_status(status)
         except ValueError:
@@ -3439,30 +4040,47 @@ def invoke_board(
                 seat_key=seat.seat_key,
                 effort=seat.effort,
                 lens=seat.lens,
-                artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
+                artifact_ref=str(artifact_ref)
+                if isinstance(artifact_ref, str)
+                else None,
                 brief_ref=str(brief_ref) if isinstance(brief_ref, str) else None,
                 instructions=effective_instructions,
             )
             # CR F2: attach post-creation (non-field) so asdict/golden can't see it.
             attach_native_agent_request(result, request)
-        return result
+        return (
+            _finalize_research_result(result, research_seat)
+            if research_seat is not None
+            else result
+        )
 
     # Fan the seats out concurrently (parallel by default; max_concurrency=1 →
     # sequential); results come back in SEAT ORDER (positional re-key + golden
     # order/content assertions depend on it). ``on_leg_complete`` / ``stream_dir``
     # (opt-in, REVIEWGOV IF-0-REVIEWGOV-2) deliver each seat's verdict as it lands;
     # both ``None`` (default) keeps the byte-identical ordered path (golden intact).
-    results = _run_legs_ordered(
-        list(board.seats), _run_seat, max_concurrency=max_concurrency,
-        on_leg_complete=on_leg_complete,
-        review_dir=Path(stream_dir) if stream_dir is not None else None,
+    items: list[Seat] | list[tuple[int, Seat]] = (
+        list(enumerate(board.seats))
+        if effective_research.enabled
+        else list(board.seats)
     )
-    # Observability emit is a SEPARATE pass over the (unchanged) run results, in
-    # seat order — 1 result per seat — so the run control-flow above is untouched
-    # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.
-    if observer is not None:
-        for seat, result in zip(board.seats, results):
-            observer.seat_started(seat)
-            observer.seat_result(seat, result)
-        observer.board_completed(results)
-    return PanelResult(legs=tuple(results))
+    try:
+        results = _run_legs_ordered(
+            items,
+            _run_seat,
+            max_concurrency=max_concurrency,
+            on_leg_complete=on_leg_complete,
+            review_dir=Path(stream_dir) if stream_dir is not None else None,
+        )
+        # Observability emit is a SEPARATE pass over the (unchanged) run results, in
+        # seat order — 1 result per seat — so the run control-flow above is untouched
+        # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.
+        if observer is not None:
+            for seat, result in zip(board.seats, results):
+                observer.seat_started(seat)
+                observer.seat_result(seat, result)
+            observer.board_completed(results)
+        return PanelResult(legs=tuple(results))
+    finally:
+        if research_run is not None:
+            research_run.close()

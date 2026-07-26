@@ -8,15 +8,15 @@ enforcement is live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.10`
-- Runtime `phase_loop_runtime.__version__`: `0.7.10`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.10`
+- Version: `0.7.13`
+- Runtime `phase_loop_runtime.__version__`: `0.7.13`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.13`
 - Console scripts: `phase-loop`, `codex-phase-loop`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.10`
+- Validator version: `0.7.13`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -45,12 +45,12 @@ enforcement is live.
 
 ## Package Surface Inventory
 
-- Wheel artifact: `phase_loop_runtime-0.7.10-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.10.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.10.data`, `phase_loop_runtime-0.7.10.dist-info`
-- Wheel file count: 422
+- Wheel artifact: `phase_loop_runtime-0.7.13-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.13.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.13.data`, `phase_loop_runtime-0.7.13.dist-info`
+- Wheel file count: 430
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: 901
+- Sdist file count: 941
 - Wheel entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
@@ -58,7 +58,7 @@ enforcement is live.
 
 Governed-pipeline should consume this runtime as an authoritative validator only
 after a maintainer publishes or pins it. Pin the released package
-`phase-loop-runtime==0.7.10`, then call:
+`phase-loop-runtime==0.7.13`, then call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \

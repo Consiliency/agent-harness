@@ -6,6 +6,43 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-07-26
+
+### Native Windows import safety (Consiliency/agent-harness#327)
+
+- The phase-loop CLI entrypoint now imports on native Windows by treating the
+  POSIX PTY stack as optional at module load time.
+- Claude remains subscription-TUI-only; hosts without the POSIX PTY stack return
+  `claude_tui_unsupported_platform` and never fall back to an API or native Task.
+- `0.7.12` was not published because tag/version validation rejected the release
+  before build or upload.
+
+## [0.7.11] - 2026-07-26
+
+### Governed advisor research through PMCP (Consiliency/agent-harness#310)
+
+- Advisor boards can opt into `ResearchPolicy(enabled=True)` or
+  `research_enabled = true`; disabled boards retain their existing result and
+  launch behavior.
+- Research requires the exact published `pmcp==1.20.0`
+  `scoped_advisor_audit.v1` capability, creates unique per-seat lock/audit paths,
+  and exposes only health/catalog/describe/invoke for Firecrawl and Bright Data
+  research tools. Mutation tools, resources, prompts, and ambient MCP servers are
+  absent or denied.
+- Codex and Claude subscription TUI receive strict run-local PMCP config. Codex
+  native web search/apps are disabled, and Claude pre-approves only the four PMCP
+  controls in its authoritative brief. Gemini/agy, Grok, Omnigent, native-host,
+  and custom-spawn research seats fail closed
+  as `research_profile_unenforceable`. Claude remains TUI-only with no API, SDK,
+  direct-HTTP, gateway, or native Task fallback.
+- Seat research status is reduced from PMCP's completed correlated audit rather
+  than model prose. Observability carries only status and ledger/audit digests;
+  source references are hashed and raw queries, results, and credentials are not
+  retained.
+- An opt-in live board test proves one real subscription Codex seat successfully
+  calls both Firecrawl and Bright Data and receives a policy denial for an
+  attempted GitHub mutation.
+
 ### Role-aware model and effort defaults (Consiliency/agent-harness#310)
 
 - Roadmap and plan authoring now use Claude Opus 5 through the `planner`/heavy
