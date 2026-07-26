@@ -6,6 +6,7 @@ gemini-heavy preview/volatile marker, and the role→tier + supervise bindings.
 Also asserts the PIN-ONLY invariant (no floating aliases in the matrix).
 """
 import unittest
+from pathlib import Path
 
 from phase_loop_runtime.models import MODEL_TIERS
 from phase_loop_runtime.profiles import (
@@ -269,6 +270,19 @@ class TierLiveWiringTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             _gemini_cli_model("gemini-9.9-imaginary")
+
+    def test_gemini_launcher_preserves_opaque_override_with_policy_effort(self):
+        """Non-dotfiles boundary proof for the real agy command builder."""
+        from phase_loop_runtime.launcher import build_gemini_command
+        from phase_loop_runtime.models import ModelSelection
+
+        command = build_gemini_command(
+            Path("/repo"),
+            ModelSelection(profile="review", model="gpt-5-codex", effort="high"),
+            action="review",
+            context_file="X",
+        )
+        self.assertEqual(command[command.index("--model") + 1], "gpt-5-codex")
 
     def test_grok_tier_ids_are_cli_passthrough_safe(self):
         # grok passes -m verbatim; the tier ids must be plain -m-safe tokens. grok's
