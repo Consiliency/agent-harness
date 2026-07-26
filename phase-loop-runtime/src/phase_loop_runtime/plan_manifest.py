@@ -562,6 +562,12 @@ def phase_status_disagreements(
     without a repo.
     """
     out: list[tuple[str, str, str]] = []
+    _alias_counts: dict[str, int] = {}
+    for e in entries:
+        a = getattr(e, "phase_alias", None)
+        if a:
+            _alias_counts[a] = _alias_counts.get(a, 0) + 1
+    _ambiguous_aliases = {a for a, n in _alias_counts.items() if n > 1}
     for entry in entries:
         alias = getattr(entry, "phase_alias", None)
         if not alias or alias not in snapshot_phases:
@@ -569,7 +575,17 @@ def phase_status_disagreements(
         if roadmap_slug is not None:
             ref = getattr(entry, "roadmap_ref", None)
             ref_slug = getattr(ref, "slug", None) if ref else None
-            if ref_slug is not None and ref_slug != roadmap_slug:
+            if ref_slug is not None:
+                if ref_slug != roadmap_slug:
+                    continue
+            elif _ambiguous_aliases and alias in _ambiguous_aliases:
+                # CR: legacy entries carry `roadmap_ref: null` (6 exist today, all from
+                # v4). Admitting them keeps the signal for a legitimately-associated entry
+                # whose frontmatter is missing — but if the SAME alias appears more than
+                # once in the manifest we cannot tell which roadmap it belongs to, and
+                # reporting it would name a phase from a DIFFERENT roadmap as contradicting
+                # the active one. That is actively misleading, so require positive
+                # association in exactly that ambiguous case.
                 continue
         snap = snapshot_phases[alias]
         man = getattr(entry, "status", "")

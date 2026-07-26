@@ -127,3 +127,23 @@ def test_status_output_surfaces_the_disagreement(monkeypatch, tmp_path):
     out = render.render_status(_Snap())
     assert "STATE DISAGREEMENT" in out, "render_status did not surface the contradiction"
     assert "FREEZE" in out and "executing" in out and "completed" in out
+
+
+def test_null_roadmap_ref_is_admitted_when_the_alias_is_unambiguous():
+    """Legacy entries carry `roadmap_ref: null` (6 exist in the real manifest). If the
+    alias appears once, admitting it preserves the signal for an entry whose frontmatter
+    is merely missing."""
+    e = _entry("FREEZE", "completed")           # no roadmap_ref
+    out = phase_status_disagreements({"FREEZE": "executing"}, [e],
+                                     roadmap_slug="phase-plans-convergence-v1")
+    assert out == [("FREEZE", "executing", "completed")]
+
+
+def test_null_roadmap_ref_is_skipped_when_the_alias_is_ambiguous():
+    """CR: if the same alias appears more than once with no roadmap_ref, we cannot tell
+    which roadmap it belongs to — reporting it would name a phase from a DIFFERENT
+    roadmap as contradicting the active one, which is actively misleading."""
+    dupes = [_entry("FREEZE", "completed"), _entry("FREEZE", "executing")]
+    out = phase_status_disagreements({"FREEZE": "executing"}, dupes,
+                                     roadmap_slug="phase-plans-convergence-v1")
+    assert out == []
