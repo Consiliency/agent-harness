@@ -326,3 +326,64 @@ mandatory.
       the known `test_task_message_resolver::test_control_socket_...`.
 - [ ] ah#294 is filed as a separate design-track issue referencing Part B; this PR does not touch
       `_classify_dirty_paths` / `goal_coverage`.
+
+---
+
+## CR AMENDMENT — 2026-07-26 (codex DISAGREE, grok PARTIALLY AGREE)
+
+**Part A is NOT executable as written.** Both legs endorse SPLITTING #294 into a separate
+authorization-design track, and endorse Part A as the right size for one PR. The
+following are normative.
+
+### B1 (BLOCKING, both legs independently) — A2 guards the WRONG branch
+Real interrupts return a NONZERO return code, so `result.failed` (`runner.py:3570`)
+persists `blocked` BEFORE the proposed `if launch_contract_blocker` guard
+(`runner.py:3632`) is ever reached. Followed literally, the fix does nothing.
+**Required:** factor ONE shared "maybe preserve prior trusted terminal instead of writing
+blocked" helper and call it from BOTH clobber sites (`if result.failed:` AND
+`if launch_contract_blocker:`), before any blocked-terminal persist.
+**Required test:** a realistic interrupted `LaunchResult` with `interrupted=True` AND a
+non-zero returncode (e.g. `-15`); assert persisted state stays
+`awaiting_phase_closeout`/`passed`. Same shape for the negative case.
+Also thread `head_before` on `_DispatchPrep` beside `pre_launch_dirty_paths`.
+
+### B2 (BLOCKING) — the "byte-level no-change proof" is UNSOUND
+`_dirty_paths` (`runner.py:8362`) records only path NAMES and converts probe failure to
+`[]` (`except Exception: return []` — verified verbatim). A repair can modify or restage
+an ALREADY-dirty path while preserving both the path set and HEAD, so stale `passed`
+evidence survives. A failed git probe also reads as CLEAN.
+**Required:** a fail-closed content/index fingerprint, a same-path-content mutation test,
+and NEVER preserve when `process_alive_after_cleanup` is true.
+
+### B3 (BLOCKING) — the lineage marker never reaches production spawning
+`launch_with_spec` (`launcher.py:1944`) supplies no lineage to `launch`, and `launch`
+(`launcher.py:2259`) calls `child_executor_env()` without one. Changing
+`harness_env_signatures.py` alone CANNOT satisfy the acceptance criterion.
+**Required:** include the launcher seam; add a test proving the actual executor
+subprocess receives the marker.
+
+### B4 (BLOCKING) — lease identity is collision-prone
+The proposed lease file is keyed only by phase, and the env marker only by repo+phase,
+while repair identity includes the roadmap. Dispatch locks are explicitly roadmap-scoped
+(`dispatch_lock.py:235`). Two roadmaps sharing an alias can overwrite/delete each other's
+lease or falsely block a legitimate first repair.
+**Required:** key BOTH signals by canonical repo+roadmap+phase; make release
+ownership-token-safe; add a cross-roadmap regression test. Wrap lease acquisition in
+`try`/`finally` — a missed release on a live P0 masks later repairs.
+
+### B5 (BLOCKING, mine) — `_classify_dirty_paths` call sites are unenumerated
+The #294 fix is "thread the amendment record into the classifier the same way
+`terminal_summary` is threaded" — a SIGNATURE change. `_classify_dirty_paths` has **8**
+call sites in runner.py (4269, 4309, 4336, 4362, 4406, 7018, 7064, 10367; def 8482) and
+the plan enumerates NONE. This is the repo's most frequent defect class.
+**Required (on the #294 split):** enumerate all 8 and add a test that fails if any one is
+left unthreaded.
+
+### Endorsed as written
+A3 prompt hardening is correctly located in `prompts.py` (runtime-owned), not skills-src;
+"verify before editing skills" is right; do NOT test prompt text. Repair dispatch has a
+single assignment site. Part B stays design-only, out of the PR.
+
+### Anchor re-grounding
+DRIFTED: `_launch_contract_blocker` call **3569**, def **8037** (plan cited 3717);
+`_classify_dirty_paths` def **8482** (plan cited 8350-8471). Re-locate by symbol.

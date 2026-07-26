@@ -366,3 +366,67 @@ To prove each regression bites: run the new tests on the pre-change tree (Change
       assert OFF; the flip is a separate diff (Change C) landing only after #299.
 - [ ] `PYTHONPATH=src:tests python3 -m pytest -q -m "not dotfiles_integration"` shows no new failures beyond
       the known pre-existing `test_task_message_resolver::test_control_socket_...`.
+
+---
+
+## CR AMENDMENT — 2026-07-26 (codex DISAGREE, grok PARTIALLY AGREE)
+
+**This plan is NOT executable as written.** Board: codex DISAGREE, grok PARTIALLY AGREE,
+gemini unavailable (ah#335). The architecture, A/B/C split, and flip-after-#299 sequencing
+are endorsed. The following are normative and must be satisfied before execution.
+
+### A1 (BLOCKING) — the `sequence >= 2` baseline does not close the fail-open
+The plan calls `admit()` and THEN checks `sequence >= 2`. But `admit()` durably appends
+sequence 1 *inside* the call (`admission.py:37`). A replacement PR head therefore produces
+a different idempotency key at epoch 2, appends sequence 2, and is ACCEPTED although no
+publish ever occurred — a poison-record retry exploit. The proposed single-call
+empty-store test cannot see this.
+**Required:** validate the baseline ATOMICALLY BEFORE any mutation, and require a prior
+publish for the exact repo/node — not merely "any earlier record".
+**Required test:** two-attempt / poison-record case (empty store, second distinct key).
+
+### A2 (BLOCKING) — equal-epoch conflicting re-admissions are admissible
+`admission.py:45-49` deduplicates first, then rejects only `lease_epoch < max(...)`. A
+DIFFERENT request at the CURRENT epoch is accepted, contradicting this plan's "strictly
+above" M3 contract. Because identical resumes already return during deduplication,
+rejecting `<= max` for non-deduplicated requests does NOT break resume idempotency.
+**Required test:** same-epoch / different-head regression.
+
+### A3 (BLOCKING) — the exception flow does not implement the fail-closed contract
+`readmit_advanced_head` propagates `PermissionError` / `ValueError`, but the proposed seam
+inspects only a returned result and `_fab_delta_readmit` handles only `None`. M3/M5
+therefore escape to `run_train`'s broad handler (`train_runner.py:3081-3091`) instead of
+recovering provenance and returning `None`.
+**Required:** catch those exceptions AT THE READMISSION BOUNDARY, run admitted-prefix
+recovery, return `None`.
+
+### A4 (BLOCKING) — verification cannot see a missing production binding
+Every Change-B test invokes `_fab_delta_readmit` directly, and the existing merge-loop
+test STUBS it (`test_fab_activation_promotion.py:1321` — verified). So omitting or
+misbinding the real `coordinator_runtime.broker_client` call site would pass every planned
+test while the activated feature never works. No M5 conflicting-key test exists despite
+the plan claiming M5 coverage.
+**Required:** a `run_train` integration test through the REAL default seam with
+file-backed broker stores, whose mutation is "remove the call-site binding". Plus the
+missing M5 test.
+
+### A5 (BLOCKING, grok) — existing tests break closed
+`tests/test_fab_delta_consumer.py` makes **14** direct `_fab_delta_readmit(...)` calls and
+**0** pass `broker_admit_fn` (verified). After M1 (`None` => fail closed) every current
+happy path breaks.
+**Required:** the plan must specify injecting a permitting seam into those existing
+success tests WITHOUT weakening production M1.
+
+### A6 (REQUIRED, grok) — pin the resume epoch
+State explicitly: idempotent resume uses the epoch of the ALREADY-FINALIZED delta for
+`live_head_sha`, NOT `max(chain)+1` — otherwise resume invents a new admission epoch and
+breaks admit idempotency.
+
+### Non-blocking
+Upgrade the node-scoped prior-publish "MAY" to a requirement on multi-node per-repo
+stores. Specify `attempt_id` encoding with explicit delimiters. M3 prose says "not
+strictly above"; the store rejects only `< max`.
+
+### Anchor re-grounding
+`convergence/broker/admission.py:23-56` VERIFIED EXACT. runner.py call-site anchors have
+drifted ~100 lines (that file absorbed the #324/#325/#326 merges) — re-locate by symbol.

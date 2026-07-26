@@ -319,3 +319,62 @@ From `phase-loop-runtime/`:
   plan artifacts without flipping the env flag, but the flag still conflates "child leaves dirty work" with
   "which transport." A follow-up could choose transport per-child from the child's actual worktree state
   (committed vs. dirty) rather than a global env flag, retiring the flag. Out of scope here.
+
+---
+
+## CR AMENDMENT — 2026-07-26 (codex DISAGREE, grok PARTIALLY AGREE)
+
+**This plan is NOT executable as written.** The declared-kind diagnosis for #301 defect 1
+is sound and endorsed. Clustering #301+#300 is endorsed. The following are normative.
+
+### A1 (BLOCKING, both legs) — #300's preserve path is a FALSE safety net
+`teardown_phase_worktree` (`phase_worktree_executor.py:418`) ALWAYS force-removes the
+worktree; `delete_branch=False` preserves only the branch REF. Because the plan explicitly
+skips `transfer_phase_worktree_dirty` under manual closeout, the staged artifact is never
+committed to that ref — so the "mandatory" preserve-after-block guard loses the only
+validated plan. It ships data-loss safety it does not provide.
+**Required:** on ANY preserve path (blocked finalize, manual closeout, transfer failure),
+FIRST commit the child's dirty/staged tree onto `temp_branch` (reuse the commit half of
+`transfer_phase_worktree_dirty`, or a preserve-only mode), THEN set `preserve_branches`
+and tear down. Manual closeout becomes "commit-to-temp + preserve branch + coordinator
+event (no apply to main)".
+**Required test:** assert plan CONTENT is recoverable (`git show <branch>:plans/...`), not
+merely that the branch ref exists.
+
+### A2 (BLOCKING) — #301 defect 2's causal diagnosis is WRONG
+The plan blames `start_new_session=True` (`launcher.py:2327`) for defeating ancestry
+detection. It does not: `setsid()` makes the child a session/process-group leader but
+leaves its **ppid unchanged**, so ancestry walking still resolves. Existing detection is
+expressly designed for descendants (CHANGELOG records ancestry surviving
+subprocess/setsid). Independently confirmed from first principles.
+**This is the SECOND wrong triage on #301** (the first claimed an out-of-repo skill leg).
+**Required BEFORE any run-ID wiring is accepted as the fix:** a production-path reproducer
+capturing holder PID, caller PID, parent chain, platform, and launch route.
+
+### A3 (BLOCKING, both legs) — run-ID plumbing is incomplete
+`child_executor_env` is called only inside `launcher.launch`; `launch_with_spec`
+(`launcher.py:1944`) exposes no run-ID/env parameter, and concurrent launches cross
+`worker_pool.PhaseWorkerJob`. Editing only `runner.py` + `harness_env_signatures.py`
+CANNOT thread local identity into spawned children.
+**Required:** enumerate and modify `launcher.py` (+ `worker_pool` forward) and every
+relevant call; add an end-to-end spawn test proving the child actually INHERITS the ID
+(child env stamp + nested re-entry), not merely that the lock file records a pre-set env.
+
+### A4 (BLOCKING) — the proposed #300 regression is self-contradictory
+It simultaneously requires the temp branch to be cleaned up (successful adoption => not
+missing-plan blocked) and to remain (finalize blocked => preserved). Split into two tests:
+adoption/cleanup, and forced-block/preservation. Separately, "and/or" on #301's twin
+production call sites does NOT prove the acceptance criterion — exercise BOTH.
+
+### Non-blocking
+Verification `-k inherited_run_id` does not match the proposed test names
+(`stamps_run_id` / `via_run_id`). Prefer adding concurrent-plan tests beside
+`test_phase_loop_v45_schedharden.py` (already models concurrent dirty transport) rather
+than only `test_phase_loop_concurrent_phase_dispatch.py`.
+
+### Anchor re-grounding
+VERIFIED EXACT: `plan_ir.py:233` (`detect_reducer_lane`),
+`phase_worktree_executor.py:306`, `dispatch_lock.py:162-166`.
+DRIFTED (runner.py absorbed today's merges): DispatchLock acquire 1462 -> **1469**;
+worktree transfer/integrate 4666 -> **4738 / 4762**; `_dispatch_concurrent_wave` def
+**4620**, call **4816**. Re-locate by symbol, not line.
