@@ -17,6 +17,15 @@ def render_status(snapshot: StateSnapshot, as_json: bool = False, ledger_debug: 
         policy_block = _resolve_execution_policy_block(snapshot)
         if policy_block:
             payload["execution_policy"] = policy_block
+        # ah#312 (CR): automation reads `status --json` — repair and handoff flows rely on
+        # it — so the reconciliation must appear here too, not only in the prose branch.
+        # Additive key: absent when the stores agree, so no existing consumer changes.
+        disagreements = _manifest_disagreements(snapshot)
+        if disagreements:
+            payload["state_disagreements"] = [
+                {"phase": phase, "status": snap, "manifest": man}
+                for phase, snap, man in disagreements
+            ]
         if ledger_debug:
             payload["rejected_events"] = [_ledger_debug_record(warning) for warning in snapshot.ledger_warnings]
             payload["duplicates_skipped"] = [
@@ -27,6 +36,7 @@ def render_status(snapshot: StateSnapshot, as_json: bool = False, ledger_debug: 
     for phase, status in snapshot.phases.items():
         marker = "*" if phase == snapshot.current_phase else " "
         lines.append(f"{marker} {phase}: {status}")
+    lines.extend(_manifest_disagreement_lines(snapshot))
     if snapshot.current_phase is None and snapshot.phases and all(status == "complete" for status in snapshot.phases.values()):
         lines.append("Roadmap complete: all phases are complete")
     terminal_summary = _current_terminal_summary(snapshot)
@@ -434,3 +444,40 @@ def _current_terminal_summary(snapshot: StateSnapshot) -> dict[str, object] | No
     ):
         return None
     return snapshot.terminal_summary
+
+def _manifest_disagreements(snapshot: StateSnapshot) -> list[tuple[str, str, str]]:
+    """The reconciliation itself, shared by the prose and JSON branches so they can never
+    disagree about whether a disagreement exists."""
+    try:
+        from .plan_manifest import phase_status_disagreements, read_manifest
+        entries = read_manifest(Path(snapshot.repo)).plans
+        roadmap_slug = Path(snapshot.roadmap).stem if snapshot.roadmap else None
+        return phase_status_disagreements(
+            snapshot.phases, entries, roadmap_slug=roadmap_slug
+        )
+    except Exception:  # never let reconciliation break `status`
+        return []
+
+
+def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
+    """ah#312: phase state lives in TWO stores — the runner snapshot rendered above and
+    `plans/manifest.json` — and nothing reconciles them. They share an execution
+    vocabulary, so a disagreement means one of them is lying to whoever reads this.
+    Surface it LOUDLY instead of silently rendering one and discarding the other; a phase
+    stuck at `executing` that is actually finished is exactly what makes resume/dispatch
+    do the wrong thing, and status alone cannot distinguish it from a live phase.
+
+    Best-effort: a missing/unreadable manifest is not an error here — status must still
+    render. Only genuine done-vs-in-flight pairs are reported (see
+    `plan_manifest.phase_status_disagreements`).
+    """
+    clashes = _manifest_disagreements(snapshot)
+    if not clashes:
+        return []
+    lines = [
+        f"STATE DISAGREEMENT: {len(clashes)} phase(s) differ between the runner state and "
+        "plans/manifest.json (ah#312) — one of these is stale:"
+    ]
+    for phase, snap, man in clashes:
+        lines.append(f"  {phase}: status={snap!r} vs manifest={man!r}")
+    return lines

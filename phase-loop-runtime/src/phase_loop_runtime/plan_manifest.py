@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -513,3 +514,96 @@ def _extract_if_gates(path: Path) -> tuple[str, ...]:
 def _extract_lanes(path: Path) -> tuple[str, ...]:
     text = path.read_text(encoding="utf-8")
     return tuple(dict.fromkeys(re.findall(r"^###\s+(SL-\d+[A-Z]?)\b", text, re.MULTILINE)))
+
+
+# ---------------------------------------------------------------------------
+# ah#312: phase state lives in TWO stores with no reconciliation between them —
+# the runner's snapshot (what `phase-loop status` prints) and this plan manifest.
+# They share an execution vocabulary (`executing`, `completed`/`complete`), so when
+# they disagree one of them is lying to whoever reads it. Observed on
+# specs/phase-plans-convergence-v1.md: status printed `FREEZE: executing` while the
+# manifest recorded that phase `completed`.
+#
+# A phase stuck at `executing` that is actually finished is exactly the state that
+# makes resume/dispatch do the wrong thing, and it is indistinguishable — from status
+# alone — from a genuinely in-flight phase. So SURFACE the disagreement rather than
+# silently rendering one store and discarding the other.
+#
+# Deliberately CONSERVATIVE: only a DONE-vs-IN-FLIGHT pair is a contradiction. A plan
+# that is merely `imported`/`committed` (document written, never executed) says nothing
+# about execution state and must not warn — that is the normal case for a planned-but-
+# unstarted phase and would drown the real signal.
+_MANIFEST_DONE = {"completed"}
+_MANIFEST_IN_FLIGHT = {"executing"}
+_SNAPSHOT_DONE = {"complete"}
+# `blocked` is IN-FLIGHT: the runner is saying work is outstanding / needs repair. A
+# manifest that records the same phase `completed` is the motivating harm class exactly —
+# resume/repair would act on a phase the other store believes finished, and status alone
+# cannot tell it from a genuinely blocked one. (CR: omitting it left a real contradiction
+# silent, which this detector's own bar rates worse than a false positive.)
+#
+# Deliberately still EXCLUDED: manifest `failed` vs a done snapshot. That is a DONE-vs-DONE
+# outcome disagreement, outside this detector's declared done-vs-in-flight scope, and it
+# has a legitimate staleness reading — a failed plan superseded by a re-plan should be
+# marked orphaned rather than flagged here. Tracked separately rather than widened silently.
+#
+# `awaiting_phase_closeout` belongs with `blocked` for the same reason: resume acts on it
+# (handoff.py), and handoff couples the two as a pair at three separate sites. Admitting
+# one member of that pair and not its constant companion was a gap in the same matrix.
+# `executed` is likewise RESUME-ACTIONABLE: runner.py relaunches the execute action for
+# `status in {"planned", "executed"}`, i.e. acceptance/evidence is still unresolved. A
+# manifest recording that same phase `completed` is the motivating harm class again.
+# (Kept `awaiting_phase_closeout` here rather than on the done side: handoff.py treats it
+# as needing action, pairing it with `blocked` at three sites.)
+_SNAPSHOT_IN_FLIGHT = {
+    "executing", "planned", "blocked", "awaiting_phase_closeout", "executed",
+}
+
+
+def phase_status_disagreements(
+    snapshot_phases: Mapping[str, str],
+    entries: Sequence[DotfilesPlanEntry],
+    *,
+    roadmap_slug: str | None = None,
+) -> list[tuple[str, str, str]]:
+    """Phases where the runner snapshot and the plan manifest CONTRADICT each other.
+
+    Returns ``[(phase_alias, snapshot_status, manifest_status), ...]``, empty when the
+    two stores agree or say nothing comparable. Pure — no I/O — so it is testable
+    without a repo.
+    """
+    out: list[tuple[str, str, str]] = []
+    _alias_counts: dict[str, int] = {}
+    for e in entries:
+        a = getattr(e, "phase_alias", None)
+        if a:
+            _alias_counts[a] = _alias_counts.get(a, 0) + 1
+    _ambiguous_aliases = {a for a, n in _alias_counts.items() if n > 1}
+    for entry in entries:
+        alias = getattr(entry, "phase_alias", None)
+        if not alias or alias not in snapshot_phases:
+            continue
+        if roadmap_slug is not None:
+            ref = getattr(entry, "roadmap_ref", None)
+            ref_slug = getattr(ref, "slug", None) if ref else None
+            if ref_slug is not None:
+                if ref_slug != roadmap_slug:
+                    continue
+            elif _ambiguous_aliases and alias in _ambiguous_aliases:
+                # CR: legacy entries carry `roadmap_ref: null` (6 exist today, all from
+                # v4). Admitting them keeps the signal for a legitimately-associated entry
+                # whose frontmatter is missing — but if the SAME alias appears more than
+                # once in the manifest we cannot tell which roadmap it belongs to, and
+                # reporting it would name a phase from a DIFFERENT roadmap as contradicting
+                # the active one. That is actively misleading, so require positive
+                # association in exactly that ambiguous case.
+                continue
+        snap = snapshot_phases[alias]
+        man = getattr(entry, "status", "")
+        contradiction = (
+            (man in _MANIFEST_DONE and snap in _SNAPSHOT_IN_FLIGHT)
+            or (man in _MANIFEST_IN_FLIGHT and snap in _SNAPSHOT_DONE)
+        )
+        if contradiction:
+            out.append((alias, snap, man))
+    return out
