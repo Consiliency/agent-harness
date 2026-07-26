@@ -348,23 +348,46 @@ def test_pointer_form_e2big_reraises_instead_of_retrying_itself(monkeypatch, sta
     assert len(calls) == 1, "pointer-form E2BIG retried itself with the same prompt"
 
 
-def test_denial_reason_reaches_the_operator_through_the_real_spawn(monkeypatch, tmp_path):
-    """CR round 5 (codex): the classifier's explanation must survive the SPAWN boundary,
-    not just `_exec_leg`. Previously `_default_spawn` returned only the empty review text,
-    so a tool-denial surfaced as an anonymous ERROR — the exact silent degradation this PR
-    exists to remove.
+def test_denial_reason_goes_to_detail_never_to_text(monkeypatch):
+    """CR round 5 (codex) + round 6 (claude leg): the reason must reach the operator, but
+    via `detail` — NEVER `text`.
 
-    This drives the REAL `_default_spawn`; an earlier revision used a fake spawn that
-    re-implemented the propagation itself and therefore survived deleting the production
-    code (the round-1 tautology, reproduced). Do not reintroduce that shape.
+    Round 5 put it in text and that was a real regression:
+    `governed_review._findings_from_panel` keys BLOCK-vs-WARN on `leg.text.strip()` for an
+    unusable leg — non-empty text is treated as a NONCONFORMING REVIEW and BLOCKS
+    promotion, while empty text records the correct non-gating warn. Stamping a diagnostic
+    into text turns every routine timeout/auth failure into a promotion block. The
+    invariant is documented at panel_invoker.py:2296-2301.
     """
     diagnostic = (
         "gemini leg: headless TOOL-DENIAL — the CLI auto-denied a tool permission it "
-        "cannot prompt for and produced NO output. CLI said: jetski: no output produced."
+        "cannot prompt for and produced NO output."
     )
     monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, "", diagnostic))
-    status, text = pi._default_spawn("gemini", "ARTIFACT")
+    spawned = pi._default_spawn("gemini", "ARTIFACT")
+    assert len(spawned) == 3, "no diagnostic channel returned"
+    status, text, detail = spawned
     assert status != "OK"
-    assert "TOOL-DENIAL" in str(text), (
-        "the spawn boundary dropped the reason — operator sees an anonymous failure"
+    assert not str(text).strip(), (
+        "diagnostic leaked into TEXT — this converts an operational failure into a "
+        "governed promotion BLOCK (panel_invoker.py:2296-2301)"
+    )
+    assert "TOOL-DENIAL" in str(detail), "operator cannot see WHY the leg failed"
+
+
+def test_operational_failure_stays_a_warn_not_a_governed_block(monkeypatch):
+    """The consequence test, driven through the real classifier: an unusable leg carrying
+    a diagnostic must still produce the non-gating `panel_leg_degraded` WARN, not
+    `panel_nonconforming` BLOCK. A routine leg TIMEOUT must never block promotion."""
+    from phase_loop_runtime import governed_review as gr
+
+    monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (124, "", "timeout after 900s"))
+    panel = pi.invoke_panel("ARTIFACT", ["gemini"], spawn=pi._default_spawn)
+    findings = gr._findings_from_panel(panel)
+    codes = {f.code for f in findings}
+    assert "panel_nonconforming" not in codes, (
+        "a routine leg timeout was escalated to a promotion BLOCK"
+    )
+    assert not any(getattr(f, "severity", "") == "block" for f in findings), (
+        "an operational leg failure produced a blocking finding"
     )

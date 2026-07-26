@@ -2965,14 +2965,22 @@ def _default_spawn(
             deadline_s=leg_deadline, **extra,
         )
         status = _classify_leg(rc, review_text, log_text, mode)
-        # DIAGNOSTIC PROPAGATION (CR round 5, codex). `_exec_leg` returns WHY a leg
-        # failed in `log_text`, but this boundary used to drop it and hand back only the
-        # empty `review_text` — so a headless tool-denial surfaced to the operator as an
-        # anonymous ERROR with no text, defeating the whole point of classifying it.
-        # A failed leg has no review to report, so the reason goes in the text slot —
-        # exactly what the `except` branch below already does with its exception string.
+        # DIAGNOSTIC PROPAGATION (CR round 5 codex; CHANNEL CORRECTED round 6 claude).
+        # `_exec_leg` returns WHY a leg failed in `log_text`, and this boundary used to
+        # drop it — a headless tool-denial reached the operator as an anonymous ERROR.
+        #
+        # The reason goes in `detail`, NEVER in `text`. Round 5 put it in text and that
+        # was a REAL REGRESSION: `governed_review._findings_from_panel` keys BLOCK-vs-WARN
+        # on `leg.text.strip()` for an unusable leg — non-empty text ⇒ `panel_nonconforming`
+        # BLOCK (a review that violated the verdict contract), empty text ⇒ non-gating
+        # `panel_leg_degraded` WARN. Stamping a diagnostic into text therefore converts
+        # EVERY operational failure (timeout / auth / tool-denial / rc!=0) into a promotion
+        # block — and timeouts are routine under shared-subscription contention. The
+        # invariant is documented at :2296-2301 for the claude TUI leg, which was
+        # engineered specifically NOT to do this. `detail` already carries diagnostics at
+        # every other boundary and is serialized into the streaming verdict JSON.
         if status != "OK" and not str(review_text).strip() and str(log_text).strip():
-            return status, str(log_text).strip()[:2000]
+            return status, review_text, str(log_text).strip()[:2000]
         return status, review_text
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
@@ -3262,17 +3270,33 @@ def invoke_panel(
         # future.result() never raises). This is the exact per-leg body as before —
         # only the surrounding loop is now a concurrent, order-preserving fan-out.
         try:
-            status, text = runner(leg, artifact)
+            spawned = runner(leg, artifact)
         except Exception as exc:
             return PanelLegResult(leg=leg, status="DEGRADED", text="", detail=str(exc)[:200])
+        # A spawn may return the legacy 2-tuple (status, text) or, when it has a failure
+        # DIAGNOSTIC to report, a 3-tuple (status, text, detail). len-2 is byte-identical
+        # to previous behavior, so every existing/monkeypatched spawn keeps working, and
+        # the diagnostic never lands in `text` (see the channel note in `_default_spawn`:
+        # text keys the governed BLOCK-vs-WARN classification).
+        detail: str | None = None
+        if isinstance(spawned, tuple) and len(spawned) == 3:
+            status, text, detail = spawned
+        else:
+            status, text = spawned
         try:
             status = normalize_leg_status(status)
         except ValueError:
             status = "DEGRADED"
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
+        # Two detail sources coexist here. (1) The 3-tuple spawn diagnostic (CR round 6):
+        # a failed leg's reason is routed to `detail`, NEVER `text`, so the governed
+        # BLOCK-vs-WARN classifier (which keys on `text.strip()`) is untouched; that
+        # `detail` was already unpacked above and must be preserved. (2) Main's typed
+        # UNAVAILABLE markers ride in `text`; move such a marker into `detail` and blank
+        # the text, since a typed marker is not a review. A tool-denial 3-tuple carries
+        # empty `text`, so it never trips the typed-marker branch (no collision).
         text_value = str(text)
-        detail = None
         if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
             detail, text_value = text_value, ""
         return PanelLegResult(leg=leg, status=status, text=text_value, detail=detail)
