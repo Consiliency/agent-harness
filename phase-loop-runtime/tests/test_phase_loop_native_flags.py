@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from phase_loop_runtime.launcher import (
+    _claude_json_schema,
     CODEX_OUTPUT_SCHEMA_PLACEHOLDER,
     LaunchResult,
     build_claude_command,
@@ -52,7 +53,12 @@ class PhaseLoopNativeFlagsTest(unittest.TestCase):
         )
         schema_text = command[command.index("--json-schema") + 1]
 
-        self.assertEqual(json.loads(schema_text), JSON_CLOSEOUT_SCHEMA)
+        # ah#291: the claude CLI rejects a 2020-12 `$schema` at arg-parse time, so the
+        # adapter strips that declaration. Derive the expectation from the PRODUCTION
+        # down-converter rather than restating it — a hand-written copy of this
+        # expectation is what went stale in the sibling schema-flow test.
+        self.assertEqual(json.loads(schema_text), _claude_json_schema(JSON_CLOSEOUT_SCHEMA))
+        self.assertNotIn("$schema", json.loads(schema_text))
         self.assertNotIn("\n", schema_text)
 
     def test_build_launch_spec_limits_native_flags_to_codex_and_claude(self):

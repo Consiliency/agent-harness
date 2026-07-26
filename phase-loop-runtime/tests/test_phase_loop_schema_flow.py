@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from phase_loop_runtime.baml_modular import export_function_schema
+from phase_loop_runtime.launcher import _claude_json_schema
 from phase_loop_runtime.launcher import CODEX_OUTPUT_SCHEMA_PLACEHOLDER, build_launch_request, build_launch_spec
 from phase_loop_runtime.models import CLOSEOUT_SCHEMA
 from phase_loop_runtime.profiles import resolve_profile_for_executor
@@ -65,9 +66,9 @@ class PhaseLoopSchemaFlowTest(unittest.TestCase):
                 # hash, so this test still fails if anything other than the meta-schema
                 # declaration diverges.
                 self.assertNotIn("$schema", emitted)
-                self.assertEqual(
-                    emitted, {k: v for k, v in schema.items() if k != "$schema"}
-                )
+                # Derived from the PRODUCTION down-converter, not restated — a
+                # hand-written copy of this expectation is exactly what went stale here.
+                self.assertEqual(emitted, _claude_json_schema(schema))
 
             for executor in ("gemini", "opencode", "pi"):
                 with self.subTest(action=action, executor=executor):
