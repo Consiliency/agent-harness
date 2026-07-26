@@ -106,7 +106,7 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-5.6-sol · max · codex · — ; gemini-3.6-flash · high · gemini · — ; claude-fable-5 · max · claude · — ; grok-4.5 · max · grok · — |
+| `default`               | premerge-review       | gpt-5.6-sol · max · codex · red-team ; gemini-3.6-flash · high · gemini · alternative-approach ; claude-fable-5 · max · claude · correctness ; grok-4.5 · max · grok · adversarial |
 | `code-review`           | code-review           | grok-4.5 · max · grok · adversarial ; claude-fable-5 · max · claude · correctness ; gpt-5.6-sol · max · codex · red-team ; gemini-3.6-flash · high · gemini · alternative-approach |
 | `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-5.6-sol · high · codex · supportive ; gemini-3.6-flash · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-5.5 · medium · codex · structure |

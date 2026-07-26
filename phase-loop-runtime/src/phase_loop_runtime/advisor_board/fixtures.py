@@ -37,13 +37,13 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # Fable, not on the implementer model ``claude-sonnet-5``. This is byte-pinned to
 # ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` (also Fable) by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
-    Seat(model="gpt-5.6-sol", effort="max", harness="codex",
+    Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="red-team",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="gemini-3.6-flash", effort="high", harness="gemini",
+    Seat(model="gemini-3.6-flash", effort="high", harness="gemini", lens="alternative-approach",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="claude-fable-5", effort="max", harness="claude",
+    Seat(model="claude-fable-5", effort="max", harness="claude", lens="correctness",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="grok-4.5", effort="max", harness="grok",
+    Seat(model="grok-4.5", effort="max", harness="grok", lens="adversarial",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
 )
 

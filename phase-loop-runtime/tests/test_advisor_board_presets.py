@@ -60,6 +60,11 @@ class PresetTests(unittest.TestCase):
                 ("grok-4.5", "max", "grok"),
             ),
         )
+        self.assertEqual(
+            tuple(s.lens for s in PRESETS["default"].seats),
+            ("red-team", "alternative-approach", "correctness", "adversarial"),
+        )
+        self.assertEqual(len({s.lens for s in PRESETS["default"].seats}), 4)
 
     def test_all_presets_default_to_no_api_key_fallback(self) -> None:
         for name in PRESET_NAMES:

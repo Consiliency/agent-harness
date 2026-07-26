@@ -220,8 +220,10 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         self.assertEqual([r.seat_key for r in panel.legs], list(pi.PANEL_LEGS))
         self.assertEqual(
             [r.seat_key for r in board.legs],
-            ["codex:gpt-5.6-sol:max", "gemini:gemini-3.6-flash:high",
-             "claude:claude-fable-5:max", "grok:grok-4.5:max"],
+            ["codex:gpt-5.6-sol:max:red-team",
+             "gemini:gemini-3.6-flash:high:alternative-approach",
+             "claude:claude-fable-5:max:correctness",
+             "grok:grok-4.5:max:adversarial"],
         )
         for p, b in zip(panel.legs, board.legs):
             self.assertEqual(p.leg, b.leg)             # bare vendor lane unchanged

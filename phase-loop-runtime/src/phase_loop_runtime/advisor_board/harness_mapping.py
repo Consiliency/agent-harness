@@ -159,7 +159,10 @@ def render_agy_model(model: str, effort: str | None = None) -> str:
             f"unmapped gemini model id {candidate!r}: add it to "
             "_GEMINI_MODEL_ID_ALIASES (never silently coerce a gemini-* id to Pro)"
         )
-    if effort is None:
+    # Explicit non-Gemini operator overrides are opaque agy tokens. Preserve
+    # them verbatim even when the routing policy supplies effort; only legacy
+    # human-readable Gemini display names use the parenthesized convention.
+    if effort is None or not candidate.lower().startswith("gemini "):
         return candidate
     _require_effort(effort)
     return f"{gemini_base_model(candidate)} ({_GEMINI_EFFORT_WORD[effort]})"
