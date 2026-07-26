@@ -12,11 +12,9 @@ status so a verbose auth error is never mistaken for a real review.
 
 from __future__ import annotations
 
-import fcntl
 import logging
 import mimetypes
 import os
-import pty
 import re
 import select
 import shutil
@@ -25,7 +23,6 @@ import struct
 import subprocess
 import sys
 import tempfile
-import termios
 import time
 import json
 import threading
@@ -34,6 +31,15 @@ from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, cast
+
+try:
+    import fcntl
+    import pty
+    import termios
+except ImportError:  # Native Windows has no POSIX PTY stack.
+    fcntl = None  # type: ignore[assignment]
+    pty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
 
 from .agent_runtime_provider import (
     CreateSessionRequest,
@@ -1872,6 +1878,9 @@ def _run_claude_tui_session(
     mode: str = "review",
     backstop_s: int | None = None,
 ) -> tuple[int, str, str, str]:
+    if fcntl is None or pty is None or termios is None:
+        return 1, "", "claude_tui_unsupported_platform", ""
+
     start_monotonic = time.monotonic()
     start_wall = time.time()
     # Leg-liveness: like the print-mode legs, the claude TUI leg is bounded by heartbeat
