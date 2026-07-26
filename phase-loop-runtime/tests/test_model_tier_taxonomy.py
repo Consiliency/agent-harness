@@ -77,9 +77,11 @@ class TierMatrixTest(unittest.TestCase):
 
 class RoleToTierTest(unittest.TestCase):
     def test_role_to_tier_bindings(self):
-        self.assertEqual(tier_for_role("roadmap"), "ultra")
-        self.assertEqual(tier_for_role("plan"), "ultra")
+        self.assertEqual(tier_for_role("roadmap"), "heavy")
+        self.assertEqual(tier_for_role("plan"), "heavy")
         self.assertEqual(tier_for_role("review"), "ultra")
+        self.assertEqual(tier_for_role("advise"), "ultra")
+        self.assertEqual(tier_for_role("security"), "ultra")
         self.assertEqual(tier_for_role("execute"), "regular")
         self.assertEqual(tier_for_role("repair"), "regular")
         self.assertEqual(tier_for_role("worker"), "lite")
@@ -95,9 +97,10 @@ class RoleToTierTest(unittest.TestCase):
         for tier in MODEL_TIERS:
             self.assertEqual(tier_for_role(tier), tier)
 
-    def test_planning_resolves_to_fable_on_claude(self):
-        # The headline behavior change: Claude planning/review → fable (ultra).
-        for role in ("roadmap", "plan", "review"):
+    def test_authoring_and_review_resolve_separately_on_claude(self):
+        for role in ("roadmap", "plan"):
+            self.assertEqual(resolve(role, "claude").model_id, "claude-opus-5")
+        for role in ("review", "advise", "security"):
             self.assertEqual(resolve(role, "claude").model_id, "claude-fable-5")
 
     def test_execute_target_is_regular_sonnet_on_claude(self):
@@ -163,7 +166,12 @@ class TierLiveWiringTest(unittest.TestCase):
     def test_class_path_is_matrix_sourced_for_claude_and_codex(self):
         from phase_loop_runtime.profiles import resolve_model_class
 
-        bridge = {"planner": "ultra", "implementer": "regular", "worker": "lite"}
+        bridge = {
+            "planner": "heavy",
+            "reviewer": "ultra",
+            "implementer": "regular",
+            "worker": "lite",
+        }
         for vendor in ("claude", "codex"):
             for model_class, tier in bridge.items():
                 self.assertEqual(
@@ -203,7 +211,7 @@ class TierLiveWiringTest(unittest.TestCase):
             "repair": "implementer",
             "roadmap": "planner",
             "plan": "planner",
-            "review": "planner",
+            "review": "reviewer",
         }
         for action, model_class in bridge.items():
             self.assertEqual(
@@ -229,7 +237,7 @@ class TierLiveWiringTest(unittest.TestCase):
             "repair": "implementer",
             "roadmap": "planner",
             "plan": "planner",
-            "review": "planner",
+            "review": "reviewer",
         }
         for action, model_class in bridge.items():
             self.assertEqual(
@@ -240,7 +248,8 @@ class TierLiveWiringTest(unittest.TestCase):
         # Anti-collapse guard (the sneaky adapter defect): implementation's argv must NOT
         # resolve to the Pro/heavy agy model.
         for action in ("execute", "repair"):
-            argv = _gemini_cli_model(resolve_profile_for_executor(action=action, executor="gemini").model)
+            selection = resolve_profile_for_executor(action=action, executor="gemini")
+            argv = _gemini_cli_model(selection.model, selection.effort)
             self.assertNotEqual(argv, "Gemini 3.1 Pro (High)", action)
 
     def test_gemini_adapter_maps_tier_ids_without_collapsing_flash_to_pro(self):
@@ -249,7 +258,7 @@ class TierLiveWiringTest(unittest.TestCase):
         from phase_loop_runtime.launcher import _gemini_cli_model
 
         self.assertEqual(_gemini_cli_model(resolve("heavy", "gemini").model_id), "Gemini 3.1 Pro (High)")
-        regular = _gemini_cli_model(resolve("regular", "gemini").model_id)
+        regular = _gemini_cli_model(resolve("regular", "gemini").model_id, "medium")
         lite = _gemini_cli_model(resolve("lite", "gemini").model_id)
         self.assertNotEqual(regular, "Gemini 3.1 Pro (High)")
         self.assertNotEqual(lite, "Gemini 3.1 Pro (High)")
@@ -271,7 +280,7 @@ class TierLiveWiringTest(unittest.TestCase):
             mid = resolve(tier, "grok").model_id
             self.assertNotIn(" ", mid, tier)
             self.assertTrue(mid.startswith("grok-"), tier)
-        for model_class in ("planner", "implementer", "worker"):
+        for model_class in ("planner", "reviewer", "implementer", "worker"):
             self.assertEqual(resolve_model_class("grok", model_class), GROK_DEFAULT_MODEL)
 
 

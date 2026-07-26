@@ -37,7 +37,7 @@ GEMINI_AUTO_ROUTED_MODEL = "auto"
 # (GA), so the regular tier retargets from the old 3.5 Flash to the newest 3.6 Flash.
 # (agy's ids are `gemini-<ver>-<family>-<effort>`; the old "Gemini 3.5 Flash (High)" display
 # label is NOT in `agy models` — hoisted here so EXECUTOR_MODEL_OVERRIDES can reference it.)
-GEMINI_IMPLEMENTER_MODEL = "gemini-3.6-flash-high"
+GEMINI_IMPLEMENTER_MODEL = "gemini-3.6-flash"
 PI_AUTO_ROUTED_MODEL = "auto"
 # xAI-family grok executor default (GROKEXEC). Single source for the grok live
 # adapter model alias; the grok CLI takes it verbatim via `-m`.
@@ -63,12 +63,10 @@ ACTION_WORK_UNITS = {
 
 EXECUTOR_MODEL_OVERRIDES = {
     "claude": {
-        # design-model-tier-taxonomy.md (operator-ratified): planning/review use the
-        # ultra model (fable); implementation (execute/repair) uses the regular model
-        # (sonnet). This makes the executor-default path AGREE with the tier/class
-        # path — resolve("plan","claude")=fable, resolve("execute","claude")=sonnet.
-        "roadmap": CLAUDE_ULTRA_MODEL,
-        "plan": CLAUDE_ULTRA_MODEL,
+        # Consiliency/agent-harness#310: authoring/supervision use heavy Opus,
+        # review/advice/security use ultra Fable, and implementation stays regular.
+        "roadmap": CLAUDE_HEAVY_MODEL,
+        "plan": CLAUDE_HEAVY_MODEL,
         "execute": CLAUDE_REGULAR_MODEL,
         "repair": CLAUDE_REGULAR_MODEL,
         "review": CLAUDE_ULTRA_MODEL,
@@ -127,19 +125,17 @@ EXECUTOR_MODEL_OVERRIDES = {
     },
 }
 
-# Executor-path effort overrides. These INTENTIONALLY win over the per-tier advisory
-# efforts (_TIER_ADVISORY_EFFORT) — effort is a declared non-goal / advisory-only
-# (CR round-4 item I decision (ii)); the model mapping is the enforced axis, not effort.
-# claude runs `high` on every action here — roadmap/plan/review vs the ultra-tier advisory
-# `max`, and execute/repair vs the regular-tier advisory `medium`; codex roadmap/plan/
-# review also run `high` (vs ultra `max`). All tracked in agent-harness#304.
+# Executor-path effort overrides. Consiliency/agent-harness#310 binds Claude
+# authoring/review to max and normal implementation/repair to high. Other
+# providers receive the same action policy through SHIPPED_MODEL_POLICY and
+# normalize or translate only at their documented provider/adapter boundary.
 EXECUTOR_EFFORT_OVERRIDES = {
     "claude": {
-        "roadmap": "high",
-        "plan": "high",
+        "roadmap": "max",
+        "plan": "max",
         "execute": "high",
         "repair": "high",
-        "review": "high",
+        "review": "max",
     },
 }
 
@@ -160,10 +156,9 @@ CLAUDE_IMPLEMENTER_MODEL = CLAUDE_REGULAR_MODEL
 OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 # OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
-# Gemini planning (planner class + roadmap/plan/review executor path) stays on the CLI
-# `pro` alias (heavy → agy Pro). Implementation (regular, GEMINI_IMPLEMENTER_MODEL) uses the
-# canonical agy `gemini-3.6-flash-high` on BOTH the class and executor paths, NOT the broad
-# `auto` alias (which the adapter collapses to Pro/heavy). Worker (lite) uses the canonical
+# Gemini authoring/review stays on the CLI `pro` alias. Implementation uses the
+# base `gemini-3.6-flash` id on both class and executor paths; the adapter appends
+# the policy-normalized effort. Worker (lite) uses the canonical
 # agy 3.5 Flash id: `agy models` exposes NO flash-lite, so the matrix's gemini-3.5-flash-lite
 # lite cell is ASPIRATIONAL (target, not live) — the live worker degrades to real 3.5 Flash,
 # named in the deferral below (a real version/family gap, like grok-4.3, NOT representational).
@@ -199,18 +194,9 @@ GEMINI_WORKER_MODEL = "gemini-3.5-flash-high"
 # vendor, otherwise heavy".
 # ===========================================================================
 
-# Per-tier ADVISORY effort defaults (ultra=max, heavy=xhigh, regular=medium, lite=low).
-# ADVISORY — NOT enforced at the executor path (CR round-4, item I decision (ii)): effort
-# ladders are a declared non-goal of the taxonomy, and effort changes cost/latency
-# fleet-wide and were never operator-ratified the way MODELS were. Where an executor
-# declares an effort override (EXECUTOR_EFFORT_OVERRIDES) it INTENTIONALLY WINS over
-# these defaults. Named live divergences today: claude roadmap/plan/review AND
-# execute/repair all run `high` (vs the ultra-tier advisory `max` for planning/review and
-# the regular-tier advisory `medium` for implementation); codex roadmap/plan/review run
-# `high` on the executor path (vs the ultra-tier advisory `max`). (gemini/grok planning
-# clamp `max`→`high` at their own ceilings regardless.) resolve().effort returns this
-# advisory value; the wiring test asserts MODEL agreement only — effort is tracked in
-# agent-harness#304.
+# Per-tier advisory defaults remain part of resolve(). Action launches use the
+# explicit shipped action policy below: roadmap/plan/review request max and
+# execute/repair request high, with provider and adapter normalization recorded.
 _TIER_ADVISORY_EFFORT: dict[str, str] = {
     "ultra": "max",
     "heavy": "xhigh",
@@ -307,10 +293,11 @@ SUPERVISOR_TIER = "heavy"
 # cheap/worker high-volume band. resolve() ALSO accepts a bare tier name (any
 # member of MODEL_TIERS) as `role`, so callers can address a tier directly.
 ROLE_TIERS: dict[str, str] = {
-    "roadmap": "ultra",
-    "plan": "ultra",
+    "roadmap": "heavy",
+    "plan": "heavy",
     "review": "ultra",
     "advise": "ultra",
+    "security": "ultra",
     "supervise": SUPERVISOR_TIER,
     "execute": "regular",
     "repair": "regular",
@@ -375,7 +362,8 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 
 
 # --- class↔tier bridge: derive the legacy class overrides from the matrix -----
-# The MODEL_CLASSES axis (planner/implementer/worker) maps onto model tiers so the
+# The MODEL_CLASSES axis maps authoring, evaluation, implementation, and worker
+# roles onto model tiers so the
 # class path and the tier path can never DIVERGE on the same decision (the CR's
 # blocker). CONVERGED VENDORS — claude + codex: their class models are API-id-shaped,
 # so CLASS_MODEL_OVERRIDES DERIVES from TIER_MODELS via this bridge AND their
@@ -386,11 +374,8 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # enumeration; each is intentional, with the reason it can't be a one-line derive):
 #   • gemini — the MODEL-PATH split is FIXED (CR round-4) and the REGULAR VERSION is now
 #     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
-#     uses the canonical agy `gemini-3.6-flash-high` (verified against `agy models`; the
-#     newest GA Flash the operator asked us to adopt) — the regular tier is VERSION-ALIGNED to
-#     the matrix's gemini-3.6-flash (the only remaining difference is NOTATION: the live id is
-#     the agy-suffixed `gemini-3.6-flash-high`, not the matrix's bare `gemini-3.6-flash`, a form
-#     the adapter maps 1:1). Two things remain: (a) the PRO/
+#     stores the base `gemini-3.6-flash` id; the adapter appends the normalized
+#     effort to emit agy's canonical id. Two things remain: (a) the PRO/
 #     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
 #     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
 #     of this fix's scope; (b) LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so
@@ -438,7 +423,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     (governed_premerge.next_escalation / _NEXT_CLASS: worker→implementer→planner) is a RECORDED
 #     DECISION only — the repair-loop pivot writes it with `applied: False` (runner.py:2788) and
 #     the runner does NOT re-select the model_class off it (the documented remaining thread); its
-#     ceiling WOULD be the PLANNER class = the ULTRA model (claude-fable-5). (2) the
+#     ceiling is the PLANNER class = the HEAVY model (claude-opus-5). (2) the
 #     claude-execute-phase skill's in-lane retry-tier ladder (fast→strong→frontier) has a
 #     ceiling of `frontier` = the HEAVY model (claude-opus-5). This comment states the two
 #     CEILINGS only — it makes NO claim about when/whether the retry-tier ladder takes effect
@@ -459,10 +444,12 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # (panel_invoker.DEFAULT_LEG_MODELS = fable-5 / sol / 3.1-Pro / grok-4.5) are a SEPARATE
 # model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
 # are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
-# EFFORT is a separate, ADVISORY axis (see _TIER_ADVISORY_EFFORT), intentionally not enforced.
-# Migrating the representational cases wholesale is out of scope.
+# Effort is bound by shipped action policy and recorded at requested, policy,
+# and adapter-effective layers. Migrating the representational cases wholesale
+# is out of scope.
 _CLASS_TIER_BRIDGE: dict[str, str] = {
-    "planner": "ultra",     # ultra-else-heavy@max via resolve()
+    "planner": "heavy",
+    "reviewer": "ultra",    # ultra-else-heavy@max via resolve()
     "implementer": "regular",
     "worker": "lite",
 }
@@ -478,17 +465,19 @@ def _derived_class_overrides(vendor: str) -> dict[str, str]:
 
 
 CLASS_MODEL_OVERRIDES = {
-    # claude + codex: DERIVED from the tier matrix (planner←ultra, implementer←
-    # regular, worker←lite) so the class and tier paths agree by construction.
+    # claude + codex: DERIVED from the tier matrix (planner←heavy,
+    # reviewer←ultra, implementer←regular, worker←lite).
     "claude": _derived_class_overrides("claude"),
     "codex": _derived_class_overrides("codex"),
     "opencode": {
         "planner": OPENCODE_OPENAI_HEAVY_MODEL,
+        "reviewer": OPENCODE_OPENAI_HEAVY_MODEL,
         "implementer": OPENCODE_OPENAI_IMPLEMENTER_MODEL,
         "worker": OPENCODE_OPENAI_WORKER_MODEL,
     },
     "gemini": {
         "planner": GEMINI_PRO_ROUTED_MODEL,
+        "reviewer": GEMINI_PRO_ROUTED_MODEL,
         "implementer": GEMINI_IMPLEMENTER_MODEL,
         "worker": GEMINI_WORKER_MODEL,
     },
@@ -497,11 +486,13 @@ CLASS_MODEL_OVERRIDES = {
     # matrix ids (grok-4.3/grok-build-0.1) are the taxonomy target, not yet live.
     "grok": {
         "planner": GROK_DEFAULT_MODEL,
+        "reviewer": GROK_DEFAULT_MODEL,
         "implementer": GROK_DEFAULT_MODEL,
         "worker": GROK_DEFAULT_MODEL,
     },
     "pi": {
         "planner": PI_AUTO_ROUTED_MODEL,
+        "reviewer": PI_AUTO_ROUTED_MODEL,
         "implementer": PI_AUTO_ROUTED_MODEL,
         "worker": PI_AUTO_ROUTED_MODEL,
     },
@@ -561,11 +552,11 @@ def max_effort_planner_eligible(executor: str) -> bool:
 SHIPPED_MODEL_POLICY = {
     "roadmap": {"model_class": "planner", "effort": "max", "clamp": True},
     "plan": {"model_class": "planner", "effort": "max", "clamp": True},
-    "execute": {"model_class": "implementer", "effort": "medium"},
-    "repair": {"model_class": "implementer", "effort": "medium"},
+    "execute": {"model_class": "implementer", "effort": "high"},
+    "repair": {"model_class": "implementer", "effort": "high"},
     # design-model-tier-taxonomy.md: review is an ULTRA-tier role → max effort (was
     # high). clamp=True still resolves a sub-max provider's `max` to its ceiling.
-    "review": {"model_class": "planner", "effort": "max", "clamp": True},
+    "review": {"model_class": "reviewer", "effort": "max", "clamp": True},
 }
 
 
@@ -764,6 +755,8 @@ def resolve_execution_policy(
         fallback_source=fallback_source,
         fallback_applied=fallback_applied,
         model_class=policy.model_class if policy else None,
+        requested_effort=policy_effort,
+        policy_effort=normalized_effort,
     )
 
 
@@ -791,6 +784,8 @@ def resolve_model_selection_from_policy(
         source=resolved_policy.execution_policy_source,
         override_reason=resolved_policy.execution_policy_override_reason,
         model_class=resolved_policy.model_class,
+        requested_effort=resolved_policy.requested_effort or resolved_policy.effort,
+        policy_effort=resolved_policy.policy_effort or resolved_policy.effort,
     )
 
 

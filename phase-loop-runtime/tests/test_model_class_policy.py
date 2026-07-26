@@ -15,22 +15,26 @@ from phase_loop_runtime.profiles import (
 )
 
 
-def _resolve(action, executor, *, model_policy=False, plan_policy=None,
-             operator_model=None, operator_effort=None):
+def _resolved(action, executor, *, model_policy=False, plan_policy=None,
+              operator_model=None, operator_effort=None):
     selection = resolve_profile_for_executor(action=action, executor=executor)
     rule = shipped_model_policy_rule(action) if model_policy else None
-    rp = resolve_execution_policy(
+    return resolve_execution_policy(
         action=action, executor=executor, model_selection=selection,
         plan_policy=plan_policy, model_policy_rule=rule,
         operator_model=operator_model, operator_effort=operator_effort,
     )
+
+
+def _resolve(action, executor, **kwargs):
+    rp = _resolved(action, executor, **kwargs)
     return rp.model, rp.effort
 
 
 class ModelClassResolutionTest(unittest.TestCase):
     def test_class_to_model_per_executor(self):
-        # design-model-tier-taxonomy.md: Claude planner class promoted opus→fable (ultra).
-        self.assertEqual(resolve_model_class("claude", "planner"), "claude-fable-5")
+        self.assertEqual(resolve_model_class("claude", "planner"), "claude-opus-5")
+        self.assertEqual(resolve_model_class("claude", "reviewer"), "claude-fable-5")
         self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
         # design-model-tier-taxonomy.md: worker class → the lite tier's DATED pin
         # (was the undated claude-haiku-4-5, a floating-alias shape).
@@ -40,12 +44,14 @@ class ModelClassResolutionTest(unittest.TestCase):
         # (newest GA, CR round-5 finding B), worker the agy 3.5 Flash id (agy has no flash-lite
         # → the matrix's gemini-3.5-flash-lite lite cell is aspirational).
         self.assertEqual(resolve_model_class("gemini", "planner"), "pro")
-        self.assertEqual(resolve_model_class("gemini", "implementer"), "gemini-3.6-flash-high")
+        self.assertEqual(resolve_model_class("gemini", "reviewer"), "pro")
+        self.assertEqual(resolve_model_class("gemini", "implementer"), "gemini-3.6-flash")
         self.assertEqual(resolve_model_class("gemini", "worker"), "gemini-3.5-flash-high")
         self.assertIsNone(resolve_model_class("claude", "bogus"))
 
     def test_model_class_field_validates(self):
         ExecutionPolicyRule(model_class="planner")  # ok
+        ExecutionPolicyRule(model_class="reviewer")  # ok
         with self.assertRaises(ValueError):
             ExecutionPolicyRule(model_class="not_a_class")
 
@@ -68,14 +74,26 @@ class ShippedPolicyTest(unittest.TestCase):
     def test_roadmap_is_max(self):
         self.assertEqual(_resolve("roadmap", "codex", model_policy=True)[1], "max")
 
-    def test_execute_claude_becomes_sonnet_medium(self):
-        self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-5", "medium"))
+    def test_execute_claude_becomes_sonnet_high(self):
+        self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-5", "high"))
+
+    def test_review_claude_uses_reviewer_fable(self):
+        resolved = _resolved("review", "claude", model_policy=True)
+        self.assertEqual(resolved.model_class, "reviewer")
+        self.assertEqual((resolved.model, resolved.effort), ("claude-fable-5", "max"))
 
 
 class EffortClampTest(unittest.TestCase):
     def test_gemini_plan_max_clamps_to_high_with_shipped_policy(self):
         # The shipped policy sets fallback so gemini's effort_map maps max->high.
         self.assertEqual(_resolve("plan", "gemini", model_policy=True), ("pro", "high"))
+
+    def test_gemini_clamp_records_requested_and_policy_effort(self):
+        resolved = _resolved("plan", "gemini", model_policy=True)
+        self.assertEqual(resolved.requested_effort, "max")
+        self.assertEqual(resolved.policy_effort, "high")
+        self.assertEqual(resolved.effort, "high")
+        self.assertTrue(resolved.fallback_applied)
 
     def test_gemini_max_raises_without_clamp(self):
         # Documenting the verified runtime behavior: a max request for a sub-max

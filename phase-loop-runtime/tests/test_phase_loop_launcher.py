@@ -22,7 +22,7 @@ from phase_loop_runtime.launcher import (
     launch_with_spec,
     run_auth_preflight,
 )
-from phase_loop_runtime.models import CommandAdapterConfig, HarnessLaneAssignment, LaneWorktreeAssignment, PhaseSourceBundle, PipelineProtectedSource
+from phase_loop_runtime.models import CommandAdapterConfig, HarnessLaneAssignment, LaneWorktreeAssignment, ModelSelection, PhaseSourceBundle, PipelineProtectedSource
 from phase_loop_runtime.profiles import resolve_profile, resolve_profile_for_executor
 from phase_loop_runtime.prompts import build_prompt
 from phase_loop_test_utils import make_repo, write_phase_plan
@@ -44,9 +44,8 @@ class PhaseLoopLauncherTest(unittest.TestCase):
 
     def test_claude_executor_uses_executor_specific_model_alias(self):
         selection = resolve_profile_for_executor(action="plan", executor="claude")
-        # design-model-tier-taxonomy.md: Claude planning promoted opus→fable (ultra).
-        self.assertEqual(selection.model, "claude-fable-5")
-        self.assertEqual(selection.effort, "high")
+        self.assertEqual(selection.model, "claude-opus-5")
+        self.assertEqual(selection.effort, "max")
         execute_selection = resolve_profile_for_executor(action="execute", executor="claude")
         # design-model-tier-taxonomy.md (operator-ratified): implementation → regular (sonnet-5).
         self.assertEqual(execute_selection.model, "claude-sonnet-5")
@@ -1284,6 +1283,9 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(_gemini_cli_model("gemini-3.1-pro-preview"), "Gemini 3.1 Pro (High)")
         self.assertEqual(_gemini_cli_model("Gemini 3.5 Flash (High)"), "Gemini 3.5 Flash (High)")
         self.assertEqual(_gemini_cli_model("gpt-5-codex"), "gpt-5-codex")
+        self.assertEqual(_gemini_cli_model("gemini-3.6-flash", "medium"), "gemini-3.6-flash-medium")
+        with self.assertRaisesRegex(ValueError, "conflicts with requested effort"):
+            _gemini_cli_model("gemini-3.6-flash-high", "medium")
 
     def test_opencode_executor_builds_live_launch_spec(self):
         selection = resolve_profile_for_executor(action="plan", executor="opencode")
@@ -1511,10 +1513,40 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             bypass_approvals=False,
         )
         spec = build_launch_spec(request)
-        self.assertEqual(spec.selected_model, "auto")
+        self.assertEqual(spec.selected_model, "gemini-3.6-flash")
         self.assertIn("--model", spec.command)
-        # v46 EXEC: the "auto" routing alias maps onto agy's fixed model name.
-        self.assertIn("Gemini 3.1 Pro (High)", spec.command)
+        self.assertIn("gemini-3.6-flash-medium", spec.command)
+
+    def test_launch_metadata_records_policy_and_adapter_effort(self):
+        roadmap = Path("/repo/specs/phase-plans-v1.md")
+        for executor, model, effective, argv_token in (
+            ("codex", "gpt-5.6-sol", "xhigh", 'model_reasoning_effort="xhigh"'),
+            ("grok", "grok-4.5", "high", "high"),
+        ):
+            selection = ModelSelection(
+                profile="plan",
+                model=model,
+                effort="max",
+                requested_effort="max",
+                policy_effort="max",
+            )
+            request = build_launch_request(
+                executor=executor,
+                action="plan",
+                repo=Path("/repo"),
+                roadmap=roadmap,
+                phase="RUNNER",
+                plan=None,
+                model_selection=selection,
+                prompt_bundle=build_prompt("plan", roadmap, phase="RUNNER", harness_target=executor),
+                json_output=False,
+                bypass_approvals=False,
+            )
+            spec = build_launch_spec(request)
+            self.assertEqual(spec.requested_effort, "max")
+            self.assertEqual(spec.policy_effort, "max")
+            self.assertEqual(spec.effective_effort, effective)
+            self.assertIn(argv_token, spec.command)
 
     def test_gemini_output_reduction_handles_json_and_stream_json(self):
         selection = resolve_profile("execute")
