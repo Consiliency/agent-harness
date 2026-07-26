@@ -22,6 +22,11 @@ from phase_loop_runtime.panel_invoker import _exec_claude_tui_leg, _run_claude_t
 
 pytestmark = pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh")
 
+
+@pytest.fixture(autouse=True)
+def _proven_subscription_auth(monkeypatch):
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
+
 _NO_TRANSCRIPT = lambda *a, **k: ""  # noqa: E731
 
 # Fast timing so the startup state machine resolves in seconds, not the production

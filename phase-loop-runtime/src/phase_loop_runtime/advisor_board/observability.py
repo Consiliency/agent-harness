@@ -460,6 +460,11 @@ class BoardObserver:
             payload["reason"] = str(detail)
         if kind == "seat.failed":
             payload["failure"] = {"reason": str(detail or status)}
+        refusal_kind = getattr(result, "provider_refusal_kind", None)
+        if refusal_kind:
+            payload["provider_refusal_kind"] = str(refusal_kind)
+        if bool(getattr(result, "fallback_used", False)):
+            payload["fallback_used"] = True
         self._emit(kind, payload=payload, **fields)
 
 

@@ -38,6 +38,7 @@ from phase_loop_runtime.advisor_board import (
     Board,
     HostContext,
     Seat,
+    CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS,
     resolve_seat_env,
 )
 from phase_loop_runtime.advisor_board import SeatValidationError, resolve_board
@@ -188,7 +189,11 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
     every launcher, for both the subscription and api-key fallback paths."""
 
     def _all_keys_base(self) -> dict:
-        return {var: "secret" for var in pi._API_KEY_VARS} | {"PATH": "/usr/bin"}
+        return (
+            {var: "secret" for var in pi._API_KEY_VARS}
+            | {var: "alternate" for var in CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS}
+            | {"PATH": "/usr/bin"}
+        )
 
     def _codex_seat(self, auth: str) -> Seat:
         return Seat(model="gpt-5.6-sol", effort="max", harness="codex", auth=auth)
@@ -197,7 +202,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
         return Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", auth=auth)
 
     def _claude_seat(self, auth: str) -> Seat:
-        return Seat(model="claude-sonnet-5", effort="max", harness="claude", auth=auth)
+        return Seat(model="claude-fable-5", effort="max", harness="claude", auth=auth)
 
     def test_codex_launcher_subscription_scrubs_every_key(self) -> None:
         env = resolve_seat_env(self._codex_seat("subscription"), self._all_keys_base())
@@ -242,29 +247,20 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
 
         with patch.object(pi, "_claude_code_support_status", return_value=(True, "")), \
                 patch.object(pi, "_under_claude_code", return_value=False), \
+                patch.object(pi, "_claude_subscription_auth_ok", return_value=(True, "")), \
                 patch.object(pi, "_run_claude_tui_session", side_effect=fake_session), \
                 tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             pi._exec_claude_tui_leg(Path(rd), Path(od), 600, "bundle", effort="max", env=env)
-        for var in pi._API_KEY_VARS:
+        for var in set(pi._API_KEY_VARS) | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS):
             self.assertNotIn(var, captured["env"])
 
-    def test_claude_launcher_api_key_injects_only_anthropic(self) -> None:
-        env = resolve_seat_env(self._claude_seat(AUTH_API_KEY), self._all_keys_base(),
-                               allow_api_key_fallback=True)
-        captured: dict = {}
-
-        def fake_session(**kwargs):
-            captured["env"] = kwargs.get("env")
-            return 0, "AGREE", "", ""
-
-        with patch.object(pi, "_claude_code_support_status", return_value=(True, "")), \
-                patch.object(pi, "_under_claude_code", return_value=False), \
-                patch.object(pi, "_run_claude_tui_session", side_effect=fake_session), \
-                tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
-            pi._exec_claude_tui_leg(Path(rd), Path(od), 600, "bundle", effort="max", env=env)
-        self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "secret")
-        self.assertNotIn("OPENAI_API_KEY", captured["env"])
-        self.assertNotIn("GEMINI_API_KEY", captured["env"])
+    def test_claude_fable_api_key_fallback_is_forbidden_even_with_optin(self) -> None:
+        with self.assertRaisesRegex(ValueError, "TUI subscription auth"):
+            resolve_seat_env(
+                self._claude_seat(AUTH_API_KEY),
+                self._all_keys_base(),
+                allow_api_key_fallback=True,
+            )
 
     def test_api_key_seat_without_optin_never_launches(self) -> None:
         # resolve_seat_env fail-closes BEFORE any subprocess is built.

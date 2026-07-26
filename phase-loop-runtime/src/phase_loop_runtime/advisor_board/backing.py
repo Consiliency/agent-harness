@@ -48,6 +48,37 @@ VENDOR_API_KEY_VARS: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"),
 }
 
+# Credentials and routing selectors that can move a Claude Code process away
+# from the first-party Claude.ai subscription lane.  This is deliberately
+# broader than ``VENDOR_API_KEY_VARS``: the latter remains the frozen cross-
+# vendor API-key map, while this set also covers helpers, gateways, and cloud
+# providers that Claude Code gives precedence over subscription OAuth.
+CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "ANTHROPIC_AWS_BASE_URL",
+    "ANTHROPIC_AWS_WORKSPACE_ID",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    "CLAUDE_CODE_SKIP_MANTLE_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+)
+
 
 def all_vendor_key_vars() -> tuple[str, ...]:
     """Every vendor API-key var (scrub set for a subscription seat)."""
@@ -57,6 +88,17 @@ def all_vendor_key_vars() -> tuple[str, ...]:
             if var not in seen:
                 seen.append(var)
     return tuple(seen)
+
+
+def scrub_subscription_env(base_env: Mapping[str, str]) -> dict[str, str]:
+    """Return a subscription-only child environment.
+
+    All vendor API keys are removed. Claude-specific credential helpers,
+    alternate endpoints, and cloud-provider selectors are removed as well so a
+    Claude seat cannot silently escape the first-party subscription lane.
+    """
+    blocked = set(all_vendor_key_vars()) | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
+    return {key: value for key, value in base_env.items() if key not in blocked}
 
 
 # --- backing selector -------------------------------------------------------
@@ -107,16 +149,21 @@ def resolve_seat_env(
     silent key can never slip through. Pure and side-effect-free; ABDHOME wires
     it into the subprocess/gateway env.
     """
-    env = {k: v for k, v in base_env.items() if k not in all_vendor_key_vars()}
+    env = scrub_subscription_env(base_env)
     if seat.auth == AUTH_SUBSCRIPTION:
         return env
     if seat.auth == AUTH_API_KEY:
+        vendor = seat_vendor_family(seat)
+        if vendor == "claude" and seat.model.lower().startswith(("claude-fable-", "claude-opus-")):
+            raise ValueError(
+                f"seat {seat.seat_key} requires Claude Code TUI subscription auth; "
+                "api_key fallback is forbidden"
+            )
         if not allow_api_key_fallback:
             raise ValueError(
                 f"seat {seat.seat_key} requests the api_key lane but the board did not "
                 "opt in (allow_api_key_fallback=False) — never-silent-key"
             )
-        vendor = seat_vendor_family(seat)
         for var in VENDOR_API_KEY_VARS.get(vendor, ()):  # ONLY this vendor's key(s)
             if var in base_env:
                 env[var] = base_env[var]
@@ -126,7 +173,9 @@ def resolve_seat_env(
 
 __all__ = [
     "VENDOR_API_KEY_VARS",
+    "CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS",
     "all_vendor_key_vars",
+    "scrub_subscription_env",
     "BackingDecision",
     "select_backing",
     "resolve_seat_env",

@@ -32,6 +32,7 @@ from phase_loop_runtime.advisor_board import (
     seat_vendor_family,
 )
 from phase_loop_runtime.advisor_board.backing import VENDOR_API_KEY_VARS
+from phase_loop_runtime.advisor_board.backing import CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS
 
 
 class DefaultBoardReproducesTodayTests(unittest.TestCase):
@@ -74,12 +75,17 @@ class AuthScrubByteEquivalenceTests(unittest.TestCase):
         self.assertEqual(set(all_vendor_key_vars()), set(pi._API_KEY_VARS))
 
     def test_subscription_seat_scrubs_every_vendor_key(self) -> None:
-        base = {var: "secret" for var in pi._API_KEY_VARS} | {"PATH": "/usr/bin", "HOME": "/h"}
+        base = (
+            {var: "secret" for var in pi._API_KEY_VARS}
+            | {var: "alternate" for var in CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS}
+            | {"PATH": "/usr/bin", "HOME": "/h"}
+        )
         sub_seat = Seat(model="gpt-5.6-sol", effort="max", harness="codex")  # subscription default
         env = resolve_seat_env(sub_seat, base)
-        for var in pi._API_KEY_VARS:
+        for var in set(pi._API_KEY_VARS) | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS):
             self.assertNotIn(var, env)
         self.assertEqual(env["PATH"], "/usr/bin")  # non-key vars preserved
+        self.assertEqual(env, pi._subscription_env(base))
 
     def test_api_key_seat_injects_only_its_vendor_key(self) -> None:
         base = {var: "secret" for var in pi._API_KEY_VARS} | {"PATH": "/usr/bin"}

@@ -44,29 +44,15 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys out of the environment; the runtime strips known API-key variables and uses local subscription CLIs.
-6. On a Claude Code host the runtime DEFERS the `claude` leg (`UNAVAILABLE`, empty text) so you supply it as a native `Task` Agent (#92); on a headless NON-Claude host (e.g. Codex Desktop) the runtime now RUNS the leg itself through a self-allocated PTY (#183), so it is NOT deferred there. See "Fulfilling the deferred claude leg natively" below for the Claude-Code defer and the native-adapter fallback.
+6. Every Fable or Opus seat runs only through the Claude Code self-PTY adapter after `claude auth status --json` proves a first-party `claude.ai` subscription. `subscription_auth_unproven` and `tui_adapter_required` are unavailable seats, never invitations to substitute an API or native Task Agent.
 
-## Fulfilling The Deferred Claude Leg Natively (#125 / #183)
+## Claude Subscription TUI Boundary
 
-The runtime defers the `claude` leg (`status="UNAVAILABLE"`, empty text — never counted as an AGREE, recorded as a non-gating `panel_leg_degraded` warn) ONLY when it cannot drive a Claude TUI here. Two machine-branchable reason codes:
+Fable and Opus have one execution route: the installed Claude Code TUI in a self-allocated PTY. The launch pins the exact requested model, disables fallback-model selection, supplies run-isolated settings with no API-key helper, and uses a scrubbed environment. The auth probe accepts only a logged-in, first-party `claude.ai` subscription. Identity fields and raw probe output are not retained.
 
-- `under_claude_code` — you are running INSIDE a Claude Code session (`CLAUDECODE=1`). The driving Claude Code session supplies the leg as its own native `Task` Agent. This is the case the RUNTIME actually defers.
-- `native_adapter_required` — an AFFORDANCE / fallback (#183). On a headless / no-tty host such as the **Codex Desktop** tool shell (`CLAUDECODE` unset, stdin/stdout not a tty) the runtime now RUNS the self-PTY TUI itself, so the leg is NOT deferred by default. Use this path only when the runtime cannot run the TUI (no Claude support on the host) or you PREFER to fulfill the leg through your own native sub-agent adapter (`multi_agent_v1.spawn_agent`).
+On a headless non-Claude host, the self-PTY route remains valid. Inside Claude Code, where a nested TUI cannot be driven safely, the seat returns `UNAVAILABLE` with `detail="tui_adapter_required"`. Do not fill it through the host's Task/subagent primitive; retry the board from a host where the TUI adapter can run.
 
-Do NOT accept a short board silently. When the leg IS deferred (under Claude Code), or when you deliberately opt into the native-adapter fallback, ask the runtime for the structured request instead of parsing the log line, then fulfill it natively:
-
-```python
-from phase_loop_runtime.panel_invoker import native_agent_leg_request
-
-req = native_agent_leg_request(mode="review")   # env defaults to os.environ
-# req.reason == "native_adapter_required" on a non-Claude host (affordance),
-# "under_claude_code" inside a Claude Code session.
-# spawn a Codex native sub-agent seeded with the SAME review bundle you passed the
-# board, plus req.instructions (the review brief) and req.verdict_contract, on
-# req.model (Fable by default). req.to_dict() is JSON for the tool boundary.
-```
-
-The native agent must be given the same `review-bundle.md` material the board reviewed, must follow `req.instructions`, and (for `mode="review"`) must end with exactly one of `AGREE` / `PARTIALLY AGREE` / `DISAGREE` per `req.verdict_contract`. Reconcile its verdict with the codex + gemini legs as the third seat. A `UNAVAILABLE` claude leg is a gap to fill, not an acceptable 2-leg board.
+Today's TUI adapter has no typed classifier-refusal capability, so refusal-looking text never triggers fallback. A future typed adapter may permit one Opus TUI retry only for independently attested defensive-security work; the result remains degraded/fallback-attributed, and a second refusal fails closed. The legacy native-fill descriptor remains only for explicitly custom, non-governed integrations.
 
 ## Standalone Smoke Shape
 
