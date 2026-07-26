@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from phase_loop_runtime.baml_modular import export_function_schema
+from phase_loop_runtime.launcher import _claude_json_schema
 from phase_loop_runtime.launcher import CODEX_OUTPUT_SCHEMA_PLACEHOLDER, build_launch_request, build_launch_spec
 from phase_loop_runtime.models import CLOSEOUT_SCHEMA
 from phase_loop_runtime.profiles import resolve_profile_for_executor
@@ -56,7 +57,18 @@ class PhaseLoopSchemaFlowTest(unittest.TestCase):
 
             with self.subTest(action=action, executor="claude"):
                 spec = self._spec("claude", action)
-                self.assertEqual(_schema_hash(json.loads(spec.command[spec.command.index("--json-schema") + 1])), expected_hash)
+                emitted = json.loads(spec.command[spec.command.index("--json-schema") + 1])
+                # ah#291: claude is the ONE harness whose payload is not byte-identical to
+                # the canonical export. Its CLI validates `--json-schema` with Ajv against
+                # a draft-07 registry and REJECTS a `$schema: .../draft/2020-12/schema`
+                # declaration at arg-parse time, so the adapter strips that declaration.
+                # The CONSTRAINTS are unchanged — assert exactly that, rather than the raw
+                # hash, so this test still fails if anything other than the meta-schema
+                # declaration diverges.
+                self.assertNotIn("$schema", emitted)
+                # Derived from the PRODUCTION down-converter, not restated — a
+                # hand-written copy of this expectation is exactly what went stale here.
+                self.assertEqual(emitted, _claude_json_schema(schema))
 
             for executor in ("gemini", "opencode", "pi"):
                 with self.subTest(action=action, executor=executor):

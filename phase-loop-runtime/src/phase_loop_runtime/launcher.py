@@ -15,7 +15,7 @@ import urllib.parse
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
@@ -502,6 +502,28 @@ def build_codex_command(
     return command
 
 
+# ah#291: the Claude CLI's `--json-schema` validates with Ajv against a DEFAULT draft-07
+# registry, so a schema declaring `$schema: .../draft/2020-12/schema` is rejected at
+# ARG-PARSE time — before any model turn — with:
+#
+#     Error: --json-schema is not a valid JSON Schema: no schema with key or ref
+#     "https://json-schema.org/draft/2020-12/schema"
+#
+# `CLOSEOUT_SCHEMA` declares exactly that, so every claude execute/repair/review launch
+# failed instantly. Codex's `--output-schema` ACCEPTS 2020-12, which is why resume worked
+# and masked it.
+#
+# Down-convert at THIS adapter boundary rather than at the schema source: the schema is
+# shared with executors that accept 2020-12, and the declaration is the only
+# incompatibility — the body uses no 2020-12-only constructs (no `prefixItems`,
+# `$dynamicRef`, or `unevaluated*`), so dropping the declaration is CONSTRAINT-PRESERVING
+# (Ajv then applies its draft-07 default, under which the body is valid). Doing it at the
+# chokepoint also covers any future caller-supplied schema, whatever its own `$schema`.
+def _claude_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """The schema as the Claude CLI will accept it: same constraints, no `$schema`."""
+    return {k: v for k, v in schema.items() if k != "$schema"}
+
+
 def build_claude_command(
     repo: Path,
     selection: ModelSelection,
@@ -541,7 +563,10 @@ def build_claude_command(
         selection.effort,
     ]
     if closeout_schema is not None:
-        command.extend(["--json-schema", json.dumps(closeout_schema, separators=(",", ":"), sort_keys=True)])
+        command.extend([
+            "--json-schema",
+            json.dumps(_claude_json_schema(closeout_schema), separators=(",", ":"), sort_keys=True),
+        ])
     if bypass_approvals:
         command.append("--dangerously-skip-permissions")
     command.append(prompt)

@@ -1304,7 +1304,9 @@ Codex live launches that require a closeout write `CLOSEOUT_SCHEMA` to a
 temporary JSON file, append `--output-schema <path>`, record the path on
 `LaunchSpec.cleanup_paths`, and remove it after subprocess completion. Claude
 live launches that require a closeout append `--json-schema <compact-json>`
-with the same schema. Gemini, OpenCode, PI, command adapters, and manual paths
+with that schema minus its `$schema` declaration (ah#291: the Claude CLI's Ajv
+rejects a draft-2020-12 `$schema` at arg-parse time; the constraint body is
+byte-identical otherwise). Gemini, OpenCode, PI, command adapters, and manual paths
 do not receive native CLI schema flags during NATIVE.
 
 The NATIVE runner still accepts legacy rendered `automation:` blocks during the
@@ -1409,8 +1411,9 @@ The canonical helper call is `export_function_schema("EmitPhaseCloseout")`.
 existing callers and is computed from
 `export_function_schema("EmitPhaseCloseout")` at module import time. Codex
 launches that require closeout write that schema to `--output-schema <path>`;
-Claude launches pass the same canonical schema through
-`--json-schema <compact-json>`. Gemini, OpenCode, and PI do not expose matching
+Claude launches pass that same canonical schema, minus its `$schema`
+declaration, through `--json-schema <compact-json>` (ah#291 — constraints
+unchanged; only the meta-schema declaration is dropped). Gemini, OpenCode, and PI do not expose matching
 native flags, so their closeout prompts embed deterministic schema-description
 text from `inject_schema_description(prompt, schema)` with the canonical schema
 hash and ordered fields.
