@@ -184,6 +184,9 @@ class LaunchSpec:
     selected_agent: str | None = None
     selected_model: str | None = None
     selected_effort: str | None = None
+    requested_effort: str | None = None
+    policy_effort: str | None = None
+    effective_effort: str | None = None
     profile_source: str | None = None
     override_reason: str | None = None
     selected_variant: str | None = None
@@ -231,6 +234,11 @@ class LaunchSpec:
             "selected_agent": self.selected_agent,
             "selected_model": self.selected_model,
             "selected_effort": self.selected_effort,
+            "requested_effort": self.requested_effort or self.selected_effort,
+            "policy_effort": self.policy_effort or self.selected_effort,
+            "effective_effort": self.effective_effort or _adapter_effective_effort(
+                self.executor, self.selected_model, self.selected_effort
+            ),
             "profile_source": self.profile_source,
             "override_reason": self.override_reason,
             "selected_variant": self.selected_variant,
@@ -289,6 +297,9 @@ class LaunchResult:
     permission_posture: str = "unknown"
     selected_agent: str | None = None
     selected_model: str | None = None
+    requested_effort: str | None = None
+    policy_effort: str | None = None
+    effective_effort: str | None = None
     selected_variant: str | None = None
     process_pid: int | None = None
     process_group_id: int | None = None
@@ -344,6 +355,9 @@ class LaunchResult:
             "permission_posture": self.permission_posture,
             "selected_agent": self.selected_agent,
             "selected_model": self.selected_model,
+            "requested_effort": self.requested_effort,
+            "policy_effort": self.policy_effort,
+            "effective_effort": self.effective_effort,
             "selected_variant": self.selected_variant,
         }
         if self.log_path:
@@ -763,7 +777,7 @@ def build_gemini_command(
     # `_resolve_command_context` substitutes a launch-time gitignore-aware copy —
     # agy can only ever write the throwaway copy, never the reviewed tree
     # (IF-0-SANDBOX-1). (`bypass_approvals` is moot for agy's all-or-nothing model.)
-    command = ["agy", "--model", _gemini_cli_model(selection.model)]
+    command = ["agy", "--model", _gemini_cli_model(selection.model, selection.effort)]
     if action != "review":
         command.append("--dangerously-skip-permissions")
     add_dir_value = f"{GEMINI_REVIEW_STAGE_PREFIX}{repo}" if action == "review" else str(repo)
@@ -791,7 +805,6 @@ def build_gemini_command(
 # An unmapped `gemini-*` id that is neither a matrix id nor a canonical agy id FAILS LOUD.
 _GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro (High)",  # model-id-source: agy adapter map (heavy/Pro; display, planning path)
-    "gemini-3.6-flash": "gemini-3.6-flash-high",  # model-id-source: agy adapter map (regular tier; canonical agy id)
     "gemini-3.5-flash-lite": "gemini-3.5-flash-high",  # model-id-source: agy adapter map (lite ASPIRATIONAL → degrade to real 3.5 Flash; agy has no flash-lite)
 }
 
@@ -799,10 +812,13 @@ _GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
 # through verbatim for agy to validate. NOTE: the shape is broader than the live catalog (it
 # admits e.g. `-thinking` / `gemini-3.1-pro-medium` that a given agy build may not expose) —
 # those still pass through and fail LOUD at agy (exit 1), never silently mis-route.
-_AGY_CANONICAL_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)-(?:high|medium|low|thinking)$")
+_AGY_CANONICAL_GEMINI = re.compile(
+    r"^(gemini-\d+\.\d+-(?:flash|pro))-(high|medium|low|thinking)$"
+)
+_AGY_BASE_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)$")
 
 
-def _gemini_cli_model(model: str) -> str:
+def _gemini_cli_model(model: str, effort: str | None = None) -> str:
     # Map the phase-loop routing aliases (pro/auto/"") onto agy's default Pro model, and the
     # matrix `gemini-*` tier ids onto their agy model (_GEMINI_MODEL_ID_ALIASES). A canonical
     # agy id (gemini-3.6-flash-high, ...) passes through verbatim. Any OTHER value — a display
@@ -810,11 +826,25 @@ def _gemini_cli_model(model: str) -> str:
     # through for agy to validate. An UNKNOWN `gemini-*` id that is neither a matrix id nor a
     # canonical agy id fails loud (never silently → Pro).
     candidate = (model or "").strip()
+    if _AGY_BASE_GEMINI.match(candidate):
+        rendered_effort = effort or "high"
+        if rendered_effort not in {"high", "medium", "low", "thinking"}:
+            raise ValueError(
+                f"gemini base model {candidate!r} requires a supported agy effort; got {effort!r}"
+            )
+        return f"{candidate}-{rendered_effort}"
     if candidate in {"", "auto", "pro"}:
         return "Gemini 3.1 Pro (High)"
     if candidate in _GEMINI_MODEL_ID_ALIASES:
         return _GEMINI_MODEL_ID_ALIASES[candidate]
-    if _AGY_CANONICAL_GEMINI.match(candidate):
+    canonical = _AGY_CANONICAL_GEMINI.match(candidate)
+    if canonical:
+        embedded_effort = canonical.group(2)
+        if effort is not None and effort != embedded_effort:
+            raise ValueError(
+                f"gemini model {candidate!r} embeds effort {embedded_effort!r}, "
+                f"which conflicts with requested effort {effort!r}"
+            )
         return candidate  # canonical agy id shape — passed through for agy to validate
     if candidate.startswith("gemini-"):
         # FOLLOW-UP (Consiliency/agent-harness#302): this raises at spec-BUILD time, so
@@ -826,6 +856,31 @@ def _gemini_cli_model(model: str) -> str:
             "_GEMINI_MODEL_ID_ALIASES (never silently coerce a gemini-* id to Pro)"
         )
     return candidate
+
+
+def _adapter_effective_effort(
+    executor: str,
+    model: str | None,
+    policy_effort: str | None,
+    action: str | None = None,
+) -> str | None:
+    """The effort token actually emitted at the final adapter boundary."""
+    if policy_effort is None:
+        return None
+    if executor == "codex":
+        return _codex_cli_effort(policy_effort)
+    if executor == "grok":
+        return _grok_cli_effort(policy_effort)
+    if executor == "gemini":
+        rendered = _gemini_cli_model(model or "", policy_effort)
+        canonical = _AGY_CANONICAL_GEMINI.match(rendered)
+        if canonical:
+            return canonical.group(2)
+        display = re.search(r"\((High|Medium|Low|Thinking)\)$", rendered)
+        return display.group(1).lower() if display else policy_effort
+    if executor == "opencode":
+        return _opencode_variant(action or "plan", policy_effort) or policy_effort
+    return policy_effort
 
 
 def build_grok_command(
@@ -1599,7 +1654,20 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
             f"executor {request.executor!r} has no build_command bound on its "
             "capability record"
         )
-    return builder(request, record)
+    spec = builder(request, record)
+    # Registry extensions may intentionally return an opaque adapter result;
+    # preserve that delegation contract and decorate only native LaunchSpecs.
+    if not isinstance(spec, LaunchSpec) or not hasattr(request, "model_selection"):
+        return spec
+    policy_effort = request.model_selection.policy_effort or request.model_selection.effort
+    return replace(
+        spec,
+        requested_effort=request.model_selection.requested_effort or policy_effort,
+        policy_effort=policy_effort,
+        effective_effort=_adapter_effective_effort(
+            request.executor, request.model_selection.model, policy_effort, request.action
+        ),
+    )
 
 
 def _build_command_launch_spec(request: LaunchRequest, capability) -> LaunchSpec:
@@ -2013,6 +2081,11 @@ def _launch_claude_channel(spec: LaunchSpec, *, log_path: Path | None) -> Launch
         started_at=started_at,
         finished_at=_utc_now(),
         selected_model=spec.selected_model,
+        requested_effort=spec.requested_effort or spec.selected_effort,
+        policy_effort=spec.policy_effort or spec.selected_effort,
+        effective_effort=spec.effective_effort or _adapter_effective_effort(
+            spec.executor, spec.selected_model, spec.selected_effort
+        ),
         claude_route="claude_channel",
         claude_route_warnings=spec.claude_route_warnings,
         claude_route_result=payload,
@@ -3256,6 +3329,11 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         permission_posture=spec.permission_posture,
         selected_agent=spec.selected_agent,
         selected_model=spec.selected_model,
+        requested_effort=spec.requested_effort or spec.selected_effort,
+        policy_effort=spec.policy_effort or spec.selected_effort,
+        effective_effort=spec.effective_effort or _adapter_effective_effort(
+            spec.executor, spec.selected_model, spec.selected_effort
+        ),
         selected_variant=spec.selected_variant,
         process_pid=result.process_pid,
         process_group_id=result.process_group_id,

@@ -3,18 +3,46 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.capability_registry import DEFAULT_EXECUTOR_POLICY
+from phase_loop_runtime.launcher import (
+    _adapter_effective_effort,
+    _gemini_cli_model,
+    build_codex_command,
+    build_grok_command,
+)
 from phase_loop_runtime.models import ExecutionPolicyRule, ModelSelection
 from phase_loop_runtime.profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile_for_executor
 
 
 class PhaseLoopExecutionPolicyTest(unittest.TestCase):
+    def test_adapter_effort_provenance_matches_emitted_argv(self):
+        codex = ModelSelection(profile="plan", model="gpt-5.6-sol", effort="max")
+        codex_command = build_codex_command(Path("/repo"), codex, "prompt")
+        self.assertIn('model_reasoning_effort="xhigh"', codex_command)
+        self.assertEqual(_adapter_effective_effort("codex", codex.model, codex.effort), "xhigh")
+
+        grok = ModelSelection(profile="plan", model="grok-4.5", effort="max")
+        grok_command = build_grok_command(
+            Path("/repo"), grok, action="plan", context_file="context.md"
+        )
+        effort_index = grok_command.index("--reasoning-effort") + 1
+        self.assertEqual(grok_command[effort_index], "high")
+        self.assertEqual(_adapter_effective_effort("grok", grok.model, grok.effort), "high")
+
+    def test_gemini_base_model_renders_effort_and_conflict_fails(self):
+        self.assertEqual(
+            _gemini_cli_model("gemini-3.6-flash", "medium"),
+            "gemini-3.6-flash-medium",
+        )
+        with self.assertRaisesRegex(ValueError, "conflicts with requested effort"):
+            _gemini_cli_model("gemini-3.6-flash-high", "medium")
+
     def test_dfparsoak_policy_precedence_keeps_execute_default_and_explicit_fallbacks(self):
         self.assertEqual(DEFAULT_EXECUTOR_POLICY["execute"], "codex")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="pi").model, "auto")
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-sonnet-5")
         # gemini execute uses the canonical agy 3.6 Flash id (CR round-5 finding B — newest
         # GA), NOT `auto` (which the adapter collapses to Pro/heavy).
-        self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "gemini-3.6-flash-high")
+        self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "gemini-3.6-flash")
 
         roadmap = ExecutionPolicyRule(
             selector="execute",

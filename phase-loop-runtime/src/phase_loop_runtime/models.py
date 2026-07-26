@@ -27,9 +27,11 @@ MODEL_PROFILES = ("roadmap", "plan", "execute", "repair", "review", "skill-maint
 EXECUTORS = ("codex", "claude", "gemini", "grok", "opencode", "pi", "command", "manual")
 # Vendor-agnostic model roles (model-routing-v1). "class" not "tier" — tier
 # already denotes evidence-audit budgets (--tier-2/--tier-3).
-MODEL_CLASSES = ("planner", "implementer", "worker")
-# Model-capability tiers (design-model-tier-taxonomy.md). ultra=planning/review/
-# advising, heavy=supervising long-running workflows, regular=implementation,
+# Authoring and evaluation are distinct routing roles: planners produce roadmap/
+# plan artifacts, while reviewers evaluate plans, code, advice, and security posture.
+MODEL_CLASSES = ("planner", "reviewer", "implementer", "worker")
+# Model-capability tiers (design-model-tier-taxonomy.md). ultra=review/advice/
+# security, heavy=authoring and supervising, regular=implementation,
 # lite=cheap/high-volume subtasks. The concrete `tier -> (vendor -> model_id)`
 # matrix and the `resolve(role, vendor)` core live in `profiles.py`.
 #
@@ -491,9 +493,13 @@ class ModelSelection:
     effort: str
     source: str = "default"
     override_reason: str | None = None
-    # model-routing-v1 P4: the resolved role (planner/implementer/worker) when a
+    # model-routing-v1 P4: the resolved role when a
     # model_class policy chose the model; None on the legacy/empty-policy path.
     model_class: str | None = None
+    # Effort provenance is additive/back-compatible. `effort` remains the
+    # provider-normalized policy value consumed by launchers.
+    requested_effort: str | None = None
+    policy_effort: str | None = None
 
     def __post_init__(self) -> None:
         require_literal(self.profile, MODEL_PROFILES, "model profile")
@@ -2417,11 +2423,19 @@ class ResolvedExecutionPolicy:
     fallback_applied: bool = False
     # model-routing-v1 P4: the role the winning policy requested, for route logs.
     model_class: str | None = None
+    # Winning effort before provider normalization, followed by the normalized
+    # policy value. Historical `effort` remains equal to `policy_effort`.
+    requested_effort: str | None = None
+    policy_effort: str | None = None
 
     def __post_init__(self) -> None:
         require_literal(self.action, PRODUCT_LOOP_ACTIONS, "execution policy action")
         require_literal(self.executor, EXECUTORS, "execution policy executor")
         require_literal(self.effort, NORMALIZED_EFFORT_LEVELS, "execution policy effort")
+        if self.requested_effort is not None:
+            require_literal(self.requested_effort, NORMALIZED_EFFORT_LEVELS, "requested execution policy effort")
+        if self.policy_effort is not None:
+            require_literal(self.policy_effort, NORMALIZED_EFFORT_LEVELS, "normalized execution policy effort")
         require_literal(self.work_unit_kind, WORK_UNIT_KINDS, "execution policy work-unit kind")
         require_literal(self.unsupported_policy_behavior, UNSUPPORTED_POLICY_BEHAVIORS, "unsupported policy behavior")
 

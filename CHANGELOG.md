@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Role-aware model and effort defaults (Consiliency/agent-harness#310)
+
+- Roadmap and plan authoring now use Claude Opus 5 through the `planner`/heavy
+  route, while plan review, code review, advice, and security evaluation use the
+  distinct `reviewer`/ultra route on Claude Fable 5.
+- Normal execute and repair remain on Claude Sonnet 5 and request high effort;
+  authoring and review request max effort.
+- Execution-policy and launch metadata distinguish requested, provider-normalized,
+  and adapter-effective effort. Codex records `max/max/xhigh`, Grok records
+  `max/max/high`, and Gemini records its explicit policy clamp.
+- Gemini Flash defaults store the base `gemini-3.6-flash` model and render the
+  policy effort into the canonical agy model id at launch.
+
 ### FAB activation piece 3a — durable admission bridge (Consiliency/agent-harness#191)
 
 Binds the trusted FAB `fab_run_id` at ADMISSION time into the durable train
