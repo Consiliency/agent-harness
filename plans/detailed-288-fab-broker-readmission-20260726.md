@@ -114,6 +114,11 @@ impossible.
   dependency.
 
 ## The re-admission contract (what the broker must re-admit + verify)
+> **SUPERSEDED by `## CR AMENDMENT 2` — this section still specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. Do not satisfy it as written;
+> a replacement contract for the CAS design has NOT yet been authored (see
+> `## CR AMENDMENT 2` -> "What this amendment does NOT yet provide").**
+
 
 A delta re-admission is admitted **iff** all hold; otherwise it FAILS CLOSED (`_fab_delta_readmit` returns
 `None` → the caller falls through to the UNCHANGED, fail-closed `pr-head-advanced` guard in `_live_merge_pr`):
@@ -158,6 +163,11 @@ between admit and ledger-append fails closed exactly as today — the ledger sti
 guard fires, resume re-runs and the deterministic admit dedups).
 
 ## Fail-closed matrix (each branch drives the production path; each has a biting mutation)
+> **SUPERSEDED by `## CR AMENDMENT 2` — this section still specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. Do not satisfy it as written;
+> a replacement contract for the CAS design has NOT yet been authored (see
+> `## CR AMENDMENT 2` -> "What this amendment does NOT yet provide").**
+
 
 | # | Condition | Detection (production path) | Result | Biting mutation (test proves it) |
 |---|-----------|-----------------------------|--------|-----------------------------------|
@@ -249,6 +259,11 @@ as the mechanism.** Rationale:
   per-repo blast-radius property the routing service already guarantees for `execute`).
 
 ### Change B — `phase-loop-runtime/src/phase_loop_runtime/train_runner.py` (modify)
+> **SUPERSEDED by `## CR AMENDMENT 2` — this section still specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. Do not satisfy it as written;
+> a replacement contract for the CAS design has NOT yet been authored (see
+> `## CR AMENDMENT 2` -> "What this amendment does NOT yet provide").**
+
 - **Add** a module-level default seam `_default_broker_readmit(coordinator_runtime, *, node, workspace,
   owned_paths, run_id, artifact, new_head_sha, next_epoch) -> Optional[str]` (place near
   `_default_build_admission`, `train_runner.py:101`). It builds the approval binding from **durable
@@ -296,6 +311,11 @@ computed. Follow `DeltaReadmitTransactionTest`'s fixture (`tests/test_fab_delta_
 git base→candidate→delta, a candidate run store, a real file-backed ledger.
 
 ### `phase-loop-runtime/tests/test_convergence_broker_readmit.py` (create — UNMARKED module) — Change A
+> **SUPERSEDED by `## CR AMENDMENT 2` — this section still specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. Do not satisfy it as written;
+> a replacement contract for the CAS design has NOT yet been authored (see
+> `## CR AMENDMENT 2` -> "What this amendment does NOT yet provide").**
+
 Drive `BrokerService.readmit_advanced_head` against a real file-backed `LinearizableAdmissionStore` +
 `BrokerEvidenceStore`.
 - `test_readmit_bumps_epoch_above_publish_and_is_durable`: seed the store with a publish admission at epoch 1;
@@ -341,6 +361,11 @@ path, which `test_broker_denied_readmit_recovers_and_fails_closed` exercises gen
   assert the ON behavior. These move WITH the flip (Change C), not before.
 
 ## Dependencies / order
+> **SUPERSEDED by `## CR AMENDMENT 2` — this section still specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. Do not satisfy it as written;
+> a replacement contract for the CAS design has NOT yet been authored (see
+> `## CR AMENDMENT 2` -> "What this amendment does NOT yet provide").**
+
 1. **Change A** — broker primitive + `ReadmitResult` + Change-A tests. Self-contained; verify in isolation.
 2. **Change B** — thread `broker_admit_fn` into `_fab_delta_readmit` + call site; remove KNOWN-LIMITATION
    comment; M1-M6 readmit tests. Depends on A.
@@ -351,6 +376,11 @@ To prove each regression bites: run the new tests on the pre-change tree (Change
 `readmit_advanced_head`; the six-branch tests each fail under their stated mutation) and pass after.
 
 ## Verification (from `phase-loop-runtime/`)
+> **SUPERSEDED by `## CR AMENDMENT 2` — this section still specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. Do not satisfy it as written;
+> a replacement contract for the CAS design has NOT yet been authored (see
+> `## CR AMENDMENT 2` -> "What this amendment does NOT yet provide").**
+
 - Prove the Change-A bite: `PYTHONPATH=src:tests python3 -m pytest -q tests/test_convergence_broker_readmit.py`
   (fails before A, passes after).
 - Prove the Change-B bites: `PYTHONPATH=src:tests python3 -m pytest -q tests/test_fab_delta_consumer.py`
@@ -363,6 +393,11 @@ To prove each regression bites: run the new tests on the pre-change tree (Change
   tests/test_fab_activation_promotion.py` (fence tests now assert ON) plus the full default lane.
 
 ## Acceptance criteria
+> **SUPERSEDED by `## CR AMENDMENT 2` — this section still specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. Do not satisfy it as written;
+> a replacement contract for the CAS design has NOT yet been authored (see
+> `## CR AMENDMENT 2` -> "What this amendment does NOT yet provide").**
+
 - [ ] `_fab_delta_readmit`'s ledger COMMIT POINT is reached ONLY after a brokered admit that is
       epoch-bumped (`lease_epoch = next_epoch ≥ 2`), revocation-checked (`evidence_store.epoch_blocked`), and
       verified against a durable `AdmissionRecord` (`sequence ≥ 2`, matching `idempotency_key` + epoch); the
@@ -481,17 +516,45 @@ progression; and convergence-event ordering. Three consumers already disagree:
 - `convergence/event_log.py:124` — an **independent** monotonicity rule flagging
   `"epoch regression"` over the same values.
 
-### CRUX FACT (verified, and it partially adjudicates the panel split)
+### CRUX FACT — CORRECTED (CR round 1 on this amendment; the original overclaimed)
 
-**The current tip is NOT derivable from existing durable state.** Evidence keys are a
-one-way `sha256(repo\0branch\0head)` (`verbs.py:25`) and `EvidenceRecord` carries only
-`(idempotency_key, state, evidence_reference)` (`evidence.py:13-16`). You can CHECK
-whether a specific head was published; you cannot ASK what the current head is.
+**What is established:** the current tip is NOT derivable from the BROKER's own durable
+state. Evidence keys are a one-way `sha256(repo\0branch\0head)` (`verbs.py:25`) and
+`EvidenceRecord` carries only `(idempotency_key, state, evidence_reference)`
+(`evidence.py:13-16`). `AdmissionRequest` (`contracts.py:19-28`) has no structured head
+field, and `expected_version_predicate` is free text. You can CHECK a candidate head; you
+cannot ASK the broker for the current one.
 
-Consequence: **any** design needs new durable state. The panel split on whether publish
-must change — grok argued readmit could fence off existing evidence, codex argued new
-broker-owned target state is required. This fact shows grok's option is not free; it
-narrows the disagreement to *who writes* the state, not *whether* it is needed.
+**What the first draft of this amendment got WRONG:** it said "not derivable from existing
+durable state" — unqualified — and concluded that ANY design needs new durable state, and
+that this adjudicated the panel split. All three claims are too strong.
+
+The **coordinator train ledger already records the admitted head.**
+`train_ledger.LedgerRecord` carries `branch`, `pr_url` and `head_sha` with last-record-wins
+per `node_id`, and `train_runner.py:2403` reads it as exactly that:
+
+```python
+admitted_sha = rec.head_sha
+# "`rec.head_sha` is the broker-ADMITTED SHA (the ledger record written at
+#  pr_open publish time) ... preserved separately, unmodified by any live OOB read"
+```
+
+So durable state answering "what head was admitted for this node" EXISTS today — it simply
+lives in the coordinator ledger rather than in the broker.
+
+**Consequence: the panel split is NOT adjudicated, and this amendment does not claim it
+is.** The reviewers split on whether publish must change; that question is still open, and
+the ledger makes the "leave publish alone" option MORE viable than the first draft implied,
+not less. A design decision remains outstanding:
+
+| option | uses | open question |
+|---|---|---|
+| broker-owned target journal | new broker state written on publish | is the additive shadow-write worth touching the merged publish path? |
+| reuse the coordinator ledger | `LedgerRecord.head_sha`, already durable | is the ledger a sound TRUST-ROOT authority, or merely bookkeeping? It is written by the coordinator, not the broker, and nothing binds it to broker evidence. |
+
+**Resolve that before implementing.** The second option is cheaper and needs no publish
+change; whether the ledger is trustworthy ENOUGH to fence a trust-root gate is exactly the
+question the first draft skipped by asserting the state did not exist.
 
 ### The replacement design — per-target versioned-head CAS
 
@@ -606,3 +669,40 @@ codex + grok, advisory mode. gemini unavailable throughout (ah#335 — expired O
 `~/.gemini/oauth_creds.json` absent). Across the four CR rounds codex DISAGREE'd 4/4 with
 every finding real and reproduced; grok AGREE'd 4/4. On the design question they split, and
 the crux fact above was verified against source to adjudicate it rather than counting votes.
+
+### What this amendment does NOT yet provide (CR round 1 on the amendment — both seats)
+
+This amendment kills Change A's MECHANISM but does **not** yet supply a replacement
+normative contract. Both review seats flagged this independently as blocking, and they are
+right: an implementer reading the plan front-to-back would find the acceptance criteria,
+fail-closed matrix, re-admission contract, Change-A tests and the epoch-coupled parts of
+Change B still demanding `lease_epoch`, `node_id` and `sequence >= 2` — the design four CR
+rounds killed. They could satisfy the acceptance criteria only by re-implementing it.
+
+Every such section now carries a SUPERSEDED banner, so nothing reads as live. But banners
+are a stop sign, not a road.
+
+**THIS PLAN IS NOT EXECUTABLE UNTIL THE FOLLOWING ARE AUTHORED:**
+
+1. A replacement **re-admission contract** in CAS terms: predecessor record + head,
+   generation/ABA, provider head check, bound approval, ancestry.
+2. A replacement **fail-closed matrix** — the current M1-M6 are epoch-shaped.
+3. Replacement **acceptance criteria**. (The manifest entry records
+   `acceptance_criteria_count: 0`, which is accurate and is why this plan cannot be
+   handed to an implementer yet.)
+4. File-level **change actions** for the work this amendment introduces but never
+   enumerates: the target journal, the publish shadow-write, migration of BOTH publish
+   producers, and the `event_log` schema split.
+5. **Crash/replay ordering**, which is currently unspecified in both directions:
+   - `verbs.py:55` replays terminal evidence BEFORE the normal publish path. A crash
+     between terminal evidence and the proposed journal shadow-write leaves a successful
+     publish permanently without target state unless replay explicitly repairs it —
+     while writing the journal FIRST could authorize an unconfirmed publish.
+   - A crash after a CAS successor append but before the coordinator-ledger commit leaves
+     resume undefined: predecessor checking rejects the retry, while unconditional dedup
+     can replay stale authority after a later generation.
+   Both need an explicit transactional/reconciliation order AND crash-window tests before
+   any crash-recovery acceptance claim is meaningful.
+
+Authoring 1-5 is the next unit of work on ah#288. It should resolve the open design
+question in `### CRUX FACT — CORRECTED` first, because the answer changes items 1, 4 and 5.
