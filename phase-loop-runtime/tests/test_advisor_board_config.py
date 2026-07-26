@@ -19,7 +19,10 @@ from phase_loop_runtime.advisor_board import (
     load_boards,
 )
 
-_ALL_PRESENT = lambda cli: True
+def _ALL_PRESENT(cli):  # noqa: ANN001, ARG001
+    return True
+
+
 _MATRIX = default_matrix(probe=_ALL_PRESENT, env={})
 
 
@@ -171,6 +174,30 @@ purpose = "x"
         with TemporaryDirectory() as tmp:
             cfg = load_boards(_write(tmp, body), matrix=_MATRIX)
         self.assertFalse(cfg.get("sub-only").allow_api_key_fallback)
+
+    def test_research_enabled_is_explicit_and_defaults_false(self) -> None:
+        body = """
+[[boards]]
+name = "research-board"
+purpose = "advisory"
+research_enabled = true
+  [[boards.seats]]
+  model = "gpt-5.6-sol"
+  effort = "high"
+  harness = "codex"
+
+[[boards]]
+name = "ordinary-board"
+purpose = "advisory"
+  [[boards.seats]]
+  model = "gpt-5.6-sol"
+  effort = "high"
+  harness = "codex"
+"""
+        with TemporaryDirectory() as tmp:
+            cfg = load_boards(_write(tmp, body), matrix=_MATRIX)
+        self.assertTrue(cfg.get("research-board").research_policy.enabled)
+        self.assertFalse(cfg.get("ordinary-board").research_policy.enabled)
 
     def test_api_key_seat_without_optin_is_rejected(self) -> None:
         body = """

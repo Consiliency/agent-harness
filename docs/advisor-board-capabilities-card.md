@@ -198,6 +198,48 @@ throttled provider, a constrained host), or `N` to cap. Seat order and
 fail-closed-per-seat semantics are identical regardless; the governed gates thread
 the knob through, defaulting to parallel.
 
+### Opt-in governed web research
+
+`ResearchPolicy(enabled=True)` gives enforceable homebrew Codex and Claude TUI
+seats session-local access to PMCP `scoped_advisor_audit.v1`. The integration
+pins `pmcp==1.20.0`, requires its exact capability declaration, and exposes only
+`gateway.health`, `gateway.catalog_search`, `gateway.describe`, and
+`gateway.invoke`. PMCP then permits only Firecrawl and Bright Data search/scrape/
+crawl/query tools. Resources, prompts, ambient MCP servers, and mutation tools are
+absent or denied. The runtime supplies run-local, highest-precedence definitions for
+both approved providers plus a final manifest overlay, and strips inherited `PMCP_*`
+controls before launch. Codex native web search/apps and Claude's Chrome integration
+are disabled. Claude receives the same four PMCP controls in its tool-availability and
+pre-approval CLI lists, receives only the staged review directory rather than the live
+repository, and remains subscription-TUI only; research does not introduce an API,
+SDK, direct-HTTP, gateway, or native Task fallback for Claude seats.
+
+Each seat gets a unique lock directory, audit file, and typed run/seat/evidence
+correlations. A seat cannot claim successful research from its prose: the runtime
+waits for PMCP's fsynced `audit.completed` record, validates the contiguous audit,
+fails the whole research ledger if any invocation has mismatched run/seat/evidence
+correlations, and attaches only a privacy-safe ledger plus policy/audit/ledger digests. Source
+references are hashed; raw queries, results, credentials, and authorization headers
+are not emitted through observability. Gemini's `agy` adapter, Grok (which lacks a
+proven session-local user-config isolation switch), Omnigent seats, native host
+legs, and custom spawn callbacks currently report
+`UNAVAILABLE/research_profile_unenforceable` when research is enabled.
+
+```python
+from dataclasses import replace
+from phase_loop_runtime.advisor_board import ResearchPolicy
+from phase_loop_runtime.advisor_board.composition import compose_review_board
+from phase_loop_runtime.panel_invoker import invoke_board
+
+board = replace(
+    compose_review_board(),
+    research_policy=ResearchPolicy(enabled=True),
+)
+result = invoke_board(board, "", artifact_ref="path/to/research-brief.md")
+for leg in result.legs:
+    print(leg.seat_key, leg.status, leg.research_status, leg.research_ledger_digest)
+```
+
 ---
 
 ## How to add a custom board
@@ -215,6 +257,7 @@ default_board = "my-review"          # optional: what bare `advisor-board` resol
 [[boards]]
 name = "my-review"
 purpose = "code-review"
+research_enabled = true                 # optional; default false, exact PMCP profile
 
   [[boards.seats]]
   model = "gpt-5.5"                  # must be a registered model…
@@ -256,8 +299,9 @@ a two-same-vendor board is not collapsed.
    keep an existing invocation working; prefer `<harness>-advisor-board` for new
    instructions.
 
-2. **The runtime API.** `panel_invoker.invoke_panel(artifact, legs, ...)` is
-   **unchanged** — same signature, same behavior. The live governed gates
+2. **The runtime API.** `panel_invoker.invoke_panel(artifact, legs, ...)` keeps the
+   same positional contract and disabled behavior. It has one additive keyword-only
+   `research_policy=None` parameter. The live governed gates
    (`governed_review`, `governed_premerge`) still call it. The new
    `invoke_board(board, artifact, ...)` seam is *additive*; migrate to it only when
    you want boards/presets/breadth. When you do, the `default` board reproduces the

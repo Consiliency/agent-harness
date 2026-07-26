@@ -39,6 +39,20 @@ Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's
 
 ## Use
 
+### Optional governed research
+
+For current external evidence, opt in with `ResearchPolicy(enabled=True)` on the
+board. The runtime requires the exact published `pmcp==1.20.0`
+`scoped_advisor_audit.v1` capability, creates unique per-seat locks/audits, and
+exposes only PMCP health/catalog/describe/invoke backed by Firecrawl and Bright
+Data research tools. It disables Codex native web search/apps, derives success
+from the completed correlated audit rather than model prose, and emits only
+privacy-safe tool IDs, statuses, source hashes, and digests. Claude still runs
+only through the subscription TUI adapter—never an API, SDK, direct HTTP call,
+gateway backing, or native Task Agent. Gemini/agy, Grok, Omnigent, native-host,
+and custom-spawn research seats fail closed as
+`research_profile_unenforceable`.
+
 1. Prefer the repo's governed phase-loop path when reviewing phase execution or pre-merge work.
 2. For a standalone smoke or diagnostic, run `phase-loop advisor-board <artifact>` (or, in-process, compose with `compose_review_board` and pass the material's path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_board`).
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
