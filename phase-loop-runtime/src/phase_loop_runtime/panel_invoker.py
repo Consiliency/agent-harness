@@ -2964,7 +2964,16 @@ def _default_spawn(
             leg, review_dir, out_dir, leg_timeout, artifact, mode, model,
             deadline_s=leg_deadline, **extra,
         )
-        return _classify_leg(rc, review_text, log_text, mode), review_text
+        status = _classify_leg(rc, review_text, log_text, mode)
+        # DIAGNOSTIC PROPAGATION (CR round 5, codex). `_exec_leg` returns WHY a leg
+        # failed in `log_text`, but this boundary used to drop it and hand back only the
+        # empty `review_text` — so a headless tool-denial surfaced to the operator as an
+        # anonymous ERROR with no text, defeating the whole point of classifying it.
+        # A failed leg has no review to report, so the reason goes in the text slot —
+        # exactly what the `except` branch below already does with its exception string.
+        if status != "OK" and not str(review_text).strip() and str(log_text).strip():
+            return status, str(log_text).strip()[:2000]
+        return status, review_text
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
     finally:

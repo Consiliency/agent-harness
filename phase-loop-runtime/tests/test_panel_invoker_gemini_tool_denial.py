@@ -311,3 +311,60 @@ def test_e2big_at_exec_falls_back_to_the_pointer_prompt(monkeypatch, staged):
     assert "BUNDLE-SENTINEL" in _prompt_of(calls[0]), "first attempt was not the inline form"
     assert "BUNDLE-SENTINEL" not in _prompt_of(calls[1]), "retry did not use the pointer form"
     assert rc == 0 and "pointer form" in text, "the seat was lost instead of recovered"
+
+
+def test_non_e2big_oserror_is_not_swallowed_by_the_backstop(monkeypatch, staged):
+    """CR round 5 (claude leg, mutant M2): the backstop must key on E2BIG only. A
+    different OSError (e.g. ENOENT — the CLI is missing) must propagate, not be retried
+    as if it were an argv-size problem."""
+    review_dir, out_dir = staged
+    calls: list[list[str]] = []
+
+    def _fake_runner(cmd, **kwargs):
+        calls.append(list(cmd))
+        raise OSError(2, "No such file or directory")  # ENOENT, not E2BIG
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", _fake_runner)
+    with pytest.raises(OSError):
+        pi._exec_leg("gemini", review_dir, out_dir, timeout_s=60, artifact="A", env={})
+    assert len(calls) == 1, "a non-E2BIG OSError was retried"
+
+
+def test_pointer_form_e2big_reraises_instead_of_retrying_itself(monkeypatch, staged):
+    """CR round 5 (mutant M1): when the prompt is ALREADY the pointer form, an E2BIG has
+    no smaller fallback — it must re-raise rather than burn a futile second execve."""
+    review_dir, out_dir = staged
+    # Force the pointer form: oversize the bundle past the gate.
+    (review_dir / "review-bundle.md").write_text("B" * 400_000, encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def _fake_runner(cmd, **kwargs):
+        calls.append(list(cmd))
+        raise OSError(7, "Argument list too long")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", _fake_runner)
+    with pytest.raises(OSError):
+        pi._exec_leg("gemini", review_dir, out_dir, timeout_s=60, artifact="A", env={})
+    assert len(calls) == 1, "pointer-form E2BIG retried itself with the same prompt"
+
+
+def test_denial_reason_reaches_the_operator_through_the_real_spawn(monkeypatch, tmp_path):
+    """CR round 5 (codex): the classifier's explanation must survive the SPAWN boundary,
+    not just `_exec_leg`. Previously `_default_spawn` returned only the empty review text,
+    so a tool-denial surfaced as an anonymous ERROR — the exact silent degradation this PR
+    exists to remove.
+
+    This drives the REAL `_default_spawn`; an earlier revision used a fake spawn that
+    re-implemented the propagation itself and therefore survived deleting the production
+    code (the round-1 tautology, reproduced). Do not reintroduce that shape.
+    """
+    diagnostic = (
+        "gemini leg: headless TOOL-DENIAL — the CLI auto-denied a tool permission it "
+        "cannot prompt for and produced NO output. CLI said: jetski: no output produced."
+    )
+    monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, "", diagnostic))
+    status, text = pi._default_spawn("gemini", "ARTIFACT")
+    assert status != "OK"
+    assert "TOOL-DENIAL" in str(text), (
+        "the spawn boundary dropped the reason — operator sees an anonymous failure"
+    )
