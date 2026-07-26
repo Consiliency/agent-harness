@@ -1,6 +1,8 @@
 # Design: Fleet-wide model-tier taxonomy (ultra / heavy / regular / lite)
 
-Status: DRAFT (spec for implementation behind cross-vendor CR)
+Status: DELIVERED — merged as PR Consiliency/agent-harness#309 (squashed to main @c266410, 2026-07-26)
+after 11 rounds of cross-vendor CR (final: 4/4 AGREE, 0 blockers). Every acceptance
+criterion below was re-verified against live code on main before being ticked.
 Owner: model-routing
 Related: model-id-source guard (agent-harness#129 / gp#108), advisor-board registries, phase-loop profiles
 
@@ -141,20 +143,20 @@ All under `phase-loop-runtime/src/phase_loop_runtime/`.
 
 ## Acceptance criteria
 
-- [ ] `MODEL_TIERS` defined; audit-"tier" collision documented at the definition site.
-- [ ] `resolve(role, vendor)` returns the matrix's id+effort for all 4 tiers × 4 vendors,
+- [x] `MODEL_TIERS` defined; audit-"tier" collision documented at the definition site.
+- [x] `resolve(role, vendor)` returns the matrix's id+effort for all 4 tiers × 4 vendors,
       with non-claude ultra → heavy model @ `effort=max`.
-- [ ] Claude heavy = `claude-opus-5`; Claude planning/review = `claude-fable-5`;
+- [x] Claude heavy = `claude-opus-5`; Claude planning/review = `claude-fable-5`;
       implementation = `claude-sonnet-5`; lite = `claude-haiku-4-5-20251001`.
-- [ ] gemini heavy carries a `preview`/`volatile` marker.
-- [ ] Pinned where the vendor publishes immutable ids (claude dateless per-gen
+- [x] gemini heavy carries a `preview`/`volatile` marker.
+- [x] Pinned where the vendor publishes immutable ids (claude dateless per-gen
       snapshots; codex `gpt-5.6-<name>`); no floating aliases (`gpt-5.6`,
       `gemini-flash-latest`, `-latest`). gemini heavy (preview) and ALL grok cells
       are marked `volatile=True` — xAI ships no dated snapshot, so bare grok ids
       float to latest stable; repin when dated ids exist.
-- [ ] `python3 scripts/check_model_id_sources.py` → exit 0.
-- [ ] Full `pytest` green; new `resolve()` matrix test passes.
-- [ ] Cross-vendor CR converged (public-repo gate) before merge.
+- [x] `python3 scripts/check_model_id_sources.py` → exit 0.
+- [x] Full `pytest` green; new `resolve()` matrix test passes.
+- [x] Cross-vendor CR converged (public-repo gate) before merge.
 
 ## Non-goals
 

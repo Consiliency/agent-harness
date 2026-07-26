@@ -1,5 +1,30 @@
 # Phase Plans — Convergence: Crash-Safe Cross-Repo Train + Credential Broker (v1)
 
+> **STATUS (2026-07-26): PARTIALLY EXECUTED — genuinely unfinished work, not just stale bookkeeping.**
+> Authored 2026-07-13. Verified against `plans/manifest.json` + the phase-plan files:
+>
+> | Phase | Plan file | Manifest status |
+> |---|---|---|
+> | FREEZE | yes | **completed** |
+> | RUNTIME | yes | `imported` — planned, NEVER EXECUTED (empty lifecycle, no handoff) |
+> | BROKER | yes | `imported` — planned, NEVER EXECUTED (empty lifecycle, no handoff) |
+> | INTEG | yes | **completed** |
+> | FAULTS | yes | **committed** |
+> | PILOT | — | not planned |
+> | RELEASE | — | not planned |
+>
+> So 3 of 7 phases landed and TWO PLANNED PHASES (RUNTIME, BROKER) remain unexecuted.
+>
+> KNOWN INCONSISTENCY: `phase-loop status` reports `FREEZE: executing` while the manifest
+> records FREEZE as **completed** — the runner's phase state and the plan manifest DISAGREE.
+> Because the two `imported` entries are still open, discovery keeps selecting this roadmap,
+> so status also presents it as the active effort. Recent real work has been the FAB
+> milestone (#191) and the model-tier taxonomy (#309).
+>
+> DECISION REQUIRED (maintainer): (a) RESUME RUNTIME + BROKER as real work, or (b) RETIRE
+> them as superseded. Nothing is deleted pending that call — plan files and manifest
+> entries are preserved intact. The FREEZE status contradiction should be reconciled either way.
+
 ## Context
 
 Long-lived interactive coordinator sessions (esp. multi-repo Codex trains) fail to
