@@ -14,13 +14,22 @@
 # pyflakes only — real defects (undefined names, unused imports, redefinitions), not
 # style. Deliberately narrow so the gate is signal rather than noise.
 #
-# F841 (unused-variable) is NOT enabled yet: its 28 occurrences need per-case judgment,
-# not a bulk pass. At least two are load-bearing rather than dead —
-# `_fab_promotion_gate_before_merge` (train_runner.py:544) assigns
-# `fab_gate.read_provenance(...)` and discards it, but the CALL exists to raise
-# ProvenanceNotFound, so ruff's unsafe fix would delete the guard. And
-# `governed_premerge.py:370` sets `seen_block` and never reads it, which is a real
-# mis-attribution defect rather than noise. Tracked as a follow-up to ah#334; enabling
-# it blind would either break code or teach people to `# noqa` the gate.
+# F841 (unused-variable) is NOT enabled yet — tracked in
+# Consiliency/agent-harness#341.
+#
+# NOT because the unsafe fix would delete a load-bearing call: it would not. Verified by
+# running `ruff check . --select F841 --fix --unsafe-fixes` over a `git archive HEAD` copy
+# and diffing every file — ruff drops the BINDING and keeps the CALL
+# (`artifact = fab_gate.read_provenance(...)` -> `fab_gate.read_provenance(...)`, guard
+# intact). An earlier version of this comment claimed otherwise and was wrong.
+#
+# The actual reasons:
+#   1. The unsafe fix silently deletes `governed_premerge.py:370` `seen_block = True`,
+#      erasing the on-disk evidence of a REAL defect — that flag is written and never
+#      read, so a run with genuine block findings that ends on a structural hold reports
+#      the structural reason instead of `non_convergence`. Fixing that is a behavioural
+#      change to governed-review attribution and needs its own test (ah#341).
+#   2. It turns 20+ test assignments into bare expression statements that read as
+#      accidental leftovers.
 select = ["F"]
 ignore = ["F841"]

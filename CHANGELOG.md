@@ -9,10 +9,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### CI: a pyflakes (ruff F) lint gate, and the defects it found (Consiliency/agent-harness#334)
 
 - **CI now runs a linter.** Previously it ran none — no ruff config, no workflow step.
-  That is how an undefined name in a type annotation shipped past a green suite on all
-  three Python versions (ah#291): `from __future__ import annotations` defers evaluation,
-  so the name is never resolved at runtime and only a linter or `typing.get_type_hints()`
-  can observe it.
+  That is how undefined names in type annotations shipped past a green suite on all three
+  Python versions: `from __future__ import annotations` defers evaluation, so the name is
+  never resolved at runtime and only a linter or `typing.get_type_hints()` can observe it.
+  The two live instances entered on Consiliency/agent-harness#191 and
+  Consiliency/agent-harness#29; a third of the same class was caught during the
+  Consiliency/agent-harness#291 review rather than shipping.
 - **Two live production defects of that same class are fixed.** `governed_premerge`
   annotated a field with `PanelResult` and `train_runner` a return with `LoopResult`,
   neither imported. Both were runtime-observable:
@@ -22,12 +24,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   nowhere, with a `# type: ignore[return-value]` masking the mismatch; replaced with the
   callable's real signature. A loop variable in `phase_loop_drift_audit` shadowed the
   `dataclasses.field` import used elsewhere in that module.
-- 120 further findings (unused imports, redefinitions, placeholder-free f-strings) were
-  auto-fixed with safe fixes only.
+- 122 further findings (111 unused imports, 6 redefinitions, 5 placeholder-free
+  f-strings) were auto-fixed with safe fixes only.
 - The gate runs as its own `lint` job reading the root `ruff.toml`
   (`select = ["F"]`, `ignore = ["F841"]`), with ruff pinned. `F841` is deliberately
-  deferred: of its 28 occurrences at least two are load-bearing rather than dead, so a
-  bulk unsafe fix would delete a call that exists to raise.
+  deferred (Consiliency/agent-harness#341): a bulk unsafe fix would silently delete
+  `seen_block = True` in `governed_premerge`, erasing evidence of a real terminal-
+  attribution defect, and would turn 20+ test assignments into bare expression statements.
 
 ## [0.7.13] - 2026-07-26
 
