@@ -10,9 +10,13 @@
 > BLOCKING/REQUIRED**, are retained as a decision record. They are NOT instructions.
 >
 > A replacement design, the reasoning, and the open design question are in
-> Consiliency/agent-harness#339. Until that lands: no replacement contract, fail-closed
-> matrix, acceptance criteria or crash/replay ordering exist for this work, so there is
-> nothing here to implement correctly.
+> Consiliency/agent-harness#339.
+>
+> **Merging #339 does NOT lift this block.** #339 records the analysis; it does not author
+> the missing artefacts. This plan becomes implementable only when a replacement contract,
+> fail-closed matrix, acceptance criteria, file-level change actions and crash/replay
+> ordering have all been WRITTEN, and the open ledger-vs-journal design question resolved.
+> None of those exist today, so there is nothing here to implement correctly.
 
 
 ## Task
@@ -39,8 +43,14 @@ artifacts field-by-field; fail closed on absence / mismatch / vacuity.** For a t
 impossible.
 
 ## Research summary (source-verified on `feat/fab-265-merge-queue-bound` @ `9540f91`)
+> **SUPERSEDED — decision record, not instructions.** Retained for its findings; the
+> mechanism it describes is dead. See the notice at the top of this file.
+
 
 ### The interlock and what it gates
+> **SUPERSEDED — decision record, not instructions.** Retained for its findings; the
+> mechanism it describes is dead. See the notice at the top of this file.
+
 - `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py:74` — `_FAB_DELTA_BROKER_READMIT_READY = False`.
 - `governed_premerge.py:77-93` — `fab_delta_shortcut_enabled(coordinator_opt_in, env)` returns
   `_FAB_DELTA_BROKER_READMIT_READY and fab_promotion_enabled(env) and bool(coordinator_opt_in)`. The
@@ -73,6 +83,9 @@ impossible.
   durable record (not a parallel epoch invented at attempt time).
 
 ### The engage/consume site (where the broker authority must be threaded)
+> **SUPERSEDED — decision record, not instructions.** Retained for its findings; the
+> mechanism it describes is dead. See the notice at the top of this file.
+
 - `train_runner.py:3025-3091` — the P4 merge-loop shortcut block. Gated on `_fab_run_id_shortcut is not None`
   (`:3044`), it runs the unconditional torn-recovery (`:3054-3055`) then, ONLY under
   `fab_delta_shortcut_enabled(fab_delta_shortcut)` (`:3058`), calls `_fab_delta_readmit(...)` (`:3068-3075`).
@@ -132,6 +145,9 @@ impossible.
   minus the GitHub push (the advance is already pushed).
 
 ### #299 interaction (Consiliency/agent-harness#299 — flag-off byte-neutrality of the recovery block)
+> **SUPERSEDED — decision record, not instructions.** Retained for its findings; the
+> mechanism it describes is dead. See the notice at the top of this file.
+
 - #299 is a **pre-existing** flag-off leak in the recovery block (`_fab_recover_torn_to_admitted`, gated on
   `fab_run_id is not None`, NOT the flag). It is **orthogonal to the interlock flip** (the flip only touches
   the ENGAGE predicate, which already ANDs `fab_promotion_enabled`). BUT once the milestone is activated, the
@@ -315,6 +331,15 @@ as the mechanism.** Rationale:
   already in lexical scope here (verified) — no signature plumbing through `run_train` is needed.
 
 ### Change C — `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py` (modify — SEPARATE PR, after #299)
+
+> **⛔ SUPERSEDED — AND THIS ONE IS INDEPENDENTLY EXECUTABLE. DO NOT PERFORM IT.**
+> Unlike the rest of this plan, Change C is a one-line flag flip that requires none of the
+> killed mechanism, so the banners elsewhere do not obviously cover it. Flipping
+> `_FAB_DELTA_BROKER_READMIT_READY = True` on main today ACTIVATES the un-brokered
+> re-admission bypass that ah#288 exists to CLOSE — `_fab_delta_readmit` still carries its
+> KNOWN LIMITATION block and its direct `append_record` (`train_runner.py:1127-1146`).
+> Its stated predecessor ah#299 is now CLOSED, so that precondition reads as satisfied. It
+> is not: the mechanism this flag would activate was never built.
 - **Modify** `_FAB_DELTA_BROKER_READMIT_READY = False` → `True` (`governed_premerge.py:74`); delete the
   interlock comment block (`:64-73`). Reason: activate the ENGAGE path once the brokered mechanism (A+B) has
   cross-vendor CR and #299 has landed.
