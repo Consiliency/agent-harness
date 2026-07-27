@@ -1,6 +1,25 @@
 # Detailed plan: FAB 3b broker re-admission of a delta-approved head (ah#288)
 
+> # ⛔ DO NOT IMPLEMENT THIS PLAN
+>
+> The mechanism specified below — caller-supplied `lease_epoch` fencing, `node_id`
+> lineage, `sequence >= 2` baselines — **failed four cross-vendor review rounds** and is
+> superseded. Its implementation PR (Consiliency/agent-harness#337) is a parked draft.
+>
+> Sections below, **including `## CR AMENDMENT` and its A1-A6 items marked
+> BLOCKING/REQUIRED**, are retained as a decision record. They are NOT instructions.
+>
+> A replacement design, the reasoning, and the open design question are in
+> Consiliency/agent-harness#339. Until that lands: no replacement contract, fail-closed
+> matrix, acceptance criteria or crash/replay ordering exist for this work, so there is
+> nothing here to implement correctly.
+
+
 ## Task
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 FAB piece 3b-consumer (Consiliency/agent-harness#191, PR #287) re-admits a delta-approved advanced PR head
 by writing the new admitted head **directly to the coordinator ledger** (`_fab_delta_readmit` →
 `append_record`, after an owned-scope `_covered_by_owned` re-check). That direct append **bypasses the
@@ -34,6 +53,10 @@ impossible.
   `fab_run_id is not None` and is unaffected by the flip — that is the seam #299 addresses (below).
 
 ### The current direct-append re-admission (what must go through the broker)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 - `train_runner.py:890-1145` — `_fab_delta_readmit(...)`. On a single-commit advance of an admitted FAB node
   with the trusted opt-in: fetch the live head (`:953`), single-commit check (`:965-970`), **broker
   owned-scope re-check** via `_paths_covered_by_owned` (`:983`, reusing `GitHubBrokerAdapter._covered_by_owned`,
@@ -63,6 +86,10 @@ impossible.
   `broker_client`.
 
 ### The broker admission stack (the primitive to extend)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 - `convergence/contracts.py:18-33` — `AdmissionRequest(attempt_id, lease_epoch, fence_token, approval_digest,
   expected_version_predicate, authority_domain_scope, idempotency_key)`; `__post_init__` rejects any empty
   fencing field.
@@ -114,6 +141,10 @@ impossible.
   dependency.
 
 ## The re-admission contract (what the broker must re-admit + verify)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 
 A delta re-admission is admitted **iff** all hold; otherwise it FAILS CLOSED (`_fab_delta_readmit` returns
 `None` → the caller falls through to the UNCHANGED, fail-closed `pr-head-advanced` guard in `_live_merge_pr`):
@@ -158,6 +189,10 @@ between admit and ledger-append fails closed exactly as today — the ledger sti
 guard fires, resume re-runs and the deterministic admit dedups).
 
 ## Fail-closed matrix (each branch drives the production path; each has a biting mutation)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 
 | # | Condition | Detection (production path) | Result | Biting mutation (test proves it) |
 |---|-----------|-----------------------------|--------|-----------------------------------|
@@ -172,6 +207,10 @@ All six return `None`, never a weakening of the guard. M1/M2/M6 are the fail-OPE
 vacuous evidence) — the ones that would activate an unverified re-admission if wrong.
 
 ## Split into bounded changes (this issue is larger than one bounded change)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 
 Recommend **three** bounded changes; the interlock flip MUST be its own step:
 
@@ -208,6 +247,10 @@ as the mechanism.** Rationale:
   activation ships the #299 leak active otherwise. Sequence: **A → B → #299 → C.**
 
 ## Changes (file · entity · action · reason)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 
 ### Change A — `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py` (modify)
 - **Add** frozen dataclass `ReadmitResult(accepted: bool, granted_epoch: int, idempotency_key: str, reason:
@@ -277,6 +320,10 @@ as the mechanism.** Rationale:
   cross-vendor CR and #299 has landed.
 
 ## Regression tests (MANDATORY — one per fail-closed branch; each drives the PRODUCTION path and FAILS before the fix)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 
 Anti-tautology discipline (a recent PR here was blocked for asserting on values built in the test body): every
 test invokes the real production function (`BrokerService.readmit_advanced_head` for A; `_fab_delta_readmit`
@@ -330,6 +377,10 @@ path, which `test_broker_denied_readmit_recovers_and_fails_closed` exercises gen
   assert the ON behavior. These move WITH the flip (Change C), not before.
 
 ## Dependencies / order
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 1. **Change A** — broker primitive + `ReadmitResult` + Change-A tests. Self-contained; verify in isolation.
 2. **Change B** — thread `broker_admit_fn` into `_fab_delta_readmit` + call site; remove KNOWN-LIMITATION
    comment; M1-M6 readmit tests. Depends on A.
@@ -340,6 +391,10 @@ To prove each regression bites: run the new tests on the pre-change tree (Change
 `readmit_advanced_head`; the six-branch tests each fail under their stated mutation) and pass after.
 
 ## Verification (from `phase-loop-runtime/`)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 - Prove the Change-A bite: `PYTHONPATH=src:tests python3 -m pytest -q tests/test_convergence_broker_readmit.py`
   (fails before A, passes after).
 - Prove the Change-B bites: `PYTHONPATH=src:tests python3 -m pytest -q tests/test_fab_delta_consumer.py`
@@ -352,6 +407,10 @@ To prove each regression bites: run the new tests on the pre-change tree (Change
   tests/test_fab_activation_promotion.py` (fence tests now assert ON) plus the full default lane.
 
 ## Acceptance criteria
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 - [ ] `_fab_delta_readmit`'s ledger COMMIT POINT is reached ONLY after a brokered admit that is
       epoch-bumped (`lease_epoch = next_epoch ≥ 2`), revocation-checked (`evidence_store.epoch_blocked`), and
       verified against a durable `AdmissionRecord` (`sequence ≥ 2`, matching `idempotency_key` + epoch); the
@@ -370,6 +429,10 @@ To prove each regression bites: run the new tests on the pre-change tree (Change
 ---
 
 ## CR AMENDMENT — 2026-07-26 (codex DISAGREE, grok PARTIALLY AGREE)
+> **SUPERSEDED — decision record, not instructions.** Specifies the killed
+> `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See the notice at the top
+> of this file.
+
 
 **This plan is NOT executable as written.** Board: codex DISAGREE, grok PARTIALLY AGREE,
 gemini unavailable (ah#335). The architecture, A/B/C split, and flip-after-#299 sequencing
