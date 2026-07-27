@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import Mock
 
-from phase_loop_runtime.closeout_validators import CloseoutContext, ReviewFinding
+from phase_loop_runtime.closeout_validators import CloseoutContext
 from phase_loop_runtime.governed_review import (
     author_vendor_for_executor,
     governed_planning_gate,

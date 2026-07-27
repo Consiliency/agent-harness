@@ -22,7 +22,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD

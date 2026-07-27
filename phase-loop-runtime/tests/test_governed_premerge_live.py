@@ -4,7 +4,6 @@ reviews the EXACT staged index inside `_perform_phase_closeout`, author identity
 is the UNION of dispatch `selected_executor` vendors, and verdicts are strict."""
 import subprocess
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch

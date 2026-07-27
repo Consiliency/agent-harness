@@ -56,6 +56,8 @@ module is fully testable without live network access.
 """
 from __future__ import annotations
 
+from .governed_premerge import LoopResult
+
 import json
 import os
 import subprocess
@@ -66,7 +68,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
 from .convergence.broker.credsep import REPO_REDIRECT_KEYS, resolve_broker_repo_identity
-from .cross_repo_channel import ChannelDescriptor, set_upstream_ref
+from .cross_repo_channel import set_upstream_ref
 from .train_ledger import LedgerRecord, append_record, read_ledger
 from .train_roadmap import TrainEdge, TrainNode, TrainRoadmap
 
@@ -535,7 +537,7 @@ def _fab_promotion_gate_before_merge(
     if run_id is None or not fab_promotion_enabled():
         return None
 
-    from . import fab_canonical, fab_gate
+    from . import fab_gate
     from .fab_provenance import ProvenanceNotFound
 
     try:
@@ -2021,7 +2023,7 @@ def _default_train_review(artifact: str, run_mode: str) -> "LoopResult":
 
     Stubbable seam: inject ``_train_review_fn`` into :func:`run_train`.
     """
-    from .governed_premerge import LoopResult, run_governed_premerge_loop
+    from .governed_premerge import run_governed_premerge_loop
 
     return run_governed_premerge_loop(
         artifact=artifact,
@@ -2093,7 +2095,7 @@ def _build_pr_body(
     it).  Downstream PRs are not yet open, so only backward-links are included.
     """
     lines: List[str] = [
-        f"## Cross-repo release train\n\n",
+        "## Cross-repo release train\n\n",
         f"**Node:** `{node.node_id}`\n\n",
     ]
 
@@ -2481,7 +2483,7 @@ def run_train(
                     )
             detail_msg = (
                 "; ".join(change_reasons)
-                + f"; close/supersede the stale downstream PR and re-run"
+                + "; close/supersede the stale downstream PR and re-run"
             )
             append_record(
                 ledger_path,

@@ -312,13 +312,13 @@ def _collapse_findings(findings: Iterable[DriftFinding]) -> tuple[DriftCount, ..
     for finding in findings:
         buckets.setdefault(finding.key(), []).append(finding)
     counts: list[DriftCount] = []
-    for (repo, field, literal), items in buckets.items():
+    for (repo, field_name, literal), items in buckets.items():
         first_seen_values = sorted(item.first_seen for item in items if item.first_seen)
         sources = tuple(sorted({item.source for item in items}))
         counts.append(
             DriftCount(
                 repo=repo,
-                field=field,
+                field=field_name,
                 literal=literal,
                 count=len(items),
                 first_seen=first_seen_values[0] if first_seen_values else None,

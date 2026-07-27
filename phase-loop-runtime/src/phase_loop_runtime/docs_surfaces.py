@@ -32,6 +32,13 @@ RELEASE_AFFECTING_PATTERNS = (
     "RELEASE*",
     "VERSION",
     "pyproject.toml",
+    # ah#334: the lint gate's config. It deliberately lives in ruff.toml rather than a
+    # root pyproject.toml (which several runtime modules read as "this root is an
+    # installable Python project"), but that moved it OFF the release surface — someone
+    # could set `select = []` or `ignore = ["F821"]` and gut the gate with no CHANGELOG
+    # requirement and no docs-audit finding. Put it back on.
+    "ruff.toml",
+    ".ruff.toml",
     "setup.cfg",
     "setup.py",
     "uv.lock",
@@ -74,6 +81,8 @@ DOC_SURFACE_GLOBS = (
 RELEASE_DOC_REQUIREMENTS = (
     ("VERSION", ("CHANGELOG*",)),
     ("pyproject.toml", ("CHANGELOG*",)),
+    ("ruff.toml", ("CHANGELOG*",)),
+    (".ruff.toml", ("CHANGELOG*",)),
     ("setup.cfg", ("CHANGELOG*",)),
     ("setup.py", ("CHANGELOG*",)),
     ("uv.lock", ("CHANGELOG*",)),

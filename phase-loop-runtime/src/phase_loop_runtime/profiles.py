@@ -8,7 +8,6 @@ from .capability_registry import (
     CLAUDE_LITE_MODEL,
     CLAUDE_REGULAR_MODEL,
     CLAUDE_ULTRA_MODEL,
-    DEFAULT_EXECUTOR,
     default_model_profile_for_executor,
     provider_policy_capabilities,
 )

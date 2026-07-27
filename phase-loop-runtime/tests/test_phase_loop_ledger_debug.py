@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from phase_loop_runtime.cli import build_parser, main
 from phase_loop_runtime.events import append_event
 from phase_loop_runtime.models import LoopEvent, utc_now
-from phase_loop_runtime.provenance import event_provenance, roadmap_sha256, phase_sha256
+from phase_loop_runtime.provenance import roadmap_sha256, phase_sha256
 from phase_loop_runtime.reconcile import reconcile
 from phase_loop_runtime.render import render_status
 from phase_loop_test_utils import make_repo, provenanced_event, write_phase_plan

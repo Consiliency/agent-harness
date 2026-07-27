@@ -49,7 +49,7 @@ from phase_loop_runtime.governed_premerge import LoopResult
 from phase_loop_runtime.models import StateSnapshot
 from phase_loop_runtime.train_ledger import LedgerRecord, append_record, read_ledger
 from phase_loop_runtime.train_roadmap import parse_train_roadmap
-from phase_loop_runtime.train_runner import _TRAIN_REVIEW_NODE_ID, _live_reverify, run_train
+from phase_loop_runtime.train_runner import _live_reverify, run_train
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ class TestInvariant1NoMergeBeforeApproval:
         )
 
         assert merge_log == [], (
-            f"INV-1 VIOLATED: merge_pr called when _merge_phase_enabled=False"
+            "INV-1 VIOLATED: merge_pr called when _merge_phase_enabled=False"
         )
 
     def test_review_approval_then_reverify_fail_halts_before_downstream(self, tmp_path: Path):
@@ -1180,7 +1180,6 @@ class TestInvariant7RunLoopFailureContract:
         failure.  Changing run_loop's failure output so that reconcile() no
         longer sees the signal would make this test red.
         """
-        import subprocess
 
         from phase_loop_runtime.events import append_event
         from phase_loop_runtime.models import LoopEvent, utc_now

@@ -43,7 +43,7 @@ aware board, project ``board_independence``/lens coverage) lives in
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 # The gates a ratification policy can be resolved for.
 GATES: tuple[str, ...] = ("plan-ratify", "design-ratify", "pre-merge-CR", "release-dispatch")

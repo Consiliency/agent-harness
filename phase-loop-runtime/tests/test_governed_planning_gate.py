@@ -9,7 +9,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from phase_loop_runtime import runner
 from phase_loop_runtime.governed_review import GateResult

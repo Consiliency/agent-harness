@@ -32,7 +32,7 @@ from phase_loop_runtime.discovery import (
 from phase_loop_runtime.plan_manifest import DotfilesPlanEntry, DotfilesPlanRef, append_entry
 from phase_loop_runtime.state import write_state
 
-from phase_loop_test_utils import make_repo, provenanced_state, write_phase_plan
+from phase_loop_test_utils import make_repo, provenanced_state
 
 
 def _write_roadmap(repo: Path, version: str, alias: str) -> Path:

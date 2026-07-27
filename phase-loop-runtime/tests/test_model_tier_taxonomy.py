@@ -140,7 +140,6 @@ class PinOnlyInvariantTest(unittest.TestCase):
         # CR nit E: Haiku uses the alias→dated form, so the matrix must pin the DATED
         # snapshot, never the bare undated `claude-haiku-4-5` (the floating-alias shape
         # blocker C reintroduced in skill prose). Reject the bare id in every claude cell.
-        import re
 
         lite = resolve("lite", "claude").model_id
         self.assertNotEqual(lite, "claude-haiku-4-5")

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.events import read_events
 from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.runner import RotationState, run_loop, status_snapshot
-from phase_loop_runtime.state import load_work_unit_state, write_work_unit_state
+from phase_loop_runtime.state import load_work_unit_state
 from phase_loop_runtime.state_degradation import record_degradation
 from phase_loop_test_utils import commit_fixture_paths, make_repo, write_named_roadmap, write_phase_plan
 

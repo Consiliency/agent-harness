@@ -142,7 +142,7 @@ def resolve_ratification_policy(gate: str, *, manifest: Mapping[str, Any] | None
     """
     from dataclasses import replace
 
-    from .ratification_policy import DEFAULT_RATIFICATION_POLICIES, RatificationPolicy
+    from .ratification_policy import DEFAULT_RATIFICATION_POLICIES
 
     base = DEFAULT_RATIFICATION_POLICIES.get(gate)
     if base is None:

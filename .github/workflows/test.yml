@@ -9,6 +9,38 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: lint (pyflakes)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ruff check (config-driven)
+        # ah#334: before this job CI ran NO linter, which is how an undefined name in an
+        # annotation shipped past a green suite on every Python version (ah#291) —
+        # `from __future__ import annotations` defers evaluation, so only a linter or
+        # get_type_hints() can see it.
+        #
+        # Its OWN job, not a step gated on `matrix.python-version == '3.12'`: a
+        # matrix-conditional step silently vanishes if the matrix is ever bumped past
+        # that version, taking the gate with it and leaving CI fully green.
+        #
+        # Selection lives in the root ruff.toml (select = ["F"], ignore = ["F841"]).
+        # Do NOT pass --select on the CLI: it overrides the config's ignore and
+        # re-enables the deliberately deferred F841.
+        #
+        # ruff is pinned: it is pre-1.0 and adds F-rules between releases, which would
+        # otherwise red the build for unrelated contributors at an arbitrary time.
+        run: |
+          python -m pip install 'ruff==0.15.5'
+          ruff check .
+
   pytest:
     name: pytest (py${{ matrix.python-version }})
     runs-on: blacksmith-4vcpu-ubuntu-2404

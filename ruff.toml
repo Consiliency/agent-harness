@@ -1,0 +1,37 @@
+# ah#334: the repo's lint gate.
+#
+# Deliberately a ruff.toml and NOT a root pyproject.toml. Ruff reads either, but a
+# repo-root `pyproject.toml` is a load-bearing SIGNAL to several runtime modules that
+# this directory is an installable Python project — `verification_evidence.py`
+# (resolve_install_command), `doctor.py` (_contract_floor), `docs_surfaces.py`,
+# `fleet_map.py` and `repo_validation.py` all key on its presence. Adding one flipped
+# `resolve_install_command` from None to `pip install -e .` at the repo root, a command
+# that cannot succeed here (no [project], no [build-system]) and would record a nonzero
+# env_refresh on any run whose changed files include a pyproject.toml — e.g. every
+# release version-bump phase. ruff.toml gets the identical gate with none of that.
+
+[lint]
+# pyflakes only — real defects (undefined names, unused imports, redefinitions), not
+# style. Deliberately narrow so the gate is signal rather than noise.
+#
+# F841 (unused-variable) is NOT enabled yet — tracked in
+# Consiliency/agent-harness#341.
+#
+# NOT because the unsafe fix would delete a load-bearing call: it would not. Verified by
+# running `ruff check . --select F841 --fix --unsafe-fixes` over a `git archive HEAD` copy
+# and diffing every file — ruff drops the BINDING and keeps the CALL
+# (`artifact = fab_gate.read_provenance(...)` -> `fab_gate.read_provenance(...)`, guard
+# intact). An earlier version of this comment claimed otherwise and was wrong.
+#
+# The actual reasons:
+#   1. The unsafe fix silently deletes `governed_premerge.py:370` `seen_block = True`,
+#      erasing the on-disk evidence of a REAL defect — that flag is written and never
+#      read, so a run with genuine block findings that ends on a structural hold reports
+#      the structural reason instead of `non_convergence`. Fixing that is a behavioural
+#      change to governed-review attribution and needs its own test (ah#341).
+#   2. It rewrites assignments across the suite into bare expression statements that
+#      read as accidental leftovers. (Deliberately no count here: four successive
+#      revisions of this comment stated a different wrong figure. The effect is the
+#      argument; `ruff check . --select F841` is the source of truth for the tally.)
+select = ["F"]
+ignore = ["F841"]

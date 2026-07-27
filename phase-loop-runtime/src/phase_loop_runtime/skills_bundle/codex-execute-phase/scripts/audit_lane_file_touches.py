@@ -35,7 +35,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 
 _SL_SECTION_RE = re.compile(r"^###\s+(SL-\d+)\b.*$", re.MULTILINE)

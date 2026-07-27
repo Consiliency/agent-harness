@@ -30,7 +30,6 @@ content) so the byte-stable artifact is a meaningful parity baseline.
 from __future__ import annotations
 
 import dataclasses
-import importlib.resources
 import json
 import types
 import typing

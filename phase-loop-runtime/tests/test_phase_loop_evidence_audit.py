@@ -12,9 +12,6 @@ import unittest
 from pathlib import Path
 
 from phase_loop_runtime.evidence_audit import (
-    DuplicateContentFinding,
-    MissingReferenceFinding,
-    UniformNumericFinding,
     detect_duplicate_content,
     detect_missing_references,
     detect_uniform_numeric,

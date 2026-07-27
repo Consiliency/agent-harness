@@ -23,7 +23,7 @@ import time
 import pytest
 
 import phase_loop_runtime.panel_invoker as pi
-from phase_loop_runtime.panel_invoker import _classify_leg, _run_claude_tui_session
+from phase_loop_runtime.panel_invoker import _run_claude_tui_session
 
 pytestmark = pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh")
 

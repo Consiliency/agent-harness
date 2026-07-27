@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .flag import branchgov_enabled, branchgov_override_explicit
+from .flag import branchgov_enabled
 from .markers import detect_pipeline_mode
 
 

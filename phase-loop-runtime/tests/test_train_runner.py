@@ -34,11 +34,12 @@ Coverage:
 """
 from __future__ import annotations
 
+from phase_loop_runtime.models import StateSnapshot  # ah#334: used in return annotations
+
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -822,7 +823,7 @@ class TestMidTrainFailure:
         # Attempt to use a .phase-loop path — must raise
         bad_ledger = tmp_path / ".phase-loop" / "train.ledger.jsonl"
 
-        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+        from phase_loop_runtime.train_ledger import append_record
 
         with pytest.raises(ValueError, match=r"\.phase-loop"):
             append_record(bad_ledger, LedgerRecord(node_id="x/y", status="pending"))
@@ -1064,7 +1065,6 @@ class TestCLIRegistration:
     def test_run_train_requires_train_flag(self):
         """run-train without --train must exit with error."""
         from phase_loop_runtime.cli import build_parser
-        import sys
 
         parser = build_parser()
         # parse_args with no --train should still succeed (required enforced in _main)
@@ -1640,7 +1640,7 @@ class TestResumeUsesLiveHeadSha:
         Pre-fix: injected sha was taken from rec.upstream_merge_sha (== sha-v1).
         Post-fix: live_pr_head_sha returns sha-v2 → downstream injects sha-v2.
         """
-        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+        from phase_loop_runtime.train_ledger import append_record
 
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
@@ -1802,7 +1802,7 @@ class TestDownstreamRebuildsWhenUpstreamRebuilt:
         Post-deferred behavior: repo-b is blocked with reason
         ``"upstream_changed_downstream_pr_open"``.
         """
-        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+        from phase_loop_runtime.train_ledger import append_record
 
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
@@ -2347,7 +2347,7 @@ class TestOutOfBandUpstreamBlocksDownstream:
         Pre-fix: no OOB detection → repo-b silently skipped (stale injection risk).
         Post-fix: OOB detected → repo-b blocked with clear reason.
         """
-        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+        from phase_loop_runtime.train_ledger import append_record
 
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
@@ -2411,7 +2411,7 @@ class TestOutOfBandUpstreamBlocksDownstream:
         # Neither repo ran (both were in completed_nodes; repo-a skipped, repo-b blocked)
         assert run_loop_mock.call_count == 0, (
             "run_loop must not be called when all nodes are in completed_nodes "
-            f"(repo-a skipped, repo-b blocked before run_loop)"
+            "(repo-a skipped, repo-b blocked before run_loop)"
         )
         assert publish_mock.call_count == 0, (
             "publish must not be called on a blocked node"
@@ -2442,7 +2442,7 @@ class TestMissingResumeShaBlocks:
           - Pre-fix: falls back to branch name → injects a moving target.
           - Post-fix: raises "no resolvable SHA" → downstream blocked.
         """
-        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+        from phase_loop_runtime.train_ledger import append_record
 
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
@@ -2548,7 +2548,7 @@ class TestMultiPhaseNodeGuard:
     def test_planned_phase_in_snapshot_blocks_node(self, tmp_path: Path):
         """run_loop snapshot with a 'planned' phase → node blocked, publish not called."""
         from phase_loop_runtime.train_roadmap import parse_train_roadmap
-        from phase_loop_runtime.train_ledger import append_record, LedgerRecord, read_ledger
+        from phase_loop_runtime.train_ledger import read_ledger
 
         roadmap_md = """\
 # Release Train: multi-phase-guard

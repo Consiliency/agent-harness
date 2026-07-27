@@ -445,7 +445,6 @@ class PhaseLoopModelsTest(unittest.TestCase):
         # Contract-absent degrade: when load_registry raises (older contract with
         # no protected_source_categories registry) we fall back to the legacy
         # six-tuple and DO NOT hard-crash -- mirroring gate_posture.available().
-        from phase_loop_runtime import models as _models
 
         def _raise(_name):
             raise ValueError("Unknown registry: protected_source_categories")
@@ -957,7 +956,6 @@ def test_find_plan_artifact_handles_hyphenated_alias_and_suffix_spec():
     spec filenames that the regex alone can't disambiguate."""
     import tempfile, subprocess
     from pathlib import Path
-    from phase_loop_runtime.discovery import find_plan_artifact
 
     with tempfile.TemporaryDirectory() as td:
         repo = Path(td)

@@ -17,7 +17,6 @@ from phase_loop_runtime.runner import run_loop
 from phase_loop_runtime.state import write_state
 from phase_loop_test_utils import (
     FAKE_EXECUTORS,
-    ROOT,
     PhaseLoopFixture,
     commit_fixture_paths,
     make_code_index_blocker_fixture,

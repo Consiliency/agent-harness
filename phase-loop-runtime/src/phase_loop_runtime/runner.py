@@ -55,14 +55,13 @@ class _DispatchPrep(NamedTuple):
     autosel_provenance: object = None
 
 from .broker import validate_delegation_request
-from .baml_modular import BamlValidationError, parse_baml_response
+from .baml_modular import BamlValidationError
 from .capability_registry import (
     default_executor_for_work_unit,
     describe_dispatch_decision,
     merge_dispatch_hints,
     resolve_dispatch_decision,
 )
-from .classifier import classify_all
 from .default_executor_resolver import DefaultResolutionContext, resolve_default_executor
 from .closeout_evidence_audit import audit_closeout_evidence
 from .closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
@@ -73,7 +72,6 @@ from .roadmap_authority import active_authorized_roadmap
 from .closeout_validation import validate_produced_gates
 from .discovery import (
     PLAN_RE,
-    compute_ready_phases,
     dispatch_hints_for_action,
     execution_policy_dispatch_hints,
     execution_policy_for_action,
@@ -85,7 +83,6 @@ from .discovery import (
     load_phase_source_bundle,
     parse_automation_status,
     parse_closeout_payload_doc,
-    parse_dispatch_hints,
     parse_dispatch_hints_doc,
     parse_execution_policy,
     parse_pipeline_plan_metadata,
@@ -209,7 +206,7 @@ from .panel_invoker import available_panel_legs
 from .reconcile import reconcile
 from .redaction import apply_diagnostics_redaction
 from .review_summary import summarize_run
-from .route_log import build_route_log, with_route_log
+from .route_log import with_route_log
 from .release_guard import (
     OperatorApprovalError,
     ReleaseDispatchBlocker,
@@ -8806,7 +8803,7 @@ def _goal_coverage_closeout_gate(
     Returns (evidence, blocker). If the plan cannot be resolved (missing/manifest conflict)
     AND the phase opted into goal IDs, the closeout is un-auditable -> fails CLOSED under
     enforcement (CR codex round 6, #2); a non-opted-in phase with no resolvable plan skips."""
-    from .goal_coverage import check_goal_coverage, phase_declares_goal_ids
+    from .goal_coverage import phase_declares_goal_ids
 
     enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
     try:

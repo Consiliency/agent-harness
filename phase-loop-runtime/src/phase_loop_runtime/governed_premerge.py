@@ -31,7 +31,7 @@ from .fab_canonical import EquivalenceBinding
 from .fab_canonical import equivalent as fab_equivalent
 from .fab_provenance import EQUIVALENCE_EQUIVALENT, EquivalenceResult
 from .governed_review import GateResult, governed_planning_gate
-from .panel_invoker import invoke_panel
+from .panel_invoker import PanelResult
 
 #: A class is escalated once it has failed this many times (tests or patch retries).
 ESCALATION_FAIL_THRESHOLD = 2

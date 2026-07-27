@@ -18,7 +18,7 @@ from pathlib import Path
 
 from phase_loop_test_utils import make_repo
 from phase_loop_runtime.consiliency_gates import scan_consiliency_gates
-from phase_loop_runtime.consiliency_layout import consiliency_root, find_consiliency_manifest
+from phase_loop_runtime.consiliency_layout import find_consiliency_manifest
 from phase_loop_runtime.consiliency_scaffold import scaffold
 
 # glossary is a proj-S doc, sbom is proj-code -- both l0_stub_allowed at presence-only.
