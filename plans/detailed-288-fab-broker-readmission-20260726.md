@@ -335,11 +335,13 @@ as the mechanism.** Rationale:
 > **⛔ SUPERSEDED — AND THIS ONE IS INDEPENDENTLY EXECUTABLE. DO NOT PERFORM IT.**
 > Unlike the rest of this plan, Change C is a one-line flag flip that requires none of the
 > killed mechanism, so the banners elsewhere do not obviously cover it. Flipping
-> `_FAB_DELTA_BROKER_READMIT_READY = True` on main today ACTIVATES the un-brokered
-> re-admission bypass that ah#288 exists to CLOSE — `_fab_delta_readmit` still carries its
+> `_FAB_DELTA_BROKER_READMIT_READY = True` on main today ACTIVATES — for any FAB-enabled,
+> opted-in coordinator run (`PHASE_LOOP_FAB` set AND `coordinator_opt_in`) — the
+> un-brokered re-admission bypass that ah#288 exists to CLOSE — `_fab_delta_readmit` still carries its
 > KNOWN LIMITATION block and its direct `append_record` (`train_runner.py:1127-1146`).
 > Its stated predecessor ah#299 is now CLOSED, so that precondition reads as satisfied. It
 > is not: the mechanism this flag would activate was never built.
+
 - **Modify** `_FAB_DELTA_BROKER_READMIT_READY = False` → `True` (`governed_premerge.py:74`); delete the
   interlock comment block (`:64-73`). Reason: activate the ENGAGE path once the brokered mechanism (A+B) has
   cross-vendor CR and #299 has landed.
