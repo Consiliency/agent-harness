@@ -1,6 +1,26 @@
 # Detailed plan: FAB 3b broker re-admission of a delta-approved head (ah#288)
 
+> # ⛔ THIS PLAN IS NOT EXECUTABLE
+>
+> **Read `## CR AMENDMENT 2` (end of file) BEFORE anything else.** The mechanism this plan
+> specifies — caller-supplied `lease_epoch` fencing, `node_id` lineage, `sequence >= 2`
+> baselines — FAILED four cross-vendor CR rounds and is SUPERSEDED. Its PR
+> (Consiliency/agent-harness#337) is a parked draft.
+>
+> Sections below still describe that mechanism in normative language. They are retained as
+> a decision record, NOT as instructions. **Do not implement anything in this document**
+> until the replacement contract, fail-closed matrix, acceptance criteria, file-level
+> change actions and crash/replay ordering enumerated in `## CR AMENDMENT 2` have been
+> authored, and the open ledger-vs-journal design question resolved.
+>
+> `## CR AMENDMENT 1` is likewise historical: its repairs applied to the killed mechanism.
+
+
 ## Task
+> **SUPERSEDED — retained as a decision record, not instructions.** This section
+> specifies the killed `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See
+> `## CR AMENDMENT 2`.
+
 FAB piece 3b-consumer (Consiliency/agent-harness#191, PR #287) re-admits a delta-approved advanced PR head
 by writing the new admitted head **directly to the coordinator ledger** (`_fab_delta_readmit` →
 `append_record`, after an owned-scope `_covered_by_owned` re-check). That direct append **bypasses the
@@ -34,6 +54,10 @@ impossible.
   `fab_run_id is not None` and is unaffected by the flip — that is the seam #299 addresses (below).
 
 ### The current direct-append re-admission (what must go through the broker)
+> **SUPERSEDED — retained as a decision record, not instructions.** This section
+> specifies the killed `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See
+> `## CR AMENDMENT 2`.
+
 - `train_runner.py:890-1145` — `_fab_delta_readmit(...)`. On a single-commit advance of an admitted FAB node
   with the trusted opt-in: fetch the live head (`:953`), single-commit check (`:965-970`), **broker
   owned-scope re-check** via `_paths_covered_by_owned` (`:983`, reusing `GitHubBrokerAdapter._covered_by_owned`,
@@ -182,6 +206,10 @@ All six return `None`, never a weakening of the guard. M1/M2/M6 are the fail-OPE
 vacuous evidence) — the ones that would activate an unverified re-admission if wrong.
 
 ## Split into bounded changes (this issue is larger than one bounded change)
+> **SUPERSEDED — retained as a decision record, not instructions.** This section
+> specifies the killed `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See
+> `## CR AMENDMENT 2`.
+
 
 Recommend **three** bounded changes; the interlock flip MUST be its own step:
 
@@ -303,6 +331,10 @@ as the mechanism.** Rationale:
   cross-vendor CR and #299 has landed.
 
 ## Regression tests (MANDATORY — one per fail-closed branch; each drives the PRODUCTION path and FAILS before the fix)
+> **SUPERSEDED — retained as a decision record, not instructions.** This section
+> specifies the killed `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See
+> `## CR AMENDMENT 2`.
+
 
 Anti-tautology discipline (a recent PR here was blocked for asserting on values built in the test body): every
 test invokes the real production function (`BrokerService.readmit_advanced_head` for A; `_fab_delta_readmit`
@@ -416,6 +448,10 @@ To prove each regression bites: run the new tests on the pre-change tree (Change
 ---
 
 ## CR AMENDMENT — 2026-07-26 (codex DISAGREE, grok PARTIALLY AGREE)
+> **SUPERSEDED — retained as a decision record, not instructions.** This section
+> specifies the killed `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See
+> `## CR AMENDMENT 2`.
+
 
 **This plan is NOT executable as written.** Board: codex DISAGREE, grok PARTIALLY AGREE,
 gemini unavailable (ah#335). The architecture, A/B/C split, and flip-after-#299 sequencing
@@ -448,7 +484,7 @@ recovery, return `None`.
 
 ### A4 (BLOCKING) — verification cannot see a missing production binding
 Every Change-B test invokes `_fab_delta_readmit` directly, and the existing merge-loop
-test STUBS it (`test_fab_activation_promotion.py:1321` — verified). So omitting or
+test STUBS it (`test_fab_activation_promotion.py:1319` — verified). So omitting or
 misbinding the real `coordinator_runtime.broker_client` call site would pass every planned
 test while the activated feature never works. No M5 conflicting-key test exists despite
 the plan claiming M5 coverage.
@@ -508,7 +544,7 @@ generate epochs by unrelated conventions. The same integer is being asked to exp
 repo-wide admission order; freshness of one branch/PR lineage; FAB review-round
 progression; and convergence-event ordering. Three consumers already disagree:
 
-- `train_runner.py:136` — publish, **hardcoded** `lease_epoch=1`, so an N-node train
+- `train_runner.py:138` — publish, **hardcoded** `lease_epoch=1`, so an N-node train
   holds N distinct admissions at epoch 1. (This is why tightening the store to reject
   `<= max` is unavailable: node 2 would fail.)
 - `convergence/refresh.py:61` — publish, **variable** `lease_epoch`. So "publish is
@@ -531,7 +567,7 @@ that this adjudicated the panel split. All three claims are too strong.
 
 The **coordinator train ledger already records the admitted head.**
 `train_ledger.LedgerRecord` carries `branch`, `pr_url` and `head_sha` with last-record-wins
-per `node_id`, and `train_runner.py:2403` reads it as exactly that:
+per `node_id`, and `train_runner.py:2405` reads it as exactly that:
 
 ```python
 admitted_sha = rec.head_sha
@@ -556,7 +592,13 @@ not less. A design decision remains outstanding:
 change; whether the ledger is trustworthy ENOUGH to fence a trust-root gate is exactly the
 question the first draft skipped by asserting the state did not exist.
 
-### The replacement design — per-target versioned-head CAS
+### CANDIDATE replacement design — per-target versioned-head CAS
+
+> **CONDITIONAL — not yet chosen.** The ledger-vs-journal question in
+> `### CRUX FACT — CORRECTED` is OPEN. This section describes the broker-owned-journal
+> option in full so it can be evaluated; it is NOT a decision, and the sequencing below
+> inherits that condition. If the coordinator ledger proves a sound trust-root authority,
+> the journal and its publish shadow-write are unnecessary.
 
 Re-admission does not need a repository-global epoch. It needs proof that the request
 advances the uniquely current admission.
@@ -623,7 +665,7 @@ Required: keep append order as a distinct `event_sequence`; record `target_id` +
 coordinator event log must reconcile against the broker journal, never invent fencing
 truth independently.
 
-### Sequencing — satisfies BOTH panel seats
+### Sequencing — IF the journal option is chosen (see the CONDITIONAL note above)
 
 The bridge between codex's "publish must participate" and grok's "do not touch merged
 publish" is that publish's change is **ADDITIVE, with no behavioural change**:
@@ -631,7 +673,7 @@ publish" is that publish's change is **ADDITIVE, with no behavioural change**:
 1. **Land the target journal + event-schema change, readmit still DISABLED.** On terminal
    publish success, SHADOW-WRITE structured target metadata (canonical identity, current
    admitted head). External publish behaviour, return values and callers unchanged.
-2. **Migrate both publish producers** into the metadata contract — `train_runner.py:136`
+2. **Migrate both publish producers** into the metadata contract — `train_runner.py:138`
    (hardcoded) and `convergence/refresh.py:61` (variable). Stores lacking target records
    must fail CLOSED for readmit, or undergo an explicit provider-reconciled migration.
    Never reconstruct authority from caller assertions.

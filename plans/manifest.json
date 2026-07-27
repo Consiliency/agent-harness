@@ -21,7 +21,7 @@
       "roadmap_ref": null,
       "slug": "288-fab-broker-readmission-amendment-2",
       "status": "committed",
-      "task_summary": "CR AMENDMENT 2: Change A (caller-supplied lease_epoch fencing) SUPERSEDED after 4 failed CR rounds; replaced by broker-owned per-target versioned-head CAS. Records the verified crux that the current tip is not derivable from existing durable state.",
+      "task_summary": "CR AMENDMENT 2: Change A (caller-supplied lease_epoch fencing) SUPERSEDED after 4 failed CR rounds; PR#337 parked. Records the BROKER-SCOPED crux \u2014 the broker's own durable state cannot answer 'what head is currently admitted' (one-way evidence keys, no structured head field) \u2014 while the coordinator train ledger DOES retain the admitted SHA. The ledger-vs-broker-journal design question is therefore OPEN and must be resolved before implementation; a per-target versioned-head CAS is described as a CANDIDATE, not a decision. PLAN IS NOT EXECUTABLE: replacement contract, matrix, acceptance criteria, file-level change actions and crash/replay ordering are all unauthored.",
       "type": "detailed",
       "updated_at": "2026-07-26T21:30:00+00:00"
     },
