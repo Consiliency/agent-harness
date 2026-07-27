@@ -114,9 +114,20 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 # Which CLI binary backs each leg (used for metadata-only liveness preflight).
 # grok is NOT in ``PANEL_LEGS`` (the default 3-leg panel is byte-frozen) but IS a
 # registered homebrew lane a board seat can run on (the 4-vendor code-review board).
+# ah#335 — READ THIS BEFORE DEBUGGING THE "gemini" LEG. The leg is NAMED `gemini` but
+# EXECUTES `agy` (Antigravity). Nothing on the panel path invokes a `gemini` binary. That
+# mismatch has produced two wrong root causes: both times the leg was diagnosed by running
+# `gemini` and reasoning from its output, when `gemini`'s health is irrelevant here. The
+# `gemini` CLI is separately dead (IneligibleTierError / UNSUPPORTED_CLIENT — Google
+# withdrew free-tier OAuth for that client); the panel is unaffected because it never calls
+# it. Probe `agy`, not `gemini`.
+#
+# The name is retained deliberately: `PANEL_LEGS` is byte-frozen, and `"gemini"` also spans
+# `_HOMEBREW_LANES`, `DEFAULT_LEG_MODELS` and many tests, so a rename is a change to the
+# review gate rather than a cosmetic edit.
 _LEG_CLI: dict[str, str] = {
     "codex": "codex",
-    "gemini": "agy",
+    "gemini": "agy",  # ah#335: NOT the gemini CLI — see the note above
     "claude": "claude",
     "grok": "grok",
 }
@@ -2913,6 +2924,9 @@ def _exec_leg(
                 break  # slow empty turn (not transient) → don't re-run + double wall-clock
         return rc, review_text, log_text
     if leg == "gemini":
+        # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). A 0-byte
+        # EMPTY here is usually the transient agy backend stall matched by
+        # `_GEMINI_TRANSIENT_RE` below, not an auth problem with any `gemini` binary.
         out_file = out_dir / "panel-gemini.txt"
         # ABDHOME: the agy leg bakes effort INTO the model name. effort-absent keeps
         # the shared default model verbatim; a seat renders
