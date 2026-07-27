@@ -593,22 +593,49 @@ not less. A design decision remains outstanding:
 | option | uses | open question |
 |---|---|---|
 | broker-owned target journal | new broker state written on publish | is the additive shadow-write worth touching the merged publish path? |
-| reuse the coordinator ledger | `LedgerRecord.head_sha`, already durable | see below — its MEMBERSHIP claim is broker-verifiable, its CURRENCY claim is not. |
+| reuse the coordinator ledger | `LedgerRecord.head_sha`, already durable | see below — MEMBERSHIP verifiable only given a repo-key invariant that does not exist; CURRENCY not broker-backed. |
+| **FAB provenance chain** | `artifact.candidate.head_sha`, per-round `record.delta_head_sha`, `resolve_chain_resolution` | named independently by TWO review seats. Already a per-target, ordered, tamper-evident head lineage with per-round epochs, fail-closed on splice/reorder/pending, bound to the coordinator record via `fab_run_id` (`_resolve_admission_fab_run_id`). Close to the `current_admitted_head_sha` + `generation` shape this amendment claims needs new state. It is repo-local and NOT broker-owned, and can advance before the ledger commit — that may be a sound reason to reject it, but it must be EVALUATED, not omitted. |
 
-**Correction (review round 3).** An earlier draft of this row said "nothing binds it to
-broker evidence". That is FALSE, and was disproved by execution: the ledger's `head_sha` at
-`pr_open` IS the broker's own `publish_result["head_sha"]`, and the evidence key is
-`sha256(repo\0branch\0head_sha)` namespaced by verb (`verbs.py:25`), so the three fields
-the ledger already stores recompute the key directly. A head that was never admitted
-returns `None` — no false positive. **The ledger's MEMBERSHIP claim is verifiable today
-with zero new state.**
+**The table above is not proven exhaustive.** Two of its three rows were added by
+reviewers after the author presented earlier versions as complete. Treat it as the
+candidates known so far.
 
-The decisive objection is different, and is in this plan's own subject matter:
-`_fab_delta_readmit` **already appends a `pr_open` ledger record carrying a `head_sha` that
-no broker ever admitted** (`train_runner.py:1139-1146`, the `durable=True` re-admission
-COMMIT POINT, under the KNOWN LIMITATION comment at `:1127-1138` — "does NOT go through a
-full broker admission"). So the coordinator demonstrably advances `head_sha` without an
-admission: **the ledger's CURRENCY claim is not broker-backed.**
+**Correction (review rounds 3-4). This paragraph has been wrong twice; read the
+qualifiers.**
+
+Round 1 said "nothing binds the ledger to broker evidence" — FALSE. The evidence key is
+`sha256(repo\0branch\0head_sha)` namespaced by verb (`verbs.py:25`), the ledger's
+`head_sha` at `pr_open` IS the broker's own `publish_result["head_sha"]`, and a
+reviewer demonstrated the join resolving to `EFFECT_TERMINAL_OBSERVED` with a
+non-admitted head correctly returning `None`.
+
+Round 3 then said the membership claim is verifiable "today with zero new state". That
+ALSO overstates it, in two ways found in round 4:
+
+1. **The ledger does not store `repo`.** `LedgerRecord` carries
+   `(node_id, status, branch, pr_url, head_sha, upstream_merge_sha, merge_order,
+   fab_run_id, ts)` — verified. The evidence hash needs the `repo` string, and the broker
+   hashes/routes on the **absolute workspace path** passed as `str(repo)`
+   (`publishing.py:196`, `live.py::_repo_store_slug`). `node_id` is `<repo>/<roadmap>`, a
+   roadmap identifier — NOT that path. The demonstration supplied `repo` itself, so it
+   proved the hash composes, not that the ledger alone suffices. **A stable repo-key
+   invariant or canonical mapping is required, and does not exist today.** Workspace
+   overrides can change that string across a resume, leaving no durable mapping back to
+   the original evidence store.
+2. **Presence is not membership.** `replay()` may return `REJECTED_BEFORE_START`,
+   `PROVIDER_CALL_IN_FLIGHT` or `OUTCOME_AMBIGUOUS_BLOCKED`. Membership requires the
+   record's state to be exactly `EFFECT_TERMINAL_OBSERVED` — a non-`None` lookup is not
+   enough.
+
+So the accurate statement is: **the ledger's MEMBERSHIP claim is verifiable in principle,
+but only given a repo-key invariant that must be designed, plus the exact
+`EFFECT_TERMINAL_OBSERVED` predicate.** Not free.
+
+The CURRENCY objection is independent and unaffected: `_fab_delta_readmit` already appends
+a `pr_open` ledger record carrying a `head_sha` no broker admitted
+(`train_runner.py:1139-1146`, under the KNOWN LIMITATION comment at `:1127-1138` — "does
+NOT go through a full broker admission"). The coordinator demonstrably advances `head_sha`
+without an admission, so **the ledger's CURRENCY claim is not broker-backed.**
 
 Frame the design question that way. A round run off the old wording would conclude the
 ledger cannot be checked against the broker at all — false — and would over-scope the new
