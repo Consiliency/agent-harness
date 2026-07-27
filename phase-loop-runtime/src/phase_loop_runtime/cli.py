@@ -296,7 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "goal-coverage-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "goal-coverage-audit", "validate-roadmap", "docs-audit", "citation-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -389,6 +389,18 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Mechanically lint a phase-plan roadmap spec (headings, aliases, IF-gates, DAG, lane hints).  Pass --train for cross-repo release-train roadmaps."
             sub.add_argument("roadmap_path", nargs="?", help="Path to the roadmap spec. Falls back to --roadmap / auto-detection.")
             sub.add_argument("--train", action="store_true", default=False, help="Validate as a cross-repo release-train roadmap (P2 train mode).")
+        if name == "citation-audit":
+            sub.description = (
+                "Verify that source citations in prose documents still resolve. Catches drifted "
+                "line anchors and FABRICATED symbols. Language- and layout-agnostic; --repo is "
+                "repeatable to span the fleet (e.g. --repo . --repo ../governed-pipeline)."
+            )
+            sub.add_argument("--glob", action="append", default=None,
+                             help="Document glob; repeatable (default: **/*.md).")
+            sub.add_argument("--search-root", action="append", default=[],
+                             help="Extra root to resolve cited paths against; repeatable.")
+            sub.add_argument("--require-symbols", action="store_true",
+                             help="Treat line-only citations as failures (migrate to `path::symbol`).")
         if name == "docs-audit":
             sub.description = "Pipeline-independent docs-freshness backstop over a git diff (no .phase-loop state); fails loud on a release surface changed without its required doc."
             sub.add_argument("--base", help="Diff base ref (auto-resolved from CI env if omitted: PR base / prior tag / push before-SHA).")
@@ -1057,6 +1069,22 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _task_message_broker_serve_command(args=args)
     if command == "advisor-board":
         return _advisor_board_command(args=args)
+    if command == "citation-audit":
+        from . import citation_audit
+
+        repo_args = args.repo if isinstance(args.repo, list) else [args.repo or "."]
+        reports = citation_audit.audit_many(
+            [resolve_repo(r) for r in (repo_args or ["."])],
+            globs=tuple(getattr(args, "glob", None) or ("**/*.md",)),
+            search_roots=getattr(args, "search_root", []) or [],
+            require_symbols=bool(getattr(args, "require_symbols", False)),
+        )
+        if bool(args.json):
+            print(json.dumps({"repos": [r.to_json() for r in reports],
+                              "ok": all(r.ok for r in reports)}, indent=2))
+        else:
+            print("\n".join(citation_audit.render(r) for r in reports))
+        return 0 if all(r.ok for r in reports) else 1
     if command == "docs-audit":
         from . import docs_audit
 

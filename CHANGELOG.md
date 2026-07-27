@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### `citation-audit`: mechanically verify source citations in prose (ah#334 follow-up)
+
+- New `phase-loop citation-audit` verifies that source citations in prose documents still
+  resolve: a cited path exists and is unambiguous, a cited line is within the file, and a
+  cited **symbol** is actually defined. Language- and layout-agnostic (Python, TypeScript,
+  Go, Rust), zero-config, and `--repo` is repeatable so one run spans the fleet.
+- **Known limit, stated deliberately:** in-range line drift is NOT detected and cannot be
+  from a bare `path:N` — the citation carries no expectation of what that line should
+  contain. That is the argument for `path::symbol`, which is self-describing. A test pins
+  the limit so the claim cannot be re-added without the mechanism.
+- Symbol resolution strips comments and string literals first, so a fabricated name merely
+  *mentioned* in the file does not satisfy it.
+- Findings only: see `docs/decisions/0001-citation-integrity-is-not-a-maturity-signal.md`.
+  The audit MUST NOT emit or imply a fleet maturity rung.
+
 ### CI: a pyflakes (ruff F) lint gate, and the defects it found (Consiliency/agent-harness#334)
 
 - **CI now runs a linter.** Previously it ran none — no ruff config, no workflow step.
