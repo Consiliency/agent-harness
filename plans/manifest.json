@@ -13,6 +13,14 @@
           "by": "claude-plan-detailed",
           "metadata": {},
           "transition": "committed"
+        },
+        {
+          "at": "2026-07-27T00:10:00+00:00",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "reason": "plan is NOT EXECUTABLE: replacement contract, matrix, acceptance criteria, file-level change actions and crash/replay ordering unauthored; ledger-vs-journal design question open (ah#288)"
+          },
+          "transition": "orphaned"
         }
       ],
       "owner_skill": "claude-plan-detailed",
@@ -20,7 +28,7 @@
       "reflection_ref": "~/.codex/skills/claude-plan-detailed/reflections/637369a25984/chore-plan-288-amendment-2/run-288-amendment-2.md",
       "roadmap_ref": null,
       "slug": "288-fab-broker-readmission-amendment-2",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": "CR AMENDMENT 2: Change A (caller-supplied lease_epoch fencing) SUPERSEDED after 4 failed CR rounds; PR#337 parked. Records the BROKER-SCOPED crux \u2014 the broker's own durable state cannot answer 'what head is currently admitted' (one-way evidence keys, no structured head field) \u2014 while the coordinator train ledger DOES retain the admitted SHA. The ledger-vs-broker-journal design question is therefore OPEN and must be resolved before implementation; a per-target versioned-head CAS is described as a CANDIDATE, not a decision. PLAN IS NOT EXECUTABLE: replacement contract, matrix, acceptance criteria, file-level change actions and crash/replay ordering are all unauthored.",
       "type": "detailed",
       "updated_at": "2026-07-26T21:30:00+00:00"

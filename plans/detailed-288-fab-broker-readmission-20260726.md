@@ -42,14 +42,14 @@ impossible.
 ## Research summary (source-verified on `feat/fab-265-merge-queue-bound` @ `9540f91`)
 
 ### The interlock and what it gates
-- `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py:74` — `_FAB_DELTA_BROKER_READMIT_READY = False`.
+- `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py:76` — `_FAB_DELTA_BROKER_READMIT_READY = False`.
 - `governed_premerge.py:77-93` — `fab_delta_shortcut_enabled(coordinator_opt_in, env)` returns
   `_FAB_DELTA_BROKER_READMIT_READY and fab_promotion_enabled(env) and bool(coordinator_opt_in)`. The
   interlock is one of **three ANDed trusted gates**; the flip touches ONLY this predicate. Because the
   master flag `fab_promotion_enabled(env)` is already ANDed here, **flipping the interlock keeps the ENGAGE
   path byte-neutral when `PHASE_LOOP_FAB` is off** (verified: flag-off ⇒ predicate False regardless of the
   interlock).
-- The predicate gates ONLY the ENGAGE (delta review + re-admit) at `train_runner.py:3058`. The torn-state
+- The predicate gates ONLY the ENGAGE (delta review + re-admit) at `train_runner.py:3036`. The torn-state
   recovery net (`_fab_recover_torn_to_admitted`, `train_runner.py:3054-3055`) is gated separately on
   `fab_run_id is not None` and is unaffected by the flip — that is the seam #299 addresses (below).
 
@@ -68,7 +68,7 @@ impossible.
   removed by change (4), issue Scope).
 - The delta round's epoch is already computed deterministically from the **durable provenance chain**:
   `next_epoch = max([FAB_CANDIDATE_EPOCH, *(d.epoch for d in artifact.delta_chain)]) + 1`
-  (`train_runner.py:1035` / `:1039`). `FAB_CANDIDATE_EPOCH = 1` (`fab_gate.py:505`), so the first delta round
+  (`train_runner.py:1035` / `:1039`). `FAB_CANDIDATE_EPOCH = 1` (`fab_gate.py:504`), so the first delta round
   is epoch **2**, strictly greater than the original publish's `lease_epoch=1` — this is the natural,
   deterministic, monotonic **lease-epoch bump** the re-admission needs, sourced from a harness-written
   durable record (not a parallel epoch invented at attempt time).
@@ -81,12 +81,16 @@ impossible.
   (`train_runner.py:2127`), `resolve_owned_paths` (`:2126`), `admission_fn` (`:2244`) — are in lexical scope
   here (confirmed: `coordinator_runtime` is a `run_train` param, referenced at `:2222/:2550/:2691`). No
   cross-function plumbing is required to reach the broker at the call site.
-- `train_runner.py:2222` — `run_train` already asserts: `coordinator_runtime is not None ⟹ train_id set AND
+- `train_runner.py:2224` — `run_train` already asserts: `coordinator_runtime is not None ⟹ train_id set AND
   broker_client is not None`. So a broker-authoritative runtime always carries a live `broker_client`.
 - `CoordinatorRuntime` (`train_runner.py:~88-98`) carries `train_id`, `roadmap_digest`, `workspace_id`,
   `broker_client`.
 
 ### The broker admission stack (the primitive to extend)
+> **SUPERSEDED — retained as a decision record, not instructions.** This section
+> specifies the killed `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See
+> `## CR AMENDMENT 2`.
+
 - `convergence/contracts.py:18-33` — `AdmissionRequest(attempt_id, lease_epoch, fence_token, approval_digest,
   expected_version_predicate, authority_domain_scope, idempotency_key)`; `__post_init__` rejects any empty
   fencing field.
@@ -294,7 +298,7 @@ as the mechanism.** Rationale:
 
 - **Add** a module-level default seam `_default_broker_readmit(coordinator_runtime, *, node, workspace,
   owned_paths, run_id, artifact, new_head_sha, next_epoch) -> Optional[str]` (place near
-  `_default_build_admission`, `train_runner.py:101`). It builds the approval binding from **durable
+  `_default_build_admission`, `train_runner.py:103`). It builds the approval binding from **durable
   provenance** (`artifact.base.base_sha`, owned-scope digest over `owned_paths` via `os.fsencode`,
   `roadmap_digest` from the runtime — mirror `_default_build_admission:127-135`), calls
   `coordinator_runtime.broker_client.readmit_advanced_head(repo=str(workspace), node_id=node.node_id,
@@ -326,7 +330,7 @@ as the mechanism.** Rationale:
   already in lexical scope here (verified) — no signature plumbing through `run_train` is needed.
 
 ### Change C — `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py` (modify — SEPARATE PR, after #299)
-- **Modify** `_FAB_DELTA_BROKER_READMIT_READY = False` → `True` (`governed_premerge.py:74`); delete the
+- **Modify** `_FAB_DELTA_BROKER_READMIT_READY = False` → `True` (`governed_premerge.py:76`); delete the
   interlock comment block (`:64-73`). Reason: activate the ENGAGE path once the brokered mechanism (A+B) has
   cross-vendor CR and #299 has landed.
 
@@ -369,6 +373,10 @@ Drive `BrokerService.readmit_advanced_head` against a real file-backed `Lineariz
   **Bite:** delete the post-admit durable re-read → the vacuous admit is accepted.
 
 ### `phase-loop-runtime/tests/test_fab_delta_consumer.py` (extend `DeltaReadmitTransactionTest`) — Change B
+> **SUPERSEDED — retained as a decision record, not instructions.** This section
+> specifies the killed `lease_epoch` / `node_id` / `sequence >= 2` mechanism. See
+> `## CR AMENDMENT 2`.
+
 Each calls the real `tr._fab_delta_readmit(...)` with a `broker_admit_fn` seam and the existing real fixture.
 - `test_readmit_goes_through_broker_before_ledger_commit`: a spying `broker_admit_fn` that records its call
   and returns the new head → the ledger COMMIT POINT is reached AND the spy was called with `next_epoch==2`,
@@ -510,8 +518,7 @@ stores. Specify `attempt_id` encoding with explicit delimiters. M3 prose says "n
 strictly above"; the store rejects only `< max`.
 
 ### Anchor re-grounding
-`convergence/broker/admission.py:23-56` VERIFIED EXACT. runner.py call-site anchors have
-drifted ~100 lines (that file absorbed the #324/#325/#326 merges) — re-locate by symbol.
+`convergence/broker/admission.py:23-56` VERIFIED EXACT. train_runner.py anchors have drifted by small amounts (+2/+16) (that file absorbed the #324/#325/#326 merges) — re-locate by symbol.
 
 ---
 
@@ -586,7 +593,26 @@ not less. A design decision remains outstanding:
 | option | uses | open question |
 |---|---|---|
 | broker-owned target journal | new broker state written on publish | is the additive shadow-write worth touching the merged publish path? |
-| reuse the coordinator ledger | `LedgerRecord.head_sha`, already durable | is the ledger a sound TRUST-ROOT authority, or merely bookkeeping? It is written by the coordinator, not the broker, and nothing binds it to broker evidence. |
+| reuse the coordinator ledger | `LedgerRecord.head_sha`, already durable | see below — its MEMBERSHIP claim is broker-verifiable, its CURRENCY claim is not. |
+
+**Correction (review round 3).** An earlier draft of this row said "nothing binds it to
+broker evidence". That is FALSE, and was disproved by execution: the ledger's `head_sha` at
+`pr_open` IS the broker's own `publish_result["head_sha"]`, and the evidence key is
+`sha256(repo\0branch\0head_sha)` namespaced by verb (`verbs.py:25`), so the three fields
+the ledger already stores recompute the key directly. A head that was never admitted
+returns `None` — no false positive. **The ledger's MEMBERSHIP claim is verifiable today
+with zero new state.**
+
+The decisive objection is different, and is in this plan's own subject matter:
+`_fab_delta_readmit` **already appends a `pr_open` ledger record carrying a `head_sha` that
+no broker ever admitted** (`train_runner.py:1139-1146`, the `durable=True` re-admission
+COMMIT POINT, under the KNOWN LIMITATION comment at `:1127-1138` — "does NOT go through a
+full broker admission"). So the coordinator demonstrably advances `head_sha` without an
+admission: **the ledger's CURRENCY claim is not broker-backed.**
+
+Frame the design question that way. A round run off the old wording would conclude the
+ledger cannot be checked against the broker at all — false — and would over-scope the new
+journal.
 
 **Resolve that before implementing.** The second option is cheaper and needs no publish
 change; whether the ledger is trustworthy ENOUGH to fence a trust-root gate is exactly the
@@ -721,8 +747,11 @@ fail-closed matrix, re-admission contract, Change-A tests and the epoch-coupled 
 Change B still demanding `lease_epoch`, `node_id` and `sequence >= 2` — the design four CR
 rounds killed. They could satisfy the acceptance criteria only by re-implementing it.
 
-Every such section now carries a SUPERSEDED banner, so nothing reads as live. But banners
-are a stop sign, not a road.
+A top-level stop sign sits under the title and every section identified across three review
+rounds now carries a banner. Do NOT read that as a guarantee of completeness: two prior
+versions of this sentence asserted "nothing reads as live" and were both falsified by
+review. Treat the top-level notice as authoritative and any unbannered section as
+historical regardless. Banners are a stop sign, not a road.
 
 **THIS PLAN IS NOT EXECUTABLE UNTIL THE FOLLOWING ARE AUTHORED:**
 
