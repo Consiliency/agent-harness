@@ -29,7 +29,9 @@
 #      read, so a run with genuine block findings that ends on a structural hold reports
 #      the structural reason instead of `non_convergence`. Fixing that is a behavioural
 #      change to governed-review attribution and needs its own test (ah#341).
-#   2. It turns 20+ test assignments into bare expression statements that read as
-#      accidental leftovers.
+#   2. It rewrites assignments across the suite into bare expression statements that
+#      read as accidental leftovers. (Deliberately no count here: four successive
+#      revisions of this comment stated a different wrong figure. The effect is the
+#      argument; `ruff check . --select F841` is the source of truth for the tally.)
 select = ["F"]
 ignore = ["F841"]

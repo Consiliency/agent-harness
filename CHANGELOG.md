@@ -26,11 +26,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `dataclasses.field` import used elsewhere in that module.
 - 122 further findings (111 unused imports, 6 redefinitions, 5 placeholder-free
   f-strings) were auto-fixed with safe fixes only.
+- **Downstream-visible:** `ruff.toml` / `.ruff.toml` are now classified as release
+  surfaces by `docs_surfaces`, so a repo audited by the harness that edits its ruff config
+  needs a matching `CHANGELOG*` change or `docs-audit` reports a finding. This keeps the
+  lint gate's own config from being weakened silently — without it, setting `select = []`
+  or `ignore = ["F821"]` would carry no documentation requirement. Strictly tightening and
+  fails loud; it cannot produce a silent pass. The shipped `release_guard` control is
+  deliberately NOT changed (`test_shipped_release_guard_unchanged` holds the two
+  taxonomies apart, so a lint-config edit never gates release dispatch).
 - The gate runs as its own `lint` job reading the root `ruff.toml`
   (`select = ["F"]`, `ignore = ["F841"]`), with ruff pinned. `F841` is deliberately
   deferred (Consiliency/agent-harness#341): a bulk unsafe fix would silently delete
   `seen_block = True` in `governed_premerge`, erasing evidence of a real terminal-
-  attribution defect, and would turn 20+ test assignments into bare expression statements.
+  attribution defect, and would rewrite assignments across the suite into bare expression
+  statements that read as accidental leftovers.
 
 ## [0.7.13] - 2026-07-26
 
