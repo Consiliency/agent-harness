@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Panel: the headless agy leg can READ its staged bundle again (Consiliency/agent-harness#345)
+
+- The `gemini` panel leg (which drives the Antigravity `agy` CLI) returned a silent 0-byte
+  result on review-sized bundles. Root cause, from the CLI's own stderr: headless mode
+  cannot prompt for a tool permission, so it AUTO-DENIES — and the denied tool is
+  **`read_file`**, not `command`. A prior comment in `panel_invoker` asserted the opposite,
+  which is why the ah#324 no-command preamble did not fix it.
+- The staged review directory now carries a scoped grant
+  (`{"permissions": {"allow": ["read_file"]}}`) written into the ephemeral dir, so it dies
+  with the run and never touches the operator's `~/.gemini/settings.json`.
+- Deliberately NOT `--dangerously-skip-permissions`: that auto-approves every tool
+  including `command`, and a review leg ingests untrusted material by construction, so a
+  prompt injection in a bundle would reach arbitrary execution. Verified against the real
+  CLI — with the scoped grant a read succeeds and a shell command is still DENIED.
+
 ### CI: a pyflakes (ruff F) lint gate, and the defects it found (Consiliency/agent-harness#334)
 
 - **CI now runs a linter.** Previously it ran none — no ruff config, no workflow step.
