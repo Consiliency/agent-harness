@@ -292,9 +292,10 @@ injection anchor, and a positive control
   Option-A variant) → publish is accepted after revocation. **Injection anchor:** the
   in-lock `epoch_blocked()` inside `admit_next` (S6) + `execute:64`. **Positive control:**
   with `epoch_blocked = False`, the identical publish is accepted — so the test is not
-  vacuously blocking everything. **⚠️ Flagged in §10:** the simple form here PASSES on
-  current `main` (`execute:64` already refuses under #366) — as a red-first test it must be
-  narrowed to the in-lock `admit_next` guarantee, else relabeled a regression guard.
+  vacuously blocking everything. **⚠️ §10 ratified SPLIT:** the simple form here PASSES on
+  current `main` (`execute:64` already refuses under #366), so it is relabeled a `REGRESSION
+  GUARD` (rule 7); a SEPARATE red-first test asserts the genuinely new guarantee — in-lock
+  refusal inside `admit_next` under a concurrent revocation race (step-1 wave). Both.
 
 - **AC-3 — publish idempotency survives renumbering (epoch-independent key).** Publish
   `(repo, branch, head)`; it records some epoch E. Replay the SAME publish → returns the
@@ -330,9 +331,10 @@ injection anchor, and a positive control
   `epoch_blocked` → a succeeded publish wrongly reports blocked on resume. **Injection
   anchor:** the terminal short-circuit at `execute:58` (before the `:64` revocation gate).
   **Positive control:** a DIFFERENT `head_sha` publish under the same revocation IS refused
-  at `:64` — proving `:58` is a terminal-only replay, not a blanket bypass. **⚠️ Flagged in
-  §10:** this PASSES on current `main` (`:58` already precedes `:64` under #366) — it is a
-  regression guard, not a red-first test; relabel it as such.
+  at `:64` — proving `:58` is a terminal-only replay, not a blanket bypass. **⚠️ §10 ratified
+  REGRESSION GUARD:** this PASSES on current `main` (`:58` already precedes `:64` under #366);
+  no new guarantee hides here, so it is labeled a `REGRESSION GUARD` (rule 7) naming the
+  `:58`-before-`:64` ordering, not presented as a red-first test.
 
 - **AC-6b — a revoked resume is refused IN-LOCK (the parked defect, as a live AC).** An
   admission is authorized (dedup-able by `attempt_id`) but its effect is NOT yet observed;
@@ -423,6 +425,35 @@ there is none.
    quietly patched to green. Without this rule TDD is theatre.
 6. **`pytest -k <new tests>` goes red→green across exactly TWO commits** per lane: the test
    commit (red) and the implementation commit (green). The execution PR states which two.
+7. **Rule 2 governs tests for NEW behavior. A test that proves EXISTING behavior stays fixed
+   is a different, legitimate category: a REGRESSION GUARD — green on arrival, rule-2 exempt
+   BY LABEL.** The exemption is by explicit labelling, NEVER by silence: a regression guard
+   must carry the `REGRESSION GUARD` label and name exactly what existing behavior it guards
+   (e.g. #366's `execute:64` fresh-publish refusal, or the `execute:58`-before-`:64`
+   terminal-replay ordering). **An unlabelled green-on-arrival test remains a rule-2
+   violation** — the failure mode rule 2 prevents is a test shaped to fit code that already
+   exists, and a regression guard is openly that by design, which is fine only because it is
+   declared. When existing behavior is being guarded AND the same AC also asserts a genuinely
+   NEW guarantee, the new guarantee gets its OWN red-first test ALONGSIDE the regression guard
+   — both, not either.
+
+### The general rule (generalizes past this plan)
+
+**Test-first is per implementation STEP, not per plan.** A step's tests land and go red
+before that step's code; a falsifier that mutates a not-yet-existing symbol belongs to that
+symbol's step, not to an earlier wave. Rules 2 (red on arrival) and 3 (falsifier = applied
+mutation) are different lifecycle moments and coincide only where the current tree already
+embodies the mutation.
+
+### Pilot status (why this section exists as prose, not a gate)
+
+This contract is a **PILOT**: no harness gate enforces it yet (Consiliency/agent-harness#362
+is the falsifier-gate that would). It is here because the discipline has just paid off
+elsewhere — the ratification review of `Consiliency/spec` PR #102 found that the conformance
+validator REJECTS the canonical corpus, a defect invisible for as long as it was because
+every test ran against fixtures we authored ourselves rather than the corpus
+(Consiliency/agent-harness#371). Self-authored fixtures that never exercise the real artifact
+are the same vacuity rule 3 targets.
 
 ### Applied to THIS plan's step ordering (§11)
 
@@ -454,6 +485,9 @@ scaffolding. The two the directive prioritizes both live here:
   the fence is `if records and …`), then drives the live publish path (S1/S3) at
   `lease_epoch=1` → `admission.py:49` raises `1 < 2`. Red on `main`; post-fix, publish
   allocates epoch 3 and succeeds. Falsifier = the status quo (`lease_epoch=1` at S1).
+  (agent-harness#363 is NOT wrong — it records the round-4 reproduction as it occurred on
+  #337's branch, where `readmit_advanced_head` existed; only the mapping onto `main` needs
+  this seed.)
 - **AC-7 (doc retraction) — red on arrival.** The byte-neutrality claim is still in the
   tree and the CHANGELOG retraction is absent, so the grep-level check fails today.
 
@@ -468,22 +502,22 @@ mutation, or AC-6b's "return the dedup hit before `epoch_blocked`," can run befo
 
 ### Criteria in §8 that need rework or relabeling under this contract
 
-Applying rule 2 (a test that passes on arrival is not a test) surfaces two that do NOT fail
-on arrival, because #366 already shipped the behavior they assert. They are flagged here and
-in §8; the maintainer must ratify the resolution (relabel vs. reframe) — this plan does not
-unilaterally rewrite rule 2:
+Applying rule 2 surfaces two that do NOT fail on arrival, because #366 already shipped the
+behavior they assert. **Resolution RATIFIED (team-lead): relabel per rule 7, do NOT exempt
+silently** — and where a new guarantee hides inside the same AC, add its own red-first test
+alongside the guard.
 
-- **AC-2 (fresh publish refused under revocation) — PASSES on arrival.** `execute:64`
+- **AC-2 (fresh publish refused under revocation) — PASSES on arrival → split.** `execute:64`
   already raises under `epoch_blocked` (merged #366), so a fresh publish is already refused
-  today. As written it is a regression guard, not a red-first test. RESOLUTION (for
-  ratification): either relabel it a regression guard (legitimately green from the start,
-  exempt from rule 2) OR narrow the red assertion to the genuinely new guarantee — refusal
-  IN-LOCK inside `admit_next` under a concurrent revocation race — which is absent today and
-  belongs to the step-1 wave.
-- **AC-6a (completed publish replays after revocation) — PASSES on arrival.** `execute:58`
-  terminal replay already precedes the `:64` revocation gate (#366 ordering), so a completed
-  publish already replays without reporting blocked. It is a regression guard for existing
-  behavior; relabel it as such rather than presenting it as a test-first-red test.
+  today. Resolution: **(a)** relabel the on-arrival assertion a `REGRESSION GUARD` naming
+  #366's `execute:64` refusal (rule-7 exempt), AND **(b)** add a SEPARATE red-first test for
+  the genuinely new guarantee — refusal IN-LOCK inside `admit_next` under a concurrent
+  revocation race — which is absent today and lands in the step-1 wave. Both, not either.
+- **AC-6a (completed publish replays after revocation) — PASSES on arrival → REGRESSION
+  GUARD.** `execute:58` terminal replay already precedes the `:64` revocation gate (#366
+  ordering), so a completed publish already replays without reporting blocked. There is no
+  new guarantee hiding here; relabel it a `REGRESSION GUARD` naming the `:58`-before-`:64`
+  ordering. It is legitimately green from the start.
 
 Everything else in §8 fails on arrival for its named reason (AC-1/AC-7/AC-8 against `main`
 per wave-0 above; AC-3/AC-4/AC-5/AC-6b against the step-1 skeleton) and satisfies the
