@@ -2928,7 +2928,10 @@ def _exec_leg(
         # of any `gemini` binary is irrelevant here — diagnosing this leg by running
         # `gemini` produced two wrong root causes in one session.
         #
-        # A 0-byte result here has TWO distinct causes, and they are not interchangeable:
+        # A 0-byte result here has at least TWO KNOWN causes, not interchangeable. This
+        # comment does NOT enumerate retry semantics — read the retry code below; it has
+        # already drifted from prose twice (soft-empty retry at ~:3020, slow-failure
+        # suppression at ~:3034 even on a regex match).
         #   * headless TOOL-DENIAL — agy needs a permission it cannot prompt for and
         #     auto-denies, exiting rc==0 with no output. This is DETERMINISTIC for the
         #     denied tool: it destroys the ENTIRE response, not merely that one read.
@@ -2939,8 +2942,7 @@ def _exec_leg(
         #     names in `permissions.allow` (`invalid grant string` — only `tool(target)`
         #     parses), so the written grant was never read. Do not re-add one without
         #     first proving agy loads it.
-        #   * a TRANSIENT backend stall, matched by `_GEMINI_TRANSIENT_RE` below, which is
-        #     retried once.
+        #   * a TRANSIENT backend stall, matched by `_GEMINI_TRANSIENT_RE` below.
         # An earlier version of this comment attributed the observed EMPTY to the transient
         # stall. That was wrong: reproduction showed the `read_file` denial.
         out_file = out_dir / "panel-gemini.txt"
