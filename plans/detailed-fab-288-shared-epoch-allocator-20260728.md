@@ -83,14 +83,27 @@ plan RE-LANDS the rest of #337 as prior art:
   check — the exact ordering the parked-conflict record flags as a defect ("revocation must
   precede dedup"): a revoked resume returns its prior record as ACCEPTED and the caller
   proceeds to merge. The required in-lock order is:
-  **`epoch_blocked` → `attempt_id` dedup → `precondition` → allocate `max+1` → `policy` →
-  append.** Rationale: readmit has NO evidence-terminal replay (decoupled admit, no provider
-  adapter), so ALL readmit idempotency lives at this admission-dedup layer; gating dedup
-  behind `epoch_blocked` refuses a revoked resume (no double-merge — the ledger record +
-  `--match-head-commit` pinning already prevent that) while still deduping a NON-revoked
+  **`epoch_blocked` → `attempt_id` dedup (rebuild `make_request(prior.epoch)` + conflict-
+  compare on a hit — see the next paragraph) → `precondition` → allocate `max+1` → `policy`
+  → append.** Rationale: readmit has NO evidence-terminal replay (decoupled admit, no
+  provider adapter), so ALL readmit idempotency lives at this admission-dedup layer; gating
+  dedup behind `epoch_blocked` refuses a revoked resume (no double-merge — the ledger record
+  + `--match-head-commit` pinning already prevent that) while still deduping a NON-revoked
   resume. This also closes the #366 race on the dedup path (a revocation landing after an
   outside-lock entry check but before the in-lock body is only caught if in-lock
   `epoch_blocked` precedes the dedup return).
+  **ADDITIONALLY — restore the conflict-compare the 288a `admit_next` DROPPED (round-1 CR,
+  grok — verified @ `c1da62a`).** Its `attempt_id` dedup does `return record` with NO rebuild
+  and NO compare, whereas legacy `admit()` (`admission.py:47`) raises
+  `ValueError("conflicting idempotency key")` when `record.request != request`. Ported
+  unchanged, a resume presenting the SAME `attempt_id` but a DIFFERENT
+  authority/approval/predicate is returned ACCEPTED — and under S8 "accepted" means
+  "authorized to append the ledger and merge." So on the dedup hit, AFTER `epoch_blocked`,
+  the re-land MUST rebuild `make_request(prior.epoch)` and require field equality (raising a
+  field-wise conflict otherwise), matching `admit()`'s semantics. This guard is reachable
+  ONLY under §6's DETERMINISTIC `attempt_id`: with the random `uuid4`, dedup never fires and
+  the compare is dead code — so BLOCKING-2 REINFORCES the §6 recommendation. Falsifier + AC:
+  AC-9 (§8).
 - `AdmissionPrecondition = Callable[[tuple[AdmissionRecord, ...]], str | None]` — an
   in-lock gate over the durable log (used by readmit's baseline check; publish supplies
   none).
@@ -101,6 +114,26 @@ plan RE-LANDS the rest of #337 as prior art:
 
 Do NOT re-invent these; port them from `origin/feat/288a-broker-readmit-primitive`
 (@ `c1da62a`) unchanged except where §4/§5 below extend them to publish.
+
+### Sibling-diff discipline (re-landing a function that has an existing sibling)
+
+**Rule (generalizes past this plan): when re-landing a function that is a SIBLING of an
+existing one, DIFF the two for DROPPED checks and ENUMERATE what you deliberately did NOT
+port — a silent omission is the second guard-drop this one plan would otherwise have shipped
+(the `epoch_blocked` ordering was the first).** Performed here for `admit()` vs `admit_next`
+(@ `c1da62a`):
+
+| Check in `admit()` | In `admit_next`? | Disposition |
+|---|---|---|
+| conflict-compare on a dedup hit (`record.request != request → ValueError`) | **DROPPED** | **MUST RESTORE** — BLOCKING-2 above; AC-9 |
+| explicit fence `lease_epoch < max(epoch)` (`admission.py:49`) | absent | **DELIBERATE NON-PORT** — allocation is `max+1` in-lock, so "strictly above" holds by construction; the fence is structurally unreachable for allocated admits, NOT an omission |
+| `epoch_blocked` position (FIRST in `admit`, LAST in `admit_next`) | reordered | **already fixed** by the §3 in-lock reorder above |
+
+Applied to the OTHER re-land, `readmit_advanced_head`: it and `execute`'s publish admit both
+now route through the SAME `admit_next` body (one dedup/compare/fence path), so there is no
+sibling-specific guard for it to drop — **checked, nothing dropped.** (The "assume a third
+until you have enumerated exhaustively" directive applies to the guard-drop class too, not
+only to the append-site class of §4.)
 
 Also confirmed already shipped — **do NOT re-invent**: `RatificationPolicy`
 (`ratification_policy.py`) exists and is unrelated to this change.
@@ -122,7 +155,10 @@ green). So the seams are enumerated exhaustively, each with the exact change.
   baked into `fence_token` and the fencing `idempotency_key`.
   **Change:** stop returning a finished request at a fixed epoch. Return instead a
   `make_request(epoch: int) -> AdmissionRequest` closure that rebuilds the lease + request
-  at the epoch the broker allocates (see §5). Nothing here may hardcode `1`.
+  at the epoch the broker allocates (see §5). Nothing here may hardcode `1`. **Nothing here
+  may bind the §6 `attempt_id` from a HEAD, either:** S1 runs PRE-commit on the non-prebuilt
+  path (the commit is in `publishing.py`, S3b), so the deterministic `attempt_id` is computed
+  downstream at `execute` from the post-commit `BrokerRequest.head_sha` — never captured here.
 
 - **S2 — `convergence/refresh.py:61`, `refresh_downstream_after_merge`.** Today: takes a
   caller `lease_epoch: int` param and builds `factory.lease(..., lease_epoch=lease_epoch)`.
@@ -141,6 +177,22 @@ green). So the seams are enumerated exhaustively, each with the exact change.
   a `make_request` factory (or the fields needed to build one) instead of a pre-epoched
   `AdmissionRequest`. The in-lock `epoch_blocked` re-check inside `admit_next` preserves the
   #366 revocation guarantee; keep the pre-check at `verbs.py:64` too (fail-fast).
+  **attempt_id LOCUS (round-1 CR, grok — verified):** the §6 `publish_attempt_id =
+  sha256(publish‖repo‖branch‖head_sha)` is computed HERE, inside `execute`, from
+  `BrokerRequest.head_sha` — the POST-COMMIT head — NOT baked in S1, which runs BEFORE the
+  commit on the non-prebuilt path. Binding `attempt_id` from a pre-commit HEAD would key a
+  resume off a head that changes after commit, so dedup would never fire (and the §3 / AC-9
+  conflict-compare would be dead code). Any `make_request` field derived from the head must
+  likewise reference the post-commit `BrokerRequest.head_sha` via the `execute`-side closure.
+
+- **S3b — `publishing.py:196`, `publish_committed_branch` → `broker_client.execute(...)`**
+  *(the live #199 CALL site of S3 — previously unlisted, round-1 CR, grok).* This is where
+  the `BrokerRequest` is constructed with the POST-COMMIT `head_sha` (captured at
+  `publishing.py:188`, "immediately after commit") and `execute` is invoked. It stamps no
+  epoch (S3 allocates), but it is the seam that SUPPLIES the post-commit `head_sha` the §6
+  `attempt_id` binds to — enumerated so a reviewer sees the pre-commit (S1) vs post-commit
+  (here) boundary. The prebuilt path (`publishing.py:157`) already has HEAD = the prebuilt
+  commit, so its head_sha is stable across S1.
 
 - **S4 — `verbs.py`, `readmit_advanced_head`** *(re-landed from #337).* Already uses
   `admit_next`. No change beyond re-landing.
@@ -286,7 +338,14 @@ bloating the allocator and racing a concurrent readmit.
 - **Recommendation (adopt):** derive `publish_attempt_id =
   sha256(f"publish\0{repo}\0{branch}\0{head_sha}")`, mirroring `readmit_attempt_id`. This
   makes `admit_next` idempotent under in-flight retry: the resume finds its prior record
-  before allocating.
+  before allocating. **The `head_sha` here is the POST-COMMIT head, bound inside `execute`
+  from `BrokerRequest.head_sha` (S3/S3b) — NOT a pre-commit HEAD captured in S1 (round-1 CR,
+  grok — verified). On the non-prebuilt path the commit happens in `publishing.py` AFTER S1
+  builds the admission (`publishing.py:188` captures the head, `:196` calls `execute`), so a
+  pre-commit binding would key the resume off a head that changes and dedup would never
+  fire.** This also settles the fork TOWARD deterministic: BLOCKING-2's restored
+  conflict-compare (§3, AC-9) is reachable ONLY under a deterministic `attempt_id` — with
+  `uuid4`, dedup never fires and the compare is dead code.
 - **Two idempotency layers the plan MUST keep distinct** (conflating them silently inverts
   the revocation semantics — see AC-6a/6b):
   - **Completed-EFFECT idempotency = evidence-replay (`execute:58`).** Fires only for a
@@ -393,6 +452,23 @@ injection anchor, and a positive control
   merges. **Injection anchor:** the in-lock order in `admit_next` (S6, §3 reorder).
   **Positive control:** a NON-revoked resume dedups to the SAME `granted_epoch` (idempotency
   preserved) — proving the gate refuses only under revocation, not always.
+
+- **AC-9 — a CONFLICTING resume (same `attempt_id`, different request) is REFUSED, not
+  silently accepted (grok round-1 blocking — the guard the 288a `admit_next` dropped).** Seed
+  an admission via `admit_next` at `attempt_id=X`. Re-drive `admit_next` with the SAME
+  `attempt_id=X` but a `make_request` that rebuilds to DIFFERENT authority/approval/predicate
+  fields: it RAISES (conflicting idempotency), appends NO second record. **Falsifier:**
+  restore the 288a dedup that does `return record` with no rebuild/compare → the conflicting
+  resume is returned ACCEPTED (and under S8 that is "authorized to append the ledger and
+  merge"). **Injection anchor:** the `attempt_id` dedup return inside `admit_next` (S6, §3) —
+  assert the rebuild `make_request(prior.epoch)` + compare is present in `src` before
+  mutating (a mutation against a moved anchor is a silent no-op). **Positive control
+  (load-bearing):** a GENUINE resume — same `attempt_id`, a request that rebuilds to the
+  IDENTICAL fields at `prior.epoch` — dedups to the SAME record with NO false conflict,
+  proving the compare is not over-strict and that idempotency (the whole point of
+  `admit_next`) is preserved. **Reachability:** meaningful ONLY under §6's deterministic
+  `attempt_id`; with `uuid4` the dedup never fires. **Wave:** step-1 (it mutates `admit_next`,
+  which step (1) re-lands), not wave-0.
 
 > **AC-8 is split into AC-8a (normal path) and AC-8b (crash-resume path) — the two S8
 > commit points. BOTH bind to the PRODUCTION SEAM, not to a direct helper call.** Driving
@@ -569,7 +645,7 @@ scaffolding. The two the directive prioritizes both live here:
 - **AC-7 (doc retraction) — red on arrival.** The byte-neutrality claim is still in the
   tree and the CHANGELOG retraction is absent, so the grep-level check fails today.
 
-**Step-1 test PR — red against the step-1 skeleton.** AC-3, AC-4, AC-5, AC-6b (and the
+**Step-1 test PR — red against the step-1 skeleton.** AC-3, AC-4, AC-5, AC-6b, AC-9 (and the
 in-lock half of AC-2) mutate `admit_next` / `readmit_advanced_head` / routing, which step
 (1) re-lands. Their falsifiers can only be RUN once those symbols exist, so these tests land
 red against a step-1 skeleton (symbols present, bodies unimplemented or deliberately wrong)
@@ -598,7 +674,7 @@ alongside the guard.
   ordering. It is legitimately green from the start.
 
 Everything else in §8 fails on arrival for its named reason (AC-1/AC-7/AC-8a/AC-8b against `main`
-per wave-0 above; AC-3/AC-4/AC-5/AC-6b against the step-1 skeleton) and satisfies the
+per wave-0 above; AC-3/AC-4/AC-5/AC-6b/AC-9 against the step-1 skeleton) and satisfies the
 contract.
 
 ---
@@ -619,16 +695,25 @@ contract.
    "multi-day protocol integration" of #288 and the actual gap the flag guards. **AC-8a AND
    AC-8b gate it** (one per commit point).
 5. **Flip `_FAB_DELTA_BROKER_READMIT_READY = True`** in `governed_premerge.py:76` — LAST,
-   as its own gated step per the #288 landing-checklist interlock. **Depends on (4)** — NOT
-   on (1)+(2) — because the gap the flag guards is closed by the CONSUMER wiring, not by
-   re-landing the primitive. Flipping the flag while `_fab_delta_readmit` still appends
-   directly would ACTIVATE the exact bypass #288 exists to fix. Until this flip, the
-   delta-shortcut ENGAGE path is fenced OFF by construction and the gap is unreachable.
+   as its own gated step per the #288 landing-checklist interlock. **Depends on BOTH (4)
+   consumer wiring AND (2) publish migration** (round-1 CR, grok — verified). Two failure
+   modes it must not activate: **(a)** flipping while `_fab_delta_readmit` still appends
+   directly ACTIVATES the exact bypass #288 exists to fix (needs (4)); **(b)** flipping while
+   publish is still on `admit(lease_epoch=1)` creates MIXED ALLOCATION — the first delta
+   readmit allocates epoch 2 into the shared per-repo store via `admit_next`, then the next
+   live #199 publish still presents epoch 1 and the fence at `admission.py:49` raises
+   `PermissionError("stale epoch")` (`1 < 2`), BRICKING every multi-node train after the
+   first readmit (needs (2)). Mode (b) is the identical mixed-allocation hazard that killed
+   #337 round 4 — reintroduced through the dependency graph rather than the code; an earlier
+   draft over-corrected "the flag must not depend only on the primitive" into "depends on (4)
+   NOT (2)," which is exactly this bug. Until this flip, the delta-shortcut ENGAGE path is
+   fenced OFF by construction and the gap is unreachable.
 
-Blocks: (2)→(1); (4)→(1); (5)→(4). Publish migration (2) and consumer wiring (4) both
-sequence before the flip (5) so no ENGAGE path can reach a half-migrated allocator or a
-still-bypassing consumer. (2) and (4) are independent and may land in either order; both
-build on the re-landed primitive (1).
+Blocks: (2)→(1); (4)→(1); (5)→(2); (5)→(4). Publish migration (2) and consumer wiring (4)
+both sequence before the flip (5) so no ENGAGE path can reach a half-migrated allocator
+(mode b) or a still-bypassing consumer (mode a) — the flip requires BOTH, never "(4) alone /
+the flag ignores publish." (2) and (4) are independent of EACH OTHER and may land in either
+order, but both are predecessors of (5); all build on the re-landed primitive (1).
 
 ---
 
@@ -639,7 +724,8 @@ allocator foundation (1), the publish migration (2) — the LIVE-#199 risk the r
 is about — the docs retraction (3), the readmit CONSUMER wiring (4, S8/AC-8a/AC-8b — BOTH
 commit points `:1016`+`:1139` via one gated path) — the seam #288 exists to fix — and the
 gated flag flip (5). The flag flip is NOT a safe terminal step
-until the consumer is wired; that dependency is fixed in §11. The consumer wiring is
+until the consumer is wired AND publish is migrated (the mixed-allocation brick, grok
+round-1); that dependency is fixed in §11 — the flip depends on BOTH (2) and (4). The consumer wiring is
 "multi-day protocol integration" per #288's body — specified here at the seam/falsifier
 level, implemented by the execution PR.
 
