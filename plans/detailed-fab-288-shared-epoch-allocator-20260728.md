@@ -147,22 +147,71 @@ green). So the seams are enumerated exhaustively, each with the exact change.
 
 - **S8 — `train_runner.py:892`, `_fab_delta_readmit` (THE readmit CONSUMER — the seam
   #288 exists to fix; "guard correct, never wired" applied to the readmit half).**
-  Today (verified on `main`): the delta re-admit does a **direct**
-  `append_record(ledger_path, LedgerRecord(...), durable=True)` (the "re-admission COMMIT
-  POINT") and takes `ledger_path`, **NOT a `broker_client`**. The call site
-  (`train_runner.py:3084`) passes no broker. So the delta re-admit **bypasses broker
-  lease/epoch/revocation entirely** — a node whose lease was revoked mid-run can still
-  delta-re-admit and merge. Re-landing S4 makes the primitive EXIST; it does not make S8
-  CALL it. **Change:** replace the direct `append_record` with a call to
-  `broker_client.readmit_advanced_head(...)` (which allocates via `admit_next` and
-  fail-closes on `epoch_blocked`), then append the ledger record only on an accepted
-  `ReadmitResult`. This requires **threading `broker_client` through the production spawn
-  path** — `run_train → merge loop → _fab_delta_readmit` — the multi-site plumbing #288's
-  body calls "multi-day protocol integration." Threading anchors: the `CoordinatorRuntime`
-  already carries `broker_client` (`train_runner.py:100`); it must reach the merge loop's
-  call site (`:3084`) and be added to `_fab_delta_readmit`'s signature. When
-  `broker_client is None`, fail CLOSED (fall through to the unchanged `pr-head-advanced`
-  guard), never fall back to the direct append.
+  Today (verified on `main` @ `b581fcd`): `_fab_delta_readmit` takes `ledger_path`, **NOT a
+  `broker_client`**, and the call site (`train_runner.py:3084`) passes no broker. So the
+  delta re-admit **bypasses broker lease/epoch/revocation entirely** — a node whose lease
+  was revoked mid-run can still delta-re-admit and merge.
+  **⚠️ There are TWO re-admission COMMIT POINTs in this one function, not one** (round-1 CR,
+  codex — verified):
+  - **`train_runner.py:1016`** — the idempotent CRASH-RESUME early append (comment: "a prior
+    attempt already extended the chain to the live head AND it passes the gate — only the
+    ledger append was pending"). Fires when `resolved_final == live_head_sha and
+    _gate_passes()`.
+  - **`train_runner.py:1139`** — the NORMAL path append ("7. COMMIT POINT"), after
+    capture+build+re-gate.
+
+  Both build the **identical** `LedgerRecord(status="pr_open", head_sha=live_head_sha,
+  fab_run_id=run_id, …)` and both `append_record(..., durable=True)` directly. A rewrite
+  that only touches `:1139` (the seam a reader lands on) leaves `:1016` as a live bypass: a
+  crash that leaves gate-passing extended provenance lets a **revoked resume take the early
+  `:1016` append and merge with no broker admission** — the exact #288 defect, on the path
+  nobody reads. This is the dominant failure class in this line of work (guard added at one
+  seam; a second seam completes the same operation unguarded).
+  **Change — ONE shared broker-gated commit path covering BOTH appends (directive #1):**
+  introduce a single inner `_commit_readmission(*, broker_client, ledger_path, node_id,
+  branch, pr_url, merge_order, run_id, new_head_sha) -> str | None` that (a) fails CLOSED and
+  returns `None` when `broker_client is None` (NO direct-append fallback — caller falls
+  through to the unchanged `pr-head-advanced` guard); (b) otherwise calls
+  `broker_client.readmit_advanced_head(...)`, which allocates via `admit_next` and
+  fail-closes on `epoch_blocked`; (c) `append_record(..., durable=True)` the ledger record
+  ONLY on an accepted `ReadmitResult`, then returns `new_head_sha`. **BOTH `:1016` and
+  `:1139` call this one function instead of their inline `append_record`.** Two call sites
+  converging on one admission-gated function — not two parallel rewrites that can drift.
+  **Normative: any future site that advances the admitted head MUST route through
+  `_commit_readmission`; a new direct `append_record` of an advanced head is a defect.**
+  - **Commit-ordering / crash-consistency (state it so the shifted COMMIT POINT is not
+    misread as a regression):** the broker admission becomes the authority; the ledger append
+    is downstream of an accepted `ReadmitResult`. A crash BETWEEN the broker admit and the
+    ledger append still fails CLOSED — the ledger stays at the OLD admitted head, so
+    `_live_merge_pr` pins `--match-head-commit` to it and the guard fires; on resume the
+    `:1016` branch re-enters `_commit_readmission`, and `admit_next` **dedups on the
+    deterministic `readmit_attempt_id(node_id, new_head_sha)`** → same epoch if not revoked
+    (idempotent, ledger append completes), refused if revoked (§6 two-layer / AC-6b).
+  - **Threading (the load-bearing plumbing #288's body calls "multi-day protocol
+    integration"):** `broker_client` must reach `_fab_delta_readmit` through the PRODUCTION
+    path `run_train → merge loop (`:3084`) → _fab_delta_readmit → _commit_readmission`. The
+    `CoordinatorRuntime` already carries `broker_client` (`train_runner.py:100`); it must be
+    added to the `:3084` call and to `_fab_delta_readmit`'s signature. **Re-landing S4 makes
+    the primitive EXIST; it does not make S8 CALL it — the test that proves the wiring is a
+    seam-level test (AC-8a/8b, §8), NOT a direct helper call.**
+
+**Enumeration method (so a reviewer can check COMPLETENESS, not just the result) —
+repo-wide, per directive #3:**
+1. `grep -rn "append_record(" phase-loop-runtime/src/` → **21 call sites in 3 files**
+   (`train_ledger.py`, `train_runner.py`, `advisor_board/observability.py`). The durable
+   ledger `append_record` is the SOLE commit surface that admits/advances a node's admitted
+   head — the merge pins `--match-head-commit` to the ledger's admitted head, so a
+   head-advancing re-admission MUST write a ledger record carrying the new head.
+2. Discriminant for a HEAD-ADVANCING re-admission commit: the appended `LedgerRecord` sets
+   `head_sha=live_head_sha` (the advanced head). `grep -rn "head_sha=live_head_sha"
+   phase-loop-runtime/src/` — then EXCLUDE the read-side `final_pr_head_sha=live_head_sha` /
+   `live_head_sha=` params in `fab_gate.py` and `fab_canonical.py` (gate-compose inputs, not
+   ledger writes). **Result: exactly `train_runner.py:1020` and `:1143` — i.e. the `:1016`
+   and `:1139` appends, both inside `_fab_delta_readmit`.** The `observability.py` and
+   `train_ledger.py` appends are non-head-advancing (metrics / the `append_record` def).
+3. Completeness is re-checkable by re-running both greps: any NEW head-advancing append
+   surfaces as a third `head_sha=<advanced head>` hit and MUST route through
+   `_commit_readmission` (step (1) normative rule).
 
 ### ALLOCATOR / FENCE seams
 
@@ -345,17 +394,42 @@ injection anchor, and a positive control
   **Positive control:** a NON-revoked resume dedups to the SAME `granted_epoch` (idempotency
   preserved) — proving the gate refuses only under revocation, not always.
 
-- **AC-8 — the delta re-admit is subject to revocation (the #288 bug reproducer, readmit
-  half).** With the broker lease revoked (`evidence_store.epoch_blocked = True`),
-  `_fab_delta_readmit` (S8) fails CLOSED — it does NOT append a re-admission ledger record
-  and returns `None` (caller falls through to the `pr-head-advanced` guard, no merge).
-  **Falsifier:** leave the current direct `append_record` in place (the bypass) → the
-  re-admit succeeds and the advanced head merges despite revocation — the exact #288 defect
-  reproduces. **Injection anchor:** the `append_record` → `broker_client.readmit_advanced_head`
-  rewrite at `train_runner.py` (S8) + `broker_client` threading through the merge loop
-  (`:3084`). **Positive control:** with `epoch_blocked = False` and a valid single-commit
-  PASS delta, the re-admit IS admitted at an allocated epoch and the head advances — so the
-  test proves the gate fires on revocation, not that the shortcut is dead.
+> **AC-8 is split into AC-8a (normal path) and AC-8b (crash-resume path) — the two S8
+> commit points. BOTH bind to the PRODUCTION SEAM, not to a direct helper call.** Driving
+> `_fab_delta_readmit(broker_client=<fake>, …)` directly would test the helper in isolation
+> and CANNOT catch the actual #288 defect — `broker_client` never threaded through the
+> `:3084` production path (the "guard correct, never wired, suite green" class). It also
+> breaks the §10 contract: a test naming the new `broker_client` param dies on `main` with a
+> `TypeError` (rule-2 wrong-reason red) and must be edited by the impl PR (rule-5 violation).
+> So each test sets up a revoked per-repo broker store and drives the merge-loop seam
+> (`run_train` / the `:3084` caller — at minimum `_live_merge_pr`); it NEVER hands
+> `broker_client` to the helper. The wiring supplies it, so an unwired path stays red.
+
+- **AC-8a — the NORMAL-path delta re-admit is subject to revocation.** Drive the merge-loop
+  seam with a valid single-commit PASS delta (so `:1139` is the append reached) against a
+  revoked per-repo broker store (`evidence_store.epoch_blocked = True`): the node does NOT
+  re-admit — no new admitted head, no `:1139` ledger append, the merge falls through to the
+  `pr-head-advanced` guard (no merge). **Falsifier:** restore the direct `append_record` at
+  `train_runner.py:1139` (the current bypass) → the seam re-admits and the advanced head
+  merges despite revocation. **Injection anchor:** the `:1139` append rewrite +
+  `broker_client` threading at the `:3084` call. **Wave-0 red on `main`** (the seam reaches
+  `:1139`, appends, merges despite the revoked store). **Positive control (POST-IMPL,
+  green-time — NOT wave-0):** with `epoch_blocked = False`, the identical seam re-admits at an
+  allocated epoch and the head advances.
+
+- **AC-8b — the CRASH-RESUME delta re-admit is subject to revocation (the second bypass
+  codex found).** Pre-extend the durable provenance to the live head so it passes the gate
+  (`resolved_final == live_head_sha and _gate_passes()` → the `:1016` crash-resume branch
+  fires), then drive the SAME merge-loop seam against a revoked store: the node does NOT
+  re-admit — no `:1016` ledger append, falls through to the guard. **Falsifier:** restore the
+  direct `append_record` at `train_runner.py:1016` (the crash-resume bypass) → a revoked
+  resume takes the early append and merges. **Injection anchor:** the `:1016` append
+  specifically (assert `head_sha=live_head_sha` at that append in `src` before mutating, so
+  the mutation cannot be a silent no-op against a moved anchor). **Wave-0 red on `main`** (the
+  crash-resume path appends unconditionally today). **Positive control (POST-IMPL,
+  green-time — NOT wave-0):** with `epoch_blocked = False`, the crash-resume DEDUPS to the
+  SAME `granted_epoch` (idempotent resume, per §6/AC-6b) and the head advances — proving the
+  gate refuses only under revocation, not that the crash-resume path is dead.
 
 - **AC-7 — CHANGELOG/doc retraction present and self-consistent.** A repo check (grep-level
   is sufficient) asserts (a) `CHANGELOG.md` contains the byte-neutrality RETRACTION entry
@@ -468,13 +542,17 @@ into two waves.
 falsifier here IS the status quo, so the test is red on arrival with zero behavior
 scaffolding. The two the directive prioritizes both live here:
 
-- **AC-8 (readmit-consumer bypass) — highest-value test-first item, clean wave-0.** Current
-  `_fab_delta_readmit` does a direct `append_record` ignoring the broker; under
-  `epoch_blocked=True` it STILL appends and the advanced head merges. The test reproduces
-  the exact #288 defect and is RED on arrival with no adjustment. It MUST exist and fail
-  before any allocator or publish work, so the bypass cannot be introduced by ordering
-  accident (flipping `_FAB_DELTA_BROKER_READMIT_READY` while the append is still direct).
-  Falsifier = the current direct append = the tree as it stands.
+- **AC-8a + AC-8b (readmit-consumer bypass, BOTH commit points) — highest-value test-first
+  items, wave-0.** Current `_fab_delta_readmit` appends directly at `:1139` (normal) AND
+  `:1016` (crash-resume), ignoring the broker; driven at the merge-loop seam against a
+  revoked per-repo store it STILL appends and the advanced head merges. Each test reproduces
+  the #288 defect on its path and is RED on `main`. They MUST exist and fail before any
+  allocator or publish work, so neither bypass can be introduced by ordering accident
+  (flipping `_FAB_DELTA_BROKER_READMIT_READY` while either append is still direct). Falsifier
+  = the current direct append at that specific line = the tree as it stands. **Bound at the
+  PRODUCTION SEAM, never a direct helper call (§8 preamble); the POSITIVE controls
+  (non-revoked advances; 8b dedups to the same epoch) are POST-IMPL green-time, not wave-0
+  red.**
 - **AC-1 (round-4 stale-epoch incident) — red on arrival, but VIA A SEEDED RECORD, not the
   literal sequence.** ⚠️ The reproduction "publish A → readmit A → publish B" is NOT
   buildable on `main`: `readmit_advanced_head` is re-landed by step (1) and is absent, and
@@ -519,7 +597,7 @@ alongside the guard.
   new guarantee hiding here; relabel it a `REGRESSION GUARD` naming the `:58`-before-`:64`
   ordering. It is legitimately green from the start.
 
-Everything else in §8 fails on arrival for its named reason (AC-1/AC-7/AC-8 against `main`
+Everything else in §8 fails on arrival for its named reason (AC-1/AC-7/AC-8a/AC-8b against `main`
 per wave-0 above; AC-3/AC-4/AC-5/AC-6b against the step-1 skeleton) and satisfies the
 contract.
 
@@ -534,11 +612,12 @@ contract.
    `attempt_id`. Depends on (1). **This is the live-#199 risk; it gets AC-1..AC-3, AC-6a/6b and
    a byte-diff review against a live-broker fixture.**
 3. **Docs/CHANGELOG retraction** (§9) — lands WITH (2); AC-7 gates it.
-4. **Wire the readmit CONSUMER** (S8) — rewrite `_fab_delta_readmit`'s direct
-   `append_record` to `broker_client.readmit_advanced_head`, and thread `broker_client`
-   through `run_train → merge loop → _fab_delta_readmit`. Depends on (1). This is the
-   "multi-day protocol integration" of #288 and the actual gap the flag guards. AC-8 gates
-   it.
+4. **Wire the readmit CONSUMER** (S8) — replace BOTH direct `append_record` sites
+   (`:1016` crash-resume + `:1139` normal) with the single `_commit_readmission` →
+   `broker_client.readmit_advanced_head` path, and thread `broker_client` through
+   `run_train → merge loop (`:3084`) → _fab_delta_readmit`. Depends on (1). This is the
+   "multi-day protocol integration" of #288 and the actual gap the flag guards. **AC-8a AND
+   AC-8b gate it** (one per commit point).
 5. **Flip `_FAB_DELTA_BROKER_READMIT_READY = True`** in `governed_premerge.py:76` — LAST,
    as its own gated step per the #288 landing-checklist interlock. **Depends on (4)** — NOT
    on (1)+(2) — because the gap the flag guards is closed by the CONSUMER wiring, not by
@@ -557,8 +636,9 @@ build on the re-landed primitive (1).
 
 **In scope (the full #288 arc):** this is the migration plan for #288, so it covers the
 allocator foundation (1), the publish migration (2) — the LIVE-#199 risk the ratification
-is about — the docs retraction (3), the readmit CONSUMER wiring (4, S8/AC-8) — the seam
-#288 exists to fix — and the gated flag flip (5). The flag flip is NOT a safe terminal step
+is about — the docs retraction (3), the readmit CONSUMER wiring (4, S8/AC-8a/AC-8b — BOTH
+commit points `:1016`+`:1139` via one gated path) — the seam #288 exists to fix — and the
+gated flag flip (5). The flag flip is NOT a safe terminal step
 until the consumer is wired; that dependency is fixed in §11. The consumer wiring is
 "multi-day protocol integration" per #288's body — specified here at the seam/falsifier
 level, implemented by the execution PR.
