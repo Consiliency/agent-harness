@@ -2924,9 +2924,18 @@ def _exec_leg(
                 break  # slow empty turn (not transient) → don't re-run + double wall-clock
         return rc, review_text, log_text
     if leg == "gemini":
-        # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). A 0-byte
-        # EMPTY here is usually the transient agy backend stall matched by
-        # `_GEMINI_TRANSIENT_RE` below, not an auth problem with any `gemini` binary.
+        # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). The health
+        # of any `gemini` binary is irrelevant here — diagnosing this leg by running
+        # `gemini` produced two wrong root causes in one session.
+        #
+        # A 0-byte result here has TWO distinct causes, and they are not interchangeable:
+        #   * headless TOOL-DENIAL — agy needs a permission it cannot prompt for and
+        #     auto-denies, exiting rc==0 with no output. This is DETERMINISTIC for the
+        #     denied tool. ah#345 stages a scoped `read_file` grant for exactly this.
+        #   * a TRANSIENT backend stall, matched by `_GEMINI_TRANSIENT_RE` below, which is
+        #     retried once.
+        # An earlier version of this comment attributed the observed EMPTY to the transient
+        # stall. That was wrong: reproduction showed the `read_file` denial.
         out_file = out_dir / "panel-gemini.txt"
         # ABDHOME: the agy leg bakes effort INTO the model name. effort-absent keeps
         # the shared default model verbatim; a seat renders
