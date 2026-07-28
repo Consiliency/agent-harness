@@ -31,23 +31,51 @@ class _Proof:
 
 
 class _Resolver:
-    def __init__(self, *, delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        delay: float = 0.0,
+        started: threading.Event | None = None,
+        hold: threading.Event | None = None,
+    ) -> None:
         self.delay = delay
+        self.started = started
+        self.hold = hold
+
+    def _enter(self) -> None:
+        """Signal/gate the owner worker from INSIDE the resolver.
+
+        ``_stream`` runs the resolver only after ``broker.acquire()`` has already
+        succeeded, so ``started`` fires at the precise instant single flight is
+        held, and ``hold`` keeps it held for exactly as long as the test wants —
+        no wall-clock guessing at either edge.
+        """
+        if self.started is not None:
+            self.started.set()
+        if self.hold is not None:
+            self.hold.wait(timeout=5)
+        time.sleep(self.delay)
 
     def probe(self) -> dict[str, object]:
-        time.sleep(self.delay)
+        self._enter()
         return {"status": "ready", "authority": AUTHORITY}
 
     def resolve(self, **_kwargs: object) -> _Proof:
-        time.sleep(self.delay)
+        self._enter()
         return _Proof()
 
 
-def _server(*, delay: float = 0.0, calls: list[int] | None = None):
+def _server(
+    *,
+    delay: float = 0.0,
+    calls: list[int] | None = None,
+    started: threading.Event | None = None,
+    hold: threading.Event | None = None,
+):
     def factory(max_age: int):
         if calls is not None:
             calls.append(max_age)
-        return _Resolver(delay=delay)
+        return _Resolver(delay=delay, started=started, hold=hold)
 
     broker = TaskMessageBroker(
         BrokerConfig(
@@ -279,7 +307,15 @@ def test_resolve_fallbacks_preserve_requested_identities(mode: str, expected_cod
 
 
 def test_disconnect_holds_single_flight_until_owner_socket_worker_finishes() -> None:
-    server = _server(delay=0.12)
+    # Synchronised on the owner worker rather than on the clock. The wall-clock
+    # shape this replaces (sleep 30ms, assume the handler acquired; sleep 120ms,
+    # assume it released) failed on contended CI runners whenever the handler
+    # thread was not scheduled inside the 30ms guess — a false red that says
+    # nothing about the invariant. `started`/`hold` bracket the invariant exactly:
+    # the owner holds single flight for as long as its worker runs, however long
+    # the scheduler takes to get there.
+    started, hold = threading.Event(), threading.Event()
+    server = _server(started=started, hold=hold)
     try:
         raw = socket.create_connection(("127.0.0.1", server.server_port), timeout=1)
         body = b"{}"
@@ -289,14 +325,26 @@ def test_disconnect_holds_single_flight_until_owner_socket_worker_finishes() -> 
             + body
         )
         raw.close()
-        time.sleep(0.03)
+        assert started.wait(timeout=5), "the owner request never reached its resolver"
+        # The owner is now provably in flight and its client is gone: single flight
+        # must still be held. Releasing before joining the worker fails here.
         with pytest.raises(HTTPError) as busy:
             _post(server, "/v1/task-message/probe", {})
         assert busy.value.code == 503
-        time.sleep(0.12)
-        with _post(server, "/v1/task-message/probe", {}) as response:
-            assert json.loads(list(response)[-1])["payload"]["status"] == "ready"
+        hold.set()
+        # ...and released once that worker finishes.
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                with _post(server, "/v1/task-message/probe", {}) as response:
+                    assert json.loads(list(response)[-1])["payload"]["status"] == "ready"
+                break
+            except HTTPError as exc:
+                assert exc.code == 503
+                assert time.monotonic() < deadline, "single flight was never released"
+                time.sleep(0.01)
     finally:
+        hold.set()
         server.shutdown()
         server.server_close()
 
