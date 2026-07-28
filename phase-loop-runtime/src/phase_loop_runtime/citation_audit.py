@@ -100,7 +100,8 @@ class Citation:
 @dataclass(frozen=True)
 class Finding:
     citation: Citation
-    kind: str  # unresolved_path | line_out_of_range | symbol_absent | line_only
+    kind: str  # unresolved_path | ambiguous_path | line_out_of_range | symbol_absent |
+    #            line_only | symbol_required (line_only promoted under --require-symbols)
     detail: str
 
     @property
@@ -306,7 +307,16 @@ def _symbol_defined(text: str, symbol: str, suffix: str = "") -> bool:
         # Guarded separately below — see `_STATEMENT_LEAD`. A regex lookahead does NOT
         # work here: `^\s*` backtracks, so the guard lands mid-whitespace and never fires.
         rf"^\s*(?:export\s+)?(?:public\s+|private\s+|static\s+|async\s+)*"
-        rf"[A-Za-z_<>\[\]:*&\s]*\b{escaped}\s*\(",
+        # A real declaration has a type/modifier token, then WHITESPACE, then the name. The
+        # mandatory `\s+` (not `\b`) is what distinguishes `void foo(` from a bare call
+        # `admit_atomically(req)`: a bare call has no token+whitespace before the name, so it
+        # cannot match. `[*&]*` after the whitespace admits the pointer/reference return form
+        # `char *dupstr(` / `Rec &get(` (K&R/Linux style), which is a real declaration the
+        # earlier `\s+{escaped}` form falsely accused. This whole tuple is matched PER LINE
+        # (see the `for ln in lines` search below), so `\s+` can never span a newline and
+        # borrow the PREVIOUS line's trailing token (`try:`, `pass`, a closing `]`) as the
+        # type prefix — that cross-line span silently accepted fabricated called-only symbols.
+        rf"[A-Za-z_<>\[\]:*&]+\s+[*&]*\s*{escaped}\s*\(",
         # Receiver / method forms whose prefix contains parens, so the generic
         # `name(` pattern cannot reach them: Go `func (s *Store) Name(`,
         # C++/PHP `Type::Name(`. Found by a portability test that initially passed
@@ -327,9 +337,21 @@ def _symbol_defined(text: str, symbol: str, suffix: str = "") -> bool:
         rf"^\s*(?:(?:public|private|protected|internal|static|final|readonly|const|extern|"
         rf"volatile|synchronized)\s+)+[A-Za-z_][A-Za-z0-9_<>\[\].]*\s+{escaped}\s*[=;]",
         rf"^\s*{escaped}\s*[:=]",
-        rf"^\s*{escaped}\s*\(",
+        # NOTE: a bare `name(` at line start is DELIBERATELY not a definition form. It is
+        # indistinguishable from a statement-expression call (`admit_atomically(req)` in a
+        # function body), which a reviewer showed was being accepted as a definition —
+        # a fail-open in the audit's core question. Shell-style `name() {` and
+        # `name() -> T:` are still matched by the `name()` + brace/arrow/colon form above.
     )
-    if not any(re.search(p, text, re.MULTILINE) for p in patterns):
+    # Match every pattern PER LINE, not against the whole text. A definition and its name
+    # live on one physical line; searching the joined text with re.MULTILINE let `\s+` (and
+    # the leading `^\s*`) span newlines, so the previous line's trailing token could serve as
+    # a declaration's "type prefix" — a fabricated symbol merely CALLED as the first
+    # statement of a `try:`/`else:`/`finally:` block, or after a `pass`/`return`/`]` line,
+    # was silently accepted as defined. That defeated the audit's core purpose. Per-line
+    # search confines every whitespace class to a single line and closes the whole class.
+    lines = text.splitlines()
+    if not any(re.search(p, ln) for p in patterns for ln in lines):
         return False
     # A match whose only evidence is a statement line (`return Foo()`) is a CALL SITE.
     keyword_forms = (
@@ -338,7 +360,7 @@ def _symbol_defined(text: str, symbol: str, suffix: str = "") -> bool:
         rf"^\s*#\s*(?:define|undef)\s+{escaped}\b",
         rf"^\s*(?:const|let|var|val)\s+{escaped}\b",
     )
-    if any(re.search(p, text, re.MULTILINE) for p in keyword_forms):
+    if any(re.search(p, ln) for p in keyword_forms for ln in lines):
         return True
     return not _line_is_statement(text, symbol)
 
@@ -423,8 +445,15 @@ def audit(
             )
 
     if require_symbols:
+        # Promote line-only advisories to FATAL under the opt-in migration gate. The kind
+        # is `symbol_required`, NOT `unresolved_path`: the path DID resolve, so reporting it
+        # as unresolved would be a false machine-readable diagnostic about the repo's
+        # contents (a JSON consumer keying on `unresolved_path` would conclude the file is
+        # missing). This is the same "never claim a resolved path is missing" rule the
+        # ambiguous-vs-missing split already enforces.
         report.findings = [
-            Finding(f.citation, "unresolved_path" if f.kind == "line_only" else f.kind, f.detail)
+            Finding(f.citation, "symbol_required",
+                    f"{f.detail} [--require-symbols: line anchor rejected; migrate to `path::symbol`]")
             if f.kind == "line_only" else f
             for f in report.findings
         ]

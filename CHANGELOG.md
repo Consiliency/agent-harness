@@ -17,7 +17,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   contain. That is the argument for `path::symbol`, which is self-describing. A test pins
   the limit so the claim cannot be re-added without the mechanism.
 - Symbol resolution strips comments and string literals first, so a fabricated name merely
-  *mentioned* in the file does not satisfy it.
+  *mentioned* in the file does not satisfy it. It also matches declaration patterns
+  **per line**, so a symbol that is only *called* (e.g. as the first statement of a
+  `try:`/`else:` block, or after a `pass`/`return`/`]` line) can no longer borrow the
+  previous line's trailing token as a "type prefix" and be mistaken for a definition. The
+  pointer/reference return form (`char *dupstr(`) is recognised as a real declaration.
+- `--require-symbols` reports a rejected line-only citation with kind `symbol_required`
+  (the path resolved; it is NOT reported as `unresolved_path`, which would falsely claim
+  the file is missing).
 - Findings only: see `docs/decisions/0001-citation-integrity-is-not-a-maturity-signal.md`.
   The audit MUST NOT emit or imply a fleet maturity rung.
 

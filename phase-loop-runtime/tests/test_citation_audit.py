@@ -262,7 +262,12 @@ def test_stripping_does_not_falsely_accuse_real_code(tmp_path: Path):
     comment syntax and truncated real declarations: `;` (a statement separator in most of
     the languages the module claims to support), `#` (C preprocessor / Rust attributes),
     and `'...'` (Rust lifetimes). Seven legitimate definitions were reported FATAL as
-    'fabricated or renamed'. Mutation: put `;` back in the opener set -> this fails."""
+    'fabricated or renamed'.
+
+    Openers are now chosen PER EXTENSION, so a killing mutation must target a real opener
+    list. Mutation (verified to kill): add `#` to the `.c` opener tuple in `_LINE_COMMENTS`
+    — the `#define MAX_RETRIES` line is then stripped as a comment, so `MAX_RETRIES` is
+    falsely accused. (Adding `;` to `.ts` kills `boot` the same way.)"""
     repo = _repo(tmp_path, {
         "src/a.ts": "const a = 1; export function boot(): void {}\n",
         "src/b.c": "#define MAX_RETRIES 10\n",
@@ -350,4 +355,123 @@ def test_cli_refuses_the_truncating_top_level_repo_position(tmp_path, capsys):
     rc = cli.main(["--repo", str(a), "--repo", str(b), "citation-audit"])
     err = capsys.readouterr().err
     assert rc == 2, "must refuse, not silently audit a subset"
-    assert "DISCARDED" in err and "after the subcommand" in err, err
+    assert "only 1 reached the audit" in err and "after the subcommand" in err.lower(), err
+
+
+def test_repo_dropped_in_any_position_or_form_refuses(tmp_path, capsys):
+    """The fail-open was 'fixed' THREE times and reopened each time in a position or form
+    the previous patch did not consider: exact-token counting missed `--repo=`, and counting
+    at all missed the mixed position. So the check is STRUCTURAL — compare INTENT (how many
+    times --repo was written) to EFFECT (how many reached the audit).
+
+    Mutation: revert to counting exact `--repo` tokens -> the equals form slips through."""
+    from phase_loop_runtime import cli
+
+    a = _repo(tmp_path / "a", {"docs/p.md": "clean\n"})
+    b = _repo(tmp_path / "b", {"docs/p.md": "clean\n"})
+
+    for argv in (
+        ["--repo", str(a), "--repo", str(b), "citation-audit"],      # both top-level
+        [f"--repo={a}", f"--repo={b}", "citation-audit"],            # equals form
+        ["--repo", str(a), "citation-audit", "--repo", str(b)],      # mixed position
+    ):
+        assert cli.main(argv) == 2, f"must refuse rather than under-audit: {argv}"
+        assert "reached the audit" in capsys.readouterr().err
+
+    # The supported form still audits everything.
+    assert cli.main(["citation-audit", "--repo", str(a), "--repo", str(b)]) == 0
+    assert capsys.readouterr().out.count("citation-audit [") == 2
+
+
+def test_missing_repo_directory_is_not_a_successful_audit(tmp_path, capsys):
+    """'Successfully audited nothing' is the same fail-open wearing a different hat: a
+    mistyped path found zero documents and reported OK at exit 0. Mutation: drop the
+    is_dir() guard -> a typo silently passes."""
+    from phase_loop_runtime import cli
+
+    assert cli.main(["citation-audit", "--repo", str(tmp_path / "nope")]) == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_bare_call_at_line_start_is_not_a_definition(tmp_path: Path):
+    """Fail-open in the audit's core question: a statement-expression call
+    (`admit_atomically(req)`) was accepted as a definition. What distinguishes a real
+    declaration from a bare call is the mandatory WHITESPACE between a type/modifier token
+    and the name (`void admit_atomically(` vs `admit_atomically(`).
+
+    Mutation (verified to kill): revert the C-style declaration pattern to its earlier
+    `[A-Za-z_<>\\[\\]:*&\\s]*\\b{escaped}\\s*\\(` form — the zero-width `\\b` no longer
+    requires that whitespace, so the bare call matches and is accepted again."""
+    repo = _repo(tmp_path, {
+        "src/a.py": "def run():\n    x = 1\nadmit_atomically(req)\n",
+        "docs/p.md": "- `src/a.py::admit_atomically`\n- `src/a.py::run`\n",
+    })
+    report = citation_audit.audit(repo)
+    absent = {f.citation.symbol for f in report.findings if f.kind == "symbol_absent"}
+    assert absent == {"admit_atomically"}, f"a call is not a definition; got {absent}"
+
+
+# --- fresh-eyes round: the fail-open the whole suite missed --------------------------
+
+def test_called_only_symbol_across_lines_is_not_a_definition(tmp_path: Path):
+    """THE FAIL-OPEN EVERY EARLIER ROUND MISSED. The C-style declaration pattern used `\\s+`
+    between the type token and the name, and was searched against the WHOLE file with
+    re.MULTILINE — so `\\s+` spanned newlines and the PREVIOUS line's trailing token served
+    as the "type prefix". A fabricated symbol merely CALLED as the first statement of a
+    `try:`/`else:`/`finally:` block, or after a `pass`/`return`/`]` line, was silently
+    accepted as defined. Every prior negative test placed the fabricated call on a line NOT
+    preceded by a class-token line, so none of them could see it.
+
+    The fix is structural: match the declaration patterns PER LINE, so no whitespace class
+    can span a newline. Mutation (verified to kill): revert the per-line search to
+    `any(re.search(p, text, re.MULTILINE) for p in patterns)` -> every case below is
+    accepted and this fails."""
+    bodies = {
+        "src/t.py": "def run():\n    try:\n        Ghost(x)\n    except Exception:\n        pass\n",
+        "src/e.py": "def run():\n    if c:\n        ok()\n    else:\n        Spectre(x)\n",
+        "src/p.py": "class S:\n    pass\nWraith(x)\n",
+        "src/b.py": "CFG = [\n    'a',\n]\nPhantom(x)\n",
+    }
+    repo = _repo(tmp_path, {
+        **bodies,
+        "docs/plan.md": (
+            "- `src/t.py::Ghost`\n- `src/e.py::Spectre`\n"
+            "- `src/p.py::Wraith`\n- `src/b.py::Phantom`\n"
+        ),
+    })
+    report = citation_audit.audit(repo)
+    absent = {f.citation.symbol for f in report.findings if f.kind == "symbol_absent"}
+    assert absent == {"Ghost", "Spectre", "Wraith", "Phantom"}, (
+        f"a symbol only CALLED across a line boundary is not defined; got {absent}"
+    )
+
+
+def test_pointer_return_declaration_is_not_falsely_accused(tmp_path: Path):
+    """FAIL-CLOSED companion to the fix above. Tightening the declaration pattern to require
+    whitespace before the name must not falsely accuse the K&R/Linux pointer-return form,
+    where the `*`/`&` sits against the name: `char *dupstr(`, `Rec &get(`. Mutation (verified
+    to kill): drop the `[*&]*` allowance from the C-style pattern -> `dupstr`/`get` are
+    reported `symbol_absent` and this fails."""
+    repo = _repo(tmp_path, {
+        "src/s.c": "char *dupstr(const char *s) { return 0; }\n",
+        "src/r.cpp": "Rec &get(int i) { return r; }\n",
+        "docs/plan.md": "- `src/s.c::dupstr`\n- `src/r.cpp::get`\n",
+    })
+    report = citation_audit.audit(repo)
+    assert report.ok, f"pointer/ref return decls falsely accused: {[f.detail for f in report.fatal_findings]}"
+
+
+def test_require_symbols_rejects_with_symbol_required_not_unresolved(tmp_path: Path):
+    """Under --require-symbols a line-only citation is promoted to FATAL — but the file DID
+    resolve, so the kind must NOT be `unresolved_path` (which means "no file matches" and is
+    a false machine-readable claim about the repo). Mutation (verified to kill): relabel the
+    promoted finding back to `unresolved_path` -> this fails."""
+    repo = _repo(tmp_path, {
+        "src/s.py": "x = 1\n",
+        "docs/plan.md": "See `src/s.py:1`.\n",
+    })
+    strict = citation_audit.audit(repo, require_symbols=True)
+    assert not strict.ok
+    kinds = {f.kind for f in strict.findings}
+    assert kinds == {"symbol_required"}, f"resolved path must not be relabeled unresolved; got {kinds}"
+    assert "unresolved_path" not in kinds, "the file exists — must not claim it is missing"
