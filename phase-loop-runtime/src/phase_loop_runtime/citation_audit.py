@@ -51,8 +51,13 @@ from typing import Iterable, Sequence
 
 #: `path:LINE`, `path:LINE-LINE`, or `path::symbol`, inside backticks or bare.
 #: The path must contain a dot or a slash so prose like "step 3:4" is not a citation.
+#: The path must end in a FILE EXTENSION — a dot followed by an ALPHA-led token. Without
+#: that, `127.0.0.1:18765` parses as path `127.0.0.1` line `18765` and is reported FATAL as
+#: "no file matches" — a false accusation against a socket address, triggered by this
+#: repo's own docs. A reviewer found it; the rule that a path merely "contains a dot or
+#: slash" was too weak.
 _CITATION = re.compile(
-    r"`?(?P<path>[A-Za-z0-9_./\-]+[./][A-Za-z0-9_./\-]*)"
+    r"`?(?P<path>[A-Za-z0-9_./\-]*[A-Za-z0-9_\-]\.[A-Za-z][A-Za-z0-9]{0,9})"
     r"(?::(?P<line>\d+)(?:-(?P<end>\d+))?|::(?P<symbol>[A-Za-z_][A-Za-z0-9_]*))`?"
 )
 
@@ -308,7 +313,19 @@ def _symbol_defined(text: str, symbol: str, suffix: str = "") -> bool:
         # WITHOUT this and therefore proved nothing.
         rf"\b(?:func|fn)\s*\([^)]*\)\s*(?:[A-Za-z_<>\[\]:*&\s]*\s)?{escaped}\s*\(",
         rf"\b{escaped}\s*\(\s*\)\s*(?:->|:|\{{)",
-        rf"^\s*(?:const|let|var|val)\s+{escaped}\b",
+        # Value/constant declarations. The modifier prefix is REQUIRED: `export const`,
+        # `pub const`, `pub static`, `public static final` are idiomatic TS/JS/Rust/Java, and
+        # without it every one was falsely accused of being "fabricated or renamed" — a
+        # FATAL finding against correct code. Found by a reviewer enumerating real-world
+        # declaration forms rather than the ones I happened to write tests for.
+        rf"^\s*(?:(?:export|pub(?:\([^)]*\))?|public|private|protected|internal|static|"
+        rf"final|readonly|declare|extern|global)\s+)*"
+        rf"(?:const|let|var|val|static)\s+{escaped}\b",
+        # Typed FIELD declaration with no keyword: `public static final int MAX = 3` (Java,
+        # C#, C++). At least one modifier is REQUIRED so a plain assignment or a call site
+        # cannot match — `x = 1` is not a declaration of `x` in these languages.
+        rf"^\s*(?:(?:public|private|protected|internal|static|final|readonly|const|extern|"
+        rf"volatile|synchronized)\s+)+[A-Za-z_][A-Za-z0-9_<>\[\].]*\s+{escaped}\s*[=;]",
         rf"^\s*{escaped}\s*[:=]",
         rf"^\s*{escaped}\s*\(",
     )
