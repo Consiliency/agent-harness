@@ -301,3 +301,53 @@ def test_backtick_string_cannot_smuggle_a_fabricated_symbol(tmp_path: Path):
     report = citation_audit.audit(repo)
     absent = {f.citation.symbol for f in report.findings if f.kind == "symbol_absent"}
     assert absent == {"Ghost", "Spectre"}, f"backtick strings must not define symbols; got {absent}"
+
+
+# --- confirmation round: two fail-open paths the earlier tests could not reach ------
+
+def test_socket_addresses_are_not_citations(tmp_path: Path):
+    """A reviewer found the repo's OWN docs producing fatal findings: `127.0.0.1:18765`
+    parsed as path `127.0.0.1` line `18765` and was reported "no file matches" — a false
+    accusation against a socket address. A citation path must end in a FILE EXTENSION.
+    Mutation: relax the path pattern back to 'contains a dot or slash' -> this fails."""
+    repo = _repo(tmp_path, {
+        "src/a.py": "def run(): pass\n",
+        "docs/ops.md": (
+            "Connect to 127.0.0.1:18765 and also http://127.0.0.1:18765/health.\n"
+            "Version 1.2.3 shipped. See `src/a.py::run` for the handler.\n"
+        ),
+    })
+    report = citation_audit.audit(repo)
+    assert report.ok, f"non-paths must not be cited: {[f.detail for f in report.fatal_findings]}"
+    assert report.citations == 1, "only the real source citation should be recognised"
+
+
+def test_cli_repeated_repo_after_subcommand_audits_every_repo(tmp_path, capsys):
+    """CLI-LEVEL, deliberately. The earlier test called `audit_many()` directly and so could
+    not see that the shipped entrypoint dropped repos. Mutation: remove `citation-audit`
+    from cli.py's append-allowlist -> only the last repo is audited and this fails."""
+    from phase_loop_runtime import cli
+
+    a = _repo(tmp_path / "a", {"src/x.py": "def f(): pass\n", "docs/p.md": "`src/x.py::missing_sym`\n"})
+    b = _repo(tmp_path / "b", {"docs/p.md": "clean\n"})
+
+    rc = cli.main(["citation-audit", "--repo", str(a), "--repo", str(b)])
+    out = capsys.readouterr().out
+    assert out.count("citation-audit [") == 2, f"both repos must be audited:\n{out}"
+    assert rc == 1, "a broken citation in ANY audited repo must fail the run"
+
+
+def test_cli_refuses_the_truncating_top_level_repo_position(tmp_path, capsys):
+    """The TOP-LEVEL `--repo` is scalar and shared by every subcommand, so
+    `phase-loop --repo a --repo b citation-audit` silently keeps only `b`. Auditing a subset
+    while exiting 0 is precisely the fail-open this command exists to avoid, so it must
+    REFUSE rather than under-report. Mutation: drop the guard -> it silently audits one."""
+    from phase_loop_runtime import cli
+
+    a = _repo(tmp_path / "a", {"docs/p.md": "clean\n"})
+    b = _repo(tmp_path / "b", {"docs/p.md": "clean\n"})
+
+    rc = cli.main(["--repo", str(a), "--repo", str(b), "citation-audit"])
+    err = capsys.readouterr().err
+    assert rc == 2, "must refuse, not silently audit a subset"
+    assert "DISCARDED" in err and "after the subcommand" in err, err

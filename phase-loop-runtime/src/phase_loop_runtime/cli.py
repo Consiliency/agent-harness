@@ -931,6 +931,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # The argv AS PARSED. A guard keyed on `sys.argv` silently fails to fire whenever
+    # main() is invoked programmatically (tests, embedders) — caught by a test that did
+    # exactly that.
+    args._argv = list(sys.argv[1:] if argv is None else argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
     try:
         # Issue #83: --allow-branchgov opts into the convention-branch switch even when
@@ -1075,7 +1079,21 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     if command == "citation-audit":
         from . import citation_audit
 
-        repo_args = args.repo if isinstance(args.repo, list) else [args.repo or "."]
+        # ah#334 f/u: the TOP-LEVEL `--repo` (cli.py:228) is scalar and shared by every
+        # subcommand, so `phase-loop --repo a --repo b citation-audit` silently keeps only
+        # `b`. Auditing a subset while exiting 0 is the fail-open this command exists to
+        # avoid, so detect the truncating position and refuse rather than under-report.
+        raw_repo = getattr(args, "repo", None)
+        if not isinstance(raw_repo, list) and getattr(args, "_argv", []).count("--repo") > 1:
+            print(
+                "citation-audit: --repo was given more than once BEFORE the subcommand, "
+                "where it is not repeatable and all but the last value are DISCARDED. "
+                "Put them after the subcommand: "
+                "`phase-loop citation-audit --repo A --repo B`.",
+                file=sys.stderr,
+            )
+            return 2
+        repo_args = raw_repo if isinstance(raw_repo, list) else [raw_repo or "."]
         reports = citation_audit.audit_many(
             [resolve_repo(r) for r in (repo_args or ["."])],
             globs=tuple(getattr(args, "glob", None) or ("**/*.md",)),
