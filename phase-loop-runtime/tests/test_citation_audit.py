@@ -225,3 +225,64 @@ def test_in_range_line_drift_is_NOT_claimed_to_be_detected(tmp_path: Path):
     assert "Cannot detect" in doc and "IN-RANGE line drift" in doc, (
         "the module must state this limit; an earlier version implied the opposite"
     )
+
+
+# --- review round 2: five claims the module made and did NOT satisfy ---------------
+
+def test_symbol_present_but_NOT_DEFINED_is_rejected(tmp_path: Path):
+    """THE CASE THAT MADE THE WHOLE SUITE VACUOUS.
+
+    Every earlier negative case was fabricated by ABSENCE — the name appeared nowhere. So a
+    degenerate `_symbol_defined = lambda t, s: s in t` passed all 12 tests, and the comment
+    claiming the portability test was 'discriminating' was itself false.
+
+    Here the symbol is PRESENT in the file — as a call site, an import, a type reference —
+    but never DEFINED. Mutation: replace `_symbol_defined` with a substring check -> fails.
+    """
+    repo = _repo(tmp_path, {
+        "src/app.ts": 'import { Ghost } from "./ghost";\nexport function boot(): void { Ghost(); }\n',
+        "src/use.py": "from lib import Phantom\n\ndef run():\n    return Phantom()\n",
+        "lib/s.go": "package lib\n\nvar Spectre error\n\nfunc Real() error { return Spectre }\n",
+        "docs/plan.md": (
+            "- `src/app.ts::Ghost`\n"      # imported + called, never defined here
+            "- `src/use.py::Phantom`\n"    # imported + called, never defined here
+            "- `src/app.ts::boot`\n"       # genuinely defined -> must pass
+            "- `lib/s.go::Real`\n"         # genuinely defined -> must pass
+        ),
+    })
+    report = citation_audit.audit(repo)
+    absent = {f.citation.symbol for f in report.findings if f.kind == "symbol_absent"}
+    assert absent == {"Ghost", "Phantom"}, (
+        f"a call site or import is not a definition; got {absent}"
+    )
+
+
+def test_stripping_does_not_falsely_accuse_real_code(tmp_path: Path):
+    """A FALSE ACCUSATION IS ITS OWN KIND OF WRONG. The first stripper guessed one global
+    comment syntax and truncated real declarations: `;` (a statement separator in most of
+    the languages the module claims to support), `#` (C preprocessor / Rust attributes),
+    and `'...'` (Rust lifetimes). Seven legitimate definitions were reported FATAL as
+    'fabricated or renamed'. Mutation: put `;` back in the opener set -> this fails."""
+    repo = _repo(tmp_path, {
+        "src/a.ts": "const a = 1; export function boot(): void {}\n",
+        "src/b.c": "#define MAX_RETRIES 10\n",
+        "src/c.rs": "impl<'a> Parser<'a> {\n    fn go(&self) {}\n}\n",
+        "src/d.py": 'url = "http://x.co"\nimport os;\ndef grab(): pass\n',
+        "docs/plan.md": (
+            "- `src/a.ts::boot`\n- `src/b.c::MAX_RETRIES`\n"
+            "- `src/c.rs::Parser`\n- `src/d.py::grab`\n"
+        ),
+    })
+    report = citation_audit.audit(repo)
+    assert report.ok, f"real definitions falsely accused: {[f.detail for f in report.fatal_findings]}"
+
+
+def test_escaped_quote_cannot_smuggle_a_fabricated_symbol(tmp_path: Path):
+    """The first string regex `"[^"]*"` could not span an escaped quote, so a fabricated
+    name hid inside one. Mutation: revert to the non-escape-aware pattern -> fails."""
+    repo = _repo(tmp_path, {
+        "src/s.py": 'x = "he said \\"def Phantom(\\" ok"\ndef real(): pass\n',
+        "docs/plan.md": "- `src/s.py::Phantom`\n",
+    })
+    report = citation_audit.audit(repo)
+    assert not report.ok and "symbol_absent" in _kinds(report)
