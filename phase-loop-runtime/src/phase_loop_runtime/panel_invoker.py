@@ -761,6 +761,14 @@ _NO_COMMAND_PREAMBLE = (
     # absolute repo path:
     #     without this clause -> 304B, `read_file` auto-denied, no review at all
     #     with this clause    -> a full review naming the file it could not open
+    #
+    # THIS IS AN INSTRUCTION, NOT AN ENFORCEMENT. It makes the leg USEFUL; it does not make
+    # it SAFE. The actual boundary is agy's default `toolPermission=request-review` plus
+    # the headless auto-deny — and that default is OPERATOR-CONFIG DEPENDENT: the child
+    # retains HOME, so agy loads `~/.gemini/antigravity-cli/settings.json`, and an operator
+    # who has enabled `always-proceed` or non-workspace access defeats it. Do not read this
+    # clause as a sandbox. The review bundle is untrusted by construction, so anything that
+    # must HOLD against a hostile bundle needs a real boundary, not a prompt.
     "You may read ONLY files inside the staged review directory provided to you. Do NOT "
     "attempt to read any file outside it — such a read cannot be approved in this headless "
     "session and would destroy your ENTIRE response, not merely that read. If the material "
