@@ -2929,9 +2929,8 @@ def _exec_leg(
         # `gemini` produced two wrong root causes in one session.
         #
         # A 0-byte result here has at least TWO KNOWN causes, not interchangeable. This
-        # comment does NOT enumerate retry semantics — read the retry code below; it has
-        # already drifted from prose twice (soft-empty retry at ~:3020, slow-failure
-        # suppression at ~:3034 even on a regex match).
+        # comment deliberately does NOT describe retry behaviour — read the retry code.
+        # Prose here has drifted from that code twice already.
         #   * headless TOOL-DENIAL — agy needs a permission it cannot prompt for and
         #     auto-denies, exiting rc==0 with no output. This is DETERMINISTIC for the
         #     denied tool: it destroys the ENTIRE response, not merely that one read.
