@@ -2980,8 +2980,11 @@ def _exec_leg(
             if rc == 0 and not review_text.strip() and _TOOL_DENIED_RE.search(log_text):
                 return 1, "", (
                     "gemini leg: headless TOOL-DENIAL — the CLI auto-denied a tool "
-                    "permission it cannot prompt for and produced NO output. Not "
-                    "transient; the review prompt must not require RUNNING commands. "
+                    "permission it cannot prompt for and produced NO output, destroying the "
+                    "WHOLE response rather than just that one action. Not transient. The "
+                    "denied tool is whichever the model ATTEMPTED — usually `read_file` for "
+                    "a path OUTSIDE the staged review dir (the leg's only --add-dir), "
+                    "sometimes `command`. See the CLI's own message below for which. "
                     f"CLI said: {log_text.strip()[:400]}"
                 )
             soft_empty = rc == 0 and not review_text.strip()
