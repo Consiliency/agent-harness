@@ -6,6 +6,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Broker: close the admission-vs-revocation race with one serialization boundary (Consiliency/agent-harness#288, #199)
+
+- **A pre-existing race, live on `main` since 6ff8c8a (Consiliency/agent-harness#199).**
+  `BrokerService.execute` reads `evidence_store.epoch_blocked` and THEN calls
+  `admission_store.admit`. A concurrent revocation — an `outcome_ambiguous_blocked`
+  evidence write — could become durable between the check and the admit, so a publish was
+  admitted into an epoch that had just been permanently revoked.
+- **Two coupled halves, each inert alone.** (A) `BrokerEvidenceStore._append` now takes the
+  SAME advisory lock file (`admissions.lock`) that `LinearizableAdmissionStore` uses — both
+  stores are already constructed on one `root`. (B) `build_github_broker_client` and
+  `build_routing_broker_client` now wire the admission store's in-lock revocation re-check
+  (`epoch_blocked`) to that repo's evidence store; it previously defaulted to
+  `lambda: False`, so `admit`'s existing under-lock check saw nothing. Sharing the lock
+  without the wiring serializes writes against an admit that never consults evidence;
+  wiring without the shared lock still lets a revocation land mid-admission. Both are
+  required and both are tested to fail independently.
+- **Deadlock-safe:** no evidence write happens while the admission lock is held (`execute`
+  admits, THEN records). `admit`'s evidence read under the lock only reads.
+- **Deliberately excludes epoch ALLOCATION (Consiliency/agent-harness#363).** This is the
+  revocation-poison flag only — no `admit_next`, no `lease_epoch`/fence change, no
+  re-admission verb. The unresolved publish-vs-readmit epoch-space decision is untouched.
+
 ### Panel: the headless agy leg no longer dies on out-of-workspace reads (Consiliency/agent-harness#345)
 
 - The `gemini` panel leg (which drives the Antigravity `agy` CLI) returned a silent 0-byte
