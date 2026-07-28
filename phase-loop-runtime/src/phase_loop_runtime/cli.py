@@ -69,7 +69,7 @@ def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> No
     # `--closeout-mode` / `--pipeline-mode` / `--lane-scheduler`. Safe (no AttributeError)
     # because the top-level parser always provides the default.
     _S = argparse.SUPPRESS
-    if name in {"closeout-drift-audit", "fleet-map"}:
+    if name in {"closeout-drift-audit", "fleet-map", "citation-audit"}:
         sub.add_argument("--repo", action="append", help="Repo to audit. Repeat for cross-repo aggregation.", default=_S)
     else:
         sub.add_argument("--repo", default=_S)
@@ -391,9 +391,12 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--train", action="store_true", default=False, help="Validate as a cross-repo release-train roadmap (P2 train mode).")
         if name == "citation-audit":
             sub.description = (
-                "Verify that source citations in prose documents still resolve. Catches drifted "
-                "line anchors and FABRICATED symbols. Language- and layout-agnostic; --repo is "
-                "repeatable to span the fleet (e.g. --repo . --repo ../governed-pipeline)."
+                "Verify that source citations in prose documents still resolve: the path exists "
+                "and is unambiguous, the line is within the file, and a cited `path::symbol` is "
+                "actually DEFINED there (catching a fabricated or renamed symbol). Does NOT "
+                "detect in-range line drift — a bare `path:N` carries no expectation of what "
+                "line N should contain; prefer `path::symbol`, which is self-describing. "
+                "--repo is repeatable to span the fleet (e.g. --repo . --repo ../governed-pipeline)."
             )
             sub.add_argument("--glob", action="append", default=None,
                              help="Document glob; repeatable (default: **/*.md).")

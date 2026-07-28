@@ -188,42 +188,91 @@ def _resolve(repo: Path, rel: str, search_roots: Sequence[Path]) -> Path | None:
     return None
 
 
-#: Line/inline comment openers across the ecosystems this audit targets, plus the string
-#: delimiters a symbol name could otherwise hide inside.  Stripped before matching: a
-#: FABRICATED symbol mentioned in a comment ("// interface NeverExisted {}") or in a string
-#: literal previously satisfied the search, which defeated the audit's primary purpose.
-_COMMENT_OPENERS = ("#", "//", "--", ";")
+#: Comment syntax BY FILE EXTENSION. An earlier version guessed one global set of openers
+#: and was wrong in both directions: `;` (a statement separator in C/C++/Java/JS/TS/Go/Rust/
+#: PHP) truncated real declarations, `#` killed C preprocessor lines and Rust attributes,
+#: and `'...'` ate Rust lifetimes — each producing a FATAL "fabricated or renamed"
+#: accusation against correct code. A false accusation is its own kind of wrong.
+_LINE_COMMENTS: dict[str, tuple[str, ...]] = {
+    ".py": ("#",), ".rb": ("#",), ".sh": ("#",), ".bash": ("#",), ".zsh": ("#",),
+    ".yml": ("#",), ".yaml": ("#",), ".toml": ("#",), ".pl": ("#",), ".r": ("#",),
+    ".js": ("//",), ".jsx": ("//",), ".ts": ("//",), ".tsx": ("//",),
+    ".go": ("//",), ".rs": ("//",), ".java": ("//",), ".c": ("//",), ".h": ("//",),
+    ".cc": ("//",), ".cpp": ("//",), ".hpp": ("//",), ".cs": ("//",), ".swift": ("//",),
+    ".kt": ("//",), ".scala": ("//",), ".php": ("//", "#"),
+    ".sql": ("--",), ".lua": ("--",), ".hs": ("--",), ".ex": ("#",), ".exs": ("#",),
+}
+#: Conservative fallback for an unknown extension: only unambiguous openers.  `;` is
+#: DELIBERATELY absent — it is a comment opener in Lisp/asm/ini and a statement separator
+#: nearly everywhere else, so treating it as a comment breaks far more than it fixes.
+_DEFAULT_LINE_COMMENTS: tuple[str, ...] = ("//", "#")
+
 _BLOCK_COMMENTS = (
     (r"/\*", r"\*/"),
     (r'"""', r'"""'),
-    (r"'''", r"'''"),
+    ("'''", "'''"),
     (r"<!--", r"-->"),
 )
 
+#: A quoted string, honouring BACKSLASH ESCAPES.  The earlier `"[^"]*"` could not span an
+#: escaped quote, so `x = "he said \"def Phantom(\" ok"` left `def Phantom(` exposed and a
+#: FABRICATED symbol was accepted — the exact defect this stripping exists to prevent.
+_DQ_STRING = re.compile(r'"(?:\\.|[^"\\])*"')
+_SQ_STRING = re.compile(r"'(?:\\.|[^'\\])*'")
+#: Rust lifetimes (`'a`, `'static`) are NOT char literals and must survive stripping.
+_RUST_LIFETIME = re.compile(r"'[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_'])")
 
-def _strip_noncode(text: str) -> str:
-    """Remove block comments, line comments and string literals.
 
-    Deliberately crude and language-agnostic: it over-strips rather than under-strips,
-    because a false NEGATIVE here (missing a real definition) surfaces as a loud
-    `symbol_absent` a human corrects, while a false POSITIVE (accepting a fabricated
-    symbol) is silent and is exactly the defect this audit exists to catch.
+def _strip_noncode(text: str, suffix: str = "") -> str:
+    """Remove block comments, line comments and string literals, so a symbol that is only
+    MENTIONED in prose-within-code cannot satisfy a definition search.
+
+    Comment syntax is chosen by file extension rather than guessed globally — guessing
+    produced false "fabricated" accusations against correct C, Rust, Go and JS.
     """
     for opener, closer in _BLOCK_COMMENTS:
         text = re.sub(rf"{opener}.*?{closer}", " ", text, flags=re.DOTALL)
+    openers = _LINE_COMMENTS.get(suffix.lower(), _DEFAULT_LINE_COMMENTS)
     out = []
     for line in text.splitlines():
-        for opener in _COMMENT_OPENERS:
-            idx = line.find(opener)
-            if idx != -1:
-                line = line[:idx]
-        line = re.sub(r'"[^"]*"', '""', line)
-        line = re.sub(r"'[^']*'", "''", line)
+        # Strings first: a `//` or `#` INSIDE a string (a URL, a fragment) is not a comment.
+        line = _DQ_STRING.sub('""', line)
+        placeholders: list[str] = []
+
+        def _keep_lifetime(m: "re.Match[str]") -> str:
+            placeholders.append(m.group(0))
+            return f"\x00LT{len(placeholders) - 1}\x00"
+
+        line = _RUST_LIFETIME.sub(_keep_lifetime, line)
+        line = _SQ_STRING.sub("''", line)
+        for idx, kept in enumerate(placeholders):
+            line = line.replace(f"\x00LT{idx}\x00", kept)
+        for opener in openers:
+            pos = line.find(opener)
+            if pos != -1:
+                line = line[:pos]
         out.append(line)
     return "\n".join(out)
 
 
-def _symbol_defined(text: str, symbol: str) -> bool:
+#: Keywords that make a line a STATEMENT, not a declaration. `return Phantom()` is a CALL
+#: SITE; without this guard the C-style declaration pattern reads it as a definition, and a
+#: symbol that is merely imported/called/referenced passes as "defined". Checked in Python
+#: rather than by regex lookahead: `^\s*` backtracks, so a lookahead can be evaluated at a
+#: position where the keyword is no longer at the start and silently succeeds.
+_STATEMENT_LEAD = re.compile(
+    r"^\s*(?:return|yield|await|if|elif|while|for|else|throw|new|assert|del|raise|print|"
+    r"case|switch|match|with|in|and|or|not)\b"
+)
+
+
+def _line_is_statement(text: str, symbol: str) -> bool:
+    """True when EVERY line mentioning `symbol` before a `(` leads with a statement keyword."""
+    hits = [ln for ln in text.splitlines() if re.search(rf"\b{re.escape(symbol)}\s*\(", ln)]
+    return bool(hits) and all(_STATEMENT_LEAD.match(ln) for ln in hits)
+
+
+def _symbol_defined(text: str, symbol: str, suffix: str = "") -> bool:
     """Language-agnostic 'is this symbol defined here'.
 
     Operates on CODE ONLY — comments and string literals are stripped first.
@@ -232,11 +281,22 @@ def _symbol_defined(text: str, symbol: str) -> bool:
     language tooling: a definition keyword before the name, or the name bound/declared at
     the start of a line.  Deliberately permissive — the goal is catching a FABRICATED
     symbol, not grading style."""
-    text = _strip_noncode(text)
+    text = _strip_noncode(text, suffix)
     escaped = re.escape(symbol)
     patterns = (
-        rf"\b(?:def|class|func|fn|function|struct|interface|type|impl|trait|enum|module)\s+{escaped}\b",
-        rf"^\s*(?:export\s+)?(?:public\s+|private\s+|static\s+|async\s+)*[A-Za-z_<>\[\]:*&\s]*\b{escaped}\s*\(",
+        # Generic parameters may sit between the keyword and the name — `impl<'a> Parser`,
+        # `class Foo<T>`, `func[T any]`. Found by a reviewer: without `(?:<[^>]*>)?` the
+        # Rust impl form produced a FATAL "fabricated" accusation against correct code.
+        rf"\b(?:def|class|func|fn|function|struct|interface|type|impl|trait|enum|module)"
+        rf"\s*(?:<[^>]*>)?\s+{escaped}\b",
+        # C/C++ preprocessor definitions. `#` is not a comment opener in these languages,
+        # so the macro name is a real declaration the audit must see.
+        rf"^\s*#\s*(?:define|undef)\s+{escaped}\b",
+        # C-style declaration: optional type/modifier prefix, then the name, then `(`.
+        # Guarded separately below — see `_STATEMENT_LEAD`. A regex lookahead does NOT
+        # work here: `^\s*` backtracks, so the guard lands mid-whitespace and never fires.
+        rf"^\s*(?:export\s+)?(?:public\s+|private\s+|static\s+|async\s+)*"
+        rf"[A-Za-z_<>\[\]:*&\s]*\b{escaped}\s*\(",
         # Receiver / method forms whose prefix contains parens, so the generic
         # `name(` pattern cannot reach them: Go `func (s *Store) Name(`,
         # C++/PHP `Type::Name(`. Found by a portability test that initially passed
@@ -247,7 +307,18 @@ def _symbol_defined(text: str, symbol: str) -> bool:
         rf"^\s*{escaped}\s*[:=]",
         rf"^\s*{escaped}\s*\(",
     )
-    return any(re.search(p, text, re.MULTILINE) for p in patterns)
+    if not any(re.search(p, text, re.MULTILINE) for p in patterns):
+        return False
+    # A match whose only evidence is a statement line (`return Foo()`) is a CALL SITE.
+    keyword_forms = (
+        rf"\b(?:def|class|func|fn|function|struct|interface|type|impl|trait|enum|module)"
+        rf"\s*(?:<[^>]*>)?\s+{escaped}\b",
+        rf"^\s*#\s*(?:define|undef)\s+{escaped}\b",
+        rf"^\s*(?:const|let|var|val)\s+{escaped}\b",
+    )
+    if any(re.search(p, text, re.MULTILINE) for p in keyword_forms):
+        return True
+    return not _line_is_statement(text, symbol)
 
 
 def extract_citations(document: Path, repo: Path) -> list[Citation]:
@@ -307,7 +378,7 @@ def audit(
             text = target.read_text(encoding="utf-8", errors="replace")
 
             if cite.symbol is not None:
-                if not _symbol_defined(text, cite.symbol):
+                if not _symbol_defined(text, cite.symbol, target.suffix):
                     report.findings.append(
                         Finding(cite, "symbol_absent",
                                 f"{cite.symbol!r} is not defined in {cite.path} — fabricated or renamed")
