@@ -727,7 +727,12 @@ _TOOL_DENIED_RE = re.compile(
 # silently vanishes. (That is how the gemini seat stayed dead for 6 of 11 rounds of the
 # model-tier review, #309, and got misread as flakiness for the entire milestone.)
 #
-# The denial is specifically the "command" permission — NOT file access. `agy` reads the
+# ah#345: the denied tool is whichever tool the model ATTEMPTS — `command` when it tries to
+# run something, `read_file` when it tries to read outside the workspace. TWO earlier
+# versions of this comment each named one of those as THE cause; both were over-general.
+# The reachable failure is the READ case: the staged dir is this leg's only `--add-dir`, so
+# any repo path the bundle mentions is out-of-workspace, and a headless auto-deny destroys
+# the whole response. `_NO_COMMAND_PREAMBLE` now forbids such reads. `agy` reads the
 # staged review-instructions.md / review-bundle.md perfectly well through `--add-dir`;
 # what it cannot do is RUN things. Our review prompts routinely ask a leg to verify by
 # EXECUTING ("run the guard", "reproduce the mutation", "run the suite yourself"), and
@@ -748,7 +753,27 @@ _NO_COMMAND_PREAMBLE = (
     "your ENTIRE response (you would return nothing at all).\n"
     "Where the material asks you to verify something by RUNNING it, do not attempt to run "
     "it. Reason from the staged evidence instead, and state plainly which claims you could "
-    "NOT verify. Do not claim to have run anything.\n\n"
+    "NOT verify. Do not claim to have run anything.\n"
+    # ah#345 — the REAL cause of the silent 0-byte leg. The staged dir is this leg's ONLY
+    # `--add-dir`, so any repo path the bundle mentions is an OUT-OF-WORKSPACE read.
+    # Headless cannot prompt for that permission, auto-denies it, and DESTROYS THE ENTIRE
+    # RESPONSE — not merely that read. Verified against agy 1.1.7 with a bundle citing an
+    # absolute repo path:
+    #     without this clause -> 304B, `read_file` auto-denied, no review at all
+    #     with this clause    -> a full review naming the file it could not open
+    #
+    # THIS IS AN INSTRUCTION, NOT AN ENFORCEMENT. It makes the leg USEFUL; it does not make
+    # it SAFE. The actual boundary is agy's default `toolPermission=request-review` plus
+    # the headless auto-deny — and that default is OPERATOR-CONFIG DEPENDENT: the child
+    # retains HOME, so agy loads `~/.gemini/antigravity-cli/settings.json`, and an operator
+    # who has enabled `always-proceed` or non-workspace access defeats it. Do not read this
+    # clause as a sandbox. The review bundle is untrusted by construction, so anything that
+    # must HOLD against a hostile bundle needs a real boundary, not a prompt.
+    "You may read ONLY files inside the staged review directory provided to you. Do NOT "
+    "attempt to read any file outside it — such a read cannot be approved in this headless "
+    "session and would destroy your ENTIRE response, not merely that read. If the material "
+    "references a path outside the staged directory, reason from what is staged and say "
+    "plainly that you could not open it.\n\n"
 )
 # Subscription auth only: strip provider API keys from the child environment.
 _API_KEY_VARS = (
@@ -2955,8 +2980,11 @@ def _exec_leg(
             if rc == 0 and not review_text.strip() and _TOOL_DENIED_RE.search(log_text):
                 return 1, "", (
                     "gemini leg: headless TOOL-DENIAL — the CLI auto-denied a tool "
-                    "permission it cannot prompt for and produced NO output. Not "
-                    "transient; the review prompt must not require RUNNING commands. "
+                    "permission it cannot prompt for and produced NO output, destroying the "
+                    "WHOLE response rather than just that one action. Not transient. The "
+                    "denied tool is whichever the model ATTEMPTED — usually `read_file` for "
+                    "a path OUTSIDE the staged review dir (the leg's only --add-dir), "
+                    "sometimes `command`. See the CLI's own message below for which. "
                     f"CLI said: {log_text.strip()[:400]}"
                 )
             soft_empty = rc == 0 and not review_text.strip()

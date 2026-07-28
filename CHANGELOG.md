@@ -6,6 +6,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Panel: the headless agy leg no longer dies on out-of-workspace reads (Consiliency/agent-harness#345)
+
+- The `gemini` panel leg (which drives the Antigravity `agy` CLI) returned a silent 0-byte
+  result on real review bundles. Cause: the staged review directory is the leg's ONLY
+  `--add-dir`, so any repo path the bundle mentions is an **out-of-workspace read**.
+  Headless mode cannot prompt for that permission, auto-denies it, and **destroys the
+  entire response** — not merely that one read.
+- The leg's prompt preamble now tells the model it may read only inside the staged
+  directory, and to say plainly which referenced files it could not open. Verified against
+  agy 1.1.7 with a bundle citing an absolute repo path: without the clause, 304 bytes and
+  a `read_file` denial; with it, a full review that names the file it could not open.
+- The denied tool is whichever tool the model ATTEMPTS — `command` when it tries to run
+  something, `read_file` when it tries to read outside the workspace. Two earlier
+  descriptions in this codebase each named one of those as *the* cause; both were
+  over-general, and the comment has been corrected accordingly.
+- **This is a usability fix, not a security boundary.** The preamble is an instruction to
+  the model. The real boundary is agy's default `toolPermission=request-review` plus the
+  headless auto-deny, and that default is operator-config dependent — the leg retains
+  `HOME`, so an operator who has enabled `always-proceed` or non-workspace access in
+  `~/.gemini/antigravity-cli/settings.json` defeats it. Anything that must hold against a
+  hostile review bundle needs a real boundary, not a prompt.
+
 ### CI: a pyflakes (ruff F) lint gate, and the defects it found (Consiliency/agent-harness#334)
 
 - **CI now runs a linter.** Previously it ran none — no ruff config, no workflow step.
