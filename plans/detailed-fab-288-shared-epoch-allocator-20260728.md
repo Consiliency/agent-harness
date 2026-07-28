@@ -292,7 +292,9 @@ injection anchor, and a positive control
   Option-A variant) → publish is accepted after revocation. **Injection anchor:** the
   in-lock `epoch_blocked()` inside `admit_next` (S6) + `execute:64`. **Positive control:**
   with `epoch_blocked = False`, the identical publish is accepted — so the test is not
-  vacuously blocking everything.
+  vacuously blocking everything. **⚠️ Flagged in §10:** the simple form here PASSES on
+  current `main` (`execute:64` already refuses under #366) — as a red-first test it must be
+  narrowed to the in-lock `admit_next` guarantee, else relabeled a regression guard.
 
 - **AC-3 — publish idempotency survives renumbering (epoch-independent key).** Publish
   `(repo, branch, head)`; it records some epoch E. Replay the SAME publish → returns the
@@ -328,7 +330,9 @@ injection anchor, and a positive control
   `epoch_blocked` → a succeeded publish wrongly reports blocked on resume. **Injection
   anchor:** the terminal short-circuit at `execute:58` (before the `:64` revocation gate).
   **Positive control:** a DIFFERENT `head_sha` publish under the same revocation IS refused
-  at `:64` — proving `:58` is a terminal-only replay, not a blanket bypass.
+  at `:64` — proving `:58` is a terminal-only replay, not a blanket bypass. **⚠️ Flagged in
+  §10:** this PASSES on current `main` (`:58` already precedes `:64` under #366) — it is a
+  regression guard, not a red-first test; relabel it as such.
 
 - **AC-6b — a revoked resume is refused IN-LOCK (the parked defect, as a live AC).** An
   admission is authorized (dedup-able by `attempt_id`) but its effect is NOT yet observed;
@@ -382,7 +386,112 @@ injection anchor, and a positive control
 
 ---
 
-## 10. Ordering and what blocks what
+## 10. Test-first execution contract — NORMATIVE, not advisory
+
+This plan is not implementable in one PR. Its acceptance criteria (§8) LAND AS FAILING
+TESTS BEFORE any production change here, so the criteria are stipulated while it is still
+cheap to argue their shape — not reverse-engineered to fit whatever got built. This section
+is normative: an execution that writes code first violates the plan.
+
+**No harness gate enforces this.** The falsifier-gate that would
+(Consiliency/agent-harness#362) is not built. This is a PLAN-LEVEL commitment; the reviewer
+is asked to enforce it at review time. Do not assume a CI check will catch a violation —
+there is none.
+
+### The contract (each rule is a review gate)
+
+1. **Tests land FIRST, in their own PR**, before any production change in this plan. That PR
+   contains ONLY test files plus the minimal scaffolding they need to import (fixtures, a
+   conftest, import shims for symbols step (1) will create — nothing that implements
+   behavior).
+2. **Every test FAILS when it lands, for its named reason.** The test PR records, per test:
+   the AC it proves, the observed failure output, and why that failure is the RIGHT failure
+   — the asserted behavior is wrong, NOT an import error, a typo, or a missing fixture. A
+   test that passes on arrival proves nothing about work not yet done and is rejected.
+3. **Each falsifier from §8 is RUN, with its injection anchor asserted.** Not "a mutation
+   was identified" — the mutation is applied to the tree, `assert <anchor> in <source>`
+   confirms the anchor matched (a mutation against a moved/renamed anchor is a silent no-op
+   — the defect class this repo has already shipped), the test is observed to die, and the
+   source is restored. An unapplied mutation is indistinguishable from a passing one.
+4. **The test PR is REVIEWED BY THE PANEL BEFORE implementation begins.** The review
+   question is "are these the right tests and the right falsifiers," decided while argument
+   is cheap — not "does this code work," discovered after the code exists. This is the whole
+   point of the exercise.
+5. **The implementation PR MUST NOT modify the landed tests.** Any diff touching a landed
+   test file is a BLOCKING review item requiring explicit written justification. If a test
+   was wrong, that is a finding against the test PR and its review — reopened there, not
+   quietly patched to green. Without this rule TDD is theatre.
+6. **`pytest -k <new tests>` goes red→green across exactly TWO commits** per lane: the test
+   commit (red) and the implementation commit (green). The execution PR states which two.
+
+### Applied to THIS plan's step ordering (§11)
+
+Test-first is applied PER STEP, because §11 carries an internal dependency: the falsifiers
+for the allocator primitive MUTATE code (`admit_next`, `readmit_advanced_head`, routing)
+that step (1) creates, and a falsifier cannot be RUN against code that does not yet exist.
+Rules 2 (red on arrival) and 3 (falsifier = applied mutation) are different lifecycle
+moments: they coincide only where `main` already embodies the mutation. So the tests split
+into two waves.
+
+**Wave-0 test PR — red against current `main`, no new production code required.** The
+falsifier here IS the status quo, so the test is red on arrival with zero behavior
+scaffolding. The two the directive prioritizes both live here:
+
+- **AC-8 (readmit-consumer bypass) — highest-value test-first item, clean wave-0.** Current
+  `_fab_delta_readmit` does a direct `append_record` ignoring the broker; under
+  `epoch_blocked=True` it STILL appends and the advanced head merges. The test reproduces
+  the exact #288 defect and is RED on arrival with no adjustment. It MUST exist and fail
+  before any allocator or publish work, so the bypass cannot be introduced by ordering
+  accident (flipping `_FAB_DELTA_BROKER_READMIT_READY` while the append is still direct).
+  Falsifier = the current direct append = the tree as it stands.
+- **AC-1 (round-4 stale-epoch incident) — red on arrival, but VIA A SEEDED RECORD, not the
+  literal sequence.** ⚠️ The reproduction "publish A → readmit A → publish B" is NOT
+  buildable on `main`: `readmit_advanced_head` is re-landed by step (1) and is absent, and
+  the on-`main` `_fab_delta_readmit` appends to the ledger — not the broker admission store
+  (that is the S8 bypass) — so **nothing on `main` advances the broker admission epoch via
+  readmit**, and the literal sequence cannot trip the fence pre-allocator. The wave-0 test
+  instead SEEDS a broker record at epoch 2 directly via `admit()` (legal on an empty store —
+  the fence is `if records and …`), then drives the live publish path (S1/S3) at
+  `lease_epoch=1` → `admission.py:49` raises `1 < 2`. Red on `main`; post-fix, publish
+  allocates epoch 3 and succeeds. Falsifier = the status quo (`lease_epoch=1` at S1).
+- **AC-7 (doc retraction) — red on arrival.** The byte-neutrality claim is still in the
+  tree and the CHANGELOG retraction is absent, so the grep-level check fails today.
+
+**Step-1 test PR — red against the step-1 skeleton.** AC-3, AC-4, AC-5, AC-6b (and the
+in-lock half of AC-2) mutate `admit_next` / `readmit_advanced_head` / routing, which step
+(1) re-lands. Their falsifiers can only be RUN once those symbols exist, so these tests land
+red against a step-1 skeleton (symbols present, bodies unimplemented or deliberately wrong)
+— NOT against empty `main`. This is still test-first — it is the primitive's own red→green —
+but it is a SEPARATE wave. The plan must not pretend AC-5's "move `max+1` outside the flock"
+mutation, or AC-6b's "return the dedup hit before `epoch_blocked`," can run before
+`admit_next` exists.
+
+### Criteria in §8 that need rework or relabeling under this contract
+
+Applying rule 2 (a test that passes on arrival is not a test) surfaces two that do NOT fail
+on arrival, because #366 already shipped the behavior they assert. They are flagged here and
+in §8; the maintainer must ratify the resolution (relabel vs. reframe) — this plan does not
+unilaterally rewrite rule 2:
+
+- **AC-2 (fresh publish refused under revocation) — PASSES on arrival.** `execute:64`
+  already raises under `epoch_blocked` (merged #366), so a fresh publish is already refused
+  today. As written it is a regression guard, not a red-first test. RESOLUTION (for
+  ratification): either relabel it a regression guard (legitimately green from the start,
+  exempt from rule 2) OR narrow the red assertion to the genuinely new guarantee — refusal
+  IN-LOCK inside `admit_next` under a concurrent revocation race — which is absent today and
+  belongs to the step-1 wave.
+- **AC-6a (completed publish replays after revocation) — PASSES on arrival.** `execute:58`
+  terminal replay already precedes the `:64` revocation gate (#366 ordering), so a completed
+  publish already replays without reporting blocked. It is a regression guard for existing
+  behavior; relabel it as such rather than presenting it as a test-first-red test.
+
+Everything else in §8 fails on arrival for its named reason (AC-1/AC-7/AC-8 against `main`
+per wave-0 above; AC-3/AC-4/AC-5/AC-6b against the step-1 skeleton) and satisfies the
+contract.
+
+---
+
+## 11. Ordering and what blocks what
 
 1. **Re-land the allocator + readmit primitive** (`admit_next`, `AdmissionPrecondition`,
    `readmit_advanced_head`, `readmit_attempt_id`, `ReadmitResult`, routing) from #337.
@@ -410,13 +519,13 @@ build on the re-landed primitive (1).
 
 ---
 
-## 11. Scope statement + what is explicitly NOT in scope (do not over-build)
+## 12. Scope statement + what is explicitly NOT in scope (do not over-build)
 
 **In scope (the full #288 arc):** this is the migration plan for #288, so it covers the
 allocator foundation (1), the publish migration (2) — the LIVE-#199 risk the ratification
 is about — the docs retraction (3), the readmit CONSUMER wiring (4, S8/AC-8) — the seam
 #288 exists to fix — and the gated flag flip (5). The flag flip is NOT a safe terminal step
-until the consumer is wired; that dependency is fixed in §10. The consumer wiring is
+until the consumer is wired; that dependency is fixed in §11. The consumer wiring is
 "multi-day protocol integration" per #288's body — specified here at the seam/falsifier
 level, implemented by the execution PR.
 
