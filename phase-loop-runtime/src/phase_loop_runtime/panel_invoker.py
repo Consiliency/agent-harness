@@ -118,9 +118,10 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 # EXECUTES `agy` (Antigravity). Nothing on the panel path invokes a `gemini` binary. That
 # mismatch has produced two wrong root causes: both times the leg was diagnosed by running
 # `gemini` and reasoning from its output, when `gemini`'s health is irrelevant here. The
-# `gemini` CLI is separately dead (IneligibleTierError / UNSUPPORTED_CLIENT — Google
-# withdrew free-tier OAuth for that client); the panel is unaffected because it never calls
-# it. Probe `agy`, not `gemini`.
+# panel is unaffected by ANY state of the `gemini` binary — healthy, broken, or absent —
+# because it never calls it. Deliberately records no claim about that CLI's auth tiers or
+# availability: those are volatile vendor facts, and asserting them here is how this comment
+# has drifted before. Probe `agy`, not `gemini`.
 #
 # The name is retained deliberately: `PANEL_LEGS` is byte-frozen, and `"gemini"` also spans
 # `_HOMEBREW_LANES`, `DEFAULT_LEG_MODELS` and many tests, so a rename is a change to the
