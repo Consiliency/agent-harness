@@ -60,7 +60,22 @@ load-bearing and correct.
 its own sign-off, and does the golden's docstring need to become normative about which
 deltas are permitted?
 
-### D2 — Does a sub-floor board BLOCK or WARN?
+### D2 — [SUPERSEDED by panel round 1 — see D2′] Does a sub-floor board BLOCK or WARN?
+
+> **RETRACTED 2026-07-28 after panel round 1 (codex DISAGREE, gemini DISAGREE).**
+> Two independent errors, both mine:
+>
+> 1. **It proposed inventing a mechanism that already ships.**
+>    `ratification_policy.RatificationPolicy` already models `required_vendors`,
+>    `required_lens_coverage`, `required_consensus` (`unanimous`|`majority`), and
+>    `on_shortfall` (`escalate` | `proceed_degraded`) — and explicitly preserves
+>    autonomy-first ("never a `human_required` stall"), citing the same guardrail I cited
+>    as the reason to invent something new. `gate_posture.py:130` already provides the
+>    manifest-level shortfall override.
+> 2. **I cited a false precedent.** `PHASE_LOOP_ACCEPTANCE_ENFORCE` is a GOAL-COVERAGE
+>    control (`runner.py:6234`), not review ratification. It is not precedent for this at all.
+>
+> Original text retained below for the record; do not implement it.
 
 **This is the fork I smuggled into #358's acceptance criteria as "fail loud below floor"
 without noticing it was a decision.** It collides with a standing repo principle: *review
@@ -80,6 +95,59 @@ Removing the false claim addresses the harm without violating autonomy-first.
 
 **Panel question:** is "convergence unclaimable" enforceable at the type level, or does it
 degrade into prose that the next caller ignores?
+
+### D2′ — Wire the EXISTING `RatificationDecision` into merge authorization
+
+Do not invent a floor rule. `RatificationPolicy` already expresses it. The decision is
+**where its verdict becomes authoritative**: only `ratified` may be called convergence, and
+only `ratified` may authorize admin-merge. `proceed_degraded` proceeds AND writes a durable
+audit record — it is explicitly not convergence.
+
+**Panel question:** is `RatificationDecision` currently reachable from the live pre-merge /
+merge-authorization path at all, or is it composed-but-never-dispatched (the same shape as
+`invoke_board` before it was wired)? If the latter, wiring it IS the fix.
+
+### D2″ — Three states, not two (the motivating failure is AT floor, not below it)
+
+**This is the finding that invalidates the plan's original acceptance criteria.** Measured
+across every board this session:
+
+| board | reviewed seats | floor | below floor? |
+|---|---|---|---|
+| ah#354 | 3 | 3 | **no** |
+| ah#351 | 3 | 3 | **no** |
+| #226/#212/#105 queue | 3 | 3 | **no** |
+| this plan's own panel | 2 | 3 | yes (grok DEGRADED) |
+
+Every incident that motivated ah#358 delivered **exactly the floor**. `cli.py:1526` treats 3
+as usable and exits successfully. So a "below floor" rule — the original acceptance
+criterion — **would not have fired on any of them.** It is a criterion that cannot fail.
+
+Type three distinct states and decide which may authorize merge:
+- **full** — target seat count delivered (4)
+- **floor-only degraded** — at floor but below target; usable, NOT convergence
+- **below floor** — not usable
+
+**Recommendation:** only **full** authorizes admin-merge on a public repo.
+**floor-only degraded** may proceed and must say so in every surface that reports the
+verdict. This is what actually addresses the observed failures.
+
+### D2‴ — The authoritative voting rule (currently two rules disagree)
+
+`governed_review.py:157` gives **every `DISAGREE` veto power**. `ratification_policy.py:101`
+uses **majority consensus**. On the exact case observed this session — two vendors AGREE, codex
+DISAGREEs and is right — these produce **opposite outcomes**. The plan must pick one.
+
+**Recommendation: veto (unanimous) for pre-merge on a public repo**, with an explicit
+rationale that generalizes: *the board's job is the residue that mechanical checks cannot
+decide.* Facts are CI's job. A panel is not voting on facts, so majority agreement carries
+much less information than a single well-evidenced dissent. Session evidence: codex's lone
+DISAGREE was correct on #354, #351, #212 and #105 — including #105, where two seats AGREE'd
+on a change failing five CI gates.
+
+**Must also decide:** do same-vendor backfilled seats (D3) count toward `required_vendors`,
+toward lens coverage only, or neither? Counting them toward consensus manufactures
+correlated votes and would dilute exactly the dissent that has been carrying the signal.
 
 ### D3 — What fills the claude seat inside Harness Code?
 
@@ -134,9 +202,26 @@ ruff check phase-loop-runtime/src/phase_loop_runtime/
 Plus a live board run from inside Harness Code, asserting it yields four reviewing seats OR
 a typed unfillable signal — never a silent 3-of-4.
 
+### D5 — D3's backfill CONFLICTS with D1's golden proof (raised by gemini)
+
+Dynamic lens-backfill changes the backfilled seat's **argv**, which is exactly what
+`test_advisor_board_golden.py` asserts byte-equal between `invoke_panel(PANEL_LEGS)` and
+`invoke_board(DEFAULT_BOARD)`. D1 assumed the proof survives; under D3(b) it does not.
+
+Decide explicitly: does the golden proof bind the **static default board** only (so a
+dynamically composed board is out of its scope, stated normatively), or must backfill
+preserve byte-equality (which likely forecloses D3(b))? These cannot both hold.
+
 ## Acceptance criteria
 
-- [ ] A board below its declared **reviewed-seat** floor cannot report convergence
+> **Round-1 note.** The original criterion here was *"a board below its declared floor
+> cannot report convergence."* Measured: every board that motivated this issue delivered
+> exactly the floor, so that criterion **could not have fired on any of them.** Replaced.
+
+- [ ] Re-running the three motivating boards (ah#354, ah#351, the queue drain) under the new
+      rule, each is reported as **floor-only degraded** and **cannot authorize admin-merge**
+      — the criterion must fire on the incidents that motivated the work
+- [ ] Only `RatificationDecision == ratified` may be called convergence or authorize merge
 - [ ] An unusable leg is distinguished from a reviewing leg **without inspecting `text`**
 - [ ] A spawn that RAISES does not produce a governed BLOCK from its traceback
 - [ ] A board driven inside Harness Code yields 4 reviewing seats or a typed unfillable
