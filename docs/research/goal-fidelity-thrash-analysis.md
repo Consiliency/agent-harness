@@ -8,6 +8,23 @@
 
 This document is the consolidated evidence behind both issues so they share one source of truth.
 
+> **POINT-IN-TIME ANALYSIS — partially SUPERSEDED as of 2026-07-28.**
+> The investigation, the DUALPROOF evidence, and the three disconfirmations (§1) all still
+> stand: they are claims about what happened, and they remain accurate.
+>
+> **§2's load-bearing finding no longer describes the runtime.** When this was written, no
+> runtime gate loaded the roadmap exit-criteria, so a faithful copy and a loosened
+> paraphrase were indistinguishable to every gate. That gap has since been CLOSED by the
+> goal-ID coverage mechanism filed as #211 and shipped:
+> `goal_coverage.check_goal_coverage` loads the anchored roadmap and plan, and
+> `runner._execute_goal_coverage_preflight` / `runner._goal_coverage_closeout_outcome`
+> enforce and re-check `EC-<ALIAS>-<N>` coverage at preflight AND closeout.
+>
+> Read §2's "there is no comparison" as **the 2026-07-13 state that motivated #211**, not as
+> current behavior. Residual scope after #211: coverage is checked for declared EC-IDs;
+> criteria ADEQUACY (does the EC-ID actually capture the goal?) is still not machine-checked
+> — see #246 for the fail-closed enforce-mode work.
+
 ---
 
 ## 1. The three hypotheses, and why each is disconfirmed
