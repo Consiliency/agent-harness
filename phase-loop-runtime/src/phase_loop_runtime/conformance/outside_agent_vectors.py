@@ -1,7 +1,14 @@
-"""Deterministic vector runner for outside-agent conformance manifests."""
+"""Deterministic vector runner for the canonical outside-agent conformance corpus.
+
+The manifest and vectors are the PACKAGED Consiliency/spec format
+(``_contract/test-vectors/outside-agent/manifest.json``): each entry references a
+vector FILE by ``path`` (not an inline submission) and declares a ``schema_target``
+that selects the submission or route-verdict schema. Each vector is validated
+through the same core the ``outside-agent-validate`` CLI uses, and its pass/reject
+outcome is compared to the manifest's own ``expected_valid``.
+"""
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from importlib import resources
@@ -17,8 +24,13 @@ from .outside_agent_pin import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     OutsideAgentContractPin,
 )
+from .outside_agent_schema import validate_outside_agent_route_verdict
 
 _VECTOR_MANIFEST_SCHEMA_VERSION = "outside_agent_vector_manifest.v0.1"
+_SUBMISSION_TARGET = "outside_agent_submission.v0.1"
+_ROUTE_VERDICT_TARGET = "outside_agent_route_verdict.v0.1"
+_ALLOWED_TARGETS = frozenset({_SUBMISSION_TARGET, _ROUTE_VERDICT_TARGET})
+_MANIFEST_RELPATH = "test-vectors/outside-agent/manifest.json"
 
 
 @dataclass(frozen=True)
@@ -31,13 +43,29 @@ class OutsideAgentVectorResult:
     evidence_refs: tuple[str, ...]
 
 
+def _default_contract_root() -> Path:
+    return Path(str(resources.files("phase_loop_runtime.conformance") / "_contract"))
+
+
 def run_outside_agent_vectors(
-    manifest: Mapping[str, Any] | str | Path | None = None,
+    root: str | Path | None = None,
     *,
+    manifest: Mapping[str, Any] | None = None,
     contract_pin: OutsideAgentContractPin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
 ) -> tuple[OutsideAgentVectorResult, ...]:
-    manifest_data, manifest_digest = _load_manifest(manifest, contract_pin)
-    manifest_blockers = _validate_manifest(manifest_data, manifest_digest)
+    """Run the canonical vector corpus rooted at ``root`` (packaged corpus default).
+
+    ``manifest`` may override the on-disk manifest (used by fail-closed tests);
+    vector ``path`` entries always resolve against ``root``.
+    """
+    contract_root = _default_contract_root() if root is None else Path(root)
+    manifest_data = (
+        manifest
+        if manifest is not None
+        else _load_json(contract_root / _MANIFEST_RELPATH)
+    )
+
+    manifest_blockers = _validate_manifest(manifest_data)
     if manifest_blockers:
         return (
             OutsideAgentVectorResult(
@@ -46,59 +74,53 @@ def run_outside_agent_vectors(
                 expected_status=None,
                 matched=False,
                 blockers=manifest_blockers,
-                evidence_refs=(contract_pin.vector_manifest_name,),
+                evidence_refs=(_MANIFEST_RELPATH,),
             ),
         )
 
     results: list[OutsideAgentVectorResult] = []
-    for vector in manifest_data.get("vectors", []):
-        expected_status = OutsideAgentVerdictStatus(vector["expected_status"])
-        verdict = validate_outside_agent_submission(
-            vector["submission"], contract_pin=contract_pin
+    for entry in manifest_data["vectors"]:
+        payload = _load_json(contract_root / entry["path"])
+        expected_status = (
+            OutsideAgentVerdictStatus.PASS
+            if entry["expected_valid"]
+            else OutsideAgentVerdictStatus.BLOCKED
         )
-        expected_blockers = tuple(vector.get("expected_blocker_codes", ()))
-        actual_codes = tuple(blocker.code for blocker in verdict.blockers)
-        blocker_match = all(code in actual_codes for code in expected_blockers)
-        matched = verdict.status == expected_status and blocker_match
+        if entry["schema_target"] == _SUBMISSION_TARGET:
+            verdict = validate_outside_agent_submission(payload, contract_pin=contract_pin)
+            status = verdict.status
+            blockers = verdict.blockers
+            evidence_refs = tuple(ref.ref for ref in verdict.evidence_refs)
+        else:
+            blockers = validate_outside_agent_route_verdict(payload)
+            status = (
+                OutsideAgentVerdictStatus.BLOCKED
+                if blockers
+                else OutsideAgentVerdictStatus.PASS
+            )
+            evidence_refs = ()
         results.append(
             OutsideAgentVectorResult(
-                vector_name=str(vector["name"]),
-                status=verdict.status,
+                vector_name=str(entry["case_id"]),
+                status=status,
                 expected_status=expected_status,
-                matched=matched,
-                blockers=verdict.blockers,
-                evidence_refs=tuple(ref.ref for ref in verdict.evidence_refs),
+                matched=status == expected_status,
+                blockers=blockers,
+                evidence_refs=evidence_refs,
             )
         )
     return tuple(results)
 
 
-def _load_manifest(
-    manifest: Mapping[str, Any] | str | Path | None,
-    contract_pin: OutsideAgentContractPin,
-) -> tuple[Mapping[str, Any], str]:
-    if manifest is None:
-        import consiliency_spec
-
-        manifest_bytes = (
-            resources.files(consiliency_spec)
-            / f"_data/{contract_pin.vector_manifest_name}"
-        ).read_bytes()
-        return json.loads(manifest_bytes), hashlib.sha256(manifest_bytes).hexdigest()
-    if isinstance(manifest, Mapping):
-        manifest_bytes = json.dumps(
-            manifest, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        return manifest, hashlib.sha256(manifest_bytes).hexdigest()
-
-    manifest_bytes = Path(manifest).read_bytes()
-    return json.loads(manifest_bytes), hashlib.sha256(manifest_bytes).hexdigest()
-
-
-def _validate_manifest(
-    manifest: Mapping[str, Any],
-    manifest_digest: str,
-) -> tuple[OutsideAgentBlocker, ...]:
+def _validate_manifest(manifest: Mapping[str, Any]) -> tuple[OutsideAgentBlocker, ...]:
+    if not isinstance(manifest, Mapping):
+        return (
+            OutsideAgentBlocker(
+                "schema_validation_failed",
+                "outside-agent vector manifest must be an object",
+                ref="$",
+            ),
+        )
     blockers: list[OutsideAgentBlocker] = []
     if manifest.get("manifest_schema_version") != _VECTOR_MANIFEST_SCHEMA_VERSION:
         blockers.append(
@@ -108,18 +130,9 @@ def _validate_manifest(
                 ref="manifest_schema_version",
             )
         )
-    expected_digest = manifest.get("manifest_digest")
-    if expected_digest and str(expected_digest).removeprefix("sha256:").lower() != manifest_digest:
-        blockers.append(
-            OutsideAgentBlocker(
-                "digest_mismatch",
-                "outside-agent vector manifest digest drifted",
-                ref="manifest_digest",
-            )
-        )
 
     vectors = manifest.get("vectors")
-    if not isinstance(vectors, list):
+    if not isinstance(vectors, list) or not vectors:
         blockers.append(
             OutsideAgentBlocker(
                 "schema_validation_failed",
@@ -129,45 +142,46 @@ def _validate_manifest(
         )
         return tuple(blockers)
 
-    for index, vector in enumerate(vectors):
-        if not isinstance(vector, Mapping):
+    for index, entry in enumerate(vectors):
+        if not isinstance(entry, Mapping):
             blockers.append(
                 OutsideAgentBlocker(
                     "schema_validation_failed",
-                    "outside-agent vector must be metadata",
+                    "outside-agent vector entry must be metadata",
                     ref=f"vectors.{index}",
                 )
             )
             continue
-        if "expected_status" not in vector:
-            blockers.append(
-                OutsideAgentBlocker(
-                    "schema_validation_failed",
-                    "outside-agent vector is missing expected outcome",
-                    ref=f"vectors.{index}.expected_status",
-                )
-            )
-        elif vector["expected_status"] not in {
-            OutsideAgentVerdictStatus.PASS.value,
-            OutsideAgentVerdictStatus.BLOCKED.value,
-        }:
-            blockers.append(
-                OutsideAgentBlocker(
-                    "schema_validation_failed",
-                    "outside-agent vector expected outcome is unsupported",
-                    ref=f"vectors.{index}.expected_status",
-                )
-            )
-        for field in ("name", "submission"):
-            if field not in vector:
+        for field in ("case_id", "path", "schema_target", "expected_valid"):
+            if field not in entry:
                 blockers.append(
                     OutsideAgentBlocker(
                         "schema_validation_failed",
-                        "outside-agent vector is incomplete",
+                        "outside-agent vector entry is incomplete",
                         ref=f"vectors.{index}.{field}",
                     )
                 )
+        if entry.get("schema_target") not in _ALLOWED_TARGETS:
+            blockers.append(
+                OutsideAgentBlocker(
+                    "schema_validation_failed",
+                    "outside-agent vector entry schema_target is unsupported",
+                    ref=f"vectors.{index}.schema_target",
+                )
+            )
+        if "expected_valid" in entry and not isinstance(entry["expected_valid"], bool):
+            blockers.append(
+                OutsideAgentBlocker(
+                    "schema_validation_failed",
+                    "outside-agent vector entry expected_valid must be a bool",
+                    ref=f"vectors.{index}.expected_valid",
+                )
+            )
     return tuple(blockers)
+
+
+def _load_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 __all__ = ["OutsideAgentVectorResult", "run_outside_agent_vectors"]

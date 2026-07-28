@@ -65,11 +65,13 @@ def test_secret_like_values_and_local_env_values_fail_closed():
 
 
 def test_core_verdict_contains_only_metadata_refs_and_digests():
-    verdict = validate_outside_agent_submission(_submission())
+    from _outside_agent_canonical import clean_submission
+
+    verdict = validate_outside_agent_submission(clean_submission())
 
     assert verdict.status == OutsideAgentVerdictStatus.PASS
     assert verdict.input_digest
-    assert verdict.provenance_refs == ("requests/oa-1.json",)
+    assert verdict.provenance_refs == ("plans/oaspec/FIELD-NAME-FREEZE.md",)
     assert verdict.redaction_posture == "metadata_only"
     assert verdict.contract_pin == EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN
 

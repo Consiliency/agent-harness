@@ -2,24 +2,16 @@ import json
 import subprocess
 import sys
 
+from _outside_agent_canonical import (
+    clean_submission,
+    raw_payload_submission,
+    source_bundle_mismatch_submission,
+)
 
-def _submission(**overrides):
-    submission = {
-        "submission_schema_version": "outside_agent_submission.v0.1",
-        "submission_kind": "work_request",
-        "metadata": {
-            "submission_id": "oa-1",
-            "content_digest": "a" * 64,
-        },
-        "provenance_refs": [
-            {"ref": "requests/oa-1.json", "digest": "b" * 64},
-        ],
-        "evidence_refs": [
-            {"ref": "evidence/oa-1.json", "digest": "c" * 64},
-        ],
-    }
-    submission.update(overrides)
-    return submission
+
+def _write(path, submission):
+    path.write_text(json.dumps(submission), encoding="utf-8")
+    return path
 
 
 def _run_validate(path, *args):
@@ -39,9 +31,8 @@ def _run_validate(path, *args):
 
 
 def test_cli_clean_pass_writes_file_and_stdout(tmp_path):
-    submission_path = tmp_path / "submission.json"
+    submission_path = _write(tmp_path / "submission.json", clean_submission())
     output_path = tmp_path / "verdict.json"
-    submission_path.write_text(json.dumps(_submission()), encoding="utf-8")
 
     result = _run_validate(
         submission_path,
@@ -77,30 +68,29 @@ def test_cli_malformed_json_returns_exit_2_and_writes_output(tmp_path):
     assert json.loads(output_path.read_text(encoding="utf-8")) == payload
 
 
-def test_cli_redaction_violation_returns_exit_3(tmp_path):
-    submission_path = tmp_path / "submission.json"
+def test_cli_schema_invalid_submission_returns_exit_2(tmp_path):
+    # A forbidden raw payload field is a packaged-schema (additionalProperties) failure.
+    submission_path = _write(tmp_path / "submission.json", raw_payload_submission())
     output_path = tmp_path / "verdict.json"
-    submission_path.write_text(
-        json.dumps(_submission(provider_response_body="digest-only-marker")),
-        encoding="utf-8",
-    )
 
     result = _run_validate(submission_path, "--output", str(output_path))
     payload = json.loads(result.stdout)
 
-    assert result.returncode == 3
-    assert "raw_payload_present" in {blocker["code"] for blocker in payload["blockers"]}
+    assert result.returncode == 2
+    assert {blocker["code"] for blocker in payload["blockers"]} == {"schema_validation_failed"}
 
 
-def test_cli_provenance_failure_returns_exit_4(tmp_path):
-    submission_path = tmp_path / "submission.json"
+def test_cli_unsafe_submitted_ref_returns_exit_4(tmp_path):
+    submission_path = _write(tmp_path / "submission.json", clean_submission())
     output_path = tmp_path / "verdict.json"
-    submission_path.write_text(
-        json.dumps(_submission(provenance_refs=[{"ref": "/tmp/unsafe.json", "digest": "b" * 64}])),
-        encoding="utf-8",
-    )
 
-    result = _run_validate(submission_path, "--output", str(output_path))
+    result = _run_validate(
+        submission_path,
+        "--output",
+        str(output_path),
+        "--submitted-ref",
+        "/tmp/unsafe.json",
+    )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 4
@@ -108,8 +98,7 @@ def test_cli_provenance_failure_returns_exit_4(tmp_path):
 
 
 def test_cli_requires_output(tmp_path):
-    submission_path = tmp_path / "submission.json"
-    submission_path.write_text(json.dumps(_submission()), encoding="utf-8")
+    submission_path = _write(tmp_path / "submission.json", clean_submission())
 
     result = _run_validate(submission_path)
 
@@ -118,27 +107,14 @@ def test_cli_requires_output(tmp_path):
     assert result.stdout == ""
 
 
-def test_cli_contract_pin_failure_returns_exit_5(tmp_path):
-    submission_path = tmp_path / "submission.json"
-    output_path = tmp_path / "verdict.json"
-    submission_path.write_text(
-        json.dumps(_submission(submission_schema_version="outside_agent_submission.v9")),
-        encoding="utf-8",
+def test_cli_source_bundle_mismatch_returns_exit_6(tmp_path):
+    submission_path = _write(
+        tmp_path / "submission.json", source_bundle_mismatch_submission()
     )
+    output_path = tmp_path / "verdict.json"
 
     result = _run_validate(submission_path, "--output", str(output_path))
-
-    assert result.returncode == 5
-
-
-def test_cli_other_conformance_blockers_return_exit_6(tmp_path):
-    submission_path = tmp_path / "submission.json"
-    output_path = tmp_path / "verdict.json"
-    submission_path.write_text(
-        json.dumps(_submission(submission_kind="not_supported")),
-        encoding="utf-8",
-    )
-
-    result = _run_validate(submission_path, "--output", str(output_path))
+    payload = json.loads(result.stdout)
 
     assert result.returncode == 6
+    assert {blocker["code"] for blocker in payload["blockers"]} == {"source_bundle_mismatch"}

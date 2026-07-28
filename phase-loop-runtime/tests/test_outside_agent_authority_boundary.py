@@ -2,6 +2,8 @@ import json
 import subprocess
 import sys
 
+from _outside_agent_canonical import clean_submission
+
 from phase_loop_runtime.conformance.outside_agent_advisory import (
     build_outside_agent_advisory_evidence,
     serialize_outside_agent_advisory_evidence,
@@ -17,20 +19,7 @@ _FORBIDDEN_AUTHORITY_FIELDS = (
 
 
 def _submission():
-    return {
-        "submission_schema_version": "outside_agent_submission.v0.1",
-        "submission_kind": "work_request",
-        "metadata": {
-            "submission_id": "oa-boundary",
-            "content_digest": "a" * 64,
-        },
-        "provenance_refs": [
-            {"ref": "requests/oa-boundary.json", "digest": "b" * 64},
-        ],
-        "evidence_refs": [
-            {"ref": "evidence/oa-boundary.json", "digest": "c" * 64},
-        ],
-    }
+    return clean_submission()
 
 
 def test_sdk_serialization_never_claims_merge_authority():

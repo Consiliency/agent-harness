@@ -4,74 +4,73 @@ from phase_loop_runtime.conformance.outside_agent_core import OutsideAgentVerdic
 from phase_loop_runtime.conformance.outside_agent_vectors import run_outside_agent_vectors
 
 
-def _submission(**extra):
-    value = {
-        "submission_schema_version": "outside_agent_submission.v0.1",
-        "submission_kind": "work_request",
-        "metadata": {"submission_id": "oa-1", "content_digest": "a" * 64},
-        "provenance_refs": [{"ref": "requests/oa-1.json", "digest": "b" * 64}],
-    }
-    value.update(extra)
-    return value
-
-
-def _manifest():
+def _canonical_manifest():
+    """A minimal well-formed canonical manifest (path entries resolved vs corpus)."""
     return {
         "manifest_schema_version": "outside_agent_vector_manifest.v0.1",
         "vectors": [
             {
-                "name": "valid-work-request",
-                "submission": _submission(),
-                "expected_status": "pass",
-            },
-            {
-                "name": "unknown-field",
-                "submission": _submission(extra_field=True),
-                "expected_status": "blocked",
-                "expected_blocker_codes": ["unknown_field"],
+                "case_id": "positive-work-request",
+                "path": "test-vectors/outside-agent/valid-work-request.json",
+                "submission_kind": "work_request",
+                "schema_target": "outside_agent_submission.v0.1",
+                "expected_valid": True,
             },
         ],
     }
 
 
-def test_vector_runner_matches_positive_and_negative_expected_outcomes():
-    results = run_outside_agent_vectors(_manifest())
+def test_runner_matches_canonical_corpus_expected_outcomes():
+    results = run_outside_agent_vectors()
 
-    assert [result.vector_name for result in results] == [
-        "valid-work-request",
-        "unknown-field",
-    ]
-    assert all(result.matched for result in results)
-    assert results[0].status == OutsideAgentVerdictStatus.PASS
-    assert results[1].status == OutsideAgentVerdictStatus.BLOCKED
+    by_case = {result.vector_name: result for result in results}
+    # Every canonical vector's pass/reject outcome matches the manifest's own
+    # expected_valid — including the semantic-only and route-verdict cases.
+    assert all(result.matched for result in results), {
+        name: (r.status.value, [b.code for b in r.blockers])
+        for name, r in by_case.items()
+        if not r.matched
+    }
+    assert by_case["positive-work-request"].status == OutsideAgentVerdictStatus.PASS
+    assert by_case["negative-source-bundle-mismatch"].status == OutsideAgentVerdictStatus.BLOCKED
+    assert {b.code for b in by_case["negative-source-bundle-mismatch"].blockers} == {
+        "source_bundle_mismatch"
+    }
+    # The route-verdict target vector is validated against the verdict schema.
+    assert by_case["negative-unsupported-verdict"].status == OutsideAgentVerdictStatus.BLOCKED
 
 
-def test_unknown_vector_schema_version_fails_closed():
-    manifest = _manifest()
+def test_unknown_vector_manifest_schema_version_fails_closed():
+    manifest = _canonical_manifest()
     manifest["manifest_schema_version"] = "outside_agent_vector_manifest.v9"
 
-    result = run_outside_agent_vectors(manifest)[0]
+    result = run_outside_agent_vectors(manifest=manifest)[0]
 
     assert result.vector_name == "__manifest__"
     assert result.status == OutsideAgentVerdictStatus.BLOCKED
     assert any(blocker.code == "unsupported_schema_version" for blocker in result.blockers)
 
 
-def test_missing_expected_outcome_fails_closed():
-    manifest = _manifest()
-    del manifest["vectors"][0]["expected_status"]
+def test_missing_required_entry_field_fails_closed():
+    manifest = copy.deepcopy(_canonical_manifest())
+    del manifest["vectors"][0]["expected_valid"]
 
-    result = run_outside_agent_vectors(manifest)[0]
-
-    assert result.vector_name == "__manifest__"
-    assert any(blocker.code == "schema_validation_failed" for blocker in result.blockers)
-
-
-def test_manifest_digest_drift_fails_closed():
-    manifest = copy.deepcopy(_manifest())
-    manifest["manifest_digest"] = "0" * 64
-
-    result = run_outside_agent_vectors(manifest)[0]
+    result = run_outside_agent_vectors(manifest=manifest)[0]
 
     assert result.vector_name == "__manifest__"
-    assert any(blocker.code == "digest_mismatch" for blocker in result.blockers)
+    assert any(
+        blocker.ref == "vectors.0.expected_valid" and blocker.code == "schema_validation_failed"
+        for blocker in result.blockers
+    )
+
+
+def test_unsupported_schema_target_fails_closed():
+    manifest = copy.deepcopy(_canonical_manifest())
+    manifest["vectors"][0]["schema_target"] = "outside_agent_submission.v9"
+
+    result = run_outside_agent_vectors(manifest=manifest)[0]
+
+    assert result.vector_name == "__manifest__"
+    assert any(
+        blocker.ref == "vectors.0.schema_target" for blocker in result.blockers
+    )

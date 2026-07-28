@@ -1,3 +1,9 @@
+from _outside_agent_canonical import (
+    clean_submission,
+    raw_payload_submission,
+    source_bundle_mismatch_submission,
+)
+
 from phase_loop_runtime.conformance import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     OutsideAgentSubmittedRef,
@@ -12,25 +18,6 @@ from phase_loop_runtime.conformance.outside_agent_core import (
 )
 
 
-def _submission(**overrides):
-    submission = {
-        "submission_schema_version": "outside_agent_submission.v0.1",
-        "submission_kind": "work_request",
-        "metadata": {
-            "submission_id": "oa-1",
-            "content_digest": "a" * 64,
-        },
-        "provenance_refs": [
-            {"ref": "requests/oa-1.json", "digest": "b" * 64},
-        ],
-        "evidence_refs": [
-            {"ref": "evidence/oa-1.json", "digest": "c" * 64},
-        ],
-    }
-    submission.update(overrides)
-    return submission
-
-
 def test_real_validator_wraps_core_once_with_metadata_only_evidence():
     calls = []
 
@@ -39,7 +26,7 @@ def test_real_validator_wraps_core_once_with_metadata_only_evidence():
         return validate_outside_agent_submission(submission, contract_pin=contract_pin)
 
     verdict = build_outside_agent_validation_verdict(
-        _submission(),
+        clean_submission(),
         submitted_refs=("src/agent.py",),
         core_validator=core,
     )
@@ -52,7 +39,7 @@ def test_real_validator_wraps_core_once_with_metadata_only_evidence():
     assert len(verdict.verdict.input_digest) == 64
     assert verdict.submitted_refs == (OutsideAgentSubmittedRef(ref="src/agent.py"),)
     assert verdict.vectors_executed is False
-    assert calls == [(_submission(), EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN)]
+    assert calls == [(clean_submission(), EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN)]
 
 
 def test_real_validator_malformed_object_maps_to_exit_2_and_calls_core_once():
@@ -69,35 +56,27 @@ def test_real_validator_malformed_object_maps_to_exit_2_and_calls_core_once():
     assert "schema_validation_failed" in {blocker.code for blocker in verdict.verdict.blockers}
 
 
-def test_real_validator_redaction_violation_maps_to_exit_3():
-    verdict = build_outside_agent_validation_verdict(
-        _submission(provider_response_body="digest-only-marker")
-    )
+def test_real_validator_schema_invalid_submission_maps_to_exit_2():
+    # A forbidden raw payload is a schema (additionalProperties) failure.
+    verdict = build_outside_agent_validation_verdict(raw_payload_submission())
 
-    assert verdict.exit_code == OutsideAgentValidationExitCode.REDACTION_VIOLATION
-    assert "raw_payload_present" in {blocker.code for blocker in verdict.verdict.blockers}
-
-
-def test_real_validator_provenance_failure_maps_to_exit_4():
-    verdict = build_outside_agent_validation_verdict(
-        _submission(provenance_refs=[{"ref": "/tmp/unsafe.json", "digest": "b" * 64}])
-    )
-
-    assert verdict.exit_code == OutsideAgentValidationExitCode.PROVENANCE_FAILURE
-    assert "absolute_path_ref" in {blocker.code for blocker in verdict.verdict.blockers}
+    assert verdict.exit_code == OutsideAgentValidationExitCode.MALFORMED_INPUT
+    codes = {blocker.code for blocker in verdict.verdict.blockers}
+    assert codes == {"schema_validation_failed"}
 
 
-def test_real_validator_contract_pin_failure_maps_to_exit_5():
-    verdict = build_outside_agent_validation_verdict(
-        _submission(submission_schema_version="outside_agent_submission.v9")
-    )
+def test_real_validator_source_bundle_mismatch_maps_to_exit_6():
+    # Schema-valid but semantically inconsistent -> conformance blocked, not malformed.
+    verdict = build_outside_agent_validation_verdict(source_bundle_mismatch_submission())
 
-    assert verdict.exit_code == OutsideAgentValidationExitCode.CONTRACT_VECTOR_PIN_FAILURE
-    assert "unsupported_schema_version" in {blocker.code for blocker in verdict.verdict.blockers}
+    assert verdict.exit_code == OutsideAgentValidationExitCode.CONFORMANCE_BLOCKED
+    assert {blocker.code for blocker in verdict.verdict.blockers} == {
+        "source_bundle_mismatch"
+    }
 
 
 def test_real_validator_other_conformance_blocker_maps_to_exit_6():
-    base = validate_outside_agent_submission(_submission())
+    base = validate_outside_agent_submission(clean_submission())
 
     def core(submission, *, contract_pin):
         return OutsideAgentConformanceVerdict(
@@ -113,14 +92,14 @@ def test_real_validator_other_conformance_blocker_maps_to_exit_6():
             metadata=base.metadata,
         )
 
-    verdict = build_outside_agent_validation_verdict(_submission(), core_validator=core)
+    verdict = build_outside_agent_validation_verdict(clean_submission(), core_validator=core)
 
     assert verdict.exit_code == OutsideAgentValidationExitCode.CONFORMANCE_BLOCKED
 
 
 def test_real_validator_rejects_absolute_submitted_refs_without_raw_paths():
     verdict = build_outside_agent_validation_verdict(
-        _submission(),
+        clean_submission(),
         submitted_refs=("/tmp/agent.py",),
     )
 

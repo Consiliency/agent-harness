@@ -54,6 +54,36 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Refreshed digests reflect two real fail-closed fixes spec landed: `evidence_refs`
   gained `minItems: 1` and `git_sha` moved to `^(?:[a-f0-9]{40}|[a-f0-9]{64})$`.
 
+### Outside-agent validator: speak the PACKAGED contract dialect, not our own (Consiliency/agent-harness#371)
+
+- **The validator implemented a different dialect than the contract it pins to.**
+  `outside_agent_schema.py` accepted a hand-written field allow-list
+  (`submission_schema_version`/`submission_kind`/`metadata`/`provenance_refs`/`evidence_refs`
+  with required `metadata.{submission_id,content_digest}`) that shared only three of nine
+  top-level fields with the canonical `outside_agent_submission.v0.1`. The canonical VALID
+  work-request was rejected with ten blockers; the canonical manifest was rejected as
+  `__manifest__`. It survived because every test used fixtures we authored in our own shape.
+- **Fix — validate against the packaged JSON Schema, mirroring spec's own checker.**
+  `outside_agent_schema.py` now runs `jsonschema` Draft 2020-12 against the vendored
+  `outside-agent-submission`/`-route-verdict` schemas (the schema file is the single source
+  of truth — no re-encoded `additionalProperties`/`required`/patterns to drift). The core
+  verdict adds the one cross-field check the schema cannot express (`source_bundle_mismatch`);
+  metadata-only safety (no raw payloads, repo-relative paths, digest presence) is enforced
+  by the schema itself, so the separate provenance/redaction passes no longer gate the core
+  path. The vector runner consumes the canonical path-referenced manifest
+  (`case_id`/`path`/`schema_target`/`expected_valid`).
+- **Test-first, against the REAL corpus.** The canonical Consiliency/spec corpus (schemas +
+  9 vectors + manifest) is vendored under `conformance/_contract` with per-file sha256
+  provenance in `VENDOR.json` and a drift-guard test. A new suite drives every canonical
+  vector through the `outside-agent-validate` core and the pinned vector runner, asserting
+  the corpus's own `expected_valid` outcomes — the test whose absence let this ship.
+- **Exit-code taxonomy re-baselined:** schema failures read `schema_validation_failed` →
+  `MALFORMED_INPUT (2)`; the schema-valid-but-inconsistent bundle-digest case →
+  `CONFORMANCE_BLOCKED (6)`; unsafe `--submitted-ref` still → `PROVENANCE_FAILURE (4)`.
+- **Out of scope (unchanged):** the pinned `contract_git_sha`/`vector_manifest_hash` in
+  `outside_agent_pin.py` (Consiliency/agent-harness#370) and governed-pipeline's own fixture
+  (Consiliency/governed-pipeline#128).
+
 ### Broker: close the admission-vs-revocation race with one serialization boundary (Consiliency/agent-harness#288, #199)
 
 - **A pre-existing race, live on `main` since 6ff8c8a (Consiliency/agent-harness#199).**

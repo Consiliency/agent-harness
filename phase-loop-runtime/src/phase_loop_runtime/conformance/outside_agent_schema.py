@@ -1,8 +1,21 @@
-"""Metadata-only schema checks for outside-agent submissions."""
+"""Schema validation for outside-agent submissions against the packaged contract.
+
+The authority is the vendored Consiliency/spec JSON Schema
+(``_contract/schemas/outside-agent-submission.schema.json`` and the route-verdict
+schema), validated with ``jsonschema`` Draft 2020-12 — the SAME model spec's own
+reference checker uses. The schema file is the single source of truth: we do not
+re-encode ``additionalProperties``/``required``/patterns in Python. Hand-mirroring
+the schema is exactly how agent-harness#371's dialect divergence was born.
+"""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from functools import lru_cache
+from importlib import resources
 from typing import Any, Mapping
+
+from jsonschema.validators import Draft202012Validator
 
 from .outside_agent_core import OutsideAgentBlocker, OutsideAgentSubmissionKind
 from .outside_agent_pin import (
@@ -10,16 +23,32 @@ from .outside_agent_pin import (
     OutsideAgentContractPin,
 )
 
-_ALLOWED_TOP_LEVEL_FIELDS = frozenset(
-    {
-        "submission_schema_version",
-        "submission_kind",
-        "metadata",
-        "provenance_refs",
-        "evidence_refs",
-    }
-)
-_REQUIRED_METADATA_FIELDS = frozenset({"submission_id", "content_digest"})
+_SUBMISSION_SCHEMA_NAME = "outside-agent-submission.schema.json"
+_ROUTE_VERDICT_SCHEMA_NAME = "outside-agent-route-verdict.schema.json"
+
+
+def _load_schema(name: str) -> dict[str, Any]:
+    schema_bytes = (
+        resources.files("phase_loop_runtime.conformance")
+        / "_contract"
+        / "schemas"
+        / name
+    ).read_bytes()
+    return json.loads(schema_bytes)
+
+
+@lru_cache(maxsize=None)
+def _submission_validator() -> Draft202012Validator:
+    schema = _load_schema(_SUBMISSION_SCHEMA_NAME)
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
+
+
+@lru_cache(maxsize=None)
+def _route_verdict_validator() -> Draft202012Validator:
+    schema = _load_schema(_ROUTE_VERDICT_SCHEMA_NAME)
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
 
 
 @dataclass(frozen=True)
@@ -28,86 +57,46 @@ class OutsideAgentSchemaValidation:
     blockers: tuple[OutsideAgentBlocker, ...]
 
 
+def _ref_for_error(error: Any) -> str:
+    """Repo-relative-ish JSON path for a jsonschema error (``$`` -> root)."""
+    json_path = getattr(error, "json_path", "$")
+    if json_path in ("$", ""):
+        return "$"
+    return json_path[2:] if json_path.startswith("$.") else json_path
+
+
+def _schema_blockers(
+    validator: Draft202012Validator, document: Any
+) -> tuple[OutsideAgentBlocker, ...]:
+    errors = sorted(validator.iter_errors(document), key=lambda error: list(error.path))
+    return tuple(
+        OutsideAgentBlocker(
+            "schema_validation_failed",
+            error.message,
+            ref=_ref_for_error(error),
+        )
+        for error in errors
+    )
+
+
 def validate_outside_agent_submission_schema(
     submission: Mapping[str, Any],
     *,
     contract_pin: OutsideAgentContractPin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
 ) -> OutsideAgentSchemaValidation:
-    blockers: list[OutsideAgentBlocker] = []
-
-    for field in sorted(set(submission) - _ALLOWED_TOP_LEVEL_FIELDS):
-        blockers.append(
-            OutsideAgentBlocker(
-                "unknown_field",
-                "outside-agent submission contains an unsupported top-level field",
-                ref=field,
-            )
-        )
-
-    schema_version = submission.get("submission_schema_version")
-    if schema_version != contract_pin.schema_version:
-        blockers.append(
-            OutsideAgentBlocker(
-                "unsupported_schema_version",
-                "outside-agent submission schema version is not pinned",
-                ref="submission_schema_version",
-            )
-        )
-
-    submission_kind = _parse_submission_kind(submission.get("submission_kind"))
-    if submission_kind is None:
-        blockers.append(
-            OutsideAgentBlocker(
-                "unsupported_submission_kind",
-                "outside-agent submission kind is not supported",
-                ref="submission_kind",
-            )
-        )
-
-    metadata = submission.get("metadata")
-    if not isinstance(metadata, Mapping):
-        blockers.append(
-            OutsideAgentBlocker(
-                "schema_validation_failed",
-                "outside-agent submission metadata is required",
-                ref="metadata",
-            )
-        )
-    else:
-        missing = sorted(_REQUIRED_METADATA_FIELDS - set(metadata))
-        for field in missing:
-            blockers.append(
-                OutsideAgentBlocker(
-                    "schema_validation_failed",
-                    "outside-agent submission metadata is incomplete",
-                    ref=f"metadata.{field}",
-                )
-            )
-
-    provenance_refs = submission.get("provenance_refs")
-    if not isinstance(provenance_refs, list) or not provenance_refs:
-        blockers.append(
-            OutsideAgentBlocker(
-                "schema_validation_failed",
-                "outside-agent submission must include provenance refs",
-                ref="provenance_refs",
-            )
-        )
-
-    evidence_refs = submission.get("evidence_refs", [])
-    if evidence_refs is not None and not isinstance(evidence_refs, list):
-        blockers.append(
-            OutsideAgentBlocker(
-                "schema_validation_failed",
-                "outside-agent evidence refs must be a list",
-                ref="evidence_refs",
-            )
-        )
-
-    return OutsideAgentSchemaValidation(
-        submission_kind=submission_kind,
-        blockers=tuple(blockers),
+    del contract_pin  # schema const pins the version; kept for signature stability
+    blockers = _schema_blockers(_submission_validator(), submission)
+    submission_kind = _parse_submission_kind(
+        submission.get("submission_kind") if isinstance(submission, Mapping) else None
     )
+    return OutsideAgentSchemaValidation(submission_kind=submission_kind, blockers=blockers)
+
+
+def validate_outside_agent_route_verdict(
+    document: Mapping[str, Any],
+) -> tuple[OutsideAgentBlocker, ...]:
+    """Validate an outside-agent route-verdict document against the packaged schema."""
+    return _schema_blockers(_route_verdict_validator(), document)
 
 
 def _parse_submission_kind(value: Any) -> OutsideAgentSubmissionKind | None:
@@ -119,5 +108,6 @@ def _parse_submission_kind(value: Any) -> OutsideAgentSubmissionKind | None:
 
 __all__ = [
     "OutsideAgentSchemaValidation",
+    "validate_outside_agent_route_verdict",
     "validate_outside_agent_submission_schema",
 ]
