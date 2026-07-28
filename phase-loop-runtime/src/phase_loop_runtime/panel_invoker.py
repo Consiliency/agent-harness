@@ -2931,7 +2931,14 @@ def _exec_leg(
         # A 0-byte result here has TWO distinct causes, and they are not interchangeable:
         #   * headless TOOL-DENIAL — agy needs a permission it cannot prompt for and
         #     auto-denies, exiting rc==0 with no output. This is DETERMINISTIC for the
-        #     denied tool. ah#345 stages a scoped `read_file` grant for exactly this.
+        #     denied tool: it destroys the ENTIRE response, not merely that one read.
+        #     ah#345/#350 ships INSTRUCTION, NOT ENFORCEMENT — `_NO_COMMAND_PREAMBLE`
+        #     tells the leg to read only inside the staged review dir. A scoped
+        #     `read_file` grant was tried and REVERTED as inert: agy's config home is
+        #     `~/.gemini/antigravity-cli/` (not `~/.gemini/`) and it rejects bare tool
+        #     names in `permissions.allow` (`invalid grant string` — only `tool(target)`
+        #     parses), so the written grant was never read. Do not re-add one without
+        #     first proving agy loads it.
         #   * a TRANSIENT backend stall, matched by `_GEMINI_TRANSIENT_RE` below, which is
         #     retried once.
         # An earlier version of this comment attributed the observed EMPTY to the transient
