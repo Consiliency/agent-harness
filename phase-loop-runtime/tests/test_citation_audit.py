@@ -286,3 +286,18 @@ def test_escaped_quote_cannot_smuggle_a_fabricated_symbol(tmp_path: Path):
     })
     report = citation_audit.audit(repo)
     assert not report.ok and "symbol_absent" in _kinds(report)
+
+
+def test_backtick_string_cannot_smuggle_a_fabricated_symbol(tmp_path: Path):
+    """Found by a vendor leg: JS/TS template literals and Go raw strings are delimited by
+    backticks, which the earlier stripper ignored entirely — so a fabricated symbol inside
+    one satisfied the search. They span lines, so they must be stripped before the
+    line-by-line pass. Mutation: remove the `_BACKTICK_STRING` substitution -> fails."""
+    repo = _repo(tmp_path, {
+        "src/a.ts": "const q = `class Ghost {}`;\nexport function real(): void {}\n",
+        "lib/b.go": "package lib\n\nconst q = `func Spectre() {}`\n\nfunc Real() {}\n",
+        "docs/plan.md": "- `src/a.ts::Ghost`\n- `lib/b.go::Spectre`\n- `src/a.ts::real`\n- `lib/b.go::Real`\n",
+    })
+    report = citation_audit.audit(repo)
+    absent = {f.citation.symbol for f in report.findings if f.kind == "symbol_absent"}
+    assert absent == {"Ghost", "Spectre"}, f"backtick strings must not define symbols; got {absent}"

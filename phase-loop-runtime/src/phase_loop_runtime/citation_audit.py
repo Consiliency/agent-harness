@@ -221,6 +221,10 @@ _DQ_STRING = re.compile(r'"(?:\\.|[^"\\])*"')
 _SQ_STRING = re.compile(r"'(?:\\.|[^'\\])*'")
 #: Rust lifetimes (`'a`, `'static`) are NOT char literals and must survive stripping.
 _RUST_LIFETIME = re.compile(r"'[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_'])")
+#: Backtick strings — JS/TS template literals and Go raw strings. A reviewer found a
+#: fabricated symbol hiding in one (`const q = \`class Ghost {}\``): they span lines, so
+#: they are stripped with the BLOCK comments, before line-by-line processing.
+_BACKTICK_STRING = re.compile(r"`(?:[^`\\]|\\.)*`", re.DOTALL)
 
 
 def _strip_noncode(text: str, suffix: str = "") -> str:
@@ -232,6 +236,7 @@ def _strip_noncode(text: str, suffix: str = "") -> str:
     """
     for opener, closer in _BLOCK_COMMENTS:
         text = re.sub(rf"{opener}.*?{closer}", " ", text, flags=re.DOTALL)
+    text = _BACKTICK_STRING.sub("``", text)  # multi-line, so stripped before line splitting
     openers = _LINE_COMMENTS.get(suffix.lower(), _DEFAULT_LINE_COMMENTS)
     out = []
     for line in text.splitlines():
