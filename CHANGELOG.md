@@ -6,20 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Panel: the headless agy leg can READ its staged bundle again (Consiliency/agent-harness#345)
+### Panel: the headless agy leg no longer dies on out-of-workspace reads (Consiliency/agent-harness#345)
 
 - The `gemini` panel leg (which drives the Antigravity `agy` CLI) returned a silent 0-byte
-  result on review-sized bundles. Root cause, from the CLI's own stderr: headless mode
-  cannot prompt for a tool permission, so it AUTO-DENIES — and the denied tool is
-  **`read_file`**, not `command`. A prior comment in `panel_invoker` asserted the opposite,
-  which is why the ah#324 no-command preamble did not fix it.
-- The staged review directory now carries a scoped grant
-  (`{"permissions": {"allow": ["read_file"]}}`) written into the ephemeral dir, so it dies
-  with the run and never touches the operator's `~/.gemini/settings.json`.
-- Deliberately NOT `--dangerously-skip-permissions`: that auto-approves every tool
-  including `command`, and a review leg ingests untrusted material by construction, so a
-  prompt injection in a bundle would reach arbitrary execution. Verified against the real
-  CLI — with the scoped grant a read succeeds and a shell command is still DENIED.
+  result on real review bundles. Cause: the staged review directory is the leg's ONLY
+  `--add-dir`, so any repo path the bundle mentions is an **out-of-workspace read**.
+  Headless mode cannot prompt for that permission, auto-denies it, and **destroys the
+  entire response** — not merely that one read.
+- The leg's prompt preamble now tells the model it may read only inside the staged
+  directory, and to say plainly which referenced files it could not open. Verified against
+  agy 1.1.7 with a bundle citing an absolute repo path: without the clause, 304 bytes and
+  a `read_file` denial; with it, a full review that names the file it could not open.
+- The denied tool is whichever tool the model ATTEMPTS — `command` when it tries to run
+  something, `read_file` when it tries to read outside the workspace. Two earlier
+  descriptions in this codebase each named one of those as *the* cause; both were
+  over-general, and the comment has been corrected accordingly.
 
 ### CI: a pyflakes (ruff F) lint gate, and the defects it found (Consiliency/agent-harness#334)
 

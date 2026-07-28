@@ -29,8 +29,6 @@ are confined to a bundle-only review dir that never contains the repo.
 """
 from __future__ import annotations
 
-import json
-
 import shutil
 import subprocess
 from pathlib import Path
@@ -396,23 +394,14 @@ def test_panel_leg_review_dir_never_contains_the_repo(tmp_path, monkeypatch):
     repo.mkdir()
     (repo / "SECRET_SOURCE.py").write_text("live tree file\n", encoding="utf-8")
 
-    seen: dict[str, object] = {}
+    seen: dict[str, list[str]] = {}
 
     def _fake_exec_leg(leg, review_dir, out_dir, timeout_s, artifact, mode, model, **kwargs):
         seen["entries"] = sorted(p.name for p in Path(review_dir).iterdir())
-        grant = Path(review_dir) / ".gemini" / "settings.json"
-        seen["grant"] = json.loads(grant.read_text(encoding="utf-8")) if grant.is_file() else None
         return 0, "ok review", "log"
 
     monkeypatch.setattr(panel_invoker, "_exec_leg", _fake_exec_leg)
     status, _text = panel_invoker._default_spawn("gemini", "REVIEW BUNDLE BODY", repo_dir=repo)
 
     assert "SECRET_SOURCE.py" not in seen["entries"], "review dir must not contain the reviewed tree"
-    # EXACT whitelist, deliberately: anything unexpected in the staged dir is a leak.
-    # `.gemini` is the ah#345 read_file grant — harness-authored, carries no repo content,
-    # and is required for a headless agy leg to read the bundle at all.
-    assert seen["entries"] == [".gemini", "review-bundle.md", "review-instructions.md"]
-    # ...and the new entry is itself constrained, so widening the whitelist did not weaken
-    # it: the grant must permit READING only. `command` here would put arbitrary execution
-    # one prompt-injection away, since the bundle is untrusted by construction.
-    assert seen["grant"] == {"permissions": {"allow": ["read_file"]}}
+    assert seen["entries"] == ["review-bundle.md", "review-instructions.md"]
