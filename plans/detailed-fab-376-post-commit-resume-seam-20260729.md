@@ -432,8 +432,14 @@ existing `durable=True` precedent (`_fab_delta_readmit`).
 The marker (§1) is written while the workspace is still dirty — §1 runs
 immediately before `publish_fn`, and the commit happens INSIDE `publish_fn`
 (`publishing.py:179`). So after a crash the resumed workspace is dirty: fully, for
-a crash BEFORE the commit; or with any `run_loop` residue outside `owned_paths`,
-for a crash AFTER it. Production `run_train` runs Step-2 preflight
+a crash BEFORE the commit; or with any UNTRACKED content outside `owned_paths` for a
+crash AFTER it — the execute publisher stages ONLY `owned_paths` by explicit name
+(`publishing.py:163`, "never `git add -A`") and runs NO `git clean`, so any untracked
+file outside owned scope (run_loop output, a build/cache artifact, an editor file, or
+unrelated user work) SURVIVES the commit and shows in `git status --short`. That is
+why the POST-commit exemption (round-4 (Z)) is load-bearing and not dead code: without
+it, such a Record-B node would trip `_check_repo_clean` and never reach the resume
+publish (AC-376-1/AC-376-10). Production `run_train` runs Step-2 preflight
 (`train_runner.py:2288-2295`), which calls `_check_repo_clean` — a hard failure on
 ANY `git status --short` output (`:181-182`) — and returns `preflight_failed`
 (`:2294`) BEFORE it reads the ledger (`:2299`). Preflight failure is a STRUCTURAL
@@ -541,7 +547,15 @@ afterwards") BY DECLINING TO ACT: nothing writes to the tree, so nothing can be 
 **Consequence, stated honestly.** Under (Z), Step 4 has NO tree-mutating op at all
 — no `reset`, no `clean`, no quarantine. Resume either PUBLISHES a committed node
 (clean/residual tree, `AC-376-1`) or BLOCKS fail-closed; it never regenerates a
-pre-commit crash. That capability — auto-resume of a pre-commit crash — is deferred
+pre-commit crash. **Multi-node interaction (unchanged from today, stated for the
+reviewer):** because a non-exempted dirty node fails Step-2 preflight and preflight is
+a STRUCTURAL whole-train abort (`:17-19`), a co-occurring pre-commit-crashed (Record-A,
+dirty) node blocks resume of the ENTIRE train — including Record-B nodes elsewhere that
+would otherwise publish. This is EXISTING `_check_repo_clean` semantics (any dirty node
+blocks all), not a new coupling (Z) introduces; (Z) only declines to add the exemption
+that would have let the pre-commit node through. The operator clears the dirty
+workspace (its bytes preserved on disk) and re-runs, at which point the Record-B nodes
+resume. That capability — auto-resume of a pre-commit crash — is deferred
 to `Consiliency/agent-harness#388`, which records the now-proven-safe mechanism
 (non-mutating temp-index capture + tree-sha-addressed create-only ref) that would
 deliver it without the round-3/round-4 defects. (W) — a fresh worktree — was
@@ -1126,30 +1140,40 @@ and not a re-proof against an unreachable path — the `#368` AC-12/13 sin).
   AND untracked byte is byte-identical on disk afterward. No publish, no `run_loop`,
   no `reset`/`clean`/quarantine — the tree is never touched. (This is strictly
   non-regressive: blocking a dirty tree IS today's `_check_repo_clean` behaviour.)
-  *Observable (byte-survival BY INACTION — the lead's literal positive control):*
-  with the real dirty post-crash workspace (Record A, no `committed_head_sha`) and the
-  DEFAULT preflight, `run_train` returns `{status:"preflight_failed"}` with zero
-  publish calls; a file the run never touched — BOTH a tracked edit AND an untracked
-  file — is byte-identical on disk after the blocked resume.
-  *Falsifier (any fails the AC):* (a) widen the §1b exemption to skip
-  `_check_repo_clean` for a `committing` node WITHOUT `committed_head_sha` (a
-  pre-commit Record A) → the dirty pre-commit node is admitted → re-introduces the
-  destruction surface (Z) removed and breaches the entry invariant; (b) add ANY
-  tree-mutating op (`reset`/`clean`/quarantine) on the `HEAD == pre_commit_head` arm
-  → the planted unrelated file is no longer byte-identical → the positive control
-  fails; (c) route a no-commit crash to prebuilt-publish (drop the
-  `committed_head_sha`-keyed identity, §2) → it publishes the stale parent or blocks
-  spuriously instead of failing closed at preflight.
-  *Injection anchor:* drive the crash in the real subprocess BEFORE
-  `publishing.py:179` so the workspace is genuinely dirty and the ledger's last record
-  is `committing` WITHOUT `committed_head_sha`; `assert` the resume ran the DEFAULT
-  preflight (no `_preflight_fn` injected), returned `preflight_failed`, made zero
-  publish calls, and left the planted unrelated file (tracked AND untracked)
-  byte-identical on disk. **Scope note:** auto-resume of a dirty pre-commit crash
-  (preserve-then-regenerate) is deferred to `Consiliency/agent-harness#388`; this AC
-  asserts the (Z) block-and-preserve outcome. It ABSORBS the round-3 AC-376-11
-  unrelated-work-survival control in its strongest form — survival by inaction — so
-  AC-376-11 is retired (round-4 (Z)).
+  This is a PREFLIGHT AC (round-4 (Z)): the guarantee is the REFUSAL, and byte-survival
+  is its corollary — because preflight refuses before any Step-4 code runs, nothing
+  touches the tree.
+  *Observable (load-bearing — the preflight refusal):* with the real dirty post-crash
+  workspace (Record A, no `committed_head_sha`) and the DEFAULT preflight, `run_train`
+  returns `{status:"preflight_failed"}` with zero publish calls and zero `run_loop`
+  invocations for that node. *Corollary asserted alongside (the lead's literal control):*
+  a file the run never touched — BOTH a tracked edit AND an untracked file — is
+  byte-identical on disk after the blocked resume (guaranteed by the refusal; see the
+  regression-tripwire note below).
+  *Falsifier (load-bearing):* widen the §1b exemption to skip `_check_repo_clean` for a
+  `committing` node WITHOUT `committed_head_sha` (a pre-commit Record A) → the dirty
+  pre-commit node is ADMITTED → `run_train` no longer returns `preflight_failed` → the
+  refusal observable fails. This is the single mutation that breaks the (Z) guarantee;
+  it attacks the preflight keying, which is the only thing the dirty-pre-commit
+  scenario actually reaches (a Step-4 mutation cannot be a falsifier here — the
+  scenario is refused before Step 4, so it never enters that code).
+  *Regression tripwire (why byte-identity is still asserted, honestly):* under a
+  CORRECT (Z) refusal the byte-identity assertion cannot independently fire — it is
+  downstream of the refusal. It is retained so that a future RE-widening of the
+  exemption (the load-bearing falsifier above) COMBINED with a re-introduced
+  tree-mutating op in Step 4 (the exact round-3 `reset --hard` / round-4 quarantine
+  regression) is caught by a byte-identity failure, not silently reopened — the
+  positive control the lead required, kept as a tripwire on the admitted path rather
+  than as a claim that survival is independently tested under correct (Z).
+  *Injection anchor:* drive the crash in the real subprocess BEFORE `publishing.py:179`
+  so the workspace is genuinely dirty and the ledger's last record is `committing`
+  WITHOUT `committed_head_sha`; `assert` the resume ran the DEFAULT preflight (no
+  `_preflight_fn` injected), returned `preflight_failed`, made zero publish calls and
+  zero `run_loop` invocations, and left the planted unrelated file (tracked AND
+  untracked) byte-identical on disk. **Scope note:** auto-resume of a dirty pre-commit
+  crash (preserve-then-regenerate) is deferred to `Consiliency/agent-harness#388`; this
+  AC asserts the (Z) block-and-preserve outcome and ABSORBS the round-3 AC-376-11
+  control (survival by inaction), so AC-376-11 is retired (round-4 (Z)).
 
 - [ ] **AC-376-3 (stale-upstream on a frozen commit fails closed).** A resumed
   committed-unpublished node whose consumed upstream was rebuilt this run (or
@@ -1305,15 +1329,18 @@ and not a re-proof against an unreachable path — the `#368` AC-12/13 sin).
   or unmarked dirty node — round-2 finding 1, narrowed round-4 (Z)).** Obligation: the
   resume entry gate must let a node whose `committing` marker carries a
   `committed_head_sha` (Record B) past the uncommitted-changes check on its real
-  post-crash workspace — which can be dirty with `run_loop` residue OUTSIDE
-  `owned_paths` that survived the commit (§1b) — while a `committing` node WITHOUT
+  post-crash workspace — which can be dirty with UNTRACKED content outside
+  `owned_paths` that survived the commit (the execute publisher stages only
+  `owned_paths` and never `git add -A`/`git clean` — `publishing.py:163`, §1b) — while
+  a `committing` node WITHOUT
   `committed_head_sha` (a pre-commit Record A) AND every unmarked dirty node still
   abort the train with zero PRs.
   *Observable / positive (reachability of the headline fix):* after a real `run_train`
-  crash that left a Record B marker (`committed_head_sha` set) and a workspace dirty
-  with untracked residue, a second `run_train` with the DEFAULT `_default_preflight`
-  does NOT return `preflight_failed` — it proceeds to the Step-4 committing branch and
-  publishes per AC-376-1 (never `preflight_failed`).
+  crash that left a Record B marker (`committed_head_sha` set), with an untracked file
+  outside `owned_paths` SEEDED in the workspace (so `git status --short` is non-empty
+  deterministically — not dependent on run_loop's output), a second `run_train` with
+  the DEFAULT `_default_preflight` does NOT return `preflight_failed` — it proceeds to
+  the Step-4 committing branch and publishes per AC-376-1 (never `preflight_failed`).
   *Observable / negative (fail-closed narrowness):* (i) a `committing` node WITHOUT
   `committed_head_sha` (a pre-commit Record A) on a dirty workspace still makes
   `run_train` return `{status:"preflight_failed"}` with zero PRs (this IS the (Z)
@@ -1361,7 +1388,7 @@ concrete symbol at `file:line`. `x.y ⇒ y exists on type(x)`:
 | 7 | `completed_nodes[nid]["fab_run_id"]` == marker; `pr_open.fab_run_id` == marker; gate not inert | `completed_nodes` dict `:2767-2777`; `pr_open.fab_run_id` `:2790`; `_fab_promotion_gate_before_merge` `:485-496` | YES |
 | 8 | `completed_nodes[nid]["admitted_head_sha"]` == `head_sha` | `completed_nodes[nid]["admitted_head_sha"]` `:2773` | YES |
 | 9 | captured `owned_paths` arg == `rec.owned_paths`, ⊊ whole-diff | `publish_fn` arg spy; `rec.owned_paths` tuple; `prebuilt_owned_paths_fn` `:2536` | YES |
-| 10 | Record-B (`committed_head_sha`-set) residual-dirty node → no `preflight_failed`, reaches Step-4 branch; pre-commit Record-A dirty node AND unmarked dirty node → `{status:"preflight_failed"}`, zero PRs | `_default_preflight` `:303`/`:332` (new `ledger_state` param, exemption keyed on `committed_head_sha`, §1b); `preflight_failed` return `:2294`; `_check_repo_clean` `:168-183` | YES |
+| 10 | Record-B (`committed_head_sha`-set) node with a SEEDED untracked file outside `owned_paths` → no `preflight_failed`, reaches Step-4 branch; pre-commit Record-A dirty node AND unmarked dirty node → `{status:"preflight_failed"}`, zero PRs | `_default_preflight` `:303`/`:332` (new `ledger_state` param, exemption keyed on `committed_head_sha`, §1b); post-commit dirtiness is real — publisher stages only `owned_paths`, no `git add -A`/clean (`publishing.py:163`); `preflight_failed` return `:2294`; `_check_repo_clean` `:168-183` | YES |
 
 Every AC 1/2/3/5/6/7/8/9/10 observable is producible on TODAY's code; only AC-4's
 is #368-gated and is grounded on the durable record's `.epoch`, not on a result field
