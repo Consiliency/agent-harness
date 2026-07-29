@@ -485,11 +485,23 @@ and the merge-base `base_sha` above), returning it as `record.request`. But `Bro
 **a factory cannot cross that boundary, so `execute` must reconstruct the frozen request** with
 the finalized admission — `dataclasses.replace(request, admission=record.request)` — and pass
 THAT to `self.adapter.execute(...)`, so every downstream consumer of `request.admission` sees the
-finalized object, not the pre-allocation S1 admission. **Independently re-enumerated (F2's own
-lesson is that the audit missed the CLASS) — the sites that require `request.admission` to be the
-concrete, correctly-keyed object are SIX across three modules:** `verbs.py:65`
-`admit(request.admission)` (the whole-object handoff — a mis-built admission surfaces here FIRST,
-caught by AC-10/AC-11's enforcement), `verbs.py:40` `.admission.idempotency_key`,
+finalized object, not the pre-allocation S1 admission. **The class is ONE producer + SIX consumers,
+and it took TWO enumeration passes to see the whole of it — because the type is changing,
+construction sites are a SEPARATE enumeration pass from read sites.** Three successive
+`.admission`-READ sweeps (codex 3, lead 4, this plan's re-enumeration 6) each found more consumers
+and none grepped for the CONSTRUCTOR — the same shape as the round-3 propagation defect (thorough
+within the frame, and the frame was wrong). **PRODUCER (1) — `publishing.py:196`** builds the ENTRY
+`BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, …)` from the caller-supplied
+`admission` param (`:93`, guarded `is None` at `:194`). That entry admission is S1's STALE,
+non-identity-bearing one (`base_sha=H0`); **`:196` is NOT where the correctly-keyed admission is
+produced** — `admit_next` is (post-commit, in-lock, carrying epoch E + deterministic `attempt_id` +
+merge-base `base_sha`), and §5c's `dataclasses.replace(request, admission=record.request)` is the
+stale→finalized SWAP. The type change lands at `:196` (the frozen constructor must be satisfied)
+even though the correct VALUE is admit_next's — which is exactly why AC-14 asserts the adapter sees
+the RECONSTRUCTED admission, not the one `:196` threaded in. **CONSUMERS (6) across three modules —**
+the sites that then READ `request.admission` and require it to be the concrete, correctly-keyed
+object: `verbs.py:65` `admit(request.admission)` (the whole-object handoff — a mis-built admission
+surfaces here FIRST, caught by AC-10/AC-11's enforcement), `verbs.py:40` `.admission.idempotency_key`,
 `credsep.py:123/:131/:315` `.admission.idempotency_key` (terminal evidence), and
 `adapters/base.py:29` (`AdapterExecutionRequest.__post_init__` hard-RAISES unless
 `admission.attempt_id == attempt_id`). **Honest stakes — verified, do not overstate:** on the
@@ -502,9 +514,14 @@ it is FUNCTIONAL for the CLASS members reached by OTHER verbs — `verbs.py:40` 
 dedup key) and `adapters/base.py:29` (the attempt_id invariant) — not a live publish mis-label. **Of the six, the PUBLISH hot path reaches four**
 (`verbs.py:65` and the three `credsep` terminal-evidence sites); `verbs.py:40` is the NON-publish
 dedup branch (publish keys on `publish_committed_branch_idempotency_key(repo, branch, head)`,
-`verbs.py:35-39`) and `adapters/base.py:29` is the bounded-adapter path for other verbs — both
-are the SAME class but reached by other verbs, so the finalized construction must satisfy them
-structurally even though AC-14 exercises the four publish-reachable ones.
+`verbs.py:35-39`) and `adapters/base.py:29` is the bounded-adapter path for other verbs — its only
+consumer `run_bounded` is wired to the `claude`/`codex`/`outside_agent` execution adapters (NEVER
+the publish adapter `credsep`), and `AdapterExecutionRequest` has ZERO src construction sites
+(built only in `test_convergence_adapters.py`), so `base.py:29` is CATEGORICALLY
+non-publish-reachable. Both are the SAME class but reached by other verbs, so the finalized
+construction must satisfy them structurally even though AC-14 exercises the four publish-reachable
+ones — and a test that makes `base.py:29` itself FIRE needs an agent-execution verb, out of P1's
+publish scope (a publish-driven assertion that it raises would be vacuous).
 
 **This plan now pins the DEFECT, the INVARIANT, the rejected alternatives, the DECIDED mechanism
 (merge-base + post-commit binding + `execute` reconstruction), and AC-13 + AC-14.** Scope note:
@@ -799,12 +816,19 @@ injection anchor, and a positive control
 
 - **AC-14 — `execute` hands the FINALIZED admission (the allocated record) to the adapter, not
   S1's pre-allocation one (round-5 codex F2 — the construction seam the audit had not specified;
-  §5c).** Drive a publish through the migrated `execute` with a SPY adapter that CAPTURES the
-  `BrokerRequest` it is called with. `admit_next` allocates epoch E and builds the finalized
-  `AdmissionRequest` (`record.request`, carrying epoch E, the deterministic `attempt_id`, and the
-  merge-base `base_sha`). **Assert the request handed to `adapter.execute(...)` carries the
+  §5c).** Drive the publish through `publish_committed_branch` (the `publishing.py:196` PRODUCER
+  path that constructs the entry `BrokerRequest`), NOT a hand-built `BrokerRequest` handed to
+  `execute` directly — a test that starts at `execute`/`admit()` with a hand-built admission PASSES
+  while the real `:196`→`execute` seam stays broken (the reachability trap, the 7th-site lesson: the
+  entry constructor was missed by every `.admission`-read sweep). Install a SPY adapter that
+  CAPTURES the `BrokerRequest` `execute` calls it with. `admit_next` allocates epoch E and builds the
+  finalized `AdmissionRequest` (`record.request`, carrying epoch E, the deterministic `attempt_id`,
+  and the merge-base `base_sha`). **Assert the request handed to `adapter.execute(...)` carries the
   FINALIZED admission** — `captured.admission == record.request` (in particular
-  `captured.admission.lease_epoch == E`), NOT S1's admission at `lease_epoch=1`. **Falsifier:**
+  `captured.admission.lease_epoch == E` AND `captured.admission.attempt_id == <the deterministic
+  attempt_id>` — the attempt_id-preservation PROPERTY that `base.py:29` enforces for agent-execution
+  verbs, asserted here on the reachable publish spy since `base.py:29` itself never fires on the
+  publish path, §5c), NOT S1's admission at `lease_epoch=1`. **Falsifier:**
   have `execute` pass the pre-allocation `request` to `self.adapter.execute(...)` instead of
   `dataclasses.replace(request, admission=record.request)` → the spy captures `request.admission`
   still at `lease_epoch=1`, diverging from the allocated record. **Observable:** FIELD DIVERGENCE
@@ -884,7 +908,7 @@ vacuous even if a different assertion would catch it.
 | AC-11 | record appended with `request.attempt_id != attempt_id` (no raise) | ✅ | NEW; guards the dedup-identity enforcement — mirrors AC-10, one field over |
 | AC-12 | admission record COUNT +1 / new epoch on an IN-FLIGHT retry | ✅ | NEW; falsifier is vacuous UNLESS the seed is `PROVIDER_CALL_IN_FLIGHT` (else short-circuits at `:59` before `admit` at `:65`) — the trap this AC itself guards; AC-3 (completed replay) cannot reach the admission path |
 | AC-13 | `ValueError` on a faithful retry (drift) vs `granted_epoch == E` (fixed) | ✅ | NEW; falsifier requires (a) the crash modelled by re-running S1 on post-commit git state, NOT a captured closure, and (b) the `attempt_id` dedup HIT asserted — else vacuous in both arms |
-| AC-14 | CAPTURED (spy) request's `admission.lease_epoch != E` (FIELD DIVERGENCE, no raise) | ✅ | NEW (round-5 F2); §5c construction seam — asserts the admission HANDED TO THE ADAPTER, NOT the terminal-evidence key (informational: `verbs` re-keys the persisted evidence by the `_dedup_key`); path-entered = the spy adapter is invoked |
+| AC-14 | CAPTURED (spy) request's `admission.lease_epoch != E` / `admission.attempt_id` mismatch (FIELD DIVERGENCE, no raise) | ✅ | NEW (round-5 F2); §5c construction seam — driven through the `publishing.py:196` PRODUCER path (not a hand-built request), asserts the admission HANDED TO THE ADAPTER (epoch E + deterministic attempt_id, the property `base.py:29` enforces — which never fires on the publish path), NOT the terminal-evidence key (informational: `verbs` re-keys the persisted evidence by the `_dedup_key`); path-entered = the spy adapter is invoked |
 | AC-15 | acceptance (deduped record) where refusal expected under a DENYING policy | ✅ | NEW (round-5 F3); falsifier vacuous unless the resume DEDUP-HITS **and** `policy(request)` is `False` (both asserted); a denying policy — `policy=None` is unreachable at the live seam (`live.py:79`) |
 
 **Three dependency clusters the audit makes explicit** (the round-2 AND round-3 fixes, so the
@@ -900,7 +924,9 @@ retry can only dedup (rather than be wrongly rejected) once `approval_digest` is
 AC-13's falsifier is the current drift. **§5b's mechanism is now DECIDED (round-5), not deferred
 (`merge-base` + post-commit binding + `execute` reconstruction), adding two round-5 clusters:
 CONSTRUCTION-SEAM (§5c) gates AC-14 — the finalized admission must reach the consumers, its
-falsifier the un-reconstructed `request`; and POLICY-ON-DEDUP (§3 table) gates AC-15 — a denying
+falsifier the un-reconstructed `request` (the class is 1 PRODUCER at `publishing.py:196` + 6
+consumers; the type change lands at the constructor, the finalized VALUE at `admit_next`, and
+construction sites are a separate enumeration pass from read sites); and POLICY-ON-DEDUP (§3 table) gates AC-15 — a denying
 policy must survive a dedup-hit resume, its falsifier the dedup-before-policy order.** A reviewer
 can check this table against the tests: any AC
 whose "fires?" is ✅ must have an assertion reading the named observable, not a `pytest.raises`
@@ -928,7 +954,7 @@ scenario that silently never reaches the seam, unless a positive control proves 
 | AC-11 | POSITIVE — field divergence value / raise | mirrors AC-10 |
 | AC-12 | negative (no 2nd record) | round-3 FIX: asserts the `PROVIDER_CALL_IN_FLIGHT` seed (path-entered) + positive control (different head → new record) |
 | AC-13 | mixed (raise vs dedup) | round-4: asserts the `attempt_id` dedup HIT (prior record found) as the path-entered precondition BEFORE the compare outcome |
-| AC-14 | POSITIVE — captured admission carries epoch E, gated on the spy being invoked | round-5 F2: asserts the spy adapter was INVOKED (seam entered) before reading the captured request's `admission.lease_epoch` — the field cannot be read on an unreached adapter call |
+| AC-14 | POSITIVE — captured admission carries epoch E + deterministic attempt_id, gated on the spy being invoked | round-5 F2: driven through `publish_committed_branch` (`publishing.py:196`), so the real entry-constructor→`execute` seam is exercised (not a hand-built request); asserts the spy adapter was INVOKED (seam entered) before reading the captured request's `admission` fields — those cannot be read on an unreached adapter call |
 | AC-15 | negative (refused under a denying policy) | round-5 F3: asserts the dedup HIT **and** `policy(request)==False` as path-entered preconditions before the refusal; positive control: a PERMITTING policy → the same resume dedups to `granted_epoch == E` (proves entry, and that the gate refuses only under denial) |
 
 The two ACs that needed the fix this round (AC-8a/8b) are now in P2; each P1 AC above carries a
