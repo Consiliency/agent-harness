@@ -1661,7 +1661,14 @@ def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     print(text, end="")
-    return int(evidence.exit_code)
+    # Return the emitted document's exit code, matching the real path (line ~1707).
+    # The advisory sink redacts in place and never re-adjudicates the verdict, so its
+    # boundary sweep cannot change ``exit_code`` — the walk only rewrites secret-shaped
+    # string scalars and ``exit_code`` is an int — hence this equals int(evidence.exit_code)
+    # by construction today. Reading the emitted document (not the pre-sink object) keeps
+    # the return path structurally sealed against the seventh channel should the advisory
+    # sink ever gain a verdict-downgrading backstop (agent-harness#371 round 5).
+    return int(payload["exit_code"])
 
 
 def _outside_agent_validate_command(args: argparse.Namespace) -> int:

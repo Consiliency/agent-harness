@@ -6,7 +6,10 @@ from typing import Any
 
 from .outside_agent_pin import OutsideAgentContractPin
 from .outside_agent_real import OutsideAgentValidationExitCode, OutsideAgentValidationVerdict
-from .outside_agent_redaction import assert_outside_agent_metadata_only
+from .outside_agent_redaction import (
+    _redact_document_scalars,
+    assert_outside_agent_metadata_only,
+)
 
 
 def serialize_outside_agent_validation_verdict(
@@ -54,24 +57,6 @@ def serialize_outside_agent_validation_verdict(
     return payload
 
 
-_REDACTED = "<redacted>"
-
-
-def _redact_if_secret(value: str) -> str:
-    """Emit a scalar into the fail-closed document ONLY if it is itself secret-free.
-
-    The fail-closed document must never repeat the value that tripped the sweep. The
-    round-3 build assumed the copied metadata (``validator_version``, ``input_digest``,
-    the contract-pin fields) was provably non-submitter-derived; that assumption was
-    false — the sweep can trip ON one of those channels, and the document then echoed
-    the secret verbatim (agent-harness#371 round 4, blocker 2). So every scalar copied
-    from the rejected object is re-checked with the SAME metadata-only predicate the
-    sink uses (one detector, not a second that could disagree) and replaced with a
-    constant placeholder if it carries a secret-shaped value.
-    """
-    return _REDACTED if assert_outside_agent_metadata_only({"value": value}) else value
-
-
 def _contract_pin_fields(contract_pin: OutsideAgentContractPin) -> dict[str, Any]:
     return {
         "schema_version": contract_pin.schema_version,
@@ -84,25 +69,6 @@ def _contract_pin_fields(contract_pin: OutsideAgentContractPin) -> dict[str, Any
         "source_owner": contract_pin.source_owner,
         "redaction_posture": contract_pin.redaction_posture,
     }
-
-
-def _redact_document_scalars(value: Any) -> Any:
-    """Recursively redact every secret-shaped string scalar anywhere in ``value``.
-
-    A CLASS-level guard, not an enumeration: the fail-closed document is assembled from
-    whatever fields it has today and this walks the whole structure, so a field ADDED
-    later cannot silently re-open the leak (the round-3 build hand-listed which fields
-    it trusted, and the round-4 board found the field it missed). One detector — the
-    sink's own ``assert_outside_agent_metadata_only`` — decides each scalar
-    (agent-harness#371 round 4, blocker 2).
-    """
-    if isinstance(value, str):
-        return _redact_if_secret(value)
-    if isinstance(value, dict):
-        return {key: _redact_document_scalars(child) for key, child in value.items()}
-    if isinstance(value, list):
-        return [_redact_document_scalars(child) for child in value]
-    return value
 
 
 def _secret_free_blocked_document(

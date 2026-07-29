@@ -17,6 +17,7 @@ from .outside_agent_pin import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     OutsideAgentContractPin,
 )
+from .outside_agent_redaction import _redact_document_scalars
 
 
 _REDACTION_BLOCKER_CODES = frozenset(
@@ -95,7 +96,7 @@ def serialize_outside_agent_advisory_evidence(
     evidence: OutsideAgentAdvisoryEvidence,
 ) -> dict[str, Any]:
     verdict = evidence.verdict
-    return {
+    payload = {
         "authority": evidence.authority,
         "classification": evidence.classification,
         "exit_code": int(evidence.exit_code),
@@ -126,6 +127,21 @@ def serialize_outside_agent_advisory_evidence(
         "redaction_posture": verdict.redaction_posture,
         "metadata": dict(evidence.metadata),
     }
+
+    # Serialization-boundary safety sweep (agent-harness#371 round 5). This is the
+    # SOLE advisory sink and it ships the same submitter-supplied projection fields
+    # as the real sink (blockers, evidence_refs, provenance_refs, input_digest,
+    # metadata). The construction scan empties those on a BLOCKED verdict, but a
+    # secret can reach this sink on a non-blocked verdict if construction was
+    # bypassed — the same premise Option C backstops on the real path. Redact in
+    # place with the SHARED class-level walk (one detector, one redactor). Unlike the
+    # real gate we do NOT downgrade the verdict: advisory is a non-authoritative
+    # preflight whose published guarantee is "no secret-shaped value emitted", not a
+    # re-adjudication. The walk rewrites only secret-shaped string scalars and never
+    # touches ``exit_code`` (an int), so the emitted document's exit code equals
+    # ``evidence.exit_code`` by construction — cli.py cannot observe a post-sink
+    # disagreement here (contrast the real path's seventh channel).
+    return _redact_document_scalars(payload)
 
 
 def digest_outside_agent_submission_bytes(value: bytes) -> str:

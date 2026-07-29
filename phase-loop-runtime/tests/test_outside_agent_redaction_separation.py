@@ -25,9 +25,18 @@ import pytest
 from _outside_agent_canonical import clean_submission
 
 from phase_loop_runtime.conformance.outside_agent_advisory import (
+    OutsideAgentAdvisoryEvidence,
     OutsideAgentAdvisoryExitCode,
     build_outside_agent_advisory_evidence,
     serialize_outside_agent_advisory_evidence,
+)
+from phase_loop_runtime.conformance.outside_agent_core import (
+    OutsideAgentConformanceVerdict,
+    OutsideAgentEvidenceRef,
+    OutsideAgentVerdictStatus,
+)
+from phase_loop_runtime.conformance.outside_agent_pin import (
+    EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
 )
 from phase_loop_runtime.conformance.outside_agent_real import (
     OutsideAgentValidationExitCode,
@@ -345,3 +354,128 @@ def test_blocked_via_submitted_ref_still_empties_projection():
     assert serialized["status"] == "blocked"
     assert serialized["evidence_refs"] == []  # real serializer has no provenance_refs key
     assert serialized["submitted_refs"] == []  # unsafe ref dropped -> becomes a blocker
+
+
+# ---------------------------------------------------------------------------
+# Concern 6 (CR round 5): the ADVISORY serialization-boundary backstop.
+#
+# The advisory sink ships the SAME submitter-supplied projection fields as the
+# real sink (blockers[].message/.ref, evidence_refs[].ref/.digest/.kind,
+# provenance_refs, input_digest, metadata). On a BLOCKED verdict the construction
+# scan empties those projections (the tests above) — but that is the exact
+# "construction can be bypassed" premise Option C exists to backstop on the real
+# path. A secret that reaches the sink on a NON-blocked verdict (construction
+# bypassed) had no boundary guard on the advisory path and rode out verbatim.
+#
+# The fix is redact-in-place, NOT a verdict downgrade: advisory is a
+# non-authoritative preflight, so the guarantee it publishes is "no secret-shaped
+# value emitted", which the class-level ``_redact_document_scalars`` walk (shared
+# with the real sink — one detector, one redactor) satisfies. Re-adjudicating the
+# verdict to BLOCKED is the authoritative real gate's job, not the advisory sink's;
+# so the advisory exit_code is unchanged by the sink and cli.py cannot observe a
+# post-sink disagreement here (unlike the real path's seventh channel).
+# ---------------------------------------------------------------------------
+_ADVISORY_SINK_SECRET = "sk-ADVISORYboundary0123456789deadbeef"
+
+
+def _pass_advisory_evidence(
+    *,
+    evidence_refs=(),
+    metadata=None,
+) -> OutsideAgentAdvisoryEvidence:
+    """A directly-built PASS advisory evidence, construction scans BYPASSED.
+
+    Built by hand rather than via ``build_outside_agent_advisory_evidence`` for the
+    same reason ``_pass_validation`` is on the real path: building through ``build_*``
+    runs ``validate_outside_agent_submission``'s metadata-only scan, which would
+    BLOCK a secret-carrying field and empty the projection before it ever reaches the
+    sink — the falsifier would die upstream. Bypassing construction is what lets a
+    secret reach the SINK, which is exactly the state the boundary backstop covers.
+    """
+    pin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN
+    verdict = OutsideAgentConformanceVerdict(
+        verdict_schema_version=pin.verdict_schema_version,
+        submission_kind=None,
+        status=OutsideAgentVerdictStatus.PASS,
+        blockers=(),
+        contract_pin=pin,
+        input_digest="a" * 64,
+        provenance_refs=tuple(ref.ref for ref in evidence_refs),
+        evidence_refs=tuple(evidence_refs),
+        redaction_posture=pin.redaction_posture,
+        metadata={"source_owner": pin.source_owner},
+    )
+    return OutsideAgentAdvisoryEvidence(
+        authority="advisory",
+        classification="clean_advisory_pass",
+        exit_code=OutsideAgentAdvisoryExitCode.PASS,
+        verdict=verdict,
+        metadata=metadata
+        if metadata is not None
+        else {"source": "outside_agent_advisory_preflight"},
+    )
+
+
+def test_advisory_clean_pass_enters_sink_and_projects_refs():
+    """Positive control: a clean PASS advisory evidence routes THROUGH the sink,
+    keeps exit 0, and still surfaces its projection refs — so the redaction
+    assertions below prove the walk removes secrets rather than the sink being
+    'always empty' (the vacuity the round-4 board named)."""
+    evidence = _pass_advisory_evidence(
+        evidence_refs=(
+            OutsideAgentEvidenceRef(
+                ref="notes/clean.md", digest="b" * 64, kind="documentation"
+            ),
+        ),
+    )
+    payload = serialize_outside_agent_advisory_evidence(evidence)
+    assert payload["exit_code"] == int(OutsideAgentAdvisoryExitCode.PASS)
+    assert payload["status"] == "pass"
+    assert payload["evidence_refs"] and payload["provenance_refs"]
+    assert payload["evidence_refs"][0]["ref"] == "notes/clean.md"
+
+
+def test_advisory_sink_redacts_secret_in_projection_ref():
+    """Falsifier: a secret-shaped ref that reached the advisory sink on a NON-blocked
+    verdict (construction bypassed) must not be emitted. Pre-fix the advisory sink
+    had no boundary redaction and the marker rode out through ``evidence_refs[].ref``
+    and ``provenance_refs`` verbatim.
+
+    Mutation (kills this test): drop the ``_redact_document_scalars`` walk from
+    ``serialize_outside_agent_advisory_evidence`` -> the marker reappears in output.
+    """
+    evidence = _pass_advisory_evidence(
+        evidence_refs=(
+            OutsideAgentEvidenceRef(
+                ref=f"notes/{_ADVISORY_SINK_SECRET}.md",
+                digest="b" * 64,
+                kind="documentation",
+            ),
+        ),
+    )
+    payload = serialize_outside_agent_advisory_evidence(evidence)
+    # The verdict is NOT re-adjudicated (advisory is preflight) — the exit code is
+    # unchanged — but the secret-shaped scalar is gone from every channel.
+    assert payload["exit_code"] == int(OutsideAgentAdvisoryExitCode.PASS)
+    assert _ADVISORY_SINK_SECRET not in json.dumps(payload)
+
+
+def test_advisory_sink_redaction_is_class_level_reaches_metadata():
+    """Class-level reachability on the advisory payload specifically: a secret in the
+    free-form ``metadata`` mapping is NOT a projection the blocked-path emptying ever
+    touches, and it survives on a PASS verdict. The recursive walk must still catch
+    it — proving the guard is the whole-document walk, not a projection-field list.
+
+    Mutation (kills this test): redact only the projection fields instead of walking
+    the whole payload -> the ``metadata`` secret rides out.
+    """
+    evidence = _pass_advisory_evidence(
+        metadata={
+            "source": "outside_agent_advisory_preflight",
+            "trace": _ADVISORY_SINK_SECRET,
+        },
+    )
+    payload = serialize_outside_agent_advisory_evidence(evidence)
+    assert _ADVISORY_SINK_SECRET not in json.dumps(payload)
+    # The walk redacts, it does not blank: the clean metadata scalar survives.
+    assert payload["metadata"]["source"] == "outside_agent_advisory_preflight"
