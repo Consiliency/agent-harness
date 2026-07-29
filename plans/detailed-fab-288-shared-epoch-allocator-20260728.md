@@ -1,5 +1,7 @@
 # Detailed migration plan: FAB ah#288 — P1 of 2: one shared monotonic epoch allocator + publish migration
 
+*Phase alias: FABPUB (specs/phase-plans-v10.md)*
+
 > **⚠️ THIS IS P1 OF A RATIFIED TWO-PLAN SPLIT** (maintainer, `ah#363` follow-up), carved
 > along the merge boundary the §11 DAG implies. **P1 (this plan)** = the shared allocator
 > (`admit_next`), the re-landed `readmit_advanced_head` primitive, and the live #199 **publish**
