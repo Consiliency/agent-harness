@@ -81,9 +81,13 @@ class PlanStageFloorScopeProductionPathTest(unittest.TestCase):
     sits one level below the wrapper the next widener actually runs.
 
     Non-vacuity is proven by the ACTUAL rejected design, not a synthetic floor:
-    ``git checkout fd6f6b7a1 -- .../governed_review.py`` turns this test RED (the real
-    gate returns a ``below_reviewer_floor`` block, the wrapper returns ``("blocked",
-    event)``, and the ``assertIsNone`` fails); it is GREEN at HEAD. The floor's own
+    ``git checkout rejected/ah-358-shared-gate-fd6f6b7 -- .../governed_review.py`` turns
+    this test RED (the real gate returns a ``below_reviewer_floor`` block, the wrapper
+    returns ``("blocked", event)``, and the ``assertIsNone`` fails); it is GREEN at HEAD.
+    The rejected commit ``fd6f6b7`` was squashed out of this branch's history, so it is
+    reachable ONLY via that pushed tag (``rejected/ah-358-shared-gate-fd6f6b7`` on
+    origin) — a bare-SHA checkout would break once the unreferenced commit is GC'd. The
+    floor's own
     ``_MIN_USABLE_REVIEWERS`` lives in ``governed_premerge`` and the plan gate never
     reads it, so this test is invariant under the ``2 -> 0`` pre-merge falsifier —
     that is the decoupling control.
