@@ -556,3 +556,164 @@ def test_direct_url_arm_rejects_stale_same_repo_install_by_version(monkeypatch):
     assert cl.declared_contract_requirement() is None
     with pytest.warns(ContractFloorUnverified):
         assert cl.check_installed_contract_floor() is None
+
+
+# ---------------------------------------------------------------------------
+# Board #382 r3 — enumerate the preflight's DEPENDENCY CLASS and sentinel each member.
+#
+# Both r3 blockers are the same failure at two levels: a specific instance was fixed and
+# the CLASS was declared closed. r2 closed ONE hollow-guard instance (declared floor);
+# the class had three operand/wiring members and two were unsentineled. The r2 py3.12
+# fix broadened arm A's fallback and, doing so, reopened r2 Finding 1 through a manifest
+# it now consults. So the class is written down here and every member gets a row with a
+# named mutation and a test that reds under it:
+#
+#   ROW  member                     mutation                              sentinel (reds)
+#   ---  -------------------------  ------------------------------------  ------------------------------
+#   1a   arm A: manifest PRECEDENCE  RECORD miss falls through to a stray  test_record_authority_rejects_
+#        (RECORD authoritative)      SOURCES.txt (the 2f67c7a behaviour)   dist_info_with_stray_sources
+#   1b   arm A end-to-end           foreign floor from the stray-sources   test_check_does_not_abort_on_
+#                                    dist aborts collection                dist_info_with_stray_sources
+#   2    operand: installed version installed_contract_version() -> None   test_installed_version_operand_
+#                                    (guard fail-opens, never enforces)    is_provable
+#   3a   wiring: check is INVOKED    delete pytest_configure's invocation  test_conftest_actually_invokes_
+#                                                                          the_floor_preflight
+#   3b   wiring: structural          delete the call line specifically     test_conftest_source_calls_the_
+#                                                                          floor_preflight
+#   (declared floor, the third operand, is sentineled above by
+#    test_declared_floor_is_provable_and_single_sourced -- reds on declared_*() -> None.)
+# ---------------------------------------------------------------------------
+class _DistInfoRecordForeignSourcesOursDist:
+    """A same-root ``.dist-info`` whose AUTHORITATIVE ``RECORD`` lists only an unrelated
+    package, but which ALSO carries a stray ``SOURCES.txt`` naming OUR package. Co-located
+    (so B1 would bind it the instant arm A accepted it) and declaring a FOREIGN floor.
+
+    Before the r3 RECORD-authority fix, ``_dist_records_package`` fell through the
+    non-matching RECORD to the stray SOURCES.txt, accepted ownership, and the foreign
+    ``>=9.9`` floor aborted collection on a healthy contract -- r2 Finding 1 reopened by
+    the r2 py3.12 broadening of arm A (board #382 r3, codex). A ``.dist-info``'s RECORD is
+    the complete installed manifest; a readable RECORD that omits the package is a decisive
+    not-owned, and the stray SOURCES.txt must never be consulted alongside it."""
+
+    version = "0.0-test"
+
+    @property
+    def requires(self):
+        return ["consiliency-contract>=9.9,<10"]
+
+    @property
+    def files(self):
+        # A real .dist-info's .files derives from RECORD -> names the FOREIGN package.
+        return [Path("otherpkg/__init__.py"), Path("otherpkg-1.0.dist-info/RECORD")]
+
+    def read_text(self, name):
+        if name == "RECORD":
+            # Authoritative manifest: the foreign package, NOT ours (path,hash,size).
+            return "otherpkg/__init__.py,sha256=deadbeef,10\notherpkg-1.0.dist-info/RECORD,,\n"
+        if name == "SOURCES.txt":
+            # Stray egg-info manifest that DOES name ours -- must not be consulted while
+            # an authoritative RECORD is present.
+            return "setup.py\nsrc/phase_loop_runtime/__init__.py\n"
+        return None
+
+    def locate_file(self, path):
+        import phase_loop_runtime
+
+        root = Path(phase_loop_runtime.__file__).resolve().parent.parent
+        return root / str(path)
+
+
+def test_record_authority_rejects_dist_info_with_stray_sources():
+    # ROW 1a FALSIFIER (board #382 r3). RED on 2f67c7a: the RECORD miss fell through to
+    # the stray SOURCES.txt and accepted the foreign-floor dist as owner.
+    import phase_loop_runtime.consiliency_layout as cl
+
+    dist = _DistInfoRecordForeignSourcesOursDist()
+    # A readable RECORD that omits our package is decisive not-owned, even though a stray
+    # SOURCES.txt names us.
+    assert cl._dist_records_package(dist, "phase_loop_runtime/__init__.py") is False
+    # Co-located, so B1 would bind it -> arm A is the ONLY thing that can reject it.
+    assert cl._dist_owns_imported_runtime(dist) is False
+
+
+def test_check_does_not_abort_on_dist_info_with_stray_sources(monkeypatch):
+    # ROW 1b, the false-COLLECTION-ABORT built end to end (codex's r3 exploit): a healthy
+    # installed contract, a foreign >=9.9 floor from a same-root .dist-info whose
+    # authoritative RECORD names an unrelated package but whose stray SOURCES.txt names
+    # ours. Must warn + no-op, never raise. RED on 2f67c7a: raised ContractFloorError.
+    import importlib.metadata as md
+
+    import phase_loop_runtime.consiliency_layout as cl
+
+    _real = md.distribution
+    monkeypatch.setattr(
+        md,
+        "distribution",
+        lambda name: _DistInfoRecordForeignSourcesOursDist()
+        if name == "phase-loop-runtime"
+        else _real(name),
+        raising=True,
+    )
+    assert cl.declared_contract_requirement() is None
+    with pytest.warns(ContractFloorUnverified):
+        assert cl.check_installed_contract_floor() is None
+
+
+def test_installed_version_operand_is_provable():
+    # ROW 2 ANTI-HOLLOW sentinel, installed-version operand (board #382 r3, Blocker 2).
+    # check_installed_contract_floor fail-opens when installed_contract_version() is None;
+    # an always-None regression there makes the guard silently never enforce, and no other
+    # test caught it (codex mutated it -> 20 green). In every env this suite runs the
+    # imported contract version MUST be readable and parseable, so that regression reds
+    # here. Parallel to the declared-floor sentinel; the two together with the wiring
+    # sentinel cover all three preflight dependencies.
+    from packaging.version import Version
+
+    import phase_loop_runtime.consiliency_layout as cl
+
+    v = cl.installed_contract_version()
+    assert v is not None, (
+        "installed_contract_version() is None -- the floor guard fail-opens and never "
+        "enforces. See board #382 r3 Blocker 2 (installed-version operand)."
+    )
+    # Parseable, not merely non-None: '' or garbage slips a bare `is not None` yet breaks
+    # assert_contract_floor_satisfied's Version() call at collection time.
+    Version(v)
+
+
+def test_conftest_actually_invokes_the_floor_preflight(pytestconfig):
+    # ROW 3a WIRING sentinel (board #382 r3, Blocker 2). A guard that is never CALLED is
+    # indistinguishable from a guard that passes: every operand test calls
+    # check_installed_contract_floor() directly, so suppressing the conftest
+    # pytest_configure invocation left all 20 green. conftest sets this stash key right
+    # after the preflight runs in THIS collection; deleting the invocation leaves it unset
+    # and reds here.
+    from _contract_floor_wiring import CONTRACT_FLOOR_PREFLIGHT_RAN
+
+    assert pytestconfig.stash.get(CONTRACT_FLOOR_PREFLIGHT_RAN, False) is True
+
+
+def test_conftest_source_calls_the_floor_preflight():
+    # ROW 3b, second wiring arm, STRUCTURAL. Parse the real conftest and assert
+    # pytest_configure contains a call to check_installed_contract_floor. Kills the exact
+    # "delete the call" mutation directly, independent of the runtime stash (which a
+    # hyper-narrow mutation could leave set while removing only the call). Board #382 r3.
+    import ast
+    from pathlib import Path
+
+    conftest = Path(__file__).resolve().parent / "conftest.py"
+    tree = ast.parse(conftest.read_text(encoding="utf-8"))
+    fn = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "pytest_configure"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "check_installed_contract_floor" in called, (
+        "conftest.pytest_configure no longer calls check_installed_contract_floor -- the "
+        "floor preflight is unwired. See board #382 r3 Blocker 2 (wiring)."
+    )

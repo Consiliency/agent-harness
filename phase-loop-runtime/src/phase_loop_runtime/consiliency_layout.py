@@ -175,24 +175,25 @@ class ContractFloorUnverified(UserWarning):
 def _dist_records_package(dist: Any, needle: str) -> bool:
     """True iff ``dist``'s OWN file manifest names ``needle`` (``<pkg>/__init__.py``).
 
-    Tries the ``dist.files`` view first (RECORD for a wheel/dist-info; ``SOURCES.txt``
-    for an ``.egg-info``) and, whenever that view does NOT match ``needle`` FOR ANY
-    REASON, reads the ``RECORD`` and ``SOURCES.txt`` texts DIRECTLY before giving up.
+    Manifest precedence -- three ordered probes (board #382 r2 py3.12 + r3 RECORD-authority):
 
-    The direct read is load-bearing on Python 3.12+, and the fallback CONDITION -- "the
-    files match failed" rather than "``.files`` was empty" -- is the load-bearing part
-    (board #382 r2, lead). ``importlib.metadata`` under 3.12 FILTERS SOURCES.txt by
-    on-disk existence: it returns only the entries that resolve relative to the egg-info
-    parent, where <= 3.11 returned the manifest verbatim. So ``.files`` can be:
-      * EMPTY -- when no listed path resolves (this repo: 817 entries under 3.10, 0
-        under 3.12, because SOURCES.txt paths are project-root-relative and don't
-        resolve from ``src/``); or
-      * NON-EMPTY but PARTIAL -- a surviving sibling remains while the imported module
-        itself is filtered out.
-    A fallback gated on ``.files`` being empty would be BYPASSED in the partial case
-    (non-empty) and the truncated view would false-reject a legitimate owner -- the
-    original bug with the repair silently skipped. Gating on "match failed for any
-    reason" subsumes both: empty, partial, and None all fall through to the text read.
+      1. ``dist.files`` -- a hit returns True; ANY miss (None, empty, or a py3.12
+         PARTIAL list that dropped the module) falls through and is never decisive.
+      2. ``RECORD`` text, read DIRECTLY -- AUTHORITATIVE when present. A wheel /
+         ``.dist-info`` RECORD is the COMPLETE installed-file manifest, so a readable
+         RECORD that does NOT name ``needle`` is a DECISIVE "not owned" and SOURCES.txt
+         is NOT consulted. Consulting SOURCES.txt on a RECORD miss reopened r2 Finding 1:
+         a same-root ``.dist-info`` (authoritative RECORD naming an unrelated package)
+         plus a stray SOURCES.txt naming ours was wrongly accepted as owner (r3, codex).
+      3. ``SOURCES.txt`` text, read DIRECTLY -- consulted ONLY when there is no readable
+         RECORD, i.e. the ``.egg-info`` layout. Load-bearing on Python 3.12+, where
+         ``importlib.metadata`` FILTERS an egg-info SOURCES.txt by on-disk existence --
+         returning only entries that resolve relative to the egg-info parent, where
+         <= 3.11 returned the manifest verbatim -- so ``.files`` collapses to EMPTY (this
+         repo: 817 entries under 3.10, 0 under 3.12, the project-root-relative paths not
+         resolving from ``src/``) or NON-EMPTY PARTIAL. Reading the text directly recovers
+         the manifest the filter hid; a fallback gated on ``.files`` being empty would be
+         BYPASSED in the partial case and false-reject a legitimate owner.
 
     Finding 1 stays closed: an empty-record dist -- no ``.files`` match AND no readable
     RECORD/SOURCES.txt naming the package -- still fails here, so a same-root foreign
@@ -214,14 +215,29 @@ def _dist_records_package(dist: Any, needle: str) -> bool:
             return True
     except Exception:
         pass
-    # (2) direct text read -- fires on every files-miss, not only when files was empty.
-    for meta in ("RECORD", "SOURCES.txt"):
-        try:
-            raw = dist.read_text(meta)
-        except Exception:
-            raw = None
-        if raw and _names_needle(raw.splitlines()):
-            return True
+    # (2) RECORD is AUTHORITATIVE when present (board #382 r3, codex/lead). A wheel /
+    # ``.dist-info`` RECORD is the COMPLETE installed-file manifest, so a readable RECORD
+    # that does NOT name ``needle`` is a DECISIVE "not owned" -- return here WITHOUT
+    # consulting SOURCES.txt. Falling through to SOURCES.txt on a RECORD miss reopened r2
+    # Finding 1: a same-root ``.dist-info`` whose authoritative RECORD lists an unrelated
+    # package, plus a stray ``SOURCES.txt`` naming ours, was accepted as owner and its
+    # foreign floor enforced against a healthy contract (r3 falsifier).
+    try:
+        record = dist.read_text("RECORD")
+    except Exception:
+        record = None
+    if record is not None:
+        return _names_needle(record.splitlines())
+    # (3) No readable RECORD -> the ``.egg-info`` layout, whose only manifest is
+    # SOURCES.txt. Read DIRECTLY because on py3.12 ``.files`` is empty/partial for an
+    # egg-info (the filter-by-existence case r2 fixed). SOURCES.txt establishes ownership
+    # ONLY in the absence of an authoritative RECORD, never alongside one.
+    try:
+        sources = dist.read_text("SOURCES.txt")
+    except Exception:
+        sources = None
+    if sources and _names_needle(sources.splitlines()):
+        return True
     return False
 
 
@@ -246,13 +262,15 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
     Ownership requires (A) AND (B):
 
       (A) RECORDED PACKAGE -- the dist's own file manifest names ``<pkg>/__init__.py``
-          (``_dist_records_package``: ``dist.files``, else the RECORD / ``.egg-info``
-          ``SOURCES.txt`` text read DIRECTLY whenever the ``.files`` match fails for
-          any reason, because Python 3.12+ FILTERS an ``.egg-info`` SOURCES.txt by
-          on-disk existence -- yielding an empty OR partial ``.files`` that can drop
-          the module; see ``_dist_records_package``). An empty-RECORD or
-          foreign-package dist fails here regardless of location, so a bare path-join
-          can never carry a foreign floor past this gate.
+          (``_dist_records_package``, ordered probes: ``dist.files``, then an
+          AUTHORITATIVE ``RECORD`` text read -- a readable RECORD that omits the package
+          is decisive not-owned -- else the ``.egg-info`` ``SOURCES.txt`` text read
+          DIRECTLY, load-bearing on Python 3.12+ where importlib FILTERS an egg-info
+          SOURCES.txt by on-disk existence into an empty OR partial ``.files``; see
+          ``_dist_records_package``). An empty-RECORD or foreign-package dist fails here
+          regardless of location, so a bare path-join can never carry a foreign floor
+          past this gate -- including a same-root ``.dist-info`` whose RECORD names an
+          unrelated package but which carries a stray SOURCES.txt naming ours (r3).
 
       (B) BOUND TO THE IMPORTED INSTANCE -- either of:
           B1 CO-LOCATION: the metadata directory is a sibling of the imported

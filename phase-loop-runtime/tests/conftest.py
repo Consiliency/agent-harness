@@ -57,10 +57,18 @@ def pytest_configure(config):
         check_installed_contract_floor,
     )
 
+    from _contract_floor_wiring import CONTRACT_FLOOR_PREFLIGHT_RAN
+
     try:
         check_installed_contract_floor()
     except ContractFloorError as exc:
         raise pytest.UsageError(str(exc)) from exc
+    # WIRING sentinel (board #382 r3, Blocker 2): record that the preflight was actually
+    # invoked in THIS collection. test_conftest_actually_invokes_the_floor_preflight
+    # reds if this block is deleted -- a guard that is never called must not read as one
+    # that passed. Set only on the non-aborting path (a raise becomes a UsageError above,
+    # which aborts collection, so no test observes the stash anyway).
+    config.stash[CONTRACT_FLOOR_PREFLIGHT_RAN] = True
 
 
 def pytest_collection_modifyitems(config, items):
