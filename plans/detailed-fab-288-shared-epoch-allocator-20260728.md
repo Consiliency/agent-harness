@@ -91,8 +91,8 @@ plan RE-LANDS the rest of #337 as prior art:
   proceeds to merge. The required in-lock order is:
   **`epoch_blocked` → `attempt_id` dedup (rebuild `make_request(prior.epoch, attempt_id)` +
   conflict-compare on a hit — see below) → `precondition` → allocate `max+1` → build
-  `make_request(epoch, attempt_id)` → ENFORCE `request.lease_epoch == epoch` → `policy` →
-  append.** Rationale: readmit has NO evidence-terminal replay (decoupled admit, no
+  `make_request(epoch, attempt_id)` → ENFORCE `request.lease_epoch == epoch` AND
+  `request.attempt_id == attempt_id` → `policy` → append.** Rationale: readmit has NO evidence-terminal replay (decoupled admit, no
   provider adapter), so ALL readmit idempotency lives at this admission-dedup layer; gating
   dedup behind `epoch_blocked` refuses a revoked resume (no double-merge — the ledger record
   + `--match-head-commit` pinning already prevent that) while still deduping a NON-revoked
@@ -106,7 +106,7 @@ plan RE-LANDS the rest of #337 as prior art:
   unchanged, a resume presenting the SAME `attempt_id` but a DIFFERENT
   authority/approval/predicate is returned ACCEPTED — and under S8 "accepted" means
   "authorized to append the ledger and merge." So on the dedup hit, AFTER `epoch_blocked`,
-  the re-land MUST rebuild `make_request(prior.epoch)` and require field equality (raising a
+  the re-land MUST rebuild `make_request(prior.epoch, attempt_id)` and require field equality (raising a
   field-wise conflict otherwise), matching `admit()`'s semantics. This guard is reachable
   ONLY under §6's DETERMINISTIC `attempt_id`: with the random `uuid4`, dedup never fires and
   the compare is dead code — so BLOCKING-2 REINFORCES the §6 recommendation. Falsifier + AC:
@@ -120,8 +120,9 @@ plan RE-LANDS the rest of #337 as prior art:
   `allocated==2`, `max==1`, so `1 < 1` is false). `AdmissionRequest` is FROZEN
   (`contracts.py:18`) so the epoch cannot be fixed up after building. Therefore, on the
   allocate path, AFTER `request = make_request(epoch, attempt_id)`, `admit_next` MUST assert
-  `request.lease_epoch == epoch` and raise `ValueError` otherwise; and on the dedup-rebuild
-  path assert `rebuilt.lease_epoch == prior.epoch` before comparing (belt-and-suspenders —
+  BOTH `request.lease_epoch == epoch` AND `request.attempt_id == attempt_id`, raising
+  `ValueError` otherwise; and on the dedup-rebuild path assert `rebuilt.lease_epoch ==
+  prior.epoch` AND `rebuilt.attempt_id == attempt_id` before comparing (belt-and-suspenders —
   the conflict-compare already catches a divergent `lease_epoch` because it makes
   `rebuilt != prior.request`, but the explicit check gives a precise error and states the
   invariant). The LOAD-BEARING check is on the allocate path. Without it, "the broker
@@ -129,6 +130,20 @@ plan RE-LANDS the rest of #337 as prior art:
   "S1 hardcodes `lease_epoch=1`" falsifier does not fire (silent-accept, not stale-epoch);
   that mutation is relocated to its own AC-10 (§8), and AC-1's falsifier is fixed to the
   `admit()`-revert form that raises via the legacy fence.
+  **ENFORCE THE DEDUP IDENTITY TOO — `admit_next` must not TRUST the factory to honor the
+  supplied `attempt_id` (round-3 CR, codex+grok — the SAME class as the epoch enforcement
+  above, one field over).** The dedup identity is what makes idempotency work, and it is
+  currently TRUSTED, not ENFORCED: nothing requires the built `request.attempt_id` to equal the
+  `attempt_id` argument `admit_next` dedups on. A factory that ignores the supplied id — e.g.
+  the round-2 S1 defect, leaving `factory.lease()` to default `attempt_id` to `uuid4`
+  (`fencing.py:54`) — appends a record keyed by a random id NO future retry can reproduce, so
+  every in-flight resume re-allocates and AC-9's conflict-compare is dead code again (the exact
+  defect the round-2 locus decision was meant to close, resurfacing because that decision had
+  not reached S1). Hence the `request.attempt_id == attempt_id` assertion on BOTH paths above,
+  parallel to the epoch check. Falsifier + AC: **AC-11** (§8) is the UNIT enforcement (the
+  stored id IS the supplied id); it is DISTINCT from AC-9 (a CONFLICTING resume) and from
+  **AC-12** (the behavioral in-flight retry driven through the live S1 seam, which AC-3 cannot
+  reach — see §8).
   **attempt_id LOCUS — resolve the self-contradiction (round-2 CR, grok — verified).** Three
   requirements could not all hold as first written: (i) S1 returns `make_request(epoch)` and
   must NOT bind the §6 `attempt_id`; (ii) §6/S3 computes `attempt_id =
@@ -178,6 +193,7 @@ port — a silent omission is the second guard-drop this one plan would otherwis
 | conflict-compare on a dedup hit (`record.request != request → ValueError`) | **DROPPED** | **MUST RESTORE** — BLOCKING-2 (round-1); AC-9 |
 | explicit fence `lease_epoch < max(epoch)` (`admission.py:49`) | absent | **DELIBERATE NON-PORT for MONOTONICITY** — allocation is `max+1` in-lock, so "strictly above" holds by construction. **But it does NOT bind `record.epoch` to `request.lease_epoch`** — see the ADD below; the `<` fence is also insufficient for that (misses `allocated==2`) |
 | `record.epoch == request.lease_epoch` equality (NOT in `admit()` either — a NEW guard) | **ADD** | **NEW, load-bearing** — `admit_next` allocates the epoch but trusts the frozen `request` to carry it; enforce on the allocate path (and rebuild). Beyond a straight port. BLOCKING (round-2, codex); AC-10 |
+| `record.request.attempt_id == attempt_id` (the supplied dedup id; NOT in `admit()` — a NEW guard) | **ADD** | **NEW, load-bearing** — `admit_next` dedups on `attempt_id` but trusts the frozen `request` to carry it; a factory defaulting `lease()` to `uuid4` stores an unfindable record → idempotency silently broken, AC-9 compare dead. Enforce on allocate + rebuild, parallel to the epoch guard. BLOCKING (round-3, codex+grok); AC-11 |
 | `epoch_blocked` position (FIRST in `admit`, LAST in `admit_next`) | reordered | **already fixed** by the §3 in-lock reorder above |
 
 Applied to the OTHER re-land, `readmit_advanced_head`: it and `execute`'s publish admit both
@@ -205,11 +221,21 @@ green). So the seams are enumerated exhaustively, each with the exact change.
   then `factory.create(...)`, returning a fully-built `AdmissionRequest` with epoch `1`
   baked into `fence_token` and the fencing `idempotency_key`.
   **Change:** stop returning a finished request at a fixed epoch. Return instead a
-  `make_request(epoch: int) -> AdmissionRequest` closure that rebuilds the lease + request
-  at the epoch the broker allocates (see §5). Nothing here may hardcode `1`. **Nothing here
-  may bind the §6 `attempt_id` from a HEAD, either:** S1 runs PRE-commit on the non-prebuilt
-  path (the commit is in `publishing.py`, S3b), so the deterministic `attempt_id` is computed
-  downstream at `execute` from the post-commit `BrokerRequest.head_sha` — never captured here.
+  `make_request(epoch: int, attempt_id: str) -> AdmissionRequest` closure that rebuilds the
+  lease + request at the epoch the broker allocates AND the `attempt_id` the broker threads in
+  (see §5; the two-arg form is FORCED by the §3 round-2 locus resolution — the one-arg
+  `make_request(epoch)` is the self-contradiction that ships broken idempotency). Nothing here
+  may hardcode `1`. **The `attempt_id` is a PARAMETER this closure RECEIVES; it must NOT COMPUTE
+  it from a HEAD.** S1 runs PRE-commit on the non-prebuilt path (the commit is in
+  `publishing.py`, S3b), so a pre-commit HEAD could not yield the right id anyway — `execute`
+  computes the deterministic `attempt_id` downstream from the post-commit `BrokerRequest.head_sha`
+  (§6) and `admit_next` forwards it in as this closure's `attempt_id` argument. **MECHANISM (the
+  actual fix, of which the signature is only the shape):** the closure threads its received
+  `attempt_id` into `factory.lease(..., attempt_id=attempt_id)` so `lease()` never defaults it to
+  `uuid4` (`fencing.py:54`); a closure that takes epoch ALONE leaves the stored request carrying a
+  random id that never equals the deterministic dedup key `admit_next` matches on — publish
+  idempotency silently broken (round-3 CR, codex+grok: the round-2 two-arg decision had been
+  applied to §3/§5/§6/S3 but NOT to this normative S1 text an implementer follows).
 
 - **S2 — `convergence/refresh.py:61`, `refresh_downstream_after_merge`.** Today: takes a
   caller `lease_epoch: int` param and builds `factory.lease(..., lease_epoch=lease_epoch)`.
@@ -231,8 +257,9 @@ green). So the seams are enumerated exhaustively, each with the exact change.
   `BrokerRequest`/`execute` contract must carry a `make_request` factory (or the fields to
   build one) instead of a pre-epoched `AdmissionRequest`. The in-lock `epoch_blocked` re-check
   inside `admit_next` preserves the #366 revocation guarantee; keep the pre-check at
-  `verbs.py:64` too (fail-fast). `admit_next` ENFORCES `request.lease_epoch == epoch` (§3),
-  so a mis-built `make_request` fails loud rather than storing a divergent record.
+  `verbs.py:64` too (fail-fast). `admit_next` ENFORCES `request.lease_epoch == epoch` AND
+  `request.attempt_id == attempt_id` (§3), so a `make_request` that ignores EITHER supplied
+  argument fails loud rather than storing a divergent record.
   **attempt_id LOCUS (round-1 + round-2 CR, grok — verified):** the §6 `publish_attempt_id =
   sha256(publish‖repo‖branch‖head_sha)` is computed HERE, inside `execute`, from
   `BrokerRequest.head_sha` — the POST-COMMIT head — NOT baked in S1, which runs BEFORE the
@@ -335,8 +362,8 @@ repo-wide, per directive #3:**
   that S1/S3 no longer route through it.
 - **S6 — `admission.py:admit_next()`** — THE shared allocator (re-landed). `epoch =
   (max(r.epoch) if records else 0) + 1`, computed under the flock; builds via
-  `make_request(epoch, attempt_id)` and ENFORCES `request.lease_epoch == epoch` before append
-  (§3, codex round-2).
+  `make_request(epoch, attempt_id)` and ENFORCES BOTH `request.lease_epoch == epoch` AND
+  `request.attempt_id == attempt_id` before append (§3, codex round-2 + round-3).
 - **S7 — `fencing.py:63`, `create()` / `fencing.py:54`, `lease()`** — bind `fence_token`
   and the fencing `idempotency_key` to `lease_epoch` AND `attempt_id`. Under allocation these
   are invoked by `make_request(epoch, attempt_id)` with the ALLOCATED epoch and the
@@ -362,8 +389,8 @@ repo-wide, per directive #3:**
 INPUT so the stored request and the rebuild both carry the deterministic value). Spell out
 exactly which fields rebuild and which stay stable — this is the seam whose mis-threading
 sinks the change. `admit_next` additionally ENFORCES `request.lease_epoch == epoch` after the
-build (§3, codex round-2), so a factory that ignores its epoch cannot silently store a
-divergent record.
+build (§3, codex round-2 + round-3), so a factory that ignores its epoch OR its supplied
+`attempt_id` cannot silently store a divergent record.
 
 **REBUILD at the allocated epoch** (these digests include `lease_epoch`):
 - `fence_token` — `_digest((train_id, node_id, action, attempt_id, lease_epoch))`
@@ -555,7 +582,7 @@ injection anchor, and a positive control
   restore the 288a dedup that does `return record` with no rebuild/compare → the conflicting
   resume is returned ACCEPTED (and under S8 that is "authorized to append the ledger and
   merge"). **Injection anchor:** the `attempt_id` dedup return inside `admit_next` (S6, §3) —
-  assert the rebuild `make_request(prior.epoch)` + compare is present in `src` before
+  assert the rebuild `make_request(prior.epoch, attempt_id)` + compare is present in `src` before
   mutating (a mutation against a moved anchor is a silent no-op). **Positive control
   (load-bearing):** a GENUINE resume — same `attempt_id`, a request that rebuilds to the
   IDENTICAL fields at `prior.epoch` — dedups to the SAME record with NO false conflict,
@@ -582,6 +609,57 @@ injection anchor, and a positive control
   trusts the frozen request to carry it, and neither request validation nor the default policy
   rejects a divergence (the `lease_epoch < max` fence would miss `allocated==2`). **Wave:**
   step-1 (it mutates `admit_next`), not wave-0.
+
+- **AC-11 — the broker's dedup identity is ENFORCED, not merely trusted (round-3 codex+grok
+  blocking — the round-2 `attempt_id` decision had not reached S1, so a factory could store an
+  unfindable record; mirrors AC-10, one field over).** Call `admit_next(make_request,
+  attempt_id=X, …)` with a `make_request` that IGNORES its `attempt_id` argument and lets
+  `factory.lease()` default it to `uuid4` (`fencing.py:54`) — the mis-built factory — against a
+  fresh store. `admit_next` RAISES `ValueError` (supplied dedup id not honored) and appends NO
+  record. **Falsifier:** remove the `request.attempt_id == attempt_id` enforcement from
+  `admit_next` AND keep the id-ignoring factory → the divergent request is SILENTLY appended as a
+  record whose `request.attempt_id` is a random `uuid4`, keyed off a value no future retry can
+  reproduce. **Observable:** the un-enforced build does NOT raise and the store grows by one
+  record whose `request.attempt_id != attempt_id` — the assertion reads that FIELD DIVERGENCE
+  (assert the stored record's `attempt_id` against the supplied `X`), NOT a bare `pytest.raises`
+  (an unrelated raise would satisfy that). **Injection anchor:** the `assert request.attempt_id
+  == attempt_id` line in `admit_next` (S6) — assert it is present in `src` before mutating.
+  **Positive control:** a CORRECT `make_request` that threads its `attempt_id` argument into
+  `factory.lease(..., attempt_id=attempt_id)` is ACCEPTED and records `request.attempt_id == X`
+  — proving the check gates only divergence, not every admit. **Why this AC exists:** the dedup
+  identity is what makes `admit_next` idempotent; if the stored id is trusted rather than
+  enforced, a factory bug (the round-2 defect: S1 defaulting to `uuid4`) silently kills
+  idempotency and AC-9's compare becomes dead code with NO test dying. This is the UNIT
+  enforcement; AC-12 is its end-to-end behavioral counterpart through the live S1 seam. **Wave:**
+  step-1 (it mutates `admit_next`), not wave-0.
+
+- **AC-12 — an IN-FLIGHT publish retry REUSES its admission (same epoch, no second record),
+  driven through the LIVE S1 boundary (round-3 codex blocking — the behavioral guard AC-3
+  structurally CANNOT provide).** Seed the evidence store with a `PROVIDER_CALL_IN_FLIGHT`
+  record for the publish `(repo, branch, head_sha)` — NOT a terminal state — and **assert that
+  precondition holds before retrying** (`current.state is PROVIDER_CALL_IN_FLIGHT`): without this
+  guard the test silently degrades into a completed-replay that short-circuits at
+  `verbs.py:58`→`:59` (`_replay`) BEFORE admission, and the falsifier goes vacuous in BOTH arms
+  (this is the exact "assert the injection landed" discipline — the seed IS the injection).
+  Then re-drive the publish through the LIVE S1 seam (`_default_build_admission` → `execute`),
+  reconstructing the `make_request` closure: because the record is IN-FLIGHT it FALLS THROUGH the
+  `:58` terminal short-circuit to `admit` at `verbs.py:65`, so `admit_next` dedups on the
+  deterministic `attempt_id` and returns the SAME record — NO new epoch allocated, admission
+  record COUNT unchanged. **Falsifier:** have S1 bind a fresh `uuid4` `attempt_id` (the
+  pre-round-3 one-arg `make_request(epoch)` behavior, `fencing.py:54` default) → the retry's
+  dedup key differs, `admit_next` allocates a SECOND epoch and appends a SECOND admission record
+  for one publish. **Observable:** admission record COUNT +1 and a new epoch — read the
+  count/epoch sequence, NOT a raise. **Why AC-3 cannot cover this:** AC-3 replays a COMPLETED
+  publish, which returns at `verbs.py:59` (`_replay`) BEFORE `admit` at `:65` is ever reached —
+  so AC-3 never exercises the admission-dedup path and cannot see whether S1 bound a random id.
+  ONLY an IN-FLIGHT record falls through to admission. AC-12 is the test that would have caught
+  THIS round's defect (S1 shipping the one-arg signature). **Injection anchor:** S1's
+  `make_request` closure (`train_runner.py:138`) — assert it threads the supplied `attempt_id`
+  into `factory.lease(..., attempt_id=…)` in `src` before mutating. **Positive control:** a retry
+  at a DIFFERENT `head_sha` (→ a different deterministic `attempt_id`) DOES allocate a new epoch
+  and append a record — proving dedup, not a universal no-op. **Wave:** rides with the
+  publish-migration tests (step 2) — it needs the migrated live S1 seam AND `admit_next`, neither
+  on `main`; not wave-0.
 
 > **AC-8 is split into AC-8a (normal path) and AC-8b (crash-resume path) — the two S8
 > commit points. BOTH bind to the PRODUCTION SEAM, not to a direct helper call.** Driving
@@ -648,14 +726,20 @@ vacuous even if a different assertion would catch it.
 | AC-8a / AC-8b | admitted head advanced / merge occurred despite revoked store | ✅ (wave-0 red) | production-seam bound |
 | AC-9 | conflicting resume accepted / same record for a different request | ✅ | dead code under `uuid4` ⇒ requires the §6 deterministic `attempt_id` |
 | AC-10 | record appended with `epoch != request.lease_epoch` (no raise) | ✅ | NEW; guards the allocated-epoch enforcement |
+| AC-11 | record appended with `request.attempt_id != attempt_id` (no raise) | ✅ | NEW; guards the dedup-identity enforcement — mirrors AC-10, one field over |
+| AC-12 | admission record COUNT +1 / new epoch on an IN-FLIGHT retry | ✅ | NEW; falsifier is vacuous UNLESS the seed is `PROVIDER_CALL_IN_FLIGHT` (else short-circuits at `:59` before `admit` at `:65`) — the trap this AC itself guards; AC-3 (completed replay) cannot reach the admission path |
 
-**Two dependency clusters the audit makes explicit** (both are the round-2 fixes, so the ACs
-that ride on them are now live): the EPOCH-ENFORCEMENT (§3, codex) makes AC-1's real
-distinction and AC-10 fire; the DETERMINISTIC-`attempt_id` LOCUS (§3/§6, grok) is a
-precondition for AC-3's positive control, AC-6b's scenario, and AC-9's compare to be anything
-but dead code. A reviewer can check this table against the tests: any AC whose "fires?" is ✅
-must have an assertion reading the named observable, not a `pytest.raises` where the audit
-says "values."
+**Three dependency clusters the audit makes explicit** (the round-2 AND round-3 fixes, so the
+ACs that ride on them are now live): the EPOCH-ENFORCEMENT (§3, codex round-2) makes AC-1's
+real distinction and AC-10 fire; the ATTEMPT_ID-ENFORCEMENT (§3, round-3) makes AC-11 fire and,
+propagated to S1, makes AC-12's mutation observable; the DETERMINISTIC-`attempt_id` LOCUS
+(§3/§6, grok, propagated to S1 in round-3) is a precondition for AC-3's positive control,
+AC-6b's scenario, AC-9's compare, and AC-12's dedup to be anything but dead code. AC-12 carries
+its OWN reachability precondition beyond the cluster: the seeded evidence record must be
+`PROVIDER_CALL_IN_FLIGHT`, or admission is never reached and the falsifier is vacuous in both
+arms. A reviewer can check this table against the tests: any AC whose "fires?" is ✅ must have an
+assertion reading the named observable, not a `pytest.raises` where the audit says "values" or
+"count."
 
 ---
 
@@ -787,11 +871,14 @@ scaffolding. The two the directive prioritizes both live here:
 - **AC-7 (doc retraction) — red on arrival.** The byte-neutrality claim is still in the
   tree and the CHANGELOG retraction is absent, so the grep-level check fails today.
 
-**Step-1 test PR — red against the step-1 skeleton.** AC-3, AC-4, AC-5, AC-6b, AC-9, AC-10
-(and the in-lock half of AC-2) mutate `admit_next` / `readmit_advanced_head` / routing, which step
-(1) re-lands. Their falsifiers can only be RUN once those symbols exist, so these tests land
-red against a step-1 skeleton (symbols present, bodies unimplemented or deliberately wrong)
-— NOT against empty `main`. This is still test-first — it is the primitive's own red→green —
+**Step-1 test PR — red against the step-1 skeleton.** AC-3, AC-4, AC-5, AC-6b, AC-9, AC-10,
+AC-11 (and the in-lock half of AC-2) mutate `admit_next` / `readmit_advanced_head` / routing,
+which step (1) re-lands. Their falsifiers can only be RUN once those symbols exist, so these
+tests land red against a step-1 skeleton (symbols present, bodies unimplemented or deliberately
+wrong) — NOT against empty `main`. **AC-12 is red-first too but rides with the step-2
+publish-migration tests, not step-1:** its falsifier mutates the LIVE S1 `make_request` closure
+(step 2), which does not exist on the step-1 skeleton — so it lands red against the migrated S1
+seam. Neither AC-11 nor AC-12 is wave-0 (both need `admit_next`, absent on `main`). This is still test-first — it is the primitive's own red→green —
 but it is a SEPARATE wave. The plan must not pretend AC-5's "move `max+1` outside the flock"
 mutation, or AC-6b's "return the dedup hit before `epoch_blocked`," can run before
 `admit_next` exists.
@@ -824,14 +911,16 @@ contract.
 ## 11. Ordering and what blocks what
 
 1. **Re-land the allocator + readmit primitive** (`admit_next` with the `(epoch, attempt_id)`
-   signature + `request.lease_epoch == epoch` enforcement + the conflict-compare on dedup,
-   `AdmissionPrecondition`, `readmit_advanced_head`, `readmit_attempt_id`, `ReadmitResult`,
-   routing) from #337. Blocks everything. **The primitive-level ACs gate it: AC-4, AC-5,
-   AC-6b, AC-9, AC-10** (all mutate `admit_next`/routing; step-1 test wave). (#366's
-   shared-lock is already in main under it.)
+   signature + `request.lease_epoch == epoch` AND `request.attempt_id == attempt_id`
+   enforcement + the conflict-compare on dedup, `AdmissionPrecondition`, `readmit_advanced_head`,
+   `readmit_attempt_id`, `ReadmitResult`, routing) from #337. Blocks everything. **The
+   primitive-level ACs gate it: AC-4, AC-5, AC-6b, AC-9, AC-10, AC-11** (all mutate
+   `admit_next`/routing; step-1 test wave). (#366's shared-lock is already in main under it.)
 2. **Migrate publish to the allocator** — S1 + S2 + S3 + §5 epoch-late-binding + §6
-   `attempt_id`. Depends on (1). **This is the live-#199 risk; it gets AC-1, AC-2, AC-3, AC-6a
-   and a byte-diff review against a live-broker fixture.**
+   `attempt_id` (S1's `make_request` threads the received `attempt_id` into
+   `factory.lease(..., attempt_id=…)` — round-3). Depends on (1). **This is the live-#199 risk;
+   it gets AC-1, AC-2, AC-3, AC-6a, AC-12 (the in-flight retry through the live S1 seam) and a
+   byte-diff review against a live-broker fixture.**
 3. **Docs/CHANGELOG retraction** (§9) — lands WITH (2); AC-7 gates it.
 4. **Wire the readmit CONSUMER** (S8) — replace BOTH direct `append_record` sites
    (`:1016` crash-resume + `:1139` normal) with the single `_commit_readmission` →
