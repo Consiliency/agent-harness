@@ -1367,7 +1367,15 @@ recur 5–8 times each (the union: §5d + §5e-table + S3b; the base: §4-constr
 dataflow + AC-13). Updating a primary statement and missing a secondary is precisely the class
 this section exists to close — so the fold's own final step was a `grep` for every changed token
 (`envelope.base`, `| None` on the contract, `granted_epoch`) confirming zero stragglers, not a
-claim that the passes were run.
+claim that the passes were run. **And the verification of the verification:** the first residual
+`grep` for `| None` used a shell-escaped alternation that silently matched nothing — a
+zero-result that "confirmed clean" but structurally *could not* have produced a straggler (the
+same can't-fire vacuity these ACs guard, one level up in the tooling). It was caught by
+POSITIVE-CONTROLLING the search itself — grepping a token known to be present (`policy is None`,
+10 hits) to prove the pattern was live — then re-running each token as a fixed-string `grep -F`.
+A "gone?" search that cannot even find something that IS there is a broken pattern, not absence;
+positive-controlling the search is the observable-grounding pass applied to the audit tooling,
+not only to the plan.
 
 ---
 
