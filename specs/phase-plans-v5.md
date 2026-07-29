@@ -11,9 +11,16 @@
 > (`panel_invoker.py:3941`) so nothing is emitted. Merged is not reachable. Carried into v10
 > as **EC-LEGLIFE-6** and **EC-LEGLIFE-7**.
 >
-> Residual noted, not carried: `skills_bundle/codex-advisor-panel/` still ships in the generated
-> bundle though it was removed from `skills-src/` — a stale regeneration artifact worth a
-> bundle re-sync check.
+> Alias — INTENDED and TEST-ENFORCED, NOT a stray (corrected during v10 cross-vendor review):
+> the `<harness>-advisor-panel` dirs in the packaged bundle are the compat alias required by
+> `:146` clause 2, materialized by `install_skills` from `SKILL_ALIASES` (byte-identical to
+> `advisor-board` modulo `name:`, `rmtree`d before each install so they cannot drift), and
+> asserted by `phase-loop-runtime/tests/test_advisor_board_alias_install.py`
+> (`test_fresh_install_creates_prefixed_alias_pointing_at_advisor_board`,
+> `test_alias_installed_for_every_supported_harness_prefix`). Clause 3's "stray codex duplicate"
+> meant a pre-rename DIVERGENT hand-authored skill, which IS removed (`skills-src/codex/` holds
+> only `codex-advisor-board`). Nothing carried — deleting these dirs would break required
+> compatibility behaviour.
 
 
 > How to use this document: run `phase-loop validate-roadmap specs/phase-plans-v5.md`, then plan each phase with the phase-loop command for the phase alias.

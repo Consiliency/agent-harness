@@ -13,8 +13,13 @@
 > runs. Carried into v10 as **EC-FABREADMIT-6** (the shortcut actually engages, proven by an
 > end-to-end test in which it FIRES) and **EC-FABREADMIT-7** (#191 becomes closeable).
 >
-> One CANNOT-DETERMINE, not carried: FAB lane (a) "reconcile 4 abdreg/abdresolve worktrees" is
-> uncommitted worktree state, unverifiable from committed history.
+> FAB lane (a) "reconcile 4 abdreg/abdresolve worktrees" (`:357`) is CARRIED into v10 as
+> **EC-SCHED-7** (corrected during v10 cross-vendor review — the earlier "CANNOT-DETERMINE, not
+> carried" was superseded). Recorded disposition: the committed tips survive on `origin`
+> (`feat/advisor-board-abdreg`, `phase/abdresolve`); `abdreg`'s uncommitted delta was inspected
+> and discarded (reverts committed safety fixes, no value forgone); `phase/abdresolve`'s 25-file
+> delta was discarded UN-INSPECTED and is carried as a recorded POSSIBLE LOSS
+> (`plans/design-fab-191-delta-review.md:514-521` declines to claim "no silent loss" for it).
 
 
 > How to use this document: save to `specs/phase-plans-v9.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v9-<alias>.md`), then `/claude-execute-phase <alias>` to build it.

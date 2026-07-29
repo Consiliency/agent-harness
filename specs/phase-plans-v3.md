@@ -2,11 +2,15 @@
 
 > # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
 >
-> **Do not execute this roadmap.** 3 of 4 phases DELIVERED (live pre-merge gate, real panel spawn, planning gate + escalation ladder, E2E invariants).
+> **Do not execute this roadmap.** 2 of 4 phases DELIVERED (P2 real panel spawn, P3 planning
+> gate + escalation ladder). P1 (live pre-merge gate) and P4 (`:188` end-to-end invariants) are
+> BOTH unmet: each requires a production block→fix→pass round, but `runner.py:10140` passes
+> `apply_fix=None` (deliberate, self-documented at `runner.py:9748-9757`), so the fix-round runs
+> only under test-injected closures — never on the production path (corrected during v10
+> cross-vendor review; the earlier "3 of 4" undercounted the gap to a single phase).
 >
-> Its ONE live item — the governed pre-merge auto-repair fix-round, not wired in production
-> (`runner.py:10140` passes `apply_fix=None`; deliberate and self-documented at
-> `runner.py:9748-9757`) — was carried into v10 as **EC-REVIEWTRUTH-8**.
+> Both P1 and P4 were carried into v10 as **EC-REVIEWTRUTH-8**, which now carries P1's
+> production-wiring obligation AND P4's end-to-end obligation.
 >
 > Note: this roadmap's work landed under agent-harness#309/#310 rather than via its own
 > `/claude-execute-phase` lanes, which is why its checkboxes are uniformly empty despite
