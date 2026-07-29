@@ -38,6 +38,24 @@ ESCALATION_FAIL_THRESHOLD = 2
 #: Default cap on governed pre-merge review→fix rounds (bounded; never infinite).
 DEFAULT_MAX_REVIEW_ROUNDS = 3
 
+#: Consiliency/agent-harness#358: minimum USABLE reviewer legs for a governed
+#: PRE-MERGE review to be a real board. A single usable reviewer is not a board —
+#: it cannot ratify a merge — so the pre-merge loop holds below this floor, not
+#: only at ZERO usable. Decision-INDEPENDENT lower bound: a 1-reviewer review is
+#: insufficient under EVERY version of the amended REVIEWTRUTH criteria (#375). It
+#: counts LEGS, not distinct vendor families, on purpose — requiring 2 DISTINCT
+#: vendors would forbid a deliberately-configured same-family breadth board (e.g.
+#: codex+opencode), and telling a degraded same-family board apart from a chosen
+#: one needs the declared-vs-achieved distinction (the three-state model, held for
+#: #375). It is below the pre-merge-CR quorum (3), whose 2-vs-3 semantics are that
+#: same held model. It lives HERE, on the PRE-MERGE loop, and NOT on
+#: `governed_planning_gate`: plan/design ratification is deliberately autonomy-first
+#: (`proceed_degraded` — a plan is not held hostage to reviewer availability,
+#: ratification_policy.py:96-100), while the merge gate demands a real board. A
+#: planning-gate floor would be a REVIEWTRUTH criterion with its own falsifier, not
+#: a side effect of this merge-gate fix.
+_MIN_USABLE_REVIEWERS = 2
+
 #: FAB (Consiliency/agent-harness#191) design §4.4 promotion-time
 #: re-assertion — activation milestone piece 1. Opt-in env control mirroring
 #: `closeout_validators.REVIEW_MODE_ENV`'s posture: default OFF/absent means
@@ -305,12 +323,20 @@ def run_governed_premerge_loop(
         return LoopResult(mergeable=True, ran=False, reason="autonomous")
 
     # Reasons that mean "the gate could not run a real review" (no disjoint
-    # reviewer / unknown author / no usable verdict) — surfaced verbatim in the
-    # terminal so the operator sees the ACCURATE cause, not a generic
-    # "non_convergence" (CR finding).
+    # reviewer / unknown author / no usable verdict / too few usable reviewers)
+    # — surfaced verbatim in the terminal so the operator sees the ACCURATE cause
+    # and remedy (authenticate/add a reviewer), not a generic "non_convergence" that
+    # implies code defects to repair (CR finding). Consiliency/agent-harness#358:
+    # `below_reviewer_floor` is a STRUCTURAL hold. NOTE: under the current design the
+    # floor check above returns DIRECTLY with reason="below_reviewer_floor" and the
+    # gate never sets that reason, so no path reaches this classifier with it —
+    # membership here is UNREACHABLE-BY-CONSTRUCTION today (verified: deleting it
+    # leaves the whole cluster green). It is retained DEFENSIVELY so that if a future
+    # change ever routes a below-floor hold through the fall-through instead of a
+    # direct return, it stays classified structural, never non_convergence.
     _STRUCTURAL_HOLD = frozenset({
         "unknown_author", "no_disjoint_reviewer", "author_vendor_only",
-        "no_reviewers", "no_usable_review",
+        "no_reviewers", "no_usable_review", "below_reviewer_floor",
     })
     seen_block = False
     current = artifact
@@ -352,6 +378,49 @@ def run_governed_premerge_loop(
                     f"reviewer after {rnd} round(s); halting (non-human)",
                 ),
                 reason=gate.reason or "panel_unavailable",
+            )
+
+        # Consiliency/agent-harness#358: usable-reviewer floor — PRE-MERGE ONLY.
+        # The gate promotes on a lone usable reviewer (no block finding), which would
+        # authorize a merge that ONE opinion "reviewed". Hold below the floor here, on
+        # the merge path, leaving the plan-stage gate's autonomy-first posture intact
+        # (ratification_policy.py:96-100). `gate.panel is None` on every structural
+        # `_block_result` (no_usable_review / no_disjoint_reviewer / unknown_author …)
+        # and on the autonomous no-op, so this fires ONLY when a real board ran and
+        # delivered fewer than the floor of usable legs — i.e. exactly 1 (0 usable is
+        # already `no_usable_review`, handled above). `collected` already holds the
+        # panel findings, so a lone DISAGREE keeps its concrete #80 body; append the
+        # structural floor finding and terminate. Retrying cannot add a reviewer
+        # (apply_fix re-dispatches the SAME board; per-leg transient retry is LEGLIFE,
+        # held for #359), so this is a round-1 STRUCTURAL hold, not a spin to max_rounds.
+        if gate.panel is not None and len(gate.panel.usable_legs) < _MIN_USABLE_REVIEWERS:
+            usable_n = len(gate.panel.usable_legs)
+            reviewed_sha = next((f.reviewed_sha for f in gate.findings if f.reviewed_sha), None)
+            floor_finding = ReviewFinding(
+                code="governed_below_reviewer_floor",
+                reason=(
+                    f"governed pre-merge review had only {usable_n} usable reviewer "
+                    f"leg(s), below the minimum of {_MIN_USABLE_REVIEWERS} for a real "
+                    f"review board; a single reviewer cannot ratify a merge; holding "
+                    f"(non-human). Authenticate or install a second non-author panel leg "
+                    f"(a different vendor is preferred). Requiring DISTINCT vendors or "
+                    f"the full 3-vendor quorum is the three-state model, held for #375."
+                ),
+                severity="block",
+                blocker_class="review_gate_block",
+                reviewed_sha=reviewed_sha,
+            )
+            return LoopResult(
+                mergeable=False, ran=True, rounds=rnd,
+                findings=tuple(collected) + (floor_finding,),
+                terminal_blocker=_non_human_blocker(
+                    "review_gate_block",
+                    f"governed pre-merge review held (below_reviewer_floor) — only "
+                    f"{usable_n} usable reviewer leg(s), below the minimum of "
+                    f"{_MIN_USABLE_REVIEWERS} for a real board; halting (non-human, "
+                    f"remedy: add a non-author reviewer)",
+                ),
+                reason="below_reviewer_floor",
             )
 
         if gate.promoted:  # zero block findings; any nits already in `collected`

@@ -14,6 +14,7 @@ from unittest.mock import patch
 from phase_loop_runtime import runner
 from phase_loop_runtime.governed_review import GateResult
 from phase_loop_runtime.governed_premerge import next_escalation
+from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 
 
 def _sel():
@@ -62,6 +63,73 @@ class PlanningGateHelperTest(unittest.TestCase):
         # degraded => not a real review => promote (autonomy-first, never a
         # same-vendor self-review that blocks).
         self.assertIsNone(self._run(GateResult(ran=True, promoted=True, degraded=True)))
+
+
+class PlanStageFloorScopeProductionPathTest(unittest.TestCase):
+    """Consiliency/agent-harness#358 — the usable-reviewer floor is PRE-MERGE ONLY.
+
+    This drives the PRODUCTION plan-stage wrapper ``runner._governed_planning_gate``
+    (runner.py:9812) with the REAL gate and a SINGLE usable reviewer, asserting the
+    plan still PROMOTES (proceeds — ``None``). It exists because board #384 r1 found
+    the exact blind spot it closes: the rejected shared-gate design (parent commit
+    ``fd6f6b7``) applied the pre-merge floor inside ``governed_planning_gate`` and so
+    HELD a 1-reviewer PLAN, contradicting the autonomy-first plan-ratification
+    posture (``proceed_degraded`` — a plan is not held hostage to reviewer
+    availability, ratification_policy.py:96-100). Six earlier guard tests all passed
+    under that regression because none exercised THIS production surface; a
+    direct-gate test (``test_planning_gate_does_not_enforce_floor`` in the 358 file)
+    sits one level below the wrapper the next widener actually runs.
+
+    Non-vacuity is proven by the ACTUAL rejected design, not a synthetic floor:
+    ``git checkout fd6f6b7a1 -- .../governed_review.py`` turns this test RED (the real
+    gate returns a ``below_reviewer_floor`` block, the wrapper returns ``("blocked",
+    event)``, and the ``assertIsNone`` fails); it is GREEN at HEAD. The floor's own
+    ``_MIN_USABLE_REVIEWERS`` lives in ``governed_premerge`` and the plan gate never
+    reads it, so this test is invariant under the ``2 -> 0`` pre-merge falsifier —
+    that is the decoupling control.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.repo = Path(self._td.name)
+        self.roadmap = self.repo / "specs" / "rm.md"
+        self.roadmap.parent.mkdir(parents=True, exist_ok=True)
+        self.roadmap.write_text("# roadmap\n", encoding="utf-8")
+        self.plan = self.repo / "plan.md"
+        self.plan.write_text("# plan\n## Acceptance Criteria\n- [ ] x\n", encoding="utf-8")
+        self.snap = types.SimpleNamespace(closeout_terminal_status=None, terminal_summary={})
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_single_usable_reviewer_plan_promotes_via_production_wrapper(self):
+        # One usable reviewer (codex AGREE) + one unavailable (gemini) => the
+        # PRE-MERGE loop would HOLD (below the floor of 2), but the PLAN-stage gate
+        # must PROMOTE. Author vendor `claude` is disjoint from the codex/gemini
+        # pool, so the real gate selects a live reviewer and reaches a verdict.
+        panel = PanelResult(legs=(
+            PanelLegResult(leg="codex", status="ok", text="AGREE"),
+            PanelLegResult(leg="gemini", status="unavailable", text=""),
+        ))
+        real_gate = runner.governed_planning_gate  # unpatched below; mutation flows through it
+
+        def gate_running_real_with_injected_panel(**kw):
+            kw.setdefault("invoke", lambda art, pool, **_ignored: panel)
+            return real_gate(**kw)
+
+        with patch.object(runner, "governed_planning_gate",
+                          side_effect=gate_running_real_with_injected_panel), \
+                patch.object(runner, "available_panel_legs", return_value=("codex", "gemini")), \
+                patch.object(runner, "_phase_author_vendors", return_value=frozenset({"claude"})):
+            result = runner._governed_planning_gate(
+                self.repo, self.roadmap, "P1", self.plan, self.snap, _sel(), "run"
+            )
+
+        # None => proceed to execute (promoted). A floor re-added to
+        # governed_planning_gate makes the real gate block => wrapper returns a
+        # ("blocked", event) tuple => this fails. That is the RED under the rejected
+        # shared-gate design (the surface the change actually touches).
+        self.assertIsNone(result)
 
 
 class FirstAttemptGuardTest(unittest.TestCase):
