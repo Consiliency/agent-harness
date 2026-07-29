@@ -6,6 +6,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Contract-floor preflight: fail readably on a stale `consiliency-contract` (Consiliency/agent-harness#378)
+
+- **The reported "74 tests fail on `main`" was a stale-dependency environment, not a
+  `main` defect.** Both encodings the issue splits on — the `^0\.4\.\d+$` manifest
+  pattern and the emitted `contract_version` — live in the installed
+  `consiliency_contract` package, which this repo consumes and neither authors. An
+  installed `consiliency-contract 0.6.0` is below this repo's declared floor
+  (`phase-loop-runtime` requires `>=0.6.5,<0.7`) and is internally inconsistent
+  (`CONTRACT_VERSION="0.6.0"` against a bundled manifest schema still pinned to
+  `^0\.4\.\d+$`); one `jsonschema.ValidationError` then fans out across ~60 node IDs.
+  The failure is dependency-state-dependent, not code-dependent — which is why it
+  reproduced on a docs-only branch. On `main` in CI (which installs `0.6.5` from
+  `pyproject`) the failure count is **0**.
+- **New guard — the one fact this repo owns and previously left unenforced: the
+  installed contract satisfies the declared floor.** `consiliency_layout` gains
+  `assert_contract_floor_satisfied()` / `check_installed_contract_floor()`, and the
+  test-suite `conftest` aborts collection with a single actionable line
+  (`installed consiliency-contract 0.6.0 does not satisfy the declared floor …`)
+  instead of dozens of opaque validation failures. The floor is read from the
+  package's own dist metadata (`importlib.metadata.requires`), so the guard cannot
+  drift from the `pyproject` pin it enforces. It is a no-op when the floor is
+  satisfied (CI, clean-room wheel) or when the installed/declared state is unreadable
+  (uninstalled source tree) — it never becomes a new false failure.
+
 ### Outside-agent contract: repin to `spec@v0.2.1` + per-file `sha256` verification (Consiliency/agent-harness#370)
 
 - **Repin the anchor. These are the pin facts, stated inline and verified in this

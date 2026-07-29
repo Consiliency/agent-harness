@@ -156,6 +156,92 @@ def installed_contract_version() -> str:
     return CONTRACT_VERSION
 
 
+class ContractFloorError(RuntimeError):
+    """The installed ``consiliency-contract`` distribution violates this package's
+    declared floor (Consiliency/agent-harness#378). Raised only when the violation
+    is PROVABLE from readable state -- see ``check_installed_contract_floor``."""
+
+
+def declared_contract_requirement() -> str | None:
+    """The ``consiliency-contract`` requirement string this package declares, read
+    from installed dist metadata rather than re-encoded here.
+
+    The floor lives in exactly one place -- ``phase-loop-runtime``'s ``pyproject``
+    ``dependencies`` -- and this reads it back from that dist's metadata so the
+    guard cannot silently disagree with the pin it is meant to enforce. Returns
+    ``None`` when the metadata is unreadable (e.g. an uninstalled source tree), so
+    the caller can treat the floor as unknowable rather than violated.
+    """
+    try:
+        import importlib.metadata as md
+        from packaging.requirements import Requirement
+
+        for raw in md.requires("phase-loop-runtime") or ():
+            try:
+                req = Requirement(raw)
+            except Exception:
+                continue
+            if req.name == "consiliency-contract":
+                # Drop any environment marker; keep name + specifier.
+                return raw.split(";", 1)[0].strip()
+    except Exception:
+        return None
+    return None
+
+
+def _installed_contract_dist_version() -> str | None:
+    """The installed ``consiliency-contract`` DISTRIBUTION version (what the floor
+    constrains), or ``None`` if the dist is not installed."""
+    try:
+        import importlib.metadata as md
+
+        return md.version("consiliency-contract")
+    except Exception:
+        return None
+
+
+def assert_contract_floor_satisfied(installed_version: str, requirement: str) -> None:
+    """Raise ``ContractFloorError`` if ``installed_version`` does not satisfy the
+    specifier in ``requirement`` (a ``name>=x,<y`` string).
+
+    Pure: both inputs are explicit so the check is unit-testable with literals and
+    the falsifier runs deterministically regardless of what is installed.
+    """
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    specifier = Requirement(requirement).specifier
+    # ``prereleases=True`` so a legitimately-installed prerelease is judged against
+    # the specifier's own rules rather than silently excluded.
+    if not specifier.contains(Version(installed_version), prereleases=True):
+        # Remedy command is DERIVED from ``requirement`` (the single declared floor),
+        # never a second hardcoded copy of the specifier -- a second copy is exactly
+        # the drift shape that produced this issue.
+        raise ContractFloorError(
+            f"installed consiliency-contract {installed_version} does not satisfy the "
+            f"declared floor '{requirement}'. Reinstall a floor-satisfying contract: "
+            f"pip install -U '{requirement}'  (a contract below this floor ships a "
+            f"manifest schema that rejects its own version const, which fans out into "
+            f"dozens of opaque jsonschema errors -- Consiliency/agent-harness#378)."
+        )
+
+
+def check_installed_contract_floor() -> None:
+    """Raise ``ContractFloorError`` iff the installed ``consiliency-contract`` can be
+    PROVEN to violate this package's declared floor.
+
+    Fail-open on an unprovable state: if either the declared requirement or the
+    installed distribution version is unreadable, this is a no-op. The guard exists
+    to convert a stale-dependency environment from ~60 opaque validation failures
+    into one actionable line -- it must never itself become a new false failure.
+    """
+    requirement = declared_contract_requirement()
+    installed = _installed_contract_dist_version()
+    if requirement is None or installed is None:
+        return
+    assert_contract_floor_satisfied(installed, requirement)
+
+
 def manifest_schema() -> dict[str, Any]:
     return load_schema("manifest")
 
