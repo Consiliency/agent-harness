@@ -1,4 +1,16 @@
-# Detailed migration plan: FAB ah#288 — one shared monotonic epoch allocator across all admission kinds
+# Detailed migration plan: FAB ah#288 — P1 of 2: one shared monotonic epoch allocator + publish migration
+
+> **⚠️ THIS IS P1 OF A RATIFIED TWO-PLAN SPLIT** (maintainer, `ah#363` follow-up), carved
+> along the merge boundary the §11 DAG implies. **P1 (this plan)** = the shared allocator
+> (`admit_next`), the re-landed `readmit_advanced_head` primitive, and the live #199 **publish**
+> migration — steps (1)(2)(3), AC-1..AC-7 and AC-9..AC-13 — where all the entangled-identity
+> density lives (epoch late-binding, the deterministic post-commit `attempt_id`, and §5b
+> commit-stable `approval_digest`). **P2** (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`)
+> = the readmit CONSUMER wiring (`_fab_delta_readmit`) + the engage-flag flip — steps (4)(5),
+> AC-8a/AC-8b — and **DEPENDS ON P1 BEING MERGED** (the mixed-allocation interlock becomes a git
+> merge boundary rather than an in-document promise; see §11). The readmit PRIMITIVE re-landed
+> here (step 1) is exercised at the broker level by P1's AC-4 and AC-6b; its PRODUCTION CONSUMER
+> is P2.
 
 > **Status: RATIFIED input (Option B, maintainer, 2026-07-28). Decision is SETTLED — do
 > not relitigate.** Decision record: `gh issue view 363 --comments`. This plan is written
@@ -104,8 +116,8 @@ plan RE-LANDS the rest of #337 as prior art:
   and NO compare, whereas legacy `admit()` (`admission.py:47`) raises
   `ValueError("conflicting idempotency key")` when `record.request != request`. Ported
   unchanged, a resume presenting the SAME `attempt_id` but a DIFFERENT
-  authority/approval/predicate is returned ACCEPTED — and under S8 "accepted" means
-  "authorized to append the ledger and merge." So on the dedup hit, AFTER `epoch_blocked`,
+  authority/approval/predicate is returned ACCEPTED — and under the readmit consumer (P2's S8)
+  "accepted" means "authorized to append the ledger and merge." So on the dedup hit, AFTER `epoch_blocked`,
   the re-land MUST rebuild `make_request(prior.epoch, attempt_id)` and require field equality (raising a
   field-wise conflict otherwise), matching `admit()`'s semantics. This guard is reachable
   ONLY under §6's DETERMINISTIC `attempt_id`: with the random `uuid4`, dedup never fires and
@@ -287,73 +299,14 @@ green). So the seams are enumerated exhaustively, each with the exact change.
 - **S4 — `verbs.py`, `readmit_advanced_head`** *(re-landed from #337).* Already uses
   `admit_next`. No change beyond re-landing.
 
-- **S8 — `train_runner.py:892`, `_fab_delta_readmit` (THE readmit CONSUMER — the seam
-  #288 exists to fix; "guard correct, never wired" applied to the readmit half).**
-  Today (verified on `main` @ `b581fcd`): `_fab_delta_readmit` takes `ledger_path`, **NOT a
-  `broker_client`**, and the call site (`train_runner.py:3084`) passes no broker. So the
-  delta re-admit **bypasses broker lease/epoch/revocation entirely** — a node whose lease
-  was revoked mid-run can still delta-re-admit and merge.
-  **⚠️ There are TWO re-admission COMMIT POINTs in this one function, not one** (round-1 CR,
-  codex — verified):
-  - **`train_runner.py:1016`** — the idempotent CRASH-RESUME early append (comment: "a prior
-    attempt already extended the chain to the live head AND it passes the gate — only the
-    ledger append was pending"). Fires when `resolved_final == live_head_sha and
-    _gate_passes()`.
-  - **`train_runner.py:1139`** — the NORMAL path append ("7. COMMIT POINT"), after
-    capture+build+re-gate.
-
-  Both build the **identical** `LedgerRecord(status="pr_open", head_sha=live_head_sha,
-  fab_run_id=run_id, …)` and both `append_record(..., durable=True)` directly. A rewrite
-  that only touches `:1139` (the seam a reader lands on) leaves `:1016` as a live bypass: a
-  crash that leaves gate-passing extended provenance lets a **revoked resume take the early
-  `:1016` append and merge with no broker admission** — the exact #288 defect, on the path
-  nobody reads. This is the dominant failure class in this line of work (guard added at one
-  seam; a second seam completes the same operation unguarded).
-  **Change — ONE shared broker-gated commit path covering BOTH appends (directive #1):**
-  introduce a single inner `_commit_readmission(*, broker_client, ledger_path, node_id,
-  branch, pr_url, merge_order, run_id, new_head_sha) -> str | None` that (a) fails CLOSED and
-  returns `None` when `broker_client is None` (NO direct-append fallback — caller falls
-  through to the unchanged `pr-head-advanced` guard); (b) otherwise calls
-  `broker_client.readmit_advanced_head(...)`, which allocates via `admit_next` and
-  fail-closes on `epoch_blocked`; (c) `append_record(..., durable=True)` the ledger record
-  ONLY on an accepted `ReadmitResult`, then returns `new_head_sha`. **BOTH `:1016` and
-  `:1139` call this one function instead of their inline `append_record`.** Two call sites
-  converging on one admission-gated function — not two parallel rewrites that can drift.
-  **Normative: any future site that advances the admitted head MUST route through
-  `_commit_readmission`; a new direct `append_record` of an advanced head is a defect.**
-  - **Commit-ordering / crash-consistency (state it so the shifted COMMIT POINT is not
-    misread as a regression):** the broker admission becomes the authority; the ledger append
-    is downstream of an accepted `ReadmitResult`. A crash BETWEEN the broker admit and the
-    ledger append still fails CLOSED — the ledger stays at the OLD admitted head, so
-    `_live_merge_pr` pins `--match-head-commit` to it and the guard fires; on resume the
-    `:1016` branch re-enters `_commit_readmission`, and `admit_next` **dedups on the
-    deterministic `readmit_attempt_id(node_id, new_head_sha)`** → same epoch if not revoked
-    (idempotent, ledger append completes), refused if revoked (§6 two-layer / AC-6b).
-  - **Threading (the load-bearing plumbing #288's body calls "multi-day protocol
-    integration"):** `broker_client` must reach `_fab_delta_readmit` through the PRODUCTION
-    path `run_train → merge loop (`:3084`) → _fab_delta_readmit → _commit_readmission`. The
-    `CoordinatorRuntime` already carries `broker_client` (`train_runner.py:100`); it must be
-    added to the `:3084` call and to `_fab_delta_readmit`'s signature. **Re-landing S4 makes
-    the primitive EXIST; it does not make S8 CALL it — the test that proves the wiring is a
-    seam-level test (AC-8a/8b, §8), NOT a direct helper call.**
-
-**Enumeration method (so a reviewer can check COMPLETENESS, not just the result) —
-repo-wide, per directive #3:**
-1. `grep -rn "append_record(" phase-loop-runtime/src/` → **21 call sites in 3 files**
-   (`train_ledger.py`, `train_runner.py`, `advisor_board/observability.py`). The durable
-   ledger `append_record` is the SOLE commit surface that admits/advances a node's admitted
-   head — the merge pins `--match-head-commit` to the ledger's admitted head, so a
-   head-advancing re-admission MUST write a ledger record carrying the new head.
-2. Discriminant for a HEAD-ADVANCING re-admission commit: the appended `LedgerRecord` sets
-   `head_sha=live_head_sha` (the advanced head). `grep -rn "head_sha=live_head_sha"
-   phase-loop-runtime/src/` — then EXCLUDE the read-side `final_pr_head_sha=live_head_sha` /
-   `live_head_sha=` params in `fab_gate.py` and `fab_canonical.py` (gate-compose inputs, not
-   ledger writes). **Result: exactly `train_runner.py:1020` and `:1143` — i.e. the `:1016`
-   and `:1139` appends, both inside `_fab_delta_readmit`.** The `observability.py` and
-   `train_ledger.py` appends are non-head-advancing (metrics / the `append_record` def).
-3. Completeness is re-checkable by re-running both greps: any NEW head-advancing append
-   surfaces as a third `head_sha=<advanced head>` hit and MUST route through
-   `_commit_readmission` (step (1) normative rule).
+- **S8 (the readmit CONSUMER — `_fab_delta_readmit`) is MOVED TO P2.** Re-landing the
+  `readmit_advanced_head` primitive here (S4) makes it EXIST; wiring the consumer that CALLS
+  it — replacing the two direct `append_record` commit points (`train_runner.py:1016`
+  crash-resume + `:1139` normal) with one broker-gated `_commit_readmission` path, and
+  threading `broker_client` through `run_train → :3084 → _fab_delta_readmit` — is
+  `plans/detailed-fab-288-p2-readmit-consumer-20260729.md` §3 (AC-8a/AC-8b). It depends on
+  THIS plan (P1) being merged. The `append_record` enumeration method that finds those two
+  commit points moves with it.
 
 ### ALLOCATOR / FENCE seams
 
@@ -650,8 +603,8 @@ injection anchor, and a positive control
   `attempt_id=X` but a `make_request` that rebuilds to DIFFERENT authority/approval/predicate
   fields: it RAISES (conflicting idempotency), appends NO second record. **Falsifier:**
   restore the 288a dedup that does `return record` with no rebuild/compare → the conflicting
-  resume is returned ACCEPTED (and under S8 that is "authorized to append the ledger and
-  merge"). **Injection anchor:** the `attempt_id` dedup return inside `admit_next` (S6, §3) —
+  resume is returned ACCEPTED (and under the readmit consumer (P2's S8) that is "authorized to
+  append the ledger and merge"). **Injection anchor:** the `attempt_id` dedup return inside `admit_next` (S6, §3) —
   assert the rebuild `make_request(prior.epoch, attempt_id)` + compare is present in `src` before
   mutating (a mutation against a moved anchor is a silent no-op). **Positive control
   (load-bearing):** a GENUINE resume — same `attempt_id`, a request that rebuilds to the
@@ -759,65 +712,11 @@ injection anchor, and a positive control
   is §5b's deferred design pass — this AC pins the BEHAVIOR (faithful retry dedups, real conflict
   rejects) independent of which realization §5b lands.
 
-> **AC-8 is split into AC-8a (normal path) and AC-8b (crash-resume path) — the two S8
-> commit points. BOTH bind to the PRODUCTION SEAM, not to a direct helper call.** Driving
-> `_fab_delta_readmit(broker_client=<fake>, …)` directly would test the helper in isolation
-> and CANNOT catch the actual #288 defect — `broker_client` never threaded through the
-> `:3084` production path (the "guard correct, never wired, suite green" class). It also
-> breaks the §10 contract: a test naming the new `broker_client` param dies on `main` with a
-> `TypeError` (rule-2 wrong-reason red) and must be edited by the impl PR (rule-5 violation).
-> So each test sets up a revoked per-repo broker store and drives the merge-loop seam
-> (`run_train` / the `:3084` caller — at minimum `_live_merge_pr`); it NEVER hands
-> `broker_client` to the helper. The wiring supplies it, so an unwired path stays red.
-
-- **AC-8a — the NORMAL-path delta re-admit is subject to revocation.** Drive the merge-loop
-  seam with a valid single-commit PASS delta (so `:1139` is the append reached) against a
-  revoked per-repo broker store (`evidence_store.epoch_blocked = True`): the node does NOT
-  re-admit — no new admitted head, no `:1139` ledger append, the merge falls through to the
-  `pr-head-advanced` guard (no merge). **Falsifier:** restore the direct `append_record` at
-  `train_runner.py:1139` (the current bypass) → the seam re-admits and the advanced head
-  merges despite revocation. **Injection anchor:** the `:1139` append rewrite +
-  `broker_client` threading at the `:3084` call. **Wave-0 red on `main` — get the POLARITY right
-  (round-4 grok B1 + self-review).** The PRIMARY assertion is the DESIRED behavior under
-  revocation: `assert result["status"] != "merged"` (and NO `:1139` ledger record for the
-  advanced head). RED on `main` — the bypass appends at `:1139` ignoring the revoked store, so
-  `main` merges and this assertion FAILS — and GREEN after the fix. **Do NOT assert
-  `status == "merged"`: that is GREEN on `main` (the bug merges) and RED after the fix — the
-  INVERSE of red-first, and it leaves no passing regression guard (§10 rule-5). Asserting a
-  POSITIVE observable (grok B1) does NOT mean asserting the bug outcome.** Grok's
-  non-vacuity is satisfied by a companion **reachability control that runs AT WAVE-0** (not
-  POST-IMPL): the SAME delta against a NON-revoked store (`epoch_blocked = False`) asserts the
-  merge/append DOES happen — `status == "merged"`, the `:1139` record written. That control is
-  GREEN on `main` (the bypass merges regardless of revocation) AND GREEN post-fix (re-admits at
-  an allocated epoch), so it proves the seam is REACHED in both worlds; if it ever fails, the
-  delta never reached `:1139` and the revoked assertion's greenness is suspect — the exact
-  vacuity grok named. The pair — red-first "not merged under revocation" + wave-0 "merged when
-  NOT revoked" — is the "pair a negative with a positive control" rule, non-vacuous by
-  construction. **Green-time (POST-IMPL):** the non-revoked control keeps passing (re-admits at
-  an allocated epoch), now proving the fix PRESERVED reachability rather than killing the path.
-
-- **AC-8b — the CRASH-RESUME delta re-admit is subject to revocation (the second bypass
-  codex found).** Pre-extend the durable provenance to the live head so it passes the gate
-  (`resolved_final == live_head_sha and _gate_passes()` → the `:1016` crash-resume branch
-  fires), then drive the SAME merge-loop seam against a revoked store: the node does NOT
-  re-admit — no `:1016` ledger append, falls through to the guard. **Falsifier:** restore the
-  direct `append_record` at `train_runner.py:1016` (the crash-resume bypass) → a revoked
-  resume takes the early append and merges. **Injection anchor:** the `:1016` append
-  specifically (assert `head_sha=live_head_sha` at that append in `src` before mutating, so
-  the mutation cannot be a silent no-op against a moved anchor). **Wave-0 red on `main` — POLARITY
-  (round-4 grok B1 + self-review).** PRIMARY assertion = desired behavior: `assert
-  result["status"] != "merged"` and NO `:1016` ledger record. RED on `main` (the crash-resume
-  bypass appends at `:1016` ignoring revocation → `main` merges → fails), GREEN after the fix.
-  **Do NOT assert `status == "merged"` (green-on-main, red-after-fix — inverted, no regression
-  guard).** **Reachability control AT WAVE-0:** the SAME pre-extended-provenance scenario against
-  a NON-revoked store must route to `:1016` and merge/advance (`status == "merged"`, the `:1016`
-  record written) — GREEN on `main` and post-fix. This is what proves the `:1016` crash-resume
-  BRANCH was actually entered (the gate `resolved_final == live_head_sha and _gate_passes()`
-  satisfied); if it fails, the provenance never routed to `:1016` and the revoked assertion is
-  vacuous — the seed-precondition discipline of AC-12 applied to a code branch. **Green-time
-  (POST-IMPL):** with `epoch_blocked = False` the crash-resume DEDUPS to the SAME `granted_epoch`
-  (idempotent resume, per §6/AC-6b) and the head advances — proving the fix refuses only under
-  revocation, not that the crash-resume path is dead.
+> **AC-8a / AC-8b (the two S8 readmit-consumer commit points) are MOVED TO P2**
+> (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md` §5). They are P2's wave-0, red
+> against P1-MERGED `main` — P1 does not touch the consumer, so the bypass they target
+> persists until P2 wires it. AC-7 below stays in P1 (the docs retraction lands with the
+> publish migration).
 
 - **AC-7 — CHANGELOG/doc retraction present and self-consistent.** A repo check (grep-level
   is sufficient) asserts (a) `CHANGELOG.md` contains the byte-neutrality RETRACTION entry
@@ -844,7 +743,6 @@ vacuous even if a different assertion would catch it.
 | AC-6a | "blocked" where prior result expected | ✅ | regression-guard |
 | AC-6b | acceptance (ledger append) where refusal expected | ✅ | scenario needs a dedup-able resume ⇒ requires the §6 deterministic `attempt_id` |
 | AC-7 | grep check failure | ✅ | doc-level |
-| AC-8a / AC-8b | primary: `status != "merged"` under a revoked store (RED on `main`, which merges via the bypass); paired with a wave-0 non-revoked control asserting `status == "merged"` | ✅ (wave-0 red) | production-seam bound; polarity is red-first (round-4 — NOT `status=="merged"`, which is green-on-main); the non-revoked control proves the seam was reached (grok B1 non-vacuity) |
 | AC-9 | conflicting resume accepted / same record for a different request | ✅ | dead code under `uuid4` ⇒ requires the §6 deterministic `attempt_id` |
 | AC-10 | record appended with `epoch != request.lease_epoch` (no raise) | ✅ | NEW; guards the allocated-epoch enforcement |
 | AC-11 | record appended with `request.attempt_id != attempt_id` (no raise) | ✅ | NEW; guards the dedup-identity enforcement — mirrors AC-10, one field over |
@@ -865,9 +763,9 @@ AC-13's falsifier is the current drift. A reviewer can check this table against 
 whose "fires?" is ✅ must have an assertion reading the named observable, not a `pytest.raises`
 where the audit says "values" or "count."
 
-### Path-entered re-audit — if the scenario silently never reaches the seam, does the assertion still pass? (round-4, per grok B1 "sweep ALL fourteen")
+### Path-entered re-audit — if the scenario silently never reaches the seam, does the assertion still pass? (round-4, per grok B1 "sweep ALL")
 
-Grok named AC-8a/8b; the discipline is general. For every AC, name the SPECIFIC proof that the
+Grok named AC-8a/8b (now owned by P2); the discipline is general and applied to every P1 AC below. For every AC, name the SPECIFIC proof that the
 seam was ENTERED — a positive observable that cannot occur on an unreached path, or an explicit
 positive control. An AC whose core assertion is a NEGATIVE ("X did not happen") is vacuous on any
 scenario that silently never reaches the seam, unless a positive control proves reachability.
@@ -882,16 +780,15 @@ scenario that silently never reaches the seam, unless a positive control proves 
 | AC-6a | negative (not blocked) | positive control: DIFFERENT `head_sha` IS refused at `:64` (proves `:58` reached) |
 | AC-6b | negative (refused, no append) | positive control: non-revoked resume dedups to the SAME `granted_epoch` (proves the resume path is entered) |
 | AC-7 | doc grep | N/A (static check, no seam) |
-| **AC-8a / AC-8b** | **negative (`status != "merged"` under revocation)** | **round-4 FIX: a WAVE-0 non-revoked reachability control (same delta, `epoch_blocked=False` → `status=="merged"`, ledger record written) proves the seam is reached — GREEN on `main` and post-fix. The primary red-first assertion is the DESIRED behavior, NOT the bug outcome (`status=="merged"` would be green-on-main = inverted).** |
 | AC-9 | POSITIVE — a `ValueError` raise | the raise cannot occur on an unreached compare; positive control: genuine resume dedups (no false conflict) |
 | AC-10 | POSITIVE — field divergence value / raise | the divergent record / raise is a positive read |
 | AC-11 | POSITIVE — field divergence value / raise | mirrors AC-10 |
 | AC-12 | negative (no 2nd record) | round-3 FIX: asserts the `PROVIDER_CALL_IN_FLIGHT` seed (path-entered) + positive control (different head → new record) |
 | AC-13 | mixed (raise vs dedup) | round-4: asserts the `attempt_id` dedup HIT (prior record found) as the path-entered precondition BEFORE the compare outcome |
 
-Two ACs needed the fix this round (AC-8a/8b); the rest already carried a positive observable or a
-reachability control, shown above so the sweep is checkable rather than declared. AC-13 was built
-with its path-entered precondition from the start.
+The two ACs that needed the fix this round (AC-8a/8b) are now in P2; each P1 AC above carries a
+positive observable or a reachability control, shown so the sweep is checkable rather than
+declared. AC-13 was built with its path-entered precondition from the start.
 
 ---
 
@@ -908,10 +805,14 @@ with its path-entered precondition from the start.
   holds for FAB machinery, but the #199 publish admission record shape changes
   unconditionally. Item 3.1/3.2 (broker-admitted head bound at admission time) is satisfied
   by the allocated epoch.
-- **`plans/manifest.json`** — tooling-owned (lifecycle-driven by the execute-detailed
-  runner); the execution PR's runner registers this plan on `executing`. Do NOT hand-edit
-  it here (a single bad entry has silently disabled all plan discovery before). The
-  amendment-2 plan was never manifested on `main`, so there is no stale entry to retire.
+- **`plans/manifest.json`** — this plan (P1, slug `fab-288-shared-epoch-allocator`, 13 ACs) is
+  registered on THIS branch via `phase_loop_runtime.plan_manifest.append_entry` (the typed
+  `DotfilesPlanEntry`, `status: committed`) — the deferral to avoid the #365 conflict is lifted
+  now that #365 has merged. **Registered via `append_entry`, never hand-edited** (a single bad
+  entry has silently disabled all plan discovery before); lifecycle transitions (`executing` →
+  `completed`) are driven later by the execute-detailed runner. P2 registers its own entry
+  (`fab-288-p2-readmit-consumer`, 2 ACs) on its own branch, reconciled against P1-merged `main`.
+  The amendment-2 plan was never manifested on `main`, so there is no stale entry to retire.
 - **The re-landed `admit_next` / readmit docstrings** carry forward from #337.
 
 ---
@@ -994,24 +895,18 @@ into two waves.
 
 **Wave-0 test PR — red against current `main`, no new production code required.** The
 falsifier here IS the status quo, so the test is red on arrival with zero behavior
-scaffolding. The two the directive prioritizes both live here:
+scaffolding. P1's wave-0 items (AC-8a/8b having moved to P2):
 
-- **AC-8a + AC-8b (readmit-consumer bypass, BOTH commit points) — highest-value test-first
-  items, wave-0.** Current `_fab_delta_readmit` appends directly at `:1139` (normal) AND
-  `:1016` (crash-resume), ignoring the broker; driven at the merge-loop seam against a
-  revoked per-repo store it STILL appends and the advanced head merges. Each test reproduces
-  the #288 defect on its path and is RED on `main`. They MUST exist and fail before any
-  allocator or publish work, so neither bypass can be introduced by ordering accident
-  (flipping `_FAB_DELTA_BROKER_READMIT_READY` while either append is still direct). Falsifier
-  = the current direct append at that specific line = the tree as it stands. **Bound at the
-  PRODUCTION SEAM, never a direct helper call (§8 preamble); the POSITIVE controls
-  (non-revoked advances; 8b dedups to the same epoch) are POST-IMPL green-time, not wave-0
-  red.**
+- **AC-8a + AC-8b (readmit-consumer bypass) are MOVED TO P2** — they are P2's wave-0, red
+  against P1-MERGED `main` (P1 does not touch `_fab_delta_readmit`, so both direct-append
+  commit points `:1016`/`:1139` persist as the bypass on P1-merged `main`). See
+  `plans/detailed-fab-288-p2-readmit-consumer-20260729.md` §6. They are NOT part of P1's
+  wave-0.
 - **AC-1 (round-4 stale-epoch incident) — red on arrival, but VIA A SEEDED RECORD, not the
   literal sequence.** ⚠️ The reproduction "publish A → readmit A → publish B" is NOT
   buildable on `main`: `readmit_advanced_head` is re-landed by step (1) and is absent, and
   the on-`main` `_fab_delta_readmit` appends to the ledger — not the broker admission store
-  (that is the S8 bypass) — so **nothing on `main` advances the broker admission epoch via
+  (that is the readmit-consumer bypass P2 fixes) — so **nothing on `main` advances the broker admission epoch via
   readmit**, and the literal sequence cannot trip the fence pre-allocator. The wave-0 test
   instead SEEDS a broker record at epoch 2 directly via `admit()` (legal on an empty store —
   the fence is `if records and …`), then drives the live publish path (S1/S3) at
@@ -1054,7 +949,7 @@ alongside the guard.
   new guarantee hiding here; relabel it a `REGRESSION GUARD` naming the `:58`-before-`:64`
   ordering. It is legitimately green from the start.
 
-Everything else in §8 fails on arrival for its named reason (AC-1/AC-7/AC-8a/AC-8b against `main`
+Everything else in §8 fails on arrival for its named reason (AC-1/AC-7 against `main`
 per wave-0 above; AC-3/AC-4/AC-5/AC-6b/AC-9/AC-10 against the step-1 skeleton) and satisfies the
 contract.
 
@@ -1076,46 +971,29 @@ contract.
    byte-diff review against a live-broker fixture. §5b's commit-stable mechanism is a DEFERRED
    design pass INSIDE this step — its density is the core of the split recommendation (§12).**
 3. **Docs/CHANGELOG retraction** (§9) — lands WITH (2); AC-7 gates it.
-4. **Wire the readmit CONSUMER** (S8) — replace BOTH direct `append_record` sites
-   (`:1016` crash-resume + `:1139` normal) with the single `_commit_readmission` →
-   `broker_client.readmit_advanced_head` path, and thread `broker_client` through
-   `run_train → merge loop (`:3084`) → _fab_delta_readmit`. Depends on (1). This is the
-   "multi-day protocol integration" of #288 and the actual gap the flag guards. **AC-8a AND
-   AC-8b gate it** (one per commit point).
-5. **Flip `_FAB_DELTA_BROKER_READMIT_READY = True`** in `governed_premerge.py:76` — LAST,
-   as its own gated step per the #288 landing-checklist interlock. **Depends on BOTH (4)
-   consumer wiring AND (2) publish migration** (round-1 CR, grok — verified). Two failure
-   modes it must not activate: **(a)** flipping while `_fab_delta_readmit` still appends
-   directly ACTIVATES the exact bypass #288 exists to fix (needs (4)); **(b)** flipping while
-   publish is still on `admit(lease_epoch=1)` creates MIXED ALLOCATION — the first delta
-   readmit allocates epoch 2 into the shared per-repo store via `admit_next`, then the next
-   live #199 publish still presents epoch 1 and the fence at `admission.py:49` raises
-   `PermissionError("stale epoch")` (`1 < 2`), BRICKING every multi-node train after the
-   first readmit (needs (2)). Mode (b) is the identical mixed-allocation hazard that killed
-   #337 round 4 — reintroduced through the dependency graph rather than the code; an earlier
-   draft over-corrected "the flag must not depend only on the primitive" into "depends on (4)
-   NOT (2)," which is exactly this bug. Until this flip, the delta-shortcut ENGAGE path is
-   fenced OFF by construction and the gap is unreachable.
 
-Blocks: (2)→(1); (4)→(1); (5)→(2); (5)→(4). Publish migration (2) and consumer wiring (4)
-both sequence before the flip (5) so no ENGAGE path can reach a half-migrated allocator
-(mode b) or a still-bypassing consumer (mode a) — the flip requires BOTH, never "(4) alone /
-the flag ignores publish." (2) and (4) are independent of EACH OTHER and may land in either
-order, but both are predecessors of (5); all build on the re-landed primitive (1).
+**Steps (4) and (5) are P2** (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`): (4)
+wire the readmit CONSUMER (`_fab_delta_readmit` → `_commit_readmission → readmit_advanced_head`,
+both commit points, `broker_client` threaded through `:3084`); (5) flip
+`_FAB_DELTA_BROKER_READMIT_READY = True`. **P2 depends on THIS plan (P1) being MERGED** — which
+makes the flag-flip interlock SAFER, not riskier: the flip must not activate while publish is
+still on `admit(lease_epoch=1)` (mode (b), the mixed-allocation brick that killed #337 round 4),
+and P1-migrated-publish-on-`main` satisfies that predecessor as a **merge boundary** rather than
+an in-document ordering promise a reader could miss. P2 §7 owns the full interlock.
+
+Blocks (within P1): (2)→(1); (3) lands with (2). The publish migration (2) builds on the
+re-landed primitive (1). The cross-plan edge (P2 step 5)→(P1 step 2) is discharged by the P1
+merge boundary.
 
 ---
 
 ## 12. Scope statement + what is explicitly NOT in scope (do not over-build)
 
-**In scope (the full #288 arc):** this is the migration plan for #288, so it covers the
-allocator foundation (1), the publish migration (2) — the LIVE-#199 risk the ratification
-is about — the docs retraction (3), the readmit CONSUMER wiring (4, S8/AC-8a/AC-8b — BOTH
-commit points `:1016`+`:1139` via one gated path) — the seam #288 exists to fix — and the
-gated flag flip (5). The flag flip is NOT a safe terminal step
-until the consumer is wired AND publish is migrated (the mixed-allocation brick, grok
-round-1); that dependency is fixed in §11 — the flip depends on BOTH (2) and (4). The consumer wiring is
-"multi-day protocol integration" per #288's body — specified here at the seam/falsifier
-level, implemented by the execution PR.
+**In scope (P1 — the allocator + publish half of the #288 arc):** the allocator foundation (1)
+— the re-landed `admit_next` + `readmit_advanced_head` primitive — the publish migration (2),
+the LIVE-#199 risk the ratification is about, and the docs retraction (3). The readmit CONSUMER
+wiring and the gated flag flip are **P2** (steps 4/5, AC-8a/AC-8b;
+`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`), which depends on this plan merged.
 
 **Explicitly NOT in scope:**
 
@@ -1130,37 +1008,18 @@ level, implemented by the execution PR.
 - **No touching the FAB review-round epoch or the seat-outcome epoch** (§2). A sweep that
   renumbers `epoch=1` in `tests/test_fab_*.py` is the wrong sweep.
 
-### 12b. Convergence assessment + split recommendation (round-4, requested by the team-lead)
+### 12b. Split status (RATIFIED) — this is P1 of 2
 
-**Is this converging or churning?** Converging on the DESIGN — four rounds, eleven blocking
-findings, every one verified real, and each round nailed a genuinely DIFFERENT invariant (round-1
-the DAG mixed-allocation + dropped conflict-compare; round-2 epoch enforcement + attempt_id
-locus; round-3 the two-arg propagation to S1; round-4 commit-stable approval identity + the
-path-entered vacuity). Several were introduced by the prior round's fix — that is the signature
-of a genuinely entangled sub-system, not of a wandering plan.
-
-**But the density is NOT uniform — it is concentrated in the publish-migration half, and it is
-ISOLABLE.** Discriminant checked in source: the recurring hard core is publish's IDENTITY under a
-commit that moves HEAD mid-operation (epoch late-binding, deterministic `attempt_id` from the
-post-commit head, and now commit-stable `approval_digest`). **`readmit_advanced_head` does NOT
-share it** — it takes `approval` as a caller-supplied parameter (`c1da62a` `verbs.py:87`) and
-keys on an already-advanced, stable `new_head_sha`; it never re-derives `base_sha` from a drifting
-`rev-parse HEAD`. So the entangled-identity work is publish-specific, and the readmit-CONSUMER
-half (S8/AC-8a/AC-8b — wire `_fab_delta_readmit` through the broker) is comparatively self-
-contained (one finding cluster: the two commit points, plus the round-4 path-entered hardening).
-
-**Recommendation (for the team-lead to ratify — NOT self-executed):** carve this into two plans
-along the merge boundary the §11 DAG already implies:
-- **P1 — allocator + publish migration** = steps (1)(2)(3): the re-landed primitive, the publish
-  migration, and the §5b commit-stable-approval-identity design pass. This is where all the
-  density lives; it gets AC-1..AC-7, AC-9, AC-10, AC-11, AC-12, AC-13.
-- **P2 — readmit consumer + flag flip** = steps (4)(5), DEPENDS ON P1 merged. It gets AC-8a/AC-8b
-  and owns the flag-flip interlock. Making P2 depend on P1-merged makes the mixed-allocation
-  interlock (§11: flip requires BOTH publish migrated AND consumer wired) SAFER, not riskier —
-  publish is already migrated on `main` before P2 begins, so the (5)→(2) edge is satisfied by a
-  merge boundary rather than an in-plan ordering promise.
-
-This is the honest "this is too big" the team-lead invited: the §5b identity sub-design deserves
-focused treatment and should not gate the (simpler, ready) consumer-wiring work. **If the
-team-lead prefers to keep one plan, it stands as written — the split is a delivery-sequencing
-recommendation, not a correctness gap.**
+The combined plan converged on the DESIGN over four adversarial rounds (eleven blocking
+findings, all verified real, each round a genuinely different invariant), but its density is
+concentrated — and entangled — in the publish-migration half: publish's IDENTITY under a commit
+that moves `HEAD` mid-operation (epoch late-binding, the deterministic post-commit `attempt_id`,
+and §5b commit-stable `approval_digest`). The readmit-CONSUMER half does NOT share that
+entanglement — `readmit_advanced_head` takes `approval` as a caller-supplied parameter
+(`c1da62a` `verbs.py:87`) and keys on an already-advanced, stable `new_head_sha`. **The
+maintainer ratified splitting along the §11 merge boundary:** this plan is **P1** (steps 1/2/3,
+AC-1..AC-7 and AC-9..AC-13 — all the density, incl. the §5b design pass); **P2**
+(`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`) is the readmit consumer + flag flip
+(steps 4/5, AC-8a/AC-8b) and **depends on P1 merged**. Making P2 depend on P1-merged makes the
+mixed-allocation interlock SAFER — publish is already migrated on `main` before P2 begins, so the
+(P2 step 5)→(P1 step 2) edge is satisfied by a merge boundary rather than an in-plan promise.
