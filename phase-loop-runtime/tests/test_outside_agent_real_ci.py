@@ -32,8 +32,15 @@ _EXPECTED_EXIT = {
     "negative-missing-digest": 2,
     "negative-unknown-producer-identity-posture": 2,
     "negative-path-traversal": 2,
+    "negative-empty-evidence-refs": 2,
+    "negative-git-object-id-length": 2,
     "negative-source-bundle-mismatch": 6,
 }
+
+
+def test_expected_exit_map_covers_every_canonical_submission_vector():
+    """A re-vendor that adds a vector must extend this map, not skip it."""
+    assert {entry["case_id"] for entry in _SUBMISSION_ENTRIES} == set(_EXPECTED_EXIT)
 
 
 def _run_validate(vector_path, tmp_path):

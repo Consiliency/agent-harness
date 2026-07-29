@@ -73,16 +73,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   SEPARATE concern (see round 2 below). The vector runner consumes the canonical
   path-referenced manifest (`case_id`/`path`/`schema_target`/`expected_valid`).
 - **Test-first, against the REAL corpus.** The canonical Consiliency/spec corpus (schemas +
-  9 vectors + manifest) is vendored under `conformance/_contract` with per-file sha256
+  11 vectors + manifest) is vendored under `conformance/_contract` with per-file sha256
   provenance in `VENDOR.json` and a drift-guard test. A new suite drives every canonical
   vector through the `outside-agent-validate` core and the pinned vector runner, asserting
   the corpus's own `expected_valid` outcomes — the test whose absence let this ship.
 - **Exit-code taxonomy re-baselined:** schema failures read `schema_validation_failed` →
   `MALFORMED_INPUT (2)`; the schema-valid-but-inconsistent bundle-digest case →
   `CONFORMANCE_BLOCKED (6)`; unsafe `--submitted-ref` still → `PROVENANCE_FAILURE (4)`.
-- **Out of scope (unchanged):** the pinned `contract_git_sha`/`vector_manifest_hash` in
-  `outside_agent_pin.py` (Consiliency/agent-harness#370) and governed-pipeline's own fixture
-  (Consiliency/governed-pipeline#128).
+- **Vendored corpus anchored to the pin.** The corpus is vendored from the same immutable
+  tag the pin records after Consiliency/agent-harness#370 — `spec@v0.2.1` (deref commit
+  `b862f977`) — so the two schema digests and the vector-manifest digest in `VENDOR.json`
+  equal `submission_schema_sha256` / `verdict_schema_sha256` / `vector_manifest_hash` in
+  `outside_agent_pin.py` byte-for-byte. Validating against a copy older than the pin would be
+  agent-harness#371 in miniature. It brings the two vectors `v0.2.1` added
+  (`invalid-empty-evidence-refs`, `invalid-git-object-id-length`), both schema failures →
+  `MALFORMED_INPUT (2)`; a new assertion fails the suite if a future re-vendor adds a vector
+  without an expected exit code.
+- **Out of scope (unchanged):** the pin values themselves (Consiliency/agent-harness#370) and
+  governed-pipeline's own fixture (Consiliency/governed-pipeline#128).
 
 ### Outside-agent validator round 2: keep redaction a SEPARATE safety pass, sanitize schema messages (Consiliency/agent-harness#371)
 

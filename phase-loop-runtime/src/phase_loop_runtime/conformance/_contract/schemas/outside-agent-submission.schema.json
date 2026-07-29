@@ -45,6 +45,7 @@
     },
     "evidence_refs": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "$ref": "#/$defs/evidence_ref"
       }
@@ -173,7 +174,8 @@
     },
     "git_sha": {
       "type": "string",
-      "pattern": "^[a-f0-9]{40,64}$"
+      "description": "Git object id: exactly 40 hex (SHA-1) or exactly 64 hex (SHA-256). Intermediate lengths are not representable and are rejected.",
+      "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
     },
     "source_bundle_ref": {
       "type": "object",

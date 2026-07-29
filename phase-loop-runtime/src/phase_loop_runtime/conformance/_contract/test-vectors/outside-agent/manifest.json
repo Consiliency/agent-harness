@@ -87,6 +87,26 @@
       "expected_verdict": "reject",
       "expected_blocker_class": "unsafe_evidence_reference",
       "negative_reason": "path_traversal"
+    },
+    {
+      "case_id": "negative-empty-evidence-refs",
+      "path": "test-vectors/outside-agent/invalid-empty-evidence-refs.json",
+      "submission_kind": "work_request",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "missing_information",
+      "negative_reason": "empty_evidence_refs"
+    },
+    {
+      "case_id": "negative-git-object-id-length",
+      "path": "test-vectors/outside-agent/invalid-git-object-id-length.json",
+      "submission_kind": "work_request",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "unsafe_evidence_reference",
+      "negative_reason": "malformed_git_object_id"
     }
   ]
 }
