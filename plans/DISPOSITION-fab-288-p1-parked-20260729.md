@@ -69,10 +69,22 @@ showed this **undoes AC-17 for exactly the records it is meant to rescue.** Two 
 - **The legacy-key fallback replays BEFORE the adapter's base verification.** Every base check
   (`_base_invalid`, the `origin/{base}...{head_sha}` diff) lives INSIDE `execute()`
   (`credsep.py:209+`, guards at ~:246/:248). The dedup/replay short-circuit decides whether
-  `execute` runs at all — a replay "MAKES NO ADAPTER CALL AT ALL" (the code's own comment,
-  `credsep.py:213-218`). A base-blind legacy match therefore short-circuits `execute` entirely and
-  **replays a record whose base was never verified against the current request** — recreating the
-  exact wrong-base publish replay AC-17 exists to forbid.
+  `execute` runs at all. The repository states the soundness of that short-circuit in its own
+  words (`credsep.py:213-216`):
+
+  > *"BrokerService replays a recorded terminal for that triple WITHOUT re-invoking the adapter,
+  > and its dedup key excludes base/owned_paths. That is sound because a REPLAY MAKES NO ADAPTER
+  > CALL AT ALL — there is no push/mutation on a replay, so there is nothing to re-authorize."*
+
+  **That comment is the proof, and it is sharper than an external assertion: the existing design is
+  sound PRECISELY BECAUSE the 3-arg key fully determines the outcome** — the triple names exactly
+  one PR, so replaying it re-authorizes nothing. **AC-17 removes that premise for legacy records:**
+  once `base` is part of identity, a base-blind legacy match replays a *different* base's PR, and
+  the code's own soundness argument no longer holds. The defect is not that the dual-read is badly
+  implemented — it is that it **reinstates an invariant the codebase documented as safe under an
+  assumption AC-17 deletes.** A base-blind legacy match short-circuits `execute` entirely and
+  replays a record whose base was never verified against the current request — recreating the exact
+  wrong-base publish replay AC-17 exists to forbid.
 
 grok framed it structurally as a **fourth foreclosure surface**: a migration dual-read on a
 *coarser* (base-free) key sitting in front of the *finer* (base-bound) AC-17 identity — the same
