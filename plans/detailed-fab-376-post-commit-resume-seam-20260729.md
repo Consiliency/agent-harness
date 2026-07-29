@@ -257,7 +257,19 @@ head by an EXACT match against a SHA recorded AFTER the commit landed:
 
 ```
 rec.committed_head_sha is not None  AND  HEAD == rec.committed_head_sha
+                                     AND  <current branch> == rec.branch
 ```
+
+The branch clause closes finding 2's second half ("accepts any same-parent foreign
+commit confined to owned paths, AND records `branch` without checking it"): the SHA
+answers commit-content identity, the branch clause answers ref identity. It is not
+redundant with the broker's own branch check — `credsep.py:210` compares the current
+branch to `request.branch`, but `request.branch` is itself derived from the current
+branch (tautological), so it cannot catch a wrong-branch resume; comparing against
+the RECORDED `rec.branch` can. (In a single persistent worktree the branch is
+normally invariant across the crash, so this is defense-in-depth; it fails closed if
+that assumption is ever violated — e.g. an operator checked out a different branch
+before re-running.)
 
 `committed_head_sha` is written by a best-effort `on_committed(head_sha)` callback
 fired INSIDE `publish_from_worktree` immediately after the commit, reusing the
@@ -458,14 +470,18 @@ cannot be PROVEN** — never run a destructive op on an unverified preservation 
 failure branch is exactly where bytes die). Two mechanisms satisfy "preserve";
 **the choice is a lead decision** because it changes AC-376-11's positive control:
 
-- **(P) Quarantine-in-place** (recommended — smaller, one worktree/branch): capture
-  the entire dirty state to a durable named ref (e.g. `git stash create` including
-  untracked, then anchor the resulting commit under `refs/fab-quarantine/<node>/<run_id>`
-  so it is discoverable and GC-safe), VERIFY the ref resolves to a non-empty object,
-  record it in the block/log, THEN `git reset --hard rec.pre_commit_head` + `git
-  clean -fd` and re-run `run_loop`. Preservation guarantee: **recoverable from a
-  verified named ref** — NOT byte-identical in the working tree (the tree is reset).
-  If the quarantine ref-write fails or is empty → BLOCK, no reset.
+- **(P) Quarantine-in-place** (recommended — smaller, one worktree/branch):
+  **requirement** — durably capture BOTH tracked AND untracked dirty state to a
+  recoverable, GC-safe named ref `refs/fab-quarantine/<node>/<run_id>` and VERIFY it
+  resolves to a non-empty object, record it in the block/log, THEN `git reset --hard
+  rec.pre_commit_head` + `git clean -fd` and re-run `run_loop`. (Note: bare `git
+  stash create` does NOT capture untracked files — the implementation must use a
+  mechanism that captures both, e.g. `git stash push --include-untracked` into a
+  retained ref, or an explicit index+`write-tree` of tracked-plus-untracked. AC-376-11
+  tests an UNTRACKED file's survival precisely so a tracked-only capture cannot pass.)
+  Preservation guarantee: **recoverable from a verified named ref** — NOT
+  byte-identical in the working tree (the tree is reset). If the quarantine ref-write
+  fails or is empty → BLOCK, no reset.
 - **(W) Fresh worktree** (satisfies the lead's literal "byte-identical afterwards"):
   regenerate in a NEW `git worktree add` at `rec.pre_commit_head`, leaving the
   original crashed worktree UNTOUCHED — an unrelated file is byte-identical
@@ -496,9 +512,14 @@ append (`:2509`):
 rec = ledger_state.get(nid)                 # last-wins fold gives Record B if it exists
 if rec is not None and rec.status == "committing":
     head = <git rev-parse HEAD in workspace>
-    if rec.committed_head_sha is not None and head == rec.committed_head_sha:
+    if rec.committed_head_sha is not None and head == rec.committed_head_sha \
+       and <current branch> == rec.branch:
         # EXACT identity (round-3 finding 2): the head IS the object the publisher
-        # committed (SHA recorded POST-commit, hook-robust). → resume-publish it.
+        # committed (SHA recorded POST-commit, hook-robust) AND on the recorded
+        # branch (the finding's "records `branch` without checking it" clause — the
+        # broker's own branch check `credsep.py:210` is tautological, current==request
+        # both derived from the current branch, so it cannot catch a wrong-branch
+        # resume; this compares against the RECORDED branch). → resume-publish it.
         <upstream-staleness re-check — see §3; block if stale>
         <git fetch origin <base> — see §4; block on fetch failure>
         <route through the prebuilt publish path (prebuilt=True), §4,
@@ -506,8 +527,9 @@ if rec is not None and rec.status == "committing":
          the broker re-authorizes owned-scope on publish — credsep :248-253>
         <run the FULL success epilogue below (B1 + B2)>
     elif rec.committed_head_sha is not None:
-        # Record B present but head != committed_head_sha → the head moved off the
-        # recorded commit (foreign/advanced). Cannot claim it as ours. → fail closed.
+        # Record B present but head != committed_head_sha (or the branch is not the
+        # recorded one) → the head/branch is not the object+ref we committed
+        # (foreign/advanced/wrong-branch). Cannot claim it as ours. → fail closed.
         <blocked: "committed_head_moved_on_resume"; fail closed>
     elif head == rec.pre_commit_head:
         # commit never landed → PRESERVE-then-regenerate (§1b, round-3 finding 1).
@@ -741,7 +763,8 @@ update to #368's AC-13 reachability note pointing at `AC-376-4` as the discharge
   declared-prebuilt path (`:2518-2561`) does not commit and passes no `on_committed`.
 - Step 4 resume loop (around `:2505-2509`) — **add** — the `committing`
   reconciliation branch (§2), keyed on `rec.committed_head_sha`: (a) present AND
-  `HEAD == rec.committed_head_sha` → EXACT identity → §3 upstream re-check + `git
+  `HEAD == rec.committed_head_sha` AND `current branch == rec.branch` (finding-2
+  branch clause) → EXACT identity → §3 upstream re-check + `git
   fetch origin <base>` + prebuilt publish path (§4) using `rec.owned_paths` (codex 3;
   the broker re-authorizes owned-scope on publish) + FULL success epilogue
   (`_resolve_admission_fab_run_id` block-or-bind, `completed_nodes`, `pr_open` with
@@ -1126,9 +1149,14 @@ and not a re-proof against an unreachable path — the `#368` AC-12/13 sin).
   *Injection anchor:* run all arms in the same module against a real repo — (positive)
   configure a pre-commit hook that reformats an OWNED file, let the REAL `on_committed`
   fire, resume, assert PUBLISHES with `HEAD == rec.committed_head_sha`; (identity-neg)
-  after the real crash, replace HEAD with a DIFFERENT foreign commit on the same
-  parent, confined to owned paths, and assert the resume BLOCKS
-  `committed_head_moved_on_resume` with `broker.execute` not called; (gap-neg) drive a
+  after the real crash, move HEAD to a DIFFERENT foreign commit on the same parent,
+  confined to owned paths, and assert the resume BLOCKS `committed_head_moved_on_resume`
+  with `broker.execute` not called. **(Faithfulness distinction: the MARKER
+  `committed_head_sha` is still produced by the real `on_committed` callback — never
+  fabricated; the HEAD-move is the ADVERSARIAL CONDITION under test, i.e. the world
+  changed under a genuine marker, not a hand-built ledger state. That is the opposite
+  of the forbidden "hand-construct the post-crash ledger" — here the ledger is real
+  and the environment is the variable.)** (gap-neg) drive a
   crash in the commit→append window so no `committed_head_sha` is recorded and assert
   BLOCK `committed_head_unrecorded_on_resume`. `committed_head_sha` MUST be produced
   by the real callback, never hand-injected (faithfulness — `## Verification`).
@@ -1262,7 +1290,7 @@ concrete symbol at `file:line`. `x.y ⇒ y exists on type(x)`:
 | 8 | `completed_nodes[nid]["admitted_head_sha"]` == `head_sha` | `completed_nodes[nid]["admitted_head_sha"]` `:2773` | YES |
 | 9 | captured `owned_paths` arg == `rec.owned_paths`, ⊊ whole-diff | `publish_fn` arg spy; `rec.owned_paths` tuple; `prebuilt_owned_paths_fn` `:2536` | YES |
 | 10 | marked dirty node → no `preflight_failed`, reaches Step-4 branch; unmarked dirty node → `{status:"preflight_failed"}`, zero PRs | `_default_preflight` `:303`/`:332` (new `ledger_state` param, §1b); `preflight_failed` return `:2294`; `_check_repo_clean` `:168-183` | YES |
-| 11 | unrelated dirty file recoverable from `refs/fab-quarantine/...` after resume; unproven quarantine → BLOCK, tree untouched | quarantine ref (NEW, §1b); `git stash create` / `git cat-file` on the ref; block-return shape `:2733-2737` | YES |
+| 11 | unrelated dirty file (tracked AND untracked) recoverable from `refs/fab-quarantine/...` after resume; unproven quarantine → BLOCK, tree untouched | quarantine ref (NEW, §1b — captures tracked+untracked, e.g. `stash push --include-untracked`); `git cat-file`/`rev-parse` verify; block-return shape `:2733-2737` | YES |
 
 Every AC 1/2/3/5/6/7/8/9/10/11 observable is producible on TODAY's code; only AC-4's
 is #368-gated and is grounded on the durable record's `.epoch`, not on a result field
