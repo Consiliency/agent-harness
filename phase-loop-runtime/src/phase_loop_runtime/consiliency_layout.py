@@ -173,25 +173,106 @@ class ContractFloorUnverified(UserWarning):
 
 
 def _dist_owns_imported_runtime(dist: Any) -> bool:
-    """True iff ``dist`` records the ``phase_loop_runtime`` package at the exact
-    path the interpreter actually imported.
+    """True iff ``dist`` PROVABLY ships the imported ``phase_loop_runtime`` package.
 
-    This is the provenance check (Consiliency/agent-harness#378, board #382 r1
+    Provenance check (Consiliency/agent-harness#378; board #382 r1 Finding 1, r2
     Finding 1). ``importlib.metadata`` resolves a distribution by NAME, and a name
-    can be answered by an install that is not the code being run -- e.g. a
-    site-packages ``phase-loop-runtime 0.7.10`` shadowed by this ``src/`` checkout
-    (0.7.13). That install's declared floor need not match the running code, so
-    trusting it by name lets the guard enforce a foreign floor: it could pass a
-    changed floor silently, or abort a healthy checkout. Comparing the dist's
-    recorded ``phase_loop_runtime/__init__.py`` against the imported module's
-    ``__file__`` proves the metadata belongs to what runs.
+    can be answered by an install that is not the running code -- a site-packages
+    ``phase-loop-runtime`` shadowed by this ``src/`` checkout, or a stale
+    ``.egg-info`` left beside a real one. That install's declared floor need not
+    match the running code, so trusting it by name lets the guard enforce a foreign
+    floor: pass a changed floor silently, or abort a healthy checkout.
+
+    A path comparison alone is UNSOUND (board #382 r2 Finding 1):
+    ``PathDistribution.locate_file(p)`` merely joins the metadata directory's parent
+    with ``p`` -- it never confirms the distribution RECORDS ``p``. An empty-RECORD
+    distribution sharing the same root therefore satisfies a ``locate_file``-equality
+    check, and its (foreign) floor gets enforced against a healthy contract -- a
+    false collection abort, the exact outcome this guard exists to prevent.
+
+    Ownership requires (A) AND (B):
+
+      (A) RECORDED PACKAGE -- the dist's own file list (RECORD, or ``.egg-info``
+          ``SOURCES.txt``, via ``dist.files``) names ``<pkg>/__init__.py``. An
+          empty-RECORD or foreign-package dist fails here regardless of location, so
+          a bare path-join can never carry a foreign floor past this gate.
+
+      (B) BOUND TO THE IMPORTED INSTANCE -- either of:
+          B1 CO-LOCATION: the metadata directory is a sibling of the imported
+             top-level package dir. True for a wheel / regular install
+             (``site-packages/pkg`` beside ``site-packages/pkg-*.dist-info``), a
+             classic editable ``.egg-info`` (``src/pkg`` beside ``src/pkg.egg-info``),
+             and the clean-room wheel. ``locate_file("")`` yields that parent.
+          B2 INSTALL PROVENANCE: ``direct_url.json`` (PEP 610) records the local
+             directory the dist was installed FROM; when that directory contains the
+             imported ``__file__`` AND the dist's version equals the running module's
+             ``__version__``, the resolved dist IS this code even though it lives in
+             ``site-packages`` while the import resolves from ``src/``. This is the CI
+             matrix (``pip install ./phase-loop-runtime`` then ``python -m pytest``
+             with ``src`` on ``sys.path``): without B2 the guard would skip on a
+             healthy checkout -- a self-inflicted false failure, the exact acceptance
+             criterion this round protects. The version match is load-bearing: unlike
+             B1 (a co-located dist-info IS the same install as the package beside it,
+             so versions cannot skew), B2's install-source link is weaker -- a STALE
+             non-editable install of this same repo would name the tree yet carry an
+             older floor. Requiring ``dist.version == __version__`` rejects that stale
+             install (warn + skip, never a false abort) while a same-commit CI install
+             matches (board #382 r2, advisor).
+
+    Soundness: a PyPI shadow's ``direct_url`` is absent or names a different tree, a
+    wrong-location shadow fails B1, and a stale same-repo install fails B2's version
+    match, so none passes B (board #382 r1/r2). An empty-RECORD dist fails A.
+
+    Boundary (honest, board #382 r2): this ties the dist to the imported package by
+    NAME + LOCATION/INSTALL-SOURCE, not recorded bytes to imported bytes -- hashing
+    RECORD entries for byte identity is deliberately out of scope. And a PEP 660
+    editable install (whose RECORD lists a ``.pth`` finder, not the package files)
+    fails A and so fail-opens with a warning; this repo's CI is a non-editable dir
+    install, so that path is a documented boundary, not a live gap.
     """
     try:
+        import json
+        from urllib.parse import unquote, urlparse
+
         import phase_loop_runtime
 
         imported = Path(phase_loop_runtime.__file__).resolve()
-        located = Path(dist.locate_file("phase_loop_runtime/__init__.py")).resolve()
-        return located == imported
+        pkg = phase_loop_runtime.__name__.split(".")[0]
+
+        # (A) records the package -- required in every branch.
+        files = dist.files or ()
+        needle = f"{pkg}/__init__.py"
+        if not any(str(pp).replace("\\", "/").endswith(needle) for pp in files):
+            return False
+
+        # (B1) co-location.
+        try:
+            if Path(dist.locate_file("")).resolve() == imported.parent.parent:
+                return True
+        except Exception:
+            pass
+
+        # (B2) install provenance via direct_url.json, gated on a version match so a
+        # STALE non-editable install of this same repo (right tree, older floor) is
+        # rejected rather than trusted (board #382 r2, advisor).
+        try:
+            raw = dist.read_text("direct_url.json")
+            if raw:
+                url = json.loads(raw).get("url") or ""
+                parsed = urlparse(url)
+                if parsed.scheme == "file":
+                    tree = Path(unquote(parsed.path)).resolve()
+                    running_version = getattr(phase_loop_runtime, "__version__", None)
+                    if (
+                        (tree == imported or tree in imported.parents)
+                        and running_version is not None
+                        and dist.version == running_version
+                    ):
+                        return True
+        except Exception:
+            pass
+
+        return False
     except Exception:
         return False
 

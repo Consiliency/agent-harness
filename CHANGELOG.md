@@ -30,7 +30,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   from the `phase-loop-runtime` distribution *proven to own the imported module*
   (`importlib.metadata` resolves a name, and a name can be answered by a shadowing
   install whose floor need not match the running code); when that ownership cannot be
-  proven the guard treats the floor as unknowable and does not raise. The installed
+  proven the guard treats the floor as unknowable and does not raise. Ownership is
+  proven soundly (board #382 r2 Finding 1): the distribution must (A) **record**
+  shipping the package (`dist.files` names `<pkg>/__init__.py` — a bare
+  `locate_file` path-join is unsound, it accepts an empty-RECORD dist that shares the
+  root) **and** (B) be tied to the imported instance — either co-located with it, or,
+  via PEP 610 `direct_url.json`, installed **from** the tree that contains the imported
+  `__file__` (the CI matrix imports from `src/` while the wheel lives in
+  site-packages; without (B) a healthy checkout would false-skip the guard). The installed
   contract version compared against the floor is the **imported**
   `consiliency_contract.CONTRACT_VERSION` — the version whose bundled schema fans out
   #378's failures — not the dist-metadata version, so a contract-shadow is judged on
