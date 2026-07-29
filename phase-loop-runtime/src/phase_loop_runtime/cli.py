@@ -1699,7 +1699,12 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     Path(args.output).write_text(text, encoding="utf-8")
     print(text, end="")
-    return int(validation.exit_code)
+    # Return the exit code of the document we actually EMITTED, not the pre-sink
+    # verdict. The serialization sink can downgrade a PASS verdict to a fail-closed
+    # REDACTION_VIOLATION when a construction scan was bypassed; the process exit code
+    # is a channel CI branches on, so it must match the emitted document rather than
+    # `validation.exit_code` (agent-harness#371 round 4, blocker 1 — seventh channel).
+    return int(payload["exit_code"])
 
 
 def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:

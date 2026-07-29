@@ -81,6 +81,12 @@ def build_outside_agent_validation_verdict(
     core_validator: Callable[..., OutsideAgentConformanceVerdict] = validate_outside_agent_submission,
 ) -> OutsideAgentValidationVerdict:
     """Build deterministic governed-pipeline validation evidence without external I/O."""
+    # Materialize ONCE before the two passes below. ``submitted_refs`` is an
+    # ``Iterable[str]``; normalization and the secret scan each traverse it, so a
+    # one-shot generator consumed by the first pass would slip a secret-shaped ref
+    # past the second — a PASS/exit-0 verdict carrying the secret (agent-harness#371
+    # round 4, blocker 3). A tuple/list is unaffected; a generator is made re-iterable.
+    submitted_refs = tuple(submitted_refs)
     # Structural (path safety) and safety (secret redaction) are SEPARATE passes
     # over the SAME submitter-supplied bytes: normalization proves a ref is
     # repo-relative; the secret scan proves it carries no secret-shaped value. A

@@ -54,6 +54,24 @@ def serialize_outside_agent_validation_verdict(
     return payload
 
 
+_REDACTED = "<redacted>"
+
+
+def _redact_if_secret(value: str) -> str:
+    """Emit a scalar into the fail-closed document ONLY if it is itself secret-free.
+
+    The fail-closed document must never repeat the value that tripped the sweep. The
+    round-3 build assumed the copied metadata (``validator_version``, ``input_digest``,
+    the contract-pin fields) was provably non-submitter-derived; that assumption was
+    false — the sweep can trip ON one of those channels, and the document then echoed
+    the secret verbatim (agent-harness#371 round 4, blocker 2). So every scalar copied
+    from the rejected object is re-checked with the SAME metadata-only predicate the
+    sink uses (one detector, not a second that could disagree) and replaced with a
+    constant placeholder if it carries a secret-shaped value.
+    """
+    return _REDACTED if assert_outside_agent_metadata_only({"value": value}) else value
+
+
 def _contract_pin_fields(contract_pin: OutsideAgentContractPin) -> dict[str, Any]:
     return {
         "schema_version": contract_pin.schema_version,
@@ -68,28 +86,36 @@ def _contract_pin_fields(contract_pin: OutsideAgentContractPin) -> dict[str, Any
     }
 
 
+def _secret_free_contract_pin_fields(contract_pin: OutsideAgentContractPin) -> dict[str, Any]:
+    """Contract-pin fields with every string scalar re-checked and redacted if secret."""
+    return {
+        key: _redact_if_secret(value) if isinstance(value, str) else value
+        for key, value in _contract_pin_fields(contract_pin).items()
+    }
+
+
 def _secret_free_blocked_document(
     validation: OutsideAgentValidationVerdict,
 ) -> dict[str, Any]:
     """Fail-closed replacement emitted when the boundary sweep trips.
 
-    Built ONLY from constants and fields that are provably NOT submitter-derived:
-    the frozen contract pin (ours), the validator version (``__version__``), and the
-    input_digest (a SHA-256 hex string — its alphabet [0-9a-f] cannot contain any
-    secret marker, a submitted ref, or a case id). Every submitter-projection field
-    is emptied and the blocker text is constant, so this document cannot itself echo
-    the content that tripped the boundary (agent-harness#371 round 3).
+    Every submitter-projection field is emptied and the blocker text is constant, and
+    every scalar copied from the REJECTED object (validator version, input digest, the
+    contract-pin fields) is passed through ``_redact_if_secret`` — so the document
+    cannot echo the content that tripped the boundary, regardless of WHICH channel it
+    rode in on (agent-harness#371 round 4, blocker 2 — the round-3 version checked only
+    the projections and the digest alphabet, not the copied metadata).
     """
     contract_pin = validation.verdict.contract_pin
     return {
         "gate_id": "real_conformance_gate.v0.1",
         "authority": "governed_pipeline_validator",
-        "validator_version": validation.validator_version,
+        "validator_version": _redact_if_secret(validation.validator_version),
         "command": "outside-agent-validate",
-        "verdict_schema_version": contract_pin.verdict_schema_version,
-        "contract_pin": _contract_pin_fields(contract_pin),
-        "vector_manifest_hash": contract_pin.vector_manifest_hash,
-        "input_digest": validation.verdict.input_digest,
+        "verdict_schema_version": _redact_if_secret(contract_pin.verdict_schema_version),
+        "contract_pin": _secret_free_contract_pin_fields(contract_pin),
+        "vector_manifest_hash": _redact_if_secret(contract_pin.vector_manifest_hash),
+        "input_digest": _redact_if_secret(validation.verdict.input_digest),
         "submitted_refs": [],
         "submission_kind": None,
         "status": "blocked",
@@ -104,7 +130,7 @@ def _secret_free_blocked_document(
             }
         ],
         "evidence_refs": [],
-        "redaction_posture": contract_pin.redaction_posture,
+        "redaction_posture": _redact_if_secret(contract_pin.redaction_posture),
         "vectors_executed": False,
         "exit_code": int(OutsideAgentValidationExitCode.REDACTION_VIOLATION),
     }
