@@ -25,7 +25,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (not taken on trust). `plans/oapack/RELEASE-ANCHOR.md` in Consiliency/spec is cited as
   *provenance* for which release is canonical — not as the authority these values are read
   from; this entry is the authority for the values, so it stays correct even if that
-  document is momentarily inconsistent. (It currently is: its repin-instruction section
+  document is momentarily inconsistent. (As of this writing it is: its repin-instruction section
   still names the superseded `v0.2.0` it tells consumers elsewhere not to pin — reported
   upstream on `Consiliency/spec#118`.)
 - **`v0.2.1` supersedes `v0.2.0`.** The `v0.2.0` wheel-shipped `outside_agent_router`
