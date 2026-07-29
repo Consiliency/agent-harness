@@ -499,14 +499,24 @@ build (§3, codex round-2 + round-3), so a factory that ignores its epoch OR its
   4-arg derivation (thread `base`), or the seed lands under a key `execute` never computes and the
   falsifier goes vacuous. Same-base idempotency is UNCHANGED (AC-17's positive control).**
 
-  **SINGLE NORMATIVE DEFINITION (round-10 — the propagation class grok has flagged for ten
-  rounds).** This 4-arg signature `publish_committed_branch_idempotency_key(repo, branch,
-  head_sha, base)` is defined HERE and nowhere else. Every other mention (§5c, §5d, §5e, §6,
-  AC-12, AC-17) REFERENCES "the 4-arg key defined in §5 (`verbs.py:25`)" and MUST NOT restate the
-  arg list. A restated signature IS the round-3/5/6/10 propagation defect: the signature was
-  duplicated across ~10 sites, so each change hand-propagated and left stragglers (round-10 grok
-  found three: two §5c/§5d prose restatements + one AC-12 seed). Reference, do not restate — that
-  is the structural fix that forecloses the recurrence, not another instance-patch.
+  **SINGLE NORMATIVE SOURCE (round-10 — the propagation class grok has flagged for ten rounds).**
+  This block is the ONE authoritative definition of the key signature
+  `publish_committed_branch_idempotency_key(repo, branch, head_sha, base)` (`verbs.py:25`); an
+  executor propagating a future signature change works FROM here. The mechanical mentions (§5c and
+  §5d prose, the §5e sweep row, AC-12's seed, the §8b/STANDING seed-rule line) REFERENCE "the 4-arg
+  key defined in §5" rather than re-spell the arg list. A few spellings are DELIBERATELY retained as
+  ILLUSTRATIVE (not independent definitions), because each explains a falsifier or hazard the reader
+  must be able to check against source — not a definition to keep in sync: AC-17's Layer-1 injection
+  anchor (the exact 4-arg call the impl must contain), §8a's positive-control token (what the round-9
+  sweep grepped for), the §12 scope-block before/after (why the key-shape migration exists), and
+  AC-19's LEGACY 3-arg form (the dual-read's fallback digest). This is NOT
+  "defined nowhere else" — it is "defined normatively in ONE place, referenced everywhere
+  mechanical, spelled only where a falsifier needs the literal." That is the structural answer to
+  the round-3/5/6/9/10 recurrence (the signature was duplicated across ~10 sites, so each fold
+  hand-propagated and left stragglers), replacing per-round straggler-patching with one source to
+  propagate from — it does not by itself FORECLOSE the class, it removes the DUPLICATION that
+  guaranteed the miss. **NOTE — §6's `attempt_id = sha256("publish\0…")` is a DIFFERENT function,
+  not this key; it has its own normative definition at §6 and is out of this rule's scope.**
 
   **DUAL-READ for the key-shape migration (round-10 codex; AC-19).** Because the store is
   append-only and keyed by the digest, changing the signature orphans any pre-existing publish
@@ -842,7 +852,7 @@ the closure-CALLER convention. A decision reaching only SOME sites is the exact 
 | **S4** `readmit_advanced_head` (`c1da62a verbs.py:85`) | admit_next CALLER | **YES — its `_make_request(epoch)` closure MUST widen to `(epoch, attempt_id)`** to match admit_next's two-arg call (`c1da62a` calls `make_request(epoch)`; this plan calls `make_request(epoch, attempt_id)`, line ~100). Re-landing it UNCHANGED is a `TypeError`. NOT an envelope caller (builds its closure locally, never routes through `:196`/execute). | **S4 corrected — see below** |
 | **S2** `refresh_downstream_after_merge` (`refresh.py:61`) | admit_next CALLER (if migrated) | YES for the two-arg closure convention; NO envelope (no production caller) | S2 Change block; note added |
 | `admit_next` (`admission.py`, re-land) | the allocator | signature UNCHANGED by B2 (closure built by callers); two-arg call convention already decided | §3 prior-art |
-| `publish_committed_branch_idempotency_key` (`verbs.py:25`) | KEY-SIGNATURE change (AC-17, round-9 — NOT B2) | YES — `(repo, branch, head_sha)` → `(repo, branch, head_sha, base)`; `_dedup_key` (`verbs.py:38`) passes `request.base` | §5/§8b; **every in-flight-SEEDING AC (AC-12/AC-13/AC-15) must key its `PROVIDER_CALL_IN_FLIGHT` seed by the 4-arg derivation** (thread `base`), or the seed lands under a key `execute` never computes → the record is unfindable → the falsifier goes vacuous. The one existing unit (`test_convergence_broker_verbs.py:9`) still positive-controls head-discrimination; add a base-discrimination arm |
+| `publish_committed_branch_idempotency_key` (`verbs.py:25`) | KEY-SIGNATURE change (AC-17, round-9 — NOT B2) | YES — 3-arg → 4-arg (+`base`; §5 is the normative signature); `_dedup_key` (`verbs.py:38`) passes `request.base` | §5/§8b; **every in-flight-SEEDING AC (AC-12/AC-13/AC-15) must key its `PROVIDER_CALL_IN_FLIGHT` seed by the 4-arg derivation** (thread `base`), or the seed lands under a key `execute` never computes → the record is unfindable → the falsifier goes vacuous. The one existing unit (`test_convergence_broker_verbs.py:9`) still positive-controls head-discrimination; add a base-discrimination arm |
 | `_dedup_key`/`execute` legacy-key READ (`verbs.py:35-39`) | DUAL-READ migration (AC-19, round-10 codex — the AC-17 signature change orphans old-digest records) | YES — compute the legacy `sha256(f"{repo}\0{branch}\0{head_sha}")` alongside the 4-arg key, look up new-THEN-legacy | §5/§12/AC-19; read-tolerance NOT backfill; TERMINAL orphan closed here, IN-FLIGHT orphan is #376 (production resume bails `nothing_staged` before `execute`) |
 | CONSUMER `verbs.py:40` `.admission.idempotency_key` | READ (non-publish dedup) | reads finalized `AdmissionRequest` (post-replace / non-publish) | §5c |
 | CONSUMER `credsep.py:123/:131/:315` `.admission.idempotency_key` | READ (terminal evidence) | reads finalized (post-replace); informational on publish | §5c |
@@ -1115,8 +1125,8 @@ injection anchor, and a positive control
 - **AC-12 — an IN-FLIGHT publish retry REUSES its admission (same epoch, no second record),
   driven through the LIVE S1 boundary (round-3 codex blocking — the behavioral guard AC-3
   structurally CANNOT provide).** Seed the evidence store with a `PROVIDER_CALL_IN_FLIGHT`
-  record for the publish keyed by the 4-arg key defined in §5 (`(repo, branch, head_sha, base)`,
-  per the §5e seed rule) — NOT a terminal state — and **assert that
+  record for the publish keyed by the 4-arg key defined in §5 (per the §5e seed rule, threading
+  `base`) — NOT a terminal state — and **assert that
   precondition holds before retrying** (`current.state is PROVIDER_CALL_IN_FLIGHT`): without this
   guard the test silently degrades into a completed-replay that short-circuits at
   `verbs.py:58`→`:59` (`_replay`) BEFORE admission, and the falsifier goes vacuous in BOTH arms
@@ -1324,7 +1334,7 @@ injection anchor, and a positive control
   shape for the verb), no terminal record exists so it falls THROUGH the `_replay` short-circuit,
   and it reaches `execute`'s envelope-unpack carrying the WRONG typestate. **Scenario:** build that
   fresh finalized-admission publish request (caller-chosen `lease_epoch`/`attempt_id`), with NO
-  terminal evidence for its `(repo, branch, head_sha, base)`; call `BrokerService.execute(req)`.
+  terminal evidence under its publish identity (the 4-arg key, §5); call `BrokerService.execute(req)`.
   **Falsifier (remove the execute-entry typestate guard):** the request reaches the unpack — under
   the §5d unpack (which reads envelope-only fields, e.g. `.roadmap_digest`) it raises
   `AttributeError` at the UNPACK SITE deep in `execute`; a future lenient-unpack refactor would
@@ -1360,21 +1370,27 @@ injection anchor, and a positive control
   **Falsifier (remove the legacy-key read — a naive 4-arg-only lookup):** the 4-arg lookup misses,
   `record_intent` appends a FRESH in-flight under the new key, control falls through to the mutation
   adapter, which re-pushes and attempts a SECOND `gh pr create` (`credsep.py:281`) → a duplicate-PR
-  attempt whose failure records permanent ambiguous evidence. **Observable (pin the invocation
-  COUNT, per the AC-16/AC-18 pattern):** WITH the fix — the returned `PublishCommittedBranchResult`
-  is the seeded terminal record's AND the adapter spy records ZERO `gh pr create` invocations;
-  WITHOUT it — the adapter spy IS invoked (≥1 new PR attempt). Assert the `gh pr create` invocation
-  count (0 vs ≥1), NOT merely "accepted" (a replayed AND a re-driven publish can both report
-  accepted). **Specificity arm (positive control — excludes the degenerate dual-read that ALWAYS
-  finds something, the round-6 trap):** a genuinely-FRESH same-base publish with NO seeded record
-  (neither key present) PROCEEDS normally and DOES invoke the adapter (creates its PR) — so the
-  legacy read blocks a replay of PRIOR work, never FRESH work. **In-flight arm is OUT OF SCOPE
-  (#376):** a legacy-key `PROVIDER_CALL_IN_FLIGHT` record does NOT short-circuit `:58` even when
-  found (the `:58` guard fires only on non-in-flight state), so the adapter re-drive on an in-flight
-  orphan is the pre-existing crash-resume behavior #376 owns — and a production post-commit resume
-  bails `nothing_staged` (`publishing.py:223`) before `execute`, so no in-flight orphan is re-driven
-  today. Dual-read on `record_intent` prevents only the DOUBLE intent-record under the new key. This
-  AC proves the TERMINAL arm; #376 owns the in-flight resume seam. **Injection anchor:** the
+  attempt whose failure records permanent ambiguous evidence. **Observable (PRIMARY — an existing
+  seam, cannot be read as pinning a symbol the harness may not expose):** the evidence/admission
+  record COUNT via `store.replay()` — WITH the fix the legacy TERMINAL record is replayed and NO new
+  record is appended (`len(store.replay())` unchanged; the returned `PublishCommittedBranchResult` is
+  the seeded record's); WITHOUT it a fresh in-flight is appended under the new key (`record_intent`,
+  count +1) and control re-drives the adapter. Assert the record count (Δ0 vs Δ≥1) — NOT merely
+  "accepted" (a replayed AND a re-driven publish both report accepted). **Secondary (belt-and-braces,
+  IF the adapter-spy seam is wired):** the `gh pr create` invocation count (0 vs ≥1). The record-count
+  arm is the load-bearing one because `store.replay()` is a seam every other AC already uses.
+  **Specificity arm (positive control — excludes the degenerate dual-read that ALWAYS finds
+  something, the round-6 trap):** a genuinely-FRESH same-base publish with NO seeded record (neither
+  key present) PROCEEDS normally and DOES append its record / invoke the adapter — so the legacy read
+  blocks a replay of PRIOR work, never FRESH work. **In-flight arm is OUT OF SCOPE (#376):** a
+  legacy-key `PROVIDER_CALL_IN_FLIGHT` record does NOT short-circuit `:58` even when found (the `:58`
+  guard fires only on non-in-flight state), so the adapter re-drive on an in-flight orphan is the
+  pre-existing crash-resume behavior #376 owns — and a production post-commit resume bails
+  `nothing_staged` (`publishing.py:223`) before `execute`, so no in-flight orphan is re-driven today.
+  Dual-read on `record_intent` prevents only the DOUBLE intent-record under the new key. This AC
+  proves the TERMINAL arm; **#376 owns the in-flight resume seam AND the in-flight legacy-key
+  dual-read — that obligation MUST be recorded in the #376 follow-up issue, or it evaporates when
+  #376 is executed reading only #376 (does-anything-still-PROMISE-it).** **Injection anchor:** the
   legacy-key computation + new-THEN-legacy lookup in `_dedup_key`/`execute` (`verbs.py:35-39`,
   `:57-58`) — assert BOTH keys are computed in `src` before mutating. **Wave:** step-2 (needs the
   migrated publish `execute`).
@@ -1490,7 +1506,7 @@ vacuous even if a different assertion would catch it.
 | AC-16 | exception TYPE+SITE: `TypeError` at construction (fix) vs `AttributeError` in `_dedup_key`/`verbs.py:40` (falsifier) | ✅ | NEW (round-7 B2); the annotation is documentation-only, so the assertion reads the `__post_init__`-enforced rejection, not the union type; positive control = the two LEGAL shapes construct + post-`replace` re-validates, so the invariant is not over-broad |
 | AC-17 | Layer-1: second (release/2.0) publish's `PublishCommittedBranchResult` IDENTICAL to the first (main) — wrong-base PR replayed (falsifier) vs a distinct base-scoped PR (fix). Layer-2: attempt_id EQUALITY (falsifier) vs INEQUALITY (fix) | ✅ | NEW (round-9; D-B3 OVERTURNED). Layer-1 (`_dedup_key`) is load-bearing + production-reachable (`base` is a public caller-controlled param, `publishing.py:94`); Layer-2 (`attempt_id`) is identity-completeness, exercised at the `admit_next`/derivation UNIT (a two-store seed is the wrong instrument — a different-base re-drive TOTAL-misses `_dedup_key`). Positive control: same-base idempotency preserved (AC-3). §8b: `request.base` is the stable ref NAME, not the drifting `base_sha`, so it does NOT foreclose AC-13 |
 | AC-18 | exception TYPE+SITE: `TypeError` at `execute` ENTRY + zero admission records (fix) vs `AttributeError` at the envelope-unpack site (falsifier) | ✅ | NEW (round-9 finding 2); `__post_init__` (AC-16) must ALLOW `AdmissionRequest`-on-publish for the post-`replace` re-validation, so it structurally cannot catch a FRESH publish carrying the wrong typestate — a SEPARATE execute-entry guard is owed; positive control = the legal envelope shape passes + the post-`replace` request never re-enters entry |
-| AC-19 | `gh pr create` invocation COUNT: 0 (fix — legacy-key TERMINAL replay) vs ≥1 (falsifier — 4-arg-only lookup misses → adapter re-drive) | ✅ | NEW (round-10 codex; AC-17's key change CREATED this). Falsifier fires on a REACHABLE terminal orphan (seeded old-3-arg record). Specificity arm (fresh publish, no record → adapter IS invoked) excludes a degenerate always-finds-something dual-read. In-flight orphan explicitly OUT (#376; `:58` never short-circuits in-flight; production resume bails `nothing_staged`) — scoped, not asserted |
+| AC-19 | record COUNT via `store.replay()`: Δ0 (fix — legacy-key TERMINAL replay, no append) vs Δ≥1 (falsifier — 4-arg-only lookup misses → `record_intent` appends + adapter re-drive); `gh pr create` count secondary | ✅ | NEW (round-10 codex; AC-17's key change CREATED this). PRIMARY observable is `store.replay()` (an existing seam every AC uses), not the adapter-spy count. Falsifier fires on a REACHABLE terminal orphan (seeded old-3-arg record). Specificity arm (fresh publish, no record → adapter IS invoked) excludes a degenerate always-finds-something dual-read. In-flight orphan explicitly OUT (#376; `:58` never short-circuits in-flight; production resume bails `nothing_staged`) — scoped, not asserted |
 
 **Three dependency clusters the audit makes explicit** (the round-2 AND round-3 fixes, so the
 ACs that ride on them are now live): the EPOCH-ENFORCEMENT (§3, codex round-2) makes AC-1's
@@ -1540,8 +1556,8 @@ scenario that silently never reaches the seam, unless a positive control proves 
 | AC-16 | negative (construction rejected) | round-7 B2: `__post_init__` raises `TypeError` for `None`-on-any-verb and envelope-on-non-publish; positive control: both LEGAL shapes (finalized-on-non-publish, envelope-on-publish) construct, and the post-`replace` finalized request re-validates — proving the guard rejects only the illegal states, not every construction |
 | AC-17 | Layer-1 POSITIVE (a wrong-base PR IDENTITY is read off the second call — cannot occur on an unreached publish); Layer-2 POSITIVE (attempt_id value read) | round-9: Layer-1 seeds the first publish to TERMINAL then re-drives a differing base — the returned result IDENTITY proves the replay path was entered; Layer-2 reads two derived attempt_ids directly at the unit seam (no unreached path). Positive control (same-base dedup) doubles as a path-entered proof for Layer-1 |
 | AC-18 | negative (fresh caller-epoch publish rejected) | round-9 finding 2: the guard fires at `execute` ENTRY after the `_replay` short-circuit (asserted: NO terminal evidence, so control FALLS THROUGH to entry, not a replay); positive control: the legal envelope shape PASSES the guard and allocates (proves entry) — a `TypeError` on an unreached path cannot occur |
-| AC-19 | POSITIVE — the seeded terminal record's result IDENTITY is read off the replay + a zero `gh pr create` count (cannot occur on an unreached publish) | round-10: the seeded LEGACY-key terminal record is the path-entry proof — a legacy-key HIT + returned-result-identity proves `_replay` was entered via the legacy branch; the specificity arm (fresh publish → adapter invoked) proves the legacy read does not fire on an unreached/absent record |
-| **STANDING — every AC that drives through `verbs.execute`** | names WHICH evidence-replay branch it enters | `execute` returns at `_replay` (`verbs.py:58`) whenever the `_dedup_key` record is terminal (`state is not PROVIDER_CALL_IN_FLIGHT`), BEFORE `admit_next` at `:65`. So any AC whose falsifier lives in `admit_next` (epoch allocation, `attempt_id`/epoch enforcement, dedup compare, or the policy gate) MUST seed the evidence record at `PROVIDER_CALL_IN_FLIGHT` and ASSERT that state — else it short-circuits at replay and the falsifier dies unreached. This is the seed-vacuity CLASS, not a per-AC quirk: AC-12 (in-flight retry), AC-8a/8b (P2), AC-15 (policy on resume) are the same shape. AC-14 is exempt (its first drive is the only drive; it asserts the outbound admission, not a resume). **Round-9 addendum (AC-17): the seed's `_dedup_key` is now the 4-arg `publish_committed_branch_idempotency_key(repo, branch, head_sha, base)` — a seed keyed by the old 3-arg form lands under a key `execute` never computes, so it is unfindable and the falsifier is vacuous in a NEW way; every in-flight seed must thread `base`, matching `execute`'s derivation.** |
+| AC-19 | POSITIVE — the seeded terminal record's result IDENTITY is read off the replay + an unchanged `store.replay()` count (cannot occur on an unreached publish) | round-10: the seeded LEGACY-key terminal record is the path-entry proof — a legacy-key HIT + returned-result-identity proves `_replay` was entered via the legacy branch; the specificity arm (fresh publish → record appended) proves the legacy read does not fire on an unreached/absent record |
+| **STANDING — every AC that drives through `verbs.execute`** | names WHICH evidence-replay branch it enters | `execute` returns at `_replay` (`verbs.py:58`) whenever the `_dedup_key` record is terminal (`state is not PROVIDER_CALL_IN_FLIGHT`), BEFORE `admit_next` at `:65`. So any AC whose falsifier lives in `admit_next` (epoch allocation, `attempt_id`/epoch enforcement, dedup compare, or the policy gate) MUST seed the evidence record at `PROVIDER_CALL_IN_FLIGHT` and ASSERT that state — else it short-circuits at replay and the falsifier dies unreached. This is the seed-vacuity CLASS, not a per-AC quirk: AC-12 (in-flight retry), AC-8a/8b (P2), AC-15 (policy on resume) are the same shape. AC-14 is exempt (its first drive is the only drive; it asserts the outbound admission, not a resume). **Round-9 addendum (AC-17): the seed's `_dedup_key` is now the 4-arg key defined in §5 — a seed keyed by the old 3-arg form lands under a key `execute` never computes, so it is unfindable and the falsifier is vacuous in a NEW way; every in-flight seed must thread `base`, matching `execute`'s derivation.** |
 
 The two ACs that needed the fix this round (AC-8a/8b) are now in P2; each P1 AC above carries a
 positive observable or a reachability control, shown so the sweep is checkable rather than
