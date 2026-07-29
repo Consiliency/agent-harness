@@ -2,12 +2,13 @@
 
 *Phase alias: FABPUB (specs/phase-plans-v10.md)*
 
-> **REVIEW SCOPE — this branch (`plan/288-shared-epoch-allocator`) carries a SECOND, unrelated
-> plan file:** `plans/detailed-fab-376-post-commit-resume-seam-20260729.md` (the
-> `Consiliency/agent-harness#376` post-commit crash-resume seam). It is NOT part of THIS (#368/P1)
-> review. A `git diff main...HEAD` bundle will include it; scope the #368 review to THIS file:
-> `git diff main -- plans/detailed-fab-288-shared-epoch-allocator-20260728.md`. The two plans share
-> a branch because #376 was drafted mid-#368; they are separate PRs and merge independently.
+> **REVIEW SCOPE — this branch (`plan/288-shared-epoch-allocator`) now carries EXACTLY ONE plan
+> file: this one.** The `Consiliency/agent-harness#376` post-commit crash-resume seam was drafted
+> mid-#368 and briefly shared this branch; it has been separated onto its own branch
+> (`plan/376-post-commit-resume-seam`, off `origin/main`, owner `plan-376-resume`) and removed from
+> here, so `git diff main...HEAD` carries only this plan and its single manifest entry. References
+> to `#376` that remain BELOW are intentional cross-references (the production crash-resume seam is
+> `#376`-gated — see AC-13's reachability note); they document a dependency, not co-located scope.
 
 > **⚠️ THIS IS P1 OF A RATIFIED TWO-PLAN SPLIT** (maintainer, `ah#363` follow-up), carved
 > along the merge boundary the §11 DAG implies. **P1 (this plan)** = the shared allocator
