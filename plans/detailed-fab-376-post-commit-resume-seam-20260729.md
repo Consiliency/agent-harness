@@ -1,12 +1,18 @@
 # Detailed plan: post-commit crash-resume seam for train publish (`Consiliency/agent-harness#376`)
 
 > **PLAN ONLY.** No implementation, no merge. Written 2026-07-29 to be paneled;
-> revised for the round-1 board (grok+codex, five findings — see `## CR fold`).
-> **Core (AC-376-1/2/3, and the CR fold AC-376-5..9) is INDEPENDENT of `#368` and
+> revised for the round-1 board (grok+codex, five findings — see `## CR fold`)
+> and the round-2 board (grok+codex DISAGREE, two blocking — see
+> `## CR fold — round 2`).
+> **Core (AC-376-1/2/3, and the CR fold AC-376-5..10) is INDEPENDENT of `#368` and
 > fixes the reachability + safety defects on today's code** (the publish
-> idempotency key is epoch-independent — see `## The #368 interlock`). **Only
-> `AC-376-4`** — the cross-epoch identity proof — is `#368`-gated. See
-> `## Dependencies & order`.
+> idempotency key is epoch-independent — see `## The #368 interlock`). The
+> reachability fix now includes this plan's OWN recovery-aware preflight change
+> (round-2 finding 1): the resume entry gate must admit a durably-marked node
+> whose crash left a dirty tree, or the marker is never read and the whole resume
+> mechanism is dead code. That change is still epoch-agnostic — see design §1b
+> (`### 1b. Recovery-aware preflight`). **Only `AC-376-4`** — the cross-epoch
+> identity proof — is `#368`-gated. See `## Dependencies & order`.
 > Scope: the CRASH case only (last ledger record survives as `committing`). The
 > graceful post-commit-block variant is filed as `Consiliency/agent-harness#380`;
 > the broker `PROVIDER_CALL_IN_FLIGHT` recovery gap (codex 1) is a separate
@@ -117,7 +123,7 @@ session:
 
 | # | Finding | Root | Fix in this fold | AC |
 |---|---|---|---|---|
-| codex 2 | `HEAD^ == pre_commit_head` proves PARENTAGE, not committed-tree identity | marker records only the pre-commit parent | marker records `expected_tree_sha`; resume requires `HEAD^{tree} == expected_tree_sha`, else fail closed | AC-376-6 |
+| codex 2 | `HEAD^ == pre_commit_head` proves PARENTAGE, not committed-tree identity | marker records only the pre-commit parent | ~~marker records `expected_tree_sha`; resume requires `HEAD^{tree} == expected_tree_sha`~~ **SUPERSEDED in round-2 finding 2** (exact-tree false-rejects a hook-mutated legitimate commit) → parent + owned-scope confinement, see `## CR fold — round 2` and `## Owned-scope confinement identity` | AC-376-6 |
 | grok B1 | routing a resumed FAB node through the prebuilt path drops `fab_run_id` → merge-gate inert → **fail-open** | prebuilt path leaves `_node_fab_run_id=None` (`:2526-2532`) | marker carries `fab_run_id`; resume epilogue runs `_resolve_admission_fab_run_id` → bind or BLOCK | AC-376-7 |
 | codex 3 | recovery broadens authorization to whole-branch-diff | prebuilt `owned_paths` = committed diff vs base (`:2536`) | marker persists the node's `owned_paths`; resume publishes at that scope | AC-376-9 |
 | grok B2 | resume epilogue omits `completed_nodes` | epilogue collapsed to "write `pr_open`" | resume runs the FULL normal epilogue `:2739-2792` | AC-376-8 |
@@ -128,6 +134,29 @@ state — next section). codex 1 is a distinct pre-existing broker gap #376 make
 reachable. Priority the lead set — codex 2 and grok B1 first (the two that make
 the fix worse than the bug) — is reflected in the marker-identity and FAB-scope
 work being the load-bearing changes.
+
+## CR fold — round 2 (grok + codex DISAGREE, two blocking; gemini AGREE, 0 anchors — non-corroborating)
+
+Both blockers were verified against source THIS session before folding (the
+line/symbol evidence is in each row's "Grounded" cell). Gemini's AGREE cited
+nothing and is treated as non-corroborating.
+
+| # | Finding (round-2) | Grounded against source | Root | Fix in this fold | AC |
+|---|---|---|---|---|---|
+| **round-2 finding 1** (severe) | AC-376-2 (and the whole resume mechanism) is UNREACHABLE through production `run_train`: the marker is written while the tree is still dirty; on resume `_default_preflight` rejects the dirty workspace and `run_train` returns `preflight_failed` BEFORE it ever reads the ledger — so no Step-4 arm runs. | `_default_preflight(nodes, resolve_workspace)` (`train_runner.py:303`) has NO ledger param; `_check_repo_clean` fails on any `git status --short` output (`:181-182`); `run_train` returns at `:2294` before `read_ledger` at `:2299`; and preflight failure is a STRUCTURAL whole-train abort (`:17-19`), so one dirty marked node blocks the entire resume. | The fix was confined to a ledger marker + a Step-4 branch, but the resume ENTRY point (preflight) rejects a marked node before the marker is read. It is the exact `#368` AC-12/13 sin: a fix proven against a path production cannot enter. | **Recovery-aware preflight** — read the ledger at Step 1.5 (before preflight), thread `ledger_state` into `_default_preflight`, and exempt ONLY `_check_repo_clean`, ONLY for a node carrying a durable `committing` marker; every other failure (and every unmarked dirty node) still aborts, zero PRs. The crash-before-commit arm then `git reset --hard`+cleans the untrusted dirty tree and re-runs. See design §1b (`### 1b. Recovery-aware preflight`). **This is a scope increase (run_train entry reorder + preflight signature/behaviour), surfaced to the lead as a decision.** | AC-376-2 (rewritten), **AC-376-10** (new) |
+| **round-2 finding 2** | `expected_tree_sha` (round-1 codex 2) is NOT guaranteed to equal the tree the publisher produces: the marker computes the tree in a temp index with one `git add`; the publisher does a SECOND `git add` + an unrestricted `git commit -m`, so a clean filter or a mutating pre-commit hook can make a LEGITIMATE completed commit's tree differ from the marker → the resume misroutes it to `committed_head_ambiguous_on_resume` even with terminal broker evidence — a correct crash-resume REFUSED (a new stuck-node). | publisher `git add -- owned_paths` (`publishing.py:164`, clean filters apply) then `git commit -m` (`:179`, runs pre-commit hooks — the `:184` error string names "a pre-commit hook rejected the commit"); the marker's temp-index `write-tree` sees neither. | Any tree identity computed BEFORE `git commit` cannot predict a mutating hook; exact-tree's only strength over parentage IS that false-positive. | **Drop `expected_tree_sha`; identity = parent + owned-scope confinement** — `HEAD^ == pre_commit_head` AND `{paths in git diff pre_commit_head..HEAD} ⊆ rec.owned_paths` (a LOCAL mirror of the broker's own owned-scope re-diff, `credsep.py:248-253` `_covered_by_owned`). Hook-robust: a hook reformatting owned files changes blobs, not the changed-path SET. See `## Owned-scope confinement identity`. | AC-376-6 (rewritten) |
+
+**Grok non-blocking (folded anyway per the lead).** The `## The #368 interlock`
+point 1 prose was imprecise: `_default_build_admission` runs `git rev-parse HEAD`
+(`:119-120`) at `admission_fn(...)` (`train_runner.py:2695`) — which is BEFORE
+`publish_fn`'s commit (`:2698` → `publishing.py:179`) — so the FIRST execute
+admission's `base_sha` is the PARENT (pre-commit), while the resume prebuilt
+rebuilds at the committed HEAD: the two `base_sha` values DIFFER on today's code.
+Core resume independence never rested on `base_sha` stability — it rests on the
+head_sha-keyed publish idempotency key — so the substance holds and the wording
+is corrected in-place (it actually STRENGTHENS the #368-independence claim). Grok
+also confirmed AC-376-1/2/3/5–9 observables map to real symbols and AC-4 correctly
+avoids `granted_epoch`.
 
 ## The resumed-execute-node reconstruction class (CR — B1, B2, codex 2, codex 3)
 
@@ -142,45 +171,80 @@ node faithfully:
 
 | Finding | Inherited prebuilt default (wrong for resume) | Persist on marker | Resume uses it to |
 |---|---|---|---|
-| **codex 2** | landed-check is parentage only (`HEAD^ == parent`) — any child of the parent passes, incl. an amended/foreign commit | `expected_tree_sha` (the tree the node stages) | require committed-tree IDENTITY, not parentage; fail closed on a foreign/amended tree |
+| **codex 2** (round-1) → **round-2 finding 2** | landed-check is parentage only (`HEAD^ == parent`) — any child of the parent passes, incl. an amended/foreign commit | `owned_paths` (already persisted for codex 3 — NO separate tree field; round-2 dropped `expected_tree_sha` as hook-fragile) | require the committed child's diff vs the recorded parent to be CONFINED to the node's owned scope (`git diff pre_commit_head..HEAD ⊆ owned_paths`, hook-robust); fail closed on a commit touching paths OUTSIDE owned scope. Mirrors the broker's own re-diff `credsep.py:248-253` |
 | **B1** | `_node_fab_run_id` stays `None` (comment `train_runner.py:2526-2532`) → merge-time re-gate inert → FAB content merges ungated | `fab_run_id` (the run_loop-plumbed value) | re-resolve provenance against the committed head; bind or BLOCK — never silent `None` |
 | **codex 3** | `owned_paths = prebuilt_owned_paths_fn(...)` = whole committed diff vs base | `owned_paths` (the node's actual owned scope: run_loop snapshot dirty ∪ injected-upstream union) | publish scoped to what the node OWNED, not everything the branch touched |
 | **B2** | success epilogue collapsed to "write `pr_open`" | (nothing new — code, not marker) | run the FULL normal epilogue `train_runner.py:2739-2792`: `completed_nodes[nid]` population incl. `admitted_head_sha` |
 
-All three new marker fields are `committing`-only and omit-when-absent (mirror the
-`fab_run_id` omit-when-`None` pattern, `train_ledger.py:175-183`); `committing` is
-a brand-new status, so no EXISTING record ever sets them. Byte-neutrality of every
-non-`committing` record is preserved as long as `to_dict`'s omit filter is
-GENERALIZED from the current `fab_run_id`-only hard-code to include the new fields
-— a required, verified code change, not automatic (see the BYTE-NEUTRALITY TRAP
-in `## Changes`).
+Both new marker fields (`pre_commit_head`, `owned_paths`) are `committing`-only
+and omit-when-absent (mirror the `fab_run_id` omit-when-`None` pattern,
+`train_ledger.py:175-183`); `committing` is a brand-new status, so no EXISTING
+record ever sets them. Byte-neutrality of every non-`committing` record is
+preserved as long as `to_dict`'s omit filter is GENERALIZED from the current
+`fab_run_id`-only hard-code to include the new fields — a required, verified code
+change, not automatic (see the BYTE-NEUTRALITY TRAP in `## Changes`). (Round-2
+finding 2 dropped the round-1 `expected_tree_sha` field entirely; identity is now
+carried by the already-persisted `owned_paths` — see `## Owned-scope confinement
+identity`.)
 
-**Why `expected_tree_sha` is the RIGHT identity (codex 2).** The plan's literal
-obligation is "publish the **same committed tree**." The execute path stages
-EXACTLY `owned_paths` by name (`git add -- <owned_paths>`, never `-A`,
-`publishing.py:164`) then commits (`publishing.py:179`), so the committed tree is
-a deterministic function of (parent tree, owned_paths, worktree content) — all
-known at marker time, one line before `publish_fn`. The marker computes it in a
-TEMP index without disturbing the live one (`GIT_INDEX_FILE=<tmp> git read-tree
-HEAD && git add -- <owned_paths> && git write-tree`), records the resulting tree
-SHA, and `publish_fn`'s own `git add -- owned_paths` + commit reproduces that
-exact tree. Resume then checks `HEAD^ == pre_commit_head` **AND**
-`HEAD^{tree} == expected_tree_sha`. Tree-equality is not a proxy for identity —
-it IS the obligation: a commit reproducing the exact tree publishes byte-identical
-content, and any foreign/amended tree differs in the tree SHA and fails closed.
-(A pre-commit marker structurally cannot record the post-commit COMMIT sha; it CAN
-pin the tree it is about to commit, which is the object the obligation is about.)
+## Owned-scope confinement identity (CR round-2 finding 2 — replaces `expected_tree_sha`)
 
-*Rejected alternative — a second, post-commit `committed`-SHA marker.* Recording
-the exact commit sha after `publishing.py:188` would need a `publish_fn` seam
-(the plan otherwise touches no `publishing.py`) and reintroduces a
-commit→marker atomicity window whose absent-marker case must ALSO fail closed —
-so it is strictly more machinery for the same fail-closed guarantee the
-tree-in-marker gives with one durable write. Named so it is not silently skipped.
+**The obligation and the tension.** Round-1 (codex 2) tightened the landed-check
+from parentage (`HEAD^ == pre_commit_head`, which any child of the parent passes)
+to an exact committed-tree match against an `expected_tree_sha` computed in a temp
+index. Round-2 (finding 2) refuted that: the publisher's `git add -- owned_paths`
+(`publishing.py:164`) runs clean filters and its `git commit -m` (`:179`) runs
+pre-commit hooks; NEITHER is visible to the marker's temp-index `git write-tree`,
+so a clean-filter or a mutating pre-commit hook makes a **legitimate** completed
+commit's tree differ from `expected_tree_sha` → exact-tree misroutes it to
+`committed_head_ambiguous_on_resume` even with terminal broker evidence, turning
+the recovery mechanism into a new stuck-node. Any identity computed BEFORE the
+commit cannot predict a mutating hook, and exact-tree's ONLY strength over
+parentage is exactly that false-positive.
+
+**The identity (hook-robust).** Resume identifies the node's own committed head by:
+
+```
+HEAD^ == rec.pre_commit_head                                  # parent identity
+AND  { p for p in git diff --name-only rec.pre_commit_head..HEAD } ⊆ rec.owned_paths
+                                                              # owned-scope confinement
+```
+
+The confinement clause is a LOCAL mirror of a check the broker already enforces:
+credsep's owned-scope re-diff rejects any `PUBLISH_COMMITTED_BRANCH` whose
+`branch_diff(base, head_sha)` contains a path not `_covered_by_owned(...,
+owned_paths)` (`credsep.py:248-253`). We compute the same coverage predicate, but
+against the node's RECORDED PARENT (`pre_commit_head..HEAD` — exactly this node's
+own commit) rather than `origin/<base>...head_sha` (the whole branch). It is
+hook-robust because a pre-commit hook reformatting an owned file changes that
+file's blob, NOT the set of changed paths; and any commit that ADDS a path outside
+`owned_paths` would ALSO be rejected by the broker's own re-diff at first publish,
+so it is already incompatible with the system. A foreign commit that introduces or
+touches a path outside the node's owned scope fails closed here.
+
+**The tradeoff, stated not buried.** This accepts one case exact-tree rejected: an
+amend/foreign commit CONFINED to the node's own owned paths, on the node's exact
+recorded parent, in the crash window. That adversary — an in-scope amend on the
+exact parent, in the crash window, in the coordinator's OWN worktree — is far
+narrower than the case exact-tree false-rejects (ANY mutating pre-commit hook, a
+routine repo config), and broker replay + the broker's owned-scope re-diff still
+apply to whatever is published. Eliminating a stuck-node for the common case at
+the cost of one narrow in-scope-amend case is the correct trade for a plan whose
+entire purpose is stuck-node elimination.
+
+*Rejected alternatives.* (a) **Exact-tree + a "no mutating pre-commit hooks / no
+non-idempotent clean filter" precondition** — couples correctness to unverified
+external repo config; a plan cannot assert what hooks a downstream worktree runs.
+(b) **A second, post-commit `committed`-SHA marker** (record the exact commit sha
+after `publishing.py:188`) — needs a `publish_fn` seam (the plan otherwise touches
+no `publishing.py`) AND still leaves a commit→marker window whose absent-marker
+fallback lands back on the identical parent-only identity problem, so it reduces
+nothing while costing a `publishing.py` change. Owned-scope confinement handles
+every window uniformly with NO `publishing.py` footprint.
 
 ## Design
 
-### 1. Durable pre-commit marker (a new `committing` ledger status + `pre_commit_head` + `expected_tree_sha` + `fab_run_id` + `owned_paths`)
+### 1. Durable pre-commit marker (a new `committing` ledger status + `pre_commit_head` + `owned_paths` + `fab_run_id`)
 
 `train_runner` writes a `committing` record **with `durable=True`**, immediately
 before it calls `publish_fn(...)` on the EXECUTE path (around
@@ -189,40 +253,44 @@ already computed (both are inputs to the very `publish_fn` call that follows), s
 the record captures, all at marker time:
 
 - `pre_commit_head` = `git rev-parse HEAD` — the PARENT the commit will be built
-  on (landed-detection; unchanged).
-- `expected_tree_sha` = the tree that staging `owned_paths` onto `pre_commit_head`
-  produces, computed in a TEMP index so the live index is untouched
-  (`GIT_INDEX_FILE=<tmp> git read-tree HEAD && git add -- <owned_paths> && git
-  write-tree`) — committed-tree IDENTITY (codex 2). This mirrors `publish_fn`'s
-  exact staging (`git add -- owned_paths`, `publishing.py:164`), so the tree it
-  records equals the tree `publish_fn` commits.
+  on (landed-detection AND the base of the owned-scope confinement diff, §2 /
+  `## Owned-scope confinement identity`).
 - `owned_paths` = the node's actual owned scope passed to `publish_fn` (run_loop
-  snapshot dirty paths ∪ injected-upstream union) — recovery scope (codex 3).
+  snapshot dirty paths ∪ injected-upstream union). Serves BOTH recovery scope
+  (codex 3 — the resume publish is scoped to it) AND commit identity (round-2
+  finding 2 — the committed child's diff vs `pre_commit_head` must be ⊆ this set).
 - `fab_run_id` = `_node_fab_run_id` (the run_loop-plumbed value, `None` on non-FAB
   or flag-off) — FAB scope carrier (B1). Omit-when-`None`, byte-neutral.
 
-A failure to compute `expected_tree_sha` (temp-index git error) fails closed
-BEFORE `publish_fn` — the node is not left half-marked.
+A failure to capture `pre_commit_head` (git error) fails closed BEFORE
+`publish_fn` — the node is not left half-marked.
 
-**Why the marker records the PRE-commit head AND the expected tree, and why
+(Round-2 finding 2 dropped the round-1 `expected_tree_sha` field: a tree computed
+in a temp index BEFORE the commit cannot predict the publisher's clean-filter /
+pre-commit-hook mutation, so exact-tree false-rejects a LEGITIMATE hook-mutated
+commit — `## Owned-scope confinement identity`. Identity is now parent +
+owned-scope confinement, both already on the marker; no separate tree field.)
+
+**Why the marker records the PRE-commit head + owned scope, and why
 non-atomicity is fine.** The lead's caution — "a marker that is itself non-atomic
 with respect to the commit just relocates the window" — is answered by making git,
 not the marker, the source of truth for "did the commit land." `pre_commit_head`
 answers LANDED-DETECTION (a pre-image the marker can record before the commit
-exists); `expected_tree_sha` answers IDENTITY (codex 2 — the object the commit
-will produce, also known pre-commit because staging is deterministic, §"Why
-`expected_tree_sha` is the RIGHT identity"). Resume reconciles both against
-`git rev-parse HEAD`:
+exists); `owned_paths` answers IDENTITY (round-2 finding 2 — the committed child's
+diff vs the recorded parent must be CONFINED to the node's owned scope, a
+hook-robust mirror of the broker's own re-diff, §"Owned-scope confinement
+identity"). Resume reconciles both against `git rev-parse HEAD`:
 
 - `HEAD == pre_commit_head` → the commit did not land (crash before or during
-  `git commit`) → re-run normally.
-- `HEAD^ == pre_commit_head` AND `HEAD^{tree} == expected_tree_sha` → the commit
-  landed AND its TREE is the one the node staged (positive identity, not mere
+  `git commit`) → discard the untrusted dirty tree (§1b) and re-run normally.
+- `HEAD^ == pre_commit_head` AND `changed-paths(pre_commit_head..HEAD) ⊆
+  owned_paths` → the commit landed AND the node's own commit is confined to its
+  owned scope (positive, hook-robust identity — not exact tree, not mere
   parentage) → route to the prebuilt publish path.
-- anything else — `HEAD^ != pre_commit_head`, OR a child whose
-  `HEAD^{tree} != expected_tree_sha` (an amended/foreign commit on the recorded
-  parent, codex 2) → cannot positively identify the committed object → **fail
-  closed**.
+- anything else — `HEAD^ != pre_commit_head`, OR a committed child that touches a
+  path OUTSIDE `owned_paths` (a foreign/out-of-scope commit on the recorded
+  parent, round-2 finding 2) → cannot positively identify the node's own committed
+  object → **fail closed**.
 
 The two durable facts (marker append, git commit) need not be simultaneous
 because resume COMPARES them; atomicity is never assumed. The ordering
@@ -240,6 +308,60 @@ commit — reproducing the exact undetectable state #376 exists to close. fsync
 before the commit guarantees: if the commit started, the marker is on disk.
 This reuses the existing `durable=True` precedent (`_fab_delta_readmit`).
 
+### 1b. Recovery-aware preflight (the resume entry gate — CR round-2 finding 1)
+
+The marker (§1) is written while the workspace is still dirty — §1 runs
+immediately before `publish_fn`, and the commit happens INSIDE `publish_fn`
+(`publishing.py:179`). So after a crash the resumed workspace is dirty: fully, for
+a crash BEFORE the commit; or with any `run_loop` residue outside `owned_paths`,
+for a crash AFTER it. Production `run_train` runs Step-2 preflight
+(`train_runner.py:2288-2295`), which calls `_check_repo_clean` — a hard failure on
+ANY `git status --short` output (`:181-182`) — and returns `preflight_failed`
+(`:2294`) BEFORE it reads the ledger (`:2299`). Preflight failure is a STRUCTURAL
+whole-train abort (module docstring `:17-19`): zero PRs, all repos. So without
+this change the `committing` marker is never read, Step 4 never runs, and one
+crashed marked node blocks the ENTIRE train's resume — the resume mechanism is
+dead code on the real path (precisely the `#368` AC-12/13 unreachable-path defect
+this plan exists to not repeat).
+
+**The change (a narrow, fail-closed exemption):**
+
+1. **Read the ledger at "Step 1.5", before Step-2 preflight.** `run_train` reads
+   the ledger at `:2299`, after preflight; move a read ahead of the preflight call
+   (or read once at Step 1.5 and reuse it at `:2299`) so the marker is available
+   to the entry gate.
+2. **Thread `ledger_state` into `_default_preflight`.** Its signature becomes
+   `_default_preflight(nodes, resolve_workspace, ledger_state)`; the injectable
+   `_preflight_fn` seam gains the same third parameter.
+3. **Exempt ONLY `_check_repo_clean`, ONLY for a node whose folded ledger status
+   is `committing`.** Skip the uncommitted-changes check for that node (its
+   dirtiness is the legitimate crash residue Step 4 reconciles). EVERY other check
+   still runs for it (auth, remote-reachable, base-exists), and every OTHER node —
+   including a dirty node with NO `committing` marker — still fails closed exactly
+   as today.
+
+**New entry invariant (stated precisely):** *zero PRs are opened unless a node
+carries a durable `committing` marker authorizing resume, and that node's publish
+is still gated by Step-4 fail-closed reconciliation (§2).* The exemption is not
+"skip the clean check when dirty" — it is "a durable marker is the ONLY key that
+opens the gate for a dirty tree, and it only DEFERS the decision to Step 4, which
+can still block." An unmarked dirty workspace remains a hard preflight failure.
+
+**Disposition of the crash-BEFORE-commit dirty tree (the equal-head arm).** When
+Step 4 finds `HEAD == rec.pre_commit_head` (the commit never landed), the retained
+dirty work is UNTRUSTED and discarded, not reused: `git reset --hard
+rec.pre_commit_head` (+ `git clean -fd` for untracked) BEFORE the normal re-run,
+which re-runs `run_loop` (re-injecting upstream, regenerating from a clean base).
+Reconciliation is ALWAYS on `HEAD` (a git-atomic ref), NEVER on working-tree
+content — the dirty tree is evidence a crash happened, not a source of truth to
+publish. This IS codex's "validate the retained dirty tree fail-closed": we do not
+trust it, we regenerate. (A crash-BEFORE-commit tree has no committed object to
+identify against, so any content check would only inspect bytes the discard throws
+away; the fail-closed answer is discard-and-regenerate. A crash-AFTER-commit node
+is identified by its COMMIT — §2 / `## Owned-scope confinement identity` — where
+residual dirt outside `owned_paths` is simply ignored by the prebuilt publish,
+which reads `git rev-parse HEAD` and never re-stages.)
+
 ### 2. Resume detection + routing (train_runner Step 4)
 
 In Step 4 (`train_runner.py:2440+`), for a node NOT already recovered into
@@ -253,18 +375,23 @@ rec = ledger_state.get(nid)
 if rec is not None and rec.status == "committing":
     head = <git rev-parse HEAD in workspace>
     if head == rec.pre_commit_head:
-        pass                      # commit never landed → fall through to normal re-run
-    elif <head^ == rec.pre_commit_head> and <head^{tree} == rec.expected_tree_sha>:
-        # committed-unpublished AND the committed TREE is the one the node staged
-        # (codex 2 — identity, not parentage) → resume-publish the frozen commit
+        # commit never landed → discard the UNTRUSTED dirty tree (§1b), then re-run
+        <git reset --hard rec.pre_commit_head && git clean -fd>
+        pass                      # fall through to the normal execute re-run
+    elif <head^ == rec.pre_commit_head> and \
+         <changed-paths(rec.pre_commit_head..head) ⊆ rec.owned_paths>:
+        # committed-unpublished AND the node's own commit is CONFINED to its owned
+        # scope (round-2 finding 2 — hook-robust identity, not exact tree;
+        # `## Owned-scope confinement identity`) → resume-publish the frozen commit
         <upstream-staleness re-check — see §3; block if stale>
         <route through the prebuilt publish path (prebuilt=True), §4,
          using rec.owned_paths (codex 3), NOT prebuilt_owned_paths_fn>
         <run the FULL success epilogue below (B1 + B2)>
     else:
-        # head^ != parent (foreign commit on a different parent) OR
-        # head^{tree} != expected_tree_sha (amended/foreign tree on the recorded
-        # parent — codex 2). Cannot positively identify the committed object.
+        # head^ != parent (foreign commit on a different parent) OR the committed
+        # child touches a path OUTSIDE rec.owned_paths (foreign/out-of-scope commit
+        # on the recorded parent — round-2 finding 2). Cannot positively identify
+        # the node's own committed object.
         <blocked: "committed_head_ambiguous_on_resume"; fail closed>
 ```
 
@@ -357,12 +484,21 @@ the broker's coverage re-diff, so it remains required.)
 `_default_build_admission` binds `base_sha = git rev-parse HEAD`
 (`train_runner.py:120`) and `lease_epoch=1` (`:138`) **today**. Two consequences:
 
-1. **Today the resumed identity is already stable — but for the wrong reason.**
-   `base_sha` is the frozen committed HEAD, so reconstructing the admission on
-   resume yields the same `base_sha`; and `lease_epoch=1` is constant, so the
-   epoch-dependent `fence_token` is stable too. Identity is stable because the
-   epoch never moves — i.e. via exactly the constant-epoch publish `#288` exists
-   to remove.
+1. **Today the resumed publish DEDUPS regardless of the admission — and the
+   admission's `base_sha` actually DIFFERS across the crash (grok round-2, folded).**
+   `_default_build_admission` runs `git rev-parse HEAD` (`:119-120`) at
+   `admission_fn(...)` (`:2695`), which is BEFORE `publish_fn`'s commit (`:2698` →
+   `publishing.py:179`) — so the FIRST execute admission's `base_sha` is the PARENT
+   (`pre_commit_head`), whereas a resume rebuild (post-commit, HEAD = committed
+   head) binds `base_sha` to the committed head: the two DIFFER on today's code.
+   This does not break resume, because the publish dedup key is
+   `publish_committed_branch_idempotency_key(repo, branch, head_sha)` — keyed on
+   `(repo, branch, head_sha)`, NOT on `base_sha` or the epoch — so a resumed
+   publish dedups a terminally-observed head or admits+pushes at `lease_epoch=1`
+   irrespective of the reconstructed admission's `base_sha`/epoch. Core resume
+   independence rests on the head_sha-keyed idempotency, NOT on any `base_sha`- or
+   epoch-stability (there is none today) — which is exactly why the reachability
+   fix is genuinely #368-independent.
 2. **Under #368 (on the #288 line) the epoch becomes an allocated value**, the
    `base_sha` binding moves to §5b's `merge-base(head_sha, origin/<base>)`, and
    the `PreAdmissionEnvelope` lets the admission be REBUILT at a freshly-allocated
@@ -417,51 +553,67 @@ update to #368's AC-13 reachability note pointing at `AC-376-4` as the discharge
 - `VALID_STATUSES` (`:56-58`) — **modify** — add `"committing"` to the frozen
   vocabulary. This is a contract change; see `## Frozen-vocabulary confirmation`
   and `## Status-reader sweep`.
-- `LedgerRecord` (`:147-183`) — **modify** — add FOUR optional fields, all
+- `LedgerRecord` (`:147-183`) — **modify** — add TWO new optional fields, both
   `committing`-only and omit-from-`to_dict`-when-absent (mirror the `fab_run_id`
   omit-when-`None` pattern at `:175-183`) so every non-`committing` record stays
-  byte-for-byte unchanged: `pre_commit_head: Optional[str] = None` (landed check),
-  `expected_tree_sha: Optional[str] = None` (committed-tree identity, codex 2),
-  `owned_paths: Optional[tuple[str, ...]] = None` (recovery scope, codex 3), and
+  byte-for-byte unchanged: `pre_commit_head: Optional[str] = None` (landed check +
+  the base of the confinement diff) and `owned_paths: Optional[tuple[str, ...]] =
+  None` (recovery scope, codex 3, AND commit identity, round-2 finding 2); and
   reuse the EXISTING `fab_run_id` field (already on the record, `:175-183`) to
-  carry FAB scope on the `committing` record (B1) — no new field for it. `LedgerRecord`
-  already carries `fab_run_id`, so only three fields are genuinely new. Thread all
-  new fields through the `ts`-reissue copy in `append_record` (`:272-283`) and
-  `_dict_to_record` (`:356-367`). `owned_paths` serializes as a JSON list; on
-  read, restore as a tuple.
+  carry FAB scope on the `committing` record (B1) — no new field for it. Thread
+  both new fields through the `ts`-reissue copy in `append_record` (`:272-283`)
+  and `_dict_to_record` (`:356-367`). `owned_paths` serializes as a JSON list; on
+  read, restore as a tuple. (Round-2 finding 2 removed the round-1
+  `expected_tree_sha` field — `## Owned-scope confinement identity`; there is no
+  tree field.)
   **BYTE-NEUTRALITY TRAP (verified against source):** `to_dict` (`:175-183`)
   currently hard-codes the omit-when-`None` filter to `fab_run_id` ONLY
-  (`if not (k == "fab_run_id" and v is None)`). The three new optional fields MUST
+  (`if not (k == "fab_run_id" and v is None)`). The two new optional fields MUST
   be ADDED to that filter (generalize it to an omit-set
-  `{"fab_run_id", "pre_commit_head", "expected_tree_sha", "owned_paths"}`), or
-  every non-`committing` record gains new `null` keys and byte-neutrality breaks.
-  A round-trip test (write a `committing` record with all fields → `read_ledger`
-  → fields survive; write a `running`/`pr_open` record → serialized JSON is
-  byte-identical to pre-#376) is the falsifier for both the propagation and the
-  neutrality.
+  `{"fab_run_id", "pre_commit_head", "owned_paths"}`), or every non-`committing`
+  record gains new `null` keys and byte-neutrality breaks. A round-trip test
+  (write a `committing` record with all fields → `read_ledger` → fields survive;
+  write a `running`/`pr_open` record → serialized JSON is byte-identical to
+  pre-#376) is the falsifier for both the propagation and the neutrality.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/train_runner.py` (modify)
+- **Recovery-aware preflight entry gate (§1b — CR round-2 finding 1) — modify.**
+  Read the ledger once at "Step 1.5" BEFORE the Step-2 preflight call
+  (`:2288-2295`) and pass `ledger_state` into preflight; change
+  `_default_preflight` (`:303`) to `_default_preflight(nodes, resolve_workspace,
+  ledger_state)` (and the injectable `_preflight_fn` seam, `:2136`/`:2240`, to the
+  same arity). Inside, for a node whose folded status is `committing`, SKIP
+  `_check_repo_clean` (`:332`) ONLY; every other check, and every unmarked node,
+  is unchanged. This is the change that makes the whole resume mechanism reachable
+  on the real `run_train` path — WITHOUT it preflight aborts the train
+  (`preflight_failed`, `:2294`) before the ledger is read (`:2299`). **(Scope
+  increase — surfaced to the lead as a decision; see design §1b, `### 1b.
+  Recovery-aware preflight`.)**
 - Execute-path publish block (around `:2684-2702`) — **modify** — immediately
-  before `publish_fn(...)`, capture `pre_commit_head = git rev-parse HEAD`,
-  `expected_tree_sha` (temp-index `read-tree HEAD` + `add -- owned_paths` +
-  `write-tree`, §1), and append `LedgerRecord(node_id=nid, status="committing",
-  branch=<branch>, pre_commit_head=..., expected_tree_sha=..., owned_paths=tuple(
-  owned_paths), fab_run_id=_node_fab_run_id)` with `durable=True`. All marker
-  inputs (`owned_paths`, `_node_fab_run_id`) are the SAME values passed to the
+  before `publish_fn(...)`, capture `pre_commit_head = git rev-parse HEAD` and
+  append `LedgerRecord(node_id=nid, status="committing", branch=<branch>,
+  pre_commit_head=..., owned_paths=tuple(owned_paths),
+  fab_run_id=_node_fab_run_id)` with `durable=True`. All marker inputs
+  (`owned_paths`, `_node_fab_run_id`) are the SAME values passed to the
   `publish_fn` call that follows. Execute path only; the declared-prebuilt path
-  (`:2518-2561`) does not commit and is already crash-safe.
+  (`:2518-2561`) does not commit and is already crash-safe. (No temp-index tree
+  computation — round-2 finding 2 dropped `expected_tree_sha`.)
 - Step 4 resume loop (around `:2505-2509`) — **add** — the `committing`
-  reconciliation branch (§2): reconcile `pre_commit_head` AND
-  `expected_tree_sha` (identity, not parentage — codex 2); on a positively-identified
+  reconciliation branch (§2): reconcile `pre_commit_head` AND owned-scope
+  confinement (`changed-paths(pre_commit_head..HEAD) ⊆ rec.owned_paths` — round-2
+  finding 2, a LOCAL mirror of `credsep.py:248-253`); on a positively-identified
   committed child run the §3 upstream-staleness re-check, `git fetch origin
   <base>`, then route through the prebuilt publish path (§4) using
   `rec.owned_paths` (codex 3), then run the FULL success epilogue
   (`_resolve_admission_fab_run_id` + block-or-bind, `completed_nodes` population,
-  `pr_open` with `fab_run_id` — B1 + B2); on equal-head fall through to normal
-  re-run; on any unidentified head fail closed.
+  `pr_open` with `fab_run_id` — B1 + B2); on equal-head (commit never landed)
+  `git reset --hard rec.pre_commit_head` + `git clean -fd` (§1b) then fall through
+  to the normal re-run; on any unidentified head fail closed.
 - Reuse (no change) — `_default_build_admission` (`:103`),
   `publish_from_worktree`'s `prebuilt=True` path, `_resolve_admission_fab_run_id`
-  (`:618`), and the normal success epilogue's shape (`:2739-2792`).
+  (`:618`), the normal success epilogue's shape (`:2739-2792`), and the broker's
+  owned-scope-coverage semantics (`credsep.py:248-253`, mirrored locally for the
+  confinement check — not called cross-module).
 - NOT reused on the resume path — `_prebuilt_owned_paths` / `prebuilt_owned_paths_fn`
   (`:250`): the declared-prebuilt whole-diff-vs-base scope is REPLACED by the
   persisted `rec.owned_paths` (codex 3).
@@ -478,7 +630,7 @@ update to #368's AC-13 reachability note pointing at `AC-376-4` as the discharge
   edited in this plan.
 - `train_ledger.py` module docstring record-shape list (`:19-37`, `:56-58`) —
   **modify** — document the `committing` status and its `pre_commit_head`,
-  `expected_tree_sha`, `owned_paths` fields (and its reuse of `fab_run_id`).
+  `owned_paths` fields (and its reuse of `fab_run_id`).
 - No `README`/`CHANGELOG`/`AGENTS.md` footprint: this is internal coordinator
   crash-recovery, no public-surface change.
 
@@ -486,11 +638,11 @@ update to #368's AC-13 reachability note pointing at `AC-376-4` as the discharge
 
 `train_ledger.py`'s status vocabulary is a frozen contract
 (`VALID_STATUSES`, `:56-58`; enforced in `LedgerRecord.__post_init__`, `:168-173`).
-This plan adds exactly one new value, `"committing"`, and three new optional
-fields — `pre_commit_head`, `expected_tree_sha`, `owned_paths` — all populated
-ONLY on a `committing` record and omitted from `to_dict` when absent; it also
-sets the EXISTING `fab_run_id` field on the `committing` record (no schema
-change for it). No other vocabulary is introduced; no existing value or field
+This plan adds exactly one new value, `"committing"`, and two new optional
+fields — `pre_commit_head`, `owned_paths` — all populated ONLY on a `committing`
+record and omitted from `to_dict` when absent; it also sets the EXISTING
+`fab_run_id` field on the `committing` record (no schema change for it).
+No other vocabulary is introduced; no existing value or field
 changes meaning, and because `committing` is a new status every pre-existing
 record serializes byte-for-byte as before. The `CoordinatorEvent` schema
 (`:73-117`) is NOT touched.
@@ -508,6 +660,7 @@ enumerates the set exhaustively in a way a new value could silently mis-route):
 | Step 3 recovery `status in ("pr_open","merged")` | `train_runner.py:2311` | not recovered → falls to Step 4 | no (correct — Step 4 handles it) |
 | Step 3 `status == "pr_open"` | `train_runner.py:2313` | not entered | no |
 | Step 4 merged-skip `status == "merged"` | `train_runner.py:2454` | not entered → new `committing` branch | YES — new branch (§2) |
+| Recovery-aware preflight (`_default_preflight`, §1b) | `train_runner.py:303/332` (NEW `ledger_state` param) | reads `ledger_state[nid].status == "committing"` to exempt `_check_repo_clean` ONLY | YES — NEW reader (§1b, CR round-2 finding 1) |
 | P4 merged/approved readers | `train_runner.py:2833,2900,…` | a `committing` node never reaches P4 | no |
 
 ## Scope & explicitly-deferred variants
@@ -605,14 +758,18 @@ automation:
   suite_command: "cd phase-loop-runtime && PYTHONPATH=src:tests python -m pytest tests -q -k 'crash_resume or train_ledger or train_runner'"
 ```
 
-AC-376-1/2/3 are machine-checkable by this suite today. AC-376-4 is NOT
-machine-checkable until #368 merges (operational precondition: the epoch
-allocator + `merge-base` `base_sha` must exist); it is recorded as
+AC-376-1/2/3 and AC-376-5..10 are machine-checkable by this suite today
+(the recovery-aware-preflight and owned-scope-confinement arms exercise the
+DEFAULT `_default_preflight` on a real dirty workspace — round-2 findings 1/2).
+AC-376-4 is NOT machine-checkable until #368 merges (operational precondition: the
+epoch allocator + `merge-base` `base_sha` must exist); it is recorded as
 `#368`-gated and MUST NOT be reported green by the runner before that — a plan
 amendment records its satisfaction once #376 is rebased onto merged #368.
 
 **Test faithfulness (the core of #376).** The crash MUST be produced by the real
-`run_train` path, never by hand-constructing the post-crash ledger + tree.
+`run_train` path, and resume MUST re-enter through the real `run_train` path —
+never by hand-constructing the post-crash ledger + tree, and never by injecting a
+`_preflight_fn` or cleaning the workspace to sidestep the entry gate.
 
 - **Primary — subprocess + SIGKILL.** Drive `run_train` in a real subprocess on
   a real git repo with a `publish_fn`/broker that performs the real commit then
@@ -620,6 +777,13 @@ amendment records its satisfaction once #376 is rebased onto merged #368.
   commit and `pr_open`; then re-invoke `run_train` (resume) and assert publish.
   This is the lead's literal instruction and proves no `finally`/atexit masks
   the state.
+- **Resume through the DEFAULT preflight on the REAL dirty workspace (round-2
+  finding 1 — the reachability proof).** The resume `run_train` invocation MUST use
+  the DEFAULT `_default_preflight` (no `_preflight_fn` injected) on the SAME
+  workspace the crash left dirty, and MUST NOT `git checkout`/`reset`/`clean` the
+  tree before resuming. A resume that injects a preflight or pre-cleans the tree
+  re-proves the fix against a path production cannot enter — the exact `#368`
+  AC-12/13 sin. `assert` the resume did not return `preflight_failed`.
 - **In-process form (deterministic companion).** Inject a `BaseException`
   (`SystemExit`) at the deepest post-commit point — inside `broker.execute`,
   after `publishing.py:179` — bypassing `except Exception` at `:2704`. First
@@ -627,23 +791,29 @@ amendment records its satisfaction once #376 is rebased onto merged #368.
   CLI entry writes a terminal record on exit.
 - **Ledger-faithfulness assertion (proves the state is REACHABLE, not
   constructed).** After the injected crash, assert the ledger byte-matches a real
-  crash: the node's last record is `committing` with `pre_commit_head`,
-  `expected_tree_sha`, and `owned_paths` set (and `fab_run_id` set on a FAB node),
-  and there is NO `pr_open` and NO `blocked` record for it. An AC that resumes from
-  a hand-built state would silently reproduce the exact defect #376 closes; this
-  assertion is what forbids it, and it also proves the marker actually persisted
-  the reconstruction fields the resume epilogue depends on.
+  crash: the node's last record is `committing` with `pre_commit_head` and
+  `owned_paths` set (and `fab_run_id` set on a FAB node), and there is NO `pr_open`
+  and NO `blocked` record for it. An AC that resumes from a hand-built state would
+  silently reproduce the exact defect #376 closes; this assertion is what forbids
+  it, and it also proves the marker actually persisted the reconstruction fields
+  the resume epilogue depends on.
 
 ## Acceptance criteria
 
 Each names the falsifier (the mutation that makes it fail) and the injection
 anchor. `AC-376-4` is written against the obligation and flagged
-unsatisfiable-until-#368-merged. **AC-376-5..9 are the CR fold** (codex 1 →
-AC-376-5; codex 2 → AC-376-6; B1 → AC-376-7; B2 → AC-376-8; codex 3 → AC-376-9);
-all five are machine-checkable by the suite TODAY (they do not depend on #368).
-Every AC's falsifier was written to name an OBSERVABLE the code can actually
-produce and a mutation that makes it fire — see `## AC observable-grounding` for
-the per-AC audit.
+unsatisfiable-until-#368-merged. **AC-376-5..9 are the round-1 CR fold** (codex 1 →
+AC-376-5; codex 2 → AC-376-6; B1 → AC-376-7; B2 → AC-376-8; codex 3 → AC-376-9)
+and **AC-376-10 is the round-2 fold** (recovery-aware preflight — finding 1);
+**AC-376-6 was rewritten in round 2** (owned-scope confinement, not exact tree —
+finding 2). All of AC-376-1/2/3/5..10 are machine-checkable by the suite TODAY
+(they do not depend on #368). Every AC's falsifier was written to name an
+OBSERVABLE the code can actually produce and a mutation that makes it fire — see
+`## AC observable-grounding` for the per-AC audit. **Every crash-resume AC below
+drives the crash through the REAL `run_train` path and resumes through the DEFAULT
+`_default_preflight` on the REAL post-crash workspace — never an injected preflight
+and never a hand-cleaned tree** (that is what makes finding 1's reachability real
+and not a re-proof against an unreachable path — the `#368` AC-12/13 sin).
 
 - [ ] **AC-376-1 (crash-resume publishes, OR blocks determinately — never silent
   loss).** After a `run_train`-level crash in the commit→`pr_open` window
@@ -665,17 +835,26 @@ the per-AC audit.
   window; the in-flight sub-window's determinate block is AC-376-5, and neither
   window ever returns to the silent `nothing_staged` stuck-state.
 
-- [ ] **AC-376-2 (crash BEFORE commit re-runs, does not mis-route).** A crash
-  with `HEAD == pre_commit_head` (commit never landed) resumes by RE-RUNNING the
-  normal execute path, not the prebuilt path.
-  *Observable:* the resumed run invokes `run_loop` and stages/commits afresh; it
-  does NOT call publish with `prebuilt=True`.
-  *Falsifier:* weaken the reconciliation to route on marker-presence alone
-  (drop the `HEAD == pre_commit_head` equal-head arm, or the identity conjunction)
-  → a no-commit crash is mis-routed to prebuilt-publish → publishes the stale
-  parent or blocks spuriously.
-  *Injection anchor:* `assert` `run_loop` was invoked on resume for the
-  no-commit node AND `prebuilt=True` was NOT passed.
+- [ ] **AC-376-2 (crash BEFORE commit re-runs through the DEFAULT preflight, does
+  not mis-route).** A crash with `HEAD == pre_commit_head` (commit never landed)
+  leaves a DIRTY workspace; resume passes the DEFAULT `_default_preflight` (the node
+  carries a `committing` marker — §1b), then RE-RUNS the normal execute path (not
+  the prebuilt path) after discarding the untrusted dirty tree.
+  *Observable:* with the real dirty post-crash workspace and the DEFAULT preflight,
+  `run_train` does NOT return `preflight_failed`; the resumed run resets to
+  `pre_commit_head`, invokes `run_loop`, and stages/commits afresh; it does NOT
+  call publish with `prebuilt=True`.
+  *Falsifier (either fails the AC):* (a) revert the §1b preflight exemption → the
+  dirty workspace makes `run_train` return `preflight_failed` and the node never
+  resumes at all (proves the exemption is load-bearing — finding 1); (b) weaken the
+  reconciliation to route on marker-presence alone (drop the `HEAD ==
+  pre_commit_head` equal-head arm) → a no-commit crash is mis-routed to
+  prebuilt-publish → publishes the stale parent or blocks spuriously.
+  *Injection anchor:* drive the crash in the real subprocess BEFORE
+  `publishing.py:179` so the workspace is genuinely dirty; `assert` the resume ran
+  the DEFAULT preflight (no `_preflight_fn` injected) and did NOT return
+  `preflight_failed`, AND `run_loop` was invoked on resume for the no-commit node,
+  AND `prebuilt=True` was NOT passed.
 
 - [ ] **AC-376-3 (stale-upstream on a frozen commit fails closed).** A resumed
   committed-unpublished node whose consumed upstream was rebuilt this run (or
@@ -729,25 +908,34 @@ the per-AC audit.
   produced by the real `record_intent`→adapter path, not a hand-built record;
   `assert` the terminal ledger status is `blocked` and the remote PR count is 1.
 
-- [ ] **AC-376-6 (committed-tree IDENTITY, not parentage — codex 2).** A resume
-  where HEAD is a child of `pre_commit_head` but its TREE differs from
-  `expected_tree_sha` (an amended or foreign commit built on the recorded parent)
-  is BLOCKED, not published.
-  *Observable:* `run_train` returns `{status: "blocked", detail.reason:
-  "committed_head_ambiguous_on_resume"}`; `broker.execute` is NEVER called for the
-  node.
-  *Falsifier:* between the crash and the resume, replace the committed HEAD with a
-  different commit on the SAME parent (e.g. `git commit --amend` altering a byte,
-  or a foreign commit whose parent is `pre_commit_head`) so `HEAD^ ==
-  pre_commit_head` still holds but `HEAD^{tree} != expected_tree_sha`; if the
-  reconciliation checks parentage ONLY (drops the `expected_tree_sha` conjunction),
-  the foreign tree publishes. Positive control: the UNMODIFIED committed HEAD
-  (tree matches) publishes (AC-376-1) — proving the identity check is not
-  vacuously blocking everything.
-  *Injection anchor:* `assert` the block fires with `broker.execute` not called,
-  AND assert the positive-control (untouched tree) publishes in the same test
-  module — the two arms together prove the check discriminates tree identity, not
-  merely presence of a child.
+- [ ] **AC-376-6 (owned-scope confinement identity — the node's OWN commit
+  publishes even under hook mutation; a foreign out-of-scope commit blocks —
+  round-2 finding 2).** Obligation: resume must publish the node's own committed
+  head — the commit whose diff vs the recorded parent is CONFINED to the node's
+  owned scope — and must NOT publish a foreign commit that touches paths outside
+  that scope; it must NOT false-reject a legitimate commit merely because a
+  clean-filter or pre-commit hook mutated its tree.
+  *Observable / positive control (this is the fix — the advisor's required arm):* a
+  resume where a pre-commit hook (or clean filter) ALTERED the committed tree, but
+  the commit's diff vs `pre_commit_head` is still ⊆ `rec.owned_paths`, PUBLISHES —
+  `run_train` returns `{status:"published"}` and `broker.execute` is called. Exact
+  tree (round-1) would have false-blocked this — the exact stuck-node finding 2
+  names.
+  *Observable / negative (fail-closed):* a resume where the committed child touches
+  a path OUTSIDE `rec.owned_paths` (a foreign/out-of-scope commit on the recorded
+  parent) is BLOCKED — `run_train` returns `{status:"blocked", detail.reason:
+  "committed_head_ambiguous_on_resume"}`; `broker.execute` is NEVER called.
+  *Falsifier (either fails the AC):* (a) restore exact-tree identity → the
+  hook-mutated in-scope commit blocks (positive control fails), reproducing the
+  stuck-node finding 2 names; (b) check parentage ONLY (drop the owned-scope
+  confinement clause) → the foreign out-of-scope commit publishes (negative fails).
+  *Injection anchor:* run BOTH arms in the same module against a real repo —
+  configure a pre-commit hook that reformats an OWNED file (mutating the tree
+  within owned scope) and assert the resume PUBLISHES; craft a foreign commit on
+  `pre_commit_head` that adds a path OUTSIDE `rec.owned_paths` and assert the block
+  fires with `broker.execute` not called. The two arms together prove the check
+  discriminates owned-scope CONFINEMENT (hook-robust), not exact-tree equality and
+  not mere child-presence.
 
 - [ ] **AC-376-7 (resumed FAB node binds its `fab_run_id`, or blocks — never
   silent `None` — B1).** A crash-resumed node that was FAB-scoped (its `committing`
@@ -801,6 +989,34 @@ the per-AC audit.
   of `prebuilt_owned_paths_fn(workspace, _DEFAULT_BASE)` in the constructed case —
   proving the persisted scope, not the broadened one, is authoritative.
 
+- [ ] **AC-376-10 (recovery-aware preflight admits a durably-marked node on a real
+  dirty workspace, but still fails closed for an unmarked dirty node — round-2
+  finding 1).** Obligation: the resume entry gate must let a node carrying a
+  durable `committing` marker past the uncommitted-changes check on its real
+  post-crash (dirty) workspace, while every unmarked dirty node still aborts the
+  train with zero PRs.
+  *Observable / positive (reachability):* after a real `run_train` crash that left
+  a `committing` marker and a DIRTY workspace, a second `run_train` invocation with
+  the DEFAULT `_default_preflight` does NOT return `preflight_failed` — it proceeds
+  to read the ledger and reach the Step-4 committing branch (the resumed node then
+  publishes or blocks per AC-376-1/5/6, never `preflight_failed`).
+  *Observable / negative (fail-closed narrowness):* a node with a DIRTY workspace
+  and NO `committing` marker (a stray edit, or a `running`-not-`committing` record)
+  still makes `run_train` return `{status:"preflight_failed"}` with zero PRs — the
+  exemption is keyed strictly on the marker.
+  *Falsifier (either fails the AC):* (a) revert the §1b exemption (or the Step-1.5
+  ledger-read reorder, or the `_default_preflight` `ledger_state` param) → the
+  marked dirty node returns `preflight_failed` and never resumes (positive fails —
+  reproducing finding 1's dead-code mechanism); (b) broaden the exemption to skip
+  `_check_repo_clean` for ANY dirty node → the unmarked dirty node is admitted
+  (negative fails — the entry invariant is breached).
+  *Injection anchor:* assert the resume used the DEFAULT preflight (no
+  `_preflight_fn` injected) on the REAL dirty post-crash workspace and did not
+  return `preflight_failed`; and in a sibling arm, seed one node dirty WITHOUT a
+  `committing` marker and assert `run_train` returns `preflight_failed` with zero
+  publish calls. This is the AC that proves finding 1 is closed on the production
+  path and the exemption is marker-narrow, not a blanket dirty-skip.
+
 ## AC observable-grounding (standing rule — every falsifier names an observable the code can produce)
 
 Per the lead's standing rule (#375 had a filler falsifier survive a 98/98 claim;
@@ -810,16 +1026,17 @@ concrete symbol at `file:line`. `x.y ⇒ y exists on type(x)`:
 | AC | Asserted observable | Grounded at | Producible today? |
 |---|---|---|---|
 | 1 | `{status:"published"}`; `pr_open` w/ `fab_run_id` | `publishing.py:199` returns `{"status":"published",...}`; `LedgerRecord.fab_run_id` `train_ledger.py:175-183` | YES |
-| 2 | `run_loop` invoked; `prebuilt=True` NOT passed | test spies on the `publish_fn`/`run_loop` seams | YES (seam) |
+| 2 | DEFAULT preflight passes (no `preflight_failed`); `run_loop` invoked; `prebuilt=True` NOT passed | `_default_preflight` `train_runner.py:303`; `preflight_failed` return `:2294`; `publish_fn`/`run_loop` seams | YES (seam + §1b) |
 | 3 | `{status:"blocked", reason:"upstream_changed_downstream_committed"}`; no `broker.execute` | blocked-return shape `train_runner.py:2733-2737`; reason string DEFINED by §3 | YES (reason introduced by this plan) |
 | 4 | durable `AdmissionRecord.epoch` dedup HIT, equal `base_sha` | `AdmissionRecord.epoch` `admission.py:16`; #368 fold resolution | POST-#368 only (flagged); NOT `result.granted_epoch` (no such field) |
 | 5 | `{status:"blocked"}` broker-ambiguity reason; remote PR count 1 | `verbs.py:76` `reason="outcome_ambiguous"`; `credsep.py:284` `pr-unconfirmed`; PR count via fake `gh` | YES |
-| 6 | `{status:"blocked", reason:"committed_head_ambiguous_on_resume"}`; no `broker.execute` | reason DEFINED by §2 else-arm; blocked-return shape as AC-3 | YES |
+| 6 | positive: hook-mutated in-scope commit → `{status:"published"}` + `broker.execute` called; negative: out-of-scope commit → `{status:"blocked", reason:"committed_head_ambiguous_on_resume"}` + no `broker.execute` | confinement predicate mirrors `credsep.py:248-253` `_covered_by_owned`; reason DEFINED by §2 else-arm; blocked/published shapes as AC-1/AC-3 | YES |
 | 7 | `completed_nodes[nid]["fab_run_id"]` == marker; `pr_open.fab_run_id` == marker; gate not inert | `completed_nodes` dict `:2767-2777`; `pr_open.fab_run_id` `:2790`; `_fab_promotion_gate_before_merge` `:485-496` | YES |
 | 8 | `completed_nodes[nid]["admitted_head_sha"]` == `head_sha` | `completed_nodes[nid]["admitted_head_sha"]` `:2773` | YES |
 | 9 | captured `owned_paths` arg == `rec.owned_paths`, ⊊ whole-diff | `publish_fn` arg spy; `rec.owned_paths` tuple; `prebuilt_owned_paths_fn` `:2536` | YES |
+| 10 | marked dirty node → no `preflight_failed`, reaches Step-4 branch; unmarked dirty node → `{status:"preflight_failed"}`, zero PRs | `_default_preflight` `:303`/`:332` (new `ledger_state` param, §1b); `preflight_failed` return `:2294`; `_check_repo_clean` `:168-183` | YES |
 
-Every AC 1/2/3/5/6/7/8/9 observable is producible on TODAY's code; only AC-4's is
+Every AC 1/2/3/5/6/7/8/9/10 observable is producible on TODAY's code; only AC-4's is
 #368-gated and is grounded on the durable record's `.epoch`, not on a result field
 that does not exist.
 
