@@ -444,10 +444,15 @@ fix (AC-9) created this round-4 failure. The plan's earlier "byte-identical rebu
 
 **Resolution — (b) the approval identity must be COMMIT-STABLE. State the invariant, not a
 one-line mechanism.** The rejected alternatives and why:
-- **(a) exclude HEAD-derived fields from the compare — WRONG.** `attempt_id` pins
-  `(repo, branch, head_sha)`, but `roadmap_digest`, the owned-code subset (`effective_code`),
-  and `verification_*` can differ at the SAME head; dropping `approval_digest` from the compare
-  reopens exactly the hole AC-9 closed (a resume presenting a DIFFERENT approval at the same
+- **(a) exclude HEAD-derived fields from the compare — WRONG, and not even expressible.**
+  `AdmissionRequest` stores only the OPAQUE `approval_digest` (and `idempotency_key`) — its
+  components (`roadmap_digest`, `effective_code`, `base_sha`, `verification_*`) live in
+  `ApprovalBinding` and are NEVER on the compared object (`fencing.py:27-34, 63-68`). So the
+  conflict-compare CANNOT selectively drop `base_sha`; "exclude the HEAD-derived field"
+  necessarily means dropping `approval_digest` WHOLESALE. And `attempt_id` pins only
+  `(repo, branch, head_sha)`, while `roadmap_digest`, the owned-code subset (`effective_code`),
+  and `verification_*` can differ at the SAME head — so dropping `approval_digest` reopens
+  exactly the hole AC-9 closed (a resume presenting a DIFFERENT approval at the same
   `attempt_id` would be accepted). The compare must keep the approval.
 - **(c) scope the compare to "authority fields only" — WRONG, same reason.** `approval_digest`
   IS an authority field for AC-9's purpose (a different approved base/code is a different
@@ -573,6 +578,16 @@ injection anchor, and a positive control
   current `main` (`execute:64` already refuses under #366), so it is relabeled a `REGRESSION
   GUARD` (rule 7); a SEPARATE red-first test asserts the genuinely new guarantee — in-lock
   refusal inside `admit_next` under a concurrent revocation race (step-1 wave). Both.
+  **Discriminating observable for the in-lock test (round-4 self-review — "refused" alone is
+  vacuous):** a plain "refused" can be satisfied by the `execute:64` PRE-check WITHOUT ever
+  entering the in-lock body — the same seed-vacuity class. The in-lock test MUST arrange the
+  revocation to land AFTER the pre-check passes but BEFORE the in-lock body (the #366 race:
+  seed `epoch_blocked = False` at entry, flip it `True` at a barrier between the outside-lock
+  entry check and the in-lock re-check), and its FALSIFIER must be **removing the in-lock
+  `epoch_blocked()` re-check specifically** (not the `:64` pre-check) → the race-revoked publish
+  is ACCEPTED. If the refusal came from `:64`, removing the in-lock check would not change the
+  outcome and the test would not be red — so red-on-removal-of-the-in-lock-check is exactly the
+  observable that proves the in-lock path was entered.
 
 - **AC-3 — publish idempotency survives renumbering (epoch-independent key).** Publish
   `(repo, branch, head)`; it records some epoch E. Replay the SAME publish → returns the
@@ -762,20 +777,24 @@ injection anchor, and a positive control
   `pr-head-advanced` guard (no merge). **Falsifier:** restore the direct `append_record` at
   `train_runner.py:1139` (the current bypass) → the seam re-admits and the advanced head
   merges despite revocation. **Injection anchor:** the `:1139` append rewrite +
-  `broker_client` threading at the `:3084` call. **Wave-0 red on `main` — the assertion MUST be
-  POSITIVE, not "no append" (round-4 grok B1).** Assert `result["status"] == "merged"` AND that
-  the `:1139` ledger record for the advanced head was written — the BUG is that the seam merged
-  despite revocation. Phrasing the wave-0 assertion as a POSITIVE outcome is load-bearing: a
-  scenario that silently never reaches `:1139` (multi-commit / non-PASS / gate-fail delta)
-  yields `status != "merged"`, which FAILS the wave-0 test LOUDLY on `main` rather than passing
-  it green — so the wave-0 red cannot be vacuous. A negative "no `:1139` append" assertion would
-  PASS on `main` whenever the seam is unreached, collapsing the wave-0 claim for the plan's
-  strongest test. **Path-entered control (both waves):** assert the delta actually reaches the
-  append site — the same "assert the seed/path landed" discipline as AC-12's IN-FLIGHT check.
-  **Positive control (POST-IMPL, green-time — NOT wave-0):** with `epoch_blocked = False`, the
-  IDENTICAL seam re-admits at an allocated epoch and the head advances — this proves the seam is
-  reachable with this exact setup, so the revoked run's "no advance" isolates revocation as the
-  cause, not an unreached path.
+  `broker_client` threading at the `:3084` call. **Wave-0 red on `main` — get the POLARITY right
+  (round-4 grok B1 + self-review).** The PRIMARY assertion is the DESIRED behavior under
+  revocation: `assert result["status"] != "merged"` (and NO `:1139` ledger record for the
+  advanced head). RED on `main` — the bypass appends at `:1139` ignoring the revoked store, so
+  `main` merges and this assertion FAILS — and GREEN after the fix. **Do NOT assert
+  `status == "merged"`: that is GREEN on `main` (the bug merges) and RED after the fix — the
+  INVERSE of red-first, and it leaves no passing regression guard (§10 rule-5). Asserting a
+  POSITIVE observable (grok B1) does NOT mean asserting the bug outcome.** Grok's
+  non-vacuity is satisfied by a companion **reachability control that runs AT WAVE-0** (not
+  POST-IMPL): the SAME delta against a NON-revoked store (`epoch_blocked = False`) asserts the
+  merge/append DOES happen — `status == "merged"`, the `:1139` record written. That control is
+  GREEN on `main` (the bypass merges regardless of revocation) AND GREEN post-fix (re-admits at
+  an allocated epoch), so it proves the seam is REACHED in both worlds; if it ever fails, the
+  delta never reached `:1139` and the revoked assertion's greenness is suspect — the exact
+  vacuity grok named. The pair — red-first "not merged under revocation" + wave-0 "merged when
+  NOT revoked" — is the "pair a negative with a positive control" rule, non-vacuous by
+  construction. **Green-time (POST-IMPL):** the non-revoked control keeps passing (re-admits at
+  an allocated epoch), now proving the fix PRESERVED reachability rather than killing the path.
 
 - **AC-8b — the CRASH-RESUME delta re-admit is subject to revocation (the second bypass
   codex found).** Pre-extend the durable provenance to the live head so it passes the gate
@@ -785,19 +804,20 @@ injection anchor, and a positive control
   direct `append_record` at `train_runner.py:1016` (the crash-resume bypass) → a revoked
   resume takes the early append and merges. **Injection anchor:** the `:1016` append
   specifically (assert `head_sha=live_head_sha` at that append in `src` before mutating, so
-  the mutation cannot be a silent no-op against a moved anchor). **Wave-0 red on `main` — POSITIVE
-  assertion, not "no append" (round-4 grok B1).** Assert `result["status"] == "merged"` AND the
-  `:1016` ledger record was written — the BUG is that a revoked crash-resume merged. If the
-  pre-extended provenance does NOT actually route to the `:1016` branch (the gate
-  `resolved_final == live_head_sha and _gate_passes()` not satisfied), `status != "merged"` and
-  the test FAILS LOUDLY on `main` instead of passing green. **Path-entered control (both
-  waves):** assert the run entered the `:1016` crash-resume branch specifically (e.g. the
-  crash-resume provenance was consumed / the early-append site was reached), not merely that no
-  bad merge occurred — the seed-precondition discipline of AC-12 applied to a code branch.
-  **Positive control (POST-IMPL, green-time — NOT wave-0):** with `epoch_blocked = False`, the
-  crash-resume DEDUPS to the SAME `granted_epoch` (idempotent resume, per §6/AC-6b) and the head
-  advances — proving the gate refuses only under revocation, not that the crash-resume path is
-  dead (which would make the revoked assertion vacuous).
+  the mutation cannot be a silent no-op against a moved anchor). **Wave-0 red on `main` — POLARITY
+  (round-4 grok B1 + self-review).** PRIMARY assertion = desired behavior: `assert
+  result["status"] != "merged"` and NO `:1016` ledger record. RED on `main` (the crash-resume
+  bypass appends at `:1016` ignoring revocation → `main` merges → fails), GREEN after the fix.
+  **Do NOT assert `status == "merged"` (green-on-main, red-after-fix — inverted, no regression
+  guard).** **Reachability control AT WAVE-0:** the SAME pre-extended-provenance scenario against
+  a NON-revoked store must route to `:1016` and merge/advance (`status == "merged"`, the `:1016`
+  record written) — GREEN on `main` and post-fix. This is what proves the `:1016` crash-resume
+  BRANCH was actually entered (the gate `resolved_final == live_head_sha and _gate_passes()`
+  satisfied); if it fails, the provenance never routed to `:1016` and the revoked assertion is
+  vacuous — the seed-precondition discipline of AC-12 applied to a code branch. **Green-time
+  (POST-IMPL):** with `epoch_blocked = False` the crash-resume DEDUPS to the SAME `granted_epoch`
+  (idempotent resume, per §6/AC-6b) and the head advances — proving the fix refuses only under
+  revocation, not that the crash-resume path is dead.
 
 - **AC-7 — CHANGELOG/doc retraction present and self-consistent.** A repo check (grep-level
   is sufficient) asserts (a) `CHANGELOG.md` contains the byte-neutrality RETRACTION entry
@@ -824,7 +844,7 @@ vacuous even if a different assertion would catch it.
 | AC-6a | "blocked" where prior result expected | ✅ | regression-guard |
 | AC-6b | acceptance (ledger append) where refusal expected | ✅ | scenario needs a dedup-able resume ⇒ requires the §6 deterministic `attempt_id` |
 | AC-7 | grep check failure | ✅ | doc-level |
-| AC-8a / AC-8b | `status == "merged"` + the `:1139`/`:1016` ledger record written despite revoked store | ✅ (wave-0 red) | production-seam bound; wave-0 assertion is POSITIVE (round-4 grok B1) so an unreached seam FAILS loud on `main`, not vacuously green |
+| AC-8a / AC-8b | primary: `status != "merged"` under a revoked store (RED on `main`, which merges via the bypass); paired with a wave-0 non-revoked control asserting `status == "merged"` | ✅ (wave-0 red) | production-seam bound; polarity is red-first (round-4 — NOT `status=="merged"`, which is green-on-main); the non-revoked control proves the seam was reached (grok B1 non-vacuity) |
 | AC-9 | conflicting resume accepted / same record for a different request | ✅ | dead code under `uuid4` ⇒ requires the §6 deterministic `attempt_id` |
 | AC-10 | record appended with `epoch != request.lease_epoch` (no raise) | ✅ | NEW; guards the allocated-epoch enforcement |
 | AC-11 | record appended with `request.attempt_id != attempt_id` (no raise) | ✅ | NEW; guards the dedup-identity enforcement — mirrors AC-10, one field over |
@@ -855,14 +875,14 @@ scenario that silently never reaches the seam, unless a positive control proves 
 | AC | Core assertion shape | Path-entered proof |
 |---|---|---|
 | AC-1 | POSITIVE — `accepted=True`, `granted_epoch == 3` | the accept/epoch value cannot be read on an unreached publish |
-| AC-2 | negative (refused) | positive control: `epoch_blocked=False` → the SAME publish is accepted (proves entry); in-lock red-first test asserts the admit was reached |
+| AC-2 | negative (refused) | positive control: `epoch_blocked=False` → the SAME publish is accepted (proves entry); the in-lock red-first test's discriminator is red-ON-REMOVAL-OF-THE-IN-LOCK-CHECK under the #366 race (a `:64` pre-check refusal would NOT go red when only the in-lock check is removed) — so it proves the in-lock body was entered, not just "refused" |
 | AC-3 | negative (no new record) | positive control: DIFFERENT `head_sha` → a record IS appended (proves `execute`+admit reachable) |
 | AC-4 | POSITIVE — epoch sequence `[1,2,3,4]` | all four accepts are positive reads |
 | AC-5 | POSITIVE — epochs `1..N` present | value read over N appends |
 | AC-6a | negative (not blocked) | positive control: DIFFERENT `head_sha` IS refused at `:64` (proves `:58` reached) |
 | AC-6b | negative (refused, no append) | positive control: non-revoked resume dedups to the SAME `granted_epoch` (proves the resume path is entered) |
 | AC-7 | doc grep | N/A (static check, no seam) |
-| **AC-8a / AC-8b** | **negative (no re-admit/merge)** | **round-4 FIX: wave-0 assertion made POSITIVE (`status=="merged"` + the specific ledger record) so an unreached seam FAILS loud; green-time positive control (`epoch_blocked=False` advances) proves reachability** |
+| **AC-8a / AC-8b** | **negative (`status != "merged"` under revocation)** | **round-4 FIX: a WAVE-0 non-revoked reachability control (same delta, `epoch_blocked=False` → `status=="merged"`, ledger record written) proves the seam is reached — GREEN on `main` and post-fix. The primary red-first assertion is the DESIRED behavior, NOT the bug outcome (`status=="merged"` would be green-on-main = inverted).** |
 | AC-9 | POSITIVE — a `ValueError` raise | the raise cannot occur on an unreached compare; positive control: genuine resume dedups (no false conflict) |
 | AC-10 | POSITIVE — field divergence value / raise | the divergent record / raise is a positive read |
 | AC-11 | POSITIVE — field divergence value / raise | mirrors AC-10 |
