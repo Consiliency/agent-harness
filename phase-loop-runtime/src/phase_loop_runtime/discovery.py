@@ -408,6 +408,25 @@ class AmbiguousRoadmapError(RuntimeError):
         super().__init__("ambiguous roadmap selection")
 
 
+class SupersededRoadmapStateError(RuntimeError):
+    """agent-harness#375: the phase-loop state file selects a roadmap whose manifest
+    entries are ALL retired (``orphaned`` / ``completed``-unless-hatch). After a roadmap
+    flip, an existing checkout's stale ``.phase-loop/state.json`` would otherwise select a
+    superseded roadmap that ``manifest_backed_roadmap`` already refuses — the state lever
+    is the one selector that bypasses the manifest retirement filter AND is reachable on an
+    existing checkout. Fail closed and name the remedy so the operator clears the stale
+    state and the chain falls through to the active roadmap. Subclasses ``RuntimeError``
+    (keeps ``except RuntimeError`` callers working), mirroring ``AmbiguousRoadmapError``."""
+
+    def __init__(self, roadmap: Path):
+        self.roadmap = roadmap
+        super().__init__(
+            f"phase-loop state selects a superseded roadmap: {roadmap} "
+            "(all manifest entries are retired). Remove stale state to fall through "
+            "to the active roadmap: rm .phase-loop/state.json"
+        )
+
+
 def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
     if explicit:
         path = Path(explicit).expanduser()
@@ -424,6 +443,8 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
 
     state_roadmap = active_state_roadmap(repo)
     if state_roadmap is not None:
+        if _state_roadmap_is_superseded(repo, state_roadmap):
+            raise SupersededRoadmapStateError(state_roadmap)
         return assert_roadmap_authorized(repo, state_roadmap)
 
     manifest_roadmap = manifest_backed_roadmap(repo)
@@ -464,20 +485,29 @@ def active_state_roadmap(repo: Path) -> Path | None:
     return resolved if resolved.exists() else None
 
 
+def _entry_is_retired(entry: object, allow_completed: bool) -> bool:
+    """Mirror ``manifest_backed_roadmap``'s own skip filter so both the manifest lever
+    and the state-lever guard (agent-harness#375) share ONE definition of "retired"
+    rather than re-deriving it from banner prose. ``orphaned`` is always retired.
+    LEGACY (CLEANSHIP P7): ``completed`` is retired by default too, so an all-completed
+    manifest FALLS THROUGH to the glob branch instead of silently auto-selecting a
+    finished roadmap (this is why agent-harness's own frozen-at-v4 manifest used to pick
+    a stale completed roadmap); the one-release escape hatch restores the pre-change
+    behavior. ``failed``/``imported``/``committed``/``executing`` are NOT retired."""
+    if entry.status == "orphaned":
+        return True
+    if entry.status == "completed" and not allow_completed:
+        return True
+    return False
+
+
 def manifest_backed_roadmap(repo: Path) -> Path | None:
     if _phase_manifest_disabled():
         return None
     allow_completed = _discovery_allow_completed()
     candidates: list[Path] = []
     for entry in _phase_manifest_entries(repo):
-        if entry.roadmap_ref is None or entry.status == "orphaned":
-            continue
-        # LEGACY (CLEANSHIP P7): also skip completed entries by default so an
-        # all-completed manifest FALLS THROUGH to the glob branch instead of
-        # silently auto-selecting a finished roadmap (this is why agent-harness's
-        # own frozen-at-v4 manifest used to pick a stale completed roadmap). The
-        # one-release escape hatch restores the pre-change behavior.
-        if entry.status == "completed" and not allow_completed:
+        if entry.roadmap_ref is None or _entry_is_retired(entry, allow_completed):
             continue
         path = repo / entry.roadmap_ref.file
         try:
@@ -488,6 +518,35 @@ def manifest_backed_roadmap(repo: Path) -> Path | None:
         if resolved.exists() and resolved not in candidates:
             candidates.append(resolved)
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _state_roadmap_is_superseded(repo: Path, roadmap: Path) -> bool:
+    """agent-harness#375: True iff the manifest REGISTERS this roadmap (>=1 entry whose
+    ``roadmap_ref`` resolves to it) AND every such entry is retired. Reuses
+    ``_entry_is_retired`` so the guard inherits the manifest lever's meaning instead of
+    re-deriving a terminal-set from prose. Fires ONLY when the manifest knows the roadmap,
+    so an un-manifested state roadmap is never refused. Manifest-disabled -> never fires
+    (no structured signal to key on)."""
+    if _phase_manifest_disabled():
+        return False
+    allow_completed = _discovery_allow_completed()
+    target = roadmap.resolve()
+    entries = [
+        entry
+        for entry in _phase_manifest_entries(repo)
+        if entry.roadmap_ref is not None
+        and _resolve_roadmap_ref(repo, entry.roadmap_ref.file) == target
+    ]
+    if not entries:
+        return False
+    return all(_entry_is_retired(entry, allow_completed) for entry in entries)
+
+
+def _resolve_roadmap_ref(repo: Path, ref_file: str) -> Path | None:
+    try:
+        return (repo / ref_file).resolve()
+    except OSError:
+        return None
 
 
 def latest_handoff_roadmap(identity: RepoIdentity, predecessor: str) -> Path | None:
