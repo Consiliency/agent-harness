@@ -24,12 +24,18 @@ enforcement is live.
 
 ## Contract Pin
 
+These values are authoritative as stated here and were verified in-repo by re-hashing
+the raw contract bytes at tag `v0.2.1`. `plans/oapack/RELEASE-ANCHOR.md` in
+Consiliency/spec is cited as *provenance* for which release is canonical, not as the
+authority these values are read from — so this section stays correct even if that
+document is momentarily inconsistent (it currently is: its repin-instruction section
+still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`).
+
 - `contract_package`: `consiliency-spec`
 - `contract_version`: `0.2.1`
-- `contract_git_tag`: `v0.2.1` (immutable release anchor; see
-  `plans/oapack/RELEASE-ANCHOR.md` in Consiliency/spec. `v0.2.0` is superseded —
-  its wheel-shipped router laundered validation-error values into route verdicts;
-  do not pin it. The contract bytes are byte-identical between the two tags.)
+- `contract_git_tag`: `v0.2.1` (immutable release anchor). `v0.2.0` is superseded — its
+  wheel-shipped router laundered validation-error values into route verdicts; do not pin
+  it. The three pinned contract artifacts are byte-identical between the two tags.
 - `contract_git_sha`: `b862f977897a7b87c4419680a3e83735d4ff07b0` (commit the tag derefs to)
 - `schema_version`: `outside_agent_submission.v0.1`
 - `verdict_schema_version`: `outside_agent_route_verdict.v0.1`

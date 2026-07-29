@@ -8,17 +8,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Outside-agent contract: repin to `spec@v0.2.1` + per-file `sha256` verification (Consiliency/agent-harness#370)
 
-- **Repin the anchor.** `EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN` now references the
-  immutable annotated tag `v0.2.1` (`contract_git_tag`) on `Consiliency/spec@main`
-  and the 40-hex commit it dereferences to
-  (`contract_git_sha=b862f977897a7b87c4419680a3e83735d4ff07b0`), replacing the prior
-  unmerged-branch commit `c1085483`. Source of truth is
-  `plans/oapack/RELEASE-ANCHOR.md` in Consiliency/spec. `v0.2.1` supersedes `v0.2.0`,
-  whose wheel-shipped `outside_agent_router` laundered raw `jsonschema` error values
-  (and, for `additionalProperties`, property names) into `blocker.summary` of a
-  metadata-only route verdict. **The three pinned contract artifacts are byte-identical
-  between `v0.2.0` and `v0.2.1`** — only the wheel-shipped router differed — so this repin
-  is an anchor flip, not a digest change.
+- **Repin the anchor. These are the pin facts, stated inline and verified in this
+  repo — not delegated.** `EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN` now references the
+  immutable annotated tag `v0.2.1` (`contract_git_tag`) on `Consiliency/spec@main`,
+  replacing the prior unmerged-branch commit `c1085483`:
+
+  | field | value |
+  |---|---|
+  | `contract_git_tag` | `v0.2.1` |
+  | `contract_git_sha` (deref) | `b862f977897a7b87c4419680a3e83735d4ff07b0` |
+  | `submission_schema_sha256` | `5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a` |
+  | `verdict_schema_sha256` | `86169277d3a0823db1a6c9fa4d20a838b0bc2820818ad00ebd53dcdd03c2b1c2` |
+  | `vector_manifest_hash` | `78858828e9eace93eaf31d90717666ddce54ccb3666113df9d033d67c20cfca0` |
+
+  All three digests were verified by re-hashing the raw contract bytes at tag `v0.2.1`
+  (not taken on trust). `plans/oapack/RELEASE-ANCHOR.md` in Consiliency/spec is cited as
+  *provenance* for which release is canonical — not as the authority these values are read
+  from; this entry is the authority for the values, so it stays correct even if that
+  document is momentarily inconsistent. (It currently is: its repin-instruction section
+  still names the superseded `v0.2.0` it tells consumers elsewhere not to pin — reported
+  upstream on `Consiliency/spec#118`.)
+- **`v0.2.1` supersedes `v0.2.0`.** The `v0.2.0` wheel-shipped `outside_agent_router`
+  laundered raw `jsonschema` error values (and, for `additionalProperties`, property names)
+  into `blocker.summary` of a metadata-only route verdict. **The three pinned contract
+  artifacts are byte-identical between `v0.2.0` and `v0.2.1`** — only the wheel-shipped
+  router differed — so this repin is an anchor flip, not a digest change.
 - **Close the manifest-hash-only asymmetry (the substantive fix).** Verification
   previously byte-checked only the vector manifest and matched the two schemas by
   their version `const` alone, so a byte change to a schema that preserved its
