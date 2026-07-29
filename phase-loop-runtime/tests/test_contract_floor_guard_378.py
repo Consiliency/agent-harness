@@ -27,12 +27,14 @@ guard could have run. See ``test_declared_floor_is_provable_and_single_sourced``
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 import pytest
 
 from phase_loop_runtime.consiliency_layout import (
     ContractFloorError,
+    ContractFloorMetadataDivergence,
     ContractFloorUnverified,
     assert_contract_floor_satisfied,
     declared_contract_requirement,
@@ -121,20 +123,30 @@ def test_real_dist_owns_imported_module():
 
 
 def test_declared_floor_is_provable_and_single_sourced():
-    # ANTI-HOLLOW sentinel (board #382 r2 Findings 3 & 2), None-direction + the ONE
-    # single-source enforcer. Round 1 skipped when ``declared_contract_requirement()``
-    # returned None; codex showed that let an always-None regression -- a guard that
-    # never runs -- pass CI green (10 passed, 1 skipped). The fix: when provenance is
-    # provable (the exact condition under which the guard COULD run), a None floor is
-    # a FAILURE, not a skip. It also asserts the runtime's floor equals pyproject's
-    # single source -- the live comparison that actually enforces single-source
-    # (duplicate literals never did; a scenario constant is not a source of truth).
-    from packaging.requirements import Requirement
-
+    # ANTI-HOLLOW sentinel (board #382 r2 Finding 3), None-direction. Round 1 skipped
+    # when ``declared_contract_requirement()`` returned None; codex showed that let an
+    # always-None regression -- a guard that never runs -- pass CI green (10 passed,
+    # 1 skipped). The fix: when provenance is provable (the exact condition under which
+    # the guard COULD run), a None floor is a FAILURE, not a skip. This is the layer
+    # this sentinel binds: floor-is-readable-when-the-guard-could-run; the layer above
+    # (that the readable floor IS the pin, not stale metadata) is bound by the r5
+    # divergence falsifiers below, not here.
+    #
+    # WHAT THE r5 FIX CHANGED THIS SENTINEL TO TRUST (discipline #2): pre-r5 this test
+    # also compared the runtime floor to ``_requirement_from_pyproject()`` -- a live,
+    # non-vacuous check, because ``declared_contract_requirement()`` returned the DIST
+    # METADATA floor, an independent artifact that a stale .egg-info could make disagree
+    # with pyproject. Under the r5 maintainer ruling ``declared_contract_requirement()``
+    # RETURNS the adjacent pin by construction (the pin governs, metadata is
+    # corroboration), so that equality is now a tautology (pin == pin) and is REMOVED
+    # rather than left as a silent-green check. The non-vacuous single-source binding --
+    # that the pin OVERRIDES divergent metadata in both directions -- now lives in
+    # test_floor_governed_by_pyproject_over_stale_{newer,older}_metadata, which feed
+    # metadata that DISAGREES with the pin and assert the pin wins.
     if not _provenance_provable():
         # Provenance genuinely unprovable here; test_real_dist_owns_imported_module
-        # is the sentinel that flags that as an env regression, so skipping the
-        # value comparison here is safe (it cannot hide a hollow guard).
+        # is the sentinel that flags that as an env regression, so skipping here is
+        # safe (it cannot hide a hollow guard).
         pytest.skip("provenance not provable in this env (flagged by the owns-sentinel)")
     runtime_req = declared_contract_requirement()
     # The anti-hollow core: provable provenance but a None floor == the guard is
@@ -143,17 +155,166 @@ def test_declared_floor_is_provable_and_single_sourced():
         "provenance is provable but declared_contract_requirement() is None -- the "
         "contract-floor guard is HOLLOW (it never runs). See board #382 r2 Finding 3."
     )
-    pyproject_req = _requirement_from_pyproject()
-    if pyproject_req is None:
-        # Clean-room wheel ships no pyproject; the floor VALUE is not comparable here,
-        # but the non-None assertion above already proved the guard is not hollow.
-        pytest.skip("pyproject.toml not adjacent (clean-room wheel); value not comparable")
-    # Compare parsed name + specifier, not raw string, so formatting (ordering,
-    # spaces) neither masks nor manufactures a mismatch. Non-vacuous: pyproject and
-    # the dist metadata are independent artifacts (metadata is BUILT from pyproject,
-    # but a stale .egg-info or extraction bug makes them disagree).
-    assert Requirement(runtime_req).name == Requirement(pyproject_req).name
-    assert str(Requirement(runtime_req).specifier) == str(Requirement(pyproject_req).specifier)
+
+
+class _StaleMetadataDist:
+    """A dist whose ``.requires`` declares a contract floor DIFFERENT from the pin.
+
+    Models the gitignored, install-stale co-located ``.egg-info`` at the heart of
+    board #382 r5 Blocker 1: it can name a floor the pyproject pin never set.
+    Ownership is forced True by the tests (via monkeypatch) so the fake metadata is
+    consulted through the real ``declared_contract_requirement`` code path, while the
+    REAL adjacent pyproject on disk supplies the governing pin.
+    """
+
+    version = "0.0-test"
+
+    def __init__(self, floor: str):
+        self._floor = floor
+
+    @property
+    def requires(self):
+        return [self._floor]
+
+
+def _pyproject_pin() -> str:
+    from packaging.requirements import Requirement
+
+    pin = _requirement_from_pyproject()
+    if pin is None:  # clean-room wheel: no adjacent pyproject to govern
+        pytest.skip("pyproject.toml not adjacent (clean-room wheel); pin not comparable")
+    return str(Requirement(pin).specifier)
+
+
+def test_floor_governed_by_pyproject_over_stale_newer_metadata(monkeypatch):
+    # BLOCKER 1 FALSIFIER -- stale-NEWER direction (board #382 r5, maintainer ruling
+    # 2026-07-29). LAYER this binds: floor SOURCE-of-authority -- when the co-located
+    # egg-info metadata disagrees with the adjacent pin, the PIN governs. The layer it
+    # replaces: the r4 metadata-only floor, which trusted whatever the (gitignored,
+    # install-stale) egg-info said. A stale-NEWER metadata floor (>=9.9) there would
+    # FALSE-ABORT a healthy checkout; warn-and-skip (the alternative the ruling
+    # rejected) would instead go silent. Ruling: enforce the pin, warn on divergence.
+    # RED before the fix (metadata governed): declared_contract_requirement() -> >=9.9,
+    # the guard aborts a healthy 0.6.5 install.
+    from packaging.requirements import Requirement
+
+    import phase_loop_runtime.consiliency_layout as cl
+
+    import importlib.metadata as md
+
+    pin_spec = _pyproject_pin()  # real pin, e.g. >=0.6.5,<0.7
+    monkeypatch.setattr(cl, "_dist_owns_imported_runtime", lambda dist: True)
+    monkeypatch.setattr(
+        md,
+        "distribution",
+        lambda name: _StaleMetadataDist("consiliency-contract>=9.9,<10"),
+        raising=True,
+    )
+
+    # Divergence is named (never silenced) and the returned floor is the PIN, not 9.9.
+    with pytest.warns(ContractFloorMetadataDivergence):
+        req = cl.declared_contract_requirement()
+    assert req is not None
+    assert str(Requirement(req).specifier) == pin_spec, (
+        "stale-NEWER metadata must not govern -- the adjacent pyproject pin does. "
+        "Board #382 r5 Blocker 1."
+    )
+
+    # End to end: a healthy install that SATISFIES the pin must NOT abort, even though
+    # the stale metadata floor (>=9.9) would have. (The check re-emits the divergence
+    # warning; catching it here also asserts it stays non-silent on the enforce path.)
+    with pytest.warns(ContractFloorMetadataDivergence):
+        assert cl.check_installed_contract_floor() is None
+
+
+def test_floor_governed_by_pyproject_over_stale_older_metadata(monkeypatch):
+    # BLOCKER 1 FALSIFIER -- stale-OLDER direction (board #382 r5, maintainer ruling).
+    # LAYER this binds: the SILENT-UNDER-ENFORCEMENT hole warn-and-skip would have left
+    # open. A stale-OLDER metadata floor (>=0.6.0) with a below-pin installed contract
+    # (0.6.0, under the real >=0.6.5 pin) is the case where warn-and-skip returns None
+    # and the guard PASSES a contract #378 exists to reject. Enforcing the pin makes the
+    # guard FIRE. RED if the pin does not govern (metadata >=0.6.0 is satisfied by 0.6.0
+    # -> no error).
+    import phase_loop_runtime.consiliency_layout as cl
+
+    from packaging.requirements import Requirement
+
+    import importlib.metadata as md
+
+    from phase_loop_runtime.consiliency_layout import assert_contract_floor_satisfied
+
+    pin_spec = _pyproject_pin()  # skip in the clean-room wheel where no pin governs
+    monkeypatch.setattr(cl, "_dist_owns_imported_runtime", lambda dist: True)
+    monkeypatch.setattr(
+        md,
+        "distribution",
+        lambda name: _StaleMetadataDist("consiliency-contract>=0.6.0"),
+        raising=True,
+    )
+
+    # The GOVERNED floor is the PIN, not the stale-OLDER metadata (>=0.6.0) and NOT None
+    # (warn-and-skip returned None here -> the guard never fired -- the silent-under-
+    # enforcement hole this closes). This is bound DIRECTLY on declared_contract_requirement
+    # + assert_contract_floor_satisfied, NOT through check_installed_contract_floor(), so an
+    # upstream installed-version operand mutation (rows 2/2b) does not spuriously red this
+    # enforcement falsifier; the NEWER falsifier carries the end-to-end check() path.
+    req = cl.declared_contract_requirement()
+    assert req is not None and str(Requirement(req).specifier) == pin_spec, (
+        "stale-OLDER metadata must not govern (and must not warn-skip to None) -- the "
+        "adjacent pyproject pin governs. Board #382 r5 Blocker 1."
+    )
+    # An installed contract BELOW the pin (0.6.0) fires on the governed floor -- the exact
+    # case warn-and-skip silently passed.
+    with pytest.raises(ContractFloorError):
+        assert_contract_floor_satisfied("0.6.0", req)
+
+
+def test_requirements_equivalent_normalizes_specifier_order():
+    # DIVERGENCE-CORROBORATION sentinel (board #382 r5, advisor). The pin governs, but
+    # metadata AGREEING must corroborate -- NOT spuriously warn -- and metadata / pyproject
+    # legitimately serialise the SAME specifier in different orders (this repo's live case:
+    # metadata 'consiliency-contract<0.7,>=0.6.5' vs pyproject '...>=0.6.5,<0.7'). LAYER this
+    # binds: the corroboration compare is SEMANTIC (parsed name+specifier), not textual, so a
+    # formatting-only difference does not manufacture divergence. Without it the compare could
+    # regress to raw ``a == b`` and every real run would warn (or, under filterwarnings=error,
+    # abort collection) on healthy, agreeing metadata. Reds under the ``a == b`` mutation.
+    from phase_loop_runtime.consiliency_layout import _requirements_equivalent
+
+    assert _requirements_equivalent(
+        "consiliency-contract<0.7,>=0.6.5", "consiliency-contract>=0.6.5,<0.7"
+    ), "specifier-order-only difference must corroborate, not diverge"
+    assert not _requirements_equivalent(
+        "consiliency-contract>=9.9,<10", "consiliency-contract>=0.6.5,<0.7"
+    ), "a genuinely different floor must diverge"
+
+
+def test_floor_falls_back_to_metadata_when_no_adjacent_pyproject(monkeypatch):
+    # INSTALLED-CASE sentinel (board #382 r5). A wheel / clean-room install ships no adjacent
+    # pyproject, so the ruling leaves that path unchanged: the dist METADATA floor governs and
+    # NO divergence warning fires (there is no pin to disagree with). Binds the
+    # ``return metadata_req`` branch, which every in-tree / CI layout (pyproject always
+    # adjacent) never exercises. Reds if that branch regresses to None.
+    from packaging.requirements import Requirement
+
+    import phase_loop_runtime.consiliency_layout as cl
+    import importlib.metadata as md
+
+    monkeypatch.setattr(cl, "_dist_owns_imported_runtime", lambda dist: True)
+    monkeypatch.setattr(cl, "_requirement_from_adjacent_pyproject", lambda: None)
+    monkeypatch.setattr(
+        md,
+        "distribution",
+        lambda name: _StaleMetadataDist("consiliency-contract>=1.2,<2"),
+        raising=True,
+    )
+    # No pin to govern -> metadata is the floor, and NO divergence warning fires here.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ContractFloorMetadataDivergence)
+        req = cl.declared_contract_requirement()
+    assert req is not None
+    assert str(Requirement(req).specifier) == str(Requirement("x>=1.2,<2").specifier), (
+        "with no adjacent pyproject the metadata floor must govern unchanged. Board #382 r5."
+    )
 
 
 def test_check_fires_on_a_stale_ambient_install(monkeypatch):
@@ -588,15 +749,43 @@ def test_direct_url_arm_rejects_stale_same_repo_install_by_version(monkeypatch):
 #                                                                          floor_preflight
 #   3c   wiring: ENFORCEMENT         except ContractFloorError -> except   test_conftest_floor_error_
 #        handler re-raises           Exception: pass (swallow, r4)         handler_reraises
+#   3d   wiring: 3c is SCOPE-SOUND    handler swallows but hides a raise in test_conftest_floor_error_
+#        (own-scope raise only)      a NESTED def (ast.walk crossed scopes) handler_reraises (r5)
+#   B1a  floor AUTHORITY (governance) pin governance reverted: declared_*() test_floor_governed_by_pyproject_
+#        pin overrides metadata      returns metadata_req not pyproject_req over_stale_{newer,older}_metadata
+#   B1b  floor DIVERGENCE is VISIBLE  drop the divergence warnings.warn     test_floor_governed_by_pyproject_
+#        (never silent)              (pin still governs, but silently)      over_stale_newer_metadata
+#   B1c  corroboration is SEMANTIC    _requirements_equivalent -> raw a==b  test_requirements_equivalent_
+#        (specifier-normalized)      (format-only diff manufactures warn)  normalizes_specifier_order
+#   B1d  installed case (no pin)      metadata branch return None           test_floor_falls_back_to_metadata_
+#        (metadata governs unchanged)                                       when_no_adjacent_pyproject
 #   (declared floor, the third operand, is sentineled above by
 #    test_declared_floor_is_provable_and_single_sourced -- reds on declared_*() -> None.)
 #
-# r4 (board #382, codex+fable) added 1c/f2/2b/3c. Discipline for each row: name the LAYER the
-# sentinel binds and the layer ABOVE it. 1a-1c bind manifest PRECEDENCE; the layer above is
-# importlib's own .files->SOURCES fallback, now gated by reading RECORD first. 2 binds operand
-# SHAPE; 2b binds the layer above (accessor is BOUND to the contract version, and that binding IS
-# the contract package's object). 3a binds block-executed; 3b binds call-present; 3c binds the
-# ENFORCEMENT handler re-raises -- the realistic except-swallow that 3a/3b could not see.
+# r4 (board #382, codex+fable) added 1c/f2/2b/3c. r5 (codex Blocker 2 + maintainer ruling on
+# Blocker 1) added 3d/B1a/B1b. Discipline for each row: name the LAYER the sentinel binds and
+# the layer ABOVE it. 1a-1c bind manifest PRECEDENCE; the layer above is importlib's own
+# .files->SOURCES fallback, now gated by reading RECORD first. 2 binds operand SHAPE; 2b binds
+# the layer above (accessor is BOUND to the contract version, and that binding IS the contract
+# package's object). 3a binds block-executed; 3b binds call-present; 3c binds the ENFORCEMENT
+# handler re-raises; 3d binds that 3c is SCOPE-SOUND -- a nested-def raise (which never runs when
+# the handler swallows) does not count, so the layer above 3c (ast.walk crossing lexical scopes)
+# is closed. B1a binds floor AUTHORITY -- when the gitignored, install-stale egg-info metadata
+# disagrees with the adjacent pin, the PIN governs enforcement (the layer above: the r4
+# metadata-only floor, which trusted a stale egg-info); B1a's one governance lever backs BOTH
+# stale-direction falsifiers (newer -> false-abort, older -> silent under-enforce), so reverting
+# it reds both -- a real, correct coupling, not a defect (the falsifiers guard the one lever from
+# opposite sides). B1b binds that divergence stays VISIBLE (the warn is never silenced), isolable
+# from B1a because dropping only the warn reds just the stale-NEWER falsifier's warns-assertion.
+# B1c binds that corroboration is SEMANTIC -- _requirements_equivalent compares parsed
+# (name, specifier), so a raw ``a == b`` regression (which would warn on this repo's own
+# order-only-different metadata vs pin) reds a dedicated unit sentinel rather than passing
+# vacuously. B1d binds the installed-case ``return metadata_req`` branch that no in-tree /
+# CI layout (pyproject always adjacent) exercises. The stale-OLDER falsifier is bound DIRECTLY
+# on declared + assert_contract_floor_satisfied (not through check()), so an upstream
+# installed-version operand mutation (rows 2/2b) no longer spuriously reds it -- the only
+# residual couplings are 2->2b (2b binds the layer ABOVE 2, so null fails both) and
+# B1a->{newer,older} (one governance lever guarded from both stale directions), both correct.
 # ---------------------------------------------------------------------------
 class _DistInfoRecordForeignSourcesOursDist:
     """A same-root ``.dist-info`` whose AUTHORITATIVE ``RECORD`` lists only an unrelated
@@ -861,6 +1050,29 @@ def test_conftest_floor_error_handler_reraises():
         elts = t.elts if isinstance(t, ast.Tuple) else [t]
         return {e.id for e in elts if isinstance(e, ast.Name)}
 
+    def _raises_in_own_scope(node):
+        # A ``raise`` counts only if it is in the handler's OWN lexical scope. Board
+        # #382 r5 Blocker 2 (codex): a plain ``ast.walk`` descends into nested defs, so
+        # ``except ContractFloorError as exc:\n    def convert():\n        raise ...``
+        # satisfies it while the handler itself SWALLOWS -- a nested-scope raise never
+        # runs when the handler returns. Prune nested-scope bodies (FunctionDef /
+        # AsyncFunctionDef / Lambda / ClassDef) from the walk so only raises that
+        # execute in this handler count. Nested ``try``/``if``/``with``/``for`` are NOT
+        # new scopes, so a raise inside them still counts (3c asserts a raise EXISTS in
+        # the handler's own scope, not that it aborts -- see the ROW-3 residual note).
+        stack = list(ast.iter_child_nodes(node))
+        while stack:
+            child = stack.pop()
+            if isinstance(child, ast.Raise):
+                return True
+            if isinstance(
+                child,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef),
+            ):
+                continue  # a nested scope -- its raises do not run in THIS handler
+            stack.extend(ast.iter_child_nodes(child))
+        return False
+
     floor_handlers = [
         h
         for h in ast.walk(fn)
@@ -873,11 +1085,12 @@ def test_conftest_floor_error_handler_reraises():
         "#382 r4 fable F1 (enforcement wiring)."
     )
     for h in floor_handlers:
-        assert any(isinstance(node, ast.Raise) for node in ast.walk(h)), (
+        assert _raises_in_own_scope(h), (
             "an `except ContractFloorError` handler in conftest.pytest_configure does not "
-            "RAISE -- a swallowed floor error neuters enforcement while the wiring sentinels "
-            "(3a/3b) stay green. The handler must re-raise (as a UsageError). Board #382 r4 "
-            "fable F1."
+            "RAISE in its own scope -- a swallowed floor error neuters enforcement while the "
+            "wiring sentinels (3a/3b) stay green. The handler must re-raise (as a UsageError). "
+            "A raise buried in a nested def/lambda/class inside the handler does not count -- it "
+            "never runs when the handler swallows. Board #382 r4 fable F1 / r5 Blocker 2."
         )
 
 
@@ -901,7 +1114,13 @@ def test_conftest_floor_error_handler_reraises():
 #     ContractFloorError` to `except Exception: pass` (a well-meant refactor),
 #     which swallows a real violation while 3a stays GREEN (stash set on the
 #     healthy path) and 3b stays GREEN (call present). 3c reds exactly that, so
-#     the refactoring-reachable hole is no longer in the residual.
+#     the refactoring-reachable hole is no longer in the residual. What 3c
+#     asserts is narrow (board #382 r5 F-2): the handler CONTAINS a `raise` in its
+#     OWN lexical scope -- nested def/lambda/class bodies are pruned from the walk
+#     (Blocker 2), because a raise buried in a nested def never runs when the
+#     handler swallows. It does NOT assert the raise ABORTS: `raise SystemExit(0)`,
+#     or a `raise` caught by a nested `try` inside the handler, still satisfy 3c and
+#     remain in the deliberate-sabotage residual below.
 #   * NEITHER 3a/3b/3c proves the call's BODY executed. The residual is now only
 #     a DELIBERATE in-place neuter (`if False: check_installed_contract_floor()`,
 #     stash still set, handler intact) -- present but never run. That is not

@@ -53,6 +53,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   in a genuinely shadowed environment the floor is **unverified**, and #378's failure
   mode can still occur. That is a named boundary, distinct from a guard that quietly
   claims coverage it does not have.
+- **When a co-located dist has an adjacent `pyproject`, the PIN governs — not the
+  gitignored, install-stale metadata (Consiliency/agent-harness#382 r5, maintainer
+  ruling 2026-07-29).** The co-located `.egg-info` refreshes only on `pip install`, so
+  it persists across pin edits and branch switches and can enforce a floor the pin never
+  set — a stale-NEWER metadata floor false-aborting a healthy checkout, or a stale-OLDER
+  one silently under-enforcing. `declared_contract_requirement()` now reads the adjacent
+  `pyproject` pin and enforces that; agreeing metadata is corroboration, disagreeing
+  metadata emits the new `ContractFloorMetadataDivergence` warning naming both values and
+  which governed, but enforcement proceeds on the pin. The installed case (a wheel /
+  clean-room install with no adjacent `pyproject`) is unchanged: metadata governs there.
 
 ### Outside-agent contract: repin to `spec@v0.2.1` + per-file `sha256` verification (Consiliency/agent-harness#370)
 

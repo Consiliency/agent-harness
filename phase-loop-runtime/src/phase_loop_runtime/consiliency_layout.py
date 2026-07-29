@@ -172,6 +172,21 @@ class ContractFloorUnverified(UserWarning):
     no indication a guard even ran)."""
 
 
+class ContractFloorMetadataDivergence(UserWarning):
+    """The owning dist's metadata floor disagrees with the ADJACENT ``pyproject``
+    pin (Consiliency/agent-harness#382 r5, maintainer ruling 2026-07-29).
+
+    The co-located ``.egg-info`` is gitignored and refreshes only on ``pip
+    install``, so it persists across pin edits and branch switches and can name a
+    floor the pin never set -- stale-NEWER (which would false-abort a healthy
+    checkout) or stale-OLDER (which would silently under-enforce). When an adjacent
+    ``pyproject`` is present it is the single source of truth the metadata is BUILT
+    from, so the PIN governs enforcement and the metadata is corroboration only.
+    This warning fires -- never silenced -- naming BOTH values and which governed,
+    so a stale egg-info is visible rather than silently trusted or silently
+    dropped. It is not a fail-open signal: the floor IS enforced (on the pin)."""
+
+
 def _dist_records_package(dist: Any, needle: str) -> bool:
     """True iff ``dist``'s OWN file manifest names ``needle`` (``<pkg>/__init__.py``).
 
@@ -280,9 +295,10 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
     Ownership requires (A) AND (B):
 
       (A) RECORDED PACKAGE -- the dist's own file manifest names ``<pkg>/__init__.py``
-          (``_dist_records_package``, ordered probes: ``dist.files``, then an
-          AUTHORITATIVE ``RECORD`` text read -- a readable RECORD that omits the package
-          is decisive not-owned -- else the ``.egg-info`` ``SOURCES.txt`` text read
+          (``_dist_records_package``, ordered probes: an AUTHORITATIVE ``RECORD`` text
+          read FIRST when present -- decisive BOTH ways, names the package -> owner,
+          omits it -> not-owned, nothing else consulted -- else, on the no-RECORD
+          ``.egg-info`` path, ``dist.files`` and then the ``SOURCES.txt`` text read
           DIRECTLY, load-bearing on Python 3.12+ where importlib FILTERS an egg-info
           SOURCES.txt by on-disk existence into an empty OR partial ``.files``; see
           ``_dist_records_package``). An empty-RECORD or foreign-package dist fails here
@@ -386,17 +402,85 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
         return False
 
 
+def _requirement_from_adjacent_pyproject() -> str | None:
+    """The ``consiliency-contract`` requirement declared in the SOURCE
+    ``pyproject.toml`` adjacent to the imported module, or ``None`` if there is none.
+
+    Adjacency mirrors the imported package's on-disk layout
+    (``src/phase_loop_runtime/__init__.py`` -> ``../../pyproject.toml``) -- the SAME
+    adjacency the test-suite single-source helper uses. Returns ``None`` when no
+    adjacent ``pyproject`` exists (a wheel / clean-room install ships none, and the
+    metadata floor governs there) or it declares no ``consiliency-contract``
+    dependency. The requirement's environment marker is dropped so it is directly
+    comparable with the metadata form.
+    """
+    try:
+        try:
+            import tomllib  # Python 3.11+
+        except ModuleNotFoundError:  # pragma: no cover - 3.10 backport path
+            import tomli as tomllib
+
+        import phase_loop_runtime
+
+        pyproject = (
+            Path(phase_loop_runtime.__file__).resolve().parents[2] / "pyproject.toml"
+        )
+        if not pyproject.is_file():
+            return None
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        for dep in data.get("project", {}).get("dependencies", ()):
+            if dep.replace(" ", "").lower().startswith("consiliency-contract"):
+                return dep.split(";", 1)[0].strip()
+        return None
+    except Exception:
+        return None
+
+
+def _requirements_equivalent(a: str, b: str) -> bool:
+    """True iff two requirement strings name the same dependency with the same
+    specifier, compared on the PARSED ``(name, specifier)`` -- so ``<0.7,>=0.6.5``
+    and ``>=0.6.5,<0.7`` (identical constraints, different serialisations)
+    corroborate rather than spuriously diverge. A specifier-set stringifies in a
+    normalised order, so this is a semantic, not textual, comparison."""
+    from packaging.requirements import Requirement
+
+    try:
+        ra, rb = Requirement(a), Requirement(b)
+    except Exception:
+        return a == b
+    return ra.name == rb.name and str(ra.specifier) == str(rb.specifier)
+
+
 def declared_contract_requirement() -> str | None:
-    """The ``consiliency-contract`` requirement string this package declares, read
-    from the dist metadata of the distribution PROVEN to own the imported
-    ``phase_loop_runtime`` module (never re-encoded here).
+    """The ``consiliency-contract`` floor this package enforces, for the
+    distribution PROVEN to own the imported ``phase_loop_runtime`` module.
 
     The floor lives in exactly one place -- ``phase-loop-runtime``'s ``pyproject``
-    ``dependencies`` -- and this reads it back from that dist's own metadata so the
-    guard cannot silently disagree with the pin it enforces. It returns ``None``
-    when the metadata is unreadable OR cannot be shown to belong to the running
-    code (``_dist_owns_imported_runtime``), so the caller treats the floor as
-    unknowable rather than enforcing a floor that is not the running package's.
+    ``dependencies``. Two readings of it are possible and can DISAGREE:
+
+      * the dist metadata (``dist.requires``), which for a co-located editable
+        install is a gitignored ``.egg-info`` that refreshes only on ``pip
+        install`` and so persists across pin edits and branch switches, and
+      * the adjacent ``pyproject.toml`` -- the SOURCE the metadata is BUILT from.
+
+    Maintainer ruling (Consiliency/agent-harness#382 r5, 2026-07-29): when the
+    owning dist is co-located with an adjacent ``pyproject``, the PIN governs
+    enforcement -- metadata agreeing is corroboration; metadata DISAGREEING emits a
+    ``ContractFloorMetadataDivergence`` warning naming both values and which
+    governed, but enforcement proceeds on the pin. This closes both stale-egg-info
+    failure modes the metadata-only floor allowed: a stale-NEWER metadata floor
+    false-aborting a healthy checkout, and a stale-OLDER one silently
+    under-enforcing. In the ONLY case where disagreement is possible (a co-located
+    dist with an adjacent pin), the pin wins -- so this cannot silently disagree
+    with the pin it enforces.
+
+    Installed case (no adjacent ``pyproject`` -- a wheel / clean-room install):
+    metadata-based behaviour is unchanged, since the pin is not shipped there.
+
+    Returns ``None`` when the metadata is unreadable OR cannot be shown to belong to
+    the running code (``_dist_owns_imported_runtime``) AND no adjacent pin is
+    readable, so the caller treats the floor as unknowable rather than enforcing a
+    floor that is not the running package's.
     """
     try:
         import importlib.metadata as md
@@ -405,6 +489,8 @@ def declared_contract_requirement() -> str | None:
         dist = md.distribution("phase-loop-runtime")
         if not _dist_owns_imported_runtime(dist):
             return None
+
+        metadata_req: str | None = None
         for raw in dist.requires or ():
             try:
                 req = Requirement(raw)
@@ -412,10 +498,33 @@ def declared_contract_requirement() -> str | None:
                 continue
             if req.name == "consiliency-contract":
                 # Drop any environment marker; keep name + specifier.
-                return raw.split(";", 1)[0].strip()
+                metadata_req = raw.split(";", 1)[0].strip()
+                break
+
+        # Maintainer ruling (agent-harness#382 r5): the ADJACENT pyproject pin -- not
+        # the gitignored, install-stale egg-info metadata -- is the enforced floor.
+        pyproject_req = _requirement_from_adjacent_pyproject()
+        if pyproject_req is not None:
+            if metadata_req is not None and not _requirements_equivalent(
+                metadata_req, pyproject_req
+            ):
+                warnings.warn(
+                    "consiliency-contract floor: dist metadata declares "
+                    f"'{metadata_req}' but the adjacent pyproject pin declares "
+                    f"'{pyproject_req}'. The co-located .egg-info is gitignored and "
+                    "refreshes only on 'pip install', so it can lag the pin across "
+                    "pin edits / branch switches; the PYPROJECT PIN governs "
+                    "enforcement here. Reinstall (pip install -e ./phase-loop-runtime) "
+                    "to refresh the metadata (Consiliency/agent-harness#382).",
+                    ContractFloorMetadataDivergence,
+                    stacklevel=2,
+                )
+            return pyproject_req
+
+        # No adjacent pin (installed / clean-room): metadata governs, as before.
+        return metadata_req
     except Exception:
         return None
-    return None
 
 
 def assert_contract_floor_satisfied(installed_version: str, requirement: str) -> None:
