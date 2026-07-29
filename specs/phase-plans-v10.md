@@ -111,8 +111,23 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
 ## Absorbed Roadmaps (bookkeeping — this roadmap SUPERSEDES these)
 
 This roadmap absorbs the live work of the roadmaps below. Each is closed out with a
-supersession banner pointing here. **Nothing was dropped**; where a phase was already
-delivered it is recorded as such rather than re-scheduled.
+supersession banner pointing here; where a phase was already delivered it is recorded as such
+rather than re-scheduled.
+
+> **This table's first draft asserted "Nothing was dropped." That was false, and a cross-vendor
+> review caught three drops before merge.** (1) `convergence-v1`'s process-boundary credential
+> isolation (`:291`) vanished into an `EC-INTEG-1` that only requires calls to traverse a broker
+> *abstraction* — which passes today while workers can still hold `GH_TOKEN`; restored as
+> `EC-INTEG-5`. (2) `convergence-v1:340`'s production-wiring obligations for
+> `reconcile_before_action` / `dispatch_ready_nodes` / `refresh_downstream_after_merge`, all three
+> of which have zero production callers; restored as `EC-INTEG-6`. (3) `phase-plans-v4.md` was
+> marked DELIVERED — CLOSED with "nothing carried" while its PNLVERIFY real-panel smoke had never
+> been satisfied; carried as `EC-REVIEWTRUTH-9`.
+>
+> All three are the **MERGED IS NOT REACHABLE** class this roadmap's own Context section names —
+> reproduced by the absorption pass itself. Writing the pattern down did not prevent committing
+> it. Treat any "nothing was dropped" claim, including this one, as a hypothesis to be checked
+> against the superseded document rather than as a finding.
 
 | absorbed roadmap | disposition | where its live work went |
 |---|---|---|
@@ -128,7 +143,7 @@ delivered it is recorded as such rather than re-scheduled.
 | `phase-plans-v3.md` (model-routing-v2) | **SUPERSEDED — ABSORBED** | 3 of 4 phases DELIVERED. Live gap: the governed pre-merge fix-round is not wired in production → EC-REVIEWTRUTH-8 |
 | `phase-plans-v2.md` (model-routing-v1) | **SUPERSEDED — ABSORBED** | 4 of 5 phases DELIVERED. Same single live gap as v3 → EC-REVIEWTRUTH-8. Shipped effort defaults (`execute/repair=high`, `review=max`) intentionally differ from the doc under #310 — a reconciliation, not a delivery gap |
 | `phase-plans-v5.md` (Advisor Board) | **SUPERSEDED — ABSORBED** | Phases 1–4 and 7 DELIVERED. ABDOMNI + ABDOBS are built, wired and unit-tested but have ZERO production constructors → EC-LEGLIFE-6/7. Residual: a stale `skills_bundle/codex-advisor-panel/` duplicate survives bundle regeneration |
-| `phase-plans-v4.md` (Advisor Panel ownership) | **DELIVERED — closed** | Nothing carried; all 6 phases shipped `9de824d`/`61f41c6`, focused slice 46/0 today. Three deliberate supersessions recorded in its banner (fable-5 leg default, gemini-3.6-flash, panel→board rename) so they are not mistaken for regressions | Assessment running; any live phase will be appended here before those roadmaps are closed. **Do not close them until that lands.** |
+| `phase-plans-v4.md` (Advisor Panel ownership) | **SUPERSEDED — ABSORBED** | 5 of 6 phases shipped `9de824d`/`61f41c6`, focused slice 46/0 today. Three deliberate supersessions recorded in its banner (fable-5 leg default, gemini-3.6-flash, panel→board rename) so they are not mistaken for regressions. **CARRIES ONE LIVE CRITERION:** PNLVERIFY's real-panel smoke (`phase-plans-v4.md:228`) was never satisfied — its own execution plan permitted the smoke not to run (`plans/phase-plan-v4-PNLVERIFY.md:50`) and the committed closeout records no live model-output transcript, substituting command-construction tests (`docs/research/advisor-panel-roadmap-v4-verification.md:27`) → EC-REVIEWTRUTH-9 |
 
 **Overlap that motivated the absorption** — three roadmaps independently covered the same work:
 `convergence-v1` RUNTIME criterion 4 ("advisor-seat lifecycle persists complete per-seat
@@ -195,6 +210,7 @@ Stop the cross-vendor board silently losing seats. Carry a typed per-seat outcom
 - [ ] EC-REVIEWTRUTH-6 — `test_advisor_board_golden.py` still passes, or its sanctioned-delta list is explicitly and normatively amended
 - [ ] EC-REVIEWTRUTH-7 — A capped or empty leg is distinguishable from a leg that reviewed and found nothing, and is retried rather than counted
 - [ ] EC-REVIEWTRUTH-8 — **The governed pre-merge auto-repair fix-round is WIRED IN PRODUCTION.** Build an `apply_fix` closure reusing `_build_repair_context` (`runner.py:6931`) + `build_prompt` + `launch_with_spec` to re-dispatch `repair` with the panel's `block` findings folded into `repair_context`, re-render the bundle from the new staged diff, and pass it — not `None` — at `runner.py:10140`. Falsified by reverting to `apply_fix=None`, after which a governed run with a mock panel returning block-then-pass must NOT become mergeable. Positive control: the phase becomes mergeable within `max_rounds` (default 3), with the governed fix-round counter kept independent of `_recent_repeated_repair_failures`. (Absorbed from v3 P1 / v2 P3 — the loop machinery exists at `governed_premerge.py:371-373` and is exercised only by test-injected closures; the omission is deliberate and self-documented at `runner.py:9748-9757`.)
+- [ ] EC-REVIEWTRUTH-9 — **REAL-PANEL SMOKE, carried from v4 PNLVERIFY (`phase-plans-v4.md:228`), which was closed without satisfying it.** A live panel run produces a durable transcript proving the Codex and Gemini legs actually inspected the staged files — not that their commands were constructed correctly. v4's own execution plan permitted the smoke not to run (`plans/phase-plan-v4-PNLVERIFY.md:50`) and its closeout substituted command-construction tests with no live model output recorded (`docs/research/advisor-panel-roadmap-v4-verification.md:27`). Falsified by a leg that returns a verdict while self-disclosing it opened no files — the same non-corroborating-AGREE failure observed on `#368` round 1, where a seat agreed having read no source. Positive control: the transcript names files the leg could only know by reading them
 
 **Scope notes**
 Decompose into 4 lanes: lane A owns the typed outcome on `PanelLegResult` and publishes
@@ -616,6 +632,8 @@ freeze and would otherwise serialize needlessly.
 **Exit criteria**
 - [ ] EC-INTEG-0 — **TEST LANE LANDED FIRST.** Tests written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier RUN with its injection anchor asserted; the implementation PR does not modify them.
 - [ ] EC-INTEG-1 — The coordinator drives side effects only through the broker; falsified by restoring any direct-credential path, which must be detected
+- [ ] EC-INTEG-5 — **PROCESS-BOUNDARY CREDENTIAL ISOLATION (restored from `convergence-v1:291`, which v10 dropped).** The broker is the only process holding mutation credentials, proven by a machine-checked assertion that spawned coordinator/worker environments contain no `GH_TOKEN`/`GITHUB_TOKEN`. `BrokerEnvironmentBoundary` (`convergence/broker/credsep.py:20`) implements the stripping and is unit-tested, but has **ZERO production constructors** — it appears only in two `train_runner.py` docstrings (`:358`, `:371`) and in tests, while `cli.py:3639` builds the live broker inside the coordinator process and executor environments copy `os.environ` stripping only Claude markers (`harness_env_signatures.py:194`, `launcher.py:2250`). Falsified by a spawned worker environment retaining either token. EC-INTEG-1 alone cannot detect this: routing through a broker *abstraction* passes today while the isolation does not hold
+- [ ] EC-INTEG-6 — **PRODUCTION WIRING OF THE ABSORBED COORDINATOR HELPERS.** `reconcile_before_action` (`convergence/reconcile.py:79`), `dispatch_ready_nodes` (`convergence/dispatch.py:61`) and `refresh_downstream_after_merge` (`convergence/refresh.py:42`) each have **ZERO production callers** — they appear only at their own definition and in `convergence/__init__.py` exports. `convergence-v1:340` required reconcile-before-every-action, unsupported-version rejection, and downstream refresh/reverification/invalidation; v10's first draft required none of it. Each helper must have a production `train_runner` call site, asserted by a test that fails if the call site is removed
 - [ ] EC-INTEG-2 — Crash injection between broker admission and ledger append converges on resume rather than double-executing
 - [ ] EC-INTEG-3 — The adversarial fault suite covers revocation mid-operation, ambiguous terminals, and concurrent same-target requests
 - [ ] EC-INTEG-4 — `plans/phase-plan-vergence-v1-FAULTS.md` — hand-executed 2026-07-26 with 138 fault tests green — is reconciled into the ledger rather than left as bookkeeping-stale
