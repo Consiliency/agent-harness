@@ -1,5 +1,7 @@
 # Detailed migration plan: FAB ah#288 — P2 of 2: readmit CONSUMER wiring + engage-flag flip
 
+*Phase alias: FABREADMIT (specs/phase-plans-v10.md)*
+
 > **⚠️ PRECONDITION — P1 MUST BE MERGED TO `main` FIRST. Do not begin this plan until it is.**
 > This is the second of a two-plan split (maintainer-ratified, `Consiliency/agent-harness#363`
 > follow-up). **P1** — *"one shared monotonic epoch allocator across all admission kinds"*
