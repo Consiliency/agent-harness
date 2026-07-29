@@ -31,6 +31,18 @@ RUN_MODES: tuple[str, ...] = ("autonomous", "governed")
 DEFAULT_RUN_MODE = "autonomous"
 RUN_MODE_ENV = "PHASE_LOOP_RUN_MODE"
 
+# Consiliency/agent-harness#358: minimum USABLE reviewer legs for a governed review
+# to be a real board. A single usable reviewer is not a board — it cannot ratify a
+# merge — so the gate must block below this floor, not only at ZERO usable. This is
+# the decision-INDEPENDENT lower bound (a 1-reviewer review is insufficient under
+# EVERY version of the amended REVIEWTRUTH criteria, #375). It counts LEGS, not
+# distinct vendor families, on purpose: requiring 2 DISTINCT vendors would forbid a
+# deliberately-configured same-family breadth board (e.g. codex+opencode), and
+# telling a degraded same-family board apart from a chosen one needs the declared-
+# vs-achieved distinction — the three-state model, held for #375. It is likewise
+# below the pre-merge-CR quorum (3), whose 2-vs-3 semantics are that same held model.
+_MIN_USABLE_REVIEWERS = 2
+
 
 def _leg_blocks(text: str) -> bool:
     """True iff a usable leg's review signals a blocking concern.
@@ -270,6 +282,37 @@ def governed_planning_gate(
             "no_usable_review",
             "governed_no_usable_review",
             f"no disjoint reviewer produced a usable verdict ({len(panel.legs)} leg(s) unusable); holding (non-human)",
+        )
+    # Consiliency/agent-harness#358: the governed gate previously blocked ONLY when
+    # ZERO legs were usable, so a board delivering a SINGLE usable reviewer silently
+    # promoted a merge that a lone opinion had "reviewed". Enforce the usable-reviewer
+    # floor here. Preserve the panel findings (the concrete review text, #80) and the
+    # panel object, then APPEND the structural block — a single-reviewer DISAGREE must
+    # keep its actionable body, not be replaced by the generic floor reason. `reason`
+    # is `below_reviewer_floor` so the pre-merge loop surfaces the accurate STRUCTURAL
+    # cause and remedy (add a reviewer), never a generic "non_convergence".
+    if len(panel.usable_legs) < _MIN_USABLE_REVIEWERS:
+        floor_finding = ReviewFinding(
+            code="governed_below_reviewer_floor",
+            reason=(
+                f"governed pre-merge review had only {len(panel.usable_legs)} usable "
+                f"reviewer leg(s), below the minimum of {_MIN_USABLE_REVIEWERS} for a "
+                f"real review board; a single reviewer cannot ratify a merge; holding "
+                f"(non-human). Authenticate or install a second non-author panel leg "
+                f"(a different vendor is preferred). Requiring DISTINCT vendors or the "
+                f"full 3-vendor quorum is the three-state model, held for #375."
+            ),
+            severity="block",
+            blocker_class="review_gate_block",
+            reviewed_sha=reviewed_sha,
+        )
+        return GateResult(
+            ran=True,
+            promoted=False,
+            findings=findings + (floor_finding,),
+            degraded=False,
+            reason="below_reviewer_floor",
+            panel=panel,
         )
     has_block = any(f.severity == "block" for f in findings)
     return GateResult(

@@ -305,12 +305,16 @@ def run_governed_premerge_loop(
         return LoopResult(mergeable=True, ran=False, reason="autonomous")
 
     # Reasons that mean "the gate could not run a real review" (no disjoint
-    # reviewer / unknown author / no usable verdict) — surfaced verbatim in the
-    # terminal so the operator sees the ACCURATE cause, not a generic
-    # "non_convergence" (CR finding).
+    # reviewer / unknown author / no usable verdict / too few usable reviewers)
+    # — surfaced verbatim in the terminal so the operator sees the ACCURATE cause
+    # and remedy (authenticate/add a reviewer), not a generic "non_convergence" that
+    # implies code defects to repair (CR finding). Consiliency/agent-harness#358:
+    # `below_reviewer_floor` is a STRUCTURAL hold — the review ran but had too few
+    # usable reviewers to be a real board — so it belongs here, not on the
+    # non-convergence path.
     _STRUCTURAL_HOLD = frozenset({
         "unknown_author", "no_disjoint_reviewer", "author_vendor_only",
-        "no_reviewers", "no_usable_review",
+        "no_reviewers", "no_usable_review", "below_reviewer_floor",
     })
     seen_block = False
     current = artifact

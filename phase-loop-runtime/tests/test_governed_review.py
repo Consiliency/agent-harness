@@ -74,20 +74,25 @@ class GovernedGateTest(unittest.TestCase):
             captured["artifact"] = artifact
             captured["pool"] = pool
             captured["kwargs"] = kwargs
-            return _panel(PanelLegResult(leg="codex", status="ok", text="AGREE"))
+            # Two usable reviewers so the ah#358 usable-reviewer floor is cleared and
+            # this test isolates repo_dir forwarding, not the 1-reviewer block.
+            return _panel(
+                PanelLegResult(leg="codex", status="ok", text="AGREE"),
+                PanelLegResult(leg="gemini", status="ok", text="AGREE"),
+            )
 
         result = governed_planning_gate(
             artifact="ART",
             author_executor="claude",
             run_mode="governed",
-            available_legs=("codex",),
+            available_legs=("codex", "gemini"),
             invoke=invoke,
             repo_dir="/tmp/repo-under-review",
         )
 
         self.assertTrue(result.promoted)
         self.assertEqual(captured["artifact"], "ART")
-        self.assertEqual(captured["pool"], ("codex",))
+        self.assertEqual(captured["pool"], ("codex", "gemini"))
         self.assertEqual(captured["kwargs"]["repo_dir"], "/tmp/repo-under-review")
 
     def test_deferred_claude_leg_is_a_warn_never_a_block(self):
