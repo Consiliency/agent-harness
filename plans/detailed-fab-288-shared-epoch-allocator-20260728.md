@@ -858,10 +858,23 @@ injection anchor, and a positive control
   record BEFORE the `not policy(request)` check → the resume returns the prior ACCEPTED record
   despite the denying policy (fail-open). **Observable:** ACCEPTANCE (a deduped record returned)
   where refusal is expected — the falsifier accepts; the fix refuses. **Path-entered precondition
-  (this AC's own vacuity trap — the F3(b) sweep):** assert BOTH (a) the resume DEDUP-HITS — the
+  (this AC's own vacuity trap — the F3(b) sweep):** assert (a) the resume DEDUP-HITS — the
   prior record at `attempt_id = X` is present and found — AND (b) `policy(request)` is
-  independently `False` for the installed policy; a permissive policy never denies and an
-  unreached dedup never exercises the gate, so without both the test passes vacuously. **Use a
+  independently `False` for the installed policy — AND **(c) the re-drive actually REACHES
+  `admit_next`.** For the real-adapter form (through `execute`) (c) is NOT free: the first drive
+  records TERMINAL evidence (`EFFECT_TERMINAL_OBSERVED`, keyed by the `_dedup_key`), so a naive
+  re-drive of the SAME publish short-circuits at `_replay` (`verbs.py:58` — `current.state is not
+  PROVIDER_CALL_IN_FLIGHT`) and RETURNS the prior result BEFORE `admit_next` at `:65`, leaving the
+  policy gate never evaluated — the falsifier dies unreached. The scenario MUST therefore leave the
+  evidence record at `PROVIDER_CALL_IN_FLIGHT` (model the crash after `record_intent` at `:65` but
+  before `record_terminal` at `:72`, exactly as AC-12 does) so the re-drive FALLS THROUGH the
+  replay to `admit_next` where the denying policy bites; assert the evidence state is
+  `PROVIDER_CALL_IN_FLIGHT` as a path-entered precondition (codex round-6 B4 — the seed-vacuity
+  trap's THIRD instance: AC-12, then AC-8a/8b, now AC-15; see the standing re-audit row). A
+  permissive policy never denies, an unreached dedup never exercises the gate, and a terminal-seed
+  re-drive never reaches admission, so without all three the test passes vacuously. The `admit_next`
+  UNIT form (step-1) sidesteps (c) — it calls `admit_next` directly, never entering `execute`'s
+  replay. **Use a
   DENYING policy, NOT `policy=None`:** the live factory substitutes `_default_admission_policy`
   for `None` (`live.py:79`), so a `policy=None` reopen is reachable only at the store-UNIT level
   (a legitimate second arm for the fail-closed `policy is None` disjunct), while the reachable
@@ -909,7 +922,7 @@ vacuous even if a different assertion would catch it.
 | AC-12 | admission record COUNT +1 / new epoch on an IN-FLIGHT retry | ✅ | NEW; falsifier is vacuous UNLESS the seed is `PROVIDER_CALL_IN_FLIGHT` (else short-circuits at `:59` before `admit` at `:65`) — the trap this AC itself guards; AC-3 (completed replay) cannot reach the admission path |
 | AC-13 | `ValueError` on a faithful retry (drift) vs `granted_epoch == E` (fixed) | ✅ | NEW; falsifier requires (a) the crash modelled by re-running S1 on post-commit git state, NOT a captured closure, and (b) the `attempt_id` dedup HIT asserted — else vacuous in both arms |
 | AC-14 | CAPTURED (spy) request's `admission.lease_epoch != E` / `admission.attempt_id` mismatch (FIELD DIVERGENCE, no raise) | ✅ | NEW (round-5 F2); §5c construction seam — driven through the `publishing.py:196` PRODUCER path (not a hand-built request), asserts the admission HANDED TO THE ADAPTER (epoch E + deterministic attempt_id, the property `base.py:29` enforces — which never fires on the publish path), NOT the terminal-evidence key (informational: `verbs` re-keys the persisted evidence by the `_dedup_key`); path-entered = the spy adapter is invoked |
-| AC-15 | acceptance (deduped record) where refusal expected under a DENYING policy | ✅ | NEW (round-5 F3); falsifier vacuous unless the resume DEDUP-HITS **and** `policy(request)` is `False` (both asserted); a denying policy — `policy=None` is unreachable at the live seam (`live.py:79`) |
+| AC-15 | acceptance (deduped record) where refusal expected under a DENYING policy | ✅ | NEW (round-5 F3 + round-6 B4); falsifier vacuous unless the resume DEDUP-HITS **and** `policy(request)` is `False` **and** the evidence seed is `PROVIDER_CALL_IN_FLIGHT` (else the re-drive short-circuits at `_replay`/`verbs.py:58` before `admit_next`) — all three asserted; a denying policy — `policy=None` is unreachable at the live seam (`live.py:79`) |
 
 **Three dependency clusters the audit makes explicit** (the round-2 AND round-3 fixes, so the
 ACs that ride on them are now live): the EPOCH-ENFORCEMENT (§3, codex round-2) makes AC-1's
@@ -955,7 +968,8 @@ scenario that silently never reaches the seam, unless a positive control proves 
 | AC-12 | negative (no 2nd record) | round-3 FIX: asserts the `PROVIDER_CALL_IN_FLIGHT` seed (path-entered) + positive control (different head → new record) |
 | AC-13 | mixed (raise vs dedup) | round-4: asserts the `attempt_id` dedup HIT (prior record found) as the path-entered precondition BEFORE the compare outcome |
 | AC-14 | POSITIVE — captured admission carries epoch E + deterministic attempt_id, gated on the spy being invoked | round-5 F2: driven through `publish_committed_branch` (`publishing.py:196`), so the real entry-constructor→`execute` seam is exercised (not a hand-built request); asserts the spy adapter was INVOKED (seam entered) before reading the captured request's `admission` fields — those cannot be read on an unreached adapter call |
-| AC-15 | negative (refused under a denying policy) | round-5 F3: asserts the dedup HIT **and** `policy(request)==False` as path-entered preconditions before the refusal; positive control: a PERMITTING policy → the same resume dedups to `granted_epoch == E` (proves entry, and that the gate refuses only under denial) |
+| AC-15 | negative (refused under a denying policy) | round-5 F3 + round-6 B4: asserts the dedup HIT, `policy(request)==False`, **AND the evidence record is `PROVIDER_CALL_IN_FLIGHT`** (so the re-drive falls through `_replay` at `verbs.py:58` to `admit_next`, not short-circuits at terminal replay) as path-entered preconditions before the refusal; positive control: a PERMITTING policy → the same resume dedups to `granted_epoch == E` (proves entry, and that the gate refuses only under denial) |
+| **STANDING — every AC that drives through `verbs.execute`** | names WHICH evidence-replay branch it enters | `execute` returns at `_replay` (`verbs.py:58`) whenever the `_dedup_key` record is terminal (`state is not PROVIDER_CALL_IN_FLIGHT`), BEFORE `admit_next` at `:65`. So any AC whose falsifier lives in `admit_next` (epoch allocation, `attempt_id`/epoch enforcement, dedup compare, or the policy gate) MUST seed the evidence record at `PROVIDER_CALL_IN_FLIGHT` and ASSERT that state — else it short-circuits at replay and the falsifier dies unreached. This is the seed-vacuity CLASS, not a per-AC quirk: AC-12 (in-flight retry), AC-8a/8b (P2), AC-15 (policy on resume) are the same shape. AC-14 is exempt (its first drive is the only drive; it asserts the outbound admission, not a resume). |
 
 The two ACs that needed the fix this round (AC-8a/8b) are now in P2; each P1 AC above carries a
 positive observable or a reachability control, shown so the sweep is checkable rather than
