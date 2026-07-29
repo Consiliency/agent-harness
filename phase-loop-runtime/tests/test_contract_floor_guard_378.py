@@ -717,3 +717,38 @@ def test_conftest_source_calls_the_floor_preflight():
         "conftest.pytest_configure no longer calls check_installed_contract_floor -- the "
         "floor preflight is unwired. See board #382 r3 Blocker 2 (wiring)."
     )
+
+
+# ---------------------------------------------------------------------------
+# ROW 3 -- RESIDUAL BOUNDARY (board #382 r3, lead ruling: accept the two wiring
+# arms; do NOT add a call-counter). Recorded here so a future reader inherits
+# what these sentinels prove -- and the one thing neither proves -- along with
+# the table above:
+#
+#   * 3a (dynamic stash) proves pytest_configure's preflight block EXECUTED in
+#     THIS process -- a real side effect, not static-satisfiable. Catches
+#     hook-not-invoked / block-not-run.
+#   * 3b (static ast) proves the call is PRESENT in the block. Catches the
+#     surgical "delete only the call" mutation that 3a structurally cannot see.
+#   * Together they close BOTH removal paths. Demonstrated by the 3b-isolate
+#     mutation (delete the call but KEEP the stash write): 3a stays GREEN, only
+#     3b reds -- i.e. the stash is a side effect of the block reaching the line
+#     AFTER the call, not proof the call itself ran.
+#   * NEITHER proves the call's BODY executed. A present-but-neutered call
+#     (`if False: check_installed_contract_floor()`, stash still set) reds
+#     neither wiring sentinel. The check's CORRECTNESS is covered separately by
+#     the direct-invocation tests -- ROW 2, test_declared_floor_is_provable_
+#     and_single_sourced, and test_check_does_not_abort_on_dist_info_with_stray_
+#     sources -- which call check_installed_contract_floor() and assert its
+#     behaviour. Coverage = block-ran (3a) + call-present (3b) + check-correct-
+#     when-called (direct tests); the residual is only "call present but
+#     neutered in place".
+#
+# Two ways to close that residual were weighed and REJECTED as worse trades:
+#   - a production call-counter in check_installed_contract_floor couples
+#     shipped code to test observability (a field that exists only to be looked
+#     at -> the next tidy-up removes the thing the proof rests on);
+#   - a pytester end-to-end exercises a SYNTHETIC conftest, proving the
+#     mechanism in a fixture we wrote rather than in the real one.
+# Neither is worth the coupling; the boundary is left documented instead.
+# ---------------------------------------------------------------------------
