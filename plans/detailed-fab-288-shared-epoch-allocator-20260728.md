@@ -13,7 +13,7 @@
 > **⚠️ THIS IS P1 OF A RATIFIED TWO-PLAN SPLIT** (maintainer, `ah#363` follow-up), carved
 > along the merge boundary the §11 DAG implies. **P1 (this plan)** = the shared allocator
 > (`admit_next`), the re-landed `readmit_advanced_head` primitive, and the live #199 **publish**
-> migration — steps (1)(2)(3), AC-1..AC-7 and AC-9..AC-18 (round-9 codex overturned DISPOSITION D-B3 → AC-17; +AC-18 execute-entry typestate) — where all the entangled-identity
+> migration — steps (1)(2)(3), AC-1..AC-7 and AC-9..AC-19 (round-9 codex overturned DISPOSITION D-B3 → AC-17, +AC-18 execute-entry typestate; round-10 codex +AC-19 dual-read key-shape migration) — where all the entangled-identity
 > density lives (epoch late-binding, the deterministic post-commit `attempt_id`, and §5b
 > commit-stable `approval_digest`). **P2** (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`)
 > = the readmit CONSUMER wiring (`_fab_delta_readmit`) + the engage-flag flip — steps (4)(5),
@@ -499,6 +499,23 @@ build (§3, codex round-2 + round-3), so a factory that ignores its epoch OR its
   4-arg derivation (thread `base`), or the seed lands under a key `execute` never computes and the
   falsifier goes vacuous. Same-base idempotency is UNCHANGED (AC-17's positive control).**
 
+  **SINGLE NORMATIVE DEFINITION (round-10 — the propagation class grok has flagged for ten
+  rounds).** This 4-arg signature `publish_committed_branch_idempotency_key(repo, branch,
+  head_sha, base)` is defined HERE and nowhere else. Every other mention (§5c, §5d, §5e, §6,
+  AC-12, AC-17) REFERENCES "the 4-arg key defined in §5 (`verbs.py:25`)" and MUST NOT restate the
+  arg list. A restated signature IS the round-3/5/6/10 propagation defect: the signature was
+  duplicated across ~10 sites, so each change hand-propagated and left stragglers (round-10 grok
+  found three: two §5c/§5d prose restatements + one AC-12 seed). Reference, do not restate — that
+  is the structural fix that forecloses the recurrence, not another instance-patch.
+
+  **DUAL-READ for the key-shape migration (round-10 codex; AC-19).** Because the store is
+  append-only and keyed by the digest, changing the signature orphans any pre-existing publish
+  record under its old 3-arg digest. `_dedup_key`/`execute` therefore computes BOTH the 4-arg key
+  AND the legacy `sha256(f"{repo}\0{branch}\0{head_sha}")` and looks up new-THEN-legacy: a hit
+  under the legacy key on a TERMINAL record short-circuits `_replay` (`verbs.py:58`) exactly as the
+  new key would, so no duplicate `gh pr create`. This read-tolerance is NOT backfill (no record is
+  rewritten). See §12 for the terminal-vs-in-flight split and AC-19 for the proof.
+
 **Three seams must change together** or the edit is the helper-edited-but-seam-unthreaded
 defect: the `execute`/`BrokerRequest` contract (S3), `_default_build_admission` (S1), and
 `refresh_downstream_after_merge` (S2). Editing `admit_next` while leaving S1 stamping `1`
@@ -633,7 +650,7 @@ requirement (the frozen request the adapter/consumers see must carry the finaliz
 it is FUNCTIONAL for the CLASS members reached by OTHER verbs — `verbs.py:40` (the non-publish
 dedup key) and `adapters/base.py:29` (the attempt_id invariant) — not a live publish mis-label. **Of the six, the PUBLISH hot path reaches four**
 (`verbs.py:65` and the three `credsep` terminal-evidence sites); `verbs.py:40` is the NON-publish
-dedup branch (publish keys on `publish_committed_branch_idempotency_key(repo, branch, head)`,
+dedup branch (publish keys on the 4-arg key defined in §5 (`verbs.py:25`),
 `verbs.py:35-39`) and `adapters/base.py:29` is the bounded-adapter path for other verbs — its only
 consumer `run_bounded` is wired to the `claude`/`codex`/`outside_agent` execution adapters (NEVER
 the publish adapter `credsep`), and `AdapterExecutionRequest` has ZERO src construction sites
@@ -798,8 +815,8 @@ This makes BOTH illegal states unconstructable: `None` on ANY verb, and a `PreAd
 NON-publish verb (the only way an envelope could ever reach the crashing `:40` read). `dataclasses.replace`
 re-invokes `__post_init__`, so the post-`replace` finalized `AdmissionRequest` re-validates and passes.
 **Verified no consumer reads `request.admission` before the replace on the publish path:** `execute`'s
-evidence-replay short-circuit keys on `_dedup_key` → `publish_committed_branch_idempotency_key(repo,
-branch, head_sha)` (`verbs.py:35-39`), which reads `request.repo/branch/head_sha`, NOT `request.admission`;
+evidence-replay short-circuit keys on `_dedup_key` → the 4-arg key defined in §5 (`verbs.py:25`,
+`verbs.py:35-39`), which reads `request.repo/branch/head_sha/base`, NOT `request.admission`;
 the FIRST publish-path read of `request.admission` is `execute`'s own envelope-unpack, the next is the
 post-`replace` adapter handoff. (The non-publish `_dedup_key` branch reads `request.admission.idempotency_key`,
 `verbs.py:40` — now type-safe by the `__post_init__` invariant above, which forbids a non-publish verb
@@ -826,6 +843,7 @@ the closure-CALLER convention. A decision reaching only SOME sites is the exact 
 | **S2** `refresh_downstream_after_merge` (`refresh.py:61`) | admit_next CALLER (if migrated) | YES for the two-arg closure convention; NO envelope (no production caller) | S2 Change block; note added |
 | `admit_next` (`admission.py`, re-land) | the allocator | signature UNCHANGED by B2 (closure built by callers); two-arg call convention already decided | §3 prior-art |
 | `publish_committed_branch_idempotency_key` (`verbs.py:25`) | KEY-SIGNATURE change (AC-17, round-9 — NOT B2) | YES — `(repo, branch, head_sha)` → `(repo, branch, head_sha, base)`; `_dedup_key` (`verbs.py:38`) passes `request.base` | §5/§8b; **every in-flight-SEEDING AC (AC-12/AC-13/AC-15) must key its `PROVIDER_CALL_IN_FLIGHT` seed by the 4-arg derivation** (thread `base`), or the seed lands under a key `execute` never computes → the record is unfindable → the falsifier goes vacuous. The one existing unit (`test_convergence_broker_verbs.py:9`) still positive-controls head-discrimination; add a base-discrimination arm |
+| `_dedup_key`/`execute` legacy-key READ (`verbs.py:35-39`) | DUAL-READ migration (AC-19, round-10 codex — the AC-17 signature change orphans old-digest records) | YES — compute the legacy `sha256(f"{repo}\0{branch}\0{head_sha}")` alongside the 4-arg key, look up new-THEN-legacy | §5/§12/AC-19; read-tolerance NOT backfill; TERMINAL orphan closed here, IN-FLIGHT orphan is #376 (production resume bails `nothing_staged` before `execute`) |
 | CONSUMER `verbs.py:40` `.admission.idempotency_key` | READ (non-publish dedup) | reads finalized `AdmissionRequest` (post-replace / non-publish) | §5c |
 | CONSUMER `credsep.py:123/:131/:315` `.admission.idempotency_key` | READ (terminal evidence) | reads finalized (post-replace); informational on publish | §5c |
 | CONSUMER `adapters/base.py:29` attempt_id invariant | READ (post-replace) | reads finalized; categorically non-publish-reachable | §5c |
@@ -1097,7 +1115,8 @@ injection anchor, and a positive control
 - **AC-12 — an IN-FLIGHT publish retry REUSES its admission (same epoch, no second record),
   driven through the LIVE S1 boundary (round-3 codex blocking — the behavioral guard AC-3
   structurally CANNOT provide).** Seed the evidence store with a `PROVIDER_CALL_IN_FLIGHT`
-  record for the publish `(repo, branch, head_sha)` — NOT a terminal state — and **assert that
+  record for the publish keyed by the 4-arg key defined in §5 (`(repo, branch, head_sha, base)`,
+  per the §5e seed rule) — NOT a terminal state — and **assert that
   precondition holds before retrying** (`current.state is PROVIDER_CALL_IN_FLIGHT`): without this
   guard the test silently degrades into a completed-replay that short-circuits at
   `verbs.py:58`→`:59` (`_replay`) BEFORE admission, and the falsifier goes vacuous in BOTH arms
@@ -1327,6 +1346,39 @@ injection anchor, and a positive control
   execute-entry guard is owed. **Wave:** rides step-2 (needs the migrated publish `execute` +
   `PreAdmissionEnvelope`).
 
+- **AC-19 — a pre-existing publish evidence record survives the AC-17 key-shape change (the
+  dual-READ migration; round-10 codex — AC-17's own fold created this defect class).** AC-17
+  changes the evidence key from 3-arg to 4-arg; the store is append-only and keyed by the digest
+  (`evidence.py`), so a record written under the OLD digest is unfindable under the NEW lookup
+  unless `execute` also reads the legacy key. **Scenario (TERMINAL arm — where the falsifier
+  fires):** seed the evidence store with a TERMINAL (`EFFECT_TERMINAL_OBSERVED`) record under the
+  LEGACY 3-arg key `sha256(f"{repo}\0{branch}\0{head_sha}")` for `(repo, branch, head_sha)` at
+  `base="main"` (a record written by pre-#368 code); then drive the SAME same-base publish through
+  the migrated `execute`. **Under the fix (dual-read):** `_dedup_key`/`execute` computes the 4-arg
+  key, MISSES, computes the legacy 3-arg key, HITS the terminal record, and `_replay`
+  (`verbs.py:58-59`) returns it — ZERO new `gh pr create`, admission-record count unchanged.
+  **Falsifier (remove the legacy-key read — a naive 4-arg-only lookup):** the 4-arg lookup misses,
+  `record_intent` appends a FRESH in-flight under the new key, control falls through to the mutation
+  adapter, which re-pushes and attempts a SECOND `gh pr create` (`credsep.py:281`) → a duplicate-PR
+  attempt whose failure records permanent ambiguous evidence. **Observable (pin the invocation
+  COUNT, per the AC-16/AC-18 pattern):** WITH the fix — the returned `PublishCommittedBranchResult`
+  is the seeded terminal record's AND the adapter spy records ZERO `gh pr create` invocations;
+  WITHOUT it — the adapter spy IS invoked (≥1 new PR attempt). Assert the `gh pr create` invocation
+  count (0 vs ≥1), NOT merely "accepted" (a replayed AND a re-driven publish can both report
+  accepted). **Specificity arm (positive control — excludes the degenerate dual-read that ALWAYS
+  finds something, the round-6 trap):** a genuinely-FRESH same-base publish with NO seeded record
+  (neither key present) PROCEEDS normally and DOES invoke the adapter (creates its PR) — so the
+  legacy read blocks a replay of PRIOR work, never FRESH work. **In-flight arm is OUT OF SCOPE
+  (#376):** a legacy-key `PROVIDER_CALL_IN_FLIGHT` record does NOT short-circuit `:58` even when
+  found (the `:58` guard fires only on non-in-flight state), so the adapter re-drive on an in-flight
+  orphan is the pre-existing crash-resume behavior #376 owns — and a production post-commit resume
+  bails `nothing_staged` (`publishing.py:223`) before `execute`, so no in-flight orphan is re-driven
+  today. Dual-read on `record_intent` prevents only the DOUBLE intent-record under the new key. This
+  AC proves the TERMINAL arm; #376 owns the in-flight resume seam. **Injection anchor:** the
+  legacy-key computation + new-THEN-legacy lookup in `_dedup_key`/`execute` (`verbs.py:35-39`,
+  `:57-58`) — assert BOTH keys are computed in `src` before mutating. **Wave:** step-2 (needs the
+  migrated publish `execute`).
+
 > **AC-8a / AC-8b (the two S8 readmit-consumer commit points) are MOVED TO P2**
 > (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md` §5). They are P2's wave-0, red
 > against P1-MERGED `main` — P1 does not touch the consumer, so the bypass they target
@@ -1438,6 +1490,7 @@ vacuous even if a different assertion would catch it.
 | AC-16 | exception TYPE+SITE: `TypeError` at construction (fix) vs `AttributeError` in `_dedup_key`/`verbs.py:40` (falsifier) | ✅ | NEW (round-7 B2); the annotation is documentation-only, so the assertion reads the `__post_init__`-enforced rejection, not the union type; positive control = the two LEGAL shapes construct + post-`replace` re-validates, so the invariant is not over-broad |
 | AC-17 | Layer-1: second (release/2.0) publish's `PublishCommittedBranchResult` IDENTICAL to the first (main) — wrong-base PR replayed (falsifier) vs a distinct base-scoped PR (fix). Layer-2: attempt_id EQUALITY (falsifier) vs INEQUALITY (fix) | ✅ | NEW (round-9; D-B3 OVERTURNED). Layer-1 (`_dedup_key`) is load-bearing + production-reachable (`base` is a public caller-controlled param, `publishing.py:94`); Layer-2 (`attempt_id`) is identity-completeness, exercised at the `admit_next`/derivation UNIT (a two-store seed is the wrong instrument — a different-base re-drive TOTAL-misses `_dedup_key`). Positive control: same-base idempotency preserved (AC-3). §8b: `request.base` is the stable ref NAME, not the drifting `base_sha`, so it does NOT foreclose AC-13 |
 | AC-18 | exception TYPE+SITE: `TypeError` at `execute` ENTRY + zero admission records (fix) vs `AttributeError` at the envelope-unpack site (falsifier) | ✅ | NEW (round-9 finding 2); `__post_init__` (AC-16) must ALLOW `AdmissionRequest`-on-publish for the post-`replace` re-validation, so it structurally cannot catch a FRESH publish carrying the wrong typestate — a SEPARATE execute-entry guard is owed; positive control = the legal envelope shape passes + the post-`replace` request never re-enters entry |
+| AC-19 | `gh pr create` invocation COUNT: 0 (fix — legacy-key TERMINAL replay) vs ≥1 (falsifier — 4-arg-only lookup misses → adapter re-drive) | ✅ | NEW (round-10 codex; AC-17's key change CREATED this). Falsifier fires on a REACHABLE terminal orphan (seeded old-3-arg record). Specificity arm (fresh publish, no record → adapter IS invoked) excludes a degenerate always-finds-something dual-read. In-flight orphan explicitly OUT (#376; `:58` never short-circuits in-flight; production resume bails `nothing_staged`) — scoped, not asserted |
 
 **Three dependency clusters the audit makes explicit** (the round-2 AND round-3 fixes, so the
 ACs that ride on them are now live): the EPOCH-ENFORCEMENT (§3, codex round-2) makes AC-1's
@@ -1487,6 +1540,7 @@ scenario that silently never reaches the seam, unless a positive control proves 
 | AC-16 | negative (construction rejected) | round-7 B2: `__post_init__` raises `TypeError` for `None`-on-any-verb and envelope-on-non-publish; positive control: both LEGAL shapes (finalized-on-non-publish, envelope-on-publish) construct, and the post-`replace` finalized request re-validates — proving the guard rejects only the illegal states, not every construction |
 | AC-17 | Layer-1 POSITIVE (a wrong-base PR IDENTITY is read off the second call — cannot occur on an unreached publish); Layer-2 POSITIVE (attempt_id value read) | round-9: Layer-1 seeds the first publish to TERMINAL then re-drives a differing base — the returned result IDENTITY proves the replay path was entered; Layer-2 reads two derived attempt_ids directly at the unit seam (no unreached path). Positive control (same-base dedup) doubles as a path-entered proof for Layer-1 |
 | AC-18 | negative (fresh caller-epoch publish rejected) | round-9 finding 2: the guard fires at `execute` ENTRY after the `_replay` short-circuit (asserted: NO terminal evidence, so control FALLS THROUGH to entry, not a replay); positive control: the legal envelope shape PASSES the guard and allocates (proves entry) — a `TypeError` on an unreached path cannot occur |
+| AC-19 | POSITIVE — the seeded terminal record's result IDENTITY is read off the replay + a zero `gh pr create` count (cannot occur on an unreached publish) | round-10: the seeded LEGACY-key terminal record is the path-entry proof — a legacy-key HIT + returned-result-identity proves `_replay` was entered via the legacy branch; the specificity arm (fresh publish → adapter invoked) proves the legacy read does not fire on an unreached/absent record |
 | **STANDING — every AC that drives through `verbs.execute`** | names WHICH evidence-replay branch it enters | `execute` returns at `_replay` (`verbs.py:58`) whenever the `_dedup_key` record is terminal (`state is not PROVIDER_CALL_IN_FLIGHT`), BEFORE `admit_next` at `:65`. So any AC whose falsifier lives in `admit_next` (epoch allocation, `attempt_id`/epoch enforcement, dedup compare, or the policy gate) MUST seed the evidence record at `PROVIDER_CALL_IN_FLIGHT` and ASSERT that state — else it short-circuits at replay and the falsifier dies unreached. This is the seed-vacuity CLASS, not a per-AC quirk: AC-12 (in-flight retry), AC-8a/8b (P2), AC-15 (policy on resume) are the same shape. AC-14 is exempt (its first drive is the only drive; it asserts the outbound admission, not a resume). **Round-9 addendum (AC-17): the seed's `_dedup_key` is now the 4-arg `publish_committed_branch_idempotency_key(repo, branch, head_sha, base)` — a seed keyed by the old 3-arg form lands under a key `execute` never computes, so it is unfindable and the falsifier is vacuous in a NEW way; every in-flight seed must thread `base`, matching `execute`'s derivation.** |
 
 The two ACs that needed the fix this round (AC-8a/8b) are now in P2; each P1 AC above carries a
@@ -1535,7 +1589,7 @@ CLAIMS were never the subject of a pass. That is the hole.
 
 **Both passes RUN over the whole plan this round — the residual (evidence, not a promise):**
 
-- *Observable-grounding, all 16 ACs:* the ONLY ungrounded observable was `granted_epoch`
+- *Observable-grounding, all 19 ACs:* the ONLY ungrounded observable was `granted_epoch`
   (`BrokerExecutionResult` has no such field, `verbs.py:19-23`; `AdmissionRecord.epoch` is the
   attribute, `admission.py:16`). Defined at the §8 header and, **round-8 (lead's ask), SUBSTITUTED
   at every point of use** — `record.epoch` (unit) / `store.replay()[-1].epoch` (execute-level) — so
@@ -1595,6 +1649,24 @@ POSITIVE-CONTROLLING the search itself — grepping a token known to be present 
 A "gone?" search that cannot even find something that IS there is a broken pattern, not absence;
 positive-controlling the search is the observable-grounding pass applied to the audit tooling,
 not only to the plan.
+
+**Round-10 addendum — the propagation residual was NOT clean, and the fix is structural, not another
+instance-patch.** Round-9's honesty note claimed the fold grepped every changed token and confirmed
+zero stragglers. Round-10 grok REFUTED that for the KEY-SIGNATURE token specifically: three sites
+still restated the pre-AC-17 arg list — §5c prose (`(repo, branch, head)`), §5d prose
+(`(repo, branch, head_sha)`), and the AC-12 seed (`(repo, branch, head_sha)`) — and §11's step gates
+omitted AC-17/AC-18 entirely, so a step could close green without the security identity change. The
+recurrence is the tell: this is the SAME propagation class in rounds 3, 5, 6, 9, and now 10 — because
+the 4-arg signature was DUPLICATED across ~10 sites, every fold hand-propagated and a straggler was
+structurally guaranteed. Per the method rule (two rounds of instance-patches ⇒ change the METHOD),
+round-10 does BOTH: (a) sweeps the three stragglers + the §11 gates this round, and (b) designates §5's
+key listing as the SINGLE NORMATIVE definition — every other mention now REFERENCES "the 4-arg key
+defined in §5" and restating the arg list is itself the defect. A future signature change touches ONE
+site; grok's recurring finding is foreclosed by construction, not by a promise to grep harder. The
+new AC-19 (dual-read migration) is the ONLY minted criterion this round; it exists because AC-17's own
+key change created a durable-key-orphan defect — a fix-creates-defect, folded (not carved) because the
+dual-read lives in the same `_dedup_key` publish branch AC-17 already edits and carving would invert
+the P1 merge dependency.
 
 ### 8b. The THIRD review unit — COMPOSITION between guards and criteria (round-8 codex)
 
@@ -1670,11 +1742,13 @@ treating "the shallow fix is inert" as "no fix is needed" rather than "the fix m
   holds for FAB machinery, but the #199 publish admission record shape changes
   unconditionally. Item 3.1/3.2 (broker-admitted head bound at admission time) is satisfied
   by the allocated epoch.
-- **`plans/manifest.json`** — this plan (P1, slug `fab-288-shared-epoch-allocator`, 18 ACs — the
+- **`plans/manifest.json`** — this plan (P1, slug `fab-288-shared-epoch-allocator`, 19 ACs — the
   ratified split named 13; CR rounds 5–7 added AC-14/AC-15/AC-16; round-9 codex OVERTURNED
   DISPOSITION D-B3 → AC-17 (base in both identity layers) and added AC-18 (execute-entry typestate
-  guard). NOTE: the committed manifest was STALE at `acceptance_criteria_count: 15` (a pre-existing
-  sync error round-9 codex finding 4 caught — it predated AC-16); re-registration corrects it to 18)
+  guard); round-10 codex added AC-19 (the dual-read key-shape migration — AC-17's key change
+  orphans old-digest records). NOTE: the committed manifest was STALE at
+  `acceptance_criteria_count: 15` (a pre-existing sync error round-9 codex finding 4 caught — it
+  predated AC-16); re-registration corrects it to 19)
   is
   registered on THIS branch via `phase_loop_runtime.plan_manifest.append_entry` (the typed
   `DotfilesPlanEntry`, `status: committed`) — the deferral to avoid the #365 conflict is lifted
@@ -1836,8 +1910,9 @@ contract.
    signature + `request.lease_epoch == epoch` AND `request.attempt_id == attempt_id`
    enforcement + the conflict-compare on dedup, `AdmissionPrecondition`, `readmit_advanced_head`,
    `readmit_attempt_id`, `ReadmitResult`, routing) from #337. Blocks everything. **The
-   primitive-level ACs gate it: AC-4, AC-5, AC-6b, AC-9, AC-10, AC-11, and AC-15's `admit_next`
-   unit form** (all mutate `admit_next`/routing; step-1 test wave). (#366's shared-lock is already
+   primitive-level ACs gate it: AC-4, AC-5, AC-6b, AC-9, AC-10, AC-11, AC-15's `admit_next`
+   unit form, and AC-17's Layer-2 `attempt_id`-derivation unit arm** (all mutate
+   `admit_next`/routing/derivation; step-1 test wave). (#366's shared-lock is already
    in main under it.)
 2. **Migrate publish to the allocator** — S1 (builds the `PreAdmissionEnvelope`, §5d) + S2 + S3
    (`execute` builds the closure from the envelope) + §5 epoch-late-binding + §6 `attempt_id` (the
@@ -1847,7 +1922,9 @@ contract.
    `PreAdmissionEnvelope` transport (round-5 + round-6 B2).
    Depends on (1). **This is the live-#199 risk; it gets AC-1, AC-2, AC-3, AC-6a, AC-12 (the
    in-flight retry through the live S1 seam), AC-13 (the faithful post-crash retry — §5b), AC-14
-   (the §5c construction seam), AC-15 real-adapter form (the policy gate on a dedup-hit resume)
+   (the §5c construction seam), AC-15 real-adapter form (the policy gate on a dedup-hit resume),
+   **AC-17 Layer-1 (the wrong-base PR-replay security fix in `_dedup_key`), AC-18 (the
+   execute-entry typestate guard), AC-19 (the legacy-key dual-read migration)**
    and a byte-diff review against a live-broker fixture. §5b's commit-stable mechanism is now
    DECIDED (round-5): `merge-base(head_sha, origin/<base>)` bound post-commit, threaded through
    every rebuild, plus §5c's `execute` reconstruction — no longer a deferred pass.**
@@ -1878,11 +1955,30 @@ wiring and the gated flag flip are **P2** (steps 4/5, AC-8a/AC-8b;
 
 **Explicitly NOT in scope:**
 
-- **No data migration.** Maintainer confirmed (issue #363) a whole-machine search found
-  broker state only as ephemeral `/tmp` scratch (3 files, 1 record each, from a test run);
-  this is the primary dev machine and other losses are trivial. Old records carry epoch 1
-  and sit below a new counter without conflicting. One sentence, no migration section, no
-  backfill tooling.
+- **No data migration — but AC-17's key-SHAPE change needs a read-tolerance (round-10 codex).**
+  TWO distinct concerns, only the first ratified by issue #363:
+  - *Epoch renumbering (ratified):* Maintainer confirmed (issue #363) a whole-machine search
+    found broker state only as ephemeral `/tmp` scratch (3 files, 1 record each, from a test
+    run); this is the primary dev machine and other losses are trivial. Old records carry epoch 1
+    and sit below a new counter without conflicting.
+  - *Evidence-key SHAPE (round-10 — NOT covered by the epoch reasoning above):* AC-17 changes the
+    publish evidence key from `sha256(repo‖branch‖head_sha)` to `sha256(repo‖branch‖head_sha‖base)`.
+    The store is append-only and keyed by that digest (`evidence.py`), so a record written under
+    the old 3-arg digest is UNFINDABLE under the new 4-arg lookup — `replay().get(new_key)` misses
+    it. A missed TERMINAL record → `record_intent` appends a fresh in-flight → the mutation adapter
+    re-drives → a SECOND `gh pr create` (`credsep.py:281`) → permanent ambiguous evidence. The #363
+    finding bounds the POPULATION (only ephemeral test scratch on the one deployment), but the
+    maintainer's no-migration call predates AC-17 and addressed epoch RENUMBERING, not a read-KEY
+    change — so leaning on the enumeration alone would be the D-B3 error in MIRROR ("no current
+    record triggers it" ≡ "the guard is unreachable so it doesn't matter"), which this plan and
+    the round-9 reversal reject. The fail-closed response is a **dual-READ** (read-tolerance, NOT
+    backfill — compatible with "no backfill tooling"): `_dedup_key`/`execute` computes BOTH the
+    4-arg key AND the legacy 3-arg key and looks up new-then-legacy, honoring a hit under either
+    (§5, AC-19). The TERMINAL orphan is closed by AC-19; the IN-FLIGHT orphan's adapter re-drive is
+    #376 territory (a production post-commit resume bails `nothing_staged` (`publishing.py:223`)
+    before `execute`, so the in-flight record is not re-driven today), and dual-read only prevents a
+    second intent-record under the new key. One read-tolerance branch + AC-19, still no migration
+    section, no backfill tooling.
 - **No `refresh_downstream_after_merge` production wiring.** It has no production caller;
   migrate its signature for consistency (S2) but do not invent a call site.
 - **No new `RatificationPolicy`** — it already ships.
@@ -1914,8 +2010,8 @@ and §5b commit-stable `approval_digest`). The readmit-CONSUMER half does NOT sh
 entanglement — `readmit_advanced_head` takes `approval` as a caller-supplied parameter
 (`c1da62a` `verbs.py:87`) and keys on an already-advanced, stable `new_head_sha`. **The
 maintainer ratified splitting along the §11 merge boundary:** this plan is **P1** (steps 1/2/3,
-AC-1..AC-7 and AC-9..AC-16 — all the density, incl. the §5b DECIDED mechanism + §5c construction
-seam); **P2**
+AC-1..AC-7 and AC-9..AC-19 — all the density, incl. the §5b DECIDED mechanism + §5c construction
+seam, the round-9 AC-17/AC-18 identity fixes, and the round-10 AC-19 dual-read migration); **P2**
 (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`) is the readmit consumer + flag flip
 (steps 4/5, AC-8a/AC-8b) and **depends on P1 merged**. Making P2 depend on P1-merged makes the
 mixed-allocation interlock SAFER — publish is already migrated on `main` before P2 begins, so the
