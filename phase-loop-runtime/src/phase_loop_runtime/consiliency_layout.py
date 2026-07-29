@@ -172,6 +172,46 @@ class ContractFloorUnverified(UserWarning):
     no indication a guard even ran)."""
 
 
+def _dist_records_package(dist: Any, needle: str) -> bool:
+    """True iff ``dist``'s OWN file manifest names ``needle`` (``<pkg>/__init__.py``).
+
+    Consults ``dist.files`` first -- RECORD for a wheel/dist-info, ``SOURCES.txt`` for
+    an ``.egg-info`` on Python <= 3.11 -- then, when that yields nothing, reads the
+    ``RECORD`` and ``SOURCES.txt`` texts DIRECTLY. The direct read is load-bearing on
+    Python 3.12+: ``importlib.metadata`` there no longer surfaces an ``.egg-info``
+    ``SOURCES.txt`` through ``.files`` (it returns an EMPTY list where 3.10/3.11 return
+    the full source manifest -- reproduced on this repo's egg-info: 817 entries under
+    3.10, 0 under 3.12). Without the direct read, a healthy in-tree checkout whose
+    resolved dist is the co-located egg-info fails this arm and the guard false-SKIPS
+    on py3.12 only (Consiliency/agent-harness#382 r2; py3.12 CI caught it via the
+    Finding-3 owns-sentinel). An empty-RECORD dist -- ``files`` empty AND no readable
+    RECORD/SOURCES.txt -- still fails here, so Finding 1's foreign-floor abort stays
+    closed."""
+
+    def _names_needle(entries: Any) -> bool:
+        for entry in entries:
+            # RECORD lines are ``path,hash,size``; SOURCES.txt / ``.files`` are bare
+            # paths. Split on the first comma so both shapes reduce to the path.
+            path = str(entry).split(",", 1)[0].strip().replace("\\", "/")
+            if path.endswith(needle):
+                return True
+        return False
+
+    try:
+        if _names_needle(dist.files or ()):
+            return True
+    except Exception:
+        pass
+    for meta in ("RECORD", "SOURCES.txt"):
+        try:
+            raw = dist.read_text(meta)
+        except Exception:
+            raw = None
+        if raw and _names_needle(raw.splitlines()):
+            return True
+    return False
+
+
 def _dist_owns_imported_runtime(dist: Any) -> bool:
     """True iff ``dist`` PROVABLY ships the imported ``phase_loop_runtime`` package.
 
@@ -192,17 +232,27 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
 
     Ownership requires (A) AND (B):
 
-      (A) RECORDED PACKAGE -- the dist's own file list (RECORD, or ``.egg-info``
-          ``SOURCES.txt``, via ``dist.files``) names ``<pkg>/__init__.py``. An
-          empty-RECORD or foreign-package dist fails here regardless of location, so
-          a bare path-join can never carry a foreign floor past this gate.
+      (A) RECORDED PACKAGE -- the dist's own file manifest names ``<pkg>/__init__.py``
+          (``_dist_records_package``: ``dist.files``, else the RECORD / ``.egg-info``
+          ``SOURCES.txt`` text read DIRECTLY, since Python 3.12+ surfaces an
+          ``.egg-info`` SOURCES.txt as an EMPTY ``.files``). An empty-RECORD or
+          foreign-package dist fails here regardless of location, so a bare path-join
+          can never carry a foreign floor past this gate.
 
       (B) BOUND TO THE IMPORTED INSTANCE -- either of:
           B1 CO-LOCATION: the metadata directory is a sibling of the imported
              top-level package dir. True for a wheel / regular install
              (``site-packages/pkg`` beside ``site-packages/pkg-*.dist-info``), a
              classic editable ``.egg-info`` (``src/pkg`` beside ``src/pkg.egg-info``),
-             and the clean-room wheel. ``locate_file("")`` yields that parent.
+             and the clean-room wheel. ``locate_file("")`` yields that parent. B1 is
+             deliberately NOT version-gated: a co-located ``.dist-info`` is written
+             atomically with the wheel it installs, and a co-located ``.egg-info`` is
+             the build metadata for the very ``src/`` tree beside it -- if it lags that
+             tree after a rebuild it names an OLDER floor, which is fail-open only
+             (warn + skip), never a false abort, so the no-false-failure criterion
+             holds. Gating B1 on a version match would instead red the owns-sentinel on
+             ordinary dev egg-info/``src`` skew -- trading a documented boundary for a
+             brittle assertion (board #382 r2, advisor).
           B2 INSTALL PROVENANCE: ``direct_url.json`` (PEP 610) records the local
              directory the dist was installed FROM; when that directory contains the
              imported ``__file__`` AND the dist's version equals the running module's
@@ -211,13 +261,13 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
              matrix (``pip install ./phase-loop-runtime`` then ``python -m pytest``
              with ``src`` on ``sys.path``): without B2 the guard would skip on a
              healthy checkout -- a self-inflicted false failure, the exact acceptance
-             criterion this round protects. The version match is load-bearing: unlike
-             B1 (a co-located dist-info IS the same install as the package beside it,
-             so versions cannot skew), B2's install-source link is weaker -- a STALE
-             non-editable install of this same repo would name the tree yet carry an
-             older floor. Requiring ``dist.version == __version__`` rejects that stale
-             install (warn + skip, never a false abort) while a same-commit CI install
-             matches (board #382 r2, advisor).
+             criterion this round protects. The version match is load-bearing for B2:
+             its install-source link is weaker than co-location -- a STALE non-editable
+             install of this same repo would name the tree yet carry an older floor.
+             Requiring ``dist.version == __version__`` rejects that stale install (warn
+             + skip, never a false abort) while a same-commit CI install matches. (B1
+             needs no such gate for a different reason -- see B1 above -- not because
+             versions there "cannot skew".) (board #382 r2, advisor).
 
     Soundness: a PyPI shadow's ``direct_url`` is absent or names a different tree, a
     wrong-location shadow fails B1, and a stale same-repo install fails B2's version
@@ -240,9 +290,8 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
         pkg = phase_loop_runtime.__name__.split(".")[0]
 
         # (A) records the package -- required in every branch.
-        files = dist.files or ()
         needle = f"{pkg}/__init__.py"
-        if not any(str(pp).replace("\\", "/").endswith(needle) for pp in files):
+        if not _dist_records_package(dist, needle):
             return False
 
         # (B1) co-location.

@@ -311,6 +311,13 @@ class _SameRootEmptyRecordDist:
     def requires(self):
         return ["consiliency-contract>=9.9,<10"]
 
+    def read_text(self, name):
+        # No RECORD and no SOURCES.txt either: the r2-py3.12 direct-read fallback
+        # (_dist_records_package) must find nothing here, so an empty-record dist is
+        # rejected whether importlib surfaces .files or the text is read directly.
+        # Finding 1 stays closed against BOTH read paths.
+        return None
+
     def locate_file(self, path):
         import phase_loop_runtime
 
@@ -354,6 +361,48 @@ def test_check_does_not_abort_on_same_root_empty_record(monkeypatch):
     _install_same_root_empty_record(monkeypatch)
     with pytest.warns(ContractFloorUnverified):
         assert cl.check_installed_contract_floor() is None
+
+
+# ---------------------------------------------------------------------------
+# Board #382 r2 — py3.12 egg-info: importlib.metadata surfaces an .egg-info
+# SOURCES.txt as an EMPTY .files under 3.12 (817 entries under 3.10, 0 under 3.12
+# for this repo's egg-info). The records-package arm must therefore read RECORD /
+# SOURCES.txt DIRECTLY; reading only .files false-SKIPS the guard on py3.12, which
+# the Finding-3 owns-sentinel caught live in CI (pytest (py3.12) RED at 4a4d4bb).
+# ---------------------------------------------------------------------------
+class _EmptyFilesButSourcesCoLocatedDist:
+    """A CO-LOCATED egg-info whose ``.files`` is EMPTY (the py3.12 behaviour) but whose
+    ``SOURCES.txt`` text lists the package. Ownership must resolve TRUE: the direct
+    read recovers the record, then B1 co-location binds it. Distinct from
+    ``_SameRootEmptyRecordDist`` (which records NOTHING anywhere and must stay
+    rejected) -- the only difference is a readable SOURCES.txt, which is exactly the
+    line between a real in-tree egg-info and a bare same-root path-join."""
+
+    version = "0.0-test"  # B1 is not version-gated, so this is irrelevant to ownership
+    files = []  # py3.12: importlib returns an empty .files for .egg-info SOURCES.txt
+
+    def read_text(self, name):
+        if name == "SOURCES.txt":
+            return "setup.py\nsrc/phase_loop_runtime/__init__.py\nsrc/phase_loop_runtime/consiliency_layout.py\n"
+        return None
+
+    def locate_file(self, path):
+        import phase_loop_runtime
+
+        root = Path(phase_loop_runtime.__file__).resolve().parent.parent
+        return root / str(path)
+
+
+def test_owns_via_sources_text_when_files_is_empty_egginfo():
+    # FALSIFIER for the r2 py3.12 fix. RED at 4a4d4bb: arm A read only ``dist.files``
+    # (empty here), so a co-located egg-info was judged NOT-owner and the guard
+    # false-skipped. GREEN after: _dist_records_package reads SOURCES.txt directly.
+    import phase_loop_runtime.consiliency_layout as cl
+
+    assert cl._dist_owns_imported_runtime(_EmptyFilesButSourcesCoLocatedDist()) is True
+    # And the empty-record sibling with NO readable SOURCES.txt stays rejected, so the
+    # direct-read fallback did not reopen Finding 1's foreign-floor hole.
+    assert cl._dist_owns_imported_runtime(_SameRootEmptyRecordDist()) is False
 
 
 # ---------------------------------------------------------------------------
