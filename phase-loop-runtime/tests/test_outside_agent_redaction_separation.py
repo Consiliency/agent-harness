@@ -245,13 +245,73 @@ def test_secret_shaped_key_is_redacted_in_walker_ref():
 
 
 # ---------------------------------------------------------------------------
-# Concern 4b: unsafe evidence paths are omitted, not reflected back.
+# Concern 5 (CR round 2): the PROJECTION channel. `_extract_evidence_refs` copies
+# submitter content (repo_relative_path, sha256, source_role) into serialized
+# output. On a BLOCKED submission NONE of it may be reflected back: evidence_refs
+# and provenance_refs are omitted entirely, field-agnostically.
 # ---------------------------------------------------------------------------
-def test_traversal_evidence_path_is_omitted_from_output():
-    """A ``..`` traversal path on a blocked submission must not appear in output.
+_PROJECTION_SECRETS = {
+    "repo_relative_path": "sk-LEAKpath0123456789abcdefdeadbeef",
+    "sha256": "sk-LEAKdigest0123456789abcdefdeadbe",
+    "source_role": "sk-LEAKrole0123456789abcdefdeadbeef",
+}
 
-    Mutation (kills this test): drop the ``normalize_outside_agent_ref`` guard in
-    ``_extract_evidence_refs`` -> the traversal path is surfaced in
+
+def test_clean_pass_still_projects_evidence_refs():
+    """Positive control: the gate must not be 'always empty'. A clean canonical
+    submission PASSES and still surfaces its evidence/provenance refs, so the
+    blocked-path emptiness below is meaningful rather than universal.
+
+    (The real serializer exposes ``evidence_refs``; ``provenance_refs`` is surfaced
+    only by the advisory serializer — assert each where it actually appears.)"""
+    submission = clean_submission("implementation_submission")
+    out = _real(submission)
+    advisory = _advisory(submission)
+    assert out["status"] == "pass"
+    assert out["evidence_refs"], "PASS must still project evidence_refs (real)"
+    assert advisory["provenance_refs"], "PASS must still project provenance_refs (advisory)"
+
+
+@pytest.mark.parametrize("field", ["repo_relative_path", "sha256", "source_role"])
+def test_blocked_submission_projects_no_evidence_ref_field(field):
+    """A secret in ANY evidence-ref field must not ride out through the projection.
+
+    The value trips the redaction walker (``sk-`` marker) so the submission is
+    BLOCKED; the projection gate then omits evidence_refs/provenance_refs entirely,
+    so the secret cannot reach ``evidence_refs[].ref/.digest/.kind`` or
+    ``provenance_refs``. Reproduced in BOTH the real and advisory output paths (they
+    project the same core verdict).
+
+    Mutation (kills this test): remove the status gate in
+    ``validate_outside_agent_submission`` (project on every status) -> the offending
+    field is echoed verbatim.
+    """
+    secret = _PROJECTION_SECRETS[field]
+    submission = clean_submission("implementation_submission")
+    assert submission.get("evidence_refs"), "canonical vector must carry evidence_refs"
+    submission["evidence_refs"][0][field] = secret
+
+    out = _real(submission)
+    advisory = _advisory(submission)
+
+    # Real serializer surfaces evidence_refs (+ submitted_refs); advisory surfaces
+    # evidence_refs + provenance_refs. Assert each projection where it appears.
+    assert out["status"] == "blocked"
+    assert out["evidence_refs"] == []
+    assert secret not in json.dumps(out), field
+    assert advisory["status"] == "blocked"
+    assert advisory["evidence_refs"] == []
+    assert advisory["provenance_refs"] == []
+    assert secret not in json.dumps(advisory), field
+
+
+def test_traversal_evidence_path_is_omitted_from_output():
+    """A ``..`` traversal path (schema-rejected, so BLOCKED) must not appear in
+    output. Distinct route to the same gate: blocked by SCHEMA, not the redaction
+    walker, yet the projection is still omitted.
+
+    Mutation (kills this test): remove the status gate in
+    ``validate_outside_agent_submission`` -> the traversal path is surfaced in
     ``evidence_refs``/``provenance_refs`` verbatim.
     """
     traversal = "../../etc/passwd"
@@ -262,5 +322,26 @@ def test_traversal_evidence_path_is_omitted_from_output():
     out = _real(submission)
 
     assert out["status"] == "blocked"  # schema pattern rejects the path
+    assert out["evidence_refs"] == []
     assert traversal not in json.dumps(out)
-    assert all(traversal not in ref["ref"] for ref in out["evidence_refs"])
+
+
+def test_blocked_via_submitted_ref_still_empties_projection():
+    """The flip path: a core-PASS submission turned BLOCKED by an unsafe CLI
+    ``submitted_refs`` entry must ALSO drop its (clean) projection, so the invariant
+    'every blocked verdict has empty refs' is universal. Real path only — advisory
+    has no ``submitted_refs`` channel.
+
+    Mutation (kills this test): drop ``provenance_refs=(), evidence_refs=()`` from
+    ``_verdict_with_extra_blockers`` -> the core-PASS projection survives on the
+    now-blocked verdict.
+    """
+    submission = clean_submission("implementation_submission")
+    serialized = serialize_outside_agent_validation_verdict(
+        build_outside_agent_validation_verdict(
+            submission, submitted_refs=("../../etc/passwd",)
+        )
+    )
+    assert serialized["status"] == "blocked"
+    assert serialized["evidence_refs"] == []  # real serializer has no provenance_refs key
+    assert serialized["submitted_refs"] == []  # unsafe ref dropped -> becomes a blocker

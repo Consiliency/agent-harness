@@ -47,9 +47,16 @@ failure information, contract pin metadata, and metadata-only vector result
 evidence. Schema-validation blocker messages are sanitized: they name the
 failing schema keyword and JSON pointer and the schema's own expectation, and
 never echo the submitted value or field name, so a secret carried in a
-schema-invalid field cannot ride out through a validator message. Unsafe
-(traversal or absolute) evidence paths on a blocked submission are omitted from
-surfaced refs rather than reflected back.
+schema-invalid field cannot ride out through a validator message.
+
+The projected `evidence_refs`/`provenance_refs` echo submitter-supplied content
+(repo-relative path, `sha256`, `source_role`). They are surfaced ONLY on a `pass`
+verdict — a submission that cleared both the schema and the redaction pass. On any
+`blocked` verdict the projection is omitted entirely (not filtered field by field),
+so a secret-shaped value in a path, digest, or source role cannot ride out on the
+blocked path, and a newly added ref field cannot silently reintroduce the leak.
+The invariant is uniform: every construction of a blocked verdict — core, malformed
+input, and the submitted-ref flip — carries empty projected refs.
 
 `outside_agent_vectors.run_outside_agent_vectors()` runs metadata-only vector
 manifests through the same core and compares expected outcomes without copying

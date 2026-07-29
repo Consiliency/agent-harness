@@ -174,10 +174,18 @@ def _verdict_with_extra_blockers(
 ) -> OutsideAgentConformanceVerdict:
     from dataclasses import replace
 
+    # This flip can turn a core-PASS verdict BLOCKED (an unsafe ``submitted_refs``
+    # entry). The core-PASS projection it carried is redaction-clean, but the
+    # invariant we publish is stronger and grep-checkable: EVERY blocked verdict has
+    # empty projected refs — core (projection gate), both malformed verdicts, and
+    # here. Empty the projection so no construction of a BLOCKED verdict surfaces
+    # submitter-supplied refs (agent-harness#371 CR round 2).
     return replace(
         verdict,
         status=OutsideAgentVerdictStatus.BLOCKED,
         blockers=verdict.blockers + blockers,
+        provenance_refs=(),
+        evidence_refs=(),
     )
 
 

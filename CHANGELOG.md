@@ -100,19 +100,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   keyword, the JSON pointer, and the schema's own expectation (`error.validator_value`, which
   is schema-derived) — never `error.message`/`error.instance`. A secret placed in an object
   KEY is likewise redacted before it can ride out through a blocker ref.
-- **Omit unsafe evidence paths on blocked submissions** rather than reflecting a `..`
-  traversal or absolute path back into surfaced `evidence_refs`/`provenance_refs`.
+- **Gate the projection channel: a blocked verdict surfaces NO submitter refs.**
+  `evidence_refs`/`provenance_refs` echo submitter content (repo-relative path, `sha256`,
+  `source_role`). They are now projected only on a `pass` verdict — one that cleared both the
+  schema and the redaction pass. On any `blocked` verdict the projection is omitted entirely
+  (not filtered field by field), so a secret-shaped value in a path, digest, or source role
+  cannot ride out on the blocked path, and a newly added ref field cannot silently
+  reintroduce the leak. The invariant is uniform and grep-checkable: every construction of a
+  blocked verdict — core, malformed input, and the submitted-ref flip — carries empty
+  projected refs. (Round-1's per-path `normalize_outside_agent_ref` filter is superseded and
+  removed; a secret-shaped path like `sk-…` passes path-shape normalization, so per-field
+  filtering was not sufficient.)
 - **Tests:** a new `test_outside_agent_redaction_separation.py` pins secret-in-`summary` →
   BLOCKED, no-echo of the offending value across the keyword classes whose `jsonschema`
   message embeds the instance (`enum`/`pattern`/`type`/`minLength`), a positive
   sanitized-message-shape check for `const` (whose message echoes the *expected* value, not
   the instance, so a no-echo assertion there would be vacuous), two key-echo cases pinned to
   distinct channels (an unknown key via the schema message, and a secret-shaped key via the
-  redaction walker's `ref`/`_safe_path_segment`), and traversal-path omission; three round-1
-  message-echo assertions were re-baselined into
-  anti-leak assertions. Every test names a mutation that was RUN and confirmed to kill it.
-  The canonical corpus outcomes are unchanged (the walker yields zero blockers on every
-  vendored vector).
+  redaction walker's `ref`/`_safe_path_segment`), the projection channel (a secret in each of
+  `repo_relative_path`/`sha256`/`source_role` → BLOCKED with empty projected refs, across the
+  real AND advisory serializers, with a clean-PASS positive control so the gate is not
+  vacuously "always empty", plus the submitted-ref flip path), and traversal-path omission;
+  three round-1 message-echo assertions were re-baselined into anti-leak assertions. Every
+  test names a mutation that was RUN and confirmed to kill it. The canonical corpus outcomes
+  are unchanged (the walker yields zero blockers on every vendored vector).
 
 ### Broker: close the admission-vs-revocation race with one serialization boundary (Consiliency/agent-harness#288, #199)
 
