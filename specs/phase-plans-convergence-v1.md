@@ -1,5 +1,31 @@
 # Phase Plans — Convergence: Crash-Safe Cross-Repo Train + Credential Broker (v1)
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
+>
+> **Do not execute this roadmap.** Its live work was absorbed into
+> `specs/phase-plans-v10.md`, which is now the single active roadmap for this repo.
+>
+> Carried a maintainer RESUME decision (2026-07-26) — that decision is HONOURED, not
+> reversed: FREEZE's #312 status contradiction went to v10 LEGIBLE; RUNTIME went to v10
+> RUNTIME (its advisor-seat criterion to REVIEWTRUTH); BROKER went to v10 FABPUB/FABREADMIT;
+> INTEG/FAULTS went to v10 INTEG; PILOT/RELEASE went to v10 RELEASE. Its plan files
+> (`plans/phase-plan-vergence-v1-*.md`) remain valid INPUT and need re-grounding against
+> current main before execution.
+>
+> The absorption is recorded in v10's `## Absorbed Roadmaps` table. If you found this file
+> via `select_roadmap` or a stale manifest entry, that is a bookkeeping defect — see
+> agent-harness#364.
+
+> **SUPERSEDED SNAPSHOT (corrected 2026-07-29, `agent-harness#375`):** the 2026-07-26 status below is a
+> HISTORICAL snapshot, retained for the audit trail. Its RESUME conclusion was HONOURED by ABSORBING
+> the live work into `specs/phase-plans-v10.md` (see the banner above), NOT by resuming here. Under the
+> `#375` manifest flip, `plans/manifest.json` now records RUNTIME/BROKER/FAULTS as `orphaned`, so the
+> `imported`/`committed` manifest statuses in the table below are STALE, and the "discovery keeps
+> selecting this roadmap" / "this roadmap being SELECTED by discovery is now CORRECT, not a mis-pick"
+> claims are FALSE as of the flip: discovery now resolves `specs/phase-plans-v10.md`, and the state
+> lever REFUSES this superseded roadmap fail-closed (`SupersededRoadmapStateError`). The FREEZE #312
+> status contradiction was carried to v10 LEGIBLE.
+>
 > **STATUS (2026-07-26): PARTIALLY EXECUTED — genuinely unfinished work, not just stale bookkeeping.**
 > Authored 2026-07-13. Verified against `plans/manifest.json` + the phase-plan files:
 >

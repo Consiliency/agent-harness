@@ -1,5 +1,22 @@
 # agent-harness — Model Routing v2: Live Governed Loop — Phase Plan v3
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
+>
+> **Do not execute this roadmap.** 2 of 4 phases DELIVERED (P2 real panel spawn, P3 planning
+> gate + escalation ladder). P1 (live pre-merge gate) and P4 (`:188` end-to-end invariants) are
+> BOTH unmet: each requires a production block→fix→pass round, but `runner.py:10140` passes
+> `apply_fix=None` (deliberate, self-documented at `runner.py:9748-9757`), so the fix-round runs
+> only under test-injected closures — never on the production path (corrected during v10
+> cross-vendor review; the earlier "3 of 4" undercounted the gap to a single phase).
+>
+> Both P1 and P4 were carried into v10 as **EC-REVIEWTRUTH-8**, which now carries P1's
+> production-wiring obligation AND P4's end-to-end obligation.
+>
+> Note: this roadmap's work landed under agent-harness#309/#310 rather than via its own
+> `/claude-execute-phase` lanes, which is why its checkboxes are uniformly empty despite
+> delivery. See agent-harness#364.
+
+
 > How to use this document: save to `specs/phase-plans-v3.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v3-<alias>.md`), then `/claude-execute-phase <alias>` to build it.
 
 > Companion design note: `docs/research/model-routing-v2-integration.md` (the runner deep-dive this roadmap implements). All `file:line` anchors below are against that note / the post-model-routing-v1 `main`.

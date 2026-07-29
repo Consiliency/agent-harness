@@ -1,5 +1,23 @@
 # agent-harness — Model Routing & Governed Review (model-routing-v1) — Phase Plan v2
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
+>
+> **Do not execute this roadmap.** Re-derived from `#309`/`#310` commits (not this banner's
+> original checkboxes): **3 of 5 phases FULLY DELIVERED** (P1 role/policy/clamp resolver-live,
+> P2 governed mode, P5 CI invariants + docs), with **TWO delivered-but-unmet** items carried into v10.
+>
+> Its TWO live items: (1) the governed pre-merge auto-repair fix-round (P3), not wired in
+> production (`runner.py:10140` passes `apply_fix=None`; deliberate and self-documented at
+> `runner.py:9748-9757`) — carried as **EC-REVIEWTRUTH-8**; and (2) P4 Route Logging exit-crit 2
+> — governed panel verdicts are never emitted to the run-end summary (`panel_verdict_record` has
+> ZERO production callers) — carried as **EC-REVIEWTRUTH-10** (P4 crit 1, route logging, IS met).
+> Corrected 2026-07-29 to match v10's disposition table (`v10:155`), which this banner had lagged.
+>
+> Note: this roadmap's work landed under agent-harness#309/#310 rather than via its own
+> `/claude-execute-phase` lanes, which is why its checkboxes are uniformly empty despite
+> delivery. See agent-harness#364.
+
+
 > How to use this document: save to `specs/phase-plans-v2.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v2-<alias>.md`), then `/claude-execute-phase <alias>` to build it.
 
 > **Revision r2** — reconciled against a 3-harness advisor panel (Codex/GPT-5.5, Gemini 3.1 Pro, repo-aware Claude) plus primary-source verification. The flagship fixes: separate the two orthogonal axes (model_policy vs run_mode), make the autonomous/governed boundary a real pre-invocation gate (not a severity downgrade), serialize P4 behind P3 (the cross-phase dirty start-gate would mechanically block it), and require an explicit per-provider effort-clamp policy (the runtime raises on an unsupported effort — it does **not** auto-clamp).

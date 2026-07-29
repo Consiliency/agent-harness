@@ -28,6 +28,7 @@ from phase_loop_runtime.discovery import (
     active_state_roadmap,
     manifest_backed_roadmap,
     select_roadmap,
+    SupersededRoadmapStateError,
 )
 from phase_loop_runtime.plan_manifest import DotfilesPlanEntry, DotfilesPlanRef, append_entry
 from phase_loop_runtime.state import write_state
@@ -169,6 +170,69 @@ class ResumeLadderTest(unittest.TestCase):
             write_state(repo, provenanced_state(repo, v1, {"RUNNER": "planned"}))
             self.assertEqual(active_state_roadmap(repo), v1.resolve())
             # No ambiguity: select_roadmap returns the resumed roadmap, no raise.
+            self.assertEqual(select_roadmap(repo, None), v1.resolve())
+
+
+class SupersededStateGuardTest(unittest.TestCase):
+    """agent-harness#375: the state lever is the one selector that bypasses
+    ``manifest_backed_roadmap``'s retirement filter AND is reachable on an existing
+    checkout. After a roadmap flip retires the old roadmap's manifest entries, a stale
+    ``.phase-loop/state.json`` would otherwise resolve the superseded roadmap. The guard
+    fails closed on a state-selected roadmap whose manifest entries are ALL retired,
+    keyed on manifest STATUS (not banner prose), and names the operator remedy."""
+
+    def test_state_selecting_all_retired_roadmap_is_refused(self):
+        # FALSIFIER — the demonstrated defect. State names a roadmap whose only manifest
+        # entry is orphaned; select_roadmap must fail closed and name `rm`, not return it.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            v1 = repo / "specs" / "phase-plans-v1.md"  # make_repo already wrote+committed it
+            _add_phase_entry(repo, "v1", "RUNNER", "orphaned", v1)
+            write_state(repo, provenanced_state(repo, v1, {"RUNNER": "planned"}))
+            with self.assertRaises(SupersededRoadmapStateError) as ctx:
+                select_roadmap(repo, None)
+            self.assertIn("rm .phase-loop/state.json", str(ctx.exception))
+
+    def test_state_selecting_completed_only_roadmap_is_refused(self):
+        # The retirement set mirrors the manifest lever: `completed` (default hatch off)
+        # is retired too, so an all-completed state roadmap is refused just like orphaned.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            v1 = repo / "specs" / "phase-plans-v1.md"
+            _add_phase_entry(repo, "v1", "RUNNER", "completed", v1)
+            write_state(repo, provenanced_state(repo, v1, {"RUNNER": "planned"}))
+            with self.assertRaises(SupersededRoadmapStateError):
+                select_roadmap(repo, None)
+
+    def test_state_selecting_live_manifest_roadmap_still_resolves(self):
+        # POSITIVE CONTROL — not a refuse-everything degenerate: a state roadmap with a
+        # LIVE (executing) manifest entry still resolves normally.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            v1 = repo / "specs" / "phase-plans-v1.md"
+            _add_phase_entry(repo, "v1", "RUNNER", "executing", v1)
+            write_state(repo, provenanced_state(repo, v1, {"RUNNER": "planned"}))
+            self.assertEqual(select_roadmap(repo, None), v1.resolve())
+
+    def test_state_roadmap_with_one_live_entry_not_refused(self):
+        # all() not any(): a roadmap is superseded only when EVERY registered entry is
+        # retired. One live entry beside a retired one keeps it selectable. (Pins the
+        # predicate against an `any()` mutation.)
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            v1 = repo / "specs" / "phase-plans-v1.md"
+            _add_phase_entry(repo, "v1", "RUNNER", "orphaned", v1)
+            _add_phase_entry(repo, "v1", "ACCESS", "executing", v1)
+            write_state(repo, provenanced_state(repo, v1, {"RUNNER": "planned"}))
+            self.assertEqual(select_roadmap(repo, None), v1.resolve())
+
+    def test_state_selecting_unmanifested_roadmap_still_resolves(self):
+        # NO-OVER-FIRE — the guard fires ONLY when the manifest registers the roadmap.
+        # An un-manifested state roadmap is never refused.
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            v1 = repo / "specs" / "phase-plans-v1.md"
+            write_state(repo, provenanced_state(repo, v1, {"RUNNER": "planned"}))
             self.assertEqual(select_roadmap(repo, None), v1.resolve())
 
 

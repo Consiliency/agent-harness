@@ -1,5 +1,19 @@
 # North Star — pi as the Native Execution Substrate
 
+> # NOT A ROADMAP — RETAINED AS-IS (assessed 2026-07-29)
+>
+> **Deliberately NOT absorbed into `specs/phase-plans-v10.md`, and NOT closed.** This is a
+> direction-setting document: a vision, 4 binding cross-cutting principles, and a 6-item GATED
+> backlog. Its own header says it "authorizes nothing on its own." It has no phases and no exit
+> criteria, so DELIVERED/NOT-STARTED does not apply to it.
+>
+> Its 4 cross-cutting principles have been folded into v10's principles. Its 6 backlog items stay
+> here as gated candidates — each promotes to its own roadmap only when its named evidence gate
+> reads true. B6 is out-of-repo (`portal#201`, `message-board#14`).
+>
+> Do not close this file when the v10 absorption completes.
+
+
 > Status: vision + gated backlog. This document sets direction and binds the
 > cross-cutting principles that several roadmaps share. It authorizes **nothing**
 > on its own: every backlog item promotes to a real roadmap only when its named

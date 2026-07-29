@@ -1,5 +1,20 @@
 # EXECDISPATCH — Phase Plan v8
 
+> # DELIVERED — CLOSED (assessed 2026-07-29)
+>
+> **Complete.** NOT absorbed into `specs/phase-plans-v10.md` — no live work.
+>
+> All four EXECDISPATCH phases shipped: EXECREG (`models.py:2534`, `capability_registry.py:644`,
+> `launcher.py:1557` — agent-harness#144); GROKEXEC (`capability_registry.py:263`,
+> `launcher.py:849,1608` — #148/#150); AUTOSEL (`default_executor_resolver.py:227`,
+> `harness_env_signatures.py:115`, wired `runner.py:2726` — #152); DISSECT
+> (`spikes/execdispatch-dissect/` incl. the second-harness profile + schema + validator — #142).
+>
+> Note: `north-star-pi-native.md` backlog items B1/B2 are gated on THIS roadmap's DISSECT/GROKEXEC
+> evidence. Those gates may now be satisfiable — promoting them is a separate maintainer decision,
+> not something this closure performs.
+
+
 > How to use this document: save to `specs/phase-plans-v8.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v8-<alias>.md`), then `/claude-execute-phase <alias>` to build it.
 
 ---

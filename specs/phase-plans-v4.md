@@ -1,5 +1,31 @@
 # agent-harness - Cross-Vendor Advisor Panel Ownership And Routing - Phase Plan v4
 
+> # SUPERSEDED — ABSORBED into `specs/phase-plans-v10.md` (assessed 2026-07-29; corrected after CR)
+>
+> **5 of 6 phases DELIVERED. ONE live criterion carried → `EC-REVIEWTRUTH-9`.**
+>
+> Phases 1–5 closed out 2026-06-30/07-01 (`9de824d`, `61f41c6`). Every specified mechanism
+> verified present in CURRENT code, not against the closeout doc or the (uniformly unchecked)
+> boxes; the focused verification slice passes today, 46/0.
+>
+> **CORRECTION — this roadmap was first assessed DELIVERED — CLOSED with "nothing carried."
+> That was wrong, and a cross-vendor review of the v10 consolidation caught it.** Phase 6
+> PNLVERIFY (`:228`) required a real panel proving the Codex and Gemini legs can inspect the
+> staged files. That smoke was never satisfied: PNLVERIFY's own execution plan permitted it not
+> to run (`plans/phase-plan-v4-PNLVERIFY.md:50`), and the committed closeout records no live
+> model-output transcript, substituting command-construction tests
+> (`docs/research/advisor-panel-roadmap-v4-verification.md:27`). Closing this roadmap on that
+> basis would have dropped the one criterion that distinguishes a panel that reviewed from a
+> panel that merely launched — which is the same defect class the criterion exists to catch.
+>
+> **Deliberately SUPERSEDED since — do NOT resurrect these as undone work:**
+> the claude leg default is now `claude-fable-5`, not `claude-sonnet-5` (`panel_invoker.py:137`;
+> review runs mid-tier Fable, sonnet-5 remains the implementer ID and a valid per-leg override);
+> gemini is `gemini-3.6-flash` (`profiles.py:43,220`) under the model-tier taxonomy; and
+> advisor-panel was renamed advisor-board (agent-harness#98), with panel-named directories
+> surviving only as compat aliases.
+
+
 > How to use this document: run `phase-loop validate-roadmap specs/phase-plans-v4.md`, then plan each phase with the phase-loop command for the phase alias.
 
 ---
