@@ -5,7 +5,7 @@
 > **⚠️ THIS IS P1 OF A RATIFIED TWO-PLAN SPLIT** (maintainer, `ah#363` follow-up), carved
 > along the merge boundary the §11 DAG implies. **P1 (this plan)** = the shared allocator
 > (`admit_next`), the re-landed `readmit_advanced_head` primitive, and the live #199 **publish**
-> migration — steps (1)(2)(3), AC-1..AC-7 and AC-9..AC-13 — where all the entangled-identity
+> migration — steps (1)(2)(3), AC-1..AC-7 and AC-9..AC-15 — where all the entangled-identity
 > density lives (epoch late-binding, the deterministic post-commit `attempt_id`, and §5b
 > commit-stable `approval_digest`). **P2** (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`)
 > = the readmit CONSUMER wiring (`_fab_delta_readmit`) + the engage-flag flip — steps (4)(5),
@@ -202,8 +202,15 @@ Do NOT re-invent these; port them from `origin/feat/288a-broker-readmit-primitiv
 **Rule (generalizes past this plan): when re-landing a function that is a SIBLING of an
 existing one, DIFF the two for DROPPED checks and ENUMERATE what you deliberately did NOT
 port — a silent omission is the second guard-drop this one plan would otherwise have shipped
-(the `epoch_blocked` ordering was the first).** Performed here for `admit()` vs `admit_next`
-(@ `c1da62a`):
+(the `epoch_blocked` ordering was the first).** RE-DERIVED against `admit()` LINE BY LINE
+(round-5 codex F3 — the earlier table extended rows rather than re-deriving, and MISSED that
+`admit()`'s opening guard is a COMPOUND `if self.epoch_blocked() or self.policy is None or not
+self.policy(request): raise` evaluated BEFORE the dedup loop; the in-lock reorder SPLIT that
+compound guard — `epoch_blocked` moved to the front (correct), but POLICY silently moved to the
+end, AFTER dedup, so a dedup-hit resume returns a prior admission without ever consulting the
+policy: **fail-closed → fail-open, the repo's fifteenth**). A table with a hole in it is worse
+than no table — the same reason a deferral that reads as settled is worse than an open question.
+Performed here for `admit()` vs `admit_next` (@ `c1da62a`), one row per element of `admit()`:
 
 | Check in `admit()` | In `admit_next`? | Disposition |
 |---|---|---|
@@ -211,7 +218,9 @@ port — a silent omission is the second guard-drop this one plan would otherwis
 | explicit fence `lease_epoch < max(epoch)` (`admission.py:49`) | absent | **DELIBERATE NON-PORT for MONOTONICITY** — allocation is `max+1` in-lock, so "strictly above" holds by construction. **But it does NOT bind `record.epoch` to `request.lease_epoch`** — see the ADD below; the `<` fence is also insufficient for that (misses `allocated==2`) |
 | `record.epoch == request.lease_epoch` equality (NOT in `admit()` either — a NEW guard) | **ADD** | **NEW, load-bearing** — `admit_next` allocates the epoch but trusts the frozen `request` to carry it; enforce on the allocate path (and rebuild). Beyond a straight port. BLOCKING (round-2, codex); AC-10 |
 | `record.request.attempt_id == attempt_id` (the supplied dedup id; NOT in `admit()` — a NEW guard) | **ADD** | **NEW, load-bearing** — `admit_next` dedups on `attempt_id` but trusts the frozen `request` to carry it; a factory defaulting `lease()` to `uuid4` stores an unfindable record → idempotency silently broken, AC-9 compare dead. Enforce on allocate + rebuild, parallel to the epoch guard. BLOCKING (round-3, codex+grok); AC-11 |
-| `epoch_blocked` position (FIRST in `admit`, LAST in `admit_next`) | reordered | **already fixed** by the §3 in-lock reorder above |
+| `epoch_blocked()` — first disjunct of `admit()`'s compound guard | reordered to FIRST in-lock | **already fixed** by the §3 in-lock reorder above (it correctly gates BOTH the dedup and allocate paths — it is evaluated before the dedup return) |
+| `self.policy is None` — second disjunct (fail-closed store-state) | **DROPPED from the pre-dedup gate** | **MUST RESTORE before the dedup return** — store-state, needs no request; a store with no policy must DENY on a dedup-hit resume, not return the prior admission. BLOCKING (round-5, codex F3); AC-15. (At the LIVE seam `build_github_broker_client` substitutes `_default_admission_policy` for `None` (`live.py:79`), so `policy is None` is reachable only for a store constructed directly — the AC's UNIT arm; the reachable PRODUCTION instance is the next row.) |
+| `not self.policy(request)` — third disjunct (a configured policy DENIES) | **DROPPED from the pre-dedup gate** | **MUST RESTORE on the dedup-return path**, evaluated against the rebuilt-at-`prior.epoch` request (the same object the conflict-compare rebuilds) — else a real admission gate is bypassed on every resume. `admission_policy` is a designed, threaded parameter (`_RoutingBrokerService`), so a denying policy is a reachable configuration; today's default admits all, which is exactly why the reorder's fail-open is LATENT. BLOCKING (round-5, codex F3); AC-15 (real-adapter, via `build_github_broker_client(admission_policy=<denying>)`). |
 
 Applied to the OTHER re-land, `readmit_advanced_head`: it and `execute`'s publish admit both
 now route through the SAME `admit_next` body (one dedup/compare/fence path), so there is no
@@ -418,21 +427,78 @@ one-line mechanism.** The rejected alternatives and why:
   and NOT read back from the stored record (reading from storage makes the AC-9 compare
   trivially true and defeats it).**
 
-**Mechanism is DEFERRED to a focused design pass — do NOT hardcode one here, because the
-obvious candidate is already falsified.** `base_sha = head_sha^` (parent of the committed head)
-gives `H0` on the non-prebuilt path — but the PREBUILT path (`publishing.py:157`) has
-`HEAD = the prebuilt commit` when S1 runs, so today `base_sha = head_sha` (the commit ITSELF,
-not its parent). So `base_sha` already means DIFFERENT things on the two paths, and `head_sha^`
-is wrong for prebuilt. Nor is `base_sha` redundant-given-`head_sha` (that would tempt "just drop
-it") while it still carries this prebuilt-vs-not distinction. The realization must reconcile
-both paths — likely by binding the approval to a commit-stable value captured from the SAME
-post-commit git state on every attempt (mirroring how `attempt_id` is computed post-commit and
-threaded), reconciled with the prebuilt path — and is the kind of entangled-identity sub-problem
-that motivates the split recommendation in §12. **This plan pins the DEFECT, the INVARIANT, the
-rejected alternatives, and AC-13; the exact realization is called out as needing its own design
-pass.** Scope note: this is PUBLISH-SPECIFIC — `readmit_advanced_head` takes `approval` as a
-caller-supplied parameter (`c1da62a` `verbs.py:87`) and keys on an already-advanced, stable
-`new_head_sha`; it does not re-derive `base_sha` from a drifting `rev-parse HEAD`.
+**Mechanism — DECIDED (round-5 codex F1; the deferral was itself the defect — an implementer
+hits it on day 1, so this plan now names the realization).** Two ingredients, both required:
+
+1. **Derive `base_sha` as `merge-base(head_sha, origin/<request.base>)` — a function of the
+   COMMITTED head and the declared base ref, not of live `HEAD`-at-call-time.** This is the same
+   base the broker ALREADY three-dot-diffs `owned_paths` against (`BrokerRequest.base`,
+   `origin/<base>...head_sha`, `credsep.py`); aligning the approval's `base_sha` with it is the
+   "bind base into the approval" step `credsep.py:226` flags as the stronger form. It is
+   commit-stable: identical whether computed on the first pass or a crash-resume, because
+   `head_sha` and `origin/<base>` are both stable post-commit and the publish commit sits on the
+   FEATURE branch, so `origin/<base>` advancing (another train merging) pre-merge does not move
+   the fork point. It **unifies the two paths** — the asymmetry that falsified `head_sha^`: on
+   the NON-prebuilt path the change is one publish commit so `merge-base(H1, origin/base) = H0`
+   (the parent, correct); on the PREBUILT path the change is the whole branch so `merge-base` is
+   its fork-point vs base (correct, and a strict improvement over today's degenerate
+   `base_sha = head_sha`). `head_sha^` was wrong for prebuilt (strips one commit of a
+   multi-commit branch); `merge-base` is right for both because it asks the base-relative
+   question directly. It does NOT reopen AC-9's hole: `approval_digest` still folds
+   `roadmap_digest`, `effective_code`, `dependency_shas`, and `verification_*`, so a DIFFERENT
+   approval at the same head still diverges (AC-13's positive control). And it re-derives from
+   stable git state rather than reading the stored record — honoring the invariant above (reading
+   from storage would make the AC-9 compare trivially true).
+2. **Bind it at the POST-COMMIT seam, not at pre-commit S1.** S1's pre-commit `base_sha`
+   (`train_runner.py:119`, a live `rev-parse HEAD`) is **NOT identity-bearing** — it is
+   superseded. The commit-stable `base_sha` is computed once, from post-commit git state, at the
+   same seam that binds the deterministic `attempt_id` post-commit (round-3/S3b), and threaded
+   into `factory.approval(...)` on BOTH the allocate path AND the dedup-rebuild path inside
+   `admit_next`'s `make_request(epoch, attempt_id)` — so first-pass and resume compute BYTE-
+   IDENTICAL approval inputs by construction. (This is the round-3 propagation discipline: the
+   derivation lives at ONE seam and every rebuild routes through it; a second live-`HEAD`
+   derivation anywhere reintroduces the drift.)
+
+**Verified safe against the broker's execute path (the F2-class check, done for `base_sha`'s
+consumers).** Changing `base_sha`'s derivation cannot spuriously reject a publish: the broker's
+`credsep.execute` owned-scope reconciliation diffs against `request.base` (the ref NAME), which
+it explicitly notes is "*not the digest-bound base_sha*" (`credsep.py:226`); nothing in the
+execute path compares the approval's `base_sha`. `InvalidationTrigger.BASE_SHA_CHANGED` is
+confined to the downstream-merge invalidation model (`reconcile.py:66`), a separate consumer that
+detects a legitimately-moved base across a MERGE, not a publish crash-retry. `base_sha` is
+therefore consumed ONLY by `compute_approval_digest`; re-deriving it is self-contained.
+
+### 5c. `execute` finalizes the frozen `BrokerRequest` from the allocated record (round-5 codex F2)
+
+**The construction seam the plan's audit had not specified — Fixes 1 and 2 are ONE seam.**
+`admit_next` allocates the epoch in-lock and BUILDS the finalized `AdmissionRequest` via
+`make_request(epoch, attempt_id)` (carrying the allocated epoch, the deterministic `attempt_id`,
+and the merge-base `base_sha` above), returning it as `record.request`. But `BrokerRequest` is
+`@dataclass(frozen=True)` with `admission: AdmissionRequest` — a CONCRETE field, not a callable;
+**a factory cannot cross that boundary, so `execute` must reconstruct the frozen request** with
+the finalized admission — `dataclasses.replace(request, admission=record.request)` — and pass
+THAT to `self.adapter.execute(...)`, so every downstream consumer of `request.admission` sees the
+finalized object, not the pre-allocation S1 admission. **Independently re-enumerated (F2's own
+lesson is that the audit missed the CLASS) — the sites that require `request.admission` to be the
+concrete, correctly-keyed object are SIX across three modules:** `verbs.py:65`
+`admit(request.admission)` (the whole-object handoff — a mis-built admission surfaces here FIRST,
+caught by AC-10/AC-11's enforcement), `verbs.py:40` `.admission.idempotency_key`,
+`credsep.py:123/:131/:315` `.admission.idempotency_key` (terminal evidence — `:123` records
+`outcome_ambiguous_blocked`, so a stale key there mis-labels a SUCCESSFUL push), and
+`adapters/base.py:29` (`AdapterExecutionRequest.__post_init__` hard-RAISES unless
+`admission.attempt_id == attempt_id`). **Of the six, the PUBLISH hot path reaches four**
+(`verbs.py:65` and the three `credsep` terminal-evidence sites); `verbs.py:40` is the NON-publish
+dedup branch (publish keys on `publish_committed_branch_idempotency_key(repo, branch, head)`,
+`verbs.py:35-39`) and `adapters/base.py:29` is the bounded-adapter path for other verbs — both
+are the SAME class but reached by other verbs, so the finalized construction must satisfy them
+structurally even though AC-14 exercises the four publish-reachable ones.
+
+**This plan now pins the DEFECT, the INVARIANT, the rejected alternatives, the DECIDED mechanism
+(merge-base + post-commit binding + `execute` reconstruction), and AC-13 + AC-14.** Scope note:
+this is PUBLISH-SPECIFIC — `readmit_advanced_head` takes `approval` as a caller-supplied parameter
+(`c1da62a` `verbs.py:87`) and keys on an already-advanced, stable `new_head_sha`; it does not
+re-derive `base_sha` from a drifting `rev-parse HEAD`. `refresh_downstream_after_merge` likewise
+takes `base_sha` as a supplied field (`refresh.py:31,60`), not a live read, so it does not drift.
 
 ---
 
@@ -708,11 +774,67 @@ injection anchor, and a positive control
   same `head_sha`/`attempt_id` but a genuinely DIFFERENT approval (e.g. a different owned-code
   subset → different `effective_code` → different `approval_digest`) STILL RAISES — the
   commit-stable fix must reject a real conflict while accepting a faithful retry. **Injection
-  anchor:** the `base_sha` derivation feeding `factory.approval(...)` (`train_runner.py:119`) —
-  assert the commit-stable derivation is present in `src` before mutating. **Wave:** rides with
-  the publish-migration tests (step 2); not wave-0. **Note:** the exact commit-stable mechanism
-  is §5b's deferred design pass — this AC pins the BEHAVIOR (faithful retry dedups, real conflict
-  rejects) independent of which realization §5b lands.
+  anchor:** the `base_sha` derivation feeding `factory.approval(...)` — under §5b's DECIDED
+  mechanism this is `merge-base(head_sha, origin/<base>)` computed at the post-commit binding
+  seam (NOT S1's pre-commit `train_runner.py:119` read, which §5b makes non-identity-bearing);
+  assert the merge-base derivation is present in `src` (and that no live-`HEAD` `base_sha` feeds
+  the rebuild) before mutating. **Sharpened falsifier (mechanism now chosen):** the rebuild
+  derives `base_sha` from a reconstruction-time `rev-parse HEAD` instead of
+  `merge-base(head_sha, origin/<base>)` → drift → the conflict-compare raises. **Positive
+  observable:** the merge-base rebuild → dedup HIT with `granted_epoch == E`. **Wave:** rides with
+  the publish-migration tests (step 2); not wave-0.
+
+- **AC-14 — `execute` finalizes the frozen `BrokerRequest` from the allocated record, so the
+  downstream `request.admission` consumers see the FINALIZED admission (round-5 codex F2 — the
+  construction seam the audit had not specified; §5c).** Drive a publish through the migrated
+  `execute`: `admit_next` allocates epoch E and BUILDS the finalized `AdmissionRequest`
+  (`record.request`, carrying epoch E, the deterministic `attempt_id`, and the merge-base
+  `base_sha`). The publish reaches `effect_terminal_observed`. **Assert the recorded terminal
+  evidence is keyed by the FINALIZED admission** — `evidence.idempotency_key ==
+  record.request.idempotency_key` — and the stored admission record carries epoch E.
+  **Falsifier:** have `execute` pass the pre-allocation `request` (S1's original admission, still
+  at `lease_epoch=1`) to `self.adapter.execute(...)` instead of
+  `dataclasses.replace(request, admission=record.request)` → `credsep.py:315` records the
+  terminal evidence keyed by the STALE `request.admission.idempotency_key`, which ≠
+  `record.request.idempotency_key`. **Observable:** FIELD DIVERGENCE — the terminal-evidence key
+  ≠ the stored admission record's `idempotency_key` (read both, assert equal; the falsifier makes
+  them differ), NOT a bare raise. **Injection anchor:** the `execute` line that constructs the
+  request handed to the adapter — assert `admission=record.request` (the finalized admission) is
+  threaded in `src` before mutating. **Positive control / path-entered:** the publish actually
+  reaches `credsep.py:315` (`effect_terminal_observed` recorded — proves the adapter path was
+  entered, so the key comparison is over a real terminal, not an unreached seam); the whole-object
+  handoff `admit_next(...)` (`verbs.py:65`) is where a mis-built admission surfaces FIRST via
+  AC-10/AC-11, and AC-14 is its COMPLEMENT — the admission flowing OUT of the allocator into the
+  consumers. **Class note:** `verbs.py:40` and `adapters/base.py:29` are the same
+  concrete-`request.admission` class but reached by OTHER verbs (§5c); the finalized construction
+  must satisfy them structurally, but this AC exercises the four publish-reachable sites
+  (`verbs.py:65`, `credsep.py:123/:131/:315`). **Wave:** rides with the publish-migration tests
+  (step 2) — needs migrated `execute` + `admit_next`; not wave-0.
+
+- **AC-15 — a DENYING admission policy is enforced on a dedup-hit resume, not bypassed
+  (round-5 codex F3 — the fail-closed→fail-open the in-lock reorder INTRODUCED; §3 table).** Seed
+  an admission through the migrated publish `execute` → `admit_next` at `attempt_id = X` (epoch
+  E) under a PERMITTING policy. Then install a DENYING policy on that repo's store
+  (`build_github_broker_client(admission_policy=<denies this request>)`) and re-drive the SAME
+  publish (same `attempt_id = X` — a genuine dedup-able resume). It is REFUSED
+  (`PermissionError("broker admission denied")`); no record returned, no ledger append.
+  **Falsifier:** the ratified in-lock order evaluates the `attempt_id` dedup and RETURNS the prior
+  record BEFORE the `not policy(request)` check → the resume returns the prior ACCEPTED record
+  despite the denying policy (fail-open). **Observable:** ACCEPTANCE (a deduped record returned)
+  where refusal is expected — the falsifier accepts; the fix refuses. **Path-entered precondition
+  (this AC's own vacuity trap — the F3(b) sweep):** assert BOTH (a) the resume DEDUP-HITS — the
+  prior record at `attempt_id = X` is present and found — AND (b) `policy(request)` is
+  independently `False` for the installed policy; a permissive policy never denies and an
+  unreached dedup never exercises the gate, so without both the test passes vacuously. **Use a
+  DENYING policy, NOT `policy=None`:** the live factory substitutes `_default_admission_policy`
+  for `None` (`live.py:79`), so a `policy=None` reopen is reachable only at the store-UNIT level
+  (a legitimate second arm for the fail-closed `policy is None` disjunct), while the reachable
+  PRODUCTION instance is a configured denying policy. **Injection anchor:** the position of the
+  `not policy(request)` gate relative to the dedup return in `admit_next` (S6) — assert the policy
+  gate PRECEDES the dedup return in `src` before mutating. **Positive control:** with a PERMITTING
+  policy the identical resume dedups to the SAME `granted_epoch == E` — proving the gate refuses
+  only under denial, not always. **Wave:** the real-adapter form rides step-2 (needs migrated
+  publish `execute`); the `admit_next` unit form (inject the policy directly) is step-1.
 
 > **AC-8a / AC-8b (the two S8 readmit-consumer commit points) are MOVED TO P2**
 > (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md` §5). They are P2's wave-0, red
@@ -750,6 +872,8 @@ vacuous even if a different assertion would catch it.
 | AC-11 | record appended with `request.attempt_id != attempt_id` (no raise) | ✅ | NEW; guards the dedup-identity enforcement — mirrors AC-10, one field over |
 | AC-12 | admission record COUNT +1 / new epoch on an IN-FLIGHT retry | ✅ | NEW; falsifier is vacuous UNLESS the seed is `PROVIDER_CALL_IN_FLIGHT` (else short-circuits at `:59` before `admit` at `:65`) — the trap this AC itself guards; AC-3 (completed replay) cannot reach the admission path |
 | AC-13 | `ValueError` on a faithful retry (drift) vs `granted_epoch == E` (fixed) | ✅ | NEW; falsifier requires (a) the crash modelled by re-running S1 on post-commit git state, NOT a captured closure, and (b) the `attempt_id` dedup HIT asserted — else vacuous in both arms |
+| AC-14 | terminal-evidence key ≠ stored admission-record key (FIELD DIVERGENCE, no raise) | ✅ | NEW (round-5 F2); the §5c construction seam — falsifier vacuous unless the publish reaches `effect_terminal_observed`, so the path-entered control (a real terminal key exists to compare) is load-bearing |
+| AC-15 | acceptance (deduped record) where refusal expected under a DENYING policy | ✅ | NEW (round-5 F3); falsifier vacuous unless the resume DEDUP-HITS **and** `policy(request)` is `False` (both asserted); a denying policy — `policy=None` is unreachable at the live seam (`live.py:79`) |
 
 **Three dependency clusters the audit makes explicit** (the round-2 AND round-3 fixes, so the
 ACs that ride on them are now live): the EPOCH-ENFORCEMENT (§3, codex round-2) makes AC-1's
@@ -761,7 +885,12 @@ its OWN reachability precondition beyond the cluster: the seeded evidence record
 `PROVIDER_CALL_IN_FLIGHT`, or admission is never reached and the falsifier is vacuous in both
 arms. **Fourth cluster (round-4): APPROVAL-COMMIT-STABILITY (§5b) gates AC-13** — the faithful
 retry can only dedup (rather than be wrongly rejected) once `approval_digest` is commit-stable;
-AC-13's falsifier is the current drift. A reviewer can check this table against the tests: any AC
+AC-13's falsifier is the current drift. **§5b's mechanism is now DECIDED (round-5), not deferred
+(`merge-base` + post-commit binding + `execute` reconstruction), adding two round-5 clusters:
+CONSTRUCTION-SEAM (§5c) gates AC-14 — the finalized admission must reach the consumers, its
+falsifier the un-reconstructed `request`; and POLICY-ON-DEDUP (§3 table) gates AC-15 — a denying
+policy must survive a dedup-hit resume, its falsifier the dedup-before-policy order.** A reviewer
+can check this table against the tests: any AC
 whose "fires?" is ✅ must have an assertion reading the named observable, not a `pytest.raises`
 where the audit says "values" or "count."
 
@@ -787,6 +916,8 @@ scenario that silently never reaches the seam, unless a positive control proves 
 | AC-11 | POSITIVE — field divergence value / raise | mirrors AC-10 |
 | AC-12 | negative (no 2nd record) | round-3 FIX: asserts the `PROVIDER_CALL_IN_FLIGHT` seed (path-entered) + positive control (different head → new record) |
 | AC-13 | mixed (raise vs dedup) | round-4: asserts the `attempt_id` dedup HIT (prior record found) as the path-entered precondition BEFORE the compare outcome |
+| AC-14 | POSITIVE — keys MATCH, gated on a positive path-entry | round-5 F2: asserts `effect_terminal_observed` was recorded (adapter path entered) BEFORE comparing the terminal-evidence key to the stored admission-record key — the comparison cannot read a terminal that was never produced |
+| AC-15 | negative (refused under a denying policy) | round-5 F3: asserts the dedup HIT **and** `policy(request)==False` as path-entered preconditions before the refusal; positive control: a PERMITTING policy → the same resume dedups to `granted_epoch == E` (proves entry, and that the gate refuses only under denial) |
 
 The two ACs that needed the fix this round (AC-8a/8b) are now in P2; each P1 AC above carries a
 positive observable or a reachability control, shown so the sweep is checkable rather than
@@ -927,7 +1058,12 @@ tests land red against a step-1 skeleton (symbols present, bodies unimplemented 
 wrong) — NOT against empty `main`. **AC-12 is red-first too but rides with the step-2
 publish-migration tests, not step-1:** its falsifier mutates the LIVE S1 `make_request` closure
 (step 2), which does not exist on the step-1 skeleton — so it lands red against the migrated S1
-seam. Neither AC-11 nor AC-12 is wave-0 (both need `admit_next`, absent on `main`). This is still test-first — it is the primitive's own red→green —
+seam. Neither AC-11 nor AC-12 is wave-0 (both need `admit_next`, absent on `main`). **AC-14 and
+AC-15 (round-5) ride step-2's real-adapter tests** — AC-14 needs the migrated `execute` that
+reconstructs the frozen `BrokerRequest` from the allocated record (§5c), and AC-15's real-adapter
+form needs the migrated publish `execute`; AC-15 additionally has an `admit_next` unit form
+(inject a denying policy directly) that can land in the step-1 wave. Neither is wave-0. This is
+still test-first — it is the primitive's own red→green —
 but it is a SEPARATE wave. The plan must not pretend AC-5's "move `max+1` outside the flock"
 mutation, or AC-6b's "return the dedup hit before `epoch_blocked`," can run before
 `admit_next` exists.
@@ -963,15 +1099,19 @@ contract.
    signature + `request.lease_epoch == epoch` AND `request.attempt_id == attempt_id`
    enforcement + the conflict-compare on dedup, `AdmissionPrecondition`, `readmit_advanced_head`,
    `readmit_attempt_id`, `ReadmitResult`, routing) from #337. Blocks everything. **The
-   primitive-level ACs gate it: AC-4, AC-5, AC-6b, AC-9, AC-10, AC-11** (all mutate
-   `admit_next`/routing; step-1 test wave). (#366's shared-lock is already in main under it.)
+   primitive-level ACs gate it: AC-4, AC-5, AC-6b, AC-9, AC-10, AC-11, and AC-15's `admit_next`
+   unit form** (all mutate `admit_next`/routing; step-1 test wave). (#366's shared-lock is already
+   in main under it.)
 2. **Migrate publish to the allocator** — S1 + S2 + S3 + §5 epoch-late-binding + §6
    `attempt_id` (S1's `make_request` threads the received `attempt_id` into
-   `factory.lease(..., attempt_id=…)` — round-3) + §5b commit-stable approval identity (round-4).
+   `factory.lease(..., attempt_id=…)` — round-3) + §5b commit-stable approval identity (round-4,
+   DECIDED round-5) + §5c `execute` reconstruction of the frozen `BrokerRequest` (round-5).
    Depends on (1). **This is the live-#199 risk; it gets AC-1, AC-2, AC-3, AC-6a, AC-12 (the
-   in-flight retry through the live S1 seam), AC-13 (the faithful post-crash retry — §5b) and a
-   byte-diff review against a live-broker fixture. §5b's commit-stable mechanism is a DEFERRED
-   design pass INSIDE this step — its density is the core of the split recommendation (§12).**
+   in-flight retry through the live S1 seam), AC-13 (the faithful post-crash retry — §5b), AC-14
+   (the §5c construction seam), AC-15 real-adapter form (the policy gate on a dedup-hit resume)
+   and a byte-diff review against a live-broker fixture. §5b's commit-stable mechanism is now
+   DECIDED (round-5): `merge-base(head_sha, origin/<base>)` bound post-commit, threaded through
+   every rebuild, plus §5c's `execute` reconstruction — no longer a deferred pass.**
 3. **Docs/CHANGELOG retraction** (§9) — lands WITH (2); AC-7 gates it.
 
 **Steps (4) and (5) are P2** (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`): (4)
@@ -1012,15 +1152,18 @@ wiring and the gated flag flip are **P2** (steps 4/5, AC-8a/AC-8b;
 
 ### 12b. Split status (RATIFIED) — this is P1 of 2
 
-The combined plan converged on the DESIGN over four adversarial rounds (eleven blocking
-findings, all verified real, each round a genuinely different invariant), but its density is
+The combined plan converged on the DESIGN over five adversarial rounds (fourteen blocking
+findings, all verified real, each round a genuinely different invariant — round 5 being codex's
+F1/F2/F3: the §5b deferral was not executable, the `execute` construction seam was unspecified,
+and the in-lock reorder introduced a policy fail-open), but its density is
 concentrated — and entangled — in the publish-migration half: publish's IDENTITY under a commit
 that moves `HEAD` mid-operation (epoch late-binding, the deterministic post-commit `attempt_id`,
 and §5b commit-stable `approval_digest`). The readmit-CONSUMER half does NOT share that
 entanglement — `readmit_advanced_head` takes `approval` as a caller-supplied parameter
 (`c1da62a` `verbs.py:87`) and keys on an already-advanced, stable `new_head_sha`. **The
 maintainer ratified splitting along the §11 merge boundary:** this plan is **P1** (steps 1/2/3,
-AC-1..AC-7 and AC-9..AC-13 — all the density, incl. the §5b design pass); **P2**
+AC-1..AC-7 and AC-9..AC-15 — all the density, incl. the §5b DECIDED mechanism + §5c construction
+seam); **P2**
 (`plans/detailed-fab-288-p2-readmit-consumer-20260729.md`) is the readmit consumer + flag flip
 (steps 4/5, AC-8a/AC-8b) and **depends on P1 merged**. Making P2 depend on P1-merged makes the
 mixed-allocation interlock SAFER — publish is already migrated on `main` before P2 begins, so the
