@@ -30,13 +30,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   from the `phase-loop-runtime` distribution *proven to own the imported module*
   (`importlib.metadata` resolves a name, and a name can be answered by a shadowing
   install whose floor need not match the running code); when that ownership cannot be
-  proven the guard treats the floor as unknowable and is a no-op. The installed
+  proven the guard treats the floor as unknowable and does not raise. The installed
   contract version compared against the floor is the **imported**
   `consiliency_contract.CONTRACT_VERSION` — the version whose bundled schema fans out
   #378's failures — not the dist-metadata version, so a contract-shadow is judged on
-  what will run. The guard is a no-op when the floor is satisfied (CI, clean-room
-  wheel), when ownership is unprovable (a src checkout shadowing an installed dist),
-  or when the state is otherwise unreadable — it never becomes a new false failure.
+  what will run. The guard runs cleanly (no raise, no warning) when the floor is
+  satisfied (CI, clean-room wheel), and never becomes a new false failure.
+- **Fail-open is not fail-silent (Consiliency/agent-harness#382, board ruling).**
+  When the check is *skipped* because an operand is unreadable or its provenance is
+  unprovable — the shadowed-runtime case — the guard emits a `ContractFloorUnverified`
+  warning rather than returning quietly. Silence there would recreate exactly what
+  #378 removes: the guard goes mute, a stale contract survives, and the operator faces
+  ~60 opaque `jsonschema` failures with no sign a guard even ran. The condition is
+  abnormal, not a per-run noise source, so the warning names a real, bounded residual:
+  in a genuinely shadowed environment the floor is **unverified**, and #378's failure
+  mode can still occur. That is a named boundary, distinct from a guard that quietly
+  claims coverage it does not have.
 
 ### Outside-agent contract: repin to `spec@v0.2.1` + per-file `sha256` verification (Consiliency/agent-harness#370)
 

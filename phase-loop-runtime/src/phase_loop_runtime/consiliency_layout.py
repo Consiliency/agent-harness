@@ -16,6 +16,7 @@ seam is for CS-0.12 once the adoption-profile consent check lands. Today,
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -162,6 +163,15 @@ class ContractFloorError(RuntimeError):
     is PROVABLE from readable state -- see ``check_installed_contract_floor``."""
 
 
+class ContractFloorUnverified(UserWarning):
+    """The contract-floor check could not be run because a required operand was
+    unreadable or its provenance was unprovable (Consiliency/agent-harness#382,
+    board review). Emitted -- never silenced -- in the fail-open path so the
+    guard's ABSENCE is visible: silence in a shadowed-runtime environment would
+    reproduce the very opacity #378 exists to remove (~60 jsonschema failures with
+    no indication a guard even ran)."""
+
+
 def _dist_owns_imported_runtime(dist: Any) -> bool:
     """True iff ``dist`` records the ``phase_loop_runtime`` package at the exact
     path the interpreter actually imported.
@@ -249,9 +259,18 @@ def check_installed_contract_floor() -> None:
     PROVEN to violate this package's declared floor.
 
     Fail-open on an unprovable state: if either the declared requirement or the
-    installed version is unreadable, this is a no-op. The guard exists to convert a
-    stale-dependency environment from ~60 opaque validation failures into one
-    actionable line -- it must never itself become a new false failure.
+    installed version is unreadable, this does NOT raise -- the guard exists to
+    convert a stale-dependency environment from ~60 opaque validation failures into
+    one actionable line, and must never itself become a new false failure.
+
+    But fail-open is not fail-SILENT (board #382, ruling): when the check is skipped
+    it emits a ``ContractFloorUnverified`` warning rather than returning quietly.
+    Silence here would recreate exactly what #378 removes -- in a shadowed-runtime
+    environment the guard would go mute, the stale contract would survive, and the
+    operator would face the ~60 opaque jsonschema failures with no sign a guard even
+    ran. The condition is abnormal (unreadable metadata, or a distribution that does
+    not own the imported module), not a per-run noise source, so the warning names a
+    real, bounded gap: the floor is UNVERIFIED, not verified-clean.
 
     The installed operand is the IMPORTED ``consiliency_contract.CONTRACT_VERSION``
     (via ``installed_contract_version``), not the dist metadata version
@@ -263,6 +282,17 @@ def check_installed_contract_floor() -> None:
     requirement = declared_contract_requirement()
     installed = installed_contract_version()
     if requirement is None or installed is None:
+        warnings.warn(
+            "consiliency-contract floor check SKIPPED (fail-open): could not "
+            "establish both operands for the RUNNING phase_loop_runtime -- the "
+            "declared floor was unreadable or resolved to a distribution not proven "
+            "to own the imported module, and/or the imported contract version was "
+            "unreadable. The floor is therefore UNVERIFIED here: a stale or "
+            "mismatched contract will NOT be reported and #378's opaque jsonschema "
+            "failures can still occur (Consiliency/agent-harness#378, board #382).",
+            ContractFloorUnverified,
+            stacklevel=2,
+        )
         return
     assert_contract_floor_satisfied(installed, requirement)
 

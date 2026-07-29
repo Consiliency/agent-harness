@@ -28,6 +28,7 @@ import pytest
 
 from phase_loop_runtime.consiliency_layout import (
     ContractFloorError,
+    ContractFloorUnverified,
     assert_contract_floor_satisfied,
     declared_contract_requirement,
 )
@@ -121,18 +122,37 @@ def test_check_fires_on_a_stale_ambient_install(monkeypatch):
         cl.check_installed_contract_floor()
 
 
-def test_check_is_noop_when_state_is_unprovable(monkeypatch):
-    # Never fail on an unprovable state: if the declared floor or the installed
-    # version cannot be read, the guard is a silent no-op (fail-open), because it
-    # cannot demonstrate a violation.
+def test_check_warns_and_noops_when_state_is_unprovable(monkeypatch):
+    # Never fail on an unprovable state -- but never SILENTLY no-op either (board
+    # #382 ruling). If the declared floor or the installed version cannot be read,
+    # the guard does not raise (fail-open) AND emits ContractFloorUnverified, so the
+    # check's absence is visible instead of masquerading as a clean pass.
     import phase_loop_runtime.consiliency_layout as cl
 
     monkeypatch.setattr(cl, "declared_contract_requirement", lambda: None)
-    assert cl.check_installed_contract_floor() is None
+    with pytest.warns(ContractFloorUnverified):
+        assert cl.check_installed_contract_floor() is None
 
     monkeypatch.setattr(cl, "declared_contract_requirement", lambda: _SYNTHETIC_REQ)
     monkeypatch.setattr(cl, "installed_contract_version", lambda: None)
-    assert cl.check_installed_contract_floor() is None
+    with pytest.warns(ContractFloorUnverified):
+        assert cl.check_installed_contract_floor() is None
+
+
+def test_check_does_not_warn_when_floor_is_verified(monkeypatch):
+    # Non-vacuity for the warning: it must be CONDITIONAL on the unprovable state,
+    # not unconditional. With both operands readable and the floor satisfied, the
+    # guard runs cleanly -- no raise and NO ContractFloorUnverified. This is what
+    # keeps the warning off the normal in-tree suite (where provenance holds).
+    import warnings
+
+    import phase_loop_runtime.consiliency_layout as cl
+
+    monkeypatch.setattr(cl, "installed_contract_version", lambda: "2.5")
+    monkeypatch.setattr(cl, "declared_contract_requirement", lambda: _SYNTHETIC_REQ)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ContractFloorUnverified)
+        assert cl.check_installed_contract_floor() is None
 
 
 # ---------------------------------------------------------------------------
@@ -197,13 +217,16 @@ def test_declared_requirement_is_none_when_metadata_does_not_own_imported_module
 def test_check_does_not_spuriously_abort_under_metadata_module_divergence(monkeypatch):
     # The false-failure half of #378's acceptance, driven through the CONFTEST
     # COLLECTION SURFACE (check_installed_contract_floor), not just the helper.
-    # A stale-shadow env must not make a healthy checkout abort collection.
+    # A stale-shadow env must not make a healthy checkout abort collection -- and
+    # per the board #382 ruling it must WARN rather than pass silently, so the
+    # operator sees the floor went unverified in exactly the shadowed-runtime case.
     # RED on be92ae2: the foreign >=9.9 floor is not satisfied by the real
-    # CONTRACT_VERSION, so the guard raises ContractFloorError spuriously.
+    # CONTRACT_VERSION, so the guard raised ContractFloorError spuriously.
     import phase_loop_runtime.consiliency_layout as cl
 
     _install_metadata_module_divergence(monkeypatch)
-    assert cl.check_installed_contract_floor() is None  # no-op, not a raise
+    with pytest.warns(ContractFloorUnverified):
+        assert cl.check_installed_contract_floor() is None  # warn + no-op, not a raise
 
 
 def test_floor_is_checked_against_imported_contract_version_not_dist_metadata(monkeypatch):
