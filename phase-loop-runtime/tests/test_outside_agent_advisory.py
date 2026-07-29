@@ -1,3 +1,4 @@
+import json
 import os
 
 from _outside_agent_canonical import (
@@ -77,7 +78,12 @@ def test_schema_invalid_submission_maps_to_exit_code_2():
     assert evidence.exit_code == OutsideAgentAdvisoryExitCode.MALFORMED_INPUT
     assert payload["classification"] == "malformed_input"
     assert {blocker["code"] for blocker in payload["blockers"]} == {"schema_validation_failed"}
-    assert any("raw_body" in blocker["message"] for blocker in payload["blockers"])
+    # Sanitized message names the failing keyword; the forbidden field name and its
+    # raw value must never ride out into output (agent-harness#371 round 2 anti-leak).
+    assert any("additionalProperties" in blocker["message"] for blocker in payload["blockers"])
+    _dumped = json.dumps(payload)
+    assert "raw_body" not in _dumped
+    assert "forbidden raw provider payload" not in _dumped
 
 
 def test_source_bundle_mismatch_maps_to_exit_code_2():

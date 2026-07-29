@@ -59,14 +59,21 @@ def validate_outside_agent_submission(
 ) -> OutsideAgentConformanceVerdict:
     """Validate an outside-agent submission against the packaged contract.
 
-    Mirrors Consiliency/spec's reference checker: JSON-Schema validation against
-    the packaged ``outside_agent_submission.v0.1`` schema, plus one cross-field
-    semantic check (source-bundle digest agreement) the schema cannot express.
-    Metadata-only safety (no raw payloads, repo-relative paths, digest presence)
-    is enforced BY that schema — ``additionalProperties: false``, the
-    ``repo_relative_path`` pattern, and required ``sha256`` — so there is no
-    separate hand-written provenance/redaction pass to drift out of sync.
+    Mirrors Consiliency/spec's reference checker for STRUCTURE: JSON-Schema
+    validation against the packaged ``outside_agent_submission.v0.1`` schema, plus
+    one cross-field semantic check (source-bundle digest agreement) the schema
+    cannot express.
+
+    Redaction is a SEPARATE, independent safety pass run after schema validation
+    — not a dialect concern. The JSON Schema constrains *shape* (unknown fields,
+    path patterns, digest presence), but it cannot see a secret-shaped value
+    sitting inside a schema-valid free-text field such as ``summary``. The
+    metadata-only guarantee this repo publishes (``redaction_posture`` and
+    docs/outside-agent-conformance.md) is backed by ``assert_outside_agent_metadata_only``
+    here; without it, ``redaction_posture="metadata_only"`` would assert a property
+    nothing checks (agent-harness#371 round 2).
     """
+    from .outside_agent_redaction import assert_outside_agent_metadata_only
     from .outside_agent_schema import validate_outside_agent_submission_schema
 
     input_digest = _digest_mapping(submission)
@@ -74,8 +81,12 @@ def validate_outside_agent_submission(
         submission, contract_pin=contract_pin
     )
     semantic_blockers = _semantic_blockers(submission)
+    # Independent metadata-only enforcement over the RAW submission (not a verdict
+    # projection): reaches free-text fields (summary, goal, change_summary,
+    # ambiguity_summary, questions[]) the schema treats as opaque strings.
+    redaction_blockers = assert_outside_agent_metadata_only(submission)
 
-    blockers = schema_result.blockers + semantic_blockers
+    blockers = schema_result.blockers + semantic_blockers + redaction_blockers
     status = (
         OutsideAgentVerdictStatus.BLOCKED
         if blockers
@@ -92,6 +103,9 @@ def validate_outside_agent_submission(
         contract_pin=contract_pin,
         input_digest=input_digest,
         provenance_refs=provenance_refs,
+        # Honest only because `redaction_blockers` above actually ran: a secret in a
+        # schema-valid field flips this verdict to BLOCKED rather than passing while
+        # still claiming `metadata_only`.
         evidence_refs=evidence_refs,
         redaction_posture=contract_pin.redaction_posture,
         metadata={"source_owner": contract_pin.source_owner},
@@ -138,7 +152,17 @@ def _semantic_blockers(
 def _extract_evidence_refs(
     submission: Mapping[str, Any],
 ) -> tuple[OutsideAgentEvidenceRef, ...]:
-    """Surface canonical evidence refs as verdict metadata (best-effort)."""
+    """Surface canonical evidence refs as verdict metadata (best-effort).
+
+    Paths are re-normalized through ``normalize_outside_agent_ref`` and any that do
+    not resolve to a safe repo-relative path (absolute, ``..`` traversal, scheme)
+    are OMITTED rather than echoed. On a schema-valid submission the schema's
+    ``repo_relative_path`` pattern already guarantees safety so nothing is dropped;
+    this only matters on a BLOCKED submission, where we refuse to reflect an unsafe
+    path back into output (grok, agent-harness#371 round 2).
+    """
+    from .outside_agent_provenance import normalize_outside_agent_ref
+
     if not isinstance(submission, Mapping):
         return ()
     refs: list[OutsideAgentEvidenceRef] = []
@@ -149,9 +173,13 @@ def _extract_evidence_refs(
         digest = evidence_ref.get("sha256")
         if not isinstance(path, str) or not isinstance(digest, str):
             continue
+        try:
+            safe_path = normalize_outside_agent_ref(path)
+        except ValueError:
+            continue
         refs.append(
             OutsideAgentEvidenceRef(
-                ref=path,
+                ref=safe_path,
                 digest=digest,
                 kind=str(evidence_ref.get("source_role", "metadata")),
             )

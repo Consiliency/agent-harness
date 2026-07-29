@@ -31,13 +31,25 @@ schema version, typed submission kind, `pass` or `blocked` status, typed
 repo-relative provenance refs, metadata-only evidence refs, and
 `redaction_posture="metadata_only"`.
 
-The core fails closed on unsupported schema versions, unsupported submission
-kinds, unknown fields, incomplete metadata, absolute paths, path traversal,
-missing digests, digest mismatches, raw payload fields, provider response
-bodies, raw logs, copied vector bodies, local environment values, and
-secret-shaped fields or values. Verdict output is limited to metadata, digests,
-repo-relative refs, typed failure information, contract pin metadata, and
-metadata-only vector result evidence.
+Structure and redaction are enforced as two SEPARATE passes. JSON-Schema
+validation against the packaged contract rejects unsupported schema versions,
+unsupported submission kinds, unknown fields, absolute paths, path traversal,
+and missing or malformed digests. An independent metadata-only redaction pass
+then scans the submission for raw payload fields, provider response bodies, raw
+logs, copied vector bodies, local environment values, and secret-shaped fields
+or values — including secret-shaped values sitting inside schema-valid free-text
+fields such as `summary`, which the schema alone cannot see. Both passes fail
+closed, and `redaction_posture="metadata_only"` is emitted only because that
+redaction pass actually runs.
+
+Verdict output is limited to metadata, digests, repo-relative refs, typed
+failure information, contract pin metadata, and metadata-only vector result
+evidence. Schema-validation blocker messages are sanitized: they name the
+failing schema keyword and JSON pointer and the schema's own expectation, and
+never echo the submitted value or field name, so a secret carried in a
+schema-invalid field cannot ride out through a validator message. Unsafe
+(traversal or absolute) evidence paths on a blocked submission are omitted from
+surfaced refs rather than reflected back.
 
 `outside_agent_vectors.run_outside_agent_vectors()` runs metadata-only vector
 manifests through the same core and compares expected outcomes without copying

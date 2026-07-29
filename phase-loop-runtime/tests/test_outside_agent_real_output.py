@@ -65,7 +65,12 @@ def test_serialized_blocked_verdict_has_typed_blockers_and_no_advisory_fields():
     assert payload["exit_code"] == int(OutsideAgentValidationExitCode.MALFORMED_INPUT)
     codes = {blocker["code"] for blocker in payload["blockers"]}
     assert codes == {"schema_validation_failed"}
-    assert any("raw_body" in blocker["message"] for blocker in payload["blockers"])
+    # Sanitized message names the failing keyword; the forbidden field name and its
+    # raw value must never ride out into output (agent-harness#371 round 2 anti-leak).
+    assert any("additionalProperties" in blocker["message"] for blocker in payload["blockers"])
+    _dumped = json.dumps(payload)
+    assert "raw_body" not in _dumped
+    assert "forbidden raw provider payload" not in _dumped
     assert "classification" not in payload
     assert "accepted_for_merge" not in payload
     assert "merge_verdict" not in payload

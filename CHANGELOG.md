@@ -68,10 +68,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `outside-agent-submission`/`-route-verdict` schemas (the schema file is the single source
   of truth — no re-encoded `additionalProperties`/`required`/patterns to drift). The core
   verdict adds the one cross-field check the schema cannot express (`source_bundle_mismatch`);
-  metadata-only safety (no raw payloads, repo-relative paths, digest presence) is enforced
-  by the schema itself, so the separate provenance/redaction passes no longer gate the core
-  path. The vector runner consumes the canonical path-referenced manifest
-  (`case_id`/`path`/`schema_target`/`expected_valid`).
+  structural safety (repo-relative paths, digest presence, no unknown fields) is enforced by
+  the schema itself, while the independent metadata-only redaction pass stays wired as a
+  SEPARATE concern (see round 2 below). The vector runner consumes the canonical
+  path-referenced manifest (`case_id`/`path`/`schema_target`/`expected_valid`).
 - **Test-first, against the REAL corpus.** The canonical Consiliency/spec corpus (schemas +
   9 vectors + manifest) is vendored under `conformance/_contract` with per-file sha256
   provenance in `VENDOR.json` and a drift-guard test. A new suite drives every canonical
@@ -83,6 +83,36 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **Out of scope (unchanged):** the pinned `contract_git_sha`/`vector_manifest_hash` in
   `outside_agent_pin.py` (Consiliency/agent-harness#370) and governed-pipeline's own fixture
   (Consiliency/governed-pipeline#128).
+
+### Outside-agent validator round 2: keep redaction a SEPARATE safety pass, sanitize schema messages (Consiliency/agent-harness#371)
+
+- **Redaction is not a dialect question — restore it as an independent pass.** Round 1
+  de-wired the metadata-only walker on the theory that keeping it would make us stricter
+  than the contract. But conforming to an external contract's *structure* does not license
+  dropping a guarantee we independently publish. `validate_outside_agent_submission` now runs
+  `assert_outside_agent_metadata_only` over the RAW submission after schema validation, so a
+  secret-shaped value in a schema-valid free-text field (e.g. `summary`, `work_request.goal`)
+  BLOCKS (exit `REDACTION_VIOLATION`) instead of passing while still emitting
+  `redaction_posture="metadata_only"` — a claim nothing was checking.
+- **Sanitize schema-validation messages so they cannot echo submitted values.** The round-1
+  fix copied `jsonschema`'s `error.message` verbatim, and that message embeds the offending
+  instance (`'sk-…' is not one of [...]`). Messages are now built only from the failing
+  keyword, the JSON pointer, and the schema's own expectation (`error.validator_value`, which
+  is schema-derived) — never `error.message`/`error.instance`. A secret placed in an object
+  KEY is likewise redacted before it can ride out through a blocker ref.
+- **Omit unsafe evidence paths on blocked submissions** rather than reflecting a `..`
+  traversal or absolute path back into surfaced `evidence_refs`/`provenance_refs`.
+- **Tests:** a new `test_outside_agent_redaction_separation.py` pins secret-in-`summary` →
+  BLOCKED, no-echo of the offending value across the keyword classes whose `jsonschema`
+  message embeds the instance (`enum`/`pattern`/`type`/`minLength`), a positive
+  sanitized-message-shape check for `const` (whose message echoes the *expected* value, not
+  the instance, so a no-echo assertion there would be vacuous), two key-echo cases pinned to
+  distinct channels (an unknown key via the schema message, and a secret-shaped key via the
+  redaction walker's `ref`/`_safe_path_segment`), and traversal-path omission; three round-1
+  message-echo assertions were re-baselined into
+  anti-leak assertions. Every test names a mutation that was RUN and confirmed to kill it.
+  The canonical corpus outcomes are unchanged (the walker yields zero blockers on every
+  vendored vector).
 
 ### Broker: close the admission-vs-revocation race with one serialization boundary (Consiliency/agent-harness#288, #199)
 

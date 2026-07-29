@@ -54,11 +54,29 @@ def sanitize_outside_agent_verdict(
     return replace(verdict, blockers=blockers, status=status)
 
 
+def _safe_path_segment(key: str) -> str:
+    """Redact a submitted key before it becomes part of a blocker ref.
+
+    A blocker ref is a JSON pointer we echo into output. Object KEYS are
+    submitter-controlled, so a secret placed in a key name would otherwise ride
+    out verbatim through the pointer (agent-harness#371 round 2). Legitimate
+    contract field names are short identifiers and never trip this; only a
+    secret-shaped or abnormally long key is replaced with a fixed placeholder.
+    """
+    normalized = key.lower()
+    looks_secret = (
+        any(fragment in normalized for fragment in _SECRET_FIELD_FRAGMENTS)
+        or any(marker.lower() in normalized for marker in _SECRET_VALUE_MARKERS)
+        or len(key) > 64
+    )
+    return "<redacted-key>" if looks_secret else key
+
+
 def _walk_metadata(value: Any, path: str, blockers: list[OutsideAgentBlocker]) -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
             key_text = str(key)
-            child_path = f"{path}.{key_text}"
+            child_path = f"{path}.{_safe_path_segment(key_text)}"
             _check_key(key_text, child_path, blockers)
             if key_text in _LOCAL_ENV_FIELD_NAMES and isinstance(child, Mapping):
                 blockers.append(

@@ -65,6 +65,65 @@ def _ref_for_error(error: Any) -> str:
     return json_path[2:] if json_path.startswith("$.") else json_path
 
 
+# Keywords whose failing schema value (``error.validator_value``) is a compact,
+# SCHEMA-DERIVED expectation safe to echo. It is never instance data — that lives
+# in ``error.instance`` / ``error.message``, which we must not serialize because a
+# secret-shaped submitted value would ride out verbatim (agent-harness#371 round 2).
+_SCHEMA_KEYWORD_EXPECTATION = frozenset(
+    {
+        "type",
+        "enum",
+        "const",
+        "pattern",
+        "format",
+        "required",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minProperties",
+        "maxProperties",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "uniqueItems",
+    }
+)
+
+
+def _compact_schema_value(value: Any, *, limit: int = 160) -> str:
+    """Render a schema-derived keyword value compactly and boundedly."""
+    try:
+        rendered = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        rendered = repr(value)
+    if len(rendered) > limit:
+        rendered = rendered[:limit] + "..."
+    return rendered
+
+
+def _safe_schema_message(error: Any) -> str:
+    """Sanitized blocker message: the failing keyword and its SCHEMA expectation.
+
+    Built only from ``error.validator`` (the keyword) and ``error.validator_value``
+    (schema-derived). It NEVER reads ``error.message`` or ``error.instance``, so a
+    secret carried in a schema-invalid submitted field cannot echo into output.
+    The default branch emits the keyword alone — it must not fall through to
+    ``error.message``.
+    """
+    keyword = getattr(error, "validator", None)
+    keyword = str(keyword) if keyword is not None else "schema"
+    if keyword in _SCHEMA_KEYWORD_EXPECTATION:
+        expectation = _compact_schema_value(getattr(error, "validator_value", None))
+        return (
+            f"value at this location does not satisfy schema keyword "
+            f"'{keyword}' (expected: {expectation})"
+        )
+    return f"value at this location does not satisfy schema keyword '{keyword}'"
+
+
 def _schema_blockers(
     validator: Draft202012Validator, document: Any
 ) -> tuple[OutsideAgentBlocker, ...]:
@@ -72,7 +131,7 @@ def _schema_blockers(
     return tuple(
         OutsideAgentBlocker(
             "schema_validation_failed",
-            error.message,
+            _safe_schema_message(error),
             ref=_ref_for_error(error),
         )
         for error in errors

@@ -53,7 +53,11 @@ def test_unknown_top_level_field_fails_closed():
 
     result = validate_outside_agent_submission_schema(submission)
     assert "schema_validation_failed" in _codes(result)
-    assert any("raw_result" in blocker.message for blocker in result.blockers)
+    # The unexpected field is rejected by the schema's additionalProperties gate.
+    # The sanitized message names the failing keyword, never the submitted field
+    # name or value (agent-harness#371 round 2: schema messages must not echo input).
+    assert any("additionalProperties" in blocker.message for blocker in result.blockers)
+    assert all("raw_result" not in blocker.message for blocker in result.blockers)
 
 
 def test_missing_required_top_level_field_fails_closed():
