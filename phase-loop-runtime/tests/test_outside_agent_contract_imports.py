@@ -11,14 +11,23 @@ from phase_loop_runtime.conformance.outside_agent_imports import (
 from phase_loop_runtime.conformance.outside_agent_pin import OutsideAgentContractPin
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _pin_for(root: Path, *, schema_version="outside_agent_submission.v0.1") -> OutsideAgentContractPin:
     manifest = root / "test-vectors" / "outside-agent" / "manifest.json"
+    submission_schema = root / "schemas" / "outside-agent-submission.schema.json"
+    verdict_schema = root / "schemas" / "outside-agent-route-verdict.schema.json"
     return OutsideAgentContractPin(
         schema_version=schema_version,
         verdict_schema_version="outside_agent_route_verdict.v0.1",
         contract_package="consiliency-spec",
-        contract_version="0.1.0",
+        contract_version="0.2.1",
+        contract_git_tag="v0.2.1",
         contract_git_sha="0" * 40,
+        submission_schema_sha256=_sha256(submission_schema),
+        verdict_schema_sha256=_sha256(verdict_schema),
         vector_manifest_hash=hashlib.sha256(manifest.read_bytes()).hexdigest(),
         vector_manifest_name="test-vectors/outside-agent/manifest.json",
         source_owner="Consiliency/spec",
@@ -55,8 +64,11 @@ def test_missing_contract_fails_closed(tmp_path):
         schema_version="outside_agent_submission.v0.1",
         verdict_schema_version="outside_agent_route_verdict.v0.1",
         contract_package="consiliency-spec",
-        contract_version="0.1.0",
+        contract_version="0.2.1",
+        contract_git_tag="v0.2.1",
         contract_git_sha="0" * 40,
+        submission_schema_sha256="0" * 64,
+        verdict_schema_sha256="0" * 64,
         vector_manifest_hash="0" * 64,
         vector_manifest_name="test-vectors/outside-agent/manifest.json",
         source_owner="Consiliency/spec",
@@ -91,3 +103,56 @@ def test_vector_manifest_hash_mismatch_fails_closed(tmp_path):
         load_outside_agent_contract_pin(tmp_path, expected_pin=expected)
 
     assert exc_info.value.code == "vector_manifest_hash_mismatch"
+
+
+# Consiliency/agent-harness#370 falsifiers: a byte change to a SCHEMA file that
+# preserves the version const AND leaves the vector manifest untouched slips past
+# manifest-hash-only verification. Per-file sha256 must catch it. One mutation
+# per schema proves neither new check is vacuous.
+def test_submission_schema_byte_change_with_manifest_hash_held_fails_closed(tmp_path):
+    _write_spec_root(tmp_path)
+    expected = _pin_for(tmp_path)
+    submission_schema = tmp_path / "schemas" / "outside-agent-submission.schema.json"
+    # Same version const, extra byte payload; manifest.json is not touched.
+    submission_schema.write_text(
+        json.dumps(
+            {
+                "properties": {
+                    "submission_schema_version": {
+                        "const": "outside_agent_submission.v0.1"
+                    }
+                },
+                "minItems": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OutsideAgentContractError) as exc_info:
+        load_outside_agent_contract_pin(tmp_path, expected_pin=expected)
+
+    assert exc_info.value.code == "submission_schema_sha256_mismatch"
+
+
+def test_verdict_schema_byte_change_with_manifest_hash_held_fails_closed(tmp_path):
+    _write_spec_root(tmp_path)
+    expected = _pin_for(tmp_path)
+    verdict_schema = tmp_path / "schemas" / "outside-agent-route-verdict.schema.json"
+    verdict_schema.write_text(
+        json.dumps(
+            {
+                "properties": {
+                    "verdict_schema_version": {
+                        "const": "outside_agent_route_verdict.v0.1"
+                    }
+                },
+                "route_pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OutsideAgentContractError) as exc_info:
+        load_outside_agent_contract_pin(tmp_path, expected_pin=expected)
+
+    assert exc_info.value.code == "verdict_schema_sha256_mismatch"
