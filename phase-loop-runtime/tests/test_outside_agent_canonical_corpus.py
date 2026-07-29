@@ -63,11 +63,17 @@ def test_vendored_corpus_matches_recorded_digests() -> None:
         blob = (CONTRACT_ROOT / rel).read_bytes()
         actual = "sha256:" + hashlib.sha256(blob).hexdigest()
         assert actual == expected, f"vendored {rel} drifted from recorded digest"
-    # Every vendored corpus file must be recorded (no un-tracked drift surface).
+    # Every vendored file must be recorded (no un-tracked drift surface). This
+    # enumerates ALL vendored files, not just ``*.json``: the vendored spec oracle
+    # (``oracle/outside_agent_router.py``) is executable code whose silent drift
+    # would be exactly as dangerous as a mutated vector, so it must be digest-pinned
+    # here too. Only ``VENDOR.json`` itself and bytecode caches are excluded.
     on_disk = {
         p.relative_to(CONTRACT_ROOT).as_posix()
-        for p in CONTRACT_ROOT.rglob("*.json")
-        if p.name != "VENDOR.json"
+        for p in CONTRACT_ROOT.rglob("*")
+        if p.is_file()
+        and p.name != "VENDOR.json"
+        and "__pycache__" not in p.parts
     }
     assert on_disk == set(recorded), "vendored files and VENDOR.json record disagree"
 
