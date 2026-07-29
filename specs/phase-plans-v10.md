@@ -725,8 +725,11 @@ produce the IF-0-PILOT-1 evidence bundle. **WEAKER-THAN-SOURCE, FLAGGED (not sil
 that the roadmap validator ENFORCES; collapsing PILOT+RELEASE into this one phase demotes it to an
 intra-phase lane note the validator CANNOT see — the same phase-edge blind spot filed as
 `agent-harness#385`. The durable fix is to split Phase 12 back into PILOT→RELEASE so the ordering
-edge is validator-visible; recorded here as a sequencing decision for the maintainer and folded as
-prose under round-8's bias-to-merge, not restructured unilaterally in a PLAN-ONLY PR. EC-RELEASE-2
+edge is validator-visible; **filed as `agent-harness#387`** (the roadmap-structure fix for this one
+instance; `agent-harness#385` is the validator fix for the class). Recorded here as a sequencing
+decision for the maintainer and folded as prose under round-8's bias-to-merge — an ISSUE is the
+disposition that neither restructures the DAG at merge time nor lets the obligation vanish as
+unowned prose — not restructured unilaterally in a PLAN-ONLY PR. EC-RELEASE-2
 exists because a sibling repo's production-bake criteria are asserted in committed prose whose tests
 only string-match the markdown — they pass whether or not the live run happened. Do not repeat that.
 
