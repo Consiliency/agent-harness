@@ -1,5 +1,21 @@
 # Phase Plans — Convergence: Crash-Safe Cross-Repo Train + Credential Broker (v1)
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
+>
+> **Do not execute this roadmap.** Its live work was absorbed into
+> `specs/phase-plans-v10.md`, which is now the single active roadmap for this repo.
+>
+> Carried a maintainer RESUME decision (2026-07-26) — that decision is HONOURED, not
+> reversed: FREEZE's #312 status contradiction went to v10 LEGIBLE; RUNTIME went to v10
+> RUNTIME (its advisor-seat criterion to REVIEWTRUTH); BROKER went to v10 FABPUB/FABREADMIT;
+> INTEG/FAULTS went to v10 INTEG; PILOT/RELEASE went to v10 RELEASE. Its plan files
+> (`plans/phase-plan-vergence-v1-*.md`) remain valid INPUT and need re-grounding against
+> current main before execution.
+>
+> The absorption is recorded in v10's `## Absorbed Roadmaps` table. If you found this file
+> via `select_roadmap` or a stale manifest entry, that is a bookkeeping defect — see
+> agent-harness#364.
+
 > **STATUS (2026-07-26): PARTIALLY EXECUTED — genuinely unfinished work, not just stale bookkeeping.**
 > Authored 2026-07-13. Verified against `plans/manifest.json` + the phase-plan files:
 >

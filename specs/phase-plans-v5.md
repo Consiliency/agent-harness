@@ -1,5 +1,21 @@
 # agent-harness - Advisor Board (customizable, model-first, multi-harness review board) - Phase Plan v5
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
+>
+> **Do not execute this roadmap.** Phases 1–4 (ABDFREEZE, ABDREG, ABDRESOLVE, ABDHOME) and 7
+> (ABDVERIFY) are DELIVERED and merged to `main`.
+>
+> **ABDOMNI (5) and ABDOBS (6) are PARTIALLY delivered** — both are built, wired into the
+> `invoke_board` seam, and unit-tested, but **no production code constructs either**. An
+> omnigent seat degrades to `skip` (`panel_invoker.py:4053-4058`); `observer` is `None`
+> (`panel_invoker.py:3941`) so nothing is emitted. Merged is not reachable. Carried into v10
+> as **EC-LEGLIFE-6** and **EC-LEGLIFE-7**.
+>
+> Residual noted, not carried: `skills_bundle/codex-advisor-panel/` still ships in the generated
+> bundle though it was removed from `skills-src/` — a stale regeneration artifact worth a
+> bundle re-sync check.
+
+
 > How to use this document: run `phase-loop validate-roadmap specs/phase-plans-v5.md`, then plan each phase with the phase-loop command for the phase alias.
 
 ---

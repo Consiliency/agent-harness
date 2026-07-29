@@ -1,5 +1,17 @@
 # Task-message source broker roadmap v1
 
+> # DELIVERED — CLOSED (assessed 2026-07-29)
+>
+> **Complete.** NOT absorbed into `specs/phase-plans-v10.md` — it carried no live work.
+>
+> The single SOURCEBROKER phase DELIVERED via `bf7d5e0` (agent-harness#168), with follow-on
+> hardening in #176/#178/#180/#184/#190. Loopback-only bind is enforced in code
+> (`task_message_broker.py:122,292-293`) AND in the unit file, not merely defaulted.
+>
+> Unchecked `- [ ]` boxes here prove nothing: completion lives in the ledger and closeout
+> records, never in the checkboxes. That is the defect agent-harness#364 exists to fix.
+
+
 ## Context
 
 The merged local resolver can read exact governed source bytes from Codex's real

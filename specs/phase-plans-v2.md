@@ -1,5 +1,18 @@
 # agent-harness — Model Routing & Governed Review (model-routing-v1) — Phase Plan v2
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
+>
+> **Do not execute this roadmap.** 4 of 5 phases DELIVERED (role layer + policy + clamp, governed mode, route logging, CI invariants + docs).
+>
+> Its ONE live item — the governed pre-merge auto-repair fix-round, not wired in production
+> (`runner.py:10140` passes `apply_fix=None`; deliberate and self-documented at
+> `runner.py:9748-9757`) — was carried into v10 as **EC-REVIEWTRUTH-8**.
+>
+> Note: this roadmap's work landed under agent-harness#309/#310 rather than via its own
+> `/claude-execute-phase` lanes, which is why its checkboxes are uniformly empty despite
+> delivery. See agent-harness#364.
+
+
 > How to use this document: save to `specs/phase-plans-v2.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v2-<alias>.md`), then `/claude-execute-phase <alias>` to build it.
 
 > **Revision r2** — reconciled against a 3-harness advisor panel (Codex/GPT-5.5, Gemini 3.1 Pro, repo-aware Claude) plus primary-source verification. The flagship fixes: separate the two orthogonal axes (model_policy vs run_mode), make the autonomous/governed boundary a real pre-invocation gate (not a severity downgrade), serialize P4 behind P3 (the cross-phase dirty start-gate would mechanically block it), and require an explicit per-provider effort-clamp policy (the runtime raises on an unsupported effort — it does **not** auto-clamp).

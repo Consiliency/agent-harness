@@ -1,5 +1,21 @@
 # agent-harness - Cross-Vendor Advisor Panel Ownership And Routing - Phase Plan v4
 
+> # DELIVERED — CLOSED (assessed 2026-07-29)
+>
+> **Complete.** NOT absorbed into `specs/phase-plans-v10.md` — no live work.
+>
+> All 6 phases DELIVERED, closed out 2026-06-30/07-01 (`9de824d`, `61f41c6`). Every specified
+> mechanism verified present in CURRENT code, not against the closeout doc or the (uniformly
+> unchecked) boxes; the focused verification slice passes today, 46/0.
+>
+> **Deliberately SUPERSEDED since — do NOT resurrect these as undone work:**
+> the claude leg default is now `claude-fable-5`, not `claude-sonnet-5` (`panel_invoker.py:137`;
+> review runs mid-tier Fable, sonnet-5 remains the implementer ID and a valid per-leg override);
+> gemini is `gemini-3.6-flash` (`profiles.py:43,220`) under the model-tier taxonomy; and
+> advisor-panel was renamed advisor-board (agent-harness#98), with panel-named directories
+> surviving only as compat aliases.
+
+
 > How to use this document: run `phase-loop validate-roadmap specs/phase-plans-v4.md`, then plan each phase with the phase-loop command for the phase alias.
 
 ---

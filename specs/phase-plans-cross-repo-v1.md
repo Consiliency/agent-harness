@@ -1,5 +1,20 @@
 # agent-harness — Cross-Repo Release-Train Orchestration — Phase Plan (cross-repo-v1)
 
+> # DELIVERED — CLOSED (assessed 2026-07-29)
+>
+> **Complete.** NOT absorbed into `specs/phase-plans-v10.md` — it carried no live work.
+>
+> All 5 phases DELIVERED via `5423486` (agent-harness#35 / issue #29). Mechanism-verified, not
+> lookalike-matched: the `XGATE:<node>@<sha>` gate namespace is genuinely new (not the in-repo
+> `IF-0-*` token), the tolerant ledger reader drops only a malformed FINAL line, and
+> `test_train_invariants.py:304` asserts the merged SHA was ACTUALLY passed to `set_upstream_ref`.
+> Its declared MVP non-goals (parallel DAG-of-DAGs, auto-revert, content-hash contract identity)
+> remain FUTURE scope — they are not undone P1–P5 work and were not carried into v10.
+>
+> Unchecked `- [ ]` boxes here prove nothing: completion lives in the ledger and closeout
+> records, never in the checkboxes. That is the defect agent-harness#364 exists to fix.
+
+
 > How to use this document: save to `specs/phase-plans-cross-repo-v1.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-cross-repo-v1-<alias>.md`), then `/claude-execute-phase <alias>` to build it.
 
 > Resolves GitHub issue #29 (cross-repo publication; follow-up to #28). Design + binding reconciliation: `plans/cross-repo-orchestration-design-29.md` + `plans/cross-repo-orchestration-29-panel-reconciliation.md` (3-model advisor panel).

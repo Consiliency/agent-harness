@@ -1,5 +1,21 @@
 # Phase roadmap v7 - Outside-Agent Conformance Runtime
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
+>
+> **Do not execute this roadmap.** Its live work was absorbed into
+> `specs/phase-plans-v10.md`, which is now the single active roadmap for this repo.
+>
+> Outside-Agent Conformance Runtime. Substantially BUILT (squash `7f97ea9`, 69 tests pass).
+> OAMOCK is genuinely complete. OACORE-3 and OAREAL-2 are NOT delivered — synthetic fixtures
+> stood in for the spec corpus, which concealed that our validator rejects it (agent-harness#371).
+> OACONTRACT and OARELEASE are code-complete but NOT closeable: they pin a contract that
+> exists only on an unmerged branch. All of that moved to v10 CONFORM, externally gated on
+> `Consiliency/spec#118`.
+>
+> The absorption is recorded in v10's `## Absorbed Roadmaps` table. If you found this file
+> via `select_roadmap` or a stale manifest entry, that is a bookkeeping defect — see
+> agent-harness#364.
+
 ## Context
 
 This roadmap is the Consiliency/agent-harness half of the outside-agent production program. Agent-harness owns shared conformance machinery that can be consumed by governed-pipeline as an authoritative merge fence and by outside-agent producers as an advisory preflight. It does not own the canonical contract, the merge verdict, or Portal projection truth.

@@ -1,5 +1,19 @@
 # agent-harness — Planning & Execution Rigor — Phase Plan v1
 
+> # DELIVERED — CLOSED (assessed 2026-07-29)
+>
+> **Complete.** NOT absorbed into `specs/phase-plans-v10.md` — it carried no live work.
+>
+> All 7 phases DELIVERED via PR agent-harness#3, released in v0.1.4 (`f7cd5c5`); per-phase commits
+> `06a68fd`/`e08452a`/`4365b31`/`916294f`/`d1cc07e`/`cd78b75`/`f091367`, all ancestors of `main`.
+> Naming divergences (`build_closeout_status`→`build_phase_loop_closeout`; severity carried on the
+> finding rather than at registration) are refactor renames of the SPECIFIED mechanism, verified
+> present — not substitutions.
+>
+> Unchecked `- [ ]` boxes here prove nothing: completion lives in the ledger and closeout
+> records, never in the checkboxes. That is the defect agent-harness#364 exists to fix.
+
+
 > How to use this document: save to `specs/phase-plans-v1.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v1-<alias>.md`), then `/claude-execute-phase <alias>` to build it.
 
 ---
