@@ -81,7 +81,14 @@ def build_outside_agent_validation_verdict(
     core_validator: Callable[..., OutsideAgentConformanceVerdict] = validate_outside_agent_submission,
 ) -> OutsideAgentValidationVerdict:
     """Build deterministic governed-pipeline validation evidence without external I/O."""
-    normalized_refs, ref_blockers = _normalize_submitted_refs(submitted_refs)
+    # Structural (path safety) and safety (secret redaction) are SEPARATE passes
+    # over the SAME submitter-supplied bytes: normalization proves a ref is
+    # repo-relative; the secret scan proves it carries no secret-shaped value. A
+    # ref reaches serialized output, so both must run (agent-harness#371 round 3,
+    # sixth channel — ``--submitted-ref``).
+    normalized_refs, structural_ref_blockers = _normalize_submitted_refs(submitted_refs)
+    secret_ref_blockers = _scan_submitted_refs_for_secrets(submitted_refs)
+    ref_blockers = structural_ref_blockers + secret_ref_blockers
     if not isinstance(submission, Mapping):
         verdict = _malformed_verdict(
             input_digest=_digest_value(submission),
@@ -98,12 +105,22 @@ def build_outside_agent_validation_verdict(
     if ref_blockers:
         verdict = _verdict_with_extra_blockers(verdict, ref_blockers)
 
+    # Projection gate, mirroring the core evidence_refs gate: EVERY blocked verdict
+    # surfaces an EMPTY submitted_refs projection. The offending bytes can sit in a
+    # ref itself (a secret marker) or in the body; keying off the FINAL status also
+    # covers the blocked-body path (2b) and the malformed non-object path, both of
+    # which previously still echoed submitter-supplied refs (agent-harness#371 r3).
+    emitted_refs: tuple[str, ...] = (
+        ()
+        if verdict.status is OutsideAgentVerdictStatus.BLOCKED
+        else normalized_refs
+    )
     return OutsideAgentValidationVerdict(
         authority="governed_pipeline_validator",
         validator_version=validator_version,
         exit_code=_exit_code_for_blockers(verdict.blockers),
         verdict=verdict,
-        submitted_refs=tuple(OutsideAgentSubmittedRef(ref=ref) for ref in normalized_refs),
+        submitted_refs=tuple(OutsideAgentSubmittedRef(ref=ref) for ref in emitted_refs),
         vectors_executed=False,
         metadata={"source": "outside_agent_governed_pipeline_validator"},
     )
@@ -166,6 +183,31 @@ def _normalize_submitted_refs(
                 )
             )
     return tuple(refs), tuple(blockers)
+
+
+def _scan_submitted_refs_for_secrets(
+    submitted_refs: Iterable[str],
+) -> tuple[OutsideAgentBlocker, ...]:
+    """Safety pass over submitted refs — SEPARATE from structural path validation.
+
+    A submitted ref is submitter-supplied bytes the serializer projects into
+    output; ``normalize_outside_agent_ref`` proves it is a safe repo-relative path
+    but is blind to a secret-shaped value hiding inside one (``notes/sk-...md`` is
+    a perfectly valid path). Reuse the metadata-only redaction walker so such a ref
+    raises ``secret_like_value_present`` -> REDACTION_VIOLATION, exactly as a secret
+    in a submission body does. Conforming to the external path contract never
+    licenses dropping the secret-free output guarantee this repo publishes
+    (agent-harness#371 round 3, sixth channel).
+    """
+    from .outside_agent_redaction import assert_outside_agent_metadata_only
+
+    refs = [ref for ref in submitted_refs if isinstance(ref, str)]
+    if not refs:
+        return ()
+    # The walker's blocker refs are index paths (``$.submitted_refs.N``) and its
+    # messages are constant, so the secret VALUE never rides out through the
+    # blocker it raises — only the projection could echo it, and that is gated.
+    return assert_outside_agent_metadata_only({"submitted_refs": refs})
 
 
 def _verdict_with_extra_blockers(

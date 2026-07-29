@@ -138,13 +138,24 @@ def _semantic_blockers(
     if not isinstance(submission, Mapping):
         return ()
     blockers: list[OutsideAgentBlocker] = []
-    for index, evidence_ref in enumerate(submission.get("evidence_refs", []) or []):
+    evidence_refs = submission.get("evidence_refs")
+    # A non-array ``evidence_refs`` is a schema-TYPE violation the schema pass
+    # already reports (``schema_validation_failed`` -> MALFORMED_INPUT). There is
+    # nothing to cross-check, and iterating a scalar (``evidence_refs: 1``) raised
+    # ``TypeError`` — a crash the caller received instead of the required blocked
+    # verdict, i.e. an operational fail-open (agent-harness#371 round 3). Skip.
+    if not isinstance(evidence_refs, list):
+        return ()
+    for index, evidence_ref in enumerate(evidence_refs):
         if not isinstance(evidence_ref, Mapping):
             continue
         top_digest = evidence_ref.get("bundle_manifest_sha256")
-        for bundle_index, source_bundle in enumerate(
-            evidence_ref.get("source_bundle_refs", []) or []
-        ):
+        source_bundle_refs = evidence_ref.get("source_bundle_refs")
+        if not isinstance(source_bundle_refs, list):
+            # Same reasoning as ``evidence_refs`` above; the schema types this as
+            # an array, so a scalar is a MALFORMED_INPUT the schema pass reports.
+            continue
+        for bundle_index, source_bundle in enumerate(source_bundle_refs):
             if not isinstance(source_bundle, Mapping):
                 continue
             if source_bundle.get("bundle_manifest_sha256") != top_digest:
@@ -178,8 +189,13 @@ def _extract_evidence_refs(
     """
     if not isinstance(submission, Mapping):
         return ()
+    evidence_refs = submission.get("evidence_refs")
+    if not isinstance(evidence_refs, list):
+        # Only reachable on a PASS verdict, where the schema has already proven
+        # this is an array; the guard keeps the helper total regardless.
+        return ()
     refs: list[OutsideAgentEvidenceRef] = []
-    for evidence_ref in submission.get("evidence_refs", []) or []:
+    for evidence_ref in evidence_refs:
         if not isinstance(evidence_ref, Mapping):
             continue
         path = evidence_ref.get("repo_relative_path")
