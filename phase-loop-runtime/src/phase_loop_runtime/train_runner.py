@@ -56,7 +56,11 @@ module is fully testable without live network access.
 """
 from __future__ import annotations
 
-from .governed_premerge import LoopResult
+from .governed_premerge import (
+    LoopResult,
+    REVIEW_POLICY_VERSION,
+    _MIN_USABLE_REVIEWERS,
+)
 
 import json
 import os
@@ -2894,10 +2898,21 @@ def run_train(
                 merged_shas[_nid_r] = _live_sha_r
 
     # --- Train-level review (one-round bounded panel) ----------------------
-    # Idempotent resume: skip review if already approved in a previous run.
+    # Idempotent resume: skip review only if a PRIOR approval carries durable
+    # EVIDENCE it met the usable-reviewer floor NOW in force (agent-harness#358).
+    # A bare status=="approved" is NOT enough: a pre-#358 approval — or one written
+    # by a single usable reviewer before the floor existed — must not survive an
+    # upgrade and authorize pending merges without ever reaching the floor guard in
+    # `run_governed_premerge_loop`. The recorded count is compared to the LIVE
+    # `_MIN_USABLE_REVIEWERS`, so a floor raised later (#375) auto-invalidates a
+    # stored count that no longer clears it (no old-floor snapshot is trusted).
+    # Pre-#358 records have `usable_reviewers is None` → re-review.
     train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
     already_approved = (
-        train_review_rec is not None and train_review_rec.status == "approved"
+        train_review_rec is not None
+        and train_review_rec.status == "approved"
+        and train_review_rec.usable_reviewers is not None
+        and train_review_rec.usable_reviewers >= _MIN_USABLE_REVIEWERS
     )
 
     if not already_approved:
@@ -2915,12 +2930,29 @@ def run_train(
                 "reason": review_result.reason or "train_review_rejected",
             }
 
-        # Record approval (with synthetic node_id — never a real roadmap node).
+        # Record approval (synthetic node_id — never a real roadmap node) WITH
+        # durable floor evidence (agent-harness#358). The count is the SAME measure
+        # the floor enforces — `len(panel.usable_legs)` — so a resume-accept can
+        # never diverge from what the live gate would decide. Evidence is stamped
+        # ONLY when there is a real board (`panel is not None`): an autonomous short-
+        # circuit or a stub that never boards leaves both fields None, keeping the
+        # record BYTE-identical to a pre-#358 approval and (correctly) unhonored on a
+        # future resume — fail-toward-re-review. `REVIEW_POLICY_VERSION` tags the
+        # regime for a forensic reader / the #375 migration (provenance, not a gate).
+        _review_panel = review_result.panel
+        if _review_panel is not None:
+            _usable_reviewers = len(_review_panel.usable_legs)
+            _review_policy_version = REVIEW_POLICY_VERSION
+        else:
+            _usable_reviewers = None
+            _review_policy_version = None
         append_record(
             ledger_path,
             LedgerRecord(
                 node_id=_TRAIN_REVIEW_NODE_ID,
                 status="approved",
+                usable_reviewers=_usable_reviewers,
+                review_policy_version=_review_policy_version,
             ),
         )
 

@@ -163,6 +163,21 @@ class LedgerRecord:
     # provenance); omitted from `to_dict` when `None` so flag-off ledgers stay
     # BYTE-FOR-BYTE unchanged.
     fab_run_id: Optional[str] = None
+    # Consiliency/agent-harness#358: durable EVIDENCE that a train-review approval
+    # met the usable-reviewer floor in force when it was written, so a resume can
+    # DECIDE whether a persisted approval may still skip re-review
+    # (`train_runner.already_approved`) instead of assuming it. `usable_reviewers`
+    # is the ENFORCED field: on resume it is compared to the LIVE
+    # `_MIN_USABLE_REVIEWERS`, so a floor raised later (e.g. #375) auto-invalidates a
+    # stored count that no longer clears it — no snapshot of the old floor is kept.
+    # `review_policy_version` is PROVENANCE for a forensic reader / the #375 review-
+    # semantics migration (answers "under which regime was this approved") — recorded,
+    # not itself a gate. Both are None on every non-review record AND on a pre-#358
+    # approval (which is exactly why such an approval fails the resume evidence check
+    # and is re-reviewed); omitted from `to_dict` when None so non-review / flag-off
+    # ledgers stay BYTE-FOR-BYTE unchanged.
+    usable_reviewers: Optional[int] = None
+    review_policy_version: Optional[str] = None
     ts: str = ""  # ISO-8601 UTC; auto-set on append if blank
 
     def __post_init__(self) -> None:
@@ -173,13 +188,15 @@ class LedgerRecord:
             )
 
     def to_dict(self) -> dict:
-        # Omit the optional FAB field when unset so a non-FAB (flag-off) ledger is
-        # byte-for-byte identical to a pre-piece-3 ledger (the serialized JSON is
-        # `sort_keys=True`, so an absent key changes nothing).
+        # Omit the optional FAB / #358-evidence fields when unset so a non-FAB
+        # (flag-off) or non-review ledger is byte-for-byte identical to a pre-piece-3
+        # / pre-#358 ledger (the serialized JSON is `sort_keys=True`, so an absent key
+        # changes nothing).
+        _omit_when_none = ("fab_run_id", "usable_reviewers", "review_policy_version")
         return {
             k: v
             for k, v in asdict(self).items()
-            if not (k == "fab_run_id" and v is None)
+            if not (k in _omit_when_none and v is None)
         }
 
 
@@ -279,6 +296,8 @@ def append_record(path: Path, record: LedgerRecord, *, durable: bool = False) ->
             upstream_merge_sha=record.upstream_merge_sha,
             merge_order=record.merge_order,
             fab_run_id=record.fab_run_id,
+            usable_reviewers=record.usable_reviewers,  # agent-harness#358: preserve floor evidence
+            review_policy_version=record.review_policy_version,
             ts=_utc_now(),
         )
     _assert_not_phase_loop(path)
@@ -363,6 +382,8 @@ def _dict_to_record(obj: dict) -> LedgerRecord:
         upstream_merge_sha=obj.get("upstream_merge_sha"),
         merge_order=obj.get("merge_order"),
         fab_run_id=obj.get("fab_run_id"),
+        usable_reviewers=obj.get("usable_reviewers"),  # agent-harness#358 floor evidence
+        review_policy_version=obj.get("review_policy_version"),
         ts=obj.get("ts", ""),
     )
 

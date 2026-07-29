@@ -78,7 +78,8 @@ from unittest.mock import patch
 
 import pytest
 
-from phase_loop_runtime.governed_premerge import LoopResult
+from phase_loop_runtime.governed_premerge import LoopResult, REVIEW_POLICY_VERSION
+from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 from phase_loop_runtime.models import StateSnapshot
 from phase_loop_runtime.train_ledger import LedgerRecord, append_record, read_ledger
 from phase_loop_runtime.train_roadmap import parse_train_roadmap
@@ -359,6 +360,54 @@ class TestSequentialMerge:
         # Train-level approval recorded
         assert _TRAIN_REVIEW_NODE_ID in state
         assert state[_TRAIN_REVIEW_NODE_ID].status == "approved"
+
+    def test_approval_records_usable_leg_count_not_total_and_policy_version(
+        self, tmp_path: Path
+    ):
+        """agent-harness#358: the recorded floor evidence is the SAME measure the
+        pre-merge floor enforces — `len(panel.usable_legs)` (here 2), NOT
+        `len(panel.legs)` (here 3). If the two ever diverged, a resume could honor an
+        approval the live gate would block. Also pins the provenance version tag."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map)
+
+        # 3 legs, but only 2 USABLE (gemini is unavailable → not in usable_legs).
+        panel = PanelResult(legs=(
+            PanelLegResult(leg="codex", status="ok", text="AGREE"),
+            PanelLegResult(leg="opencode", status="ok", text="AGREE"),
+            PanelLegResult(leg="gemini", status="unavailable", text=""),
+        ))
+        assert len(panel.legs) == 3 and len(panel.usable_legs) == 2  # guard the fixture
+
+        def _panel_review_fn(artifact: str, run_mode: str) -> LoopResult:
+            return LoopResult(mergeable=True, ran=True, rounds=1, panel=panel)
+
+        run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub([]),
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_panel_review_fn,
+            _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+        )
+
+        rec = read_ledger(ledger)[_TRAIN_REVIEW_NODE_ID]
+        assert rec.status == "approved"
+        assert rec.usable_reviewers == 2, (
+            f"recorded evidence must be the USABLE-leg count (2), not the total "
+            f"leg count (3); got {rec.usable_reviewers}"
+        )
+        assert rec.review_policy_version == REVIEW_POLICY_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +750,8 @@ class TestIdempotentResume:
         append_record(ledger, LedgerRecord(
             node_id=_TRAIN_REVIEW_NODE_ID,
             status="approved",
+            usable_reviewers=2,
+            review_policy_version=REVIEW_POLICY_VERSION,
         ))
         # repo-a: merged record carries all P3 fields for self-sufficient resume
         append_record(ledger, LedgerRecord(
@@ -787,7 +838,7 @@ class TestIdempotentResume:
                 branch="feat/train-b", head_sha="sha-draft-b",
                 pr_url="https://gh.com/repo-b/1", merge_order=1,
             ),
-            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved", usable_reviewers=2, review_policy_version=REVIEW_POLICY_VERSION),
             LedgerRecord(
                 node_id="repo-a/specs/plan-a.md", status="merged",
                 branch="feat/train-a", pr_url="https://gh.com/repo-a/1",
@@ -952,7 +1003,7 @@ class TestCrashBetweenMergeAndLedgerWrite:
                 merge_order=1,
             ),
             # Train-level review was approved before the crash
-            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved", usable_reviewers=2, review_policy_version=REVIEW_POLICY_VERSION),
             # NOTE: NO merged record for repo-a — that's what crashed
         ]:
             append_record(ledger, rec)
@@ -1050,10 +1101,82 @@ class TestCrashBetweenMergeAndLedgerWrite:
             _pr_merged_sha_fn=_pr_merged_sha,
         )
 
-        # already_approved=True from ledger → review must NOT be re-invoked
+        # already_approved=True from ledger (evidence-bearing) → review must NOT be
+        # re-invoked. The fixture now carries usable_reviewers=2, which is what a
+        # MODERN (post-#358) approval records; that is why it is honored.
         assert review_calls == [], (
-            f"Review must not be called when ledger already shows approved; "
-            f"got {len(review_calls)} call(s)"
+            f"Review must not be called when ledger shows an evidence-bearing "
+            f"approval; got {len(review_calls)} call(s)"
+        )
+
+    def test_crash_resume_stale_approval_without_floor_evidence_is_re_reviewed(
+        self, tmp_path: Path
+    ):
+        """agent-harness#358 (board #384 r2): a persisted _train_review_ approval
+        that predates the usable-reviewer floor (no `usable_reviewers` evidence) must
+        NOT survive an upgrade and skip review — it is RE-REVIEWED on resume, so
+        pending merges are re-subjected to the floor guard. This is the resume-bypass
+        the board reproduced: a pre-fix, 1-reviewer approval authorizing merges
+        without ever reaching `run_governed_premerge_loop`'s floor. Contrast
+        test_crash_resume_review_not_re_invoked, whose approval carries evidence
+        (usable_reviewers=2) and is honored."""
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        # Crash state, but the approval is PRE-#358 shape: NO floor evidence
+        # (status only) — exactly what is already on disk after an upgrade.
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        for rec in [
+            LedgerRecord(
+                node_id="repo-a/specs/plan-a.md", status="pr_open",
+                branch="feat/train-a", head_sha="sha-draft-a",
+                pr_url="https://gh.com/repo-a/1", merge_order=0,
+            ),
+            LedgerRecord(
+                node_id="repo-b/specs/plan-b.md", status="pr_open",
+                branch="feat/train-b", head_sha="sha-draft-b",
+                pr_url="https://gh.com/repo-b/1", merge_order=1,
+            ),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+        ]:
+            append_record(ledger, rec)
+
+        review_calls: List[str] = []
+
+        def _counting_review_fn(artifact: str, run_mode: str) -> LoopResult:
+            review_calls.append("called")
+            return _approval_review_fn(artifact, run_mode)
+
+        def _pr_merged_sha(
+            workspace: Path, branch: str, base: Optional[str] = None,
+            head_sha: Optional[str] = None,
+        ) -> Optional[str]:
+            if workspace.name == "repo-a":
+                return "sha-merged-a"
+            return None
+
+        run_train(
+            roadmap,
+            ledger,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _merge_phase_enabled=True,
+            _merge_pr_fn=_make_merge_pr_stub([]),
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_counting_review_fn,
+            _pr_merged_sha_fn=_pr_merged_sha,
+        )
+
+        # Stale (unevidenced) approval → review MUST be re-invoked on resume.
+        assert review_calls == ["called"], (
+            f"A pre-#358 approval without floor evidence must be re-reviewed on "
+            f"resume; got {len(review_calls)} call(s)"
         )
 
 
@@ -1281,7 +1404,7 @@ class TestNotOpenMergedPrOpenResume:
                 pr_url="https://gh.com/repo-b/1",
                 merge_order=1,
             ),
-            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved", usable_reviewers=2, review_policy_version=REVIEW_POLICY_VERSION),
         ]:
             append_record(ledger, rec)
 
@@ -1447,7 +1570,7 @@ class TestResumeRecoveryBaseChecked:
                 branch="feat/train-b", head_sha="sha-draft-b",
                 pr_url="https://gh.com/repo-b/1", merge_order=1,
             ),
-            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved", usable_reviewers=2, review_policy_version=REVIEW_POLICY_VERSION),
         ]:
             append_record(ledger, rec)
 
@@ -1603,7 +1726,7 @@ class TestResumeRecoveryHeadChecked:
                 branch="feat/train-b", head_sha="sha-draft-b",
                 pr_url="https://gh.com/repo-b/1", merge_order=1,
             ),
-            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved"),
+            LedgerRecord(node_id=_TRAIN_REVIEW_NODE_ID, status="approved", usable_reviewers=2, review_policy_version=REVIEW_POLICY_VERSION),
         ]:
             append_record(ledger, rec)
 
