@@ -24,11 +24,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `assert_contract_floor_satisfied()` / `check_installed_contract_floor()`, and the
   test-suite `conftest` aborts collection with a single actionable line
   (`installed consiliency-contract 0.6.0 does not satisfy the declared floor …`)
-  instead of dozens of opaque validation failures. The floor is read from the
-  package's own dist metadata (`importlib.metadata.requires`), so the guard cannot
-  drift from the `pyproject` pin it enforces. It is a no-op when the floor is
-  satisfied (CI, clean-room wheel) or when the installed/declared state is unreadable
-  (uninstalled source tree) — it never becomes a new false failure.
+  instead of dozens of opaque validation failures.
+- **Both operands are sourced from the code that actually RUNS, not from a name
+  lookup (Consiliency/agent-harness#382, board review).** The declared floor is read
+  from the `phase-loop-runtime` distribution *proven to own the imported module*
+  (`importlib.metadata` resolves a name, and a name can be answered by a shadowing
+  install whose floor need not match the running code); when that ownership cannot be
+  proven the guard treats the floor as unknowable and is a no-op. The installed
+  contract version compared against the floor is the **imported**
+  `consiliency_contract.CONTRACT_VERSION` — the version whose bundled schema fans out
+  #378's failures — not the dist-metadata version, so a contract-shadow is judged on
+  what will run. The guard is a no-op when the floor is satisfied (CI, clean-room
+  wheel), when ownership is unprovable (a src checkout shadowing an installed dist),
+  or when the state is otherwise unreadable — it never becomes a new false failure.
 
 ### Outside-agent contract: repin to `spec@v0.2.1` + per-file `sha256` verification (Consiliency/agent-harness#370)
 

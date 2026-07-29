@@ -162,21 +162,50 @@ class ContractFloorError(RuntimeError):
     is PROVABLE from readable state -- see ``check_installed_contract_floor``."""
 
 
+def _dist_owns_imported_runtime(dist: Any) -> bool:
+    """True iff ``dist`` records the ``phase_loop_runtime`` package at the exact
+    path the interpreter actually imported.
+
+    This is the provenance check (Consiliency/agent-harness#378, board #382 r1
+    Finding 1). ``importlib.metadata`` resolves a distribution by NAME, and a name
+    can be answered by an install that is not the code being run -- e.g. a
+    site-packages ``phase-loop-runtime 0.7.10`` shadowed by this ``src/`` checkout
+    (0.7.13). That install's declared floor need not match the running code, so
+    trusting it by name lets the guard enforce a foreign floor: it could pass a
+    changed floor silently, or abort a healthy checkout. Comparing the dist's
+    recorded ``phase_loop_runtime/__init__.py`` against the imported module's
+    ``__file__`` proves the metadata belongs to what runs.
+    """
+    try:
+        import phase_loop_runtime
+
+        imported = Path(phase_loop_runtime.__file__).resolve()
+        located = Path(dist.locate_file("phase_loop_runtime/__init__.py")).resolve()
+        return located == imported
+    except Exception:
+        return False
+
+
 def declared_contract_requirement() -> str | None:
     """The ``consiliency-contract`` requirement string this package declares, read
-    from installed dist metadata rather than re-encoded here.
+    from the dist metadata of the distribution PROVEN to own the imported
+    ``phase_loop_runtime`` module (never re-encoded here).
 
     The floor lives in exactly one place -- ``phase-loop-runtime``'s ``pyproject``
-    ``dependencies`` -- and this reads it back from that dist's metadata so the
-    guard cannot silently disagree with the pin it is meant to enforce. Returns
-    ``None`` when the metadata is unreadable (e.g. an uninstalled source tree), so
-    the caller can treat the floor as unknowable rather than violated.
+    ``dependencies`` -- and this reads it back from that dist's own metadata so the
+    guard cannot silently disagree with the pin it enforces. It returns ``None``
+    when the metadata is unreadable OR cannot be shown to belong to the running
+    code (``_dist_owns_imported_runtime``), so the caller treats the floor as
+    unknowable rather than enforcing a floor that is not the running package's.
     """
     try:
         import importlib.metadata as md
         from packaging.requirements import Requirement
 
-        for raw in md.requires("phase-loop-runtime") or ():
+        dist = md.distribution("phase-loop-runtime")
+        if not _dist_owns_imported_runtime(dist):
+            return None
+        for raw in dist.requires or ():
             try:
                 req = Requirement(raw)
             except Exception:
@@ -187,17 +216,6 @@ def declared_contract_requirement() -> str | None:
     except Exception:
         return None
     return None
-
-
-def _installed_contract_dist_version() -> str | None:
-    """The installed ``consiliency-contract`` DISTRIBUTION version (what the floor
-    constrains), or ``None`` if the dist is not installed."""
-    try:
-        import importlib.metadata as md
-
-        return md.version("consiliency-contract")
-    except Exception:
-        return None
 
 
 def assert_contract_floor_satisfied(installed_version: str, requirement: str) -> None:
@@ -231,12 +249,19 @@ def check_installed_contract_floor() -> None:
     PROVEN to violate this package's declared floor.
 
     Fail-open on an unprovable state: if either the declared requirement or the
-    installed distribution version is unreadable, this is a no-op. The guard exists
-    to convert a stale-dependency environment from ~60 opaque validation failures
-    into one actionable line -- it must never itself become a new false failure.
+    installed version is unreadable, this is a no-op. The guard exists to convert a
+    stale-dependency environment from ~60 opaque validation failures into one
+    actionable line -- it must never itself become a new false failure.
+
+    The installed operand is the IMPORTED ``consiliency_contract.CONTRACT_VERSION``
+    (via ``installed_contract_version``), not the dist metadata version
+    (Consiliency/agent-harness#378, board #382 r1): the manifest schema and version
+    const that actually fan out #378's failures ship inside the imported module, so
+    a contract-shadow (fresh metadata, stale imported module) must be judged on what
+    will RUN, not on what the name resolves to.
     """
     requirement = declared_contract_requirement()
-    installed = _installed_contract_dist_version()
+    installed = installed_contract_version()
     if requirement is None or installed is None:
         return
     assert_contract_floor_satisfied(installed, requirement)
