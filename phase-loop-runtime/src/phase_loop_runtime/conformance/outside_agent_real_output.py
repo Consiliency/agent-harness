@@ -86,12 +86,23 @@ def _contract_pin_fields(contract_pin: OutsideAgentContractPin) -> dict[str, Any
     }
 
 
-def _secret_free_contract_pin_fields(contract_pin: OutsideAgentContractPin) -> dict[str, Any]:
-    """Contract-pin fields with every string scalar re-checked and redacted if secret."""
-    return {
-        key: _redact_if_secret(value) if isinstance(value, str) else value
-        for key, value in _contract_pin_fields(contract_pin).items()
-    }
+def _redact_document_scalars(value: Any) -> Any:
+    """Recursively redact every secret-shaped string scalar anywhere in ``value``.
+
+    A CLASS-level guard, not an enumeration: the fail-closed document is assembled from
+    whatever fields it has today and this walks the whole structure, so a field ADDED
+    later cannot silently re-open the leak (the round-3 build hand-listed which fields
+    it trusted, and the round-4 board found the field it missed). One detector — the
+    sink's own ``assert_outside_agent_metadata_only`` — decides each scalar
+    (agent-harness#371 round 4, blocker 2).
+    """
+    if isinstance(value, str):
+        return _redact_if_secret(value)
+    if isinstance(value, dict):
+        return {key: _redact_document_scalars(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_redact_document_scalars(child) for child in value]
+    return value
 
 
 def _secret_free_blocked_document(
@@ -99,23 +110,24 @@ def _secret_free_blocked_document(
 ) -> dict[str, Any]:
     """Fail-closed replacement emitted when the boundary sweep trips.
 
-    Every submitter-projection field is emptied and the blocker text is constant, and
-    every scalar copied from the REJECTED object (validator version, input digest, the
-    contract-pin fields) is passed through ``_redact_if_secret`` — so the document
-    cannot echo the content that tripped the boundary, regardless of WHICH channel it
-    rode in on (agent-harness#371 round 4, blocker 2 — the round-3 version checked only
-    the projections and the digest alphabet, not the copied metadata).
+    Every submitter-projection field is emptied and the blocker text is constant; the
+    assembled document is then passed through ``_redact_document_scalars``, which walks
+    EVERY string scalar (validator version, input digest, the contract-pin fields, and
+    anything added later) and redacts any that carries a secret-shaped value. So the
+    document cannot echo the content that tripped the boundary regardless of WHICH
+    channel it rode in on — the round-3 version checked only the projections and the
+    digest alphabet, not the copied metadata (agent-harness#371 round 4, blocker 2).
     """
     contract_pin = validation.verdict.contract_pin
-    return {
+    document = {
         "gate_id": "real_conformance_gate.v0.1",
         "authority": "governed_pipeline_validator",
-        "validator_version": _redact_if_secret(validation.validator_version),
+        "validator_version": validation.validator_version,
         "command": "outside-agent-validate",
-        "verdict_schema_version": _redact_if_secret(contract_pin.verdict_schema_version),
-        "contract_pin": _secret_free_contract_pin_fields(contract_pin),
-        "vector_manifest_hash": _redact_if_secret(contract_pin.vector_manifest_hash),
-        "input_digest": _redact_if_secret(validation.verdict.input_digest),
+        "verdict_schema_version": contract_pin.verdict_schema_version,
+        "contract_pin": _contract_pin_fields(contract_pin),
+        "vector_manifest_hash": contract_pin.vector_manifest_hash,
+        "input_digest": validation.verdict.input_digest,
         "submitted_refs": [],
         "submission_kind": None,
         "status": "blocked",
@@ -130,10 +142,11 @@ def _secret_free_blocked_document(
             }
         ],
         "evidence_refs": [],
-        "redaction_posture": _redact_if_secret(contract_pin.redaction_posture),
+        "redaction_posture": contract_pin.redaction_posture,
         "vectors_executed": False,
         "exit_code": int(OutsideAgentValidationExitCode.REDACTION_VIOLATION),
     }
+    return _redact_document_scalars(document)
 
 
 def digest_outside_agent_validation_bytes(value: bytes) -> str:

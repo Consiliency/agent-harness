@@ -55,6 +55,9 @@ from phase_loop_runtime.conformance.outside_agent_real import (
     OutsideAgentSubmittedRef,
     OutsideAgentValidationVerdict,
 )
+from phase_loop_runtime.conformance.outside_agent_real_output import (
+    _redact_document_scalars,
+)
 
 _SECRET_REF = "notes/sk-ABCDEF0123456789deadbeefcafef00d.md"
 
@@ -186,6 +189,32 @@ def test_fail_closed_document_never_repeats_secret_in_copied_metadata(channel: s
     assert payload["exit_code"] == int(OutsideAgentValidationExitCode.REDACTION_VIOLATION), channel
     # The document must not echo the value that tripped the sweep.
     assert _MARKER not in json.dumps(payload), channel
+
+
+def test_fail_closed_redaction_is_class_level_not_an_enumeration() -> None:
+    """What makes blocker 2 a CLOSED CLASS rather than a longer list: the fail-closed
+    redaction walks the WHOLE document, so a secret in a field the per-field version
+    would never have named — a future-added key, a nested object, a list element — is
+    still caught. Reachable proof of the structural guard: drive it directly with an
+    unenumerated shape."""
+    marker = "ghp_UNENUMERATEDfield0123456789abcd"
+    doc = {
+        "constant": "real_conformance_gate.v0.1",
+        "a_future_field_nobody_listed": marker,
+        "nested": {"deep": marker},
+        "a_list": ["clean-value", f"path/{marker}.md"],
+        "number": 3,
+        "flag": False,
+    }
+
+    redacted = _redact_document_scalars(doc)
+
+    assert marker not in json.dumps(redacted)
+    # Clean scalars and non-strings are preserved — the walker redacts, it does not blank.
+    assert redacted["constant"] == "real_conformance_gate.v0.1"
+    assert redacted["a_list"][0] == "clean-value"
+    assert redacted["number"] == 3
+    assert redacted["flag"] is False
 
 
 # --------------------------------------------------------------------------
