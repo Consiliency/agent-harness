@@ -175,63 +175,81 @@ class ContractFloorUnverified(UserWarning):
 def _dist_records_package(dist: Any, needle: str) -> bool:
     """True iff ``dist``'s OWN file manifest names ``needle`` (``<pkg>/__init__.py``).
 
-    Manifest precedence -- three ordered probes (board #382 r2 py3.12 + r3 RECORD-authority):
+    Manifest precedence -- RECORD-authoritative, then the egg-info manifest (board #382 r2
+    py3.12, r3 RECORD-authority, r4 empty-RECORD ordering):
 
-      1. ``dist.files`` -- a hit returns True; ANY miss (None, empty, or a py3.12
-         PARTIAL list that dropped the module) falls through and is never decisive.
-      2. ``RECORD`` text, read DIRECTLY -- AUTHORITATIVE when present. A wheel /
-         ``.dist-info`` RECORD is the COMPLETE installed-file manifest, so a readable
-         RECORD that does NOT name ``needle`` is a DECISIVE "not owned" and SOURCES.txt
-         is NOT consulted. Consulting SOURCES.txt on a RECORD miss reopened r2 Finding 1:
-         a same-root ``.dist-info`` (authoritative RECORD naming an unrelated package)
-         plus a stray SOURCES.txt naming ours was wrongly accepted as owner (r3, codex).
-      3. ``SOURCES.txt`` text, read DIRECTLY -- consulted ONLY when there is no readable
-         RECORD, i.e. the ``.egg-info`` layout. Load-bearing on Python 3.12+, where
-         ``importlib.metadata`` FILTERS an egg-info SOURCES.txt by on-disk existence --
-         returning only entries that resolve relative to the egg-info parent, where
-         <= 3.11 returned the manifest verbatim -- so ``.files`` collapses to EMPTY (this
-         repo: 817 entries under 3.10, 0 under 3.12, the project-root-relative paths not
-         resolving from ``src/``) or NON-EMPTY PARTIAL. Reading the text directly recovers
-         the manifest the filter hid; a fallback gated on ``.files`` being empty would be
-         BYPASSED in the partial case and false-reject a legitimate owner.
+      1. ``RECORD`` text, read DIRECTLY -- AUTHORITATIVE and consulted FIRST when present. A
+         wheel / ``.dist-info`` RECORD is the COMPLETE installed-file manifest, so it decides
+         ownership BOTH ways: names ``needle`` -> owner; omits it -> DECISIVE "not owned",
+         nothing else consulted. It MUST precede ``dist.files`` because CPython's
+         ``Distribution.files`` internally falls back through ``SOURCES.txt`` for a falsy
+         (EMPTY) RECORD, so a files-first probe would serve a stray SOURCES.txt as ownership
+         before this read ran (r4 finding 1, codex+fable).
+      2. ``dist.files`` -- consulted ONLY on the no-RECORD (``.egg-info``) path. A hit is
+         decisive; ANY miss (None, empty, or a py3.12 PARTIAL list that dropped the module)
+         falls through and is never a negative signal.
+      3. ``SOURCES.txt`` text, read DIRECTLY -- the egg-info manifest, load-bearing on
+         Python 3.12+ where ``importlib.metadata`` FILTERS an egg-info SOURCES.txt by on-disk
+         existence -- returning only entries that resolve relative to the egg-info parent,
+         where <= 3.11 returned the manifest verbatim -- so ``.files`` collapses to EMPTY
+         (this repo: 817 entries under 3.10, 0 under 3.12, the project-root-relative paths not
+         resolving from ``src/``) or NON-EMPTY PARTIAL. Reading the text directly recovers the
+         manifest the filter hid. Reached ONLY on the no-RECORD path, so it can never override
+         an authoritative RECORD.
 
-    Finding 1 stays closed: an empty-record dist -- no ``.files`` match AND no readable
-    RECORD/SOURCES.txt naming the package -- still fails here, so a same-root foreign
-    floor cannot be carried past this gate (Consiliency/agent-harness#382 r1/r2)."""
+    Finding 1 stays closed for every RECORD shape: a readable RECORD that omits the package is
+    decisive not-owned regardless of any stray SOURCES.txt -- whether the RECORD names an
+    unrelated package (r3) or is EMPTY (r4, whose ``.files`` SOURCES-fallback no longer reaches
+    ownership because the RECORD read runs first). A same-root foreign floor cannot be carried
+    past this gate (Consiliency/agent-harness#382 r1/r2/r3/r4)."""
 
     def _names_needle(entries: Any) -> bool:
         for entry in entries:
             # RECORD lines are ``path,hash,size``; SOURCES.txt / ``.files`` are bare
             # paths. Split on the first comma so both shapes reduce to the path.
             path = str(entry).split(",", 1)[0].strip().replace("\\", "/")
-            if path.endswith(needle):
+            # Exact or slash-delimited match ONLY (board #382 r4, codex finding 2). A bare
+            # ``endswith(needle)`` accepts a FOREIGN co-located package whose name merely ends
+            # with ours -- ``"other_phase_loop_runtime/__init__.py".endswith(
+            # "phase_loop_runtime/__init__.py")`` is True -- so its floor could be enforced as
+            # if it were ours. Require the path boundary so a suffix collision is not ownership.
+            if path == needle or path.endswith("/" + needle):
                 return True
         return False
 
-    # (1) files-based match. Returns True only on a hit; ANY miss -- None, empty, or a
-    # partial list that dropped the module (py3.12 existence filter) -- falls through.
-    try:
-        if _names_needle(dist.files or ()):
-            return True
-    except Exception:
-        pass
-    # (2) RECORD is AUTHORITATIVE when present (board #382 r3, codex/lead). A wheel /
-    # ``.dist-info`` RECORD is the COMPLETE installed-file manifest, so a readable RECORD
-    # that does NOT name ``needle`` is a DECISIVE "not owned" -- return here WITHOUT
-    # consulting SOURCES.txt. Falling through to SOURCES.txt on a RECORD miss reopened r2
-    # Finding 1: a same-root ``.dist-info`` whose authoritative RECORD lists an unrelated
-    # package, plus a stray ``SOURCES.txt`` naming ours, was accepted as owner and its
-    # foreign floor enforced against a healthy contract (r3 falsifier).
+    # (1) RECORD is AUTHORITATIVE and read FIRST when present (board #382 r3 codex/lead, r4
+    # codex+fable). A wheel / ``.dist-info`` RECORD is the COMPLETE installed-file manifest,
+    # so a readable RECORD decides ownership BOTH ways: it names ``needle`` -> owner; it omits
+    # ``needle`` -> a DECISIVE "not owned" and NOTHING below is consulted. This MUST precede
+    # the ``dist.files`` probe: CPython's ``Distribution.files`` itself falls back
+    # ``_read_files_distinfo() or _read_files_egginfo_installed() or _read_files_egginfo_sources()``,
+    # so for a falsy (EMPTY) RECORD it serves the dist's stray ``SOURCES.txt`` THROUGH
+    # ``.files`` -- and a files-first probe would accept that stray manifest as ownership
+    # before this authoritative read ran. That was r4 finding 1: a same-root empty-RECORD
+    # ``.dist-info`` carrying a stray SOURCES.txt naming ours was wrongly accepted (and r3's
+    # analogous case, a RECORD naming an unrelated package plus a stray SOURCES.txt). Reading
+    # RECORD first gates both.
     try:
         record = dist.read_text("RECORD")
     except Exception:
         record = None
     if record is not None:
         return _names_needle(record.splitlines())
-    # (3) No readable RECORD -> the ``.egg-info`` layout, whose only manifest is
-    # SOURCES.txt. Read DIRECTLY because on py3.12 ``.files`` is empty/partial for an
-    # egg-info (the filter-by-existence case r2 fixed). SOURCES.txt establishes ownership
-    # ONLY in the absence of an authoritative RECORD, never alongside one.
+    # (2) No readable RECORD -> the ``.egg-info`` layout. ``dist.files`` may still surface the
+    # manifest; a hit is decisive, but ANY miss (None, empty, or a py3.12 PARTIAL list that
+    # dropped the module) falls through and is never a negative signal.
+    try:
+        if _names_needle(dist.files or ()):
+            return True
+    except Exception:
+        pass
+    # (3) ``SOURCES.txt`` text, read DIRECTLY -- the egg-info manifest. Load-bearing on
+    # py3.12+, where ``importlib.metadata`` FILTERS an egg-info SOURCES.txt by on-disk
+    # existence (this repo: 817 entries under 3.10, 0 under 3.12, the project-root-relative
+    # paths not resolving from ``src/``), so ``.files`` collapses to EMPTY or NON-EMPTY
+    # PARTIAL and the direct read recovers the manifest the filter hid. Reached ONLY on the
+    # no-RECORD path, so it can never override an authoritative RECORD (the r3 invariant, now
+    # structural via ordering rather than a fall-through guard).
     try:
         sources = dist.read_text("SOURCES.txt")
     except Exception:
@@ -312,6 +330,15 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
     editable install (whose RECORD lists a ``.pth`` finder, not the package files)
     fails A and so fail-opens with a warning; this repo's CI is a non-editable dir
     install, so that path is a documented boundary, not a live gap.
+
+    A further boundary (board #382 r4, fable F3): ``PathDistribution.read_text`` suppresses
+    ``PermissionError`` (verified against the 3.10 source), so an UNREADABLE RECORD is
+    indistinguishable from an ABSENT one -- both surface as ``None`` and fall to the
+    ``SOURCES.txt`` probe. A dist whose RECORD is permission-blocked while a stray SOURCES.txt
+    names the package would therefore be judged on SOURCES rather than treated as
+    record-authoritative. This needs a filesystem permission anomaly plus a planted
+    SOURCES.txt, and importlib exposes no way to tell "unreadable" from "absent" without
+    private attributes; it is recorded as a boundary, not closed.
     """
     try:
         import json

@@ -574,14 +574,29 @@ def test_direct_url_arm_rejects_stale_same_repo_install_by_version(monkeypatch):
 #        (RECORD authoritative)      SOURCES.txt (the 2f67c7a behaviour)   dist_info_with_stray_sources
 #   1b   arm A end-to-end           foreign floor from the stray-sources   test_check_does_not_abort_on_
 #                                    dist aborts collection                dist_info_with_stray_sources
+#   1c   arm A: EMPTY-RECORD, on a   files-first ordering serves the stray test_records_package_rejects_
+#        REAL PathDistribution       SOURCES.txt THROUGH .files (r4)       real_empty_record_dist_with_stray_sources
+#   f2   arm A: path BOUNDARY        bare path.endswith(needle) accepts a  test_records_package_rejects_
+#                                    foreign suffix collision (r4)         suffix_collision_foreign_package
 #   2    operand: installed version installed_contract_version() -> None   test_installed_version_operand_
-#                                    (guard fail-opens, never enforces)    is_provable
+#        (SHAPE)                     (guard fail-opens, never enforces)    is_provable
+#   2b   operand: installed version accessor returns a hardcoded constant  test_installed_version_operand_
+#        (BINDING)                   / module global hardcoded (r4)        is_bound_not_hardcoded
 #   3a   wiring: check is INVOKED    delete pytest_configure's invocation  test_conftest_actually_invokes_
 #                                                                          the_floor_preflight
 #   3b   wiring: structural          delete the call line specifically     test_conftest_source_calls_the_
 #                                                                          floor_preflight
+#   3c   wiring: ENFORCEMENT         except ContractFloorError -> except   test_conftest_floor_error_
+#        handler re-raises           Exception: pass (swallow, r4)         handler_reraises
 #   (declared floor, the third operand, is sentineled above by
 #    test_declared_floor_is_provable_and_single_sourced -- reds on declared_*() -> None.)
+#
+# r4 (board #382, codex+fable) added 1c/f2/2b/3c. Discipline for each row: name the LAYER the
+# sentinel binds and the layer ABOVE it. 1a-1c bind manifest PRECEDENCE; the layer above is
+# importlib's own .files->SOURCES fallback, now gated by reading RECORD first. 2 binds operand
+# SHAPE; 2b binds the layer above (accessor is BOUND to the contract version, and that binding IS
+# the contract package's object). 3a binds block-executed; 3b binds call-present; 3c binds the
+# ENFORCEMENT handler re-raises -- the realistic except-swallow that 3a/3b could not see.
 # ---------------------------------------------------------------------------
 class _DistInfoRecordForeignSourcesOursDist:
     """A same-root ``.dist-info`` whose AUTHORITATIVE ``RECORD`` lists only an unrelated
@@ -659,6 +674,76 @@ def test_check_does_not_abort_on_dist_info_with_stray_sources(monkeypatch):
         assert cl.check_installed_contract_floor() is None
 
 
+# ---------------------------------------------------------------------------
+# Board #382 r4 Finding 1 (codex + fable) — the EMPTY-RECORD sub-case, built on a
+# REAL importlib PathDistribution. The r2/r3 synthetic dists above hand-author
+# ``.files`` UNFAITHFULLY: ``_SameRootEmptyRecordDist`` sets ``files = None`` and
+# ``_DistInfoRecordForeignSourcesOursDist`` returns a RECORD-derived foreign list --
+# neither is the shape a REAL empty-RECORD dist takes. importlib derives ``.files``
+# via ``_read_files_distinfo() or ... or _read_files_egginfo_sources()``, so a real
+# EMPTY (falsy) RECORD serves the dist's stray SOURCES.txt THROUGH ``.files``. A
+# files-first probe accepted that stray manifest as ownership. This falsifier uses a
+# real PathDistribution over on-disk metadata so any future drift between our synthetic
+# dists and importlib surfaces here generically.
+# ---------------------------------------------------------------------------
+def _real_dist_info(tmp_path, *, dist_name, record_text, sources_text=None,
+                    make_pkg="phase_loop_runtime"):
+    """Build a real on-disk ``.dist-info`` and return its ``md.PathDistribution``.
+
+    ``make_pkg`` (if set) also writes ``<root>/<make_pkg>/__init__.py`` so the SOURCES
+    entry RESOLVES on disk and survives the py3.12 existence filter -- without it the
+    3.12 filter would drop the stray entry and the falsifier would not fire on 3.12.
+    """
+    import importlib.metadata as md
+
+    if make_pkg:
+        pkg = tmp_path / make_pkg
+        pkg.mkdir(exist_ok=True)
+        (pkg / "__init__.py").write_text("# real, exists on disk\n", encoding="utf-8")
+    dinfo = tmp_path / f"{dist_name}.dist-info"
+    dinfo.mkdir()
+    (dinfo / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {dist_name.rsplit('-', 1)[0]}\nVersion: 0.0.0\n",
+        encoding="utf-8",
+    )
+    (dinfo / "RECORD").write_text(record_text, encoding="utf-8")
+    if sources_text is not None:
+        (dinfo / "SOURCES.txt").write_text(sources_text, encoding="utf-8")
+    return md.PathDistribution(dinfo)
+
+
+def test_records_package_rejects_real_empty_record_dist_with_stray_sources(tmp_path):
+    # ROW 1c FALSIFIER (board #382 r4). A REAL empty-RECORD .dist-info + stray SOURCES.txt
+    # naming ours + the package file on disk. importlib serves SOURCES through ``.files``
+    # (empty RECORD is falsy), so a files-first probe wrongly accepted it. RED on 6ef93a6
+    # (files-first): _dist_records_package returned True. GREEN with RECORD read first: an
+    # empty-but-present RECORD is a decisive "not owned". Fires on 3.10 AND 3.12.
+    import phase_loop_runtime.consiliency_layout as cl
+
+    needle = "phase_loop_runtime/__init__.py"
+    dist = _real_dist_info(
+        tmp_path, dist_name="foreignpkg-1.0", record_text="", sources_text=needle + "\n"
+    )
+    assert cl._dist_records_package(dist, needle) is False
+
+
+def test_records_package_rejects_suffix_collision_foreign_package(tmp_path):
+    # FINDING 2 FALSIFIER (board #382 r4). A co-located foreign package whose name merely
+    # ENDS with ours -- ``other_phase_loop_runtime`` -- recorded in an authoritative RECORD.
+    # RED on 6ef93a6: bare ``path.endswith(needle)`` matched, so the foreign dist was read as
+    # owner. GREEN with exact-or-slash-delimited matching.
+    import phase_loop_runtime.consiliency_layout as cl
+
+    needle = "phase_loop_runtime/__init__.py"
+    dist = _real_dist_info(
+        tmp_path,
+        dist_name="other-plr-1.0",
+        record_text="other_phase_loop_runtime/__init__.py,sha256=x,10\n",
+        make_pkg="other_phase_loop_runtime",
+    )
+    assert cl._dist_records_package(dist, needle) is False
+
+
 def test_installed_version_operand_is_provable():
     # ROW 2 ANTI-HOLLOW sentinel, installed-version operand (board #382 r3, Blocker 2).
     # check_installed_contract_floor fail-opens when installed_contract_version() is None;
@@ -679,6 +764,37 @@ def test_installed_version_operand_is_provable():
     # Parseable, not merely non-None: '' or garbage slips a bare `is not None` yet breaks
     # assert_contract_floor_satisfied's Version() call at collection time.
     Version(v)
+
+
+def test_installed_version_operand_is_bound_not_hardcoded(monkeypatch):
+    # ROW 2 BINDING sentinel (board #382 r4, codex finding 3; remedy CORRECTED by lead+me).
+    # test_installed_version_operand_is_provable proves the operand is SHAPE-right (non-None,
+    # parseable); it does NOT prove it is BOUND to consiliency_contract.CONTRACT_VERSION.
+    # codex's constant-"0.6.5" mutation stayed green under shape alone -- same one-notch-
+    # deeper hollow as the 3b-isolate case. codex's literal remedy ("patch
+    # consiliency_contract.CONTRACT_VERSION") does NOT work: consiliency_layout captured the
+    # value via ``from consiliency_contract import CONTRACT_VERSION`` at import, so patching
+    # the SOURCE module never propagates (verified) and that sentinel would red on a healthy
+    # accessor. Two layers instead:
+    import consiliency_contract as cc
+
+    import phase_loop_runtime.consiliency_layout as cl
+
+    # (layer above) the module binding IS the contract package's object -- a source-level
+    # hardcode of the module global reds here. Checked BEFORE the patch below.
+    assert cl.CONTRACT_VERSION is cc.CONTRACT_VERSION, (
+        "consiliency_layout.CONTRACT_VERSION is not consiliency_contract.CONTRACT_VERSION -- "
+        "the module global was hardcoded rather than imported. Board #382 r4 finding 3."
+    )
+    # (accessor layer) the accessor returns that binding, not a literal: patch the binding the
+    # accessor actually READS and assert it tracks. Kills ``return "0.6.5"``.
+    sentinel = "9999.0.1-binding-probe"
+    monkeypatch.setattr(cl, "CONTRACT_VERSION", sentinel, raising=True)
+    assert cl.installed_contract_version() == sentinel, (
+        "installed_contract_version() ignores the module CONTRACT_VERSION binding -- a "
+        "hardcoded literal passes the shape test yet never tracks the real contract version. "
+        "Board #382 r4 finding 3 (installed-version operand BINDING)."
+    )
 
 
 def test_conftest_actually_invokes_the_floor_preflight(pytestconfig):
@@ -719,6 +835,52 @@ def test_conftest_source_calls_the_floor_preflight():
     )
 
 
+def test_conftest_floor_error_handler_reraises():
+    # ROW 3c WIRING sentinel (board #382 r4, fable F1). The REALISTIC neutered-call is not
+    # ``if False:`` -- it is broadening ``except ContractFloorError`` to ``except Exception:
+    # pass`` (or dropping the ``raise``), which neuters ENFORCEMENT while 3a stays green (the
+    # stash is set on the healthy path) and 3b stays green (the call is still present).
+    # Reachable by ordinary refactoring, not sabotage -- strictly more realistic than the
+    # documented ``if False:`` residual. Parse the real conftest and assert the handler that
+    # catches a ContractFloorError CONTAINS a ``raise``, so a swallow reds here.
+    import ast
+    from pathlib import Path
+
+    conftest = Path(__file__).resolve().parent / "conftest.py"
+    tree = ast.parse(conftest.read_text(encoding="utf-8"))
+    fn = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "pytest_configure"
+    )
+
+    def _handler_exc_names(handler):
+        t = handler.type
+        if t is None:
+            return set()  # bare ``except:`` -- names nothing specific
+        elts = t.elts if isinstance(t, ast.Tuple) else [t]
+        return {e.id for e in elts if isinstance(e, ast.Name)}
+
+    floor_handlers = [
+        h
+        for h in ast.walk(fn)
+        if isinstance(h, ast.ExceptHandler)
+        and "ContractFloorError" in _handler_exc_names(h)
+    ]
+    assert floor_handlers, (
+        "conftest.pytest_configure no longer has an `except ContractFloorError` handler -- a "
+        "floor violation is no longer caught and re-raised as a collection abort. Board "
+        "#382 r4 fable F1 (enforcement wiring)."
+    )
+    for h in floor_handlers:
+        assert any(isinstance(node, ast.Raise) for node in ast.walk(h)), (
+            "an `except ContractFloorError` handler in conftest.pytest_configure does not "
+            "RAISE -- a swallowed floor error neuters enforcement while the wiring sentinels "
+            "(3a/3b) stay green. The handler must re-raise (as a UsageError). Board #382 r4 "
+            "fable F1."
+        )
+
+
 # ---------------------------------------------------------------------------
 # ROW 3 -- RESIDUAL BOUNDARY (board #382 r3, lead ruling: accept the two wiring
 # arms; do NOT add a call-counter). Recorded here so a future reader inherits
@@ -734,17 +896,29 @@ def test_conftest_source_calls_the_floor_preflight():
 #     mutation (delete the call but KEEP the stash write): 3a stays GREEN, only
 #     3b reds -- i.e. the stash is a side effect of the block reaching the line
 #     AFTER the call, not proof the call itself ran.
-#   * NEITHER proves the call's BODY executed. A present-but-neutered call
-#     (`if False: check_installed_contract_floor()`, stash still set) reds
-#     neither wiring sentinel. The check's CORRECTNESS is covered separately by
-#     the direct-invocation tests -- ROW 2, test_declared_floor_is_provable_
-#     and_single_sourced, and test_check_does_not_abort_on_dist_info_with_stray_
-#     sources -- which call check_installed_contract_floor() and assert its
-#     behaviour. Coverage = block-ran (3a) + call-present (3b) + check-correct-
-#     when-called (direct tests); the residual is only "call present but
-#     neutered in place".
+#   * 3c (static ast, r4 fable F1) proves the ENFORCEMENT handler re-raises. The
+#     REALISTIC neuter is not `if False:` -- it is broadening `except
+#     ContractFloorError` to `except Exception: pass` (a well-meant refactor),
+#     which swallows a real violation while 3a stays GREEN (stash set on the
+#     healthy path) and 3b stays GREEN (call present). 3c reds exactly that, so
+#     the refactoring-reachable hole is no longer in the residual.
+#   * NEITHER 3a/3b/3c proves the call's BODY executed. The residual is now only
+#     a DELIBERATE in-place neuter (`if False: check_installed_contract_floor()`,
+#     stash still set, handler intact) -- present but never run. That is not
+#     reachable by ordinary refactoring (3c took that case); it is sabotage. The
+#     check's CORRECTNESS when it DOES run is covered separately by the direct-
+#     invocation tests -- ROW 2 (SHAPE + BINDING),
+#     test_declared_floor_is_provable_and_single_sourced, and
+#     test_check_does_not_abort_on_dist_info_with_stray_sources -- which call
+#     check_installed_contract_floor() and assert its behaviour. Coverage =
+#     block-ran (3a) + call-present (3b) + handler-reraises (3c) + check-correct-
+#     when-called (direct tests); the residual is only "call present, handler
+#     intact, but neutered in place by a deliberate edit".
 #
-# Two ways to close that residual were weighed and REJECTED as worse trades:
+# The DISPOSITION -- document this residual rather than close it with production
+# coupling -- was ruled correct by the lead (r3) and independently endorsed by
+# the fable seat (r4: both alternatives below are worse trades). Two ways to
+# close it were weighed and REJECTED:
 #   - a production call-counter in check_installed_contract_floor couples
 #     shipped code to test observability (a field that exists only to be looked
 #     at -> the next tidy-up removes the thing the proof rests on);
