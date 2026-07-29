@@ -175,18 +175,28 @@ class ContractFloorUnverified(UserWarning):
 def _dist_records_package(dist: Any, needle: str) -> bool:
     """True iff ``dist``'s OWN file manifest names ``needle`` (``<pkg>/__init__.py``).
 
-    Consults ``dist.files`` first -- RECORD for a wheel/dist-info, ``SOURCES.txt`` for
-    an ``.egg-info`` on Python <= 3.11 -- then, when that yields nothing, reads the
-    ``RECORD`` and ``SOURCES.txt`` texts DIRECTLY. The direct read is load-bearing on
-    Python 3.12+: ``importlib.metadata`` there no longer surfaces an ``.egg-info``
-    ``SOURCES.txt`` through ``.files`` (it returns an EMPTY list where 3.10/3.11 return
-    the full source manifest -- reproduced on this repo's egg-info: 817 entries under
-    3.10, 0 under 3.12). Without the direct read, a healthy in-tree checkout whose
-    resolved dist is the co-located egg-info fails this arm and the guard false-SKIPS
-    on py3.12 only (Consiliency/agent-harness#382 r2; py3.12 CI caught it via the
-    Finding-3 owns-sentinel). An empty-RECORD dist -- ``files`` empty AND no readable
-    RECORD/SOURCES.txt -- still fails here, so Finding 1's foreign-floor abort stays
-    closed."""
+    Tries the ``dist.files`` view first (RECORD for a wheel/dist-info; ``SOURCES.txt``
+    for an ``.egg-info``) and, whenever that view does NOT match ``needle`` FOR ANY
+    REASON, reads the ``RECORD`` and ``SOURCES.txt`` texts DIRECTLY before giving up.
+
+    The direct read is load-bearing on Python 3.12+, and the fallback CONDITION -- "the
+    files match failed" rather than "``.files`` was empty" -- is the load-bearing part
+    (board #382 r2, lead). ``importlib.metadata`` under 3.12 FILTERS SOURCES.txt by
+    on-disk existence: it returns only the entries that resolve relative to the egg-info
+    parent, where <= 3.11 returned the manifest verbatim. So ``.files`` can be:
+      * EMPTY -- when no listed path resolves (this repo: 817 entries under 3.10, 0
+        under 3.12, because SOURCES.txt paths are project-root-relative and don't
+        resolve from ``src/``); or
+      * NON-EMPTY but PARTIAL -- a surviving sibling remains while the imported module
+        itself is filtered out.
+    A fallback gated on ``.files`` being empty would be BYPASSED in the partial case
+    (non-empty) and the truncated view would false-reject a legitimate owner -- the
+    original bug with the repair silently skipped. Gating on "match failed for any
+    reason" subsumes both: empty, partial, and None all fall through to the text read.
+
+    Finding 1 stays closed: an empty-record dist -- no ``.files`` match AND no readable
+    RECORD/SOURCES.txt naming the package -- still fails here, so a same-root foreign
+    floor cannot be carried past this gate (Consiliency/agent-harness#382 r1/r2)."""
 
     def _names_needle(entries: Any) -> bool:
         for entry in entries:
@@ -197,11 +207,14 @@ def _dist_records_package(dist: Any, needle: str) -> bool:
                 return True
         return False
 
+    # (1) files-based match. Returns True only on a hit; ANY miss -- None, empty, or a
+    # partial list that dropped the module (py3.12 existence filter) -- falls through.
     try:
         if _names_needle(dist.files or ()):
             return True
     except Exception:
         pass
+    # (2) direct text read -- fires on every files-miss, not only when files was empty.
     for meta in ("RECORD", "SOURCES.txt"):
         try:
             raw = dist.read_text(meta)
@@ -234,8 +247,10 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
 
       (A) RECORDED PACKAGE -- the dist's own file manifest names ``<pkg>/__init__.py``
           (``_dist_records_package``: ``dist.files``, else the RECORD / ``.egg-info``
-          ``SOURCES.txt`` text read DIRECTLY, since Python 3.12+ surfaces an
-          ``.egg-info`` SOURCES.txt as an EMPTY ``.files``). An empty-RECORD or
+          ``SOURCES.txt`` text read DIRECTLY whenever the ``.files`` match fails for
+          any reason, because Python 3.12+ FILTERS an ``.egg-info`` SOURCES.txt by
+          on-disk existence -- yielding an empty OR partial ``.files`` that can drop
+          the module; see ``_dist_records_package``). An empty-RECORD or
           foreign-package dist fails here regardless of location, so a bare path-join
           can never carry a foreign floor past this gate.
 

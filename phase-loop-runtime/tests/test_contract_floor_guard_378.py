@@ -405,6 +405,52 @@ def test_owns_via_sources_text_when_files_is_empty_egginfo():
     assert cl._dist_owns_imported_runtime(_SameRootEmptyRecordDist()) is False
 
 
+class _PartialFilesCoLocatedDist:
+    """The py3.12 mechanism is FILTER-BY-EXISTENCE, not "empty for egg-info": under 3.12
+    ``importlib.metadata`` returns only the SOURCES.txt entries that RESOLVE on disk, so
+    ``.files`` can be NON-EMPTY yet PARTIAL -- missing the imported module (whose path
+    did not resolve at the egg-info's parent) while retaining a surviving sibling. A
+    fallback gated on ``.files`` being EMPTY would be bypassed here (non-empty) and the
+    truncated list would false-reject a legitimate owner (board #382 r2, lead). This
+    dist reproduces that: ``.files`` lists a sibling but NOT ``__init__.py``, while
+    SOURCES.txt text still lists the module."""
+
+    version = "0.0-test"
+
+    @property
+    def files(self):
+        # Non-empty, but the imported package's __init__.py is filtered out.
+        return [Path("phase_loop_runtime/consiliency_layout.py")]
+
+    def read_text(self, name):
+        if name == "SOURCES.txt":
+            return (
+                "setup.py\n"
+                "src/phase_loop_runtime/__init__.py\n"
+                "src/phase_loop_runtime/consiliency_layout.py\n"
+            )
+        return None
+
+    def locate_file(self, path):
+        import phase_loop_runtime
+
+        root = Path(phase_loop_runtime.__file__).resolve().parent.parent
+        return root / str(path)
+
+
+def test_owns_when_files_is_nonempty_but_partial_missing_module():
+    # FALSIFIER for the PARTIAL arm (board #382 r2, lead). CI never produces this on a
+    # fixed matrix, so it is synthetic. It goes RED under the WRONG condition (fall back
+    # to text ONLY when ``.files`` is empty) -- the partial list is non-empty, so the
+    # fallback is skipped and the truncated match false-rejects the owner. It is GREEN
+    # under the correct condition (fall back whenever the files-based match FAILED, for
+    # any reason), which is what _dist_records_package implements: the ``.files`` check
+    # not returning True falls through to the RECORD/SOURCES.txt text read.
+    import phase_loop_runtime.consiliency_layout as cl
+
+    assert cl._dist_owns_imported_runtime(_PartialFilesCoLocatedDist()) is True
+
+
 # ---------------------------------------------------------------------------
 # Board #382 r2 — the CI-layout guard: import resolves from src/ while the dist
 # lives in site-packages (pip install ./dir + pytest with src on sys.path). The
