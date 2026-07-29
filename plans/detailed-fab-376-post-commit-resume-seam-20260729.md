@@ -1,7 +1,10 @@
 # Detailed plan: post-commit crash-resume seam for train publish (`Consiliency/agent-harness#376`)
 
 > **PLAN ONLY.** No implementation, no merge. Written 2026-07-29 to be paneled.
-> **DEPENDS ON `Consiliency/agent-harness#368` MERGED** — see `## Dependencies & order`.
+> **Core (AC-376-1/2/3) is INDEPENDENT of `#368` and fixes the reachability
+> defect on today's code** (the publish idempotency key is epoch-independent —
+> see `## The #368 interlock`). **Only `AC-376-4`** — the cross-epoch identity
+> proof — is `#368`-gated. See `## Dependencies & order`.
 > Scope: the CRASH case only (last ledger record survives as `committing`). The
 > graceful post-commit-block variant is a flagged follow-up, NOT built here (see
 > `## Scope & explicitly-deferred variants`).
@@ -174,6 +177,16 @@ calls `publish_fn(workspace, owned_paths, **publish_kwargs)`. The broker's
 replay-before-admit makes the call idempotent: an already-pushed head dedups; an
 un-pushed head is admitted and pushed. **No change to `publishing.py`.**
 
+**Fetch `origin/<base>` before reconstructing (correctness, not cosmetics).** A
+crash-resume can run long after the crash, when `origin/<base>` has advanced.
+Both `prebuilt_owned_paths_fn(workspace, base)` (committed diff vs
+`origin/<base>`) and the `#368` `merge-base(head, origin/<base>)` `base_sha` read
+the LOCAL `origin/<base>` ref; a stale local ref changes the reconstructed
+`owned_paths` and the `base_sha`. The resume branch MUST `git fetch origin
+<base>` before the reconstruction so both are computed against the current base
+(the repo's "verify against origin, not a stale local ref" discipline). A failed
+fetch fails closed (block), never silently uses the stale ref.
+
 ## The #368 interlock (verified against source, not inferred from #368's plan)
 
 `_default_build_admission` binds `base_sha = git rev-parse HEAD`
@@ -191,15 +204,33 @@ un-pushed head is admitted and pushed. **No change to `publishing.py`.**
    epoch on retry, with dedup keyed on `attempt_id`. Only THEN does a resumed
    publish exercise a cross-epoch admission rebuild.
 
-**Therefore #376 must build on #368 MERGED.** If #376 landed on the
-constant-epoch / `base_sha=HEAD` path, its crash-resume test would pass
-trivially and would NOT exercise the envelope rebuild at a fresh epoch — a
-vacuity relocated from the falsifier to the scenario, the exact failure #376 was
-filed to prevent. The AC that asserts the cross-epoch rebuild
-(`AC-376-4`) is therefore written against the OBLIGATION and flagged
-**unsatisfiable until #368 merges** (per the lead's #375 caution: derive the
-criterion from the obligation, not from what the current code can do; if it
-cannot currently be satisfied, say so).
+**The core resume fix (AC-376-1/2/3) does NOT depend on #368, and fixes a live
+bug on today's code.** The publish dedup key is
+`publish_committed_branch_idempotency_key(repo, branch, head_sha)` — keyed on
+`(repo, branch, head_sha)`, NOT on the epoch-dependent `fence_token`. So the
+resumed publish reaches the broker and either dedups an already-pushed head or
+admits+pushes at `lease_epoch=1`; either way it PUBLISHES, where today it is
+permanently stuck at `nothing_staged`. AC-376-1 therefore genuinely
+fails-then-passes on the pre-#368 code; it is not vacuous today.
+
+**Only `AC-376-4` — the cross-epoch identity proof — is #368-gated.** Only #368
+makes the epoch move (off `lease_epoch=1`) and changes the `base_sha` binding to
+`merge-base`; only then is there a cross-epoch admission rebuild for a resumed
+publish to exercise. On the pre-#368 code the epoch never moves, so that aspect
+is trivial-until-#368 — written against the OBLIGATION and flagged unsatisfiable
+until #368 merges (per the lead's #375 caution: derive the criterion from the
+obligation; if it cannot currently be satisfied, say so — which is landing the
+core now with AC-4 flagged, not gating the whole plan).
+
+**Two senses of "upstream," reconciled.** The lead's "#376 is upstream" is
+CAUSAL: the resume door must open before any identity drift is observable, so the
+reachability fix can and should land FIRST, independent of #368. #368 is the
+BUILD dependency of `AC-376-4` ONLY: the cross-epoch proof needs #368's allocated
+epoch and `merge-base` `base_sha`. These are consistent — the reachability fix is
+causally upstream and ships now; `AC-376-4` is the later discharge of #368 AC-13
+at the production seam. Landing #376 AFTER #368 buys a single clean story
+(AC-1..4 all green at once) and is a **sequencing preference the lead may
+choose**, not a hard dependency of the core fix.
 
 **Debt discharged (does-anything-still-promise-it discipline).** When #376
 lands, `Consiliency/agent-harness#368` AC-13 becomes promotable from unit-level
@@ -295,11 +326,16 @@ enumerates the set exhaustively in a way a new value could silently mis-route):
 
 ## Dependencies & order
 
-1. **`Consiliency/agent-harness#368` MERGED is an upstream dependency** (the
-   shared allocated epoch + §5b `merge-base` `base_sha` + `PreAdmissionEnvelope`
-   rebuild). Until it merges, `AC-376-4` (cross-epoch rebuild) is unsatisfiable
-   — build the marker/detection/routing (AC-1..3) but do not claim AC-4 proven.
-   This is a declared external dependency, not a phase.
+1. **`Consiliency/agent-harness#368` MERGED gates `AC-376-4` ONLY** (the shared
+   allocated epoch + §5b `merge-base` `base_sha` + `PreAdmissionEnvelope`
+   rebuild). The core reachability fix — the marker, resume detection, prebuilt
+   routing, upstream re-check (AC-376-1/2/3) — is INDEPENDENT of #368 and fixes a
+   live permanent-stuck-node bug on today's code (the publish idempotency key is
+   epoch-independent; see `## The #368 interlock`). Land the core now with AC-4
+   flagged unsatisfiable-until-#368; do not hold the reachability fix for #368.
+   Landing #376 after #368 for a single clean AC-1..4 story is a sequencing
+   preference for the lead, not a hard dependency. This is a declared external
+   dependency of AC-4, not a phase.
 2. Within this plan: ledger schema change (new status + field) before the
    train_runner marker write; marker write before the resume-detection branch can
    be tested end-to-end.
@@ -312,6 +348,20 @@ Run from the runtime package root with `PYTHONPATH=src:tests`:
 PYTHONPATH=src:tests python -m pytest phase-loop-runtime/tests/…/test_train_runner_crash_resume.py -q
 PYTHONPATH=src python -c "from phase_loop_runtime.train_ledger import VALID_STATUSES; assert 'committing' in VALID_STATUSES"
 ```
+
+**automation.suite_command** (runner-executable; the effective machine-checkable
+suite for this plan):
+
+```
+automation:
+  suite_command: "cd phase-loop-runtime && PYTHONPATH=src:tests python -m pytest tests -q -k 'crash_resume or train_ledger or train_runner'"
+```
+
+AC-376-1/2/3 are machine-checkable by this suite today. AC-376-4 is NOT
+machine-checkable until #368 merges (operational precondition: the epoch
+allocator + `merge-base` `base_sha` must exist); it is recorded as
+`#368`-gated and MUST NOT be reported green by the runner before that — a plan
+amendment records its satisfaction once #376 is rebased onto merged #368.
 
 **Test faithfulness (the core of #376).** The crash MUST be produced by the real
 `run_train` path, never by hand-constructing the post-crash ledger + tree.
