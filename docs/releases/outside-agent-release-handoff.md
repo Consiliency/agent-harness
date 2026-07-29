@@ -25,12 +25,18 @@ enforcement is live.
 ## Contract Pin
 
 - `contract_package`: `consiliency-spec`
-- `contract_version`: `0.1.0`
-- `contract_git_sha`: `c1085483a015ae61aba5fa3064fbd3a96ccc9a33`
+- `contract_version`: `0.2.1`
+- `contract_git_tag`: `v0.2.1` (immutable release anchor; see
+  `plans/oapack/RELEASE-ANCHOR.md` in Consiliency/spec. `v0.2.0` is superseded —
+  its wheel-shipped router laundered validation-error values into route verdicts;
+  do not pin it. The contract bytes are byte-identical between the two tags.)
+- `contract_git_sha`: `b862f977897a7b87c4419680a3e83735d4ff07b0` (commit the tag derefs to)
 - `schema_version`: `outside_agent_submission.v0.1`
 - `verdict_schema_version`: `outside_agent_route_verdict.v0.1`
+- `submission_schema_sha256`: `5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a`
+- `verdict_schema_sha256`: `86169277d3a0823db1a6c9fa4d20a838b0bc2820818ad00ebd53dcdd03c2b1c2`
 - `vector_manifest_name`: `test-vectors/outside-agent/manifest.json`
-- `vector_manifest_hash`: `33cdb767831ee8eaf45961cdb7ccb5b8b21ac69ec054b0da7304e08a2d06434e`
+- `vector_manifest_hash`: `78858828e9eace93eaf31d90717666ddce54ccb3666113df9d033d67c20cfca0`
 - `source_owner`: `Consiliency/spec`
 - `redaction_posture`: `metadata_only`
 
@@ -68,8 +74,11 @@ phase-loop outside-agent-validate path/to/outside-agent-submission.json \
 ```
 
 The governed-pipeline side should also pin the Consiliency/spec contract fields
-listed above, including `contract_version`, `contract_git_sha`,
-`schema_version`, `verdict_schema_version`, and `vector_manifest_hash`.
+listed above, including `contract_version`, `contract_git_tag`,
+`contract_git_sha`, `schema_version`, `verdict_schema_version`,
+`submission_schema_sha256`, `verdict_schema_sha256`, and `vector_manifest_hash`.
+The per-source `sha256` digests are verified over the raw contract bytes, so a
+byte change that preserves the manifest hash no longer slips past this pin.
 
 ## Outside-Agent Advisory Preflight
 

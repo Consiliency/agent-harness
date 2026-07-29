@@ -11,8 +11,11 @@ def test_expected_outside_agent_contract_pin_records_spec_identity():
     assert pin.schema_version == "outside_agent_submission.v0.1"
     assert pin.verdict_schema_version == "outside_agent_route_verdict.v0.1"
     assert pin.contract_package == "consiliency-spec"
-    assert pin.contract_version == "0.1.0"
+    assert pin.contract_version == "0.2.1"
+    assert pin.contract_git_tag == "v0.2.1"
     assert len(pin.contract_git_sha) == 40
+    assert len(pin.submission_schema_sha256) == 64
+    assert len(pin.verdict_schema_sha256) == 64
     assert len(pin.vector_manifest_hash) == 64
     assert pin.vector_manifest_name == "test-vectors/outside-agent/manifest.json"
     assert pin.source_owner == "Consiliency/spec"
