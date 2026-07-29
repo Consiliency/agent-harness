@@ -33,7 +33,18 @@ from phase_loop_runtime.conformance import (
     build_outside_agent_validation_verdict,
     serialize_outside_agent_validation_verdict,
 )
-from phase_loop_runtime.conformance.outside_agent_core import OutsideAgentVerdictStatus
+from phase_loop_runtime.conformance.outside_agent_core import (
+    OutsideAgentConformanceVerdict,
+    OutsideAgentEvidenceRef,
+    OutsideAgentVerdictStatus,
+)
+from phase_loop_runtime.conformance.outside_agent_pin import (
+    EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
+)
+from phase_loop_runtime.conformance.outside_agent_real import (
+    OutsideAgentSubmittedRef,
+    OutsideAgentValidationVerdict,
+)
 
 _SECRET_REF = "notes/sk-ABCDEF0123456789deadbeefcafef00d.md"
 
@@ -186,3 +197,89 @@ def test_malformed_non_object_submission_empties_submitted_refs() -> None:
     )
     assert payload["status"] == "blocked"
     assert payload["submitted_refs"] == []
+
+
+# --------------------------------------------------------------------------
+# Option C — serialization-boundary backstop (single choke point).
+#
+# The construction-time scans give the CORRECT verdict/exit for secrets they see;
+# the boundary makes "no secret-shaped value is ever serialized" a property of the
+# ONE sink, independent of channel enumeration. To prove the sink holds on its own
+# it must be driven DIRECTLY — constructing via build_* would let the construction
+# scan catch the secret first, and the falsifier would die upstream (the vacuity the
+# reviewer named). So these build an OutsideAgentValidationVerdict by hand.
+# --------------------------------------------------------------------------
+
+
+def _direct_validation(*, evidence_refs=(), submitted_refs=(), status=OutsideAgentVerdictStatus.PASS):
+    pin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN
+    verdict = OutsideAgentConformanceVerdict(
+        verdict_schema_version=pin.verdict_schema_version,
+        submission_kind=None,
+        status=status,
+        blockers=(),
+        contract_pin=pin,
+        input_digest="a" * 64,
+        provenance_refs=tuple(ref.ref for ref in evidence_refs),
+        evidence_refs=tuple(evidence_refs),
+        redaction_posture=pin.redaction_posture,
+        metadata={"source_owner": pin.source_owner},
+    )
+    return OutsideAgentValidationVerdict(
+        authority="governed_pipeline_validator",
+        validator_version="test-version",
+        exit_code=OutsideAgentValidationExitCode.PASS,
+        verdict=verdict,
+        submitted_refs=tuple(OutsideAgentSubmittedRef(ref=ref) for ref in submitted_refs),
+    )
+
+
+def test_boundary_backstop_passes_clean_verdict_positive_control() -> None:
+    """Non-vacuity: the boundary is NOT always-on. A clean directly-built verdict
+    serializes normally and its projections are emitted — so the fail-closed
+    assertions below prove the sweep fired, not that the sink is inert."""
+    payload = serialize_outside_agent_validation_verdict(
+        _direct_validation(
+            evidence_refs=(OutsideAgentEvidenceRef(ref="docs/clean.md", digest="a" * 64, kind="documentation"),),
+            submitted_refs=("src/agent.py",),
+        )
+    )
+    assert payload["status"] == "pass"
+    assert payload["evidence_refs"] == [{"ref": "docs/clean.md", "digest": "a" * 64, "kind": "documentation"}]
+    assert payload["submitted_refs"] == ["src/agent.py"]
+
+
+def test_boundary_backstop_blocks_secret_that_bypassed_construction_scan() -> None:
+    """Forced fire: a secret injected straight into the verdict (construction scan
+    bypassed) must be caught by the SINK, which fails closed to a blocked doc."""
+    secret_ref = "notes/sk-ABCDEF0123456789deadbeefcafef00d.md"
+    payload = serialize_outside_agent_validation_verdict(
+        _direct_validation(
+            evidence_refs=(OutsideAgentEvidenceRef(ref=secret_ref, digest="a" * 64, kind="documentation"),),
+        )
+    )
+    assert payload["status"] == "blocked"
+    assert payload["exit_code"] == int(OutsideAgentValidationExitCode.REDACTION_VIOLATION)
+    assert payload["evidence_refs"] == []
+    assert payload["submitted_refs"] == []
+    assert "sk-" not in json.dumps(payload)
+
+
+def test_boundary_fail_closed_document_echoes_no_submitter_content() -> None:
+    """Condition 3: the fail-closed document is built from constants + the frozen pin
+    only, so it echoes NEITHER the secret marker NOR the submitter ref/path/kind that
+    tripped the sweep — a redaction doc that repeated the redacted value would be the
+    exact shape of the leak it closes. Inject through BOTH projection channels."""
+    marker = "sk-DEADBEEFcafef00d0123456789abcdef"
+    token = "UNIQUESUBMITTERPATHTOKEN"
+    secret_ref = f"{token}/{marker}.md"
+    dumped = json.dumps(
+        serialize_outside_agent_validation_verdict(
+            _direct_validation(
+                evidence_refs=(OutsideAgentEvidenceRef(ref=secret_ref, digest="b" * 64, kind=token),),
+                submitted_refs=(secret_ref,),
+            )
+        )
+    )
+    assert marker not in dumped
+    assert token not in dumped
