@@ -475,6 +475,34 @@
       "updated_at": "2026-06-30T21:06:48Z"
     },
     {
+      "acceptance_criteria_count": 9,
+      "created_at": "2026-07-29T04:59:43.736588+00:00",
+      "file": "plans/detailed-fab-376-post-commit-resume-seam-20260729.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-29T04:59:43.736588+00:00",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "depends_on": "Consiliency/agent-harness#368 (AC-376-4 only; core AC-376-1/2/3/5..9 independent)",
+            "issue": "Consiliency/agent-harness#376"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "fab-376-post-commit-resume-seam",
+      "status": "committed",
+      "task_summary": "Post-commit crash-resume seam (agent-harness#376): durable fsync'd committing marker + prebuilt-path routing for a node that crashes after commit but before terminal broker evidence. Core AC-376-1/2/3 (and CR-fold AC-376-5..9) are INDEPENDENT of #368; only AC-376-4 (cross-epoch rebuild identity) is #368-gated.",
+      "type": "detailed",
+      "updated_at": "2026-07-29T06:54:11.675484+00:00"
+    },
+    {
       "acceptance_criteria_count": 5,
       "created_at": "2026-07-18T03:20:00Z",
       "file": "plans/detailed-fable-tui-workspace-trust-stall-20260718.md",
