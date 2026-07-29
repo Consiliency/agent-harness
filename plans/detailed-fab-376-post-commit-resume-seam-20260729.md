@@ -395,6 +395,13 @@ if rec is not None and rec.status == "committing":
         <blocked: "committed_head_ambiguous_on_resume"; fail closed>
 ```
 
+**Control flow (explicit, to foreclose a double-publish reading).** ONLY the
+equal-head arm falls through to the normal execute re-run (the `pass` above); the
+committed-child arm (after its publish + epilogue) and the fail-closed `else` arm
+BOTH terminate the node (`continue` to the next topo node / return the block),
+NEVER falling through to the normal execute path at `:2509`. Without that, a
+committed-child node would run `run_loop` and publish a SECOND time.
+
 **The resume success epilogue is the FULL normal epilogue
 (`train_runner.py:2739-2792`), not just the `pr_open` append (B1 + B2).** After a
 successful resumed publish, run exactly what the normal execute success path runs,
