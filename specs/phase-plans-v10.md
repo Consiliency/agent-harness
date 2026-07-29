@@ -805,7 +805,9 @@ Absorbed convergence-v1 chain:
   PROOFGATE → RUNTIME ─┐
   FABPUB → FABREADMIT ─┴→ INTEG → RELEASE
 
-Critical path: PROOFGATE → FABPUB → FABREADMIT → INTEG → RELEASE
+Critical path (depth 4; two co-equal longest chains, both ending at the shared sink):
+  FABPUB    → FABREADMIT → INTEG → RELEASE
+  PROOFGATE → RUNTIME    → INTEG → RELEASE
 ```
 
 ## External Dependencies (NOT phases — we do not own these)
