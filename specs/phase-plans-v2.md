@@ -2,11 +2,16 @@
 
 > # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
 >
-> **Do not execute this roadmap.** 4 of 5 phases DELIVERED (role layer + policy + clamp, governed mode, route logging, CI invariants + docs).
+> **Do not execute this roadmap.** Re-derived from `#309`/`#310` commits (not this banner's
+> original checkboxes): **3 of 5 phases FULLY DELIVERED** (P1 role/policy/clamp resolver-live,
+> P2 governed mode, P5 CI invariants + docs), with **TWO delivered-but-unmet** items carried into v10.
 >
-> Its ONE live item — the governed pre-merge auto-repair fix-round, not wired in production
-> (`runner.py:10140` passes `apply_fix=None`; deliberate and self-documented at
-> `runner.py:9748-9757`) — was carried into v10 as **EC-REVIEWTRUTH-8**.
+> Its TWO live items: (1) the governed pre-merge auto-repair fix-round (P3), not wired in
+> production (`runner.py:10140` passes `apply_fix=None`; deliberate and self-documented at
+> `runner.py:9748-9757`) — carried as **EC-REVIEWTRUTH-8**; and (2) P4 Route Logging exit-crit 2
+> — governed panel verdicts are never emitted to the run-end summary (`panel_verdict_record` has
+> ZERO production callers) — carried as **EC-REVIEWTRUTH-10** (P4 crit 1, route logging, IS met).
+> Corrected 2026-07-29 to match v10's disposition table (`v10:155`), which this banner had lagged.
 >
 > Note: this roadmap's work landed under agent-harness#309/#310 rather than via its own
 > `/claude-execute-phase` lanes, which is why its checkboxes are uniformly empty despite

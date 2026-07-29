@@ -8,9 +8,11 @@
 > Outside-Agent Conformance Runtime. Substantially BUILT (squash `7f97ea9`, 69 tests pass).
 > OAMOCK is genuinely complete. OACORE-3 and OAREAL-2 are NOT delivered — synthetic fixtures
 > stood in for the spec corpus, which concealed that our validator rejects it (agent-harness#371).
-> OACONTRACT and OARELEASE are code-complete but NOT closeable: they pin a contract that
-> exists only on an unmerged branch. All of that moved to v10 CONFORM, externally gated on
-> `Consiliency/spec#118`.
+> OACONTRACT and OARELEASE are code-complete; they pinned a contract that, as of 2026-07-29,
+> is now MERGED — `Consiliency/spec#102` merged, `spec#118` closed, and `agent-harness#377`
+> landed the `v0.2.1` pin on `main`. All of that moved to v10 CONFORM; the external gate on
+> `Consiliency/spec` is **CLEARED** (the three CONFORM criteria stay live and falsifiable).
+> Corrected 2026-07-29 to match v10's disposition table (`v10:146`), which this banner had lagged.
 >
 > The absorption is recorded in v10's `## Absorbed Roadmaps` table. If you found this file
 > via `select_roadmap` or a stale manifest entry, that is a bookkeeping defect — see
