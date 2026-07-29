@@ -2,19 +2,21 @@
 
 > **PLAN ONLY.** No implementation, no merge. Written 2026-07-29 to be paneled;
 > revised for the round-1 board (grok+codex, five findings — see `## CR fold`),
-> the round-2 board (two blocking — `## CR fold — round 2`), and the round-3 board
-> (codex DISAGREE 13 anchors, two blocking — `## CR fold — round 3`).
-> **Core (AC-376-1/2/3, and the CR fold AC-376-5..11) is INDEPENDENT of `#368` and
+> the round-2 board (two blocking — `## CR fold — round 2`), the round-3 board
+> (codex DISAGREE 13 anchors, two blocking — `## CR fold — round 3`), and the
+> round-4 board (codex 1 BLOCKS-MERGE — `## CR fold — round 4`).
+> **Core (AC-376-1/2/3, and the CR fold AC-376-5..10) is INDEPENDENT of `#368` and
 > fixes the reachability + safety defects on today's code** (the publish
 > idempotency key is epoch-independent — see `## The #368 interlock`). Identity is
 > now an EXACT match against a POST-commit `committed_head_sha` (round-3 finding 2 —
 > confinement proved AUTHORIZATION, not identity; `## Commit identity via post-commit
 > SHA`), recorded by a best-effort `on_committed` callback (a named `publishing.py`
-> scope increase). The crash-before-commit arm PRESERVES the dirty tree before
-> regenerating (round-3 finding 1 — the round-2.5 `reset --hard` destroyed unrelated
-> work; "non-regressive" was FALSE). The reachability fix includes this plan's OWN
-> recovery-aware preflight change (round-2 finding 1, lead-ratified in-scope). Two
-> scope increases are named to the lead in `## CR fold — round 3`. **Only `AC-376-4`**
+> scope increase — the one that STANDS). The crash-before-commit arm BLOCKS-and-
+> PRESERVES at preflight and adds NO mechanism (round-4 (Z), lead-ratified — the
+> round-3 quarantine was not crash-safe; auto-resume of a pre-commit crash is deferred
+> to `Consiliency/agent-harness#388`). The reachability fix includes this plan's OWN
+> recovery-aware preflight change (round-2 finding 1, lead-ratified in-scope; exemption
+> narrowed to Record-B in round 4). **Only `AC-376-4`**
 > — the cross-epoch identity proof — is `#368`-gated. See `## Dependencies & order`.
 > Scope: the CRASH case only (last ledger record survives as `committing`). The
 > graceful post-commit-block variant is filed as `Consiliency/agent-harness#380`;
@@ -146,7 +148,7 @@ nothing and is treated as non-corroborating.
 
 | # | Finding (round-2) | Grounded against source | Root | Fix in this fold | AC |
 |---|---|---|---|---|---|
-| **round-2 finding 1** (severe) | AC-376-2 (and the whole resume mechanism) is UNREACHABLE through production `run_train`: the marker is written while the tree is still dirty; on resume `_default_preflight` rejects the dirty workspace and `run_train` returns `preflight_failed` BEFORE it ever reads the ledger — so no Step-4 arm runs. | `_default_preflight(nodes, resolve_workspace)` (`train_runner.py:303`) has NO ledger param; `_check_repo_clean` fails on any `git status --short` output (`:181-182`); `run_train` returns at `:2294` before `read_ledger` at `:2299`; and preflight failure is a STRUCTURAL whole-train abort (`:17-19`), so one dirty marked node blocks the entire resume. | The fix was confined to a ledger marker + a Step-4 branch, but the resume ENTRY point (preflight) rejects a marked node before the marker is read. It is the exact `#368` AC-12/13 sin: a fix proven against a path production cannot enter. | **Recovery-aware preflight** — read the ledger at Step 1.5 (before preflight), thread `ledger_state` into `_default_preflight`, and exempt ONLY `_check_repo_clean`, ONLY for a node carrying a durable `committing` marker; every other failure (and every unmarked dirty node) still aborts, zero PRs. The crash-before-commit arm then `git reset --hard`+cleans the untrusted dirty tree and re-runs. See design §1b (`### 1b. Recovery-aware preflight`). **This IS a scope increase (run_train entry reorder + preflight signature/behaviour); the lead RATIFIED keeping it in this ONE plan — in-scope, not adjacent (it is the same unreachable-path defect class this plan closes; the marker + gate interlock at one entry point and neither half is independently useful). See §1b "Why this is in scope."** | AC-376-2 (rewritten), **AC-376-10** (new) |
+| **round-2 finding 1** (severe) | AC-376-2 (and the whole resume mechanism) is UNREACHABLE through production `run_train`: the marker is written while the tree is still dirty; on resume `_default_preflight` rejects the dirty workspace and `run_train` returns `preflight_failed` BEFORE it ever reads the ledger — so no Step-4 arm runs. | `_default_preflight(nodes, resolve_workspace)` (`train_runner.py:303`) has NO ledger param; `_check_repo_clean` fails on any `git status --short` output (`:181-182`); `run_train` returns at `:2294` before `read_ledger` at `:2299`; and preflight failure is a STRUCTURAL whole-train abort (`:17-19`), so one dirty marked node blocks the entire resume. | The fix was confined to a ledger marker + a Step-4 branch, but the resume ENTRY point (preflight) rejects a marked node before the marker is read. It is the exact `#368` AC-12/13 sin: a fix proven against a path production cannot enter. | **Recovery-aware preflight** — read the ledger at Step 1.5 (before preflight), thread `ledger_state` into `_default_preflight`, and exempt ONLY `_check_repo_clean`, ONLY for a node carrying a durable `committing` marker; every other failure (and every unmarked dirty node) still aborts, zero PRs. The crash-before-commit arm then `git reset --hard`+cleans the untrusted dirty tree and re-runs. See design §1b (`### 1b. Recovery-aware preflight`). **This IS a scope increase (run_train entry reorder + preflight signature/behaviour); the lead RATIFIED keeping it in this ONE plan — in-scope, not adjacent (it is the same unreachable-path defect class this plan closes; the marker + gate interlock at one entry point and neither half is independently useful). See §1b "Why this is in scope."** **(round-4 (Z): the exemption was NARROWED to Record-B (`committed_head_sha`-present) nodes and the `reset --hard`+clean re-run was DROPPED — a pre-commit crash now block-and-preserves at preflight; see `## CR fold — round 4`.)** | AC-376-2 (rewritten), **AC-376-10** (new) |
 | **round-2 finding 2** | `expected_tree_sha` (round-1 codex 2) is NOT guaranteed to equal the tree the publisher produces: the marker computes the tree in a temp index with one `git add`; the publisher does a SECOND `git add` + an unrestricted `git commit -m`, so a clean filter or a mutating pre-commit hook can make a LEGITIMATE completed commit's tree differ from the marker → the resume misroutes it to `committed_head_ambiguous_on_resume` even with terminal broker evidence — a correct crash-resume REFUSED (a new stuck-node). | publisher `git add -- owned_paths` (`publishing.py:164`, clean filters apply) then `git commit -m` (`:179`, runs pre-commit hooks — the `:184` error string names "a pre-commit hook rejected the commit"); the marker's temp-index `write-tree` sees neither. | Any tree identity computed BEFORE `git commit` cannot predict a mutating hook; exact-tree's only strength over parentage IS that false-positive. | **Drop `expected_tree_sha`; identity = parent + owned-scope confinement** — `HEAD^ == pre_commit_head` AND `_paths_covered_by_owned(enumerate_changed_paths(…, pre_commit_head, HEAD), rec.owned_paths)`, REUSING the runtime's existing helpers (`train_runner.py:738-754` → broker's `_covered_by_owned`; `fab_canonical.py:641-664` `-z --no-renames`) — the `#371`-safe single implementation, not a new mirror. Hook-robust: a hook reformatting owned files changes blobs, not the changed-path SET. **(Round-3 finding 2 SUPERSEDED this: confinement is authorization, not identity — identity is now the POST-commit `committed_head_sha`; see `## CR fold — round 3` and `## Commit identity via post-commit SHA`.)** | AC-376-6 (rewritten) |
 
 **Grok non-blocking (folded anyway per the lead).** The `## The #368 interlock`
@@ -171,7 +173,7 @@ plan (preflight-exemption scope, the reuse of `_paths_covered_by_owned` /
 
 | # | Finding (round-3) | Grounded against source | Root | Fix in this fold | AC |
 |---|---|---|---|---|---|
-| **round-3 finding 1** (overturns an approved justification) | The equal-HEAD recovery arm can DESTROY unrelated user work. The `committing` marker proves only that a crash occurred — NOT that every tracked/untracked change in the tree came from this run. The round-2.5 arm skips the clean gate and runs a repository-wide `git reset --hard` + `git clean -fd`, deleting any unrelated uncommitted edits. The round-2.5 "strictly non-regressive" justification is FALSE: the existing behaviour BLOCKS while PRESERVING those bytes; the plan blocks-then-DELETES. A stranded node is recoverable; deleted uncommitted work is not — a regression on the one axis that matters. | Existing preflight `_check_repo_clean` (`:181-182`) BLOCKS on a dirty tree and touches nothing — bytes survive on disk. The round-2.5 arm (§1b, §2) issues `git reset --hard rec.pre_commit_head` + `git clean -fd` unconditionally. | "It was going to be rejected by preflight anyway" is parity with the existing REFUSAL, not with the existing OUTCOME (bytes-preserved). Parity of refusal ≠ parity of outcome. | **Never destroy: preserve/quarantine first.** The equal-HEAD arm must durably PRESERVE the full dirty tree (tracked + untracked) to a recoverable, named location BEFORE any `reset`/`clean`, and must BLOCK if that preservation cannot be PROVEN (never `reset --hard` on an unverified quarantine). New **AC-376-11** asserts unrelated pre-existing changes survive a resume. **(Mechanism choice — quarantine-in-place vs fresh-worktree — is a lead decision; it changes the literal positive control, see §1b.)** | AC-376-2 (rewritten), **AC-376-11** (new) |
+| **round-3 finding 1** (overturns an approved justification) | The equal-HEAD recovery arm can DESTROY unrelated user work. The `committing` marker proves only that a crash occurred — NOT that every tracked/untracked change in the tree came from this run. The round-2.5 arm skips the clean gate and runs a repository-wide `git reset --hard` + `git clean -fd`, deleting any unrelated uncommitted edits. The round-2.5 "strictly non-regressive" justification is FALSE: the existing behaviour BLOCKS while PRESERVING those bytes; the plan blocks-then-DELETES. A stranded node is recoverable; deleted uncommitted work is not — a regression on the one axis that matters. | Existing preflight `_check_repo_clean` (`:181-182`) BLOCKS on a dirty tree and touches nothing — bytes survive on disk. The round-2.5 arm (§1b, §2) issues `git reset --hard rec.pre_commit_head` + `git clean -fd` unconditionally. | "It was going to be rejected by preflight anyway" is parity with the existing REFUSAL, not with the existing OUTCOME (bytes-preserved). Parity of refusal ≠ parity of outcome. | **Never destroy: preserve/quarantine first.** The equal-HEAD arm must durably PRESERVE the full dirty tree (tracked + untracked) to a recoverable, named location BEFORE any `reset`/`clean`, and must BLOCK if that preservation cannot be PROVEN (never `reset --hard` on an unverified quarantine). New **AC-376-11** asserts unrelated pre-existing changes survive a resume. **(Mechanism choice — quarantine-in-place vs fresh-worktree — is a lead decision; it changes the literal positive control, see §1b.)** **SUPERSEDED in round-4 (Z):** the ratified quarantine-in-place was found NOT crash-safe (reusable ref orphans bytes), so the crash-before-commit auto-resume was scoped OUT; survival is now guaranteed BY INACTION (block-and-preserve at preflight) and asserted as AC-376-2's positive control; AC-376-11 RETIRED; capability filed as `#388`. See `## CR fold — round 4`. | AC-376-2 (rewritten), ~~**AC-376-11**~~ (retired r4) |
 | **round-3 finding 2** (identity vs authorization) | Owned-scope confinement (round-2.5) is AUTHORIZATION ("was this change permitted"), not commit IDENTITY ("is this the commit we made"). The stated obligation is *publish the SAME committed tree*, fail-closed on foreign state — but confinement ACCEPTS any same-parent foreign commit confined to owned paths. Dropping `expected_tree_sha` (round-2) fixed the hook false-reject but silently substituted a WEAKER adjacent question for the obligation. | §2 else-arm accepts `HEAD^ == pre_commit_head` + `_paths_covered_by_owned(...)` and records `branch` without any check that the committed OBJECT is the one this run produced. The plan's own Execution Policy says "never publish a stale/foreign/unidentified HEAD" — confinement does not establish "not foreign." | A PRE-commit marker cannot name the POST-commit SHA, so it cannot prove identity; confinement was the closest pre-commit signal and got promoted into the identity role it cannot fill. | **Record the post-commit SHA durably (option a), giving EXACT identity.** Add a best-effort `on_committed(head_sha)` callback fired inside `publish_from_worktree` right after the commit (`publishing.py:188-190`, reusing the already-captured `head_sha`); the coordinator's closure durably appends `committed_head_sha`. Resume identity = exact `HEAD == rec.committed_head_sha` (hook-robust: recorded POST-mutation). Confinement is REMOVED from the identity role (the broker still does authoritative owned-scope authorization on publish). The residual commit→append gap (committed, SHA not yet recorded) FAILS CLOSED (`committed_head_unrecorded_on_resume`), a bounded stated limitation — authorization NEVER substitutes for identity. **(New `publishing.py` seam — a scope increase, named to the lead.)** | AC-376-6 (rewritten) |
 
 **This reverses round-2's "rejected alternative (b)" (a second post-commit SHA
@@ -191,8 +193,43 @@ commit's process (a crash mid-`publish_fn` never returns to `train_runner`), so 
 seam is unavoidable for option (a). It is minimal (default-`None`, best-effort — a
 failed append never fails the publish) and behaviour/byte-neutral when absent.
 (2) Finding 1's preserve-not-destroy mechanism (quarantine vs fresh-worktree)
-changes the AC-376-11 positive control the lead specified ("byte-identical
-afterwards") — see §1b for why only fresh-worktree satisfies that literally.
+changed the AC-376-11 positive control. **WITHDRAWN in round 4 (Z):** the quarantine
+mechanism was found not crash-safe and the whole crash-before-commit auto-resume was
+scoped OUT — see `## CR fold — round 4`. Scope increase (1), the `on_committed`
+callback, STANDS (it serves the POST-commit identity, which (Z) does not touch).
+
+## CR fold — round 4 (codex DISAGREE, 1 BLOCKS-MERGE; grok AGREE no-blocks; gemini AGREE)
+
+Codex's blocker landed on the round-3 PRESERVE mechanism (not identity), and it was
+correct. The fix is not another preservation patch — it is a **scope decision (Z),
+lead-ratified**: the crash-before-commit auto-resume is removed from this plan, and
+its now-proven-safe mechanism is filed as `Consiliency/agent-harness#388`.
+
+| # | Finding (round-4) | Grounded against source | Root | Fix in this fold | AC |
+|---|---|---|---|---|---|
+| **round-4 finding** (codex, BLOCKS-MERGE) | The round-3 quarantine `refs/fab-quarantine/<node>/<run_id>` is NOT crash-safe: the ref is reusable, so a SECOND pre-commit crash overwrites it and orphans the first capture's bytes WHILE both "ref resolves" checks pass — a verification green while the thing it verifies is destroyed, the exact class this plan exists to eliminate, now INSIDE the preservation invariant. | `fab_run_id_for_reviewed_tree` is DETERMINISTIC from the reviewed tree (`fab_producer.py:106`) → a repeated crash reuses the same `run_id` → the same ref (collision is the expected case). Non-FAB nodes have `run_id=None` (`train_runner.py:2511`) → the ref name has no discriminator. `git stash push --include-untracked` MUTATES+cleans the worktree BEFORE the ref is written → capture destroys the thing it captures. | Every preservation mechanism tried on the crash-before-commit arm produced the next defect (`reset --hard` destroys → quarantine-ref orphans): the `#368` accumulated-scope shape localized to a COMPANION case that is not the headline bug. The headline `#376` defect (AC-376-1) is a POST-commit crash with NO preserve/destroy problem. | **(Z) — scope out the pre-commit auto-resume.** Narrow the §1b preflight exemption to Record-B (`committed_head_sha`-present) nodes; a pre-commit crash (Record A only) BLOCKS at preflight and PRESERVES its bytes on disk — existing behaviour, strictly non-regressive, and the lead's literal "byte-identical afterwards" control satisfied BY INACTION. Step 4 gains NO tree-mutating op (no reset/clean/quarantine). Keep AC-376-10 (the exemption is still load-bearing for AC-376-1: §1b `run_loop` residue outside `owned_paths`). Retire AC-376-11 into AC-376-2's positive control. File the capability as `#388` with the proven temp-index + tree-sha design. | AC-376-2 (rewritten to block-and-preserve); AC-376-10 (exemption narrowed to Record-B); AC-376-11 (RETIRED) |
+
+**(W) — a fresh worktree — was REJECTED (grounded), it does not avoid destruction but
+RELOCATES it.** `preflight_fn(topo_order, …)` runs at `train_runner.py:2291` over ALL
+nodes BEFORE Step-3 recovery at `:2311`; after (W) publishes from a fresh worktree the
+ORIGINAL workspace stays dirty at `pre_commit_head`, and on the next `run_train` that
+node is `pr_open` (not `committing`, so NO exemption) → `_check_repo_clean` fails on
+the dirty original → whole-train abort. (W)'s only escapes are strand-it (a permanent
+train landmine) or clean-it (the exact destructive op it claimed to avoid). It also
+adds worktree lifecycle to a runtime that creates none (`ResolveWorkspace =
+Callable[[TrainNode], Path]`), and `git worktree add` carries its own crash surface.
+
+**The proven-safe deferred mechanism (recorded in `#388`, positive-controlled this
+round).** Non-mutating capture via a scratch index OUTSIDE the worktree
+(`GIT_INDEX_FILE=… git read-tree HEAD && git add -A && git write-tree`): captures
+tracked-mod + tracked-del + untracked with the worktree byte-identical before/after —
+so the "BLOCK if unproven" branch leaves bytes untouched (stash mutates-then-proves;
+this proves-then-mutates). Collision-free naming by TREE sha (`refs/fab-quarantine/
+<node>/<tree_sha>`): identical bytes → same ref (idempotent, no orphan), distinct bytes
+→ distinct ref; `run_id` leaves the name so both aggravators evaporate. Create-only
+`update-ref … 000…0` refuses to overwrite an existing name. Wrinkle for the builder: an
+identical re-crash finding the ref present must read as "preservation already holds,
+proceed," not a block.
 
 ## The resumed-execute-node reconstruction class (CR — B1, B2, codex 2, codex 3)
 
@@ -415,19 +452,36 @@ this plan exists to not repeat).
 2. **Thread `ledger_state` into `_default_preflight`.** Its signature becomes
    `_default_preflight(nodes, resolve_workspace, ledger_state)`; the injectable
    `_preflight_fn` seam gains the same third parameter.
-3. **Exempt ONLY `_check_repo_clean`, ONLY for a node whose folded ledger status
-   is `committing`.** Skip the uncommitted-changes check for that node (its
-   dirtiness is the legitimate crash residue Step 4 reconciles). EVERY other check
-   still runs for it (auth, remote-reachable, base-exists), and every OTHER node —
-   including a dirty node with NO `committing` marker — still fails closed exactly
-   as today.
+3. **Exempt ONLY `_check_repo_clean`, ONLY for a node whose folded `committing`
+   record carries a `committed_head_sha` (a POST-commit Record B — round-4 (Z)).**
+   Skip the uncommitted-changes check for that node (its residue is `run_loop`
+   output OUTSIDE `owned_paths` that survived the commit — see the dirty-after-commit
+   case below). EVERY other check still runs for it (auth, remote-reachable,
+   base-exists), and every OTHER node — a dirty node with NO `committing` marker,
+   AND a `committing` node WITHOUT `committed_head_sha` (a PRE-commit Record A) —
+   still fails closed exactly as today.
+
+   **Why keyed on `committed_head_sha`, not bare `committing` (round-4 (Z)).** A
+   pre-commit crash (Record A only, no `committed_head_sha`) leaves a fully dirty
+   tree that may contain UNRELATED user work; auto-resuming it requires a mechanism
+   to preserve those bytes before regenerating, and every such mechanism tried in
+   review created the next defect (`reset --hard` destroyed unrelated work, round-3
+   finding 1; a reusable quarantine ref orphaned it, round-4 finding). The lead
+   ratified (Z): do NOT exempt the pre-commit case — let it BLOCK at preflight, which
+   is EXISTING behaviour (a dirty tree fails `_check_repo_clean`) and PRESERVES every
+   byte on disk untouched. The headline bug (`#376`: a node that crashed AFTER commit)
+   is a POST-commit case and is unaffected — it carries `committed_head_sha` and is
+   exempted. The pre-commit auto-resume capability, with its now-proven-safe
+   temp-index + tree-sha quarantine design, is filed as `Consiliency/agent-harness#388`.
 
 **New entry invariant (stated precisely):** *zero PRs are opened unless a node
-carries a durable `committing` marker authorizing resume, and that node's publish
-is still gated by Step-4 fail-closed reconciliation (§2).* The exemption is not
-"skip the clean check when dirty" — it is "a durable marker is the ONLY key that
-opens the gate for a dirty tree, and it only DEFERS the decision to Step 4, which
-can still block." An unmarked dirty workspace remains a hard preflight failure.
+carries a durable `committing` marker WITH a `committed_head_sha` (Record B)
+authorizing resume, and that node's publish is still gated by Step-4 fail-closed
+reconciliation (§2).* The exemption is not "skip the clean check when dirty" — it is
+"a durable POST-commit marker is the ONLY key that opens the gate for a residual
+dirty tree, and it only DEFERS the decision to Step 4, which can still block." An
+unmarked dirty workspace — and a pre-commit `committing` marker without
+`committed_head_sha` — remains a hard preflight failure (block-and-preserve, (Z)).
 
 **Why this is in scope, not a separate plan (lead-ratified ONE plan).** This IS a
 scope increase over the original marker-plus-Step-4-branch plan, and it is
@@ -450,55 +504,61 @@ gate rejects. A resume seam whose entry gate refuses to admit the state the seam
 exists to recover is not a resume seam. Closing that is the plan's obligation, not
 an adjacent nicety.
 
-**Disposition of the crash-BEFORE-commit dirty tree (the equal-HEAD arm) — PRESERVE,
-never destroy (CR round-3 finding 1).** When Step 4 finds `HEAD ==
-rec.pre_commit_head` (the commit never landed), the node's own work must be
-regenerated from the clean recorded parent — but the dirty tree may ALSO contain
-UNRELATED user work (the `committing` marker proves a crash occurred, NOT that every
-tracked/untracked change came from this run). The round-2.5 arm's repository-wide
-`git reset --hard` + `git clean -fd` would DESTROY that unrelated work, and its
-"strictly non-regressive" justification was **FALSE**: the existing preflight BLOCKS
-a dirty tree while PRESERVING its bytes on disk (recoverable); reset+clean blocks
-work AND deletes bytes (unrecoverable). Parity with the existing REFUSAL is not
-parity with the existing OUTCOME. A stranded node is recoverable; deleted
-uncommitted work is not.
+**Disposition of the crash-BEFORE-commit dirty tree — BLOCK-and-PRESERVE at
+preflight, add NO mechanism (round-4 (Z), lead-ratified).** A pre-commit crash
+(Record A only, no `committed_head_sha`) leaves a fully dirty tree. That tree may
+contain UNRELATED user work: the `committing` marker proves a crash occurred, NOT
+that every tracked/untracked change came from this run. Two review rounds tried to
+auto-resume this case by clearing the tree first, and each mechanism produced the
+next defect:
 
-**The invariant: resume NEVER destroys uncommitted bytes.** The equal-HEAD arm must
-durably PRESERVE the FULL dirty tree (tracked *and* untracked) to a recoverable,
-named location BEFORE any tree-mutating op, and must **BLOCK if that preservation
-cannot be PROVEN** — never run a destructive op on an unverified preservation (that
-failure branch is exactly where bytes die). Two mechanisms satisfy "preserve";
-**the choice is a lead decision** because it changes AC-376-11's positive control:
+- **round-3 finding 1** — an unconditional `git reset --hard` + `git clean -fd`
+  DESTROYS unrelated uncommitted bytes; its "strictly non-regressive" justification
+  was FALSE (existing preflight BLOCKS while PRESERVING those bytes; reset+clean
+  blocks AND deletes). Parity with a REFUSAL is not parity with an OUTCOME.
+- **round-4 finding** (codex, BLOCKS-MERGE) — the round-3 replacement, a quarantine
+  ref `refs/fab-quarantine/<node>/<run_id>`, is NOT crash-safe: the ref is reusable,
+  so a SECOND pre-commit crash overwrites it and orphans the first capture's bytes
+  WHILE both "ref resolves" checks pass — a verification green while the thing it
+  verifies is destroyed, the exact class this plan exists to eliminate, now inside
+  the preservation invariant. (Aggravators, grounded: `fab_run_id_for_reviewed_tree`
+  is DETERMINISTIC from the reviewed tree — `fab_producer.py:106` — so a repeated
+  crash reuses the same `run_id` and the same ref; non-FAB nodes have `run_id=None`
+  — `train_runner.py:2511` — so the ref name has no discriminator at all.)
 
-- **(P) Quarantine-in-place** (recommended — smaller, one worktree/branch):
-  **requirement** — durably capture BOTH tracked AND untracked dirty state to a
-  recoverable, GC-safe named ref `refs/fab-quarantine/<node>/<run_id>` and VERIFY it
-  resolves to a non-empty object, record it in the block/log, THEN `git reset --hard
-  rec.pre_commit_head` + `git clean -fd` and re-run `run_loop`. (Note: bare `git
-  stash create` does NOT capture untracked files — the implementation must use a
-  mechanism that captures both, e.g. `git stash push --include-untracked` into a
-  retained ref, or an explicit index+`write-tree` of tracked-plus-untracked. AC-376-11
-  tests an UNTRACKED file's survival precisely so a tracked-only capture cannot pass.)
-  Preservation guarantee: **recoverable from a verified named ref** — NOT
-  byte-identical in the working tree (the tree is reset). If the quarantine ref-write
-  fails or is empty → BLOCK, no reset.
-- **(W) Fresh worktree** (satisfies the lead's literal "byte-identical afterwards"):
-  regenerate in a NEW `git worktree add` at `rec.pre_commit_head`, leaving the
-  original crashed worktree UNTOUCHED — an unrelated file is byte-identical
-  afterwards because nothing wrote to it. Cost: worktree lifecycle + the
-  two-worktrees-cannot-share-one-branch constraint (the crashed worktree still holds
-  the branch), so the regeneration/publish worktree needs its own branch handling.
+**The decision (Z): stop adding mechanism to a companion case that is not the bug.**
+The headline `#376` defect is a POST-commit crash (`AC-376-1`), which has NO
+preserve/destroy problem — it routes to the prebuilt publish, reads `git rev-parse
+HEAD`, and never mutates the tree. The pre-commit case is a companion arm. Rather
+than carry a preservation mechanism that keeps generating defects, (Z) declines to
+auto-resume it: **a pre-commit crash is NOT exempted at preflight, so it BLOCKS the
+train (zero PRs) exactly as today, and every dirty byte is PRESERVED on disk,
+untouched.** This is **strictly non-regressive** — blocking a dirty tree IS the
+existing `_check_repo_clean` behaviour — and it hands us the strongest form of the
+lead's original positive control ("a file the run never touched is byte-identical
+afterwards") BY DECLINING TO ACT: nothing writes to the tree, so nothing can be lost.
 
-The plan carries **(P)** as primary with AC-376-11 asserting *recoverable from a
-verified ref*, and flags to the lead that their stated control ("byte-identical
-afterwards") is satisfiable ONLY by **(W)** — an honest match of criterion to
-mechanism, not a silent substitution. Under either, reconciliation is ALWAYS on
-`HEAD` (a git-atomic ref), never on working-tree content: the dirty tree is evidence
-a crash happened, not a source of truth to publish. (A crash-AFTER-commit node is
-identified by its COMMIT — `committed_head_sha`, §2 / `## Commit identity via
-post-commit SHA` — where residual dirt is simply ignored by the prebuilt publish,
-which reads `git rev-parse HEAD` and never re-stages, so no preservation issue
-arises there — only the equal-HEAD regenerate arm mutates the tree.)
+**Consequence, stated honestly.** Under (Z), Step 4 has NO tree-mutating op at all
+— no `reset`, no `clean`, no quarantine. Resume either PUBLISHES a committed node
+(clean/residual tree, `AC-376-1`) or BLOCKS fail-closed; it never regenerates a
+pre-commit crash. That capability — auto-resume of a pre-commit crash — is deferred
+to `Consiliency/agent-harness#388`, which records the now-proven-safe mechanism
+(non-mutating temp-index capture + tree-sha-addressed create-only ref) that would
+deliver it without the round-3/round-4 defects. (W) — a fresh worktree — was
+REJECTED: it does not avoid destruction, it RELOCATES it. `preflight_fn(topo_order,
+…)` runs at `:2291` over ALL nodes BEFORE Step-3 recovery at `:2311`; after (W)
+publishes from a fresh worktree the ORIGINAL workspace stays dirty at
+`pre_commit_head`, and on the next `run_train` that node is `pr_open` (not
+`committing`, no exemption) so `_check_repo_clean` fails on the dirty original and
+aborts the whole train — (W)'s only escapes are strand-it (a permanent train
+landmine) or clean-it (the exact destructive op it claimed to avoid).
+
+Reconciliation is ALWAYS on `HEAD` (a git-atomic ref), never on working-tree
+content: the dirty tree is evidence a crash happened, not a source of truth to
+publish. A crash-AFTER-commit node is identified by its COMMIT (`committed_head_sha`,
+§2 / `## Commit identity via post-commit SHA`), where residual dirt is simply
+ignored by the prebuilt publish (which reads `git rev-parse HEAD` and never
+re-stages) — so no preservation issue arises there either.
 
 ### 2. Resume detection + routing (train_runner Step 4)
 
@@ -532,10 +592,14 @@ if rec is not None and rec.status == "committing":
         # (foreign/advanced/wrong-branch). Cannot claim it as ours. → fail closed.
         <blocked: "committed_head_moved_on_resume"; fail closed>
     elif head == rec.pre_commit_head:
-        # commit never landed → PRESERVE-then-regenerate (§1b, round-3 finding 1).
-        <preserve the FULL dirty tree to a verified quarantine ref (or fresh
-         worktree); BLOCK if preservation cannot be proven — never destroy>
-        <git reset --hard rec.pre_commit_head && git clean -fd>   # only AFTER proven preserve
+        # commit never landed (Record A only, committed_head_sha is None).
+        # Round-4 (Z): a DIRTY pre-commit tree is NOT exempted at preflight (§1b) —
+        # it fails _check_repo_clean, blocks the train, and its bytes are PRESERVED
+        # on disk untouched. So it never reaches here. This arm is therefore reached
+        # only with a CLEAN tree at the parent (no commit, no residue): NO
+        # tree-mutating op (no reset, no clean, no quarantine) — fall through to the
+        # normal execute re-run. Auto-resume of a DIRTY pre-commit crash is deferred
+        # to Consiliency/agent-harness#388 (proven temp-index + tree-sha quarantine).
         pass                      # fall through to the normal execute re-run
     elif <head^ == rec.pre_commit_head>:
         # committed in the tiny commit→append gap; SHA never recorded → identity is
@@ -742,9 +806,12 @@ update to #368's AC-13 reachability note pointing at `AC-376-4` as the discharge
   (`:2288-2295`) and pass `ledger_state` into preflight; change
   `_default_preflight` (`:303`) to `_default_preflight(nodes, resolve_workspace,
   ledger_state)` (and the injectable `_preflight_fn` seam, `:2136`/`:2240`, to the
-  same arity). Inside, for a node whose folded status is `committing`, SKIP
-  `_check_repo_clean` (`:332`) ONLY; every other check, and every unmarked node,
-  is unchanged. This is the change that makes the whole resume mechanism reachable
+  same arity). Inside, for a node whose folded `committing` record carries a
+  `committed_head_sha` (a POST-commit Record B — round-4 (Z)), SKIP
+  `_check_repo_clean` (`:332`) ONLY; every other check, every unmarked node, AND a
+  pre-commit `committing` node WITHOUT `committed_head_sha`, is unchanged (the
+  pre-commit dirty tree blocks-and-preserves, §1b). This is the change that makes
+  the whole resume mechanism reachable
   on the real `run_train` path — WITHOUT it preflight aborts the train
   (`preflight_failed`, `:2294`) before the ledger is read (`:2299`). **(Scope
   increase, lead-RATIFIED as in-scope for this ONE plan — same unreachable-path
@@ -769,10 +836,11 @@ update to #368's AC-13 reachability note pointing at `AC-376-4` as the discharge
   the broker re-authorizes owned-scope on publish) + FULL success epilogue
   (`_resolve_admission_fab_run_id` block-or-bind, `completed_nodes`, `pr_open` with
   `fab_run_id` — B1 + B2); (b) present AND `HEAD != committed_head_sha` → block
-  `committed_head_moved_on_resume`; (c) absent AND `HEAD == pre_commit_head` →
-  PRESERVE the full dirty tree to a verified quarantine ref (BLOCK if unproven),
-  THEN `git reset --hard` + `git clean -fd`, fall through to the normal re-run (§1b,
-  round-3 finding 1); (d) absent AND `HEAD^ == pre_commit_head` → block
+  `committed_head_moved_on_resume`; (c) absent AND `HEAD == pre_commit_head` → NO
+  tree-mutating op (round-4 (Z)): a DIRTY pre-commit tree is refused at preflight and
+  its bytes preserved on disk (§1b), so this arm is reached only with a clean tree at
+  the parent → fall through to the normal re-run (dirty-pre-commit auto-resume
+  deferred to `Consiliency/agent-harness#388`); (d) absent AND `HEAD^ == pre_commit_head` → block
   `committed_head_unrecorded_on_resume` (the bounded commit→append gap, round-3
   finding 2 — never authorization-as-identity); (e) else → block
   `committed_head_ambiguous_on_resume`.
@@ -863,6 +931,14 @@ enumerates the set exhaustively in a way a new value could silently mis-route):
   own issue `Consiliency/agent-harness#380`, not built here** — the ratified target
   is the crash case, where the `committing` marker survives the fold directly and
   detection needs no scan.
+- **Auto-resume of a crash BEFORE commit** (regenerate the node's work from the
+  clean parent): the headline `#376` bug is the POST-commit case; this companion
+  arm requires a preservation mechanism for the dirty tree's unrelated bytes, and
+  two rounds of such mechanisms each produced the next defect (round-3 `reset --hard`
+  destroyed work; round-4 quarantine-ref orphaned it). **Scoped OUT under round-4 (Z):
+  a pre-commit crash BLOCKS-and-PRESERVES at preflight (existing behaviour), and the
+  auto-resume capability is filed as its own issue `Consiliency/agent-harness#388`
+  with the proven-safe temp-index + tree-sha design** — see `## CR fold — round 4`.
 - **Declared prebuilt nodes** are already crash-safe (their resume re-runs the
   idempotent prebuilt path); no marker needed.
 - **The broker `PROVIDER_CALL_IN_FLIGHT` sub-window** (codex 1) is a pre-existing
@@ -946,10 +1022,10 @@ automation:
   suite_command: "cd phase-loop-runtime && PYTHONPATH=src:tests python -m pytest tests -q -k 'crash_resume or train_ledger or train_runner'"
 ```
 
-AC-376-1/2/3 and AC-376-5..11 are machine-checkable by this suite today
-(the recovery-aware-preflight, exact-SHA-identity, and preserve-not-destroy arms
+AC-376-1/2/3 and AC-376-5..10 are machine-checkable by this suite today
+(the recovery-aware-preflight, exact-SHA-identity, and (Z) block-and-preserve arms
 exercise the DEFAULT `_default_preflight` and the real `on_committed` callback on a
-real dirty workspace — round-2/round-3 findings).
+real dirty workspace — round-2/round-3/round-4 findings).
 AC-376-4 is NOT machine-checkable until #368 merges (operational precondition: the
 epoch allocator + `merge-base` `base_sha` must exist); it is recorded as
 `#368`-gated and MUST NOT be reported green by the runner before that — a plan
@@ -1006,11 +1082,13 @@ Each names the falsifier (the mutation that makes it fail) and the injection
 anchor. `AC-376-4` is written against the obligation and flagged
 unsatisfiable-until-#368-merged. **AC-376-5..9 are the round-1 CR fold** (codex 1 →
 AC-376-5; codex 2 → AC-376-6; B1 → AC-376-7; B2 → AC-376-8; codex 3 → AC-376-9),
-**AC-376-10 is the round-2 fold** (recovery-aware preflight — finding 1), and
-**AC-376-11 is the round-3 fold** (unrelated-work survival — finding 1). **AC-376-6
+**AC-376-10 is the round-2 fold** (recovery-aware preflight — finding 1). **AC-376-6
 was rewritten in round 3** (EXACT post-commit-SHA identity, superseding round-2's
-owned-scope confinement — finding 2) and **AC-376-2 in round 3** (preserve-not-destroy
-— finding 1). All of AC-376-1/2/3/5..11 are machine-checkable by the suite TODAY
+owned-scope confinement — finding 2). **AC-376-2 was rewritten in round 4** to the
+(Z) block-and-preserve outcome (the crash-before-commit arm adds NO mechanism —
+`## CR fold — round 4`); it ABSORBS the round-3 **AC-376-11** unrelated-work-survival
+control (survival by inaction), so AC-376-11 is RETIRED and the checklist is now ten
+criteria (AC-376-1..10). All of AC-376-1/2/3/5..10 are machine-checkable by the suite TODAY
 (they do not depend on #368). Every AC's falsifier was written to name an
 OBSERVABLE the code can actually produce and a mutation that makes it fire — see
 `## AC observable-grounding` for the per-AC audit. **Every crash-resume AC below
@@ -1039,30 +1117,39 @@ and not a re-proof against an unreachable path — the `#368` AC-12/13 sin).
   window; the in-flight sub-window's determinate block is AC-376-5, and neither
   window ever returns to the silent `nothing_staged` stuck-state.
 
-- [ ] **AC-376-2 (crash BEFORE commit re-runs through the DEFAULT preflight,
-  preserving-not-destroying, does not mis-route).** A crash with `HEAD ==
-  pre_commit_head` (commit never landed) leaves a DIRTY workspace; resume passes the
-  DEFAULT `_default_preflight` (the node carries a `committing` marker — §1b), then
-  PRESERVES the dirty tree to a verified quarantine (byte-survival is AC-376-11) and
-  RE-RUNS the normal execute path (not the prebuilt path).
-  *Observable:* with the real dirty post-crash workspace and the DEFAULT preflight,
-  `run_train` does NOT return `preflight_failed`; the resumed run preserves the
-  dirty tree, resets to `pre_commit_head`, invokes `run_loop`, and stages/commits
-  afresh; it does NOT call publish with `prebuilt=True`.
-  *Falsifier (any fails the AC):* (a) revert the §1b preflight exemption → the
-  dirty workspace makes `run_train` return `preflight_failed` and the node never
-  resumes at all (proves the exemption is load-bearing — round-2 finding 1); (b)
-  weaken the reconciliation to route on marker-presence alone (drop the `HEAD ==
-  pre_commit_head` equal-head arm) → a no-commit crash is mis-routed to
-  prebuilt-publish → publishes the stale parent or blocks spuriously; (c) make the
-  preservation unverified (skip the "block if quarantine unproven" guard) → a
-  quarantine failure would let `reset --hard` run anyway (that regression is what
-  AC-376-11 catches).
+- [ ] **AC-376-2 (crash BEFORE commit BLOCKS at the DEFAULT preflight and PRESERVES
+  every byte — round-4 (Z)).** A crash with `HEAD == pre_commit_head` (commit never
+  landed, Record A only — NO `committed_head_sha`) leaves a DIRTY workspace that may
+  contain UNRELATED user work. Resume must NOT exempt it: the DEFAULT
+  `_default_preflight` returns `preflight_failed` (existing behaviour — the exemption
+  is keyed on `committed_head_sha`, §1b), the train opens zero PRs, and every tracked
+  AND untracked byte is byte-identical on disk afterward. No publish, no `run_loop`,
+  no `reset`/`clean`/quarantine — the tree is never touched. (This is strictly
+  non-regressive: blocking a dirty tree IS today's `_check_repo_clean` behaviour.)
+  *Observable (byte-survival BY INACTION — the lead's literal positive control):*
+  with the real dirty post-crash workspace (Record A, no `committed_head_sha`) and the
+  DEFAULT preflight, `run_train` returns `{status:"preflight_failed"}` with zero
+  publish calls; a file the run never touched — BOTH a tracked edit AND an untracked
+  file — is byte-identical on disk after the blocked resume.
+  *Falsifier (any fails the AC):* (a) widen the §1b exemption to skip
+  `_check_repo_clean` for a `committing` node WITHOUT `committed_head_sha` (a
+  pre-commit Record A) → the dirty pre-commit node is admitted → re-introduces the
+  destruction surface (Z) removed and breaches the entry invariant; (b) add ANY
+  tree-mutating op (`reset`/`clean`/quarantine) on the `HEAD == pre_commit_head` arm
+  → the planted unrelated file is no longer byte-identical → the positive control
+  fails; (c) route a no-commit crash to prebuilt-publish (drop the
+  `committed_head_sha`-keyed identity, §2) → it publishes the stale parent or blocks
+  spuriously instead of failing closed at preflight.
   *Injection anchor:* drive the crash in the real subprocess BEFORE
-  `publishing.py:179` so the workspace is genuinely dirty; `assert` the resume ran
-  the DEFAULT preflight (no `_preflight_fn` injected) and did NOT return
-  `preflight_failed`, AND `run_loop` was invoked on resume for the no-commit node,
-  AND `prebuilt=True` was NOT passed.
+  `publishing.py:179` so the workspace is genuinely dirty and the ledger's last record
+  is `committing` WITHOUT `committed_head_sha`; `assert` the resume ran the DEFAULT
+  preflight (no `_preflight_fn` injected), returned `preflight_failed`, made zero
+  publish calls, and left the planted unrelated file (tracked AND untracked)
+  byte-identical on disk. **Scope note:** auto-resume of a dirty pre-commit crash
+  (preserve-then-regenerate) is deferred to `Consiliency/agent-harness#388`; this AC
+  asserts the (Z) block-and-preserve outcome. It ABSORBS the round-3 AC-376-11
+  unrelated-work-survival control in its strongest form — survival by inaction — so
+  AC-376-11 is retired (round-4 (Z)).
 
 - [ ] **AC-376-3 (stale-upstream on a frozen commit fails closed).** A resumed
   committed-unpublished node whose consumed upstream was rebuilt this run (or
@@ -1213,64 +1300,49 @@ and not a re-proof against an unreachable path — the `#368` AC-12/13 sin).
   of `prebuilt_owned_paths_fn(workspace, _DEFAULT_BASE)` in the constructed case —
   proving the persisted scope, not the broadened one, is authoritative.
 
-- [ ] **AC-376-10 (recovery-aware preflight admits a durably-marked node on a real
-  dirty workspace, but still fails closed for an unmarked dirty node — round-2
-  finding 1).** Obligation: the resume entry gate must let a node carrying a
-  durable `committing` marker past the uncommitted-changes check on its real
-  post-crash (dirty) workspace, while every unmarked dirty node still aborts the
-  train with zero PRs.
-  *Observable / positive (reachability):* after a real `run_train` crash that left
-  a `committing` marker and a DIRTY workspace, a second `run_train` invocation with
-  the DEFAULT `_default_preflight` does NOT return `preflight_failed` — it proceeds
-  to read the ledger and reach the Step-4 committing branch (the resumed node then
-  publishes or blocks per AC-376-1/5/6, never `preflight_failed`).
-  *Observable / negative (fail-closed narrowness):* a node with a DIRTY workspace
-  and NO `committing` marker (a stray edit, or a `running`-not-`committing` record)
-  still makes `run_train` return `{status:"preflight_failed"}` with zero PRs — the
-  exemption is keyed strictly on the marker.
-  *Falsifier (either fails the AC):* (a) revert the §1b exemption (or the Step-1.5
-  ledger-read reorder, or the `_default_preflight` `ledger_state` param) → the
-  marked dirty node returns `preflight_failed` and never resumes (positive fails —
-  reproducing finding 1's dead-code mechanism); (b) broaden the exemption to skip
-  `_check_repo_clean` for ANY dirty node → the unmarked dirty node is admitted
-  (negative fails — the entry invariant is breached).
-  *Injection anchor:* assert the resume used the DEFAULT preflight (no
-  `_preflight_fn` injected) on the REAL dirty post-crash workspace and did not
-  return `preflight_failed`; and in a sibling arm, seed one node dirty WITHOUT a
-  `committing` marker and assert `run_train` returns `preflight_failed` with zero
-  publish calls. This is the AC that proves finding 1 is closed on the production
-  path and the exemption is marker-narrow, not a blanket dirty-skip.
+- [ ] **AC-376-10 (recovery-aware preflight admits a POST-commit (Record B) node on a
+  real residual-dirty workspace, but still fails closed for a pre-commit (Record A)
+  or unmarked dirty node — round-2 finding 1, narrowed round-4 (Z)).** Obligation: the
+  resume entry gate must let a node whose `committing` marker carries a
+  `committed_head_sha` (Record B) past the uncommitted-changes check on its real
+  post-crash workspace — which can be dirty with `run_loop` residue OUTSIDE
+  `owned_paths` that survived the commit (§1b) — while a `committing` node WITHOUT
+  `committed_head_sha` (a pre-commit Record A) AND every unmarked dirty node still
+  abort the train with zero PRs.
+  *Observable / positive (reachability of the headline fix):* after a real `run_train`
+  crash that left a Record B marker (`committed_head_sha` set) and a workspace dirty
+  with untracked residue, a second `run_train` with the DEFAULT `_default_preflight`
+  does NOT return `preflight_failed` — it proceeds to the Step-4 committing branch and
+  publishes per AC-376-1 (never `preflight_failed`).
+  *Observable / negative (fail-closed narrowness):* (i) a `committing` node WITHOUT
+  `committed_head_sha` (a pre-commit Record A) on a dirty workspace still makes
+  `run_train` return `{status:"preflight_failed"}` with zero PRs (this IS the (Z)
+  block-and-preserve of AC-376-2); (ii) a dirty node with NO `committing` marker (a
+  stray edit, or a `running`-not-`committing` record) likewise returns
+  `preflight_failed` — the exemption is keyed strictly on `committed_head_sha`.
+  *Falsifier (any fails the AC):* (a) revert the §1b exemption (or the Step-1.5
+  ledger-read reorder, or the `_default_preflight` `ledger_state` param) → the Record-B
+  node with residue returns `preflight_failed` and never resumes (positive fails —
+  reproducing finding 1's dead-code mechanism on AC-376-1's path); (b) key the
+  exemption on bare `committing` instead of `committed_head_sha` → a pre-commit Record-A
+  dirty node is admitted (negative (i) fails — re-opening the destruction surface (Z)
+  removed); (c) broaden the exemption to skip `_check_repo_clean` for ANY dirty node →
+  the unmarked dirty node is admitted (negative (ii) fails).
+  *Injection anchor:* assert the resume used the DEFAULT preflight (no `_preflight_fn`
+  injected) on the REAL residual-dirty post-crash workspace of a Record-B node and did
+  not return `preflight_failed`; and in sibling arms, seed one node with a pre-commit
+  Record-A marker on a dirty tree, and one node dirty WITHOUT any marker, asserting
+  `run_train` returns `preflight_failed` with zero publish calls for both. This is the
+  AC that proves finding 1 is closed on the production path AND that the exemption is
+  post-commit-narrow (Z), not a blanket dirty-skip.
 
-- [ ] **AC-376-11 (a resume NEVER destroys unrelated uncommitted work — round-3
-  finding 1).** Obligation: when the equal-HEAD arm regenerates a crash-before-commit
-  node, any pre-existing uncommitted change that did NOT come from this run must
-  SURVIVE the resume — never silently deleted by `reset --hard`/`clean`. *(The
-  positive-control wording depends on the §1b mechanism choice, a lead decision:
-  quarantine-in-place → "recoverable from a verified named ref"; fresh-worktree →
-  "byte-identical in the original tree afterward." The plan carries quarantine as
-  primary; this AC is written for it and flags the alternative.)*
-  *Observable / positive control (quarantine):* seed the crashed workspace with an
-  unrelated dirty file the run never touched (both a tracked edit and an untracked
-  file); after resume, that file's pre-crash bytes are RECOVERABLE from the recorded
-  `refs/fab-quarantine/<node>/<run_id>` (the ref resolves to a tree containing the
-  exact pre-crash content). *(Fresh-worktree variant: the file is byte-identical in
-  the original worktree, untouched.)*
-  *Observable / negative (fail-closed on unproven preservation):* if the quarantine
-  ref-write fails or resolves empty, `run_train` BLOCKS the node and does NOT run
-  `reset --hard`/`clean` — the unrelated bytes remain in the working tree (never
-  destroyed on an unverified quarantine).
-  *Falsifier (either fails the AC):* (a) restore the unconditional `git reset --hard`
-  + `git clean -fd` (the round-2.5 arm) → the unrelated tracked edit is reset and the
-  untracked file deleted, unrecoverable → positive control fails (this is the exact
-  regression finding 1 names); (b) run the destructive op WITHOUT gating on proven
-  quarantine → inject a quarantine failure and observe `reset --hard` still runs and
-  eats the bytes → negative fails.
-  *Injection anchor:* drive the real crash-before-commit in a subprocess, plant an
-  unrelated dirty file, resume through the DEFAULT preflight, and assert the unrelated
-  content is recoverable from the quarantine ref (or byte-identical, per mechanism)
-  AND that a forced quarantine failure yields a BLOCK with the working tree untouched.
-  This is the AC the lead required: "pre-existing unrelated changes survive a resume,
-  with a positive control."
+*(**AC-376-11** — the round-3 unrelated-work-survival criterion — was RETIRED in
+round-4 (Z). With NO tree-mutating op on the crash-before-commit arm, survival of
+unrelated bytes is guaranteed by INACTION and is asserted as AC-376-2's positive
+control (a planted tracked+untracked file is byte-identical on disk after the blocked
+resume). The auto-resume capability that needed a quarantine is deferred to
+`Consiliency/agent-harness#388`, where the proven temp-index + tree-sha design lives.
+See `## CR fold — round 4`.)*
 
 ## AC observable-grounding (standing rule — every falsifier names an observable the code can produce)
 
@@ -1281,7 +1353,7 @@ concrete symbol at `file:line`. `x.y ⇒ y exists on type(x)`:
 | AC | Asserted observable | Grounded at | Producible today? |
 |---|---|---|---|
 | 1 | `{status:"published"}`; `pr_open` w/ `fab_run_id` | `publishing.py:199` returns `{"status":"published",...}`; `LedgerRecord.fab_run_id` `train_ledger.py:175-183` | YES |
-| 2 | DEFAULT preflight passes (no `preflight_failed`); `run_loop` invoked; `prebuilt=True` NOT passed | `_default_preflight` `train_runner.py:303`; `preflight_failed` return `:2294`; `publish_fn`/`run_loop` seams | YES (seam + §1b) |
+| 2 | pre-commit crash (Record A, no `committed_head_sha`) → `{status:"preflight_failed"}`, zero publish; planted tracked+untracked file byte-identical on disk (survival by inaction, (Z)) | `_default_preflight` `train_runner.py:303`; `preflight_failed` return `:2294`; `_check_repo_clean` `:168-183`; exemption keyed on `committed_head_sha`, §1b | YES |
 | 3 | `{status:"blocked", reason:"upstream_changed_downstream_committed"}`; no `broker.execute` | blocked-return shape `train_runner.py:2733-2737`; reason string DEFINED by §3 | YES (reason introduced by this plan) |
 | 4 | durable `AdmissionRecord.epoch` dedup HIT, equal `base_sha` | `AdmissionRecord.epoch` `admission.py:16`; #368 fold resolution | POST-#368 only (flagged); NOT `result.granted_epoch` (no such field) |
 | 5 | `{status:"blocked"}` broker-ambiguity reason; remote PR count 1 | `verbs.py:76` `reason="outcome_ambiguous"`; `credsep.py:284` `pr-unconfirmed`; PR count via fake `gh` | YES |
@@ -1289,10 +1361,9 @@ concrete symbol at `file:line`. `x.y ⇒ y exists on type(x)`:
 | 7 | `completed_nodes[nid]["fab_run_id"]` == marker; `pr_open.fab_run_id` == marker; gate not inert | `completed_nodes` dict `:2767-2777`; `pr_open.fab_run_id` `:2790`; `_fab_promotion_gate_before_merge` `:485-496` | YES |
 | 8 | `completed_nodes[nid]["admitted_head_sha"]` == `head_sha` | `completed_nodes[nid]["admitted_head_sha"]` `:2773` | YES |
 | 9 | captured `owned_paths` arg == `rec.owned_paths`, ⊊ whole-diff | `publish_fn` arg spy; `rec.owned_paths` tuple; `prebuilt_owned_paths_fn` `:2536` | YES |
-| 10 | marked dirty node → no `preflight_failed`, reaches Step-4 branch; unmarked dirty node → `{status:"preflight_failed"}`, zero PRs | `_default_preflight` `:303`/`:332` (new `ledger_state` param, §1b); `preflight_failed` return `:2294`; `_check_repo_clean` `:168-183` | YES |
-| 11 | unrelated dirty file (tracked AND untracked) recoverable from `refs/fab-quarantine/...` after resume; unproven quarantine → BLOCK, tree untouched | quarantine ref (NEW, §1b — captures tracked+untracked, e.g. `stash push --include-untracked`); `git cat-file`/`rev-parse` verify; block-return shape `:2733-2737` | YES |
+| 10 | Record-B (`committed_head_sha`-set) residual-dirty node → no `preflight_failed`, reaches Step-4 branch; pre-commit Record-A dirty node AND unmarked dirty node → `{status:"preflight_failed"}`, zero PRs | `_default_preflight` `:303`/`:332` (new `ledger_state` param, exemption keyed on `committed_head_sha`, §1b); `preflight_failed` return `:2294`; `_check_repo_clean` `:168-183` | YES |
 
-Every AC 1/2/3/5/6/7/8/9/10/11 observable is producible on TODAY's code; only AC-4's
+Every AC 1/2/3/5/6/7/8/9/10 observable is producible on TODAY's code; only AC-4's
 is #368-gated and is grounded on the durable record's `.epoch`, not on a result field
 that does not exist.
 
