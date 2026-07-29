@@ -141,21 +141,32 @@ class PlanningGateScopeSplitTest(unittest.TestCase):
     boundary the team-lead drew at ratification_policy.py:96-100 and would catch a
     regression that re-added the floor to `governed_planning_gate`."""
 
-    def test_planning_gate_does_not_enforce_floor(self):
+    def test_one_board_held_by_loop_promoted_by_plan_gate(self):
+        # Board #384 r2: pin the split with ONE board object handed to BOTH callers
+        # — the property is "the same board treated differently by the two callers",
+        # NOT "two differently-built boards behave differently". 1 usable reviewer
+        # (codex AGREE) + 1 unavailable (gemini).
         panel = _panel(
             PanelLegResult(leg="codex", status="ok", text="AGREE"),
             PanelLegResult(leg="gemini", status="unavailable", text=""),
         )
-        result = governed_planning_gate(
+
+        # (a) the PRE-MERGE loop HOLDS this exact board below the floor ...
+        loop_result = _loop(panel, ("codex", "gemini"))
+        self.assertFalse(loop_result.mergeable)
+        self.assertEqual(loop_result.reason, "below_reviewer_floor")
+
+        # (b) ... while the plan-stage gate PROMOTES the SAME board (autonomy-first).
+        gate_result = governed_planning_gate(
             artifact="ART",
             author_executor="claude",
             run_mode="governed",
             available_legs=("codex", "gemini"),
             invoke=lambda art, pool, spawn=None: panel,
         )
-        self.assertTrue(result.promoted)  # 1 usable reviewer promotes on the plan gate
+        self.assertTrue(gate_result.promoted)
         self.assertFalse(
-            any(f.code == "governed_below_reviewer_floor" for f in result.findings)
+            any(f.code == "governed_below_reviewer_floor" for f in gate_result.findings)
         )
 
 

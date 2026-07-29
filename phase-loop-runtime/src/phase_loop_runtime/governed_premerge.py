@@ -56,6 +56,15 @@ DEFAULT_MAX_REVIEW_ROUNDS = 3
 #: a side effect of this merge-gate fix.
 _MIN_USABLE_REVIEWERS = 2
 
+#: Consiliency/agent-harness#358: PROVENANCE tag stamped onto a persisted train-
+#: review approval so a forensic reader / the #375 review-semantics migration can
+#: answer "under which review regime was this approved". It is NOT a resume gate —
+#: a persisted approval is honored on resume iff its recorded `usable_reviewers`
+#: still clears the LIVE `_MIN_USABLE_REVIEWERS`; the version is recorded evidence,
+#: never the thing that authorizes or invalidates. Bump only when the MEANING of a
+#: recorded approval changes (e.g. #375 redefining "usable" via grounding/EC-12).
+REVIEW_POLICY_VERSION = "usable-reviewer-floor@1"
+
 #: FAB (Consiliency/agent-harness#191) design §4.4 promotion-time
 #: re-assertion — activation milestone piece 1. Opt-in env control mirroring
 #: `closeout_validators.REVIEW_MODE_ENV`'s posture: default OFF/absent means
