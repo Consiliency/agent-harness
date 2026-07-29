@@ -45,7 +45,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 from .roadmap_lint import _extract_phases
 
@@ -131,6 +131,51 @@ def _edges_on_line(line: str, aliases: Set[str]) -> List[Tuple[str, str]]:
     return out
 
 
+def _bracket_edges(lines: List[str], aliases: Set[str]) -> List[Tuple[str, str]]:
+    """Edges from the ASCII-DAG bracket region, where a single source fans out over
+    several rows. A source alias sits at the START of its row and branches (``┬``/``┼``)
+    down to ``└``/``├`` CONTINUATION rows that carry an arrow but NO alias to the arrow's
+    left — e.g. ``FABPUB ──┬──→ FABREADMIT`` then ``     └──→ RESIDUAL``. ``_edges_on_line``
+    alone misses the second: its left operand is FABPUB from the row above, not on the line.
+
+    Walk the region tracking ``current_source`` — the most recent alias appearing before a
+    row's first arrow (or, on a source-only row like ``LEGIBLE ──┐``, its sole leading
+    alias). A continuation arrow with no on-line left alias inherits ``current_source``. A
+    blank line ends a fan block and resets the source, bounding inheritance to a contiguous
+    bracket so a stray later arrow can never be mis-attributed. This inheritance is scoped to
+    the bracket ONLY; serial/absorbed/critical rows always carry an on-line left alias, and
+    inheriting across them would manufacture false edges."""
+    out: List[Tuple[str, str]] = []
+    current_source: str | None = None
+    for line in lines:
+        if not line.strip():
+            current_source = None
+            continue
+        toks = [(m.start(), m.group(0)) for m in re.finditer(r"[A-Za-z][A-Za-z0-9]*", line)
+                if m.group(0) in aliases]
+        first_arrow = line.find(ARROW)
+        # Establish this row's source: the last alias before the first arrow, or (on a
+        # source-only row with no arrow) the leading alias.
+        if toks:
+            if first_arrow == -1:
+                current_source = toks[0][1]
+            else:
+                lefts = [t for p, t in toks if p < first_arrow]
+                if lefts:
+                    current_source = lefts[-1]
+        for am in re.finditer(re.escape(ARROW), line):
+            pos = am.start()
+            rights = [t for p, t in toks if p > pos]
+            if not rights:
+                continue
+            right = rights[0]
+            lefts_here = [t for p, t in toks if p < pos]
+            src = lefts_here[-1] if lefts_here else current_source
+            if src and src != right:
+                out.append((src, right))
+    return out
+
+
 def _chain_on_line(line: str, aliases: Set[str]) -> Tuple[str, ...]:
     """The ordered sequence of known-alias tokens on a line that contains arrows."""
     if ARROW not in line:
@@ -192,16 +237,20 @@ def check_representation_consistency(text: str) -> List[Finding]:
         return out
 
     # (1) Every arrow a representation CLAIMS must be backed by the structured field.
-    # Full region lists: a header line carries no alias-joined arrows, but the pre-fix
-    # critical path lives ENTIRELY on its header line ("Critical path: A → B → ..."), so
-    # dropping the header would blind the check to exactly the defect it must catch.
-    for repname, lines in (("ascii-dag", reg.bracket), ("serial-edges", reg.serial),
+    # The ASCII-DAG bracket fans one source over several rows, so its arrows are read with
+    # source-inheritance (_bracket_edges) to catch continuation rows like "└──→ RESIDUAL".
+    # The other regions use per-line reading: a header line carries no alias-joined arrows,
+    # but the pre-fix critical path lives ENTIRELY on its header line ("Critical path: A →
+    # B → ..."), so dropping the header would blind the check to exactly that defect.
+    claimed = [("ascii-dag", e) for e in _bracket_edges(reg.bracket, aliases)]
+    for repname, lines in (("serial-edges", reg.serial),
                            ("absorbed-chain", reg.absorbed), ("critical-path", reg.critical)):
-        for a, b in _claimed_edges(lines):
-            if (a, b) not in edges:
-                findings.append(Finding(
-                    repname,
-                    f"asserts edge {a} {ARROW} {b}, which no phase's **Depends on** backs"))
+        claimed.extend((repname, e) for e in _claimed_edges(lines))
+    for repname, (a, b) in claimed:
+        if (a, b) not in edges:
+            findings.append(Finding(
+                repname,
+                f"asserts edge {a} {ARROW} {b}, which no phase's **Depends on** backs"))
 
     # (2) Parallel-roots list must equal the structured roots.
     par_line = next((ln for ln in reg.parallel if "∥" in ln), " ".join(reg.parallel))
