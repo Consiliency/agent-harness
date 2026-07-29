@@ -231,6 +231,43 @@ this proves-then-mutates). Collision-free naming by TREE sha (`refs/fab-quaranti
 identical re-crash finding the ref present must read as "preservation already holds,
 proceed," not a block.
 
+**Round-4 board corroboration (grok F1–F4 — independent, cited not silently inherited).**
+The round-4 board split: codex BLOCKS-MERGE on the collision axis (folded as (Z) above);
+grok AGREE with four graded tightenings. Under (Z), grok's F2–F4 land on parts this plan
+KEEPS and each independently confirms a choice already made — worth citing as external
+corroboration rather than treating the seat as a rubber stamp:
+
+- **F2 (exact-SHA identity — reachable, residual fail-closed).** Grok's window table
+  confirms *"no window both lacks a recorded SHA and publishes,"* and endorses the callback
+  placement this plan specifies — after the real `head_sha` capture (`publishing.py:188-190`),
+  before `broker_client.execute` (`:196`) — with this plan's own reasoning: a mid-publish
+  crash never returns to `train_runner`, so the durable write must originate inside the
+  publish process. It adds: *"best-effort swallow only widens the fail-closed gap; it does
+  not open a publish-without-identity path"* — matching the `committed_head_unrecorded_on_resume`
+  fail-closed disposition (§"Commit identity via post-commit SHA").
+- **F3 (dropping confinement from identity — safe).** Grok confirms authorization is still
+  enforced on the first non-replay publish by credsep's re-diff (`credsep.py:248-253`, incl.
+  the uncovered-path reject), and that replay of a terminal record skips re-auth because it
+  performs no mutation. It reaches this plan's branch finding INDEPENDENTLY: *"`credsep.py:210`
+  compares current branch to `request.branch`, and `publishing.py:196` builds `request.branch`
+  from the current branch (tautological)"* — so this plan's comparison against the RECORDED
+  `rec.branch` (finding-2 branch clause) is real defence-in-depth, not redundant.
+- **F4 (faithfulness — hard to defeat if tests follow the plan).** Grok prescribes crash via
+  real `run_train` (SIGKILL / `BaseException` past the `except Exception` at `train_runner.py:2704`
+  — verified: that handler catches `Exception` only and writes `blocked`, so a `BaseException`
+  or SIGKILL escapes it with NO ledger write, exercising the true resume path), resumed via
+  the DEFAULT `_default_preflight`. This matches AC-376-1/2/10's faithfulness constraint
+  (real entry point, not a hand-stubbed preflight).
+- **F1 (the removed arm) — folds as corroboration into `#388`, not here.** F1 endorses the
+  preserve-then-verify-then-mutate invariant and independently prescribes the exact
+  non-mutating capture (*"`hash-object` / temp index / `commit-tree` → `update-ref` →
+  verify → THEN mutate"*) that this round proved runnable — and credits AC-376-11 for forcing
+  an untracked file into the test (the same untracked-survival axis (Z) preserves by inaction).
+  Grok graded it FOLLOW-UP, not a reason to hold the plan; codex graded the same area
+  BLOCKS-MERGE on the collision axis grok did not check. Both were right about different
+  halves; under (Z) the arm is removed and neither applies to the shipped plan. F1's
+  corroboration of the deferred design is recorded in `Consiliency/agent-harness#388`.
+
 ## The resumed-execute-node reconstruction class (CR — B1, B2, codex 2, codex 3)
 
 Four of the five CR findings are ONE defect: the plan routed a resumed execute
