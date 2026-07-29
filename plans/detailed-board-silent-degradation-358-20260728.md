@@ -1,7 +1,35 @@
 # Detailed plan: ah#358 — board silent degradation (decision-scoped)
 
-**Status:** DRAFT — awaiting cross-vendor panel
-**Date:** 2026-07-28
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` → Phase 1 `REVIEWTRUTH` (2026-07-29)
+>
+> **Do not execute this plan as a standalone artifact, and do not register it in the
+> manifest.** `Consiliency/agent-harness#358` is specified as v10's `REVIEWTRUTH` phase
+> (`EC-REVIEWTRUTH-0..10`); a separate detailed plan for it is the duplication the v10
+> consolidation exists to prevent.
+>
+> **This plan's analysis is SALVAGE, not a competing artifact.** A source-grounded audit of
+> `REVIEWTRUTH` against this analysis produced three corrections, all routed to
+> `Consiliency/agent-harness#375` as criteria, NOT to a separate PR:
+> - `EC-REVIEWTRUTH-1` is mis-targeted — it guards *below-floor*, but the motivating
+>   incident is *at-floor* degradation (`FLOOR_SEATS=3`, `DEFAULT_TARGET_SEATS=4`, claude
+>   unfillable ⇒ 3-of-4 converges). Amend `-1`/`-4` for the three-state model
+>   (full / floor-only-degraded / below-floor), which currently conflict.
+> - The just-ratified VETO + grounded-DISAGREE rule is encoded by no criterion (grounding
+>   appears only as `EC-REVIEWTRUTH-9`'s one-shot smoke). Add a runtime criterion.
+> - The `#359`/`#374` timeout/orphan cluster is COVERED — by `EC-LEGLIFE-1/2/3`, not
+>   `REVIEWTRUTH`; note the cross-phase seam (a `leg_timeout` must reach `EC-REVIEWTRUTH-7`'s
+>   retry-not-count) and the `REVIEWTRUTH → LEGLIFE` ordering.
+>
+> **What shipped now (the decision-independent subset only):** the governed pre-merge path
+> enforces a usable-reviewer floor (≥ 2 usable legs; a single reviewer is not a board),
+> closing the "blocks only at ZERO usable" hole. It counts LEGS, not distinct vendor
+> families, and does NOT decide 2-vs-3 — that (and the grounding *guarantee*) waits for the
+> `#375` criteria and the `REVIEWTRUTH` phase. `D2(a)`'s hard BLOCK stays retracted
+> (autonomy-first). Corrected framing carried from the audit: the CLI *does* enforce the
+> floor (`cli.py:1533`, exit 1, loud shortfall); the live defect was the **governed** path.
+
+**Status:** SUPERSEDED — see banner above (was: DRAFT — awaiting cross-vendor panel)
+**Date:** 2026-07-28 (superseded 2026-07-29)
 **Issue:** Consiliency/agent-harness#358 (consolidates #346, #332, #356, #319)
 
 > **Scope note.** This plan is deliberately **decision-scoped**. It frames four forks and
