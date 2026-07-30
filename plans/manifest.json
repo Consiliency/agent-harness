@@ -659,16 +659,20 @@
                 "phase-loop-runtime/src/phase_loop_runtime/proofgate_receipts.py"
               ],
               "capability_marker": "phase_loop_runtime.proofgate_capability:PROOFGATE_CAPABILITY_VERSION=proofgate.v1",
+              "credential_transform_contract": "credential_transform_closure.v1",
               "default_skip_nodeids": 36,
               "expected_nodeids": 39,
+              "external_head_contract": "proofgate_external_head.v1",
+              "external_head_ref": "refs/heads/proofgate-receipt-head-v1",
+              "identity_response_framing_contract": "identity_response_framing.v1",
               "lifecycle": "proofgate_tdd_candidate_main.v1",
               "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
               "ordinary_phase_nodeids": 39,
               "owned_path_patterns_count": 37,
               "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
-              "plan_sha256": "48da75b8359dab502d1d558505cbaaf76655e6ab740b6347498542f03c895047",
+              "plan_sha256": "cb57b42bbca45e25e8e32f18ca6c9dc759732190299ff91bd7a0126ded4946d1",
               "positive_control_nodeids": 2,
-              "predecessor_panel_sha256": "212450de27eeee121a7adb8598f91716202a1b4a17620b1aaa38a1cb86468a9d",
+              "predecessor_panel_sha256": "c40db50513fadc756860d806eaf7f427c89b99e1cef56332ecb221e8584f8757",
               "roadmap_sha256": "7f2590bdebf5a892cf0987b67916d2c3b95970b547117b8cbf4adc7c7220838e"
             }
           },
@@ -687,7 +691,7 @@
       "slug": "v10-PROOFGATE",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-07-30T10:44:29Z"
+      "updated_at": "2026-07-30T11:10:14Z"
     },
     {
       "acceptance_criteria_count": null,
