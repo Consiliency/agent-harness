@@ -651,6 +651,8 @@
               "attended_live_env": "PHASE_LOOP_PROOFGATE_ATTENDED_LIVE",
               "attended_phase_nodeids": 39,
               "attended_real_provider_rows": 4,
+              "attested_core_contract": "proofgate_attested_core.v1",
+              "acceptance_invalid_enforcement": "validator_nonzero_intake_closeout_block",
               "bootstrap_paths": [
                 ".github/workflows/proofgate-receipt-attestation.yml",
                 "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
@@ -662,17 +664,19 @@
               "credential_transform_contract": "credential_transform_closure.v1",
               "default_skip_nodeids": 36,
               "expected_nodeids": 39,
+              "external_head_append_contract": "proofgate_external_head_append.v1",
               "external_head_contract": "proofgate_external_head.v1",
               "external_head_ref": "refs/heads/proofgate-receipt-head-v1",
+              "grandfathered_acceptance_compatibility": "exact_cutoff_raw_bytes_warn_only",
               "identity_response_framing_contract": "identity_response_framing.v1",
               "lifecycle": "proofgate_tdd_candidate_main.v1",
               "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
               "ordinary_phase_nodeids": 39,
               "owned_path_patterns_count": 37,
               "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
-              "plan_sha256": "cb57b42bbca45e25e8e32f18ca6c9dc759732190299ff91bd7a0126ded4946d1",
+              "plan_sha256": "18422ee52d7a3a77adf6ecd75446abe7fea52da7ff4113f24209d0f292f3bff0",
               "positive_control_nodeids": 2,
-              "predecessor_panel_sha256": "c40db50513fadc756860d806eaf7f427c89b99e1cef56332ecb221e8584f8757",
+              "predecessor_panel_sha256": "8225d4c23b87a562b4a8132cff949a03fdc02f6f95330f20b989d1443b07b34d",
               "roadmap_sha256": "7f2590bdebf5a892cf0987b67916d2c3b95970b547117b8cbf4adc7c7220838e"
             }
           },
@@ -691,7 +695,7 @@
       "slug": "v10-PROOFGATE",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-07-30T11:10:14Z"
+      "updated_at": "2026-07-30T11:42:18Z"
     },
     {
       "acceptance_criteria_count": null,
