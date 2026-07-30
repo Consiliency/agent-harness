@@ -63,6 +63,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   metadata emits the new `ContractFloorMetadataDivergence` warning naming both values and
   which governed, but enforcement proceeds on the pin. The installed case (a wheel /
   clean-room install with no adjacent `pyproject`) is unchanged: metadata governs there.
+- **The adjacent `pyproject` is trusted only when it is proven OURS, by identity not
+  location (Consiliency/agent-harness#382 r6).** Adjacency alone is a place a foreign
+  file can occupy: `parents[2]` of an installed `site-packages/phase_loop_runtime/__init__.py`
+  is `lib/pythonX.Y`, and a `pip install --target` vendoring or a Windows venv-in-project-root
+  can put a consumer's `pyproject` there whose foreign pin would otherwise govern and
+  false-abort a healthy install. The pin is now honored only when the file's `[project].name`
+  canonicalizes (PEP 503) to `phase-loop-runtime`, and the `consiliency-contract` dependency
+  is matched by canonical name equality — never a `startswith` prefix, which had read the
+  distinct package `consiliency-contracts` (plural) as ours. Name canonicalization is applied
+  everywhere the dependency identity is compared (pyproject extraction, the metadata-side
+  match, and divergence corroboration), so a spelling-only difference (`Consiliency_Contract`)
+  neither manufactures a false divergence nor silently drops the floor.
 
 ### Outside-agent contract: repin to `spec@v0.2.1` + per-file `sha256` verification (Consiliency/agent-harness#370)
 

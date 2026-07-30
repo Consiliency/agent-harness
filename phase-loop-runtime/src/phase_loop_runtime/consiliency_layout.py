@@ -404,21 +404,35 @@ def _dist_owns_imported_runtime(dist: Any) -> bool:
 
 def _requirement_from_adjacent_pyproject() -> str | None:
     """The ``consiliency-contract`` requirement declared in the SOURCE
-    ``pyproject.toml`` adjacent to the imported module, or ``None`` if there is none.
+    ``pyproject.toml`` adjacent to AND OWNED BY the imported module, or ``None``.
 
     Adjacency mirrors the imported package's on-disk layout
-    (``src/phase_loop_runtime/__init__.py`` -> ``../../pyproject.toml``) -- the SAME
-    adjacency the test-suite single-source helper uses. Returns ``None`` when no
-    adjacent ``pyproject`` exists (a wheel / clean-room install ships none, and the
-    metadata floor governs there) or it declares no ``consiliency-contract``
-    dependency. The requirement's environment marker is dropped so it is directly
-    comparable with the metadata form.
+    (``src/phase_loop_runtime/__init__.py`` -> ``../../pyproject.toml``). But
+    adjacency is LOCATION, not IDENTITY (board #382 r6, codex B1 / fable F-1, all
+    seats): ``parents[2]`` of an INSTALLED ``site-packages/phase_loop_runtime/
+    __init__.py`` is ``lib/pythonX.Y``, and a ``pip install --target`` vendoring
+    (dist-info co-located, so ownership legitimately passes) or a Windows
+    venv-in-project-root (``Lib/site-packages`` is exactly two levels; Linux venvs
+    cannot hit it) can place a FOREIGN ``pyproject`` there whose pin would then
+    govern -- fable reproduced both shapes false-aborting a healthy install. So the
+    file is trusted ONLY when its ``[project].name`` canonicalises (PEP 503) to
+    ``phase-loop-runtime``: a consumer's pyproject carries its OWN name, so this one
+    check kills the entire class. The dependency is matched by CANONICAL name
+    equality, never a prefix -- a prefix accepted ``consiliency-contracts`` (plural,
+    a DIFFERENT package) and would let its pin govern (board #382 r6). The
+    requirement's environment marker is dropped so it is directly comparable with
+    the metadata form. Returns ``None`` when no adjacent ``pyproject`` exists (a
+    wheel / clean-room install ships none), it is not proven ours, or it declares no
+    ``consiliency-contract`` dependency -- in every such case metadata governs.
     """
     try:
         try:
             import tomllib  # Python 3.11+
         except ModuleNotFoundError:  # pragma: no cover - 3.10 backport path
             import tomli as tomllib
+
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
 
         import phase_loop_runtime
 
@@ -428,8 +442,21 @@ def _requirement_from_adjacent_pyproject() -> str | None:
         if not pyproject.is_file():
             return None
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        for dep in data.get("project", {}).get("dependencies", ()):
-            if dep.replace(" ", "").lower().startswith("consiliency-contract"):
+        project = data.get("project", {})
+        # OWNERSHIP GATE (board #382 r6): trust the pin ONLY when this pyproject is
+        # OURS. Adjacency alone is a location a foreign file can occupy.
+        name = project.get("name")
+        if not isinstance(name, str) or canonicalize_name(name) != "phase-loop-runtime":
+            return None
+        for dep in project.get("dependencies", ()):
+            try:
+                req = Requirement(dep)
+            except Exception:
+                continue
+            # CANONICAL identity, not a prefix: 'consiliency-contracts' (plural) is a
+            # different package and must not be read as ours.
+            if canonicalize_name(req.name) == "consiliency-contract":
+                # Drop any environment marker; keep name + specifier.
                 return dep.split(";", 1)[0].strip()
         return None
     except Exception:
@@ -438,17 +465,24 @@ def _requirement_from_adjacent_pyproject() -> str | None:
 
 def _requirements_equivalent(a: str, b: str) -> bool:
     """True iff two requirement strings name the same dependency with the same
-    specifier, compared on the PARSED ``(name, specifier)`` -- so ``<0.7,>=0.6.5``
-    and ``>=0.6.5,<0.7`` (identical constraints, different serialisations)
-    corroborate rather than spuriously diverge. A specifier-set stringifies in a
-    normalised order, so this is a semantic, not textual, comparison."""
+    specifier, compared on the PARSED, CANONICALISED ``(name, specifier)``.
+
+    Two axes of normalisation, both load-bearing for corroboration (board #382 r5/r6):
+    the specifier is compared on its stringified set (which serialises in a normalised
+    order, so ``<0.7,>=0.6.5`` and ``>=0.6.5,<0.7`` corroborate), and the NAME is
+    compared PEP-503-canonical (so ``Consiliency_Contract`` and ``consiliency-contract``
+    -- the same package, different spelling -- corroborate rather than manufacture a
+    false divergence, board #382 r6 codex B2)."""
     from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
 
     try:
         ra, rb = Requirement(a), Requirement(b)
     except Exception:
         return a == b
-    return ra.name == rb.name and str(ra.specifier) == str(rb.specifier)
+    return canonicalize_name(ra.name) == canonicalize_name(rb.name) and str(
+        ra.specifier
+    ) == str(rb.specifier)
 
 
 def declared_contract_requirement() -> str | None:
@@ -477,14 +511,19 @@ def declared_contract_requirement() -> str | None:
     Installed case (no adjacent ``pyproject`` -- a wheel / clean-room install):
     metadata-based behaviour is unchanged, since the pin is not shipped there.
 
-    Returns ``None`` when the metadata is unreadable OR cannot be shown to belong to
-    the running code (``_dist_owns_imported_runtime``) AND no adjacent pin is
-    readable, so the caller treats the floor as unknowable rather than enforcing a
-    floor that is not the running package's.
+    Ownership gates BOTH readings (board #382 r6, fable probe B): if the resolved
+    distribution cannot be shown to own the imported module
+    (``_dist_owns_imported_runtime``), this returns ``None`` outright -- the adjacent
+    pin does NOT rescue an unowned dist, because the pin path is reached only AFTER
+    ownership is proven. Given ownership, returns ``None`` only when neither the pin
+    (an adjacent ``pyproject`` proven OURS by ``[project].name``) nor the metadata
+    yields a ``consiliency-contract`` requirement, so the caller treats the floor as
+    unknowable rather than enforcing a floor that is not the running package's.
     """
     try:
         import importlib.metadata as md
         from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
 
         dist = md.distribution("phase-loop-runtime")
         if not _dist_owns_imported_runtime(dist):
@@ -496,7 +535,12 @@ def declared_contract_requirement() -> str | None:
                 req = Requirement(raw)
             except Exception:
                 continue
-            if req.name == "consiliency-contract":
+            # CANONICAL identity (board #382 r6, 2c): an unnormalised ``== "consiliency-
+            # contract"`` SILENTLY MISSES a metadata dep spelled ``Consiliency_Contract``
+            # -- metadata_req stays None and the guard loses corroboration/divergence
+            # detection for that dist entirely (quiet-blind, the opposite failure to the
+            # false-divergence a raw equivalence compare produces).
+            if canonicalize_name(req.name) == "consiliency-contract":
                 # Drop any environment marker; keep name + specifier.
                 metadata_req = raw.split(";", 1)[0].strip()
                 break
@@ -514,8 +558,10 @@ def declared_contract_requirement() -> str | None:
                     f"'{pyproject_req}'. The co-located .egg-info is gitignored and "
                     "refreshes only on 'pip install', so it can lag the pin across "
                     "pin edits / branch switches; the PYPROJECT PIN governs "
-                    "enforcement here. Reinstall (pip install -e ./phase-loop-runtime) "
-                    "to refresh the metadata (Consiliency/agent-harness#382).",
+                    "enforcement here. The pin is proven OURS ([project].name), so "
+                    "this divergence means the metadata is merely stale relative to "
+                    "the pin -- reinstall (pip install -e ./phase-loop-runtime) to "
+                    "refresh it (Consiliency/agent-harness#382).",
                     ContractFloorMetadataDivergence,
                     stacklevel=2,
                 )

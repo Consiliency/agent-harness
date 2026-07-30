@@ -221,10 +221,13 @@ def test_floor_governed_by_pyproject_over_stale_newer_metadata(monkeypatch):
     )
 
     # End to end: a healthy install that SATISFIES the pin must NOT abort, even though
-    # the stale metadata floor (>=9.9) would have. (The check re-emits the divergence
-    # warning; catching it here also asserts it stays non-silent on the enforce path.)
+    # the stale metadata floor (>=9.9) would have. The content asserted is "does NOT
+    # raise + re-emits the divergence warning": reaching the end of the with-block is the
+    # no-raise assertion, and pytest.warns is the warning assertion. (An `is None` value
+    # check would be VACUOUS -- check_installed_contract_floor is a `-> None` function;
+    # board #382 r6 micro-nit.)
     with pytest.warns(ContractFloorMetadataDivergence):
-        assert cl.check_installed_contract_floor() is None
+        cl.check_installed_contract_floor()
 
 
 def test_floor_governed_by_pyproject_over_stale_older_metadata(monkeypatch):
@@ -286,6 +289,12 @@ def test_requirements_equivalent_normalizes_specifier_order():
     assert not _requirements_equivalent(
         "consiliency-contract>=9.9,<10", "consiliency-contract>=0.6.5,<0.7"
     ), "a genuinely different floor must diverge"
+    # NAME axis (board #382 r6, codex B2b): a PEP-503 spelling-only difference
+    # (underscore vs hyphen, case) is the SAME package and must corroborate -- an
+    # unnormalized ``ra.name == rb.name`` would manufacture a false divergence here.
+    assert _requirements_equivalent(
+        "Consiliency_Contract>=0.6.5,<0.7", "consiliency-contract>=0.6.5,<0.7"
+    ), "canonical-name-equal deps must corroborate, not diverge on spelling"
 
 
 def test_floor_falls_back_to_metadata_when_no_adjacent_pyproject(monkeypatch):
@@ -315,6 +324,177 @@ def test_floor_falls_back_to_metadata_when_no_adjacent_pyproject(monkeypatch):
     assert str(Requirement(req).specifier) == str(Requirement("x>=1.2,<2").specifier), (
         "with no adjacent pyproject the metadata floor must govern unchanged. Board #382 r5."
     )
+
+
+# ---------------------------------------------------------------------------
+# Board #382 r6 — ADJACENCY WITHOUT IDENTITY (codex B1/B2, fable F-1/F-2, lead-
+# ratified 2c). r5 trusted adjacency; r6 proves the adjacent pyproject is OURS
+# (existence AND ownership AND exact dependency identity) before its pin governs.
+# These falsifiers build REAL on-disk layouts and repoint the imported module's
+# ``__file__`` so ``_requirement_from_adjacent_pyproject`` reads the planted file
+# through its real code path (no mock of the helper under claim).
+# ---------------------------------------------------------------------------
+def _plant_layout(root: Path, *, project_name, deps, write_pyproject=True):
+    """Write ``root/src/phase_loop_runtime/__init__.py`` and (optionally)
+    ``root/pyproject.toml`` so ``parents[2]`` of the __init__ is ``root``. Returns
+    the __init__ path to assign to ``phase_loop_runtime.__file__``."""
+    pkg = root / "src" / "phase_loop_runtime"
+    pkg.mkdir(parents=True, exist_ok=True)
+    init = pkg / "__init__.py"
+    init.write_text("", encoding="utf-8")
+    if write_pyproject:
+        dep_lines = ",\n".join(f'    "{d}"' for d in deps)
+        (root / "pyproject.toml").write_text(
+            f'[project]\nname = "{project_name}"\ndependencies = [\n{dep_lines}\n]\n',
+            encoding="utf-8",
+        )
+    return init
+
+
+def test_adjacent_pyproject_not_trusted_when_name_is_foreign(tmp_path, monkeypatch):
+    # ROW B1-OWNERSHIP falsifier (board #382 r6, codex B1 / fable F-1). LAYER this binds:
+    # the adjacent pyproject is proven OURS by [project].name before its pin governs. Layer
+    # ABOVE (now closed): r5 trusted mere is_file() adjacency, so a pip-install --target
+    # vendoring or Windows venv-in-project-root could place a CONSUMER's pyproject at
+    # parents[2] and let its foreign pin govern -> false-abort a healthy install. A consumer
+    # pyproject carries its OWN name, so the name gate kills the class. RED before the fix:
+    # helper returns the foreign >=9.9 pin.
+    import phase_loop_runtime as pl
+    import phase_loop_runtime.consiliency_layout as cl
+
+    init = _plant_layout(
+        tmp_path, project_name="some-consumer-app",
+        deps=["consiliency-contract>=9.9,<10"],
+    )
+    monkeypatch.setattr(pl, "__file__", str(init))
+    assert cl._requirement_from_adjacent_pyproject() is None, (
+        "a FOREIGN adjacent pyproject (not phase-loop-runtime) must NOT govern the floor. "
+        "Board #382 r6 Blocker 1 (adjacency without ownership)."
+    )
+
+
+def test_foreign_adjacent_pyproject_does_not_abort_end_to_end(tmp_path, monkeypatch):
+    # ROW B1-OWNERSHIP, ACCEPTANCE CRITERION end to end (board #382 r6, advisor). The unit
+    # test above binds the helper; THIS binds the actual outcome fable demonstrated: ownership
+    # LEGITIMATELY passes (a --target vendoring co-locates dist-info) AND a FOREIGN pyproject
+    # with a >=9.9 pin sits at parents[2], yet a HEALTHY install must NOT abort. Monkeypatching
+    # ownership->True is faithful here -- it reproduces "ownership passes" so the pyproject-trust
+    # decision is what the test isolates. RED under the B1own mutation: the foreign >=9.9 pin
+    # governs -> 0.6.5 install aborts with ContractFloorError.
+    import importlib.metadata as md
+
+    import phase_loop_runtime as pl
+    import phase_loop_runtime.consiliency_layout as cl
+
+    init = _plant_layout(
+        tmp_path, project_name="some-consumer-app",
+        deps=["consiliency-contract>=9.9,<10"],
+    )
+    monkeypatch.setattr(pl, "__file__", str(init))
+    monkeypatch.setattr(cl, "_dist_owns_imported_runtime", lambda dist: True)
+    monkeypatch.setattr(
+        md, "distribution",
+        lambda name: _StaleMetadataDist("consiliency-contract>=0.6.5,<0.7"), raising=True,
+    )
+    # Foreign pin rejected by the name gate -> healthy metadata (>=0.6.5,<0.7) governs ->
+    # the imported 0.6.5 satisfies it -> no raise (and no divergence: there is no owned pin).
+    cl.check_installed_contract_floor()
+
+
+def test_adjacent_pyproject_ignores_plural_contracts_package(tmp_path, monkeypatch):
+    # ROW B2a falsifier (board #382 r6, codex B2). LAYER: dependency identity is CANONICAL
+    # name equality, not a prefix. Layer ABOVE (closed): r5's startswith("consiliency-
+    # contract") matched 'consiliency-contracts' (plural -- a DIFFERENT package) and would
+    # let ITS pin govern. Our pyproject (correct name) lists ONLY the plural -> no real
+    # consiliency-contract dep -> helper returns None (metadata governs). RED before fix:
+    # returns the plural's >=9.9 pin.
+    import phase_loop_runtime as pl
+    import phase_loop_runtime.consiliency_layout as cl
+
+    init = _plant_layout(
+        tmp_path, project_name="phase-loop-runtime",
+        deps=["consiliency-contracts>=9.9,<10"],
+    )
+    monkeypatch.setattr(pl, "__file__", str(init))
+    assert cl._requirement_from_adjacent_pyproject() is None, (
+        "'consiliency-contracts' (plural) is a different package and must not be read as "
+        "ours. Board #382 r6 Blocker 2a (prefix over-reach)."
+    )
+
+
+def test_adjacent_pyproject_matches_underscore_and_ordering(tmp_path, monkeypatch):
+    # ROW B2a POSITIVE (board #382 r6). The canonical match must still FIND the real dep:
+    # (a) spelled with an underscore ('consiliency_contract' canonicalizes to ours), and
+    # (b) even when a decoy plural precedes it. Guards against over-correcting the prefix
+    # fix into a too-strict literal that misses valid spellings.
+    from packaging.requirements import Requirement
+
+    import phase_loop_runtime as pl
+    import phase_loop_runtime.consiliency_layout as cl
+
+    init = _plant_layout(
+        tmp_path, project_name="phase-loop-runtime",
+        deps=["consiliency-contracts>=9.9,<10", "consiliency_contract>=0.6.5,<0.7"],
+    )
+    monkeypatch.setattr(pl, "__file__", str(init))
+    req = cl._requirement_from_adjacent_pyproject()
+    assert req is not None and str(Requirement(req).specifier) == str(
+        Requirement("x>=0.6.5,<0.7").specifier
+    ), "the REAL consiliency-contract dep (underscore spelling, after a decoy) must govern."
+
+
+def test_metadata_underscore_spelling_still_triggers_divergence(monkeypatch):
+    # ROW 2c falsifier (board #382 r6, lead-ratified). LAYER: the metadata-side matcher is
+    # CANONICAL. Failure it closes (opposite of B2b's false-divergence): an unnormalized
+    # ``req.name == "consiliency-contract"`` SILENTLY MISSES metadata spelled
+    # 'Consiliency_Contract' -> metadata_req stays None -> divergence detection is lost and
+    # the warning can NEVER fire for that dist (quiet-blind). Here metadata (canonical-equal,
+    # >=0.6.0) DISAGREES with the real >=0.6.5 pin, so the divergence warning MUST fire. RED
+    # before fix: no warning (the metadata dep was missed).
+    import importlib.metadata as md
+
+    import phase_loop_runtime.consiliency_layout as cl
+
+    _pyproject_pin()  # ours, >=0.6.5,<0.7 (skips in clean-room wheel)
+    monkeypatch.setattr(cl, "_dist_owns_imported_runtime", lambda dist: True)
+    monkeypatch.setattr(
+        md,
+        "distribution",
+        lambda name: _StaleMetadataDist("Consiliency_Contract>=0.6.0,<0.7"),
+        raising=True,
+    )
+    with pytest.warns(ContractFloorMetadataDivergence):
+        req = cl.declared_contract_requirement()
+    # And the pin still governs (returned floor is the canonical pyproject pin, not None).
+    assert req is not None
+
+
+def test_installed_case_metadata_governs_without_mocking_helper(tmp_path, monkeypatch):
+    # INSTALLED-CASE, REAL HELPER (board #382 r6, codex gap). The r5 installed-case test
+    # MOCKS _requirement_from_adjacent_pyproject -> None, so it bypasses the very code the
+    # ownership/identity fix changed. This one plants a layout with NO adjacent pyproject and
+    # lets the REAL helper return None via is_file()==False, then asserts metadata governs.
+    from packaging.requirements import Requirement
+
+    import phase_loop_runtime as pl
+    import phase_loop_runtime.consiliency_layout as cl
+    import importlib.metadata as md
+
+    init = _plant_layout(tmp_path, project_name=None, deps=(), write_pyproject=False)
+    monkeypatch.setattr(pl, "__file__", str(init))
+    # Sanity: the REAL helper (not a mock) genuinely finds no adjacent pyproject.
+    assert cl._requirement_from_adjacent_pyproject() is None
+    monkeypatch.setattr(cl, "_dist_owns_imported_runtime", lambda dist: True)
+    monkeypatch.setattr(
+        md, "distribution",
+        lambda name: _StaleMetadataDist("consiliency-contract>=1.2,<2"), raising=True,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ContractFloorMetadataDivergence)
+        req = cl.declared_contract_requirement()
+    assert req is not None and str(Requirement(req).specifier) == str(
+        Requirement("x>=1.2,<2").specifier
+    ), "with no adjacent pyproject the REAL helper returns None and metadata governs."
 
 
 def test_check_fires_on_a_stale_ambient_install(monkeypatch):
@@ -758,12 +938,24 @@ def test_direct_url_arm_rejects_stale_same_repo_install_by_version(monkeypatch):
 #   B1c  corroboration is SEMANTIC    _requirements_equivalent -> raw a==b  test_requirements_equivalent_
 #        (specifier-normalized)      (format-only diff manufactures warn)  normalizes_specifier_order
 #   B1d  installed case (no pin)      metadata branch return None           test_floor_falls_back_to_metadata_
-#        (metadata governs unchanged)                                       when_no_adjacent_pyproject
+#        (metadata governs unchanged)                                       when_no_adjacent_pyproject (+ real-helper twin)
+#   B1own adjacency OWNERSHIP         drop [project].name gate              test_adjacent_pyproject_not_trusted_
+#        (pyproject proven OURS)      (foreign pyproject governs)           when_name_is_foreign (+ end-to-end
+#                                                                           no-abort twin: ..._does_not_abort_end_to_end)
+#   B2a  dep IDENTITY (canonical)     canonical name -> startswith prefix   test_adjacent_pyproject_ignores_
+#        (not a prefix)               (plural 'contracts' re-admitted)      plural_contracts_package (+ ordering twin)
+#   B2b  equiv NAME canonical         canonicalize -> raw ra.name==rb.name  test_requirements_equivalent_
+#        (spelling-only corroborates) (false divergence on underscore)      normalizes_specifier_order
+#   2c   metadata match canonical     canonical -> raw req.name==literal    test_metadata_underscore_spelling_
+#        (no silent miss)             (underscore metadata silently missed)  still_triggers_divergence
 #   (declared floor, the third operand, is sentineled above by
 #    test_declared_floor_is_provable_and_single_sourced -- reds on declared_*() -> None.)
 #
-# r4 (board #382, codex+fable) added 1c/f2/2b/3c. r5 (codex Blocker 2 + maintainer ruling on
-# Blocker 1) added 3d/B1a/B1b. Discipline for each row: name the LAYER the sentinel binds and
+# r4 (board #382, codex+fable) added 1c/f2/2b/3c. r5 added 3d/B1a-d. r6 (codex B1/B2, fable
+# F-1/F-2, lead-ratified 2c) added B1own/B2a/B2b/2c -- the "adjacency trusted without IDENTITY"
+# class: r5 trusted that an adjacent pyproject was ours; r6 proves existence AND ownership
+# ([project].name canonicalizes to phase-loop-runtime) AND exact dependency identity (canonical
+# name, never a prefix). Discipline for each row: name the LAYER the sentinel binds and
 # the layer ABOVE it. 1a-1c bind manifest PRECEDENCE; the layer above is importlib's own
 # .files->SOURCES fallback, now gated by reading RECORD first. 2 binds operand SHAPE; 2b binds
 # the layer above (accessor is BOUND to the contract version, and that binding IS the contract
@@ -783,9 +975,25 @@ def test_direct_url_arm_rejects_stale_same_repo_install_by_version(monkeypatch):
 # vacuously. B1d binds the installed-case ``return metadata_req`` branch that no in-tree /
 # CI layout (pyproject always adjacent) exercises. The stale-OLDER falsifier is bound DIRECTLY
 # on declared + assert_contract_floor_satisfied (not through check()), so an upstream
-# installed-version operand mutation (rows 2/2b) no longer spuriously reds it -- the only
-# residual couplings are 2->2b (2b binds the layer ABOVE 2, so null fails both) and
-# B1a->{newer,older} (one governance lever guarded from both stale directions), both correct.
+# installed-version operand mutation (rows 2/2b) no longer spuriously reds it.
+# r6 layer notes -- each binds what the adjacency now PROVES: B1own binds OWNERSHIP (an adjacent
+# pyproject governs only when [project].name is ours; the layer above = r5's is_file()-only trust,
+# which a --target vendoring or Windows venv-in-root could satisfy with a consumer's pyproject).
+# B2a binds dep IDENTITY (canonical name equality; layer above = r5's startswith prefix, which
+# read the plural 'consiliency-contracts' as ours). B2b binds that equivalence canonicalizes the
+# NAME too (spelling-only diff corroborates; the false-DIVERGENCE direction). 2c binds that the
+# METADATA matcher canonicalizes (the SILENT-MISS direction: an unnormalized match drops an
+# underscore-spelled metadata dep so divergence can never fire -- opposite failure to B2b's).
+# Residual couplings, all correct (one lever backs N sentinels, not faked isolation): 2->2b (null
+# fails shape AND the layer-above binding); B1a->{newer,older} (governance, both stale directions);
+# B1b->{newer,2c} (the warning-visibility lever backs every warning-asserting falsifier); the
+# installed-branch and B2a rows each back their mocked+real / plural-only+plural-before-real twin;
+# B1own backs its helper-unit (helper->None) AND end-to-end (healthy install does NOT abort) twin,
+# the second proving the acceptance criterion fable demonstrated, not just the mechanism.
+# NOTE (fable r6, 3d asymmetry): _raises_in_own_scope prunes ClassDef bodies too, so a raise in a
+# class body directly inside the handler (which DOES execute at class-definition time) is rejected
+# over-strictly -- fail-CLOSED (demands a visible own-scope raise), acceptable and documented, not
+# the fail-OPEN hole 3d closes.
 # ---------------------------------------------------------------------------
 class _DistInfoRecordForeignSourcesOursDist:
     """A same-root ``.dist-info`` whose AUTHORITATIVE ``RECORD`` lists only an unrelated
@@ -1060,6 +1268,10 @@ def test_conftest_floor_error_handler_reraises():
         # execute in this handler count. Nested ``try``/``if``/``with``/``for`` are NOT
         # new scopes, so a raise inside them still counts (3c asserts a raise EXISTS in
         # the handler's own scope, not that it aborts -- see the ROW-3 residual note).
+        # ASYMMETRY (board #382 r6, fable): a ClassDef BODY does execute at class-definition
+        # time, so pruning ClassDef rejects a real class-body raise over-strictly. That is
+        # fail-CLOSED (3c would then demand another visible own-scope raise), acceptable and
+        # documented -- the opposite of the fail-OPEN nested-def swallow 3d closes.
         stack = list(ast.iter_child_nodes(node))
         while stack:
             child = stack.pop()
