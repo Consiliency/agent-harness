@@ -746,6 +746,8 @@
           "metadata": {
             "proofgate_plan_contract": {
               "activated_red_failures": 37,
+              "activated_red_pass_nodeids": 2,
+              "activation_migrated_nodeids": 1,
               "activation_env": "PHASE_LOOP_TDD_EXPECT_PROOFGATE",
               "attended_live_env": "PHASE_LOOP_PROOFGATE_ATTENDED_LIVE",
               "attended_phase_nodeids": 39,
@@ -764,16 +766,50 @@
               "credential_claim_scope": "active_transport_session_and_protocol_issued_credentials",
               "credential_egress_response_protocol": "credential_egress_response_protocol.v1",
               "credential_transform_contract": "credential_transform_closure.v1",
+              "default_pass_nodeids": 3,
               "default_skip_nodeids": 36,
               "expected_nodeids": 39,
               "external_head_append_contract": "proofgate_external_head_append.v1",
               "external_head_contract": "proofgate_external_head.v1",
+              "external_head_force_push_policy": "prohibited",
+              "external_head_publication_contract": "ordinary_non_force_fast_forward_parent_oid_cas",
+              "external_head_push_command": "git push --porcelain origin <new-oid>:refs/heads/proofgate-receipt-head-v1",
               "external_head_ref": "refs/heads/proofgate-receipt-head-v1",
               "grandfathered_acceptance_compatibility": "exact_cutoff_raw_bytes_server_attested_date_warn_only",
               "identity_response_framing_contract": "identity_response_framing.v1",
-              "latest_exact_digest_panel_blocker": "mutation_nonzero_not_bound_to_declared_observable_or_failure_class",
+              "implementation_author_scope": "whole_phase",
+              "implementation_effort": "high",
+              "implementation_executor": "codex",
+              "implementation_model": "gpt-5.6-terra",
+              "lane_scheduler_mode": "off",
+              "latest_exact_digest_panel_blockers": [
+                "force_with_lease_conflicts_with_force_push_ban",
+                "ec4_missing_typed_test_emitted_oracle",
+                "runtime_lane_scheduler_conflicts_with_whole_phase_rotation"
+              ],
+              "latest_exact_digest_panel_plan_sha256": "8da6045c6e13410f74f1e6402140eddb9e91f5ed14dcf2a8daa56c8b3f70195a",
+              "latest_exact_digest_panel_sha256": "097ef0889cc1a6e7419c3bb817c2f070a9a4cfdeb0b9c4b1a5b08deba329c656",
               "lifecycle": "proofgate_tdd_candidate_main.v1",
-              "mutation_blocked_plan_sha256": "a56901b7aa3a2a5299329a09c0fff01bf09d830412ac22cdd010707e3ce73fec",
+              "manual_lane_order": [
+                "SL-0",
+                "SL-1",
+                "SL-2"
+              ],
+              "mutation_blocked_plan_sha256": "8da6045c6e13410f74f1e6402140eddb9e91f5ed14dcf2a8daa56c8b3f70195a",
+              "mutation_ec4_result_codes": {
+                "github": "github_builder_epoch_blocked_unwired",
+                "routing": "routing_builder_epoch_blocked_unwired"
+              },
+              "mutation_emitted_property_fields": [
+                "schema",
+                "roadmap_criterion_id",
+                "roadmap_criterion_sha256",
+                "rule_id",
+                "failure_class",
+                "target_nodeid",
+                "result_code",
+                "assertion_id"
+              ],
               "mutation_expected_observable_fields": [
                 "roadmap_criterion_id",
                 "roadmap_criterion_sha256",
@@ -811,14 +847,22 @@
                 "observable_mismatch"
               ],
               "mutation_kill_contract": "green_pristine_baseline_exact_one_replacement_viable_target_call_exact_declared_oracle_match",
+              "mutation_observable_channel": "pytest_junit_call_property",
+              "mutation_observable_property": "proofgate_mutation_observable",
+              "mutation_observable_schema": "proofgate_mutation_observable.v1",
               "mutation_oracle_contract": "mutation_oracle_result.v1",
-              "mutation_oracle_test_subcases": 11,
+              "mutation_oracle_test_subcases": 12,
+              "mutation_same_nodeid_different_failure": "observable_mismatch",
+              "new_nodeids": 36,
+              "nodeid_delta": 36,
               "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
               "ordinary_phase_nodeids": 39,
-              "owned_path_patterns_count": 37,
-              "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
-              "plan_sha256": "8da6045c6e13410f74f1e6402140eddb9e91f5ed14dcf2a8daa56c8b3f70195a",
+              "owned_path_patterns_count": 38,
+              "owned_path_patterns_sha256": "a19e9ae2714f414d92b12314e8e9370aa1518a400d638c6eef211eb05e4b6c9b",
+              "phase_scheduler_mode": "off",
+              "plan_sha256": "e5cba1af0a30ad5546fe6e869083e602a420c29a4d29fb250bfd2fb9b4d8de36",
               "positive_control_nodeids": 2,
+              "preexisting_owned_nodeids": 3,
               "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
               "predecessor_plan_sha256": "18422ee52d7a3a77adf6ecd75446abe7fea52da7ff4113f24209d0f292f3bff0",
               "response_control_canaries": [
@@ -830,7 +874,10 @@
                 "unsupported_control_metadata"
               ],
               "response_release_contract": "taint_clean_bounded_content_frame.v1",
-              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
+              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "tests_only_path_patterns_count": 18,
+              "tests_only_path_patterns_sha256": "3b0c0914871e17d56c24fa34e4578c498110425bcc79c4cd3dc10277a1d50deb",
+              "typed_oracle_migrated_nodeids": 2
             }
           },
           "transition": "committed"
@@ -848,7 +895,7 @@
       "slug": "v10-PROOFGATE",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-07-30T14:16:54Z"
+      "updated_at": "2026-07-30T15:33:39Z"
     },
     {
       "acceptance_criteria_count": null,
