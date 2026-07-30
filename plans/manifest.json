@@ -860,7 +860,7 @@
               "owned_path_patterns_count": 38,
               "owned_path_patterns_sha256": "a19e9ae2714f414d92b12314e8e9370aa1518a400d638c6eef211eb05e4b6c9b",
               "phase_scheduler_mode": "off",
-              "plan_sha256": "e5cba1af0a30ad5546fe6e869083e602a420c29a4d29fb250bfd2fb9b4d8de36",
+              "plan_sha256": "aff5f0ea432bf7325c4dfe854617cfcd4d4c82d4077c08ffcc615e2d02ca2624",
               "positive_control_nodeids": 2,
               "preexisting_owned_nodeids": 3,
               "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
