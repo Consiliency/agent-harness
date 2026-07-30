@@ -623,12 +623,24 @@
           "at": "2026-07-30T04:07:17Z",
           "by": "codex-plan-phase",
           "metadata": {
+            "digest_rebind": {
+              "historical_dissent_verdict": "DISAGREE",
+              "plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
+              "predecessor_plan_sha256": "2765aa6606242b5d68124e13d8ef798b0075a549371be1f4f23b53e3dbd56cef",
+              "reason": "local_three_log_reseal_and_shared_v3_namespace_contract_repair",
+              "reviewed_bundle_sha256": "9c81cf956d851721064fa2f442dfe31010a7b589ef0a94eb4f86d2b9df61bcf8",
+              "reviewed_panel_sha256": "b2b306a2e56229df7194da489ab8a158616691c8f063f1515c3b4bc7b3bfc585",
+              "reviewed_plan_sha256": "2765aa6606242b5d68124e13d8ef798b0075a549371be1f4f23b53e3dbd56cef",
+              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+            },
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T040717Z-01-legible-plan.md",
             "legible_plan_contract": {
               "activation_env": "PHASE_LOOP_TDD_EXPECT_LEGIBLE",
               "capability_marker": "phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1",
               "expected_nodeids": 83,
               "lifecycle": "legible_tdd_candidate_main.v1",
+              "log_sha256_scope": "complete_final_v3_sealed_log_bytes",
               "owned_paths": [
                 ".claude/docs-catalog.json",
                 "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
@@ -649,12 +661,19 @@
               ],
               "owned_paths_count": 16,
               "owned_paths_sha256": "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b",
-              "plan_sha256": "2765aa6606242b5d68124e13d8ef798b0075a549371be1f4f23b53e3dbd56cef",
-              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
               "test_paths": [
                 "phase-loop-runtime/tests/test_legible_evidence.py",
                 "phase-loop-runtime/tests/test_legible_roadmap_contract.py"
-              ]
+              ],
+              "v2_to_v3_preservation": "all_v2_json_values_except_schema_version_and_derived_log_sha256",
+              "verification_evidence_contract": "verification_evidence.v3",
+              "verification_extension_namespaces": {
+                "phase_loop_runtime.legible_evidence": "LEGIBLE",
+                "phase_loop_runtime.proofgate_evidence": "PROOFGATE"
+              },
+              "verification_extension_registry_owner": "LEGIBLE"
             },
             "run_id": "20260730T040717Z-01-legible-plan"
           },
@@ -704,6 +723,17 @@
               "lock_sha256": "b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce",
               "ownership": "codex-plan-phase_not_reviewtruth_lane_implementation"
             },
+            "digest_rebind": {
+              "historical_dissent_verdict": "DISAGREE",
+              "plan_sha256": "ea668b6ebd5f09633d86d716d872c7da6a9cec73adcb903d52dcae82f70102ba",
+              "predecessor_plan_sha256": "fb6e8c1ec83c74f02abfa8b0c22c612e86a06bc4d2677483c58a90699a47d2c5",
+              "reason": "local_three_independent_persistent_gate_a_input_attestation_repair",
+              "reviewed_bundle_sha256": "43cd7ad8a963597b74054dbaa876a774611cd56666304be01bd7e4b2e45a7e3e",
+              "reviewed_panel_sha256": "03cfa5530ee33c0eb5a2a5982d26ca25c2893b7235a87608c37b71dffa7256e9",
+              "reviewed_plan_sha256": "fb6e8c1ec83c74f02abfa8b0c22c612e86a06bc4d2677483c58a90699a47d2c5",
+              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+            },
             "gate_a_skip_freeze": {
               "boundary_collection_count": 4,
               "boundary_collection_sha256": "09e45269b62ec9c4ac0584600d77e883b9c3fbd67a89415ba6650ee9f6efe3be",
@@ -715,9 +745,23 @@
               "restricted_source_sha256": "59dfdd0c70679e8e2356b8dcffbb78faa795c5caa5025ce949e96522923023ea",
               "tuple_shape": "nodeid_phase_reason"
             },
+            "gate_a_terminal_attestation_contract": {
+              "attester_process": "fresh_after_child_stdout_stderr_artifact_manifest_and_copy_fds_close",
+              "owned_paths_count": 33,
+              "owned_paths_sha256": "199f22d088c71bfdb57033a7b59c1b57b4750020e26a3ea42169e0a551844c1e",
+              "persistent_copy_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_persists_independently_attestable_tests_conftest_and_parser_copy",
+              "persistent_copy_nodeid_sha256": "c96415d6e2c94d3d2f4a42eeaf38a34572a2e88af2e743711f6b97751767071d",
+              "persistent_copy_survives_temporary_tree_cleanup": true,
+              "persistent_inputs": [
+                "executed tests tree including conftest",
+                "verify_reviewtruth_chronology.py parser"
+              ],
+              "tests_only_paths_count": 10,
+              "tests_only_paths_sha256": "3828b5cd50a38b7665d6520ba437e410ac77a34f15488ce035fb1b6febfdeb6f"
+            },
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
-            "plan_sha256": "fb6e8c1ec83c74f02abfa8b0c22c612e86a06bc4d2677483c58a90699a47d2c5",
-            "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+            "plan_sha256": "ea668b6ebd5f09633d86d716d872c7da6a9cec73adcb903d52dcae82f70102ba",
+            "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
             "run_id": "20260730T035938Z-01-reviewtruth-plan"
           },
           "transition": "committed"
@@ -756,6 +800,17 @@
           "at": "2026-07-30T07:26:25Z",
           "by": "codex-plan-phase",
           "metadata": {
+            "digest_rebind": {
+              "historical_dissent_verdict": "DISAGREE",
+              "plan_sha256": "49be7a0be4d353449b134b64e7f4750e09ecb19dc779b18d9124645398b51af4",
+              "predecessor_plan_sha256": "4d4a94fac2c01028049142688deb8b16f983313384c9d085d7d4efdc6debc417",
+              "reason": "local_three_shared_v3_namespace_and_phase_dependency_repair",
+              "reviewed_bundle_sha256": "3fda3c600554fe1941668022ef73d889e6ecec6550a550b6a1410782c1a23c91",
+              "reviewed_panel_sha256": "272b3bb821cea2181aa7f9a8a138abeb67ef9e02c3d45e529570dc557acb25d2",
+              "reviewed_plan_sha256": "4d4a94fac2c01028049142688deb8b16f983313384c9d085d7d4efdc6debc417",
+              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+            },
             "proofgate_plan_contract": {
               "activated_red_failures": 37,
               "activated_red_pass_nodeids": 2,
@@ -795,10 +850,10 @@
               "implementation_model": "gemini-3.6-flash",
               "lane_scheduler_mode": "off",
               "latest_exact_digest_panel_blockers": [
-                "split_implementation_author_authority"
+                "verification_evidence_v3_namespace_collision"
               ],
-              "latest_exact_digest_panel_plan_sha256": "aff5f0ea432bf7325c4dfe854617cfcd4d4c82d4077c08ffcc615e2d02ca2624",
-              "latest_exact_digest_panel_sha256": "af088088f3dc55fa568ff4385602d2d125b42646c2966aec78965543854232ea",
+              "latest_exact_digest_panel_plan_sha256": "4d4a94fac2c01028049142688deb8b16f983313384c9d085d7d4efdc6debc417",
+              "latest_exact_digest_panel_sha256": "272b3bb821cea2181aa7f9a8a138abeb67ef9e02c3d45e529570dc557acb25d2",
               "lifecycle": "proofgate_tdd_candidate_main.v1",
               "manual_lane_order": [
                 "SL-0",
@@ -869,8 +924,19 @@
               "ordinary_phase_nodeids": 39,
               "owned_path_patterns_count": 38,
               "owned_path_patterns_sha256": "a19e9ae2714f414d92b12314e8e9370aa1518a400d638c6eef211eb05e4b6c9b",
+              "phase_dependency": "LEGIBLE",
               "phase_scheduler_mode": "off",
-              "plan_sha256": "4d4a94fac2c01028049142688deb8b16f983313384c9d085d7d4efdc6debc417",
+              "plan_sha256": "49be7a0be4d353449b134b64e7f4750e09ecb19dc779b18d9124645398b51af4",
+              "proofgate_extension_record": {
+                "fields": [
+                  "schema",
+                  "candidate_snapshot",
+                  "mutations",
+                  "chronology"
+                ],
+                "namespace": "phase_loop_runtime.proofgate_evidence",
+                "schema": "proofgate_evidence.v1"
+              },
               "positive_control_nodeids": 2,
               "preexisting_owned_nodeids": 3,
               "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
@@ -884,10 +950,12 @@
                 "unsupported_control_metadata"
               ],
               "response_release_contract": "taint_clean_bounded_content_frame.v1",
-              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
               "tests_only_path_patterns_count": 18,
               "tests_only_path_patterns_sha256": "3b0c0914871e17d56c24fa34e4578c498110425bcc79c4cd3dc10277a1d50deb",
-              "typed_oracle_migrated_nodeids": 2
+              "typed_oracle_migrated_nodeids": 2,
+              "verification_evidence_contract": "verification_evidence.v3",
+              "verification_extension_registry_owner": "LEGIBLE"
             }
           },
           "transition": "committed"
@@ -927,9 +995,31 @@
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "plan_sha256": "cf08ab677f3ee3c0d48b905be902c98ef81758fb884be17e87bf4db93cea821d",
-              "reason": "ec_conform_2_authoritative_roadmap_amendment",
-              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
+              "historical_dissent_verdict": "DISAGREE",
+              "plan_sha256": "9fcefd70eb3cbffbcc603d8c741fa19d1c66a53815ee974e10ce306800463c2a",
+              "predecessor_plan_sha256": "cf08ab677f3ee3c0d48b905be902c98ef81758fb884be17e87bf4db93cea821d",
+              "reason": "local_three_migrated_existing_and_source_distribution_contract_repair",
+              "reviewed_bundle_sha256": "45b6a2b2dd33b6bd34795832619f314e116b2ed8c4ac8cc08841595ba263fa62",
+              "reviewed_panel_sha256": "3ef3139c4e2a4fd6bfe1796a7ab26f441c7c92f337daa0263668b1669cd8ad11",
+              "reviewed_plan_sha256": "cf08ab677f3ee3c0d48b905be902c98ef81758fb884be17e87bf4db93cea821d",
+              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+            },
+            "conform_plan_contract": {
+              "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
+              "archive_inclusion_nodeid_sha256": "ccb295db192a045c224dc7f74819f8b83adb6db348d8d8b2d155a5c4f73005c0",
+              "migrated_existing_no_copy_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
+              "migrated_existing_no_copy_nodeid_sha256": "7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe",
+              "owned_path_patterns_count": 22,
+              "owned_path_patterns_sha256": "285e9ddb9d6f1996e3746f809cbe240053b6efe81504fc8e8c2913fd2660e427",
+              "package_inclusion_owned_paths": [
+                "phase-loop-runtime/MANIFEST.in",
+                "phase-loop-runtime/pyproject.toml"
+              ],
+              "plan_sha256": "9fcefd70eb3cbffbcc603d8c741fa19d1c66a53815ee974e10ce306800463c2a",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "test_path_patterns_count": 6,
+              "test_path_patterns_sha256": "d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145"
             }
           },
           "transition": "committed"
@@ -971,17 +1061,23 @@
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
-              "reason": "fabpub_authenticated_legacy_store_cutover_panel_repair",
-              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
+              "historical_dissent_verdict": "DISAGREE",
+              "plan_sha256": "e687852a20614ed8559c2c038cc2aa3a6cb0b60f1bec2bc8b2051a9f4b5f32ff",
+              "predecessor_plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
+              "reason": "local_three_exact_serialized_repo_and_global_partition_cutover_repair",
+              "reviewed_bundle_sha256": "d0d2e8210cd52a3a50da22c18a22031a0650905577cc720ae90c2411fc7bd67a",
+              "reviewed_panel_sha256": "3b3cda3d14442b909ec3078e0f749f7e11dcfa813227bf048a603da2197f3e6a",
+              "reviewed_plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
+              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
             },
             "fabpub_plan_contract": {
               "acceptance_criteria_count": 8,
               "activation_env": "PHASE_LOOP_TDD_EXPECT_FABPUB",
               "capability_marker": "phase_loop_runtime.fabpub_capability:FABPUB_CAPABILITY_VERSION=1",
               "expected_commit_state_machine": "PREPARED_COMMIT_OBJECT_DURABLE_COMMITTED_HEAD_RESOLVED",
-              "expected_nodeid_delta_from_current_plan": 4,
-              "expected_nodeid_delta_from_v10_fabpub_baseline": 5,
+              "expected_nodeid_delta_from_current_plan": 2,
+              "expected_nodeid_delta_from_v10_fabpub_baseline": 7,
               "expected_oid_recovery": "ref_expected_finalize_ref_parent_retry_same_cas_every_other_oid_block",
               "fresh_exact_digest_panel_required": [
                 "fable",
@@ -989,15 +1085,20 @@
                 "gemini",
                 "grok"
               ],
-              "latest_panel_plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
-              "latest_panel_record_sha256": "bcebe3f15c2f909ceb4146949f3eb44c70c66bac04d135ea2a22747d0b8b27cc",
+              "latest_panel_plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
+              "latest_panel_record_sha256": "3b3cda3d14442b909ec3078e0f749f7e11dcfa813227bf048a603da2197f3e6a",
+              "legacy_cutover_global_contract": "LegacyBrokerCutoverManifest.v2_to_LegacyBrokerCutoverTransaction.v2_to_repository_partition_receipts_to_global_ARMED",
               "legacy_cutover_nodeids": [
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_global_legacy_cutover_partitions_multiple_repositories_crash_idempotently_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_conflict_collision_and_idempotent_resume_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_exact_serialized_repo_preimages_and_resolution_context_before_activation",
                 "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_high_water_before_activation",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_replays_terminal_completed_effect_before_activation",
                 "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_outcome_ambiguous_block_before_activation",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_conflict_collision_and_idempotent_resume_before_activation"
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_replays_terminal_completed_effect_before_activation"
               ],
-              "legacy_store_cutover_contract": "authenticated_manifest_snapshot_archive_tombstone_receipt_armed_before_canonical_route",
+              "legacy_cutover_nodeids_count": 6,
+              "legacy_cutover_nodeids_sha256": "7c89b013678556c360f0257301d414c23bb6744500fa37c2b370497af815cb8f",
+              "legacy_store_cutover_contract": "exact_serialized_repo_preimage_plus_resolution_context_global_inventory_partition_snapshot_archive_tombstone_receipts_armed_before_any_canonical_route",
               "lifecycle": "fabpub_tdd_candidate_main.v1",
               "owned_paths": [
                 "CHANGELOG.md",
@@ -1027,14 +1128,14 @@
               ],
               "owned_paths_count": 24,
               "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
-              "plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
+              "plan_sha256": "e687852a20614ed8559c2c038cc2aa3a6cb0b60f1bec2bc8b2051a9f4b5f32ff",
               "prior_manifest_plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
               "repository_identity_contract": "canonical_git_common_dir_and_object_format_full_sha256",
-              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
               "shared_allocator_nodeids": [
                 "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_allocator_shared_repository_epoch_across_linked_worktrees_and_train_roots"
               ],
-              "shared_allocator_store_contract": "one_repository_store_under_train_independent_broker_root_after_armed_legacy_cutover",
+              "shared_allocator_store_contract": "one_repository_store_under_train_independent_broker_root_after_global_armed_legacy_cutover",
               "test_paths": [
                 "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
                 "phase-loop-runtime/tests/test_convergence_broker_admission.py",
@@ -1089,13 +1190,15 @@
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "historical_dissent_panel_sha256": "110487d9e27cde7af4e958bc1df03846003c7fccb17cc979f82b426a3fde0f0f",
-              "historical_dissent_plan_sha256": "ac7010e0f2e0e93edea051bf6c59e66d2a76ee17aa0609bfdf8cb37b030340e8",
-              "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "6cb31b7a4a8ad5fb28c07203568361b00af9999e8195039d2a8970c8c8d114e5",
-              "predecessor_plan_sha256": "ac7010e0f2e0e93edea051bf6c59e66d2a76ee17aa0609bfdf8cb37b030340e8",
-              "reason": "exact_digest_panel_lifecycle_reachability_repair",
-              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
+              "historical_dissent_verdict": "NO_USABLE_DISAGREE_LOCAL_THREE_AGREE_FABLE_ABSENT",
+              "plan_sha256": "5e234a6c104d10fa7b452ed9afa975b2dadf2a87483dc24caeb350352e139f25",
+              "predecessor_plan_sha256": "6cb31b7a4a8ad5fb28c07203568361b00af9999e8195039d2a8970c8c8d114e5",
+              "reason": "cross_phase_roadmap_digest_rebind_after_legible_proofgate_ordering_repair",
+              "reviewed_bundle_sha256": "4693db05ab285c18a119046355348d368c3420a014746aad70defc40d35f8dda",
+              "reviewed_panel_sha256": "d7867d92262deeb5b47dd07a1fb03a09c207410c24eccd5fc84007208cd80fb6",
+              "reviewed_plan_sha256": "6cb31b7a4a8ad5fb28c07203568361b00af9999e8195039d2a8970c8c8d114e5",
+              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
             },
             "harden_plan_contract_record_id": "v10-HARDEN.harden-plan-contract.v1",
             "harden_plan_contract": {
@@ -1180,7 +1283,7 @@
               "owned_paths_count": 25,
               "owned_paths_sha256": "24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2",
               "phase_scheduler_mode": "off",
-              "plan_sha256": "6cb31b7a4a8ad5fb28c07203568361b00af9999e8195039d2a8970c8c8d114e5",
+              "plan_sha256": "5e234a6c104d10fa7b452ed9afa975b2dadf2a87483dc24caeb350352e139f25",
               "pre_auth_ordering_nodeids": [
                 "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
                 "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
@@ -1191,7 +1294,7 @@
               ],
               "predecessor_plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
               "release_tag_policy": "no_release_no_tag_no_publish",
-              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
               "sl1_nodeids": 13,
               "sl2_nodeids": 7,
               "sl3_evidence_nodeids": 4,

@@ -214,7 +214,11 @@ trackable and a delivered roadmap is distinguishable from an abandoned one.
 Decompose into 3 lanes over disjoint files: lane A owns the roadmap status contract and its
 runtime accessor; lane B owns the manifest presence check; lane C owns agent-harness#347 and the
 docs-catalog disposition. Lane A publishes IF-0-LEGIBLE-1 on day 1 so lane B can consume the
-accessor shape before its implementation lands.
+accessor shape before its implementation lands. LEGIBLE also owns the generic
+`verification_evidence.v3` envelope, seal protocol, and closed extension-namespace registry.
+Its initial registry contains only `phase_loop_runtime.legible_evidence`; PROOFGATE is the
+downstream owner of `phase_loop_runtime.proofgate_evidence` and may extend that registry only
+after LEGIBLE lands.
 
 **Non-goals**
 Reconciling the 284 open checkboxes across v1–v9. Classifying those is separate work that this
@@ -339,7 +343,7 @@ that boundary stays closed and panels audit mutation ADEQUACY instead.
 - `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
 
 **Depends on**
-- (none)
+- LEGIBLE
 
 **Produces**
 - IF-0-PROOFGATE-1
@@ -802,35 +806,34 @@ outside this repo; `redaction_posture: metadata_only`; malformed evidence routes
 ## Phase Dependency DAG
 
 ```
-LEGIBLE ──────────────┐
-                      │  (independent roots, all start immediately)
-REVIEWTRUTH ──────────┼─────────────→ LEGLIFE
-                      │
-PROOFGATE ────────────┼─────────────→ SCHED
-                      │
-CONFORM ──────────────┤   [gate CLEARED 2026-07-29 — spec#102 merged, #377 landed the pin]
-                      │
-FABPUB ───────────────┼──────┬──────→ FABREADMIT
-                      │      └──────→ RESIDUAL
-                      │
-HARDEN ───────────────┘
+LEGIBLE ──────────────→ PROOFGATE ────────┬─────────────→ SCHED
+                                          └─────────────→ RUNTIME
+REVIEWTRUTH ────────────────────────────────────────────→ LEGLIFE
+
+CONFORM ──────────────────────── [gate CLEARED 2026-07-29 — spec#102 merged,
+                                  agent-harness#377 landed the pin]
+
+FABPUB ─────────────────────────┬───────────────────────→ FABREADMIT
+                                └───────────────────────→ RESIDUAL
+
+HARDEN
 
 Parallel roots (no shared ancestor):
-  LEGIBLE ∥ REVIEWTRUTH ∥ PROOFGATE ∥ CONFORM ∥ FABPUB ∥ HARDEN
+  LEGIBLE ∥ REVIEWTRUTH ∥ CONFORM ∥ FABPUB ∥ HARDEN
 
-Serial edges (four, in the live v10 graph — the Absorbed convergence-v1 chain below is separate):
+Serial edges (five, in the live v10 graph — the Absorbed convergence-v1 chain below is separate):
+  LEGIBLE     → PROOFGATE    (shared verification-evidence v3 envelope/registry lands first)
   REVIEWTRUTH → LEGLIFE     (lens must be load-bearing before custom lenses mean anything)
   FABPUB      → FABREADMIT  (merge boundary enforces the mixed-allocation interlock)
   FABPUB      → RESIDUAL    (RESIDUAL lane A rewrites the verbs.py/train_runner.py publish identity FABPUB owns)
   PROOFGATE   → SCHED       (SCHED's re-framed GC work should land under the falsifier gate)
 
 Absorbed convergence-v1 chain:
-  PROOFGATE → RUNTIME ─┐
-  FABPUB → FABREADMIT ─┴→ INTEG → RELEASE
+  LEGIBLE → PROOFGATE → RUNTIME ─┐
+  FABPUB → FABREADMIT ───────────┴→ INTEG → RELEASE
 
-Critical path (depth 4; two co-equal longest chains, both ending at the shared sink):
-  FABPUB    → FABREADMIT → INTEG → RELEASE
-  PROOFGATE → RUNTIME    → INTEG → RELEASE
+Critical path (depth 5):
+  LEGIBLE → PROOFGATE → RUNTIME → INTEG → RELEASE
 ```
 
 ## External Dependencies (NOT phases — we do not own these)
@@ -884,16 +887,20 @@ that later make the same controls machine-enforceable:
    this bootstrap interlock until REVIEWTRUTH lands the equivalent runtime enforcement.
 
 The independent roots are exactly those listed under `Parallel roots` in the DAG above; plan
-and execute them concurrently. RESIDUAL is not among them — it `Depends on` FABPUB (its lane A
-rewrites the `verbs.py`/`train_runner.py` publish identity FABPUB owns), so plan and execute it
-only after FABPUB's publish-identity migration lands.
+and execute them concurrently. PROOFGATE is not among them: LEGIBLE and PROOFGATE both write
+`runner.py`, `verification_evidence.py`, and the public verification-evidence contract document,
+so PROOFGATE starts only after LEGIBLE's shared v3 envelope and registry land. RESIDUAL is also
+not a root — it `Depends on` FABPUB (its lane A rewrites the `verbs.py`/`train_runner.py` publish
+identity FABPUB owns), so plan and execute it only after FABPUB's publish-identity migration
+lands.
 
 Recommended start order when capacity is limited, and why:
 
-1. **PROOFGATE and REVIEWTRUTH first.** Both REDUCE the cost of every later phase — one makes
-   review verdicts trustworthy, the other makes proofs mechanical. Everything else consumes
-   review capacity; these two increase it.
-2. **LEGIBLE early**, because it is small and makes this roadmap's own progress reportable.
+1. **LEGIBLE and REVIEWTRUTH first.** REVIEWTRUTH makes review verdicts trustworthy; LEGIBLE is
+   small, makes this roadmap's progress reportable, and publishes the verification-evidence v3
+   envelope that unblocks PROOFGATE.
+2. **PROOFGATE immediately after LEGIBLE**, because it makes proofs mechanical and lies on the
+   critical path. It may not overlap LEGIBLE's shared verification-evidence writers.
 3. **FABPUB** whenever capacity allows; it has no upstream dependency and lies on a longest chain
    (see the DAG's *Critical path*), so prioritizing it shortens the schedule (RESIDUAL now hangs
    off it downstream, so start FABPUB before, never beside, RESIDUAL).
