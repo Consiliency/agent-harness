@@ -651,6 +651,7 @@
           "by": "codex-plan-phase",
           "metadata": {
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
+            "plan_sha256": "2b8c23afad5b1f028ec036167f164e430030e07440bb9c11a3d34affc4109ee6",
             "run_id": "20260730T035938Z-01-reviewtruth-plan"
           },
           "transition": "committed"
