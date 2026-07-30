@@ -4,7 +4,7 @@ phase: HARDEN
 roadmap: specs/phase-plans-v10.md
 roadmap_sha256: 1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071
 automation:
-  suite_command: ["bash", "-lc", "set -euo pipefail; harden_junit=\"${PHASE_LOOP_RUN_DIR:+$PHASE_LOOP_RUN_DIR/harden-compatible-suite.xml}\"; if [[ -z \"$harden_junit\" ]]; then harden_junit=\"$(mktemp \"${TMPDIR:-/tmp}/harden-bootstrap-suite.XXXXXX.xml\")\"; fi; PYTHONPATH=phase-loop-runtime/src python3 -c 'import hashlib, json; from pathlib import Path; from phase_loop_runtime.plan_manifest import read_manifest, validate_manifest; p = Path(\"plans/manifest.json\"); v = validate_manifest(p); assert v.valid, \"; \".join(v.errors); matches = [e for e in read_manifest(Path(\".\")).plans if e.file == \"plans/phase-plan-v10-HARDEN.md\"]; assert len(matches) == 1, f\"expected one HARDEN manifest row, got {len(matches)}\"; e = matches[0]; assert (e.phase_alias, e.roadmap_ref.file if e.roadmap_ref else None, e.lanes) == (\"HARDEN\", \"specs/phase-plans-v10.md\", (\"SL-0\", \"SL-1\", \"SL-2\", \"SL-3\")); rows = [r for r in json.loads(p.read_text())[\"plans\"] if r[\"file\"] == \"plans/phase-plan-v10-HARDEN.md\"]; assert len(rows) == 1; c = rows[0][\"lifecycle\"][-1][\"metadata\"][\"harden_plan_contract\"]; digest = lambda xs: hashlib.sha256((chr(10).join(xs) + chr(10)).encode()).hexdigest(); assert c[\"plan_sha256\"] == hashlib.sha256(Path(\"plans/phase-plan-v10-HARDEN.md\").read_bytes()).hexdigest(); assert c[\"roadmap_sha256\"] == hashlib.sha256(Path(\"specs/phase-plans-v10.md\").read_bytes()).hexdigest() == \"1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071\"; assert (len(c[\"owned_paths\"]), c[\"owned_paths_count\"], digest(c[\"owned_paths\"]), c[\"owned_paths_sha256\"]) == (25, 25, \"24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2\", \"24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2\"); assert (len(c[\"test_paths\"]), c[\"test_paths_count\"], digest(c[\"test_paths\"]), c[\"test_paths_sha256\"]) == (9, 9, \"c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9\", \"c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9\"); assert (len(c[\"checkpoint_paths\"]), c[\"checkpoint_paths_count\"], digest(c[\"checkpoint_paths\"]), c[\"checkpoint_paths_sha256\"]) == (14, 14, \"4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc\", \"4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc\"); assert (c[\"expected_nodeids\"], c[\"sl1_nodeids\"], c[\"sl2_nodeids\"], c[\"sl3_evidence_nodeids\"], c[\"default_skip_nodeids\"], c[\"nodeid_delta\"], c[\"nodeid_inventory_sha256\"]) == (24, 13, 7, 4, 19, 2, \"20f358e6a3482a773cb28ed78eb6fa8e49353e2425a5d182a282eb8d7afb4b8f\")' && PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests -q -m \"not dotfiles_integration\" --junitxml=\"$harden_junit\""]
+  suite_command: ["bash", "-lc", "set -euo pipefail; harden_junit=\"${PHASE_LOOP_RUN_DIR:+$PHASE_LOOP_RUN_DIR/harden-compatible-suite.xml}\"; if [[ -z \"$harden_junit\" ]]; then harden_junit=\"$(mktemp \"${TMPDIR:-/tmp}/harden-bootstrap-suite.XXXXXX.xml\")\"; fi; PYTHONPATH=phase-loop-runtime/src python3 -c 'import hashlib, json; from pathlib import Path; from phase_loop_runtime.plan_manifest import validate_manifest; p = Path(\"plans\").joinpath(\"manifest.json\"); plan_file = Path(\"plans\").joinpath(\"phase-plan-v10-HARDEN.md\"); roadmap_file = Path(\"specs\").joinpath(\"phase-plans-v10.md\"); v = validate_manifest(p); assert v.valid, \"; \".join(v.errors); doc = json.loads(p.read_text()); rows = [r for r in doc[\"plans\"] if r.get(\"slug\") == \"v10-HARDEN\" or r.get(\"file\") == plan_file.as_posix() or r.get(\"phase_alias\") == \"HARDEN\"]; assert len(rows) == 1, f\"expected one HARDEN identity row, got {len(rows)}\"; r = rows[0]; assert (r.get(\"slug\"), r.get(\"file\"), r.get(\"phase_alias\"), (r.get(\"roadmap_ref\") or {}).get(\"file\"), r.get(\"lanes\")) == (\"v10-HARDEN\", plan_file.as_posix(), \"HARDEN\", roadmap_file.as_posix(), [\"SL-0\", \"SL-1\", \"SL-2\", \"SL-3\"]); events = r.get(\"lifecycle\"); assert isinstance(events, list) and events; bearing = [e for e in events if isinstance(e, dict) and isinstance(e.get(\"metadata\"), dict) and (\"harden_plan_contract\" in e[\"metadata\"] or \"harden_plan_contract_record_id\" in e[\"metadata\"])]; assert len(bearing) == 1, f\"expected one HARDEN contract-bearing record, got {len(bearing)}\"; event = bearing[0]; assert events[0] is event and event.get(\"transition\") == \"committed\" and event.get(\"by\") == \"codex-plan-phase\"; metadata = event[\"metadata\"]; assert metadata.get(\"harden_plan_contract_record_id\") == \"v10-HARDEN.harden-plan-contract.v1\"; c = metadata.get(\"harden_plan_contract\"); assert isinstance(c, dict); transitions = [e.get(\"transition\") for e in events]; assert transitions in ([\"committed\"], [\"committed\", \"executing\"], [\"committed\", \"executing\", \"completed\"]), transitions; assert r.get(\"status\") == transitions[-1] and r.get(\"updated_at\") == events[-1].get(\"at\"); executing = [e for e in events if e.get(\"transition\") == \"executing\"]; assert len(executing) == (0 if transitions == [\"committed\"] else 1); assert not executing or (executing[0].get(\"by\") == \"codex-execute-phase\" and executing[0].get(\"metadata\", {}).get(\"phase_alias\") == \"HARDEN\" and isinstance(executing[0].get(\"metadata\", {}).get(\"run_id\"), str) and executing[0][\"metadata\"][\"run_id\"]); payload = {k: value for k, value in c.items() if k != \"plan_sha256\"}; assert hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(\",\", \":\")).encode()).hexdigest() == \"5b5c9bbe8fa97a343c831b5f4829df05305ea19f01d71fd1c5d4e9698f554982\"; digest = lambda xs: hashlib.sha256((chr(10).join(xs) + chr(10)).encode()).hexdigest(); assert c[\"plan_sha256\"] == hashlib.sha256(plan_file.read_bytes()).hexdigest(); assert c[\"roadmap_sha256\"] == hashlib.sha256(roadmap_file.read_bytes()).hexdigest() == \"1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071\"; assert (len(c[\"owned_paths\"]), c[\"owned_paths_count\"], digest(c[\"owned_paths\"]), c[\"owned_paths_sha256\"]) == (25, 25, \"24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2\", \"24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2\"); assert (len(c[\"test_paths\"]), c[\"test_paths_count\"], digest(c[\"test_paths\"]), c[\"test_paths_sha256\"]) == (9, 9, \"c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9\", \"c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9\"); assert (len(c[\"checkpoint_paths\"]), c[\"checkpoint_paths_count\"], digest(c[\"checkpoint_paths\"]), c[\"checkpoint_paths_sha256\"]) == (14, 14, \"4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc\", \"4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc\"); assert (c[\"expected_nodeids\"], c[\"sl1_nodeids\"], c[\"sl2_nodeids\"], c[\"sl3_evidence_nodeids\"], c[\"default_skip_nodeids\"], c[\"nodeid_delta\"], c[\"nodeid_inventory_sha256\"]) == (24, 13, 7, 4, 19, 2, \"20f358e6a3482a773cb28ed78eb6fa8e49353e2425a5d182a282eb8d7afb4b8f\")' && PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests -q -m \"not dotfiles_integration\" --junitxml=\"$harden_junit\""]
 ---
 
 # HARDEN: Isolation and Verification Hardening
@@ -43,6 +43,40 @@ writes after loaded runner/reducer bytes change, and alone owns candidate
 commit, push, false-closeout reopening, process termination, fresh repo-local
 launch, and merge. Neither the implementation child nor the already-loaded
 pre-change runtime may author transition evidence or attest the candidate.
+
+`plans/manifest.json` is a runner-owned lifecycle-control path outside every
+HARDEN lane and outside the immutable 25/9/14 phase/test/checkpoint path sets.
+After plan validation and before any `SL-0` write, the installed executor must
+perform its normal
+`update_lifecycle(repo, "v10-HARDEN", "executing", "codex-execute-phase",
+{"run_id": <run-id>, "phase_alias": "HARDEN"})` call. The external coordinator
+freezes the pre-image and permits exactly the API-defined delta: the unique
+HARDEN row changes `status` from `committed` to `executing`, `updated_at`
+equals the new event's `at`, and one `executing` event with that exact writer
+and run identity is appended; every prior lifecycle event, immutable contract
+record, unrelated row, and other field remains equal. While that delta is
+unlanded, `plans/manifest.json` must be the only Git-visible dirty path and no
+lane work may start. The coordinator commits it alone on a distinct control
+branch, lands it through a manifest-only two-parent control PR, records the
+server merge as `L`, fetches the exact post-`L` target, and proves the worktree
+clean before the tests-only branch is created. A missing append, direct edit,
+second append, wrong transition/writer/run identity, extra manifest change,
+other dirty path, or failure to land `L` blocks before `SL-0`.
+
+The immutable contract is not the latest lifecycle state. Its committed event
+is located by metadata identity
+`v10-HARDEN.harden-plan-contract.v1`; the lookup treats every event carrying
+either that identity or `harden_plan_contract` as contract-bearing and requires
+exactly one such event. Missing, duplicate, identity-conflicting, malformed, or
+payload-drifted records fail closed. The frontmatter suite and the ordinary
+manifest verification command use the byte-identical lookup and seal the
+contract payload independently of mutable lifecycle status. A normal terminal
+`completed` append, if reached after the exact-`M` final audit, is handled by
+the same control-only rule on a distinct branch: the coordinator lands a
+manifest-only two-parent closeout PR as `F`, proves `M..F` is exactly the
+API-defined `executing -> completed` delta and that every runtime/code blob is
+unchanged, and only then permits terminal `complete`. A failed execution stops
+outside the successful `F` chronology and cannot claim completion.
 
 The live standalone CLI calls `compose_review_board()` before `invoke_board()`,
 and the composer can call each reachable capability record's `auth_ok()` while
@@ -150,6 +184,15 @@ path per line, with a final newline:
 - functional checkpoint `SL-1` + `SL-2` source paths: 14;
   `4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc`
 
+The sole ownership exception is the runner-owned lifecycle-control path
+`plans/manifest.json`. No `SL-*` lane owns or may edit, stage, or commit it, and
+it is not added to any phase/test/checkpoint path inventory. The external
+coordinator may admit only the exact `update_lifecycle` deltas above at the
+explicit pre-`SL-0` and terminal control boundaries. At every lane, checkpoint,
+candidate, and exact-`M` dirty-path gate the manifest must already be clean and
+equal to the applicable server-landed control blob; treating arbitrary
+manifest dirt as planning/control state is forbidden.
+
 ## Lanes
 
 ### SL-0 — Test contract, falsifiers, and panelled RED landing
@@ -171,7 +214,7 @@ path per line, with a final newline:
 | SL-0.3 | test | — | `phase-loop-runtime/tests/test_goal_coverage.py` | guarded existing `test_legacy_no_ids_no_evidence_no_block`, guarded existing `test_unresolvable_plan_legacy_does_not_block`, `test_goal_coverage_enforce_blocks_every_zero_declared_phase_at_every_completion_gate`, `test_goal_coverage_all_bare_legacy_is_distinct_warns_by_default_and_blocks_under_enforce` | `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_goal_coverage.py -q -k "legacy_no_ids_no_evidence_no_block or unresolvable_plan_legacy_does_not_block or enforce_blocks_every_zero_declared or all_bare_legacy_is_distinct"` |
 | SL-0.4 | test | — | `phase-loop-runtime/tests/test_verification_interpreter_guard_221.py` | `test_argument_consuming_bash_options_and_profile_patch_version_fail_closed` | `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_verification_interpreter_guard_221.py -q -k argument_consuming_bash_options_and_profile_patch_version_fail_closed` |
 | SL-0.5 | test | — | `phase-loop-runtime/tests/harden_tdd_guard.py`, `phase-loop-runtime/tests/test_harden_evidence_verifier.py` | `test_harden_evidence_verifier_rejects_each_missing_or_forged_obligation`, `test_harden_evidence_verifier_rejects_pretest_target_base_and_pr_range_tests`, `test_harden_fresh_process_lifecycle_rejects_self_wrong_head_or_non_two_parent_merge`, `test_harden_manifest_gate_rejects_malformed_or_stale_phase_entry` | `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_harden_evidence_verifier.py -q` |
-| SL-0.6 | impl | SL-0.1, SL-0.2, SL-0.3, SL-0.4, SL-0.5 | all `SL-0` owned test paths only | frozen tests-only PR and landed commit | Open and merge a tests-only PR into the exact target branch the later implementation PR will use. It changes no source, executable, changelog, roadmap, or manifest path. Record server-returned tests-PR number, target/base/head ref names and object IDs, merge commit, merged time, exact test-tree blob IDs, and commit SHA. Do not create or push the distinct implementation branch until the server reports the tests PR merged and its commit reachable from the target branch head. |
+| SL-0.6 | impl | SL-0.1, SL-0.2, SL-0.3, SL-0.4, SL-0.5 | all `SL-0` owned test paths only | frozen tests-only PR and landed commit | Only after the manifest-only lifecycle-control PR `L` has landed and the fetched target is clean, open and merge a tests-only PR into that exact target branch. It changes no source, executable, changelog, roadmap, manifest, or lifecycle-control path. Record server-returned tests-PR number, target/base/head ref names and object IDs, merge commit, merged time, exact test-tree blob IDs, and commit SHA; prove `L` is in the target ancestry and `plans/manifest.json` equals the landed `L` blob. Do not create or push the distinct implementation branch until the server reports the tests PR merged and its commit reachable from the target branch head. |
 | SL-0.7 | verify | SL-0.6 | all `SL-0` owned test paths only | default skip/legacy proof, activated per-selector/per-case RED, landed-base topology, and positive controls | Fetch the server-recorded post-merge target head and prove the tests commit is its ancestor. With activation absent, require the exact five legacy nodeids to pass and the exact nineteen new nodeids—and no migrated nodeid—to skip. Then set `PHASE_LOOP_TDD_EXPECT_HARDEN=1`, collect exactly the same 24 nodeids, and run every nodeid plus every frozen `RED_CASES_BY_NODEID` case separately against that landed pre-implementation base. Require intended assertion failures with zero skip, xfail, collection, import, setup, or teardown errors; record raw stdout/stderr, asserted source anchor, applied mutation/case, exit status, and JUnit in canonical `.phase-loop/` evidence. The coordinator may create the implementation branch only after the guard's exact inventories, raw anchors, and positive controls pass this gate. |
 
 `SL-0` is a complete tests-only landing, not an additive-selector landing.
@@ -270,8 +313,8 @@ default-green legacy set.
 | CWD-independent reconcile | `roadmap_paths_match` and `_normalize_automation_event` accept relative persisted paths | The same ledger bytes are reconciled from repo root and an unrelated CWD. Relative identity fields are rejected identically; relative `automation.artifact` resolves only against the absolute stored repo; relocated absolute roots with equal repo-relative roadmap subpaths remain accepted. |
 | enforce goal coverage | zero/unknown declarations can reach `not_applicable()` or a confirmed-legacy skip | Preflight, canonical closeout, delegated/resume completion, and missing-plan closeout each receive every zero-declared form—including a syntactically valid all-bare legacy phase—plus ambiguous, unparseable, and missing-plan declarations under `PHASE_LOOP_ACCEPTANCE_ENFORCE=block`; every case must return a non-human `contract_bug`. The all-bare case must remain distinguishable from parse failure, but only warn/default mode is its nonblocking positive control; the same all-bare phase must never pass an enforce completion gate. |
 | Bash/profile bypass | `_relogin_shell_shim` does not consume Bash argument-taking `-o option-name`, `+o option-name`, `-O shopt-option`, `+O shopt-option`, `--rcfile file`/`--rcfile=file`, or `--init-file file`/`--init-file=file`, and absent nominal minors can evade patch bounds | Every frozen argument-taking form locates the true `-c` payload only after consuming its argument; missing option names/files, ambiguous `--`, and malformed or unlocatable payloads fail closed. Under `<3.11.5`, a profile-introduced absent `python3.11 == 3.11.9` is shadowed/rejected; direct argv, non-login, satisfying-present, absolute-interpreter, and ordinary `bash -lc` controls retain their existing results. |
-| evidence verifier and fresh-process lifecycle | the executable is absent, the current runtime does not export `PHASE_LOOP_RUN_DIR`, and the ordinary implementation child writes all lanes before the coordinator can observe an intermediate tree | Fixture mutations separately forge external coordinator identity, server PR identity, ordered two-parent merges, target-base ancestry, actual PR range, lifecycle timestamps, process PID/nonce, loaded-head/module digests, distinct PR/branch identity, test/guard blobs and 13/7/4 node partitions, plan digest, GPT-5.6 Terra author-vendor independence, RED anchor/result, checkpoint/final commit trees and ancestry, snapshot provenance, pre-composition authorization traces, four mandatory isolated-seat attestations, registry/checklist equality, route refusal accounting, and either verification seal. The integration falsifier rejects any child or pre-change-runtime transition/self-attestation; a synthetic or laundered checkpoint; a checkpoint containing `SL-3` or omitting changed `SL-1`/`SL-2` paths; candidate evidence from a process not freshly loaded at exact pushed `I`; post-landing evidence from the candidate process or a process not freshly loaded at exact canonical `M`; a missing/forged transition, isolated-panel record, suite JUnit, fleet checklist, evidence file, or parent hash; an auth/provider/subscription/composition event preceding authorization; an unisolated mandatory seat; and any merge or terminal `complete` before the corresponding audit. Its positive control proves the only accepted lifecycle is tests merge and activated RED; Terra child exit without commit; coordinator-created actual `SL-1`+`SL-2` checkpoint `C`; a clean exact-`C` process proving 13 green + 7 green + exact 4 RED while the verifier is absent from `C`; coordinator admission of only the quarantined `SL-3` verifier/docs as direct child `I`; a new clean exact-`I` process proving all 24 green with environment activation absent; external coordinator push/transition; fresh exact-candidate suite and isolated four-seat panel, reduction, and audit; candidate-process exit and exact two-parent merge; then fresh exact-main suite and isolated four-seat panel, reduction, final audit, and completion. |
-| phase-plan manifest gate | `plans/manifest.json` is valid today, but the latest-panel HARDEN row binds the blocked predecessor digest and carries no owned/test/node inventory contract | The current-manifest command must reject malformed JSON, structural/per-entry validation errors, a missing/duplicate HARDEN row, stale HARDEN `file`, `phase_alias`, `roadmap_ref.file`, or lane metadata, a plan/roadmap digest mismatch, any mismatch in the exact 25 owned / 9 tests-only / 14 checkpoint path lists, counts, or sorted-newline digests, any mismatch in the 24-node/13-7-4/19-skip/2-delta contract, or drift in Terra/scheduler/subscription/no-release policy. The frozen fixture drives the same phase-specific gate with one mutation at a time and requires a typed non-zero result; the unmodified current manifest is the positive control. |
+| evidence verifier and fresh-process lifecycle | the executable is absent, the current runtime does not export `PHASE_LOOP_RUN_DIR`, and the ordinary implementation child writes all lanes before the coordinator can observe an intermediate tree | Fixture mutations separately forge external coordinator identity, server PR identity, ordered two-parent merges, target-base ancestry, actual PR range, lifecycle timestamps, process PID/nonce, loaded-head/module digests, distinct PR/branch identity, test/guard blobs and 13/7/4 node partitions, plan digest, GPT-5.6 Terra author-vendor independence, RED anchor/result, checkpoint/final commit trees and ancestry, snapshot provenance, pre-composition authorization traces, four mandatory isolated-seat attestations, registry/checklist equality, route refusal accounting, and either verification seal. The integration falsifier rejects a missing, forged, duplicated, dirty, or unlanded executing-control append; any child or pre-change-runtime transition/self-attestation; a synthetic or laundered checkpoint; a checkpoint containing `SL-3` or omitting changed `SL-1`/`SL-2` paths; candidate evidence from a process not freshly loaded at exact pushed `I`; post-landing evidence from the candidate process or a process not freshly loaded at exact canonical `M`; a missing/forged transition, isolated-panel record, suite JUnit, fleet checklist, evidence file, or parent hash; an auth/provider/subscription/composition event preceding authorization; an unisolated mandatory seat; and any merge or terminal `complete` before the corresponding audit and completed-control landing. Its positive control proves the only accepted lifecycle is exact executing append and manifest-only control merge `L`; tests merge and activated RED; Terra child exit without commit; coordinator-created actual `SL-1`+`SL-2` checkpoint `C` with a clean manifest; a clean exact-`C` process proving 13 green + 7 green + exact 4 RED while the verifier is absent from `C`; coordinator admission of only the quarantined `SL-3` verifier/docs as direct child `I`; a new clean exact-`I` process proving all 24 green with environment activation absent; external coordinator push/transition; fresh exact-candidate suite and isolated four-seat panel, reduction, and audit; candidate-process exit and exact two-parent implementation merge; then fresh exact-main suite and isolated four-seat panel, reduction, final audit; exact completed append and manifest-only closeout merge `F`; and only then completion. |
+| phase-plan manifest gate | `update_lifecycle()` normally appends an `executing` event without copying immutable plan metadata and rewrites `plans/manifest.json` before lane work | The current-manifest command must reject malformed JSON, structural/per-entry validation errors, a missing/duplicate/conflicting HARDEN identity row, stale HARDEN `file`, `phase_alias`, `roadmap_ref.file`, or lane metadata, and any missing, duplicate, identity-conflicting, malformed, or payload-drifted contract-bearing lifecycle record. It locates the sole immutable contract by `harden_plan_contract_record_id=v10-HARDEN.harden-plan-contract.v1`, never by latest-event position; seals every contract field other than the separately checked current plan digest; and rejects any mismatch in the unchanged roadmap digest, exact 25 owned / 9 tests-only / 14 checkpoint path lists and digests, 24-node/13-7-4/19-skip/2-delta contract, or Terra/scheduler/subscription/no-release policy. The fixture must also exercise the normal committed → executing append and committed → executing → completed sequence through the byte-identical lookup. It rejects a wrong writer/run identity, an appended contract copy, a lifecycle/status/timestamp mismatch, arbitrary manifest dirt, an unlanded pre-`SL-0` control delta, or any implementation/checkpoint head whose clean manifest blob is not descended from server-landed `L`. The frozen fixture drives the same phase-specific gate with one mutation at a time and requires a typed non-zero result; committed, clean post-`L` executing, and exact terminal-control forms are the only positive controls. |
 
 Before `SL-0.6`, the external coordinator panels the exact plan digest and exact
 tests-only diff by reference with Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and
@@ -465,12 +508,12 @@ mismatch fails. No real external mutation is performed.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | SL-1.8, SL-2.6 | `phase-loop-runtime/tests/harden_tdd_guard.py`, `phase-loop-runtime/tests/test_harden_evidence_verifier.py` (read-only) | exact checkpoint 13-green + 7-green + 4-RED proof | After the GPT-5.6 Terra implementation child has written every `SL-1`–`SL-3` owned path and the pre-change runtime/child have exited without a commit, the external coordinator records the complete dirty path/digest set. It stages only the literal fourteen `SL-1`+`SL-2` source paths enumerated below, proves the cached path set equals the recorded changed subset and excludes all `SL-0` and `SL-3` paths, and creates actual checkpoint commit `C` directly atop the fetched post-tests target `T`. The original implementation worktree must then retain exactly the two unchanged, digest-matched `SL-3` residual paths and no other Git-visible dirt. In a separate clean detached exact-`C` worktree and fresh process, set `PHASE_LOOP_TDD_EXPECT_HARDEN=1`; run exact `SL1_NODEIDS` and require 13 passed/0 skipped, exact `SL2_NODEIDS` and require 7 passed/0 skipped, then exact `SL3_EVIDENCE_NODEIDS` and every frozen case and require intended assertion RED with zero skip/xfail/collection/import/setup/teardown errors. The `SL-1` result must include both pre-composition ordering nodeids and their complete CLI/bare-default/explicit-auth/config/denial/static/invoker case traces. Prove `verify_harden_evidence.py` is absent from tree `C`. Child checks, the dirty original worktree, and the already-loaded pre-change runtime cannot satisfy this gate. |
-| SL-3.2 | impl | SL-3.1 | `phase-loop-runtime/scripts/verify_harden_evidence.py` | candidate/post-landing chronology and evidence verifier | Preserve the child-written script bytes and pre-checkpoint digest without coordinator edits. After the clean exact-`C` proof passes, stage this path together with `CHANGELOG.md` and create direct-child commit `I`. The executable has an explicit `--lifecycle-stage candidate|post_landing`; both stages require parent-supplied run directory, sealed `verification.json`, structured broad-suite JUnit, runner-reduced fleet checklist, output path, plan, roadmap, phase, repository, external coordinator transition, isolated four-seat panel record, exact checkpoint/final commit trees, and exact process/head/module identities. Candidate mode writes only `harden-candidate-evidence.json`; post-landing mode additionally requires and revalidates candidate evidence/hashes and writes only final `harden-evidence.json`. It derives Git/forge ancestry, exact `T -> C -> I` commit/path shapes, ordered PR-merge parents, path ownership, manifest state, nodeid/skip state, transition authorship/identity, all four isolated-seat attestations, and route-checklist evidence; exits non-zero with typed findings for any missing, mismatched, child/self-reported-only, stale-process/run/head, synthetic/laundered checkpoint, one-parent/squash/rebase merge, unisolated/excluded panel seat, or forged obligation; and never discovers another run, trusts CLI booleans/counts, runs as an ordinary suite command, amends `verification.json`, or writes tracked files. |
+| SL-3.1 | test | SL-1.8, SL-2.6 | `phase-loop-runtime/tests/harden_tdd_guard.py`, `phase-loop-runtime/tests/test_harden_evidence_verifier.py` (read-only) | exact checkpoint 13-green + 7-green + 4-RED proof | After the GPT-5.6 Terra implementation child has written every `SL-1`–`SL-3` owned path and the pre-change runtime/child have exited without a commit, the external coordinator records the complete dirty path/digest set. It first proves `plans/manifest.json` is clean, equals the server-landed executing-control blob descended from `L`, and is absent from the dirty and cached sets. It stages only the literal fourteen `SL-1`+`SL-2` source paths enumerated below, proves the cached path set equals the recorded changed subset and excludes all `SL-0`, `SL-3`, lifecycle-control, and unowned paths, and creates actual checkpoint commit `C` directly atop the fetched post-tests target `T`. The original implementation worktree must then retain exactly the two unchanged, digest-matched `SL-3` residual paths and no other Git-visible dirt; `plans/manifest.json` is not a third residual. In a separate clean detached exact-`C` worktree and fresh process, set `PHASE_LOOP_TDD_EXPECT_HARDEN=1`; run exact `SL1_NODEIDS` and require 13 passed/0 skipped, exact `SL2_NODEIDS` and require 7 passed/0 skipped, then exact `SL3_EVIDENCE_NODEIDS` and every frozen case and require intended assertion RED with zero skip/xfail/collection/import/setup/teardown errors. The `SL-1` result must include both pre-composition ordering nodeids and their complete CLI/bare-default/explicit-auth/config/denial/static/invoker case traces. Prove `verify_harden_evidence.py` is absent from tree `C`. Child checks, the dirty original worktree, and the already-loaded pre-change runtime cannot satisfy this gate. |
+| SL-3.2 | impl | SL-3.1 | `phase-loop-runtime/scripts/verify_harden_evidence.py` | candidate/post-landing chronology and evidence verifier | Preserve the child-written script bytes and pre-checkpoint digest without coordinator edits. After the clean exact-`C` proof passes, stage this path together with `CHANGELOG.md` and create direct-child commit `I`. The executable has an explicit `--lifecycle-stage candidate|post_landing`; both stages require parent-supplied run directory, sealed `verification.json`, structured broad-suite JUnit, runner-reduced fleet checklist, output path, plan, roadmap, phase, repository, external coordinator transition, isolated four-seat panel record, exact checkpoint/final commit trees, and exact process/head/module identities. Candidate mode writes only `harden-candidate-evidence.json`; post-landing mode additionally requires and revalidates candidate evidence/hashes and writes only final `harden-evidence.json`. It derives Git/forge ancestry, exact `L -> T -> C -> I` commit/path shapes, the normal executing lifecycle event and clean landed manifest blob, ordered control/tests/implementation PR-merge parents, path ownership, manifest state, nodeid/skip state, transition authorship/identity, all four isolated-seat attestations, and route-checklist evidence; exits non-zero with typed findings for any missing, mismatched, child/self-reported-only, stale-process/run/head, synthetic/laundered checkpoint, one-parent/squash/rebase merge, unisolated/excluded panel seat, or forged obligation; and never discovers another run, trusts CLI booleans/counts, runs as an ordinary suite command, amends `verification.json`, or writes tracked files. |
 | SL-3.3 | impl | SL-3.1 | `CHANGELOG.md` | Unreleased note | Preserve the child-written changelog bytes and pre-checkpoint digest without coordinator edits; stage it only with `verify_harden_evidence.py` after `SL-3.1`. Its concise Unreleased note covers contained review staging/fleet isolation, isolated four-seat subscription panels, CWD-independent reconcile attribution, non-vacuous enforce goal coverage, and login-shell interpreter hardening. Do not edit roadmap/spec/contract/version/release-pin surfaces. |
 | SL-3.4 | verify | SL-3.2, SL-3.3 | all phase-owned paths and frozen `SL-0` tests, read-only | exact all-24 pre-push gate | Require `I` to be an actual commit with sole parent `C`, cached/residual admission exactly `{phase-loop-runtime/scripts/verify_harden_evidence.py, CHANGELOG.md}`, and no amendment, rebase, squash, cherry-pick, stash/patch replay, replacement ref, synthetic `commit-tree`, or history rewrite. In a new clean detached exact-`I` worktree/process—not the dirty original, child, pre-change runtime, or exact-`C` process—remove `PHASE_LOOP_TDD_EXPECT_HARDEN`, assert `HARDEN_CAPABILITY_VERSION == 1`, import literal `EXPECTED_PHASE_NODEIDS`, and invoke pytest with exactly those 24 nodeids plus `--junitxml=<coordinator-run-dir>/harden-phase-focused.xml`. Require exact partition equality `13 + 7 + 4 = 24` and JUnit exactly 24 passed, zero skipped/xfailed/errors. Only this clean exact-head result authorizes push/transition. A failure returns to the GPT-5.6 Terra child for a fresh dirty output and restarts the actual `C`/`I` chronology; no partial 20-node green or reused worktree/process is admissible. |
 | SL-3.5 | verify | SL-3.4 | all phase-owned paths plus coordinator and candidate runner evidence, read-only | externally pushed candidate and fresh exact-candidate proof | After `SL-3.4` passes, the external coordinator—not the child or old runtime—pushes exact `I`, verifies the remote object, records/rejects any old-runtime false `complete`, reopens it with the existing `phase-loop reopen` command after the tree is clean, proves old PIDs/locks gone, and writes the run-owned external transition binding `T`, `C`, and `I`. It launches a distinct repo-local process with `PYTHONPATH=phase-loop-runtime/src` at exact clean fetched `I` and the exact transition path. That process validates and copies the transition into its run-owned input area, exports its run dir, runs every ordinary verification command and the broad suite, seals JUnit/`verification.json`, and enters a bounded fail-closed `awaiting_external_review` wait without exiting or changing HEAD. The coordinator then starts the exact-`I` repo-local isolated-panel boundary: all four Fable/Sol/Gemini/Grok seats receive only immutable staged exact-`I` inputs, run their direct mutation/credentialed-side-effect probes, and perform intended inference only through their supported parent-broker adapters. The sealed panel record cross-links the four supported fleet-checklist rows and is written into the candidate run's declared input path. The same still-live candidate process validates it, reduces/audits candidate evidence, records nonterminal `candidate_audit=passed`, and exits. Timeout, wrong writer/path/digest, process exit, changed HEAD, direct legacy panel launch, missing/refused/excepted seat, or failed boundary/broker/probe attestation fails. Any change or material finding invalidates `I` and restarts the actual `C`/`I` chronology; merge is forbidden until this gate passes. |
-| SL-3.6 | verify | SL-3.5 | all phase-owned paths plus candidate and canonical-main runner evidence, read-only | exact two-parent landing and fresh canonical-main proof | The external coordinator merges only exact reviewed `I` with the required two-parent topology, proves the candidate process exited, fetches server canonical main `M`, prepares an exact clean worktree, and writes a post-landing transition. It starts another distinct repo-local process at `M` with modules loaded from `M`. Repeat manifest/plan/roadmap validation, environment-activation-absent exact 24-node focused and broad compatible suites, Ruff, and the mandatory exact-`M` four-seat panel through the exact-`M` repo-local isolated-panel boundary with four direct mutation/credentialed-side-effect probes and supported broker rows. Then run post-suite fleet/final reduction and parent audit. Structured JUnit contains all 24 frozen nodeids exactly once with zero skipped. Only this process may emit terminal `complete`, after it verifies both ordered two-parent PR merges, actual `T -> C -> I` ancestry, both isolated exact-head panels, and the complete lifecycle below. |
+| SL-3.6 | verify | SL-3.5 | all phase-owned paths plus candidate and canonical-main runner evidence, read-only | exact two-parent landing and fresh canonical-main proof | The external coordinator merges only exact reviewed `I` with the required two-parent topology, proves the candidate process exited, fetches server canonical main `M`, prepares an exact clean worktree, and writes a post-landing transition. It starts another distinct repo-local process at `M` with modules loaded from `M`. Repeat manifest/plan/roadmap validation, environment-activation-absent exact 24-node focused and broad compatible suites, Ruff, and the mandatory exact-`M` four-seat panel through the exact-`M` repo-local isolated-panel boundary with four direct mutation/credentialed-side-effect probes and supported broker rows. Then run post-suite fleet/final reduction and parent audit. Structured JUnit contains all 24 frozen nodeids exactly once with zero skipped. Only this process may authorize the normal completed lifecycle append after it verifies the lifecycle-control, tests-only, and implementation ordered two-parent PR merges, actual `L -> T -> C -> I` ancestry, both isolated exact-head panels, and the complete lifecycle below. Terminal `complete` remains withheld until the external coordinator lands the exact manifest-only completed-control PR `F` and proves every non-manifest blob is identical to audited `M`. |
 
 The coordinator's checkpoint staging command names exactly these fourteen
 `SL-1`+`SL-2` source paths and no glob:
@@ -491,14 +534,18 @@ The coordinator's checkpoint staging command names exactly these fourteen
 - `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
 
 Before staging, the coordinator records the changed subset and SHA-256 for every
-phase-owned dirty path. It invokes `git add --` with only the fourteen literals,
-then requires the cached name set to equal the previously recorded changed
-subset within that exact list. It refuses an empty checkpoint, a cached
-`SL-0`/`SL-3`/unowned path, or an unstaged changed `SL-1`/`SL-2` path. Commit
+phase-owned dirty path. It separately proves `plans/manifest.json` is clean,
+matches the server-landed `L` descendant blob, and is absent from both dirty
+and cached sets. It invokes `git add --` with only the fourteen literals, then
+requires the cached name set to equal the previously recorded changed subset
+within that exact list. It refuses an empty checkpoint, a cached
+`SL-0`/`SL-3`/lifecycle-control/unowned path, an unstaged changed
+`SL-1`/`SL-2` path, or any manifest delta. Commit
 `C` has sole parent `T`, the fetched target head containing the two-parent tests
 merge. After `C`, porcelain status in the implementation worktree must name
 exactly `phase-loop-runtime/scripts/verify_harden_evidence.py` and
-`CHANGELOG.md`; their bytes and hashes must equal the child-exit record. Ignored
+`CHANGELOG.md`; their bytes and hashes must equal the child-exit record, and the
+manifest must remain clean. Ignored
 run-owned `.phase-loop/` evidence stays outside Git and is bound separately.
 The detached checkpoint worktree is created from commit `C`, is clean before
 and after its proof, cannot see the original worktree's two residual paths, and
@@ -531,16 +578,25 @@ metadata, process startup records, and sealed runner artifacts:
    panel.
 2. The unique HARDEN row in `plans/manifest.json` passes structural and
    per-entry validation and exactly names this plan, phase, roadmap, and
-   `SL-0`–`SL-3`. Its `harden_plan_contract` binds the current plan and unchanged
-   roadmap digests; 25 owned, 9 tests-only, and 14 checkpoint paths plus their
-   sorted-newline SHA-256 values; the 24-node inventory digest and exact
-   13/7/4 partition; the two pre-auth ordering nodeids; Terra whole-phase
+   `SL-0`–`SL-3`. It searches every lifecycle event for either
+   `harden_plan_contract_record_id` or `harden_plan_contract`, requires exactly
+   one contract-bearing event, and requires identity
+   `v10-HARDEN.harden-plan-contract.v1`; it never reads the contract by latest
+   event position. The sealed immutable payload binds the current plan and
+   unchanged roadmap digests; 25 owned, 9 tests-only, and 14 checkpoint paths
+   plus their sorted-newline SHA-256 values; the 24-node inventory digest and
+   exact 13/7/4 partition; the two pre-auth ordering nodeids; Terra whole-phase
    authorship; both schedulers off; subscription-only auth; and no release/tag.
-   Malformed JSON, a bad sibling row, missing/duplicate HARDEN row, stale
-   file/alias/roadmap/lane metadata, count/digest drift, or a plan digest still
-   bound to the latest-panel `DISAGREE` bytes is a typed failure. The manifest
-   command appears in both frontmatter and `## Verification`, and its sealed
-   command result is required at both exact heads.
+   The normal `executing` event is later, carries only the exact executor run
+   metadata, and is landed in `L` before tests branch creation. Malformed JSON,
+   a bad sibling row, missing/duplicate/conflicting HARDEN row, a missing,
+   duplicate, malformed, identity-conflicting, or payload-drifted
+   contract-bearing record, stale file/alias/roadmap/lane metadata,
+   count/digest drift, an invalid lifecycle sequence/status/timestamp, or a
+   plan digest still bound to the latest-panel `DISAGREE` bytes is a typed
+   failure. The byte-identical contract lookup appears in both frontmatter and
+   `## Verification`; its sealed result is required at the clean checkpoint,
+   pre-push, candidate, exact-`M`, and terminal-control heads.
 3. `harden_tdd_guard.py` and all eight phase test modules have the landed
    tests-only blob IDs. The guard's literal inventories are exactly 24 expected
    nodeids, partitioned without overlap as `SL1_NODEIDS=13`,
@@ -558,15 +614,24 @@ metadata, process startup records, and sealed runner artifacts:
    each repeat the same 24 exactly once, all passed, zero skipped, with the
    environment activation absent and production marker present.
 4. Server-returned forge metadata identifies distinct tests-only and
-   implementation PR numbers/head branches and records repository, URL,
+   implementation PR numbers/head branches, plus the distinct runner-owned
+   lifecycle-control PR, and records repository, URL,
    target/base/head refs and object IDs, reviewed heads, states, merge commits,
-   and lifecycle times. The implementation remote branch did not exist before
-   the tests PR merged and was created only from the fetched post-test target
-   head after activated RED passed.
+   and lifecycle times. The lifecycle-control PR changes only
+   `plans/manifest.json` by the exact `update_lifecycle` executing delta and
+   lands as `L` before the tests branch exists. The tests branch is created
+   from the fetched post-`L` target. The implementation remote branch did not
+   exist before the tests PR merged and was created only from the fetched
+   post-test target head after activated RED passed.
 5. Ordered two-parent topology is exact, not merely reachability. Let `B` be the
-   tests PR target object, `TH` its reviewed head, and `TM` its merge commit;
+   lifecycle-control PR target object, `LH` its manifest-only reviewed head,
+   and `L` its merge commit; `git cat-file`/forge metadata must prove `L` has
+   exactly ordered parents `[B, LH]`, `B..LH` changes only
+   `plans/manifest.json`, and that blob is exactly the allowed committed →
+   executing API delta. Let `TH` be the tests PR reviewed head and `TM` its
+   merge commit;
    `git cat-file`/forge metadata must prove `TM` has exactly ordered parents
-   `[B, TH]`. Let `T` be the fetched post-tests target/implementation branch
+   `[L, TH]`. Let `T` be the fetched post-tests target/implementation branch
    point, `C` the actual checkpoint whose sole parent is `T`, and `I` the
    reviewed/pushed direct child whose sole parent is `C`. Tree `C` contains
    exactly the changed `SL-1`+`SL-2` paths and no `SL-0`/`SL-3` change; the
@@ -575,14 +640,23 @@ metadata, process startup records, and sealed runner artifacts:
    `M` the server-recorded merge/canonical-main head; `M` must have exactly
    ordered parents `[P, I]`. Squash, rebase, octopus, synthetic replacement,
    rewritten checkpoint, reversed/wrong parents, or a later main head fails.
-   `TM` is an ancestor of `T`, `C`, `I`, `P`, and `M`. The actual
+   After the exact-`M` final audit, let `FH` be the closeout-control branch
+   commit whose sole change from `M` is the exact executing → completed
+   `update_lifecycle` delta, and `F` the server closeout-control merge; `F` has
+   exactly ordered parents `[M, FH]`, differs from `M` only in
+   `plans/manifest.json`, and preserves every runtime, test, plan, roadmap, and
+   phase-owned blob from `M`.
+   `L` and `TM` are ancestors of `T`, `C`, `I`, `P`, and `M`. The actual
    implementation PR range is derived from server identities; it and the forge
-   file set contain no `SL-0` path or tests-only commit, and every frozen
-   test/guard blob remains identical. A `base -> tests -> implementation`
+   file set contain no `SL-0` path, tests-only commit, or manifest-control
+   change, and every frozen test/guard blob remains identical. A
+   `base -> tests -> implementation`
    branch whose PR targets the pre-test base fails even if the tests commit is
    elsewhere in the head ancestry.
 6. Lifecycle order is strict and digest-bound:
    coordinator identity freeze → external phase-plan panel → external
+   manifest pre-image freeze → normal executor `executing` append → exact
+   manifest-only control PR merge `L` → clean post-`L` target → external
    tests/guard panel → tests PR merge `TM` → default 5-pass/19-skip proof →
    activated raw RED completion → implementation branch creation →
    GPT-5.6 Terra implementation child writes all owned paths under manual
@@ -601,7 +675,8 @@ metadata, process startup records, and sealed runner artifacts:
    coordinator-owned implementation PR merge `M` → distinct post-landing
    process startup at `M` → post-landing manifest/focused/broad/Ruff seal →
    isolated exact-`M` four-seat panel with the same boundary → final
-   reduction/audit → terminal `complete`. Each event carries
+   reduction/audit → exact manifest-only completed-control PR merge `F` →
+   terminal `complete`. Each event carries
    coordinator-observed time, prior-event hash, plan/test/checkpoint/candidate
    digest, and server object IDs; absent, duplicate, out-of-order, or post-dated
    evidence fails.
@@ -688,6 +763,22 @@ commands extracted from `## Verification` are pass-1 verification; no ordinary
 command may invoke `verify_harden_evidence.py`, read an unsealed current-run
 artifact, or claim post-suite output as suite evidence.
 
+0. **Land the normal lifecycle append before lane work.** After validating the
+   plan and freezing the clean manifest pre-image, the installed executor calls
+   `update_lifecycle()` once for slug `v10-HARDEN`, transition `executing`,
+   writer `codex-execute-phase`, and exact metadata
+   `{"run_id": <run-id>, "phase_alias": "HARDEN"}`. Before any `SL-0` file is
+   written, the coordinator requires `plans/manifest.json` to be the sole dirty
+   path and validates the parsed/canonical delta against the API: only the
+   unique HARDEN row status, updated timestamp, and one appended event may
+   differ; the previous lifecycle prefix, stable contract-bearing record, all
+   other HARDEN fields, and every sibling row are unchanged. It commits only
+   that path on a separate control branch, opens and merges a distinct
+   two-parent manifest-only PR as `L`, fetches the exact target, and proves a
+   clean tree whose manifest blob equals `L`. The tests branch is created only
+   from that post-`L` target. No lane or Terra child owns this transition, and
+   no allowlisting of later manifest dirt is permitted.
+
 1. **One child, no self-attestation.** The external coordinator launches exactly
    one GPT-5.6 Terra implementation process through the already-installed
    pre-change runtime with `--closeout-mode manual`, `--lane-scheduler off`, and
@@ -702,7 +793,9 @@ artifact, or claim post-suite output as suite evidence.
    exit and proves their PID/process-group/locks are gone. Any old-runtime
    terminal `complete` is classified `false_complete_rejected` because its
    imported runner/reducer identities predate the dirty output. It validates
-   frozen `SL-0` blobs and records the exact dirty path/digest set. Using only
+   frozen `SL-0` blobs, proves the manifest is clean and equal to the landed
+   `L`-descended executing blob, and records the exact phase-owned dirty
+   path/digest set. Using only
    the fourteen literal source paths above, it stages the recorded changed
    `SL-1`+`SL-2` subset and creates actual checkpoint commit `C` with sole parent
    `T`; all `SL-3` bytes remain unchanged and dirty in the original worktree.
@@ -713,7 +806,8 @@ artifact, or claim post-suite output as suite evidence.
    child, and old runtime are never evidence sources for this gate.
 3. Only after the exact-`C` proof passes, the coordinator verifies that the
    original worktree's only Git-visible dirt is the unchanged verifier and
-   changelog. It stages exactly those two literals and creates actual commit `I`
+   changelog and that `plans/manifest.json` is clean at the landed executing
+   blob. It stages exactly those two literals and creates actual commit `I`
    with sole parent `C`. A new clean detached exact-`I` worktree and new process
    remove `PHASE_LOOP_TDD_EXPECT_HARDEN`, assert the production capability
    marker, and prove exact all-24/zero-skip. The coordinator then pushes exact
@@ -726,9 +820,11 @@ artifact, or claim post-suite output as suite evidence.
 4. The coordinator writes
    `.phase-loop/runs/<transition-id>/harden-coordinator-transition.json` from
    its own process. The sealed record contains coordinator executable/package
-   realpaths, version/Git identity/file hashes/PID/start nonce; implementation
+   realpaths, version/Git identity/file hashes/PID/start nonce; manifest
+   pre/post blobs, exact executing event, lifecycle-control PR/merge `L`, and
+   the clean post-`L` target identity; implementation
    launch artifact paths/hashes and child-exit dirty manifest; rejected
-   false-complete/manual-reopen event; exact `T`/`C`/`I` parents, trees, staged
+   false-complete/manual-reopen event; exact `L`/`T`/`C`/`I` parents, trees, staged
    path sets, residual hashes, clean worktree/process identities and 13/7/4/24
    results; candidate branch/remote proof; plan, roadmap, manifest, guard/test
    blob digests; and old-process death. A child/model-produced record, a
@@ -783,8 +879,9 @@ artifact, or claim post-suite output as suite evidence.
    proves the candidate process gone, fetches server canonical main `M`,
    prepares a clean exact-`M` worktree, and writes a new post-landing transition.
    It launches the same repo-local command shape with the new exact transition.
-   Startup fails closed unless local/remote `M`, both ordered two-parent PR
-   merges, actual `T -> C -> I` ancestry, coordinator identity, and loaded
+   Startup fails closed unless local/remote `M`, the lifecycle-control,
+   tests-only, and implementation ordered two-parent PR merges, actual
+   `L -> T -> C -> I` ancestry, coordinator identity, and loaded
    repo-local module hashes all match and the PID/nonce is distinct from every
    earlier process.
 9. The post-landing runtime repeats manifest, plan, roadmap, environment-
@@ -816,8 +913,21 @@ artifact, or claim post-suite output as suite evidence.
    `review_boundary_attestation_failed`; and early completion returns
    `terminal_complete_before_final_audit`. These normalize to non-human
    `blocker_class=repeated_verification_failure`. Only the fresh exact-`M`
-   process with `final_audit.status=passed` may emit terminal `complete`; every
-   failure retains the run-owned artifacts for diagnosis.
+   process with `final_audit.status=passed` may authorize the terminal
+   lifecycle-control landing; every failure retains the run-owned artifacts for
+   diagnosis.
+10. After that exact-`M` audit passes, the executor performs its normal
+    `update_lifecycle(..., "completed", "codex-execute-phase", ...)` in a
+    separate clean control worktree rooted at `M`. The coordinator applies the
+    same exact-delta validator, commits only `plans/manifest.json` as `FH`, and
+    lands a distinct manifest-only two-parent closeout PR as `F`. It proves
+    ordered parents `[M, FH]`, a clean server tree, the byte-identical unique
+    contract lookup, and equality of every non-manifest blob with audited `M`.
+    The still-fresh exact-`M` parent may emit terminal `complete` only after
+    this server proof; its loaded runtime modules are exact because `M` and `F`
+    have identical code blobs. Any extra delta, failed/duplicate transition,
+    merge race, or changed non-manifest blob blocks and requires a new clean
+    exact-head audit rather than relabeling `F`.
 
 ## Execution Policy
 
@@ -845,10 +955,20 @@ commit/push/merge operations.
   this pre-implementation record is a TDD/governance prerequisite, never
   `EC-HARDEN-5` route evidence and never a substitute for the isolated exact-`I`
   or exact-`M` panel.
+- After that exact-plan panel and before any test write, the installed executor
+  performs its normal `committed -> executing` manifest lifecycle update. The
+  external coordinator treats `plans/manifest.json` as a single runner-owned
+  control path, not a HARDEN lane path: it accepts only the exact API delta,
+  lands it alone through the distinct two-parent control PR `L`, fetches the
+  post-`L` target, and requires a clean tree. The tests-only and implementation
+  PRs may not contain or repair the manifest. At checkpoint `C`, direct-child
+  `I`, candidate, and exact-`M`, any manifest dirt is an ownership failure, not
+  a planning/control exemption. After the exact-`M` audit, the normal completed
+  append must likewise land alone as `F` before terminal `complete`.
 - `SL-0` lands literally as tests only. No production source, executable,
   changelog, roadmap, manifest, or closeout implementation may share that
   commit. Land the test-owned guard and immutable tests through their own
-  two-parent tests-only PR into the exact target branch. On the fetched
+  two-parent tests-only PR into the exact clean post-`L` target branch. On the fetched
   post-merge target, prove the marker-absent 5-pass/19-skip default and then the
   activated 24-nodeid/per-case intended RED results. Only after that may the
   coordinator create a distinct implementation branch from that head and later
@@ -932,7 +1052,7 @@ commit/push/merge operations.
 - `PYTHONPATH=phase-loop-runtime/src python3 skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py plans/phase-plan-v10-HARDEN.md`
 - `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v10.md`
 - `PYTHONPATH=phase-loop-runtime/src python3 -c 'from pathlib import Path; from phase_loop_runtime.plan_manifest import read_manifest, validate_manifest; p = Path("plans").joinpath("manifest.json"); v = validate_manifest(p); assert v.valid, "; ".join(v.errors); plan_file = Path("plans").joinpath("phase-plan-v10-HARDEN.md").as_posix(); roadmap_file = Path("specs").joinpath("phase-plans-v10.md").as_posix(); matches = [e for e in read_manifest(Path(".")).plans if e.file == plan_file]; assert len(matches) == 1, f"expected one HARDEN manifest row, got {len(matches)}"; e = matches[0]; actual = (e.phase_alias, e.roadmap_ref.file if e.roadmap_ref else None, e.lanes); expected = ("HARDEN", roadmap_file, ("SL-0", "SL-1", "SL-2", "SL-3")); assert actual == expected, f"stale HARDEN manifest row: {actual!r}"'`
-- `python3 -c 'import hashlib,json; from pathlib import Path; plan_file=Path("plans").joinpath("phase-plan-v10-HARDEN.md"); roadmap_file=Path("specs").joinpath("phase-plans-v10.md"); row=next(r for r in json.loads(Path("plans").joinpath("manifest.json").read_text())["plans"] if r["file"]==plan_file.as_posix()); c=row["lifecycle"][-1]["metadata"]["harden_plan_contract"]; d=lambda xs:hashlib.sha256((chr(10).join(xs)+chr(10)).encode()).hexdigest(); assert c["plan_sha256"]==hashlib.sha256(plan_file.read_bytes()).hexdigest(); assert c["roadmap_sha256"]==hashlib.sha256(roadmap_file.read_bytes()).hexdigest()=="1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"; assert (len(c["owned_paths"]),c["owned_paths_count"],d(c["owned_paths"]),c["owned_paths_sha256"])==(25,25,"24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2","24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2"); assert (len(c["test_paths"]),c["test_paths_count"],d(c["test_paths"]),c["test_paths_sha256"])==(9,9,"c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9","c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9"); assert (len(c["checkpoint_paths"]),c["checkpoint_paths_count"],d(c["checkpoint_paths"]),c["checkpoint_paths_sha256"])==(14,14,"4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc","4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc"); assert (c["expected_nodeids"],c["sl1_nodeids"],c["sl2_nodeids"],c["sl3_evidence_nodeids"],c["default_skip_nodeids"],c["nodeid_delta"],c["nodeid_inventory_sha256"])==(24,13,7,4,19,2,"20f358e6a3482a773cb28ed78eb6fa8e49353e2425a5d182a282eb8d7afb4b8f")'`
+- `PYTHONPATH=phase-loop-runtime/src python3 -c 'import hashlib, json; from pathlib import Path; from phase_loop_runtime.plan_manifest import validate_manifest; p = Path("plans").joinpath("manifest.json"); plan_file = Path("plans").joinpath("phase-plan-v10-HARDEN.md"); roadmap_file = Path("specs").joinpath("phase-plans-v10.md"); v = validate_manifest(p); assert v.valid, "; ".join(v.errors); doc = json.loads(p.read_text()); rows = [r for r in doc["plans"] if r.get("slug") == "v10-HARDEN" or r.get("file") == plan_file.as_posix() or r.get("phase_alias") == "HARDEN"]; assert len(rows) == 1, f"expected one HARDEN identity row, got {len(rows)}"; r = rows[0]; assert (r.get("slug"), r.get("file"), r.get("phase_alias"), (r.get("roadmap_ref") or {}).get("file"), r.get("lanes")) == ("v10-HARDEN", plan_file.as_posix(), "HARDEN", roadmap_file.as_posix(), ["SL-0", "SL-1", "SL-2", "SL-3"]); events = r.get("lifecycle"); assert isinstance(events, list) and events; bearing = [e for e in events if isinstance(e, dict) and isinstance(e.get("metadata"), dict) and ("harden_plan_contract" in e["metadata"] or "harden_plan_contract_record_id" in e["metadata"])]; assert len(bearing) == 1, f"expected one HARDEN contract-bearing record, got {len(bearing)}"; event = bearing[0]; assert events[0] is event and event.get("transition") == "committed" and event.get("by") == "codex-plan-phase"; metadata = event["metadata"]; assert metadata.get("harden_plan_contract_record_id") == "v10-HARDEN.harden-plan-contract.v1"; c = metadata.get("harden_plan_contract"); assert isinstance(c, dict); transitions = [e.get("transition") for e in events]; assert transitions in (["committed"], ["committed", "executing"], ["committed", "executing", "completed"]), transitions; assert r.get("status") == transitions[-1] and r.get("updated_at") == events[-1].get("at"); executing = [e for e in events if e.get("transition") == "executing"]; assert len(executing) == (0 if transitions == ["committed"] else 1); assert not executing or (executing[0].get("by") == "codex-execute-phase" and executing[0].get("metadata", {}).get("phase_alias") == "HARDEN" and isinstance(executing[0].get("metadata", {}).get("run_id"), str) and executing[0]["metadata"]["run_id"]); payload = {k: value for k, value in c.items() if k != "plan_sha256"}; assert hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == "5b5c9bbe8fa97a343c831b5f4829df05305ea19f01d71fd1c5d4e9698f554982"; digest = lambda xs: hashlib.sha256((chr(10).join(xs) + chr(10)).encode()).hexdigest(); assert c["plan_sha256"] == hashlib.sha256(plan_file.read_bytes()).hexdigest(); assert c["roadmap_sha256"] == hashlib.sha256(roadmap_file.read_bytes()).hexdigest() == "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"; assert (len(c["owned_paths"]), c["owned_paths_count"], digest(c["owned_paths"]), c["owned_paths_sha256"]) == (25, 25, "24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2", "24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2"); assert (len(c["test_paths"]), c["test_paths_count"], digest(c["test_paths"]), c["test_paths_sha256"]) == (9, 9, "c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9", "c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9"); assert (len(c["checkpoint_paths"]), c["checkpoint_paths_count"], digest(c["checkpoint_paths"]), c["checkpoint_paths_sha256"]) == (14, 14, "4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc", "4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc"); assert (c["expected_nodeids"], c["sl1_nodeids"], c["sl2_nodeids"], c["sl3_evidence_nodeids"], c["default_skip_nodeids"], c["nodeid_delta"], c["nodeid_inventory_sha256"]) == (24, 13, 7, 4, 19, 2, "20f358e6a3482a773cb28ed78eb6fa8e49353e2425a5d182a282eb8d7afb4b8f")'`
 - `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -c 'import os, subprocess, sys, tempfile; from pathlib import Path; from harden_tdd_guard import EXPECTED_PHASE_NODEIDS, SL1_NODEIDS, SL2_NODEIDS, SL3_EVIDENCE_NODEIDS; assert len(EXPECTED_PHASE_NODEIDS) == 24 and len(SL1_NODEIDS) == 13 and len(SL2_NODEIDS) == 7 and len(SL3_EVIDENCE_NODEIDS) == 4; assert set(EXPECTED_PHASE_NODEIDS) == set(SL1_NODEIDS) | set(SL2_NODEIDS) | set(SL3_EVIDENCE_NODEIDS); assert not (set(SL1_NODEIDS) & set(SL2_NODEIDS) or set(SL1_NODEIDS) & set(SL3_EVIDENCE_NODEIDS) or set(SL2_NODEIDS) & set(SL3_EVIDENCE_NODEIDS)); root = os.environ.get("PHASE_LOOP_RUN_DIR"); junit = Path(root).joinpath("harden-phase-focused.xml") if root else Path(tempfile.mkdtemp(prefix="harden-bootstrap-focused-")).joinpath("harden-phase-focused.xml"); raise SystemExit(subprocess.call([sys.executable, "-m", "pytest", *EXPECTED_PHASE_NODEIDS, "-q", f"--junitxml={junit}"]))'`
 - `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_advisor_board_cli_legacy.py phase-loop-runtime/tests/test_advisor_board_composition.py -q -k "test_cli_harden_preflight_authorizes_before_compose_and_invoke or test_harden_preflight_authorizes_before_every_capability_auth_ok"`
 - `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"`
@@ -941,8 +1061,17 @@ commit/push/merge operations.
 - `git diff --cached --check`
 
 The frontmatter `automation.suite_command` is an executable fail-fast composite:
-it first validates the entire phase-plan manifest and unique HARDEN row, then
-runs the broad compatible suite with structured JUnit. The pre-change bootstrap
+it first runs the same stable-identity HARDEN contract lookup listed in
+`## Verification`, then runs the broad compatible suite with structured JUnit.
+That lookup validates the entire manifest, selects one row across the stable
+slug/file/phase identities, requires exactly one contract-bearing event with
+record id `v10-HARDEN.harden-plan-contract.v1`, validates the lifecycle
+sequence/status/timestamps, seals the complete contract payload other than the
+separately recomputed plan digest, and never assumes the contract event is
+latest. Thus committed planning, clean post-`L` executing, candidate/exact-`M`
+executing, and terminal completed-control commands consume the same lookup;
+missing, duplicate, conflicting, or drifted records fail before tests. The
+pre-change bootstrap
 runtime does not export `PHASE_LOOP_RUN_DIR`, so that first pass uses `mktemp`
 and is explicitly non-evidence. Candidate and post-landing runtimes contain the
 new export path and must write JUnit beneath their parent-owned run directory;
@@ -959,7 +1088,7 @@ must never be represented as pre-seal suite evidence.
 
 ## Acceptance Criteria
 
-- [ ] EC-HARDEN-0 — proven by the frozen guard's default 5-pass/19-skip JUnit, activated 24-nodeid and per-case raw intended-RED/JUnit records, and passed fresh-parent `_audit_harden_post_suite_outputs()`; the audit must prove immutable tests/guard, exact manifest validation including the 25/9/14 path counts and SHA-256 values plus 24-node inventory digest, ordered two-parent tests and implementation PR merges, implementation PR range excluding every `SL-0` path and the tests-only commit, immutable out-of-worktree coordinator identity, manual closeout plus rejected/manually reopened old-runtime false completion, whole-phase GPT-5.6 Terra child exit without commit, both runtime schedulers off, coordinator-only commits/push/merge, no release/tag/publish action, actual direct ancestry `T -> C -> I`, checkpoint `C` containing exactly changed `SL-1`+`SL-2` paths, unchanged two-path `SL-3` residual containment, no synthetic/history-laundering mechanism, a distinct clean exact-`C` process proving activated exact 13 green + 7 green + 4 RED with verifier absent, a distinct clean exact-`I` process proving environment-activation-absent all 24 green only after verifier/docs commit `I`, distinct candidate/main processes and exact loaded heads/modules, exported run dirs only in new runtimes, broad compatible suite before each isolated exact-head four-seat panel, candidate `--lifecycle-stage candidate` evidence, post-landing `--lifecycle-stage post_landing` evidence, and the lifecycle tests merge → activated RED → Terra child exit → real checkpoint `C` → clean 13/7/4 proof → real direct-child `I` → clean all-24 proof → push/transition → fresh candidate suite/isolated four-seat panel/audit → ordered two-parent implementation merge → fresh canonical-main suite/isolated four-seat panel/final audit → terminal complete
+- [ ] EC-HARDEN-0 — proven by the frozen guard's default 5-pass/19-skip JUnit, activated 24-nodeid and per-case raw intended-RED/JUnit records, and passed fresh-parent `_audit_harden_post_suite_outputs()` plus terminal lifecycle-control audit; the audits must prove immutable tests/guard; exact manifest validation through the stable unique contract record, including fail-closed missing/duplicate/conflict/drift cases, 25/9/14 path counts and SHA-256 values, and the 24-node inventory digest; the normal executing append as the sole pre-lane dirty path; exact manifest-only ordered two-parent control merge `L` before tests branch creation; ordered two-parent tests and implementation PR merges; implementation PR range excluding every `SL-0` path, the tests-only commit, and `plans/manifest.json`; immutable out-of-worktree coordinator identity; manual closeout plus rejected/manually reopened old-runtime false completion; whole-phase GPT-5.6 Terra child exit without commit; both runtime schedulers off; coordinator-only commits/push/merge; no release/tag/publish action; actual direct ancestry `L -> T -> C -> I`; checkpoint `C` containing exactly changed `SL-1`+`SL-2` paths while the manifest is clean; unchanged two-path `SL-3` residual containment with no hidden third manifest residual; no synthetic/history-laundering mechanism; a distinct clean exact-`C` process proving activated exact 13 green + 7 green + 4 RED with verifier absent; a distinct clean exact-`I` process proving environment-activation-absent all 24 green only after verifier/docs commit `I`; distinct candidate/main processes and exact loaded heads/modules; exported run dirs only in new runtimes; broad compatible suite before each isolated exact-head four-seat panel; candidate `--lifecycle-stage candidate` evidence; post-landing `--lifecycle-stage post_landing` evidence; exact completed append and manifest-only ordered two-parent closeout merge `F` preserving every non-manifest blob from audited `M`; and the lifecycle normal executing append → control merge `L` → tests merge → activated RED → Terra child exit → real checkpoint `C` → clean 13/7/4 proof → real direct-child `I` → clean all-24 proof → push/transition → fresh candidate suite/isolated four-seat panel/audit → ordered two-parent implementation merge → fresh canonical-main suite/isolated four-seat panel/final audit → completed-control merge `F` → terminal complete
 - [ ] EC-HARDEN-1 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_review_leg_sandbox.py -q -k review_stage_rejects_every_escape_form_before_launch`
 - [ ] EC-HARDEN-2 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_reconcile_portability_85c.py -q -k "cwd_independent or repo_anchored"`
 - [ ] EC-HARDEN-3 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_goal_coverage.py -q -k "enforce_blocks_every_zero_declared or all_bare_legacy_is_distinct"`; both selected tests must pass, and the all-bare test must prove warn/default is nonblocking while every enforce completion gate returns non-human `contract_bug`

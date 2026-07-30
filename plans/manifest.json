@@ -1068,10 +1068,11 @@
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "plan_sha256": "620d61374aa7228db9098495b6195b122cc17cb2267559f7e5885e1b05328613",
+              "plan_sha256": "ac7010e0f2e0e93edea051bf6c59e66d2a76ee17aa0609bfdf8cb37b030340e8",
               "reason": "validator_admissible_verification_command_repair",
               "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
             },
+            "harden_plan_contract_record_id": "v10-HARDEN.harden-plan-contract.v1",
             "harden_plan_contract": {
               "acceptance_criteria_count": 6,
               "activation_env": "PHASE_LOOP_TDD_EXPECT_HARDEN",
@@ -1154,7 +1155,7 @@
               "owned_paths_count": 25,
               "owned_paths_sha256": "24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2",
               "phase_scheduler_mode": "off",
-              "plan_sha256": "620d61374aa7228db9098495b6195b122cc17cb2267559f7e5885e1b05328613",
+              "plan_sha256": "ac7010e0f2e0e93edea051bf6c59e66d2a76ee17aa0609bfdf8cb37b030340e8",
               "pre_auth_ordering_nodeids": [
                 "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
                 "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
