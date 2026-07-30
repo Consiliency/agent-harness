@@ -45,16 +45,31 @@ launch, and merge. Neither the implementation child nor the already-loaded
 pre-change runtime may author transition evidence or attest the candidate.
 
 The external coordinator also owns every mandatory four-seat plan,
-implementation, and post-landing review. It uses the existing
-`PanelRequest.context_refs` true by-reference path over coordinator-materialized
-exact-head inputs, with Fable, Sol, Gemini, and Grok all reviewing through
-first-party subscription routes and API-key fallback disabled. The staged
-bundle, prompt, tool context, and model-visible inputs are secret-free; existing
-parent-side CLI subscription state is never copied into referenced material.
-Those panels are governance evidence only. They are not product-loop or Advisor
-Board route launches under test, are not checklist rows, and cannot satisfy
-`EC-HARDEN-5`. Product/advisor route conformance is proved independently by the
-supported/refused matrix in `SL-1`.
+implementation, and post-landing review. The pre-implementation plan and
+tests-only panels necessarily predate the HARDEN boundary and are TDD/governance
+preconditions only; they cannot be replayed or counted as post-implementation
+isolation evidence. At exact implementation head `I` and exact canonical-main
+head `M`, direct invocation of the current subscription subprocess routes is
+forbidden. The coordinator instead launches the newly implemented repo-local
+isolated-panel boundary from a clean worktree at that exact head. Fable, Sol,
+Gemini, and Grok each run as a supported review-leg route: an untrusted
+`linux_bwrap_v1` review environment sees only an immutable staged snapshot,
+approved staged context refs, read-only tools, run-local scratch, and a typed
+Unix inference socket; a distinct trusted parent control plane retains the
+first-party subscription transport/auth and permits only the intended inference
+RPC through an exact seat-specific broker adapter. API-key fallback remains
+disabled.
+
+`PanelRequest.context_refs` remains an input-routing API, not an isolation
+primitive: every ref is copied and hash-verified before launch, and the review
+leg sees only its contained `/review` destination. Prompts, ref names, CLI
+flags, staged CWDs, and route labels cannot establish isolation. The four exact
+`I`/`M` panel routes are normalized supported rows in the live route registry
+and fleet checklist, carry direct mutation and credentialed-side-effect probe
+attestations, and contribute to `EC-HARDEN-5`; they are not relabeled or
+excepted as external governance. All other review routes satisfy the identical
+boundary/transport contract or refuse before authentication lookup, session
+creation, broker connection, or child launch.
 
 No already-loaded process may attest a candidate that changes any runner,
 verification, or reducer surface it imported. After the external coordinator
@@ -71,8 +86,13 @@ opposite-behavior assertion so its intended RED result can be captured. With
 that variable absent on the tests-only main, exactly the frozen new-test nodeid
 set skips while the five migrated tests execute their unchanged legacy
 assertion branches. `SL-2` later installs the production capability marker;
-the same immutable tests then activate the HARDEN branches by default. No
-production lane owns an `SL-0` test path. A correction to any frozen test or
+the same immutable tests then activate the HARDEN branches by default.
+`SL-1.7`, `SL-2.6`, and the clean checkpoint proof explicitly set
+`PHASE_LOOP_TDD_EXPECT_HARDEN=1` so the interim lane gates are executable
+independently of import timing. The final clean exact-`I` and exact-`M` proofs
+remove that environment activation, require
+`HARDEN_CAPABILITY_VERSION == 1`, and still require 22 passed with zero skips.
+No production lane owns an `SL-0` test path. A correction to any frozen test or
 guard returns execution to `SL-0`, creates a new tests-only commit, re-runs
 every affected RED falsifier, and re-panels the new exact digest before
 production resumes.
@@ -209,31 +229,32 @@ branches, docstrings/helpers, nodeids, or test blobs.
 | Obligation | Required pre-implementation anchor | Per-parameter mutation and observable |
 |---|---|---|
 | staged-tree containment | `copytree(..., symlinks=True)` and `copy2(..., follow_symlinks=False)` are present | Absolute link, upward-relative link, chained link, symlinked directory ancestor, broken/cyclic link, non-git fallback link, `..`/absolute staged path, and special-file inputs each reach the staging seam and are rejected before child launch; an in-root regular file and an explicitly materialized in-root link remain positive controls. |
-| review fleet isolation | review-capable records come from `capability_registry()` plus the Advisor Board harness, compatibility, auth, backing, native-host, live Omnigent-catalog, and scoped-research registries; CLI specs use live `wrapped_cwd`, and current prompt/env anchors expose the live root/ambient environment | Every normalized product and advisor review route reaches preflight. A credentialless command adapter may execute only inside the exact Linux bubblewrap boundary below. Every provider-backed, API-key, native-host, Omnigent, research, or otherwise broker-incompatible route is refused before credential lookup, session creation, or child launch. Manual/nonlaunch proves no child or capability is created. Removing or adding one live registry route without an equal checklist row fails set equality; executing a refused row or counting the external governance panel as route conformance also fails. |
-| contained review snapshot | current review prompts either expose live paths or reduce the workspace to a bundle, while `context_refs` emits live absolute paths and instructs the reviewer to open them | The launcher materializes the exact candidate Git tree plus every approved context ref into run-owned immutable paths, rewrites all child-visible prompt/ref/workspace paths to those copies, and records each original logical label with source/destination SHA-256 provenance. Positive controls open and cite a candidate source symbol and a context-ref sentinel through the rewritten paths. Absolute/upward/chained/ancestor symlinks, special files, path races, or digest mismatches refuse before launch; negative controls cannot resolve or mutate either live original. Bundle-only remains an optional input, never the sole workspace when repository/context inspection is required. |
+| review fleet isolation | review-capable records come from `capability_registry()` plus the Advisor Board harness, compatibility, auth, backing, native-host, live Omnigent-catalog, and scoped-research registries; CLI specs use live `wrapped_cwd`; `context_refs` exposes live absolute paths; and current Fable/Sol/Gemini/Grok panel legs run subscription-authenticated host subprocesses | Every normalized product and advisor review route reaches preflight. A credentialless command adapter may execute only inside the exact Linux bubblewrap boundary below. The four mandatory Fable/Sol/Gemini/Grok subscription seats must be supported through the same untrusted review-leg boundary plus seat-specific `parent_unix_broker_v1` inference adapters, and the exact-`I`/`M` panels must use those rows. Every other provider-backed, API-key, native-host, Omnigent, research, or otherwise broker-incompatible route satisfies the same contract or refuses before credential lookup, session creation, broker connection, or child launch. Manual/nonlaunch proves no child or capability is created. Removing or adding one live registry route without an equal checklist row, executing a refused row, excluding a mandatory panel seat, or counting an unisolated/legacy panel record as route conformance fails. |
+| contained review snapshot | current review prompts either expose live paths or reduce the workspace to a bundle, while `context_refs` emits live absolute paths and instructs the reviewer to open them | The launcher materializes the exact candidate Git tree plus every approved context ref into run-owned immutable paths, rewrites all review-leg-visible prompt/ref/workspace paths to those copies, and records each original logical label with source/destination SHA-256 provenance. Positive controls open and cite a candidate source symbol and a context-ref sentinel through the rewritten paths. Absolute/upward/chained/ancestor symlinks, special files, path races, or digest mismatches refuse before launch; negative controls cannot resolve or mutate either live original. Bundle-only remains an optional input, never the sole workspace when repository/context inspection is required. `context_refs`, a prompt, CLI flags, a staged CWD, or a model/tool allowlist without the proved OS/broker boundary is never isolation evidence. |
 | crash cleanup | stage creation occurs before `launch_with_spec` cleanup and exact materialized paths are tracked | Normal return, resolver failure, timeout, interrupt, and a parent-process crash are injected separately. Recovery removes only journaled run-owned stage/config/home roots; a lookalike live directory is the positive non-removal control. |
 | CWD-independent reconcile | `roadmap_paths_match` and `_normalize_automation_event` accept relative persisted paths | The same ledger bytes are reconciled from repo root and an unrelated CWD. Relative identity fields are rejected identically; relative `automation.artifact` resolves only against the absolute stored repo; relocated absolute roots with equal repo-relative roadmap subpaths remain accepted. |
 | enforce goal coverage | zero/unknown declarations can reach `not_applicable()` or a confirmed-legacy skip | Preflight, canonical closeout, delegated/resume completion, and missing-plan closeout each receive every zero-declared form—including a syntactically valid all-bare legacy phase—plus ambiguous, unparseable, and missing-plan declarations under `PHASE_LOOP_ACCEPTANCE_ENFORCE=block`; every case must return a non-human `contract_bug`. The all-bare case must remain distinguishable from parse failure, but only warn/default mode is its nonblocking positive control; the same all-bare phase must never pass an enforce completion gate. |
 | Bash/profile bypass | `_relogin_shell_shim` does not consume Bash argument-taking `-o option-name`, `+o option-name`, `-O shopt-option`, `+O shopt-option`, `--rcfile file`/`--rcfile=file`, or `--init-file file`/`--init-file=file`, and absent nominal minors can evade patch bounds | Every frozen argument-taking form locates the true `-c` payload only after consuming its argument; missing option names/files, ambiguous `--`, and malformed or unlocatable payloads fail closed. Under `<3.11.5`, a profile-introduced absent `python3.11 == 3.11.9` is shadowed/rejected; direct argv, non-login, satisfying-present, absolute-interpreter, and ordinary `bash -lc` controls retain their existing results. |
-| evidence verifier and fresh-process lifecycle | the executable is absent, the current runtime does not export `PHASE_LOOP_RUN_DIR`, and the process that imports `runner.py`/`verification_evidence.py` can dispatch implementation and immediately attempt verification/complete from stale loaded modules | Fixture mutations separately forge external coordinator identity, server PR identity, ordered two-parent merges, target-base ancestry, actual PR range, lifecycle timestamps, process PID/nonce, loaded-head/module digests, distinct PR/branch identity, test/guard blobs and 11/7/4 node partitions, plan digest, governance-seat count, author-vendor independence, RED anchor/result, snapshot provenance, registry/checklist equality, route refusal accounting, and either verification seal. The integration falsifier rejects any child or pre-change-runtime transition/self-attestation; candidate evidence from a process not freshly loaded at exact pushed `I`; post-landing evidence from the candidate process or a process not freshly loaded at exact canonical `M`; a missing/forged external transition, governance record, suite JUnit, fleet checklist, evidence file, or parent hash; external governance evidence counted as route conformance; and any merge or terminal `complete` before the corresponding audit. Its positive control proves the only accepted lifecycle is tests merge and activated RED; 11 green + 7 green + 4 RED; verifier creation + all 22 green; old-process exit and external coordinator commit/push/transition; fresh exact-candidate suite, external by-reference panel, reduction, and audit; candidate-process exit and exact two-parent merge; then fresh exact-main suite, external panel, reduction, final audit, and completion. |
+| evidence verifier and fresh-process lifecycle | the executable is absent, the current runtime does not export `PHASE_LOOP_RUN_DIR`, and the ordinary implementation child writes all lanes before the coordinator can observe an intermediate tree | Fixture mutations separately forge external coordinator identity, server PR identity, ordered two-parent merges, target-base ancestry, actual PR range, lifecycle timestamps, process PID/nonce, loaded-head/module digests, distinct PR/branch identity, test/guard blobs and 11/7/4 node partitions, plan digest, author-vendor independence, RED anchor/result, checkpoint/final commit trees and ancestry, snapshot provenance, four mandatory isolated-seat attestations, registry/checklist equality, route refusal accounting, and either verification seal. The integration falsifier rejects any child or pre-change-runtime transition/self-attestation; a synthetic or laundered checkpoint; a checkpoint containing `SL-3` or omitting changed `SL-1`/`SL-2` paths; candidate evidence from a process not freshly loaded at exact pushed `I`; post-landing evidence from the candidate process or a process not freshly loaded at exact canonical `M`; a missing/forged transition, isolated-panel record, suite JUnit, fleet checklist, evidence file, or parent hash; an unisolated mandatory seat; and any merge or terminal `complete` before the corresponding audit. Its positive control proves the only accepted lifecycle is tests merge and activated RED; child exit without commit; coordinator-created actual `SL-1`+`SL-2` checkpoint `C`; a clean exact-`C` process proving 11 green + 7 green + exact 4 RED while the verifier is absent from `C`; coordinator admission of only the quarantined `SL-3` verifier/docs as direct child `I`; a new clean exact-`I` process proving all 22 green with environment activation absent; external coordinator push/transition; fresh exact-candidate suite and isolated four-seat panel, reduction, and audit; candidate-process exit and exact two-parent merge; then fresh exact-main suite and isolated four-seat panel, reduction, final audit, and completion. |
 | phase-plan manifest gate | `plans/manifest.json` is valid today, but no scheduled command proves it and the HARDEN evidence contract merely claims manifest validation | The current-manifest command must reject malformed JSON, structural/per-entry validation errors, a missing/duplicate HARDEN row, or stale HARDEN `file`, `phase_alias`, `roadmap_ref.file`, or lane metadata. The frozen fixture drives the same phase-specific gate with one mutation at a time and requires a typed non-zero result; the unmodified current manifest is the positive control. |
 
 Before `SL-0.6`, the external coordinator panels the exact plan digest and exact
 tests-only diff by reference with Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and
 Grok 4.5. Fable and Sol must both produce usable reviews; all four must actually
-review. This governance panel is deliberately outside the mutable product and
-advisor launch routes and supplies no `EC-HARDEN-5` evidence. Any material
-finding changes the digest and requires a complete re-panel. The tests-only PR
-and the later implementation PR must have distinct server-recorded PR numbers
-and head branches. The tests-only commit must already be in the implementation
-PR's server-recorded target branch before the implementation branch is created
-or either production lane is dispatched.
+review. Because these two reviews precede the implementation of the isolation
+boundary, they are TDD/governance prerequisites only and supply no
+`EC-HARDEN-5` evidence; they can never be reused as the exact-`I` or exact-`M`
+panel. Any material finding changes the digest and requires a complete re-panel.
+The tests-only PR and the later implementation PR must have distinct
+server-recorded PR numbers and head branches. The tests-only commit must already
+be in the implementation PR's server-recorded target branch before the
+implementation branch is created or either production lane is dispatched.
 
 ### SL-1 — Review staging and fleet isolation
 
-- **Scope**: Close every staged-tree escape and enforce one fleet-wide review boundary across all supported product-loop and advisor-board review routes.
+- **Scope**: Close every staged-tree escape and enforce one fleet-wide review boundary across all supported product-loop, advisor-board, and mandatory four-seat exact-head panel routes.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/launcher.py`, `phase-loop-runtime/src/phase_loop_runtime/injection.py`, `phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py`, `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
-- **Interfaces provided**: `review-isolation-boundary`, `review-fleet-checklist-evidence`
+- **Interfaces provided**: `review-isolation-boundary`, `trusted-provider-control-plane`, `four-seat-isolated-panel`, `review-fleet-checklist-evidence`
 - **Interfaces consumed**: `HARDEN-test-freeze`, `HARDEN-RED-evidence`
 - **Parallel-safe**: yes
 - **Tasks**:
@@ -246,10 +267,10 @@ or either production lane is dispatched.
 | SL-1.1 | test | — | all `SL-0` review test paths, read-only | frozen review selectors | Confirm every review selector is unchanged from the `SL-0` commit before implementation. |
 | SL-1.2 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/launcher.py` | staged-tree containment | Validate every enumerated source and destination lexically and after resolution. Materialize safe in-root links as contained regular content or reject; reject every absolute/upward/chained/ancestor escape, special file, and non-git fallback escape before launch; remove the partial stage on every `BaseException`. |
 | SL-1.3 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/launcher.py`, `phase-loop-runtime/src/phase_loop_runtime/injection.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | immutable snapshot and path-isolation matrix | Before prompt/context/argv construction, resolve the declared candidate to an exact Git tree identity—server head tree for a committed/PR review or a launcher-recorded index tree for an exact staged candidate—and materialize that complete tree plus every caller-approved `context_ref` into run-owned staged paths. Preserve each original logical label, but rewrite every child-visible workspace, prompt, manifest, and ref path to the contained copy. Record source identity/path, destination-relative path, kind, bytes, and source/destination SHA-256 in launcher-owned provenance; require equality before launch. Reject lexical/resolved escapes, symlink chains/ancestors, special files, source races, collisions, and digest drift. For a supported executable route, invoke the exact bubblewrap boundary frozen below, mount the finished snapshot read-only at `/review`, make `/review` the child CWD/workspace, and refuse if any live original remains visible in CWD, argv, prompt/context, environment, mounts, or tool policy. A review bundle may accompany the snapshot but cannot replace repository or approved-context material the review contract requires. |
-| SL-1.4 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py`, `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`, `phase-loop-runtime/src/phase_loop_runtime/launcher.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py` | OS-boundary, credential-transport, and tool-isolation matrix | Add route declarations `review_boundary=linux_bwrap_v1` and `review_transport=none|parent_unix_broker_v1`. `none` is permitted only for a credentialless/no-network command adapter. `parent_unix_broker_v1` is a launcher-owned AF_UNIX socket outside the sandbox: the child sees only `/run/review-broker/socket` and a non-secret route/session identifier; the parent owns subscription authentication and provider egress, verifies `SO_PEERCRED`, exposes only the typed single-provider review RPC, and never returns credential bytes. No provider route is supported until its adapter passes the exact broker compatibility probe without a credential file, API key, OAuth token, inherited auth socket, or ambient home. Build the child environment from an allowlist and keep prompt, tool namespace, argv, environment, snapshot, home/config, logs, and model-visible payloads secret-free. Route-specific flags remain defense in depth. Return typed non-human `review_gate_block` before auth lookup/session creation/launch when a platform, boundary, transport, adapter, sidecar, or direct probe is unproved; normalize persisted closeout blockers to `blocker_class=contract_bug`. |
-| SL-1.5 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`, `phase-loop-runtime/src/phase_loop_runtime/launcher.py` | complete live review-route registry and honest support/refusal | Produce one normalized route registry from every `capability_registry()` record supporting `review` (including command/manual and Claude route/mode expansion) and every Advisor Board route expressible through the live harness/compatibility registries, auth lanes, provider backings, native-host state, scoped-research state, and live Omnigent catalog. Apply the frozen support/refusal table below literally. A refused executable row satisfies the safety invariant only by proving that no credential lookup, session, broker connection, child, or side effect occurred; it is never reported as a supported conforming route. Manual/nonlaunch remains an evidenced non-executable row. Compare normalized registry keys with checklist keys by exact set equality so additions, omissions, duplicates, executed refused rows, and governance-panel records in the checklist fail closed. API-key fallback is disabled throughout HARDEN. |
+| SL-1.4 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py`, `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`, `phase-loop-runtime/src/phase_loop_runtime/launcher.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py` | OS-boundary, credential-transport, and tool-isolation matrix | Add route declarations `review_boundary=linux_bwrap_v1` and `review_transport=none|parent_unix_broker_v1`. `none` is permitted only for a credentialless/no-network command adapter. Under `parent_unix_broker_v1`, the attacker-controlled review leg is a separate bubblewrap process with immutable `/review`, read-only tools, run-local scratch, no live repo/original ref, no ambient home/config/credential, no direct network, and no host escape. It sees only `/run/review-broker/socket` plus a non-secret route/session identifier. A distinct trusted coordinator/parent control plane owns subscription auth and provider egress, verifies `SO_PEERCRED`, accepts only a typed `ReviewInferenceRequest` binding seat, model, immutable input/provenance digest, conversation turn, and output limit, and returns only provider text/status/provenance. It rejects arbitrary URLs, provider/method substitution, host commands, tool execution, credential reads/returns, mutation operations, and all non-inference RPCs. Implement and prove exact first-party subscription adapters for Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and Grok 4.5; the underlying transport process is parent-controlled and may perform only that intended inference. The four adapters must complete without placing a credential file, API key, OAuth token, inherited auth socket, ambient home, or provider network capability in the review-leg namespace. Build the review-leg environment from an allowlist and keep its prompt/tool namespace/argv/environment/snapshot/home/config/logs secret-free. Route-specific flags remain defense in depth. Return typed non-human `review_gate_block` before auth lookup/session creation/broker connection/child launch when any required platform, boundary, transport, adapter, sidecar, or direct probe is unproved; normalize persisted closeout blockers to `blocker_class=contract_bug`. |
+| SL-1.5 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`, `phase-loop-runtime/src/phase_loop_runtime/launcher.py` | complete live review-route registry and honest support/refusal | Produce one normalized route registry from every `capability_registry()` record supporting `review` (including command/manual and Claude route/mode expansion), every Advisor Board route expressible through the live harness/compatibility registries, auth lanes, provider backings, native-host state, scoped-research state, and live Omnigent catalog, and the four brokered Fable/Sol/Gemini/Grok panel-seat routes. Apply the frozen support/refusal table below literally. Candidate and canonical-main panels must invoke these same four supported rows through the exact-head repo-local boundary; their per-seat boundary/broker/probe attestations are checklist evidence, not an exclusion. A refused executable row satisfies the safety invariant only by proving that no credential lookup, session, broker connection, child, or side effect occurred; it is never reported as a supported conforming route. Manual/nonlaunch remains an evidenced non-executable row. Compare normalized registry keys with checklist keys by exact set equality so additions, omissions, duplicates, an unisolated or missing mandatory seat, an executed refused row, and a panel record without matching supported rows fail closed. API-key fallback is disabled throughout HARDEN. |
 | SL-1.6 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/launcher.py` | crash/recovery cleanup | Journal exact run-owned stage, home, config, and context roots before child launch; clean them on normal return, resolver failure, timeout, interrupt, and next-run recovery after parent crash; never infer ownership from basename, glob, or a live path. |
-| SL-1.7 | verify | SL-1.2, SL-1.3, SL-1.4, SL-1.5, SL-1.6 | all `SL-1` owned source paths | exact 11-node review matrix | With `PHASE_LOOP_TDD_EXPECT_HARDEN` absent, import literal `SL1_NODEIDS` from the frozen guard and invoke pytest with exactly those 11 nodeids plus `--junitxml=<run-dir>/harden-sl1.xml`; require exactly 11 passed, zero skipped/xfailed/errors, and JUnit nodeid set equality. |
+| SL-1.7 | verify | SL-1.2, SL-1.3, SL-1.4, SL-1.5, SL-1.6 | all `SL-1` owned source paths | exact 11-node review matrix | Set `PHASE_LOOP_TDD_EXPECT_HARDEN=1`, import literal `SL1_NODEIDS` from the frozen guard, and invoke pytest with exactly those 11 nodeids plus `--junitxml=<checkpoint-run-dir>/harden-sl1.xml`; require exactly 11 passed, zero skipped/xfailed/errors, and JUnit nodeid set equality. This is an interim lane/checkpoint activation only. The authoritative result is rerun by the external coordinator's clean exact-`C` process; exact-`I` and exact-`M` remove the environment variable and prove capability-marker activation with zero skips. |
 
 The exact current product-loop matrix is sixteen cells, but it is only one
 projection of the live review-capability registry. The test derives normalized
@@ -262,12 +283,13 @@ declared and proved. HARDEN lands this honest matrix:
 | Executor / surface | HARDEN posture | Exact reason |
 |---|---|---|
 | credentialless typed command adapter | **supported on probed Linux only** | Runs inside `linux_bwrap_v1` with `review_transport=none`; arbitrary/provider/networked templates refuse. |
+| mandatory Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and Grok 4.5 panel seats | **supported on probed Linux only** | Each review leg runs inside `linux_bwrap_v1` and reaches only its seat-specific typed inference method through `parent_unix_broker_v1`; the trusted parent retains first-party subscription auth/transport. Exact-`I` and exact-`M` panels must use these four rows and all four direct-probe attestations. |
 | manual/nonlaunch | **supported non-executable** | Creates no child, credential, workspace, broker, or side effect. |
-| codex CLI product review | **refused** | `--sandbox read-only` and `--ignore-user-config` do not provide a credentialless parent-broker adapter. |
-| Claude print, Channel, and Agent View across solo/subagent/agent-team | **refused** | Permission/tool flags and Channel bearer handling do not place the complete reviewer process tree behind the common boundary/broker. |
-| gemini/agy and grok CLI | **refused** | Staged CWD and tool allowlists are not an OS boundary, and neither route proves `parent_unix_broker_v1`. |
+| direct codex CLI product review | **refused** | `--sandbox read-only` and `--ignore-user-config` do not provide the complete review-leg/broker boundary; only the brokered Sol panel adapter above is supported. |
+| direct Claude print, Channel, and Agent View across solo/subagent/agent-team | **refused** | Permission/tool flags and Channel bearer handling do not place the complete reviewer process tree behind the common boundary/broker; only the brokered Fable panel adapter above is supported. |
+| direct gemini/agy and grok CLI review | **refused** | Staged CWD and tool allowlists are not an OS boundary; only the brokered Gemini and Grok panel adapters above are supported. |
 | OpenCode CLI and Pi Agent | **refused** | No proved credentialless broker adapter and no equivalent attested OS boundary. |
-| Advisor Board homebrew subscription routes | **refused as product routes** | The mutable in-product launch surface has no proved broker adapter; external coordinator panels remain separate governance evidence. |
+| other Advisor Board homebrew subscription routes | **refused** | The mutable direct launch surface has no proved broker adapter; the four mandatory brokered panel rows above are the only supported subscription routes in HARDEN. |
 | every API-key fallback route | **refused** | HARDEN preserves subscription-only governance and never injects API keys. |
 | Omnigent, native-host, scoped-research, gateway, and compatibility routes | **refused** | No gateway/native attestation is accepted as equivalent until it proves the same mount, transport, secret-context, probe, and cleanup observables. |
 
@@ -282,12 +304,16 @@ snapshot read-only at `/review`, and `--chdir /review`. Host `/home`, `/mnt`,
 `/run`, `/var/run`, the live repository, original context refs, credential
 stores, and unrelated paths are never bound. The preflight also requires
 AF_UNIX plus `SO_PEERCRED` support and, for `parent_unix_broker_v1`, a
-route-specific fake-broker round trip in which the CLI/adapter completes with
-no credential source. macOS, Windows, Linux without the namespace smoke, and
-any route missing a proved broker adapter are refused before authentication,
-snapshot disclosure to a child, or process/session creation.
+route-specific fake-broker round trip in which the review-leg adapter completes
+with no credential source, plus an exact parent-control-plane transport probe
+showing that only the typed intended-inference RPC reaches the selected
+first-party subscription route. macOS, Windows, Linux without the namespace
+smoke, and any non-mandatory route missing a proved broker adapter are refused
+before authentication, snapshot disclosure to a child, or process/session
+creation; a missing Fable/Sol/Gemini/Grok adapter blocks HARDEN rather than
+downgrading or refusing that mandatory seat.
 
-Before a supported command launch, direct canaries inside the exact namespace
+Before every supported review-leg launch, direct canaries inside the exact namespace
 must read the snapshot sentinel, write only run-owned home/tmp, fail to
 `stat`/write the live repo and context-ref originals, fail non-broker network
 connects, observe the exact allowlisted environment with no secret-shaped key,
@@ -299,7 +325,7 @@ and cleanup in `review_boundary_attestation.v1`. A CLI permission flag, prompt,
 staged CWD, canary without path entry, or child self-report cannot populate
 these fields.
 
-The review child environment is allowlist-built, not ambient-env-minus-a-few
+The review-leg environment is allowlist-built, not ambient-env-minus-a-few
 keys. It may contain `PATH`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `USER`, `SHELL`,
 `PHASE_LOOP_CHILD`, non-secret runner correlation IDs, run-local `HOME`,
 `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, and a non-secret
@@ -307,8 +333,28 @@ keys. It may contain `PATH`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `USER`, `SHELL`,
 adapter. Subscription tokens, API keys, gateway credentials, provider headers,
 auth helper paths, and other secrets never enter the process namespace,
 environment, argv, prompt, tool results, snapshot, or logs.
-`PHASE_LOOP_CLAUDE_CHANNEL_BEARER_TOKEN` remains usable only by the external
-parent-side Channel client and does not make Channel a conforming product route.
+Provider subscription state and
+`PHASE_LOOP_CLAUDE_CHANNEL_BEARER_TOKEN` remain usable only inside the trusted
+parent control plane and never enter a review-leg process; Channel becomes a
+conforming seat only through the Fable broker adapter, not through its direct
+product route.
+
+`provider_control_plane_v1` is the other side of that boundary. For each seat,
+the immutable coordinator starts a fixed-digest adapter in a run-owned empty
+CWD with no repository, snapshot, context-ref, shell/tool namespace, GitHub,
+SSH, package-publish, cloud, database, or 1Password capability. Its allowlisted
+inputs are the validated `ReviewInferenceRequest`, that seat's parent-only
+subscription handle, the exact provider/model route, and correlation limits;
+its only outputs are provider text/status/provenance. The adapter invokes an
+inference-only, tool-disabled provider transport and rejects any provider tool
+request, arbitrary command, alternate endpoint/model/provider, auth export, or
+non-inference operation. Provider egress is coordinator-owned and constrained
+to the exact intended subscription inference route. The untrusted review leg
+can request another inference turn only through the typed broker; it cannot
+address the transport process, auth store, endpoint, or host directly. A route
+whose current subscription CLI cannot be driven under this exact adapter must
+be repaired in `SL-1`; for a mandatory seat it blocks HARDEN rather than
+falling back to the unsafe direct CLI.
 
 Every review route must remove API-key/auth/header/alternate-endpoint variables,
 including `OPENAI_API_KEY`, the complete
@@ -328,20 +374,27 @@ the run-local home/config view.
 
 The fleet test injects fake `git`, `gh`, `ssh`, credential-helper/keyring,
 `curl`, `npm`, `twine`, cloud CLI, and `op` canaries. For the supported command
-route, each attempted live-tree write/delete, git commit/tag/config, HTTPS/SSH
-push, GitHub mutation, package publish, cloud mutation, secret retrieval, and
-non-broker network side effect must enter the intended probe and be denied
-before the canary records a side effect. For every refused route, a preflight
-probe proves refusal happened before auth lookup, session/broker creation, or
-child launch. A missing probe, an executed refused row, a refusal mislabeled
-supported, an external governance panel inserted as a route row, or
-route/checklist set mismatch fails. No real external mutation is performed.
+route and separately for each of Fable, Sol, Gemini, and Grok, a direct
+review-leg probe attempts live-tree write/delete, git commit/tag/config,
+HTTPS/SSH push, GitHub mutation, package publish, cloud mutation, secret
+retrieval, arbitrary broker method/provider/URL substitution, and non-broker
+network/host escape. Every attempt must enter its intended probe and be denied
+before any canary records a side effect; the only positive credentialed action
+is the parent-recorded intended inference RPC for that exact seat. Each
+mandatory seat also proves it can read/cite the immutable snapshot through
+read-only tools and return a usable provider response without credential or
+network capability in the review-leg namespace. For every refused route, a
+preflight probe proves refusal happened before auth lookup, session/broker
+creation, or child launch. A missing direct probe for any of the four seats, an
+executed refused row, a refusal mislabeled supported, a mandatory panel record
+without the four matching supported checklist rows, or route/checklist set
+mismatch fails. No real external mutation is performed.
 
 ### SL-2 — Reconcile, goal-coverage, interpreter, and runner sequencing hardening
 
-- **Scope**: Make main-loop attribution CWD-independent, enforce non-vacuous goal declarations on every completion path, close both `Consiliency/agent-harness#241` login-shell bypass classes, and add the capability marker plus validation for the external-coordinator fresh-process/post-suite lifecycle.
+- **Scope**: Make main-loop attribution CWD-independent, enforce non-vacuous goal declarations on every completion path, close both `Consiliency/agent-harness#241` login-shell bypass classes, and add the capability marker plus validation for the external-coordinator checkpoint/fresh-process/post-suite lifecycle.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py`, `phase-loop-runtime/src/phase_loop_runtime/reconcile.py`, `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
-- **Interfaces provided**: `path-and-verification-hardening`, `HARDEN-capability-v1`, `external-coordinator-transition-validation`, `runner-owned-run-dir-export`, `runner-owned-post-suite-reduction`
+- **Interfaces provided**: `path-and-verification-hardening`, `HARDEN-capability-v1`, `external-coordinator-checkpoint-validation`, `external-coordinator-transition-validation`, `runner-owned-run-dir-export`, `runner-owned-post-suite-reduction`
 - **Interfaces consumed**: `HARDEN-test-freeze`, `HARDEN-TDD-activation-contract`, `HARDEN-node-partition-contract`, `HARDEN-RED-evidence`, `HARDEN-post-suite-sequencing-contract`
 - **Parallel-safe**: yes
 - **Tasks**:
@@ -355,29 +408,69 @@ route/checklist set mismatch fails. No real external mutation is performed.
 | SL-2.2 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py`, `phase-loop-runtime/src/phase_loop_runtime/reconcile.py` | CWD-independent attribution | Require persisted repo/roadmap identity fields to be absolute before matching; retain relocated absolute-root equivalence only through identical repo-relative roadmap subpaths and existing SHA provenance. Resolve relative `automation.artifact` against the trusted absolute stored repo, never ambient CWD; reject escape, tilde, symlink-rebind, malformed, and mismatched identities without crashing the main loop. |
 | SL-2.3 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py` | enforce completion matrix | Return a typed declaration state that distinguishes declared IDs, syntactically valid all-bare legacy, zero match, ambiguous match, parse failure, and missing plan. Warn/default mode is the only nonblocking legacy path. Under `PHASE_LOOP_ACCEPTANCE_ENFORCE=block`, every state with zero declared EC-IDs—including valid all-bare legacy—and every ambiguous, unparseable, or missing-plan state returns non-human `contract_bug` at preflight, canonical closeout, delegated/resume completion, and missing-plan closeout. Distinct classification must never become an enforce pass-through. |
 | SL-2.4 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` | Bash/profile bypass matrix | Model and consume `-o option-name`, `+o option-name`, `-O shopt-option`, `+O shopt-option`, `--rcfile file`/`--rcfile=file`, and `--init-file file`/`--init-file=file` before locating the true `-c`; preserve combined login flags; fail closed on missing option arguments, ambiguous `--`, or an unlocatable payload. Under patch-level bounds, conservatively shadow nominal version names absent at resolve time so a profile cannot introduce an unsupported patch after shim construction; emit a clear warning for the conservative block. |
-| SL-2.5 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` | capability activation, external transition validation, run-dir export, post-suite reduction, and final audit | Install literal `HARDEN_CAPABILITY_VERSION = 1` in `verification_evidence.py`; this is the only production activation read by the frozen guard. Parse the HARDEN lifecycle/post-suite contract separately from `## Verification` and `automation.suite_command`. Do not make the implementation child or already-loaded parent commit, push, author a transition, reload, self-reexec, attest changed bytes, or complete. On a fresh repo-local `resume`, accept only the exact external-coordinator-authored transition path supplied in non-secret `PHASE_LOOP_HARDEN_COORDINATOR_TRANSITION`; require it beneath canonical `.phase-loop/runs/`, then recompute its coordinator executable/package identity, pre/post Git identities, remote candidate object, plan/roadmap/manifest/test digests, implementation launch PID/times/artifact hashes, rejected false-complete/reopen record, and old-process death. Fail closed unless the coordinator package root is outside the worktree, the candidate worktree is clean, local HEAD equals fetched remote `I`, loaded repo-local `cli.py`/`runner.py`/`verification_evidence.py`/verifier hashes equal Git blobs at `I`, and candidate PID/start nonce differs from coordinator and implementation processes. Before invoking any extracted command or `automation.suite_command`, set `PHASE_LOOP_RUN_DIR` explicitly in the subprocess environment to the current runner-owned artifacts root; never infer it from CWD. Candidate audit stops nonterminal; a separately launched exact-`M` process validates a coordinator-authored post-landing transition the same way. Persist process identities, transition/argv/exit data, and verification/log/JUnit/checklist/evidence paths and hashes in parent-owned metadata. Treat missing/child-authored/stale transition, same-process cycle, stale/wrong head/module, pre-seal call, missing output, forged hash/identity, non-zero reducer, or audit mismatch as non-human `repeated_verification_failure`. |
-| SL-2.6 | verify | SL-2.2, SL-2.3, SL-2.4, SL-2.5 | all `SL-2` owned source paths and frozen `SL-0` tests read-only | exact 7-node non-evidence `SL-2` partition | With `PHASE_LOOP_TDD_EXPECT_HARDEN` absent, import literal `SL2_NODEIDS` from the frozen guard and invoke pytest with exactly those 7 nodeids plus `--junitxml=<run-dir>/harden-sl2.xml`. Require set equality with the two reconcile nodeids, four goal nodeids (two migrated plus two new), and one interpreter nodeid; JUnit must report exactly 7 passed, zero skipped/xfailed/errors. Do not run or require any `SL3_EVIDENCE_NODEIDS` here: all four remain intended RED because `verify_harden_evidence.py` does not exist. |
+| SL-2.5 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` | capability activation, external checkpoint/transition validation, run-dir export, post-suite reduction, and final audit | Install literal `HARDEN_CAPABILITY_VERSION = 1` in `verification_evidence.py`; this is the only production activation read by the frozen guard. Parse the HARDEN lifecycle/post-suite contract separately from `## Verification` and `automation.suite_command`. Do not make the implementation child or already-loaded parent commit, push, author a checkpoint/transition, reload, self-reexec, attest changed bytes, or complete. On a fresh repo-local `resume`, accept only the exact external-coordinator-authored transition path supplied in non-secret `PHASE_LOOP_HARDEN_COORDINATOR_TRANSITION`; require it beneath canonical `.phase-loop/runs/`, then recompute its coordinator executable/package identity, actual checkpoint `C`, direct-child candidate `I`, exact staged path sets and residual hashes, clean checkpoint/final worktree/process results, pre/post Git identities, remote candidate object, plan/roadmap/manifest/test digests, implementation launch PID/times/artifact hashes, rejected false-complete/reopen record, and old-process death. Fail closed unless the coordinator package root is outside the worktree, `C` and `I` have the required ancestry/tree/path shapes, the candidate worktree is clean, local HEAD equals fetched remote `I`, loaded repo-local `cli.py`/`runner.py`/`verification_evidence.py`/verifier/panel-boundary hashes equal Git blobs at `I`, and candidate PID/start nonce differs from coordinator, implementation, and checkpoint processes. Before invoking any extracted command or `automation.suite_command`, set `PHASE_LOOP_RUN_DIR` explicitly in the subprocess environment to the current runner-owned artifacts root; never infer it from CWD. Candidate audit stops nonterminal; a separately launched exact-`M` process validates a coordinator-authored post-landing transition the same way. Persist process identities, transition/argv/exit data, and verification/log/JUnit/checklist/panel/evidence paths and hashes in parent-owned metadata. Treat missing/child-authored/stale checkpoint or transition, synthetic/laundered ancestry, same-process cycle, stale/wrong head/module, pre-seal call, missing output, forged hash/identity, non-zero reducer, or audit mismatch as non-human `repeated_verification_failure`. |
+| SL-2.6 | verify | SL-2.2, SL-2.3, SL-2.4, SL-2.5 | all `SL-2` owned source paths and frozen `SL-0` tests read-only | exact 7-node non-evidence `SL-2` partition | Set `PHASE_LOOP_TDD_EXPECT_HARDEN=1`, import literal `SL2_NODEIDS` from the frozen guard, and invoke pytest with exactly those 7 nodeids plus `--junitxml=<checkpoint-run-dir>/harden-sl2.xml`. Require set equality with the two reconcile nodeids, four goal nodeids (two migrated plus two new), and one interpreter nodeid; JUnit must report exactly 7 passed, zero skipped/xfailed/errors. Do not run or require any `SL3_EVIDENCE_NODEIDS` in this command: the external coordinator's clean exact-`C` process runs those four separately and requires intended RED because `verify_harden_evidence.py` is absent from `C`. Exact-`I` and exact-`M` remove the environment variable and prove production-marker activation. |
 
 ### SL-3 — Fresh-process candidate/post-landing evidence and documentation reducer
 
-- **Scope**: Add the fail-closed HARDEN chronology/evidence executable, synthesize the changelog note, prove all 22 frozen nodes green only after that executable exists, and let the immutable external coordinator drive candidate freeze/push plus fresh candidate/post-landing verification.
+- **Scope**: Admit the quarantined HARDEN chronology/evidence executable and changelog only after an actual clean `SL-1`+`SL-2` checkpoint proves 11 + 7 green and exact 4 RED, then prove all 22 frozen nodes green at a new clean direct-child head and let the immutable external coordinator drive push plus fresh candidate/post-landing verification.
 - **Owned files**: `phase-loop-runtime/scripts/verify_harden_evidence.py`, `CHANGELOG.md`
 - **Interfaces provided**: `HARDEN-closeout-evidence`, `HARDEN-no-spec-delta`
-- **Interfaces consumed**: `HARDEN-test-freeze`, `HARDEN-TDD-activation-contract`, `HARDEN-node-partition-contract`, `HARDEN-RED-evidence`, `review-isolation-boundary`, `review-fleet-checklist-evidence`, `path-and-verification-hardening`, `HARDEN-capability-v1`, `external-coordinator-transition-validation`, `runner-owned-run-dir-export`, `runner-owned-post-suite-reduction`
+- **Interfaces consumed**: `HARDEN-test-freeze`, `HARDEN-TDD-activation-contract`, `HARDEN-node-partition-contract`, `HARDEN-RED-evidence`, `review-isolation-boundary`, `trusted-provider-control-plane`, `four-seat-isolated-panel`, `review-fleet-checklist-evidence`, `path-and-verification-hardening`, `HARDEN-capability-v1`, `external-coordinator-checkpoint-validation`, `external-coordinator-transition-validation`, `runner-owned-run-dir-export`, `runner-owned-post-suite-reduction`
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Confirm and run the frozen evidence-verifier, manifest, and fresh-process fixtures RED in `SL-3.1`.
-  - impl: Add the chronology/evidence verifier and changelog note in `SL-3.2`–`SL-3.3`.
-  - verify: Run the exact all-22/zero-skip gate in `SL-3.4`, then let only the external coordinator freeze/push and complete the candidate and post-landing gates in `SL-3.5`–`SL-3.6`.
+  - test: After the implementation child exits without committing, let only the external coordinator create actual checkpoint `C` from the exact `SL-1`+`SL-2` staging set and prove 11 + 7 green plus the exact 4 evidence nodes RED from a separate clean exact-`C` worktree/process in `SL-3.1`.
+  - impl: After that checkpoint proof, admit only the already-written, digest-quarantined verifier and changelog into direct-child commit `I` in `SL-3.2`–`SL-3.3`; do not let the coordinator rewrite their bytes.
+  - verify: From a new clean exact-`I` worktree/process with environment activation absent, run the exact all-22/zero-skip gate in `SL-3.4`, then let only the external coordinator push and complete the candidate and post-landing gates—including the isolated exact four-seat panels—in `SL-3.5`–`SL-3.6`.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | SL-1.7, SL-2.6 | `phase-loop-runtime/tests/harden_tdd_guard.py`, `phase-loop-runtime/tests/test_harden_evidence_verifier.py` (read-only) | exact 4-node verifier/manifest/process-lifecycle/ordered-parent partition | Confirm the frozen guard/tests and blob IDs match `SL-0`; import literal `SL3_EVIDENCE_NODEIDS`, require exactly 4 entries, and run every nodeid/case intended RED before creating the executable. Require assertion failures with zero skip/xfail/collection/import/setup/teardown errors. The prior green gates are exactly `SL1_NODEIDS` = 11 and `SL2_NODEIDS` = 7; neither can make these four green. |
-| SL-3.2 | impl | SL-3.1 | `phase-loop-runtime/scripts/verify_harden_evidence.py` | candidate/post-landing chronology and evidence verifier | Add an executable shebang script with explicit `--lifecycle-stage candidate|post_landing`. Both stages require parent-supplied run directory, sealed `verification.json`, structured broad-suite JUnit, runner-reduced fleet checklist, output path, plan, roadmap, phase, repository, external coordinator transition, external governance-panel record, and exact process/head/module identities. Candidate mode writes only `harden-candidate-evidence.json`; post-landing mode additionally requires and revalidates the candidate evidence/hashes and writes only final `harden-evidence.json`. It derives Git/forge ancestry, ordered parents, PR lifecycle, path ownership, manifest state, nodeid/skip state, transition authorship/identity, governance-seat evidence, and route-checklist evidence; exits non-zero with typed findings for any missing, mismatched, child/self-reported-only, stale-process/run/head, one-parent/squash/rebase merge, external-panel-as-route, or forged obligation; and never discovers another run, trusts CLI booleans/counts, runs as an ordinary suite command, amends `verification.json`, or writes tracked files. |
-| SL-3.3 | impl | SL-3.1 | `CHANGELOG.md` | Unreleased note | Add one concise Unreleased note covering contained review staging/fleet isolation, CWD-independent reconcile attribution, non-vacuous enforce goal coverage, and login-shell interpreter hardening. Do not edit roadmap/spec/contract/version/release-pin surfaces. |
-| SL-3.4 | verify | SL-3.2, SL-3.3 | all phase-owned paths and frozen `SL-0` tests, read-only | exact all-22 pre-freeze gate | After the implementation child and pre-change runtime exit, and before any candidate commit/freeze/push/panel/merge, the external coordinator launches a separate fresh-import test subprocess over the dirty candidate tree. With `PHASE_LOOP_TDD_EXPECT_HARDEN` absent, import literal `EXPECTED_PHASE_NODEIDS` and invoke pytest with exactly those 22 nodeids plus `--junitxml=<coordinator-run-dir>/harden-phase-focused.xml`. Require exact partition equality `11 + 7 + 4 = 22` and JUnit exactly 22 passed, zero skipped/xfailed/errors. Child closeout and the old runtime's automatic verification are diagnostic only and cannot satisfy this gate. A failed evidence node returns to `SL-3.2`; no lifecycle transition may start from a partial 18-node green. |
-| SL-3.5 | verify | SL-3.4 | all phase-owned paths plus coordinator and candidate runner evidence, read-only | externally frozen/pushed candidate and fresh exact-candidate proof | After `SL-3.4` passes, the external coordinator—not the child or old runtime—checks exact owned paths/test immutability, commits one clean candidate `I`, pushes it, verifies the remote object, records/rejects any old-runtime false `complete`, reopens it with the existing `phase-loop reopen` command after the tree is clean, proves old PIDs/locks gone, and writes the run-owned external transition. It launches a distinct repo-local process with `PYTHONPATH=phase-loop-runtime/src` at exact fetched `I` and the exact transition path. That process validates and copies the transition into its run-owned input area, exports its run dir, runs every ordinary verification command and the broad suite, seals JUnit/`verification.json`, and enters a bounded fail-closed `awaiting_external_review` wait without exiting or changing HEAD. The external coordinator runs the mandatory four-seat implementation panel through true `context_refs` over its exact-`I` snapshot and writes the sealed governance record into the candidate run's declared input path; the same still-live candidate process validates that record separately from the fleet checklist, reduces/audits candidate evidence, records nonterminal `candidate_audit=passed`, and exits. Timeout, wrong writer/path/digest, process exit, or changed HEAD fails. Any change or material finding invalidates `I` and repeats `SL-3.4`–`SL-3.5`; merge is forbidden until this gate passes. |
-| SL-3.6 | verify | SL-3.5 | all phase-owned paths plus candidate and canonical-main runner evidence, read-only | exact two-parent landing and fresh canonical-main proof | The external coordinator merges only exact reviewed `I` with the required two-parent topology, terminates the candidate process, fetches server canonical main `M`, prepares the exact clean worktree, and writes a post-landing transition. It starts another distinct repo-local process at `M` with modules loaded from `M`. Repeat manifest/plan/roadmap validation, exact 22-node focused and broad compatible suites, Ruff, the separate external four-seat true-by-reference governance panel, post-suite fleet/final reduction, and parent audit. Structured JUnit contains all 22 frozen nodeids exactly once with zero skipped. Only this process may emit terminal `complete`, after it verifies both ordered two-parent merges and the complete lifecycle below. |
+| SL-3.1 | test | SL-1.7, SL-2.6 | `phase-loop-runtime/tests/harden_tdd_guard.py`, `phase-loop-runtime/tests/test_harden_evidence_verifier.py` (read-only) | exact checkpoint 11-green + 7-green + 4-RED proof | After the same-vendor implementation child has written every `SL-1`–`SL-3` owned path and the pre-change runtime/child have exited without a commit, the external coordinator records the complete dirty path/digest set. It stages only the literal twelve `SL-1`+`SL-2` source paths enumerated below, proves the cached path set equals the recorded changed subset and excludes all `SL-0` and `SL-3` paths, and creates actual checkpoint commit `C` directly atop the fetched post-tests target `T`. The original implementation worktree must then retain exactly the two unchanged, digest-matched `SL-3` residual paths and no other Git-visible dirt. In a separate clean detached exact-`C` worktree and fresh process, set `PHASE_LOOP_TDD_EXPECT_HARDEN=1`; run exact `SL1_NODEIDS` and require 11 passed/0 skipped, exact `SL2_NODEIDS` and require 7 passed/0 skipped, then exact `SL3_EVIDENCE_NODEIDS` and every frozen case and require intended assertion RED with zero skip/xfail/collection/import/setup/teardown errors. Prove `verify_harden_evidence.py` is absent from tree `C`. Child checks, the dirty original worktree, and the already-loaded pre-change runtime cannot satisfy this gate. |
+| SL-3.2 | impl | SL-3.1 | `phase-loop-runtime/scripts/verify_harden_evidence.py` | candidate/post-landing chronology and evidence verifier | Preserve the child-written script bytes and pre-checkpoint digest without coordinator edits. After the clean exact-`C` proof passes, stage this path together with `CHANGELOG.md` and create direct-child commit `I`. The executable has an explicit `--lifecycle-stage candidate|post_landing`; both stages require parent-supplied run directory, sealed `verification.json`, structured broad-suite JUnit, runner-reduced fleet checklist, output path, plan, roadmap, phase, repository, external coordinator transition, isolated four-seat panel record, exact checkpoint/final commit trees, and exact process/head/module identities. Candidate mode writes only `harden-candidate-evidence.json`; post-landing mode additionally requires and revalidates candidate evidence/hashes and writes only final `harden-evidence.json`. It derives Git/forge ancestry, exact `T -> C -> I` commit/path shapes, ordered PR-merge parents, path ownership, manifest state, nodeid/skip state, transition authorship/identity, all four isolated-seat attestations, and route-checklist evidence; exits non-zero with typed findings for any missing, mismatched, child/self-reported-only, stale-process/run/head, synthetic/laundered checkpoint, one-parent/squash/rebase merge, unisolated/excluded panel seat, or forged obligation; and never discovers another run, trusts CLI booleans/counts, runs as an ordinary suite command, amends `verification.json`, or writes tracked files. |
+| SL-3.3 | impl | SL-3.1 | `CHANGELOG.md` | Unreleased note | Preserve the child-written changelog bytes and pre-checkpoint digest without coordinator edits; stage it only with `verify_harden_evidence.py` after `SL-3.1`. Its concise Unreleased note covers contained review staging/fleet isolation, isolated four-seat subscription panels, CWD-independent reconcile attribution, non-vacuous enforce goal coverage, and login-shell interpreter hardening. Do not edit roadmap/spec/contract/version/release-pin surfaces. |
+| SL-3.4 | verify | SL-3.2, SL-3.3 | all phase-owned paths and frozen `SL-0` tests, read-only | exact all-22 pre-push gate | Require `I` to be an actual commit with sole parent `C`, cached/residual admission exactly `{phase-loop-runtime/scripts/verify_harden_evidence.py, CHANGELOG.md}`, and no amendment, rebase, squash, cherry-pick, stash/patch replay, replacement ref, synthetic `commit-tree`, or history rewrite. In a new clean detached exact-`I` worktree/process—not the dirty original, child, pre-change runtime, or exact-`C` process—remove `PHASE_LOOP_TDD_EXPECT_HARDEN`, assert `HARDEN_CAPABILITY_VERSION == 1`, import literal `EXPECTED_PHASE_NODEIDS`, and invoke pytest with exactly those 22 nodeids plus `--junitxml=<coordinator-run-dir>/harden-phase-focused.xml`. Require exact partition equality `11 + 7 + 4 = 22` and JUnit exactly 22 passed, zero skipped/xfailed/errors. Only this clean exact-head result authorizes push/transition. A failure returns to the same-vendor child for a fresh dirty output and restarts the actual `C`/`I` chronology; no partial 18-node green or reused worktree/process is admissible. |
+| SL-3.5 | verify | SL-3.4 | all phase-owned paths plus coordinator and candidate runner evidence, read-only | externally pushed candidate and fresh exact-candidate proof | After `SL-3.4` passes, the external coordinator—not the child or old runtime—pushes exact `I`, verifies the remote object, records/rejects any old-runtime false `complete`, reopens it with the existing `phase-loop reopen` command after the tree is clean, proves old PIDs/locks gone, and writes the run-owned external transition binding `T`, `C`, and `I`. It launches a distinct repo-local process with `PYTHONPATH=phase-loop-runtime/src` at exact clean fetched `I` and the exact transition path. That process validates and copies the transition into its run-owned input area, exports its run dir, runs every ordinary verification command and the broad suite, seals JUnit/`verification.json`, and enters a bounded fail-closed `awaiting_external_review` wait without exiting or changing HEAD. The coordinator then starts the exact-`I` repo-local isolated-panel boundary: all four Fable/Sol/Gemini/Grok seats receive only immutable staged exact-`I` inputs, run their direct mutation/credentialed-side-effect probes, and perform intended inference only through their supported parent-broker adapters. The sealed panel record cross-links the four supported fleet-checklist rows and is written into the candidate run's declared input path. The same still-live candidate process validates it, reduces/audits candidate evidence, records nonterminal `candidate_audit=passed`, and exits. Timeout, wrong writer/path/digest, process exit, changed HEAD, direct legacy panel launch, missing/refused/excepted seat, or failed boundary/broker/probe attestation fails. Any change or material finding invalidates `I` and restarts the actual `C`/`I` chronology; merge is forbidden until this gate passes. |
+| SL-3.6 | verify | SL-3.5 | all phase-owned paths plus candidate and canonical-main runner evidence, read-only | exact two-parent landing and fresh canonical-main proof | The external coordinator merges only exact reviewed `I` with the required two-parent topology, proves the candidate process exited, fetches server canonical main `M`, prepares an exact clean worktree, and writes a post-landing transition. It starts another distinct repo-local process at `M` with modules loaded from `M`. Repeat manifest/plan/roadmap validation, environment-activation-absent exact 22-node focused and broad compatible suites, Ruff, and the mandatory exact-`M` four-seat panel through the exact-`M` repo-local isolated-panel boundary with four direct mutation/credentialed-side-effect probes and supported broker rows. Then run post-suite fleet/final reduction and parent audit. Structured JUnit contains all 22 frozen nodeids exactly once with zero skipped. Only this process may emit terminal `complete`, after it verifies both ordered two-parent PR merges, actual `T -> C -> I` ancestry, both isolated exact-head panels, and the complete lifecycle below. |
+
+The coordinator's checkpoint staging command names exactly these twelve
+`SL-1`+`SL-2` source paths and no glob:
+
+- `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
+- `phase-loop-runtime/src/phase_loop_runtime/injection.py`
+- `phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py`
+- `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`
+- `phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py`
+- `phase-loop-runtime/src/phase_loop_runtime/reconcile.py`
+- `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
+
+Before staging, the coordinator records the changed subset and SHA-256 for every
+phase-owned dirty path. It invokes `git add --` with only the twelve literals,
+then requires the cached name set to equal the previously recorded changed
+subset within that exact list. It refuses an empty checkpoint, a cached
+`SL-0`/`SL-3`/unowned path, or an unstaged changed `SL-1`/`SL-2` path. Commit
+`C` has sole parent `T`, the fetched target head containing the two-parent tests
+merge. After `C`, porcelain status in the implementation worktree must name
+exactly `phase-loop-runtime/scripts/verify_harden_evidence.py` and
+`CHANGELOG.md`; their bytes and hashes must equal the child-exit record. Ignored
+run-owned `.phase-loop/` evidence stays outside Git and is bound separately.
+The detached checkpoint worktree is created from commit `C`, is clean before
+and after its proof, cannot see the original worktree's two residual paths, and
+is removed only after its process exits and evidence is sealed.
+
+Only after `SL-3.1` passes may the coordinator invoke `git add --` with exactly
+the verifier and changelog literals. The cached name set must equal those two
+paths, the bytes must still match the child-exit hashes, and direct-child commit
+`I` must have sole parent `C`. The coordinator never amends either commit and
+never uses rebase, squash, cherry-pick, stash/patch replay, replacement refs,
+`commit-tree`, or another synthetic-history mechanism to manufacture the
+intermediate state. Both clean proof worktrees are materialized from real
+commits; no dirty-tree checkout, index-only tree, file hiding, or post-hoc
+history rewrite can satisfy the chronology.
 
 `verify_harden_evidence.py` accepts only the fresh parent process's canonical
 current HARDEN run directory and parent-materialized inputs beneath it. It never
@@ -390,8 +483,10 @@ metadata, process startup records, and sealed runner artifacts:
    true-by-reference phase-plan review with Fable and Sol usable, four actual
    reviewing seats, API-key fallback disabled, and no unresolved material
    finding. The exact test/guard digest received the same governance panel
-   before tests landed. Neither record appears in the product/advisor route
-   registry or fleet checklist.
+   before tests landed. These pre-implementation records precede the HARDEN
+   boundary and therefore do not appear in the route registry/checklist or
+   satisfy `EC-HARDEN-5`; they cannot substitute for either isolated exact-head
+   panel.
 2. The unique HARDEN row in `plans/manifest.json` passes structural and
    per-entry validation and exactly names this plan, phase, roadmap, and
    `SL-0`–`SL-3`. Malformed JSON, a bad sibling row, missing/duplicate HARDEN
@@ -405,12 +500,14 @@ metadata, process startup records, and sealed runner artifacts:
    branches. The tests-only default JUnit is exactly 5 passed/17 skipped with
    the exact skip set. Activated RED collection is the same 22; every nodeid
    and every frozen case has intended assertion-failure raw output and JUnit
-   with zero skip/xfail/collection/setup errors. `SL-1.7` is exactly 11 green;
-   `SL-2.6` is exactly 7 green while the evidence 4 remain RED; `SL-3.1` records
-   those exact 4 RED before the executable exists; and only `SL-3.4`, after the
-   executable exists, records all 22 green before candidate freeze. Candidate
-   and post-landing JUnit each contain the same 22 exactly once, all passed,
-   zero skipped.
+   with zero skip/xfail/collection/setup errors. A clean exact-`C` process with
+   `PHASE_LOOP_TDD_EXPECT_HARDEN=1` records `SL-1.7` as exactly 11 green,
+   `SL-2.6` as exactly 7 green, and `SL-3.1` as the exact 4 RED while the
+   executable is absent from tree `C`. Only a distinct clean exact-`I` process,
+   after direct-child commit `I` introduces the executable, records all 22 green
+   with the environment activation absent. Candidate and post-landing JUnit
+   each repeat the same 22 exactly once, all passed, zero skipped, with the
+   environment activation absent and production marker present.
 4. Server-returned forge metadata identifies distinct tests-only and
    implementation PR numbers/head branches and records repository, URL,
    target/base/head refs and object IDs, reviewed heads, states, merge commits,
@@ -420,14 +517,18 @@ metadata, process startup records, and sealed runner artifacts:
 5. Ordered two-parent topology is exact, not merely reachability. Let `B` be the
    tests PR target object, `TH` its reviewed head, and `TM` its merge commit;
    `git cat-file`/forge metadata must prove `TM` has exactly ordered parents
-   `[B, TH]`. Let `I` be the reviewed/pushed implementation candidate, `P` the
-   server canonical-main object immediately before implementation merge, and
+   `[B, TH]`. Let `T` be the fetched post-tests target/implementation branch
+   point, `C` the actual checkpoint whose sole parent is `T`, and `I` the
+   reviewed/pushed direct child whose sole parent is `C`. Tree `C` contains
+   exactly the changed `SL-1`+`SL-2` paths and no `SL-0`/`SL-3` change; the
+   `C..I` range contains exactly the verifier and changelog. Let `P` be the
+   server canonical-main object immediately before implementation merge and
    `M` the server-recorded merge/canonical-main head; `M` must have exactly
    ordered parents `[P, I]`. Squash, rebase, octopus, synthetic replacement,
-   reversed/wrong parents, or a later main head fails. `TM` is an ancestor of
-   the implementation branch point, `I`, `P`, and `M`. The actual
-   implementation PR range is derived from server identities; it and the
-   forge file set contain no `SL-0` path or tests-only commit, and every frozen
+   rewritten checkpoint, reversed/wrong parents, or a later main head fails.
+   `TM` is an ancestor of `T`, `C`, `I`, `P`, and `M`. The actual
+   implementation PR range is derived from server identities; it and the forge
+   file set contain no `SL-0` path or tests-only commit, and every frozen
    test/guard blob remains identical. A `base -> tests -> implementation`
    branch whose PR targets the pre-test base fails even if the tests commit is
    elsewhere in the head ancestry.
@@ -435,55 +536,72 @@ metadata, process startup records, and sealed runner artifacts:
    coordinator identity freeze → external phase-plan panel → external
    tests/guard panel → tests PR merge `TM` → default 5-pass/17-skip proof →
    activated raw RED completion → implementation branch creation →
-   implementation child writes with old parent in manual-closeout mode →
-   11-node `SL-1` green → 7-node `SL-2` green while evidence 4 stay RED →
-   evidence 4 RED → verifier creation → old process exit → external coordinator
-   rejects false complete → independent exact all-22 green → coordinator-owned
-   clean candidate `I` commit/push/remote proof → external transition write →
-   distinct repo-local candidate process startup at `I` → candidate
-   manifest/focused/broad/Ruff seal → external exact-`I` by-reference
-   implementation panel → candidate reduction/audit → candidate process exit →
+   same-vendor implementation child writes all owned paths under manual
+   closeout and exits without commit → old runtime exit/false-complete rejection
+   → coordinator records dirty paths/hashes → coordinator stages the exact
+   `SL-1`+`SL-2` set and commits actual checkpoint `C` → clean exact-`C` process
+   records 11-node `SL-1` green → 7-node `SL-2` green → exact evidence 4 RED
+   with verifier absent → coordinator stages only unchanged verifier/docs and
+   commits direct-child `I` → distinct clean exact-`I` process records all 22
+   green with environment activation absent → coordinator push/remote proof and
+   external transition write → distinct repo-local candidate process startup at
+   `I` → candidate manifest/focused/broad/Ruff seal → isolated exact-`I`
+   Fable/Sol/Gemini/Grok panel with four supported checklist rows and direct
+   probes → candidate reduction/audit → candidate process exit →
    coordinator-owned implementation PR merge `M` → distinct post-landing
    process startup at `M` → post-landing manifest/focused/broad/Ruff seal →
-   external exact-`M` by-reference panel → final reduction/audit → terminal
-   `complete`. Each event carries coordinator-observed time, prior-event hash,
-   plan/test/candidate digest, and server object IDs; absent, duplicate,
-   out-of-order, or post-dated evidence fails.
-7. The immutable external coordinator, implementation launch, candidate
-   verifier, and post-landing verifier have distinct recorded PID/start nonce
-   values. The coordinator record proves its console script and imported
+   isolated exact-`M` four-seat panel with the same boundary → final
+   reduction/audit → terminal `complete`. Each event carries
+   coordinator-observed time, prior-event hash, plan/test/checkpoint/candidate
+   digest, and server object IDs; absent, duplicate, out-of-order, or post-dated
+   evidence fails.
+7. The immutable external coordinator, implementation launch, checkpoint
+   verifier, exact-`I` pre-push verifier, candidate verifier, and post-landing
+   verifier have distinct recorded PID/start nonce values. The coordinator
+   record proves its console script and imported
    package root are outside the HARDEN worktree and byte-identical from initial
    dispatch through final audit. The implementation launch record comes only
    from existing `launch.json`/terminal/event artifacts and is never a handoff.
-   The candidate process's startup/loaded HEAD is exactly `I`; the post-landing
-   process's is exactly `M`; their repo-local `cli.py`, `runner.py`,
-   `verification_evidence.py`, and verifier bytes hash to the corresponding Git
-   blobs. Any old-runtime terminal `complete` after changed imported bytes is
-   explicitly rejected and reopened; a process that changes/checks out a new
-   head after startup exits and can attest neither head.
+   The checkpoint process starts/ends clean at exactly `C`; the pre-push and
+   candidate processes start/end clean at exactly `I`; the post-landing process
+   starts/ends clean at exactly `M`. Their repo-local `cli.py`, `runner.py`,
+   `verification_evidence.py`, verifier, launcher, and panel boundary bytes hash
+   to the corresponding Git blobs. Any old-runtime terminal `complete` after
+   changed imported bytes is explicitly rejected and manually reopened; a
+   process that changes/checks out a new head after startup exits and can attest
+   neither head.
 8. All source/script/changelog changes use the one coordinator-recorded author
    vendor. The broad compatible suite and all ordinary verification commands
-   seal green before either external exact-head implementation panel.
+   seal green before either isolated exact-head implementation panel.
    Author-vendor seats are advisory only and the non-author seats satisfy
-   governed quorum. A finding/fix changes `I`, invalidates its
-   seal/panel/audit, and forces a new all-22 pre-freeze gate, coordinator commit
-   and push, transition, and exact-head process.
-9. The launcher-owned immutable-snapshot manifest covers the exact candidate
-   Git tree and every approved context ref, preserves logical labels, and proves
-   source/destination path, kind, bytes, and SHA-256 equality. Positive controls
-   open candidate code and context refs only through rewritten contained paths;
-   negative controls prove live originals unreachable and unmodifiable.
+   governed quorum. A finding/fix invalidates `C`, `I`, their clean-process
+   results, seal/panel/audit, and forces the same-vendor child plus the full
+   actual checkpoint/direct-child chronology to restart.
+9. The launcher-owned immutable-snapshot manifest covers the exact candidate or
+   canonical-main Git tree and every approved context ref, preserves logical
+   labels, and proves source/destination path, kind, bytes, and SHA-256 equality.
+   Positive controls for every mandatory seat open candidate code and context
+   refs only through rewritten contained `/review` paths; negative controls
+   prove live originals unreachable and unmodifiable. The review-leg namespace
+   has read-only tools, no direct network, credentials, privileged side-effect
+   capability, or host escape. `context_refs`, prompts, CLI flags, staged CWD,
+   naming, and tool allowlists cannot populate the boundary attestation.
 10. Every normalized live product-plus-advisor review route has exactly one
     runner-observed posture: supported executable, refused prelaunch, or
     nonlaunch. The supported credentialless command route carries the exact
-    `linux_bwrap_v1` mount/namespace/env/probe/cleanup attestation; any future
-    authenticated route additionally requires `parent_unix_broker_v1` with a
-    proved credentialless adapter. Refused routes prove zero auth lookup,
-    session, broker, child, and side effect. Checklist and registry keys are
-    exactly equal. Refusal satisfies the safety invariant only because the
-    route did not execute; it never counts as supported-route conformance.
-    External coordinator governance panels are absent from both sets and
-    separately prove first-party subscription-only routing.
+    `linux_bwrap_v1` mount/namespace/env/probe/cleanup attestation. Fable, Sol,
+    Gemini, and Grok are four mandatory supported executable rows; each carries
+    the same review-leg attestation, its exact `parent_unix_broker_v1` adapter
+    proof, direct mutation/credentialed-side-effect probes, intended-inference
+    RPC evidence, and candidate/main panel cross-link. The provider
+    subscription auth/transport stays in the trusted coordinator/parent control
+    plane and is never review-leg capability. Refused routes prove zero auth
+    lookup, session, broker connection, child, and side effect. Checklist and
+    registry keys are exactly equal. Refusal satisfies the safety invariant
+    only because the route did not execute; it never counts as supported-route
+    conformance. A mandatory seat that is refused, excepted, relabeled, absent,
+    or launched directly through the legacy subprocess route leaves
+    `EC-HARDEN-5` UNMET.
 
 Candidate mode writes only
 `.phase-loop/runs/<candidate-run-id>/harden-candidate-evidence.json`; post-landing
@@ -500,55 +618,71 @@ exemption.
 
 ## Fresh-Process Exact-Head Verification and Landing
 
-This is an external-coordinator plus three repo-runtime-process, two-seal
-protocol. The external coordinator is the roadmap-owned v10 control process,
-not a new HARDEN executable. It uses existing installed surfaces:
-`codex-phase-loop --version`, `run/resume --closeout-mode manual`,
+This is an immutable external-coordinator protocol with one pre-change
+implementation runtime, one clean exact-`C` checkpoint verifier process, one
+clean exact-`I` pre-push verifier process, and two sealed repo-runtime processes
+at exact `I` and exact `M`. The external coordinator is the roadmap-owned v10
+control process, not a new HARDEN executable. It uses existing installed
+surfaces: `codex-phase-loop --version`, `run/resume --closeout-mode manual`,
 `state --json`, `monitor --once --json`, `reopen --reason`, canonical
-`.phase-loop/runs/**` launch/heartbeat/terminal artifacts, Git/forge metadata,
-and the Advisor Board `PanelRequest.context_refs` API. Its resolved console
-script and imported package files are outside the worktree and digest-frozen
-before dispatch. `automation.suite_command` and commands extracted from
-`## Verification` are pass-1 verification; no ordinary command may invoke
-`verify_harden_evidence.py`, read an unsealed current-run artifact, or claim
-post-suite output as suite evidence.
+`.phase-loop/runs/**` launch/heartbeat/terminal artifacts, ordinary Git
+commits/worktrees, Git/forge metadata, and the Advisor Board
+`PanelRequest.context_refs` API. No current runner pause is assumed: current
+ordinary execution writes all lanes before phase verification, so the
+coordinator creates and verifies the real intermediate commit after the child
+exits. Its resolved console script and imported package files are outside the
+worktree and digest-frozen before dispatch. `automation.suite_command` and
+commands extracted from `## Verification` are pass-1 verification; no ordinary
+command may invoke `verify_harden_evidence.py`, read an unsealed current-run
+artifact, or claim post-suite output as suite evidence.
 
-1. **Reachable first landing.** The external coordinator launches the
-   implementation process through the already-installed pre-change runtime
-   with `--closeout-mode manual`. That runtime does not export
-   `PHASE_LOOP_RUN_DIR`, so the frontmatter command's explicit `mktemp` fallback
-   is bootstrap-only and its JUnit is never lifecycle evidence. The child
-   changes only phase-owned files and does not commit, push, write a transition,
-   panel, merge, or complete. The coordinator invokes separate short-lived test
-   subprocesses at the lane gates: `SL-1.7` proves exactly 11 nodes green;
-   `SL-2.6` proves exactly 7 green while the evidence 4 remain RED; `SL-3.1`
-   records the exact 4 RED; then `SL-3.2` creates the executable. This sequence
-   needs no new pre-change handoff, no self-reload, and no pre-change run-dir
-   export.
-2. The external coordinator waits for the installed runtime and implementation
-   child to exit and proves their recorded
-   PID/process-group/locks are gone. Any old-runtime terminal `complete` is
-   classified `false_complete_rejected` because its imported runner/reducer
-   identities predate the dirty output. It then runs the authoritative `SL-3.4`
-   exact all-22/zero-skip gate in a fresh-import subprocess; child output and
-   old-runtime verification cannot substitute. Only after that passes does the
-   coordinator validate phase-owned paths and frozen test blobs, commit exact
-   candidate `I`, push the explicit branch, verify `git ls-remote` equals `I`,
-   then invoke the existing
+1. **One child, no self-attestation.** The external coordinator launches exactly
+   one same-vendor implementation process through the already-installed
+   pre-change runtime with `--closeout-mode manual` and lane scheduling disabled.
+   That runtime does not export `PHASE_LOOP_RUN_DIR`, so the frontmatter
+   command's explicit `mktemp` fallback is bootstrap-only and never lifecycle
+   evidence. The child writes all `SL-1`, `SL-2`, and `SL-3` owned paths, runs
+   useful diagnostic checks, and exits. It must not commit, stage for the
+   coordinator, push, transition, attest, panel, merge, or complete. Neither its
+   checks nor the already-loaded runtime can satisfy the 11/7/4 chronology.
+2. The coordinator waits for the installed runtime and implementation child to
+   exit and proves their PID/process-group/locks are gone. Any old-runtime
+   terminal `complete` is classified `false_complete_rejected` because its
+   imported runner/reducer identities predate the dirty output. It validates
+   frozen `SL-0` blobs and records the exact dirty path/digest set. Using only
+   the twelve literal source paths above, it stages the recorded changed
+   `SL-1`+`SL-2` subset and creates actual checkpoint commit `C` with sole parent
+   `T`; all `SL-3` bytes remain unchanged and dirty in the original worktree.
+   It creates a separate clean detached exact-`C` worktree and starts a fresh
+   process there. With `PHASE_LOOP_TDD_EXPECT_HARDEN=1`, that process runs exact
+   11 green, exact 7 green, and exact 4 intended RED, proves the verifier absent
+   from `C`, seals results, and exits. The original dirty tree, implementation
+   child, and old runtime are never evidence sources for this gate.
+3. Only after the exact-`C` proof passes, the coordinator verifies that the
+   original worktree's only Git-visible dirt is the unchanged verifier and
+   changelog. It stages exactly those two literals and creates actual commit `I`
+   with sole parent `C`. A new clean detached exact-`I` worktree and new process
+   remove `PHASE_LOOP_TDD_EXPECT_HARDEN`, assert the production capability
+   marker, and prove exact all-22/zero-skip. The coordinator then pushes exact
+   `I`, verifies `git ls-remote` equals `I`, and invokes the existing
    `phase-loop reopen --phase HARDEN --reason
-   "pre-change runtime cannot attest HARDEN candidate"` on the now-clean tree
-   if reconciliation still says complete.
-3. The coordinator writes
+   "pre-change runtime cannot attest HARDEN candidate"` on the now-clean tree if
+   reconciliation still reports the rejected false completion. No amend,
+   rebase, squash, cherry-pick, stash/patch replay, replacement ref,
+   `commit-tree`, dirty-worktree proof, or reused process is admissible.
+4. The coordinator writes
    `.phase-loop/runs/<transition-id>/harden-coordinator-transition.json` from
    its own process. The sealed record contains coordinator executable/package
    realpaths, version/Git identity/file hashes/PID/start nonce; implementation
-   launch artifact paths and hashes; rejected false-complete/reopen event;
-   pre/post heads/trees; candidate branch/`I`/remote proof; plan, roadmap,
-   manifest, guard/test blob digests; exact 11/7/4/22 results; and old-process
-   death. A child/model-produced record, a coordinator root inside the
-   worktree, an unsealed/mutable coordinator identity, or a value not
-   recomputable from Git/forge/process/run artifacts fails.
-4. The coordinator prepares the exact clean fetched `I` worktree and launches:
+   launch artifact paths/hashes and child-exit dirty manifest; rejected
+   false-complete/manual-reopen event; exact `T`/`C`/`I` parents, trees, staged
+   path sets, residual hashes, clean worktree/process identities and 11/7/4/22
+   results; candidate branch/remote proof; plan, roadmap, manifest, guard/test
+   blob digests; and old-process death. A child/model-produced record, a
+   coordinator root inside the worktree, an unsealed/mutable coordinator
+   identity, synthetic/laundered history, or a value not recomputable from
+   Git/forge/process/run artifacts fails.
+5. The coordinator prepares the exact clean fetched `I` worktree and launches:
 
    `PHASE_LOOP_HARDEN_COORDINATOR_TRANSITION=<absolute-coordinator-transition> PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli resume --repo . --roadmap specs/phase-plans-v10.md --phase HARDEN --governed --closeout-mode manual --max-phases 1`
 
@@ -562,53 +696,71 @@ post-suite output as suite evidence.
    suite under `not dotfiles_integration`, then seal/validate
    `verification.json` and both JUnit files. The bootstrap fallback is forbidden
    in candidate/post-landing evidence: canonical JUnit must be under the
-   exported runner-owned directory.
-5. The candidate runtime enters a bounded `awaiting_external_review` wait while
+   exported runner-owned directory. The focused command removes
+   `PHASE_LOOP_TDD_EXPECT_HARDEN`, requires marker activation, and reports exact
+   22 passed/zero skipped.
+6. The candidate runtime enters a bounded `awaiting_external_review` wait while
    remaining alive at unchanged `I`; it accepts only the declared run-owned
-   governance-record path written by the immutable external coordinator. The
-   coordinator invokes the four subscription seats with
-   `allow_api_key_fallback=False` and true `PanelRequest.context_refs` pointing
-   at coordinator-owned exact-`I` read-only material. The governance record
-   binds each reviewed ref/hash, exact `I`, plan digest, four seat identities,
-   reviewed status/verdict/anchors, and author-vendor independence. It is stored
-   separately from `harden-fleet-checklist.v1` and the verifier rejects it if
-   any governance seat appears as an `EC-HARDEN-5` route row. A wait timeout,
-   candidate exit, wrong writer/path/digest, or changed HEAD fails closed.
-6. After a clean governance panel, the fresh candidate runtime validates the
+   panel-record path written by the immutable external coordinator. The
+   coordinator launches a fresh exact-`I` repo-local isolated-panel boundary,
+   not the legacy installed panel subprocess path. It sets
+   `allow_api_key_fallback=False`; materializes the exact `I` tree and every
+   approved `PanelRequest.context_refs` input into immutable `/review` paths;
+   starts separate no-network/no-credential `linux_bwrap_v1` review legs for
+   Fable, Sol, Gemini, and Grok; and keeps subscription auth/transport in the
+   trusted parent control plane behind each exact typed broker adapter. Each
+   seat must pass its direct mutation/credentialed-side-effect probes before
+   returning a usable review. The sealed panel record binds each reviewed
+   ref/hash, exact `I`, loaded boundary-module digests, plan digest, four
+   supported route/checklist identities, boundary/broker/probe attestations,
+   reviewed status/verdict/anchors, and author-vendor independence. A wait
+   timeout, candidate exit, wrong writer/path/digest, changed HEAD, direct legacy
+   route, refused/excepted/missing seat, or failed probe fails closed.
+7. After a clean isolated panel, the fresh candidate runtime validates the
    coordinator panel record, reduces the honest supported/refused fleet
-   checklist, invokes:
+   checklist with the four panel-seat rows included, invokes:
 
    `phase-loop-runtime/scripts/verify_harden_evidence.py --lifecycle-stage candidate --repo . --roadmap specs/phase-plans-v10.md --plan plans/phase-plan-v10-HARDEN.md --phase HARDEN --run-dir <candidate-run-dir> --verification-json <candidate-run-dir>/verification.json --junit-xml <candidate-run-dir>/harden-compatible-suite.xml --fleet-checklist <candidate-run-dir>/harden-fleet-checklist.json --coordinator-transition <candidate-run-dir>/harden-coordinator-transition.json --governance-panel <candidate-run-dir>/harden-governance-panel.json --output <candidate-run-dir>/harden-candidate-evidence.json`
 
    and performs a parent-owned candidate audit. Passed candidate audit records
    `awaiting_phase_closeout`, never `complete`, then exits. A fix invalidates
-   `I` and all seals/panels and restarts at `SL-3.4`.
-7. The external coordinator merges only exact `I` with ordered parents `[P,I]`,
+   `C`, `I`, all clean-process results, seals, and panels and restarts with a new
+   same-vendor child at step 1.
+8. The external coordinator merges only exact `I` with ordered parents `[P,I]`,
    proves the candidate process gone, fetches server canonical main `M`,
    prepares a clean exact-`M` worktree, and writes a new post-landing transition.
    It launches the same repo-local command shape with the new exact transition.
-   Startup fails closed unless local/remote `M`, ordered parents, coordinator
-   identity, and loaded repo-local module hashes all match and the PID/nonce is
-   distinct from implementation and candidate processes.
-8. The post-landing runtime repeats manifest, plan, roadmap, exact 22-node
-   focused, broad compatible, Ruff, exported-run-dir seal/JUnit validation, and
-   the separate external exact-`M` four-seat true-by-reference governance panel.
-   It reduces a new fleet checklist and invokes:
+   Startup fails closed unless local/remote `M`, both ordered two-parent PR
+   merges, actual `T -> C -> I` ancestry, coordinator identity, and loaded
+   repo-local module hashes all match and the PID/nonce is distinct from every
+   earlier process.
+9. The post-landing runtime repeats manifest, plan, roadmap, environment-
+   activation-absent exact 22-node focused, broad compatible, Ruff, and
+   exported-run-dir seal/JUnit validation. The coordinator then runs the
+   mandatory exact-`M` Fable/Sol/Gemini/Grok panel through a fresh exact-`M`
+   repo-local isolated-panel boundary with the same four supported rows,
+   immutable staged inputs, parent-controlled subscription inference adapters,
+   and direct mutation/credentialed-side-effect probes. It reduces a new fleet
+   checklist and invokes:
 
    `phase-loop-runtime/scripts/verify_harden_evidence.py --lifecycle-stage post_landing --repo . --roadmap specs/phase-plans-v10.md --plan plans/phase-plan-v10-HARDEN.md --phase HARDEN --run-dir <main-run-dir> --verification-json <main-run-dir>/verification.json --junit-xml <main-run-dir>/harden-compatible-suite.xml --fleet-checklist <main-run-dir>/harden-fleet-checklist.json --coordinator-transition <main-run-dir>/harden-coordinator-transition.json --governance-panel <main-run-dir>/harden-governance-panel.json --candidate-evidence <main-run-dir>/harden-candidate-evidence.json --output <main-run-dir>/harden-evidence.json`
 
-9. The parent-owned `_audit_harden_post_suite_outputs()` re-opens both seals,
-   all focused/broad JUnit files, both checklists/evidence records, both external
-   transition records, both external governance records, and server metadata;
-   recomputes every hash, exact digest, coordinator/process/head/module
-   identity, ordered parent, registry set, node partition/count/status, and
-   lifecycle edge; and matches them to parent state. Missing outputs return
+   The parent-owned `_audit_harden_post_suite_outputs()` re-opens both seals, all
+   checkpoint/pre-push/focused/broad JUnit files, both checklists/evidence
+   records, both external transition records, both isolated-panel records and
+   their eight seat attestations, and server metadata; recomputes every hash,
+   exact digest, coordinator/process/head/module identity, checkpoint/final
+   commit tree/path/ancestry, ordered PR-merge parent, registry set, node
+   partition/count/status, boundary/broker/probe result, and lifecycle edge; and
+   matches them to parent state. Missing outputs return
    `post_suite_output_missing`; changed bytes/hashes return
    `post_suite_hash_mismatch`; stale coordinator/process/run/head/plan/roadmap/
    manifest/test/registry/cross-file identity returns
    `post_suite_identity_mismatch`; child-authored/self verification returns
-   `self_verification_cycle`; wrong merge parents return
-   `harden_merge_parent_mismatch`; and early completion returns
+   `self_verification_cycle`; synthetic or wrong checkpoint history returns
+   `harden_checkpoint_history_mismatch`; wrong PR merge parents return
+   `harden_merge_parent_mismatch`; an unisolated panel seat returns
+   `review_boundary_attestation_failed`; and early completion returns
    `terminal_complete_before_final_audit`. These normalize to non-human
    `blocker_class=repeated_verification_failure`. Only the fresh exact-`M`
    process with `final_audit.status=passed` may emit terminal `complete`; every
@@ -618,7 +770,7 @@ post-suite output as suite evidence.
 
 - work-unit defaults: work-unit=`lane_execute`, effort=`high`, unsupported=`inherit_default`, inherit-default=`true`
 - execute: effort=`high`, work-unit=`lane_execute`, unsupported=`inherit_default`, inherit-default=`true`, reason=`the coordinator supplies the one author executor required by the v10 rotation policy`
-- SL-3: work-unit=`phase_reducer`, effort=`high`, unsupported=`inherit_default`, inherit-default=`true`, reason=`candidate and post-landing fresh-process evidence plus changelog synthesis after both functional lanes`
+- SL-3: work-unit=`phase_reducer`, effort=`high`, unsupported=`inherit_default`, inherit-default=`true`, reason=`actual checkpoint/direct-child reduction plus candidate and post-landing fresh-process evidence after both functional lanes`
 
 Policy precedence is CLI/operator override, this phase-plan policy, roadmap
 policy, Dispatch Hints, then registry defaults. This plan does not select an
@@ -635,8 +787,10 @@ allowed only with runner-owned worktrees and the disjoint ownership above.
   out-of-worktree identity and panels the exact SHA-256 of this plan by true
   `context_refs` with Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and Grok 4.5.
   Fable and Sol are mandatory reviewing seats; API-key fallback is disabled and
-  a degraded 3-of-4 result blocks. This is governance evidence, never
-  `EC-HARDEN-5` route evidence.
+  a degraded 3-of-4 result blocks. Because the boundary does not exist yet,
+  this pre-implementation record is a TDD/governance prerequisite, never
+  `EC-HARDEN-5` route evidence and never a substitute for the isolated exact-`I`
+  or exact-`M` panel.
 - `SL-0` lands literally as tests only. No production source, executable,
   changelog, roadmap, manifest, or closeout implementation may share that
   commit. Land the test-owned guard and immutable tests through their own
@@ -649,29 +803,46 @@ allowed only with runner-owned worktrees and the disjoint ownership above.
   evidence; local branch shape or a user-supplied base SHA is not.
 - `SL-1` and `SL-2` are write-disjoint. Lane order does not waive the single
   author-vendor policy or authorize scheduler fanout.
-- The implementation child only writes phase-owned paths and returns; it may
-  not commit, push, transition, attest, panel, merge, or complete. The
-  pre-change runtime runs with manual closeout, its missing
-  `PHASE_LOOP_RUN_DIR` uses only the non-evidence bootstrap fallback, and any
-  stale-module `complete` is rejected. After verifier creation, the external
-  coordinator waits for old processes to die, independently proves exact
-  all-22 green, then alone commits/pushes `I`, reopens any false closeout, and
-  writes the transition.
+- The same-vendor implementation child writes all phase-owned implementation
+  paths and returns once; it may not stage for the coordinator, commit, push,
+  transition, attest, panel, merge, or complete. The pre-change runtime runs
+  with manual closeout, its missing `PHASE_LOOP_RUN_DIR` uses only the
+  non-evidence bootstrap fallback, and any stale-module `complete` is rejected.
+  After both old processes exit, the external coordinator alone creates actual
+  checkpoint `C` from the exact `SL-1`+`SL-2` path list while retaining only the
+  unchanged verifier/docs as dirty residuals. A separate clean exact-`C`
+  worktree/process proves activated 11 + 7 green and exact 4 RED with the
+  verifier absent. The coordinator then stages exactly the residual two paths
+  into direct-child `I`; a new clean exact-`I` process removes the environment
+  activation and proves marker-driven all-22 green. Only then may the
+  coordinator push `I`, manually reopen a rejected false closeout, and write
+  the transition. No loaded parent or child attestation is accepted, and no
+  synthetic/re-written history can replace the two real commits.
   The fresh exact-candidate runtime exports its run directory and runs the
-  complete compatible suite before the external implementation panel or merge.
-  It exits before coordinator merge, and a second fresh exact-canonical-main
-  runtime repeats the gate. A repair, checkout, or commit in either verifier
-  process invalidates its evidence and requires another all-22/fresh-process
-  cycle.
+  complete compatible suite before its four-seat panel or merge. That panel
+  runs through the exact-`I` isolation boundary and all four supported brokered
+  seats. It exits before coordinator merge, and a second fresh
+  exact-canonical-main runtime repeats both the suite and isolated exact-`M`
+  panel. A repair, checkout, commit, direct legacy panel launch, or failed
+  boundary/broker probe in either verifier process invalidates its evidence and
+  restarts the `C`/`I` chronology.
 - Execute, repair, plan, roadmap, and maintain-skills behavior are positive
   controls. Review-only CWD/environment/tool/auth changes must not leak into
   another product action.
 - A reviewer subprocess or shell inside `linux_bwrap_v1` is permitted. A
-  provider-backed product/advisor route is refused until it proves
-  `parent_unix_broker_v1`; route-specific CLI flags/prompts cannot substitute.
-  A live-repo mutation, credentialed/privileged side effect, live-root
-  reachability, ambient credential source, non-broker egress, or unjournaled
-  cleanup path is forbidden.
+  provider-backed route is supported only when the attacker-controlled
+  review-leg process proves the common boundary and reaches a typed intended-
+  inference-only method through `parent_unix_broker_v1`; otherwise it refuses
+  before auth/session/broker/child. The trusted parent may retain first-party
+  subscription auth and provider transport for intended inference only. It may
+  not expose arbitrary provider methods, URLs, host commands, tools,
+  credentials, or side-effect RPCs to the review leg. Fable, Sol, Gemini, and
+  Grok must all be supported and directly probed at exact `I` and `M`; none may
+  be refused, excepted, or relabeled. `context_refs`, route-specific CLI flags,
+  prompts, CWDs, tool allowlists, and names cannot substitute. A live-repo
+  mutation, credentialed/privileged side effect, live-root reachability,
+  ambient credential source, direct/non-broker egress, host escape, or
+  unjournaled cleanup path is forbidden.
 - The phase produces no visible avatar/browser-media render;
   `visual_render_declared` remains false and image evidence is not required.
 
@@ -680,7 +851,7 @@ allowed only with runner-owned worktrees and the disjoint ownership above.
 - schema: `spec_delta_closeout.v1`
 - decision: `no_spec_delta`
 - target surfaces: `phase-loop-runtime/src/phase_loop_runtime/launcher.py`, `phase-loop-runtime/src/phase_loop_runtime/injection.py`, `phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py`, `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py`, `phase-loop-runtime/src/phase_loop_runtime/reconcile.py`, `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`, `phase-loop-runtime/scripts/verify_harden_evidence.py`, `CHANGELOG.md`
-- evidence paths: `plans/phase-plan-v10-HARDEN.md`, `plans/manifest.json`, `phase-loop-runtime/tests/harden_tdd_guard.py`, `phase-loop-runtime/tests/test_review_leg_sandbox.py`, `phase-loop-runtime/tests/test_phase_loop_injection.py`, `phase-loop-runtime/tests/test_reconcile_portability_85c.py`, `phase-loop-runtime/tests/test_goal_coverage.py`, `phase-loop-runtime/tests/test_verification_interpreter_guard_221.py`, `phase-loop-runtime/tests/test_harden_evidence_verifier.py`, `.phase-loop/events.jsonl`, `.phase-loop/runs/**/verification.json`, `.phase-loop/runs/**/harden-phase-focused.xml`, `.phase-loop/runs/**/harden-compatible-suite.xml`, `.phase-loop/runs/**/launch.json`, `.phase-loop/runs/**/terminal-summary.json`, `.phase-loop/runs/**/harden-coordinator-transition.json`, `.phase-loop/runs/**/harden-governance-panel.json`, `.phase-loop/runs/**/harden-fleet-checklist.json`, `.phase-loop/runs/**/harden-candidate-evidence.json`, `.phase-loop/runs/**/harden-evidence.json`
+- evidence paths: `plans/phase-plan-v10-HARDEN.md`, `plans/manifest.json`, `phase-loop-runtime/tests/harden_tdd_guard.py`, `phase-loop-runtime/tests/test_review_leg_sandbox.py`, `phase-loop-runtime/tests/test_phase_loop_injection.py`, `phase-loop-runtime/tests/test_reconcile_portability_85c.py`, `phase-loop-runtime/tests/test_goal_coverage.py`, `phase-loop-runtime/tests/test_verification_interpreter_guard_221.py`, `phase-loop-runtime/tests/test_harden_evidence_verifier.py`, `.phase-loop/events.jsonl`, `.phase-loop/runs/**/verification.json`, `.phase-loop/runs/**/harden-checkpoint-evidence.json`, `.phase-loop/runs/**/harden-prepush-evidence.json`, `.phase-loop/runs/**/harden-sl1.xml`, `.phase-loop/runs/**/harden-sl2.xml`, `.phase-loop/runs/**/harden-sl3-red.xml`, `.phase-loop/runs/**/harden-phase-focused.xml`, `.phase-loop/runs/**/harden-compatible-suite.xml`, `.phase-loop/runs/**/launch.json`, `.phase-loop/runs/**/terminal-summary.json`, `.phase-loop/runs/**/harden-coordinator-transition.json`, `.phase-loop/runs/**/harden-governance-panel.json`, `.phase-loop/runs/**/review-boundary-attestation*.json`, `.phase-loop/runs/**/harden-fleet-checklist.json`, `.phase-loop/runs/**/harden-candidate-evidence.json`, `.phase-loop/runs/**/harden-evidence.json`
 - redaction posture: `metadata_only`
 - downstream handling: `none`
 
@@ -701,18 +872,22 @@ runs the broad compatible suite with structured JUnit. The pre-change bootstrap
 runtime does not export `PHASE_LOOP_RUN_DIR`, so that first pass uses `mktemp`
 and is explicitly non-evidence. Candidate and post-landing runtimes contain the
 new export path and must write JUnit beneath their parent-owned run directory;
-the evidence verifier rejects the fallback there. The exact 22-node command
-runs after verifier creation and before the broad suite. Both fresh runtimes
-seal before the external exact-head panel. HARDEN chronology, raw RED, author
-independence, crash cleanup, and fleet evidence become decidable only through
-the two post-suite reductions and fresh-parent audits above; they must never be
-represented as pre-seal suite evidence.
+the evidence verifier rejects the fallback there. The exact-`C` process first
+proves activated 11 + 7 green and exact 4 RED with the verifier absent; a
+different clean exact-`I` process then removes the environment activation and
+proves all 22 green after direct-child `I` introduces the verifier. Candidate
+and post-landing exact 22-node commands also run with environment activation
+absent before the broad suite. Both fresh runtimes seal before their isolated
+exact-head panel. HARDEN chronology, raw RED, author independence, crash
+cleanup, four-seat boundary/broker probes, and fleet evidence become decidable
+only through the two post-suite reductions and fresh-parent audits above; they
+must never be represented as pre-seal suite evidence.
 
 ## Acceptance Criteria
 
-- [ ] EC-HARDEN-0 — proven by the frozen guard's default 5-pass/17-skip JUnit, activated 22-nodeid and per-case raw intended-RED/JUnit records, exact 11-green + 7-green + 4-RED sequencing, exact all-22 green only after verifier creation and old-process exit but before freeze, external coordinator transition, candidate `--lifecycle-stage candidate` evidence, post-landing `--lifecycle-stage post_landing` evidence, and passed fresh-parent `_audit_harden_post_suite_outputs()`; the audit must prove immutable tests/guard, exact manifest validation, ordered two-parent tests and implementation merges, implementation PR range excluding every `SL-0` path and tests-only commit, immutable out-of-worktree coordinator identity, rejected/reopened old-runtime false complete, coordinator-only commit/push/merge, distinct implementation/candidate/main process identities and exact loaded heads/modules, exported run dirs only in new runtimes, broad compatible suite before each external exact-head panel, and the lifecycle tests merge → activated RED → 11/7/4 partition → verifier → old-process exit → independent all 22 green → coordinator freeze/push/transition → fresh candidate suite/external panel/audit → merge → fresh canonical-main suite/external panel/final audit → terminal complete
+- [ ] EC-HARDEN-0 — proven by the frozen guard's default 5-pass/17-skip JUnit, activated 22-nodeid and per-case raw intended-RED/JUnit records, and passed fresh-parent `_audit_harden_post_suite_outputs()`; the audit must prove immutable tests/guard, exact manifest validation, ordered two-parent tests and implementation PR merges, implementation PR range excluding every `SL-0` path and the tests-only commit, immutable out-of-worktree coordinator identity, manual closeout plus rejected/manually reopened old-runtime false completion, same-vendor child exit without commit, coordinator-only commits/push/merge, actual direct ancestry `T -> C -> I`, checkpoint `C` containing exactly changed `SL-1`+`SL-2` paths, unchanged two-path `SL-3` residual containment, no synthetic/history-laundering mechanism, a distinct clean exact-`C` process proving activated exact 11 green + 7 green + 4 RED with verifier absent, a distinct clean exact-`I` process proving environment-activation-absent all 22 green only after verifier/docs commit `I`, distinct candidate/main processes and exact loaded heads/modules, exported run dirs only in new runtimes, broad compatible suite before each isolated exact-head four-seat panel, candidate `--lifecycle-stage candidate` evidence, post-landing `--lifecycle-stage post_landing` evidence, and the lifecycle tests merge → activated RED → child exit → real checkpoint `C` → clean 11/7/4 proof → real direct-child `I` → clean all-22 proof → push/transition → fresh candidate suite/isolated four-seat panel/audit → ordered two-parent implementation merge → fresh canonical-main suite/isolated four-seat panel/final audit → terminal complete
 - [ ] EC-HARDEN-1 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_review_leg_sandbox.py -q -k review_stage_rejects_every_escape_form_before_launch`
 - [ ] EC-HARDEN-2 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_reconcile_portability_85c.py -q -k "cwd_independent or repo_anchored"`
 - [ ] EC-HARDEN-3 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_goal_coverage.py -q -k "enforce_blocks_every_zero_declared or all_bare_legacy_is_distinct"`; both selected tests must pass, and the all-bare test must prove warn/default is nonblocking while every enforce completion gate returns non-human `contract_bug`
 - [ ] EC-HARDEN-4 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_verification_interpreter_guard_221.py -q -k argument_consuming_bash_options_and_profile_patch_version_fail_closed`; the selector must enumerate `-o option-name`, `+o option-name`, `-O shopt-option`, `+O shopt-option`, `--rcfile file`/`--rcfile=file`, and `--init-file file`/`--init-file=file`
-- [ ] EC-HARDEN-5 — proven jointly by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_review_leg_sandbox.py phase-loop-runtime/tests/test_phase_loop_injection.py -q -k "review_isolation_registry_matrix or review_capability_registry_set_equality or every_executable_review_route or review_snapshot_materializes or review_prompt_argv_cwd_and_env or crash_recovery"` and the passed runner-owned post-suite final audit; the credentialless command adapter executes only after exact Linux/bubblewrap/namespace/probe success, every provider/API-key/native/gateway/research route is refused before auth lookup/session/broker/child launch until a credentialless `parent_unix_broker_v1` adapter exists, and manual remains nonlaunch; refusal satisfies the safety invariant only through non-execution and is never mislabeled supported conformance; checklist/live-registry set equality and parent-recorded hashes/identities are exact; the external subscription-only four-seat governance panels are absent from the route registry/checklist and cannot satisfy this EC; no CLI flag/prompt, residual register, pre-seal suite result, or self-reported closeout field is a satisfaction route
+- [ ] EC-HARDEN-5 — proven jointly by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_review_leg_sandbox.py phase-loop-runtime/tests/test_phase_loop_injection.py -q -k "review_isolation_registry_matrix or review_capability_registry_set_equality or every_executable_review_route or review_snapshot_materializes or review_prompt_argv_cwd_and_env or crash_recovery"` and the passed runner-owned post-suite final audit; the credentialless command adapter executes only after exact Linux/bubblewrap/namespace/probe success; Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and Grok 4.5 are all mandatory supported routes whose exact-`I` and exact-`M` panel legs receive only immutable staged snapshots/context refs, read-only tools, no live repo, mutation credentials, privileged side-effect capability, direct network, or host escape, and whose parent-controlled first-party subscription transport/auth exposes only the typed intended-inference RPC through exact `parent_unix_broker_v1` adapters; all four carry direct live-tree mutation and credentialed-side-effect probe attestations at both heads; every other executable provider/API-key/native/gateway/research route satisfies the same isolation or refuses before auth/session/broker/child; manual remains nonlaunch; refusal satisfies the invariant only through non-execution and is never mislabeled supported conformance; checklist/live-registry set equality includes and cross-links the four mandatory panel rows; no `context_refs`, CLI flag, prompt, naming distinction, residual register, pre-seal result, or self-reported closeout field is a satisfaction route
