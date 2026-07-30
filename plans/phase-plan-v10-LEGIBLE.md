@@ -705,7 +705,7 @@ EC-LEGIBLE-4.
   repository-legibility contracts, not a public runtime feature or release.
 - Digest continuity is a preflight and closeout invariant: before every lane, and again before
   final verification, SHA-256 of `specs/phase-plans-v10.md` must equal
-  `7f2590bdebf5a892cf0987b67916d2c3b95970b547117b8cbf4adc7c7220838e`. Any roadmap-byte
+  `e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466`. Any roadmap-byte
   change blocks as an unpaneled contract change; this plan provides no mid-phase rebind path
   because none is required by the sidecar architecture. In particular, Assumption 3 already
   declares both the pending and resolved REVIEWTRUTH states, so the fixed sidecar adapter
@@ -730,11 +730,16 @@ EC-LEGIBLE-4.
 ## Spec Closeout Plan
 
 - schema: `spec_delta_closeout.v1`
-- decision: `canonical_spec_update`
-- target surfaces: `specs/roadmap-status.json`, `specs/roadmap-assumption-probes-v10.json`, `plans/manifest.json`
-- evidence paths: `specs/roadmap-status.json`, `specs/roadmap-assumption-probes-v10.json`, `plans/manifest.json`, `.claude/docs-catalog.json`, `.phase-loop/runs/*/verification.json`, `.phase-loop/runs/*/legible-operational-evidence.json`, `.phase-loop/runs/*/legible-*.junit.xml`
+- decision: `roadmap_amendment`
+- target surfaces: `specs/**`, `plans/manifest.json`
+- evidence paths: `.phase-loop/runs/*/verification.json`, `.phase-loop/runs/*/legible-operational-evidence.json`
 - redaction posture: `metadata_only`
-- downstream handling: `none`
+- downstream handling: `roadmap amendment`
+
+This closeout decision is metadata-only downstream routing, not implementation write
+authorization. LEGIBLE remains limited to the exact 15 lane-owned paths, does not mutate any
+`specs/phase-plans-*.md` bytes, and adds no public runtime documentation. The evidence paths
+carry only roadmap-status and digest references; they must not embed raw specifications or diffs.
 
 ## Verification Evidence Sidecars
 

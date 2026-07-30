@@ -646,7 +646,8 @@
                 "specs/roadmap-assumption-probes-v10.json",
                 "specs/roadmap-status.json"
               ],
-              "plan_sha256": "70f36880e03e80561474b97013df3ca923bbbbe090c70d50171593979a64d0f1",
+              "plan_sha256": "fdf2d75638e60fdda14a6ae636d63f146ec47655a6056bded3e3c93d0e5f7df7",
+              "roadmap_sha256": "e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466",
               "test_paths": [
                 "phase-loop-runtime/tests/test_legible_evidence.py",
                 "phase-loop-runtime/tests/test_legible_roadmap_contract.py"
@@ -695,7 +696,7 @@
           "by": "codex-plan-phase",
           "metadata": {
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
-            "plan_sha256": "67a448c622409515ed8c430013a13681ffb9b55446ec964b45142cd0c3cc24fe",
+            "plan_sha256": "543e202b13359244d3da8a5a0f37032ed18451da8aae9b31f33439ef8ccfce94",
             "run_id": "20260730T035938Z-01-reviewtruth-plan"
           },
           "transition": "committed"
