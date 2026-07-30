@@ -790,23 +790,21 @@
               "identity_response_framing_contract": "identity_response_framing.v1",
               "implementation_author_scope": "whole_phase",
               "implementation_effort": "high",
-              "implementation_executor": "codex",
-              "implementation_model": "gpt-5.6-terra",
+              "implementation_executor": "gemini",
+              "implementation_model": "gemini-3.6-flash",
               "lane_scheduler_mode": "off",
               "latest_exact_digest_panel_blockers": [
-                "force_with_lease_conflicts_with_force_push_ban",
-                "ec4_missing_typed_test_emitted_oracle",
-                "runtime_lane_scheduler_conflicts_with_whole_phase_rotation"
+                "split_implementation_author_authority"
               ],
-              "latest_exact_digest_panel_plan_sha256": "8da6045c6e13410f74f1e6402140eddb9e91f5ed14dcf2a8daa56c8b3f70195a",
-              "latest_exact_digest_panel_sha256": "097ef0889cc1a6e7419c3bb817c2f070a9a4cfdeb0b9c4b1a5b08deba329c656",
+              "latest_exact_digest_panel_plan_sha256": "aff5f0ea432bf7325c4dfe854617cfcd4d4c82d4077c08ffcc615e2d02ca2624",
+              "latest_exact_digest_panel_sha256": "af088088f3dc55fa568ff4385602d2d125b42646c2966aec78965543854232ea",
               "lifecycle": "proofgate_tdd_candidate_main.v1",
               "manual_lane_order": [
                 "SL-0",
                 "SL-1",
                 "SL-2"
               ],
-              "mutation_blocked_plan_sha256": "8da6045c6e13410f74f1e6402140eddb9e91f5ed14dcf2a8daa56c8b3f70195a",
+              "mutation_blocked_plan_sha256": "aff5f0ea432bf7325c4dfe854617cfcd4d4c82d4077c08ffcc615e2d02ca2624",
               "mutation_ec4_result_codes": {
                 "github": "github_builder_epoch_blocked_unwired",
                 "routing": "routing_builder_epoch_blocked_unwired"
@@ -871,7 +869,7 @@
               "owned_path_patterns_count": 38,
               "owned_path_patterns_sha256": "a19e9ae2714f414d92b12314e8e9370aa1518a400d638c6eef211eb05e4b6c9b",
               "phase_scheduler_mode": "off",
-              "plan_sha256": "aff5f0ea432bf7325c4dfe854617cfcd4d4c82d4077c08ffcc615e2d02ca2624",
+              "plan_sha256": "4d4a94fac2c01028049142688deb8b16f983313384c9d085d7d4efdc6debc417",
               "positive_control_nodeids": 2,
               "preexisting_owned_nodeids": 3,
               "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
