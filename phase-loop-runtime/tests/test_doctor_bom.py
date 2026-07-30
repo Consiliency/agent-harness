@@ -53,6 +53,12 @@ def test_golden_has_the_named_bom_inventory() -> None:
     assert any("mac-skills" in n for n in names)
 
 
+def test_golden_summary_matches_tool_presence_counts() -> None:
+    golden = _golden()
+    present = sum(1 for tool in golden["tools"] if tool["present"])
+    assert golden["summary"].startswith(f"{present}/{len(golden['tools'])} tools present;")
+
+
 # --------------------------------------------------------------------------- #
 # offline mock registry: verdicts without network
 # --------------------------------------------------------------------------- #
@@ -126,6 +132,24 @@ def test_live_report_validates_against_schema_with_fixture_bom() -> None:
     repo = Path(__file__).resolve().parents[1]
     report = doctor.build_doctor_report(repo, bom_fixture=FIXTURES / "bom-current.json")
     jsonschema.validate(report, _schema())
+
+
+def test_executor_tool_probe_uses_runtime_cli_names_and_includes_grok(monkeypatch) -> None:
+    probed: list[str] = []
+
+    def fake_which(name: str):
+        probed.append(name)
+        return f"/fake/{name}"
+
+    monkeypatch.setattr(doctor.shutil, "which", fake_which)
+    monkeypatch.setattr(doctor, "_cli_authed", lambda _name, present: present)
+
+    tools = {entry["name"]: entry for entry in doctor._tools_report({})}
+
+    assert tools["gemini"]["present"] is True
+    assert tools["grok"]["present"] is True
+    assert "agy" in probed
+    assert "gemini" not in probed
 
 
 # --------------------------------------------------------------------------- #

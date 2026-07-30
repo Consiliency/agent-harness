@@ -69,11 +69,16 @@ def build_github_broker_client(
         A :class:`BrokerService` bound to the global (verb-gated) contracts, so
         only ``publish_committed_branch``/``github`` can execute.
     """
+    evidence_store = BrokerEvidenceStore(Path(broker_root))
+    # ah#288/#199: the admission store re-checks the revocation flag INSIDE its lock, and
+    # the evidence store shares that lock, so an admission can never be granted into an
+    # epoch a concurrent revocation has blocked. Unwired (the old default lambda: False),
+    # execute()'s pre-check is racy — a revocation landing after the check still admits.
     admission_store = LinearizableAdmissionStore(
         Path(broker_root),
         admission_policy or _default_admission_policy,
+        epoch_blocked=lambda: evidence_store.epoch_blocked,
     )
-    evidence_store = BrokerEvidenceStore(Path(broker_root))
     adapter = GitHubBrokerAdapter(Path(repo_path), run=run)
     return BrokerService(
         admission_store,
@@ -135,9 +140,15 @@ class _RoutingBrokerService:
         service = self._services.get(repo)
         if service is None:
             root = self._broker_root / _repo_store_slug(repo)
+            # ah#288/#199: wire the admission store's in-lock revocation re-check to this
+            # repo's evidence store (both on one `root`, sharing one lock file), closing
+            # the execute() check-then-admit race. See build_github_broker_client.
+            evidence_store = BrokerEvidenceStore(root)
             service = BrokerService(
-                LinearizableAdmissionStore(root, self._admission_policy),
-                BrokerEvidenceStore(root),
+                LinearizableAdmissionStore(
+                    root, self._admission_policy, epoch_blocked=lambda: evidence_store.epoch_blocked
+                ),
+                evidence_store,
                 GitHubBrokerAdapter(Path(repo), run=self._run, allowed_hosts=self._allowed_hosts),
                 contracts=self._contracts,
             )

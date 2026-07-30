@@ -353,16 +353,31 @@
       "handoff_ref": null,
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-28T22:28:34Z",
+          "by": "manifest-reconcile",
+          "metadata": {
+            "chosen_status_rationale": "committed->completed is a forbidden lifecycle transition (TRANSITIONS['committed'] = {executing, orphaned}); this entry has no executing->completed closeout event recorded in its lifecycle; orphaned is the only honest terminal reachable from committed for a retired entry. The schema defines no superseded/done-elsewhere status.",
+            "criteria_audit": "NOT PERFORMED BY THIS RECONCILIATION. This reconciliation audited no criterion on this entry. It records the issue's state and which PR's diff contains the change; it makes NO claim that the plan's acceptance criteria were satisfied. (A shallow diff-presence check confirmed the plan's named implementation symbols and test functions appear in the cited PR's diff -- that is NOT an audit that the criteria are met, per the round-3 finding that a test's presence does not prove it exercises its assertion.) This reconciliation makes no claim about whether any other party audited this entry.",
+            "issue": "Consiliency/agent-harness#171",
+            "issue_state": "CLOSED",
+            "issue_state_reason": "COMPLETED",
+            "shipped_via": "Consiliency/agent-harness#229",
+            "shipped_via_verified": "gh pr diff #229 contains panel_invoker.py + test_panel_invoker.py (and this plan doc + this manifest entry)."
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "available-panel-legs-grok-171",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": "Expose grok through available_panel_legs() (ah#171)",
       "type": "detailed",
-      "updated_at": "2026-07-18T06:20:00Z"
+      "updated_at": "2026-07-28T22:28:34Z"
     },
     {
       "acceptance_criteria_count": 6,
@@ -460,22 +475,37 @@
       "updated_at": "2026-06-30T21:06:48Z"
     },
     {
-      "acceptance_criteria_count": 4,
+      "acceptance_criteria_count": 5,
       "created_at": "2026-07-18T03:20:00Z",
       "file": "plans/detailed-fable-tui-workspace-trust-stall-20260718.md",
       "handoff_ref": null,
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-28T22:28:34Z",
+          "by": "manifest-reconcile",
+          "metadata": {
+            "chosen_status_rationale": "committed->completed is a forbidden lifecycle transition (TRANSITIONS['committed'] = {executing, orphaned}); this entry has no executing->completed closeout event recorded in its lifecycle; orphaned is the only honest terminal reachable from committed for a retired entry. The schema defines no superseded/done-elsewhere status.",
+            "criteria_audit": "PARTIAL. Audited by this reconciliation: fable AC-4 only ('a non-OK leg's PanelLegResult.detail is control-sanitized, secret-scrubbed, bounded, and retains the buffer END') -- examined and found UNMET: the sanitizer (_sanitized_pty_tail) exists but PR #228 routes its output to a WARNING log, and _exec_claude_tui_leg returns (status, text) and never populates PanelLegResult.detail. Tracked in Consiliency/agent-harness#369 (OPEN). No other criterion was audited BY THIS RECONCILIATION. An external review (codex, during PR #365 cross-vendor review) separately examined AC-1/AC-2 test adequacy; its findings are recorded on #369 and are deliberately NOT restated here.",
+            "issue": "Consiliency/agent-harness#196 / Consiliency/agent-harness#223",
+            "issue_state": "CLOSED",
+            "issue_state_reason": "COMPLETED",
+            "shipped_via": "Consiliency/agent-harness#228",
+            "shipped_via_verified": "gh pr diff #228 contains panel_invoker.py + test_panel_tui_workspace_trust_223.py."
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "fable-tui-workspace-trust-stall",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": "Fix Fable/Claude advisor-board TUI leg silent stall (workspace-trust gate; ah#196+#223)",
       "type": "detailed",
-      "updated_at": "2026-07-18T03:20:00Z"
+      "updated_at": "2026-07-28T22:28:34Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -484,16 +514,31 @@
       "handoff_ref": null,
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-28T22:28:34Z",
+          "by": "manifest-reconcile",
+          "metadata": {
+            "chosen_status_rationale": "committed->completed is a forbidden lifecycle transition (TRANSITIONS['committed'] = {executing, orphaned}); this entry has no executing->completed closeout event recorded in its lifecycle; orphaned is the only honest terminal reachable from committed for a retired entry. The schema defines no superseded/done-elsewhere status.",
+            "criteria_audit": "NOT PERFORMED BY THIS RECONCILIATION. This reconciliation audited no criterion on this entry. It records the issue's state and which PR's diff contains the change; it makes NO claim that the plan's acceptance criteria were satisfied. (A shallow diff-presence check confirmed the plan's named implementation symbols and test functions appear in the cited PR's diff -- that is NOT an audit that the criteria are met, per the round-3 finding that a test's presence does not prove it exercises its assertion.) This reconciliation makes no claim about whether any other party audited this entry.",
+            "issue": "Consiliency/agent-harness#224",
+            "issue_state": "CLOSED",
+            "issue_state_reason": "COMPLETED",
+            "shipped_via": "Consiliency/agent-harness#230",
+            "shipped_via_verified": "gh pr diff #230 contains capability_registry.py + launcher.py + test_grokexec.py."
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "grokexec-effort-clamp-224",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": "Clamp grok effort at grokexec CLI boundary (ah#224)",
       "type": "detailed",
-      "updated_at": "2026-07-18T07:00:00Z"
+      "updated_at": "2026-07-28T22:28:34Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -502,16 +547,30 @@
       "handoff_ref": null,
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-28T22:28:34Z",
+          "by": "manifest-reconcile",
+          "metadata": {
+            "chosen_status_rationale": "committed->completed is a forbidden lifecycle transition (TRANSITIONS['committed'] = {executing, orphaned}); this entry has no executing->completed closeout event recorded in its lifecycle; orphaned is the only honest terminal reachable from committed for a retired entry. The schema defines no superseded/done-elsewhere status. No PR implements this plan, so there is no shipped_via to cite.",
+            "criteria_audit": "NOT PERFORMED BY THIS RECONCILIATION. This plan's PR Consiliency/agent-harness#234 was closed unmerged, so no PR implements this plan and its acceptance criteria are moot. This reconciliation makes no claim about whether any other party audited this entry.",
+            "implementing_pr": "none -- this plan's PR Consiliency/agent-harness#234 was CLOSED and never merged; issue #186 was itself closed with the maintainer comment 'resolved by #58'.",
+            "issue": "Consiliency/agent-harness#186",
+            "issue_state": "CLOSED",
+            "issue_state_reason": "COMPLETED"
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "lane-scheduler-work-unit-preflight-186",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": "Reject real-exec lane-scheduler without work-unit-mode (ah#186)",
       "type": "detailed",
-      "updated_at": "2026-07-18T21:00:00Z"
+      "updated_at": "2026-07-28T22:28:34Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -520,16 +579,54 @@
       "handoff_ref": null,
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-28T22:28:34Z",
+          "by": "manifest-reconcile",
+          "metadata": {
+            "chosen_status_rationale": "committed->completed is a forbidden lifecycle transition (TRANSITIONS['committed'] = {executing, orphaned}); this entry has no executing->completed closeout event recorded in its lifecycle; orphaned is the only honest terminal reachable from committed for a retired entry. The schema defines no superseded/done-elsewhere status.",
+            "criteria_audit": "NOT PERFORMED BY THIS RECONCILIATION. This reconciliation audited no criterion on this entry. It records the issue's state and which PR's diff contains the change; it makes NO claim that the plan's acceptance criteria were satisfied. (A shallow diff-presence check confirmed the plan's named implementation symbols and test functions appear in the cited PR's diff -- that is NOT an audit that the criteria are met, per the round-3 finding that a test's presence does not prove it exercises its assertion.) This reconciliation makes no claim about whether any other party audited this entry.",
+            "issue": "Consiliency/agent-harness#84",
+            "issue_state": "CLOSED",
+            "issue_state_reason": "COMPLETED",
+            "shipped_via": "Consiliency/agent-harness#232",
+            "shipped_via_verified": "gh pr diff #232 (title 'ah#84') contains cli.py + test_pushflow.py. Distinct from #255, a later follow-up for issue #233."
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "phase-arg-subparser-clobber-84",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": "Fix argparse subparser clobber dropping pre-subcommand common args (ah#84)",
       "type": "detailed",
-      "updated_at": "2026-07-18T20:00:00Z"
+      "updated_at": "2026-07-28T22:28:34Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-29T00:00:00Z",
+      "file": "specs/phase-plans-v10.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-phase-roadmap-builder",
+      "phase_alias": "ROADMAP",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "phase-plans-v10",
+      "status": "imported",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-29T00:00:00Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -929,7 +1026,16 @@
         "SL-4",
         "SL-5"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-29T09:28:49Z",
+          "by": "claude-roadmap-v10-consolidation",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v10.md (agent-harness#375 consolidation)"
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "BROKER",
       "reflection_ref": null,
@@ -940,10 +1046,10 @@
         "type": "phase"
       },
       "slug": "vergence-v1-BROKER",
-      "status": "imported",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-13T04:45:09Z"
+      "updated_at": "2026-07-29T09:28:49Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -964,7 +1070,16 @@
         "SL-7",
         "SL-8"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-29T09:28:49Z",
+          "by": "claude-roadmap-v10-consolidation",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v10.md (agent-harness#375 consolidation)"
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "FAULTS",
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/cd26f93c/phase-conv-integ/20260713T051059Z-01-faults-plan.md",
@@ -975,10 +1090,10 @@
         "type": "phase"
       },
       "slug": "vergence-v1-FAULTS",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-13T05:21:41Z"
+      "updated_at": "2026-07-29T09:28:49Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -1052,6 +1167,7 @@
       "updated_at": "2026-07-13T04:12:58Z"
     },
     {
+      "acceptance_criteria_count": null,
       "created_at": "2026-07-13T04:58:00Z",
       "file": "plans/phase-plan-vergence-v1-INTEG.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260713T044745Z-01-integ-plan.md",
@@ -1107,6 +1223,7 @@
       },
       "slug": "vergence-v1-INTEG",
       "status": "completed",
+      "task_summary": null,
       "type": "phase",
       "updated_at": "2026-07-13T05:07:04Z"
     },
@@ -1126,7 +1243,16 @@
         "SL-4",
         "SL-5"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-29T09:28:49Z",
+          "by": "claude-roadmap-v10-consolidation",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v10.md (agent-harness#375 consolidation)"
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "RUNTIME",
       "reflection_ref": null,
@@ -1137,10 +1263,10 @@
         "type": "phase"
       },
       "slug": "vergence-v1-RUNTIME",
-      "status": "imported",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-13T04:45:09Z"
+      "updated_at": "2026-07-29T09:28:49Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -1149,16 +1275,31 @@
       "handoff_ref": null,
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-28T22:28:34Z",
+          "by": "manifest-reconcile",
+          "metadata": {
+            "chosen_status_rationale": "committed->completed is a forbidden lifecycle transition (TRANSITIONS['committed'] = {executing, orphaned}); this entry has no executing->completed closeout event recorded in its lifecycle; orphaned is the only honest terminal reachable from committed for a retired entry. The schema defines no superseded/done-elsewhere status.",
+            "criteria_audit": "NOT PERFORMED BY THIS RECONCILIATION. This reconciliation audited no criterion on this entry. It records the issue's state and which PR's diff contains the change; it makes NO claim that the plan's acceptance criteria were satisfied. (A shallow diff-presence check confirmed the plan's named implementation symbols and test functions appear in the cited PR's diff -- that is NOT an audit that the criteria are met, per the round-3 finding that a test's presence does not prove it exercises its assertion.) This reconciliation makes no claim about whether any other party audited this entry.",
+            "issue": "Consiliency/agent-harness#85",
+            "issue_state": "CLOSED",
+            "issue_state_reason": "COMPLETED",
+            "shipped_via": "Consiliency/agent-harness#235",
+            "shipped_via_verified": "gh pr diff #235 contains runner.py + verification_evidence.py + test_verification_evidence.py."
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "verification-phase-alias-threading-85b",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": "Thread live run alias into verification.json (ah#85b)",
       "type": "detailed",
-      "updated_at": "2026-07-18T22:00:00Z"
+      "updated_at": "2026-07-28T22:28:34Z"
     }
   ],
   "schema_version": 1

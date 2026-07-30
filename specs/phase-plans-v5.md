@@ -1,5 +1,28 @@
 # agent-harness - Advisor Board (customizable, model-first, multi-harness review board) - Phase Plan v5
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)
+>
+> **Do not execute this roadmap.** Phases 1–4 (ABDFREEZE, ABDREG, ABDRESOLVE, ABDHOME) and 7
+> (ABDVERIFY) are DELIVERED and merged to `main`.
+>
+> **ABDOMNI (5) and ABDOBS (6) are PARTIALLY delivered** — both are built, wired into the
+> `invoke_board` seam, and unit-tested, but **no production code constructs either**. An
+> omnigent seat degrades to `skip` (`panel_invoker.py:4053-4058`); `observer` is `None`
+> (`panel_invoker.py:3941`) so nothing is emitted. Merged is not reachable. Carried into v10
+> as **EC-LEGLIFE-6** and **EC-LEGLIFE-7**.
+>
+> Alias — INTENDED and TEST-ENFORCED, NOT a stray (corrected during v10 cross-vendor review):
+> the `<harness>-advisor-panel` dirs in the packaged bundle are the compat alias required by
+> `:146` clause 2, materialized by `install_skills` from `SKILL_ALIASES` (byte-identical to
+> `advisor-board` modulo `name:`, `rmtree`d before each install so they cannot drift), and
+> asserted by `phase-loop-runtime/tests/test_advisor_board_alias_install.py`
+> (`test_fresh_install_creates_prefixed_alias_pointing_at_advisor_board`,
+> `test_alias_installed_for_every_supported_harness_prefix`). Clause 3's "stray codex duplicate"
+> meant a pre-rename DIVERGENT hand-authored skill, which IS removed (`skills-src/codex/` holds
+> only `codex-advisor-board`). Nothing carried — deleting these dirs would break required
+> compatibility behaviour.
+
+
 > How to use this document: run `phase-loop validate-roadmap specs/phase-plans-v5.md`, then plan each phase with the phase-loop command for the phase alias.
 
 ---

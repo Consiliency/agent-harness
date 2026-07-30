@@ -6,6 +6,163 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Advisor-board Fable liveness: tool activity counts as progress
+
+- The Claude/Fable self-PTY leg now treats fresh transcript JSONL growth as reviewer
+  progress. Claude can issue many `Read` calls while its latest assistant prose remains
+  unchanged; the old prose-length-only heartbeat reclaimed that active review as
+  `claude_tui_stalled` after 180 seconds. Tool-only transcript growth now keeps the leg
+  alive, while the existing animation-only wedge test still proves cosmetic TUI repainting
+  cannot defeat stall reclamation.
+
+### Doctor executor probes and v10 governed run policy
+
+- `phase-loop doctor` now probes the Gemini executor through its actual `agy` CLI entrypoint
+  and includes the Grok executor and subscription-auth hint in its tool report.
+- The active v10 roadmap now defaults planning to GPT-5.6 Sol at maximum effort and records
+  the coordinator's mandatory Fable-and-Sol-inclusive plan/code review, per-phase TDD, and
+  whole-phase four-harness rotation policy.
+
+### Contract-floor preflight: fail readably on a stale `consiliency-contract` (Consiliency/agent-harness#378)
+
+- **The reported "74 tests fail on `main`" was a stale-dependency environment, not a
+  `main` defect.** Both encodings the issue splits on — the `^0\.4\.\d+$` manifest
+  pattern and the emitted `contract_version` — live in the installed
+  `consiliency_contract` package, which this repo consumes and neither authors. An
+  installed `consiliency-contract 0.6.0` is below this repo's declared floor
+  (`phase-loop-runtime` requires `>=0.6.5,<0.7`) and is internally inconsistent
+  (`CONTRACT_VERSION="0.6.0"` against a bundled manifest schema still pinned to
+  `^0\.4\.\d+$`); one `jsonschema.ValidationError` then fans out across ~60 node IDs.
+  The failure is dependency-state-dependent, not code-dependent — which is why it
+  reproduced on a docs-only branch. On `main` in CI (which installs `0.6.5` from
+  `pyproject`) the failure count is **0**.
+- **New guard — the one fact this repo owns and previously left unenforced: the
+  installed contract satisfies the declared floor.** `consiliency_layout` gains
+  `assert_contract_floor_satisfied()` / `check_installed_contract_floor()`, and the
+  test-suite `conftest` aborts collection with a single actionable line
+  (`installed consiliency-contract 0.6.0 does not satisfy the declared floor …`)
+  instead of dozens of opaque validation failures.
+- **Both operands are sourced from the code that actually RUNS, not from a name
+  lookup (Consiliency/agent-harness#382, board review).** The declared floor is read
+  from the `phase-loop-runtime` distribution *proven to own the imported module*
+  (`importlib.metadata` resolves a name, and a name can be answered by a shadowing
+  install whose floor need not match the running code); when that ownership cannot be
+  proven the guard treats the floor as unknowable and does not raise. Ownership is
+  proven soundly (board #382 r2 Finding 1): the distribution must (A) **record**
+  shipping the package (`dist.files` names `<pkg>/__init__.py` — a bare
+  `locate_file` path-join is unsound, it accepts an empty-RECORD dist that shares the
+  root) **and** (B) be tied to the imported instance — either co-located with it, or,
+  via PEP 610 `direct_url.json`, installed **from** the tree that contains the imported
+  `__file__` (the CI matrix imports from `src/` while the wheel lives in
+  site-packages; without (B) a healthy checkout would false-skip the guard). The installed
+  contract version compared against the floor is the **imported**
+  `consiliency_contract.CONTRACT_VERSION` — the version whose bundled schema fans out
+  #378's failures — not the dist-metadata version, so a contract-shadow is judged on
+  what will run. The guard runs cleanly (no raise, no warning) when the floor is
+  satisfied (CI, clean-room wheel), and never becomes a new false failure.
+- **Fail-open is not fail-silent (Consiliency/agent-harness#382, board ruling).**
+  When the check is *skipped* because an operand is unreadable or its provenance is
+  unprovable — the shadowed-runtime case — the guard emits a `ContractFloorUnverified`
+  warning rather than returning quietly. Silence there would recreate exactly what
+  #378 removes: the guard goes mute, a stale contract survives, and the operator faces
+  ~60 opaque `jsonschema` failures with no sign a guard even ran. The condition is
+  abnormal, not a per-run noise source, so the warning names a real, bounded residual:
+  in a genuinely shadowed environment the floor is **unverified**, and #378's failure
+  mode can still occur. That is a named boundary, distinct from a guard that quietly
+  claims coverage it does not have.
+- **When a co-located dist has an adjacent `pyproject`, the PIN governs — not the
+  gitignored, install-stale metadata (Consiliency/agent-harness#382 r5, maintainer
+  ruling 2026-07-29).** The co-located `.egg-info` refreshes only on `pip install`, so
+  it persists across pin edits and branch switches and can enforce a floor the pin never
+  set — a stale-NEWER metadata floor false-aborting a healthy checkout, or a stale-OLDER
+  one silently under-enforcing. `declared_contract_requirement()` now reads the adjacent
+  `pyproject` pin and enforces that; agreeing metadata is corroboration, disagreeing
+  metadata emits the new `ContractFloorMetadataDivergence` warning naming both values and
+  which governed, but enforcement proceeds on the pin. The installed case (a wheel /
+  clean-room install with no adjacent `pyproject`) is unchanged: metadata governs there.
+- **The adjacent `pyproject` is trusted only when it is proven OURS, by identity not
+  location (Consiliency/agent-harness#382 r6).** Adjacency alone is a place a foreign
+  file can occupy: `parents[2]` of an installed `site-packages/phase_loop_runtime/__init__.py`
+  is `lib/pythonX.Y`, and a `pip install --target` vendoring or a Windows venv-in-project-root
+  can put a consumer's `pyproject` there whose foreign pin would otherwise govern and
+  false-abort a healthy install. The pin is now honored only when the file's `[project].name`
+  canonicalizes (PEP 503) to `phase-loop-runtime`, and the `consiliency-contract` dependency
+  is matched by canonical name equality — never a `startswith` prefix, which had read the
+  distinct package `consiliency-contracts` (plural) as ours. Name canonicalization is applied
+  everywhere the dependency identity is compared (pyproject extraction, the metadata-side
+  match, and divergence corroboration), so a spelling-only difference (`Consiliency_Contract`)
+  neither manufactures a false divergence nor silently drops the floor.
+
+### Outside-agent contract: repin to `spec@v0.2.1` + per-file `sha256` verification (Consiliency/agent-harness#370)
+
+- **Repin the anchor. These are the pin facts, stated inline and verified in this
+  repo — not delegated.** `EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN` now references the
+  immutable annotated tag `v0.2.1` (`contract_git_tag`) on `Consiliency/spec@main`,
+  replacing the prior unmerged-branch commit `c1085483`:
+
+  | field | value |
+  |---|---|
+  | `contract_git_tag` | `v0.2.1` |
+  | `contract_git_sha` (deref) | `b862f977897a7b87c4419680a3e83735d4ff07b0` |
+  | `submission_schema_sha256` | `5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a` |
+  | `verdict_schema_sha256` | `86169277d3a0823db1a6c9fa4d20a838b0bc2820818ad00ebd53dcdd03c2b1c2` |
+  | `vector_manifest_hash` | `78858828e9eace93eaf31d90717666ddce54ccb3666113df9d033d67c20cfca0` |
+
+  All three digests were verified by re-hashing the raw contract bytes at tag `v0.2.1`
+  (not taken on trust). `plans/oapack/RELEASE-ANCHOR.md` in Consiliency/spec is cited as
+  *provenance* for which release is canonical — not as the authority these values are read
+  from; this entry is the authority for the values, so it stays correct even if that
+  document is momentarily inconsistent. (As of this writing it is: its repin-instruction section
+  still names the superseded `v0.2.0` it tells consumers elsewhere not to pin — reported
+  upstream on `Consiliency/spec#118`.)
+- **`v0.2.1` supersedes `v0.2.0`.** The `v0.2.0` wheel-shipped `outside_agent_router`
+  laundered raw `jsonschema` error values (and, for `additionalProperties`, property names)
+  into `blocker.summary` of a metadata-only route verdict. **The three pinned contract
+  artifacts are byte-identical between `v0.2.0` and `v0.2.1`** — only the wheel-shipped
+  router differed — so this repin is an anchor flip, not a digest change.
+- **Close the manifest-hash-only asymmetry (the substantive fix).** Verification
+  previously byte-checked only the vector manifest and matched the two schemas by
+  their version `const` alone, so a byte change to a schema that preserved its
+  version const slipped past us while governed-pipeline (per-schema `source_sha256`)
+  caught it. The pin now carries `submission_schema_sha256` and `verdict_schema_sha256`,
+  and `load_outside_agent_contract_pin` fails closed (`submission_schema_sha256_mismatch`
+  / `verdict_schema_sha256_mismatch`) on any byte drift in the raw schema bytes. Both
+  the spec-root and installed-package paths thread raw bytes and hash them.
+- **Scope / known limitation.** Per-file digests close the "byte change that preserves
+  the manifest hash" gap; they do **not** cover behaviour changes in wheel-shipped code
+  that lives outside the digested surface (exactly how the `v0.2.0` router leak evaded
+  digest verification). That residual is two files in the spec package
+  (`consiliency_spec/__init__.py`, `consiliency_spec/outside_agent_router.py`); spec is
+  closing it upstream in `0.2.2` by moving both into the digested `public_files` set.
+  No consumer-side router/wheel verification axis is added here.
+- **`contract_version` `0.1.0` → `0.2.1`.** The v0.2.1 wheel reports package version
+  `0.2.1`; the installed-package guard (`metadata.version != contract_version`) would
+  otherwise fail closed against a real install.
+- Refreshed digests reflect two real fail-closed fixes spec landed: `evidence_refs`
+  gained `minItems: 1` and `git_sha` moved to `^(?:[a-f0-9]{40}|[a-f0-9]{64})$`.
+
+### Broker: close the admission-vs-revocation race with one serialization boundary (Consiliency/agent-harness#288, #199)
+
+- **A pre-existing race, live on `main` since 6ff8c8a (Consiliency/agent-harness#199).**
+  `BrokerService.execute` reads `evidence_store.epoch_blocked` and THEN calls
+  `admission_store.admit`. A concurrent revocation — an `outcome_ambiguous_blocked`
+  evidence write — could become durable between the check and the admit, so a publish was
+  admitted into an epoch that had just been permanently revoked.
+- **Two coupled halves, each inert alone.** (A) `BrokerEvidenceStore._append` now takes the
+  SAME advisory lock file (`admissions.lock`) that `LinearizableAdmissionStore` uses — both
+  stores are already constructed on one `root`. (B) `build_github_broker_client` and
+  `build_routing_broker_client` now wire the admission store's in-lock revocation re-check
+  (`epoch_blocked`) to that repo's evidence store; it previously defaulted to
+  `lambda: False`, so `admit`'s existing under-lock check saw nothing. Sharing the lock
+  without the wiring serializes writes against an admit that never consults evidence;
+  wiring without the shared lock still lets a revocation land mid-admission. Both are
+  required and both are tested to fail independently.
+- **Deadlock-safe:** no evidence write happens while the admission lock is held (`execute`
+  admits, THEN records). `admit`'s evidence read under the lock only reads.
+- **Deliberately excludes epoch ALLOCATION (Consiliency/agent-harness#363).** This is the
+  revocation-poison flag only — no `admit_next`, no `lease_epoch`/fence change, no
+  re-admission verb. The unresolved publish-vs-readmit epoch-space decision is untouched.
+
 ### Panel: the headless agy leg no longer dies on out-of-workspace reads (Consiliency/agent-harness#345)
 
 - The `gemini` panel leg (which drives the Antigravity `agy` CLI) returned a silent 0-byte

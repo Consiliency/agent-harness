@@ -55,8 +55,8 @@ def _validate_spec_root(root: Path, expected_pin: OutsideAgentContractPin) -> No
         )
 
     _validate_contract_files(
-        _read_json(root / "schemas" / "outside-agent-submission.schema.json"),
-        _read_json(root / "schemas" / "outside-agent-route-verdict.schema.json"),
+        _read_bytes(root / "schemas" / "outside-agent-submission.schema.json"),
+        _read_bytes(root / "schemas" / "outside-agent-route-verdict.schema.json"),
         _read_bytes(root / expected_pin.vector_manifest_name),
         expected_pin,
     )
@@ -85,19 +85,45 @@ def _validate_installed_package(expected_pin: OutsideAgentContractPin) -> None:
 
     package_root = resources.files(consiliency_spec)
     _validate_contract_files(
-        json.loads((package_root / "_data/schemas/outside-agent-submission.schema.json").read_text()),
-        json.loads((package_root / "_data/schemas/outside-agent-route-verdict.schema.json").read_text()),
+        (package_root / "_data/schemas/outside-agent-submission.schema.json").read_bytes(),
+        (package_root / "_data/schemas/outside-agent-route-verdict.schema.json").read_bytes(),
         (package_root / f"_data/{expected_pin.vector_manifest_name}").read_bytes(),
         expected_pin,
     )
 
 
 def _validate_contract_files(
-    submission_schema: dict[str, Any],
-    verdict_schema: dict[str, Any],
+    submission_schema_bytes: bytes,
+    verdict_schema_bytes: bytes,
     vector_manifest_bytes: bytes,
     expected_pin: OutsideAgentContractPin,
 ) -> None:
+    # Byte-identity FIRST: a per-file sha256 over the raw bytes catches any
+    # tampering the coarser version-const / manifest-hash checks would miss
+    # (Consiliency/agent-harness#370). Hash the exact bytes read from disk;
+    # never a re-serialized parse, or the digest will not reproduce the pin.
+    _verify_source_sha256(
+        submission_schema_bytes,
+        expected_pin.submission_schema_sha256,
+        "submission_schema_sha256_mismatch",
+    )
+    _verify_source_sha256(
+        verdict_schema_bytes,
+        expected_pin.verdict_schema_sha256,
+        "verdict_schema_sha256_mismatch",
+    )
+    manifest_hash = hashlib.sha256(vector_manifest_bytes).hexdigest()
+    if manifest_hash != expected_pin.vector_manifest_hash:
+        raise OutsideAgentContractError(
+            "vector_manifest_hash_mismatch",
+            f"expected {expected_pin.vector_manifest_hash}, found {manifest_hash}",
+        )
+
+    # The version-const checks below are defense-in-depth SUBSUMED by the byte
+    # digests above: bytes that match a pinned sha256 cannot carry a divergent
+    # const, so under EXPECTED they never fire on failure. They stay live for the
+    # digest-recomputing test helpers and any future non-byte-pinned pin.
+    submission_schema = _parse_json_bytes(submission_schema_bytes)
     schema_version = (
         submission_schema.get("properties", {})
         .get("submission_schema_version", {})
@@ -109,6 +135,7 @@ def _validate_contract_files(
             f"expected schema {expected_pin.schema_version}, found {schema_version!r}",
         )
 
+    verdict_schema = _parse_json_bytes(verdict_schema_bytes)
     verdict_schema_version = (
         verdict_schema.get("properties", {})
         .get("verdict_schema_version", {})
@@ -120,12 +147,18 @@ def _validate_contract_files(
             f"expected verdict schema {expected_pin.verdict_schema_version}, found {verdict_schema_version!r}",
         )
 
-    manifest_hash = hashlib.sha256(vector_manifest_bytes).hexdigest()
-    if manifest_hash != expected_pin.vector_manifest_hash:
+
+def _verify_source_sha256(raw_bytes: bytes, expected_hex: str, code: str) -> None:
+    actual = hashlib.sha256(raw_bytes).hexdigest()
+    if actual != expected_hex:
         raise OutsideAgentContractError(
-            "vector_manifest_hash_mismatch",
-            f"expected {expected_pin.vector_manifest_hash}, found {manifest_hash}",
+            code,
+            f"expected {expected_hex}, found {actual}",
         )
+
+
+def _parse_json_bytes(raw_bytes: bytes) -> dict[str, Any]:
+    return json.loads(raw_bytes.decode("utf-8"))
 
 
 def _git_head(root: Path) -> str | None:
@@ -142,13 +175,6 @@ def _git_head(root: Path) -> str | None:
     if completed.returncode != 0:
         return None
     return completed.stdout.strip() or None
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise OutsideAgentContractError("missing_contract", f"missing {path}") from exc
 
 
 def _read_bytes(path: Path) -> bytes:

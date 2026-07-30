@@ -1,5 +1,21 @@
 # Phase roadmap v6
 
+> # DELIVERED — CLOSED (assessed 2026-07-29)
+>
+> **All five phases are DELIVERED.** This roadmap is complete and closed; it was NOT absorbed
+> into `specs/phase-plans-v10.md` because it carried no live work.
+>
+> Evidence: the `context_refs` implementation (issue #114) merged via `c553e02` (#115),
+> `61fa59d` (#116) and `a7b6a4a` (#118) — all ancestors of `main`. `test_panel_context_refs_114.py`
+> passes 27 tests exercising the specified mechanisms (sentinel absence, byte-identical when
+> unset, symlink/TOCTOU edges, retry bounds). Phase run records under
+> `.phase-loop/runs/*ctx*-execute/` record `verification_status: passed`.
+>
+> **The `Next phase: CTXFREEZE` line near the end of this file is STALE generation boilerplate**,
+> not a signal that anything is pending. Unchecked `- [ ]` boxes here prove nothing — completion
+> lives in the ledger, which is the defect agent-harness#364 exists to fix.
+
+
 ## Context
 
 GitHub issue [#114](https://github.com/Consiliency/agent-harness/issues/114) exposed a real advisor-panel ingestion gap: callers need to give the panel local files by reference without reading private or very large file contents into the rendered artifact/prompt. The existing `artifact_ref` name is overloaded and historically means "read this path and stage the bytes"; it keeps caller context lean, but it still inlines document contents into the panel bundle. The EZBidPro PWA/PBS/NavBlue workflow needs a stricter boundary: the panel should receive a path/metadata manifest and inspect files through local tools only when a leg has that capability.
