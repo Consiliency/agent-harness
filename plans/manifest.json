@@ -960,7 +960,7 @@
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "plan_sha256": "e4e62bc83e56a79d74ee8df2ab7abea3985e3114d5b102bb66c84a4714f96f57",
+              "plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
               "reason": "fabpub_exact_oid_and_shared_repository_allocator_panel_repair",
               "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
             },
@@ -1006,7 +1006,7 @@
               ],
               "owned_paths_count": 23,
               "owned_paths_sha256": "70c3a3c3c292683db8942e40ce7feb8053c4a10957e063169a8eb48e4554c767",
-              "plan_sha256": "e4e62bc83e56a79d74ee8df2ab7abea3985e3114d5b102bb66c84a4714f96f57",
+              "plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
               "prior_manifest_plan_sha256": "d9cda3e05c1719111c50ed556625b7068fa28d623debad94276d170fd9d47100",
               "repository_identity_contract": "canonical_git_common_dir_and_object_format_full_sha256",
               "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
