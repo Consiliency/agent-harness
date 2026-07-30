@@ -648,6 +648,9 @@
             "proofgate_plan_contract": {
               "activated_red_failures": 37,
               "activation_env": "PHASE_LOOP_TDD_EXPECT_PROOFGATE",
+              "attended_live_env": "PHASE_LOOP_PROOFGATE_ATTENDED_LIVE",
+              "attended_phase_nodeids": 39,
+              "attended_real_provider_rows": 4,
               "bootstrap_paths": [
                 ".github/workflows/proofgate-receipt-attestation.yml",
                 "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
@@ -660,11 +663,12 @@
               "expected_nodeids": 39,
               "lifecycle": "proofgate_tdd_candidate_main.v1",
               "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
+              "ordinary_phase_nodeids": 39,
               "owned_path_patterns_count": 37,
               "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
-              "plan_sha256": "02da87c7bdebd1b83e2edeb08ec3b2ee7e763155233882168d8e97d637f0220c",
+              "plan_sha256": "48da75b8359dab502d1d558505cbaaf76655e6ab740b6347498542f03c895047",
               "positive_control_nodeids": 2,
-              "predecessor_panel_sha256": "a6aa8d8513136279132660f741421b9d3a30815aaaeab6579f61c3fda741f8cc",
+              "predecessor_panel_sha256": "212450de27eeee121a7adb8598f91716202a1b4a17620b1aaa38a1cb86468a9d",
               "roadmap_sha256": "7f2590bdebf5a892cf0987b67916d2c3b95970b547117b8cbf4adc7c7220838e"
             }
           },
@@ -683,7 +687,7 @@
       "slug": "v10-PROOFGATE",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-07-30T07:26:25Z"
+      "updated_at": "2026-07-30T10:44:29Z"
     },
     {
       "acceptance_criteria_count": null,
