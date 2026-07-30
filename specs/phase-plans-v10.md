@@ -62,12 +62,14 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
    stale.)
 2. `governed-pipeline` continues to pin agent-harness 0.5.0 while we ship 0.7.13 until it acts on
    `governed-pipeline#128`. No phase here depends on that being resolved.
-3. The claude/fable board seat is structurally unavailable inside Harness Code today
-   (`tui_adapter_required`), so every review in this roadmap runs 3-of-4 — and must be recorded as
-   such — until REVIEWTRUTH lands. REVIEWTRUTH resolves it in two parts: EC-REVIEWTRUTH-4 TYPES the vacancy (a
-   natively-fillable seat is no longer silently dropped) and EC-REVIEWTRUTH-14 FILLS it natively
-   under Claude Code with no TUI adapter (`agent-harness#396`), after which the board reaches full
-   seat count.
+3. The claude/fable board seat is structurally unavailable when the runtime drives the board from
+   inside Claude Code today (`tui_adapter_required`). The coordinated v10 run therefore invokes its
+   mandatory four-seat panels from the external coordinator host, where Fable is available through
+   its first-party subscription route. A runtime-internal 3-of-4 result remains evidence of a
+   degraded board but does not satisfy this run's panel gate. REVIEWTRUTH resolves the runtime gap
+   in two parts: EC-REVIEWTRUTH-4 TYPES the vacancy (a natively-fillable seat is no longer silently
+   dropped) and EC-REVIEWTRUTH-14 FILLS it natively under Claude Code with no TUI adapter
+   (`agent-harness#396`), after which the runtime-driven board reaches full seat count.
 4. `plans/manifest.json` is load-bearing for roadmap discovery; a malformed entry has previously
    disabled discovery entirely (fixed per-entry in #170).
 5. The ratified ah#363 decision stands: all admission kinds draw from ONE shared monotonic epoch
@@ -837,9 +839,44 @@ Critical path (depth 4; two co-equal longest chains, both ending at the shared s
 Coordination happens through the four-repo outside-agent release train
 (`governed-pipeline/specs/outside-agent-release-train-v1.md`), not through this roadmap.
 
+## Execution Policy
+
+- roadmap: executor=`codex`, model=`gpt-5.6-sol`, effort=`max`, reason=`v10 planning is reserved for Sol or Fable at maximum reasoning`
+- plan: executor=`codex`, model=`gpt-5.6-sol`, effort=`max`, reason=`v10 phase planning defaults to Sol; the coordinator may explicitly substitute Fable at maximum reasoning`
+
 ## Execution Notes
 
-Plan each phase with `/claude-plan-phase <ALIAS>`, then build with `/claude-execute-phase <alias>`.
+The coordinator owns the run and applies these gates to EVERY phase, including the bootstrap phases
+that later make the same controls machine-enforceable:
+
+1. **Planner boundary.** Plan only with Claude Fable 5 or GPT-5.6 Sol at maximum reasoning. The
+   roadmap policy defaults to Sol; a Fable substitution must be explicit in the dispatch record.
+2. **Phase-plan panel.** Before any test or implementation work, review the exact phase-plan digest
+   with the four-vendor board: Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and Grok 4.5. Fable and Sol are
+   mandatory reviewing seats. An unavailable, errored, empty, capped, refused, or timed-out Fable or
+   Sol leg blocks dispatch. Resolve every material finding and re-panel every changed digest.
+3. **TDD chronology.** Satisfy each phase's `EC-<ALIAS>-0` literally: write and panel the unit tests
+   first, run them against the pre-implementation base, retain the expected RED output plus asserted
+   injection anchor, and land the test change before production code. The implementation change must
+   not alter those tests. A docs-only or otherwise non-code lane must record why no unit-test
+   falsifier applies and have that exception accepted by the phase-plan panel.
+4. **Implementation rotation.** Rotate whole code-writing phases across Claude Sonnet 5 or Opus 5,
+   GPT-5.6 Terra, Gemini 3.6 Flash (3.5 Flash is an allowed compatibility fallback), and Grok 4.5.
+   Keep each phase single-author-vendor while the governed closeout excludes every author vendor:
+   work-unit rotation across vendors would leave too few independent reviewers for a multi-lane
+   phase. The coordinator assigns each phase an explicit `--executor` and records that single author
+   vendor; do not combine executor rotation with the runtime lane scheduler, which currently assigns
+   scheduler work units before phase rotation resolves. Parallelize only through the selected
+   harness's own same-vendor workers, then rotate the next phase to the next harness. A policy pin
+   may preserve the next rotation slot but must not silently replace a requested harness.
+5. **Code review and advisory panels.** Review the exact staged diff and exact head with the same
+   four-vendor board. Fable and Sol are mandatory in every plan review, code review, and advisor
+   panel. When either shares a vendor with an author, its fresh-context review is retained as an
+   advisory seat but is not counted toward reviewer-vs-author independence; the remaining
+   non-author seats must still satisfy the governed quorum. Re-run after any material fix.
+6. **No degraded promotion.** A 3-of-4 board may be retained as diagnostic evidence but is never
+   called convergence and never authorizes this coordinated run to proceed. The coordinator keeps
+   this bootstrap interlock until REVIEWTRUTH lands the equivalent runtime enforcement.
 
 The independent roots are exactly those listed under `Parallel roots` in the DAG above; plan
 and execute them concurrently. RESIDUAL is not among them — it `Depends on` FABPUB (its lane A
@@ -860,8 +897,16 @@ Recommended start order when capacity is limited, and why:
    `verbs.py`/`train_runner.py`), so it is never a concurrent root; RESIDUAL's own lanes B and C
    carry no FABPUB dependency but ride the phase-granularity edge.
 
-Every review in this roadmap runs 3-of-4 until REVIEWTRUTH lands. Record the reviewing-seat count
-with each verdict; do not report a 3-seat board as convergence.
+For phase execution, use `--governed` and assign the next executor from
+`claude,codex,gemini,grok` explicitly per phase. Keep planning and execution as separate coordinator
+steps so the exact phase-plan digest can clear the mandatory four-seat panel before any test work
+begins. Keep both runtime schedulers off for these launches: lane scheduling currently bypasses
+phase rotation, and the coordinator must preserve an auditable single author vendor. Instead, launch
+the independent roots above concurrently in separate phase worktrees with explicit executors, and
+allow same-vendor native workers only where a plan declares disjoint parallel-safe lanes. Do not use
+cross-vendor work-unit rotation until author-scoped work-unit closeout can preserve the non-author
+review quorum. Record the selected executor, model, effort, reviewed digest, reviewing seat count,
+and RED-test evidence in the phase ledger.
 
 ## Verification
 

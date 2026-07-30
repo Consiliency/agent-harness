@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Advisor-board Fable liveness: tool activity counts as progress
+
+- The Claude/Fable self-PTY leg now treats fresh transcript JSONL growth as reviewer
+  progress. Claude can issue many `Read` calls while its latest assistant prose remains
+  unchanged; the old prose-length-only heartbeat reclaimed that active review as
+  `claude_tui_stalled` after 180 seconds. Tool-only transcript growth now keeps the leg
+  alive, while the existing animation-only wedge test still proves cosmetic TUI repainting
+  cannot defeat stall reclamation.
+
+### Doctor executor probes and v10 governed run policy
+
+- `phase-loop doctor` now probes the Gemini executor through its actual `agy` CLI entrypoint
+  and includes the Grok executor and subscription-auth hint in its tool report.
+- The active v10 roadmap now defaults planning to GPT-5.6 Sol at maximum effort and records
+  the coordinator's mandatory Fable-and-Sol-inclusive plan/code review, per-phase TDD, and
+  whole-phase four-harness rotation policy.
+
 ### Contract-floor preflight: fail readably on a stale `consiliency-contract` (Consiliency/agent-harness#378)
 
 - **The reported "74 tests fail on `main`" was a stale-dependency environment, not a
