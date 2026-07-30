@@ -23,7 +23,10 @@ LANE_INDEX_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 FIELD_RE = re.compile(r"^\s*(?:-\s+)?\*\*(?P<label>[^*]+)\*\*:\s*(?P<value>.+?)\s*$", re.IGNORECASE)
-TASK_RE = re.compile(r"^\s*-\s*(?P<bucket>test|impl|verify)\s*:\s*(?P<value>.+?)\s*$", re.IGNORECASE)
+TASK_RE = re.compile(
+    r"^\s*-\s*(?P<bucket>test|impl|verify)\s*:\s*(?P<value>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 ROADMAP_PHASE_RE = re.compile(
     r"^###\s+Phase\s+\d+(?:\.\d+)?[A-Z]?\s+.*?\((?P<alias>[A-Z][A-Z0-9._-]*)(?:\s*,[^)]*)?\)[ \t]*(?:\S[^\n]*)?$",
     re.MULTILINE,
