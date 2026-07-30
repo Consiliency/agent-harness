@@ -662,9 +662,9 @@
               "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
               "owned_path_patterns_count": 37,
               "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
-              "plan_sha256": "b2bd5c8352e2804fcde3363f36ced47a90c74a7997c183f639335ac91134206f",
+              "plan_sha256": "8ec01ceb452464d7aaf66c782760632e9a06cb66b024836264d59ae76c0225c1",
               "positive_control_nodeids": 2,
-              "predecessor_panel_sha256": "4cc2e446bd0e310306091dec0ea35a9e43fbdfff44e7c67185ee3661466822b5",
+              "predecessor_panel_sha256": "9e67f09d786233f36d1b086dc2f4f75c3c442cb68ec542e3ac24b9064a325129",
               "roadmap_sha256": "7f2590bdebf5a892cf0987b67916d2c3b95970b547117b8cbf4adc7c7220838e"
             }
           },
