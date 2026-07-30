@@ -1586,6 +1586,30 @@ def _latest_claude_transcript_text(cwd: str, *, since: float) -> str:
     return ""
 
 
+def _latest_claude_transcript_activity(cwd: str, *, since: float) -> int:
+    """Return a monotonic-enough byte count for fresh transcripts in ``cwd``.
+
+    Assistant prose can stay unchanged while Claude is actively issuing tools. The
+    JSONL still grows for each tool call and result, so its aggregate size is the
+    liveness signal. The scratch cwd is run-unique; summing fresh files also tolerates
+    Claude rotating to a new session file during startup.
+    """
+    project_dir = _claude_project_dir_for_cwd(cwd)
+    try:
+        candidates = list(project_dir.glob("*.jsonl"))
+    except OSError:
+        return 0
+    total = 0
+    for path in candidates:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime >= since - 2.0:
+            total += stat.st_size
+    return total
+
+
 def _read_review_output(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace").strip()
@@ -1980,6 +2004,7 @@ def _run_claude_tui_session(
     )  # #188 CR: trailing partial line held across os.read boundaries
     last_review_len = 0
     last_transcript_len = 0
+    last_transcript_activity = 0
     # ah#196/#223 startup state machine: STARTING -> (TRUST_MODAL answered) ->
     # WAITING_FOR_EDITOR (quiescent) -> SUBMITTED. Answer the trust modal at most
     # once, strictly PRE-SUBMIT; gate the paste on editor quiescence AFTER real
@@ -2189,8 +2214,16 @@ def _run_claude_tui_session(
                 transcript_text = _latest_claude_transcript_text(
                     str(cwd), since=start_wall
                 )
+                transcript_activity = _latest_claude_transcript_activity(
+                    str(cwd), since=start_wall
+                )
                 # #188: the session transcript growing (tool calls, streamed
                 # messages) is genuine progress even before a file verdict lands.
+                # Track raw JSONL growth separately because a tool-only turn can add
+                # many events while the extracted assistant prose remains unchanged.
+                if transcript_activity != last_transcript_activity:
+                    last_transcript_activity = transcript_activity
+                    last_heartbeat = now
                 if len(transcript_text) > last_transcript_len:
                     last_transcript_len = len(transcript_text)
                     last_heartbeat = now

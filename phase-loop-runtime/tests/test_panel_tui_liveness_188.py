@@ -17,6 +17,7 @@ seconds instead of the production 180s.
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 
@@ -52,6 +53,14 @@ _PROGRESS_SCRIPT = (
     "for w in alpha bravo charlie delta echo foxtrot golf hotel india juliet; do "
     r'  printf "reviewing the %s section of the staged bundle now\n" "$w"; '
     "  sleep 0.6; "
+    "done"
+)
+
+_FINITE_ANIMATION_SCRIPT = (
+    "i=0; while [ $i -lt 12 ]; do "
+    "  i=$((i+1)); "
+    r'  printf "\r\033[2K* Herding... (%ss . esc to interrupt)" "$i"; '
+    "  sleep 0.1; "
     "done"
 )
 
@@ -244,6 +253,64 @@ def test_slow_but_progressing_pty_leg_is_not_killed(tmp_path, monkeypatch):
     # exits and closes the PTY → structured EOF / missing-canonical result), never a
     # liveness reclaim. The exact terminal detail depends on exit-vs-poll ordering.
     assert status in {"claude_tui_pty_eof_no_output", "claude_tui_missing_canonical_output"}, status
+
+
+def test_tool_only_transcript_growth_keeps_active_tui_leg_alive(tmp_path, monkeypatch):
+    """A reviewer issuing tools without new assistant prose is still making progress.
+
+    Claude records each tool call/result in its JSONL transcript while the latest
+    assistant text can remain byte-identical. The liveness heartbeat must observe that
+    file growth or it will reclaim a healthy Fable review as ``claude_tui_stalled``.
+    """
+    activity = iter(range(1, 100))
+    monkeypatch.setattr(pi, "_LEG_STALL_THRESHOLD_S", 0.3)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 999)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 0.05)
+    monkeypatch.setattr(pi, "_latest_claude_transcript_text", _NO_TRANSCRIPT)
+    monkeypatch.setattr(pi, "_latest_claude_transcript_activity", lambda *a, **k: next(activity))
+
+    started = time.monotonic()
+    _rc, _text, status, _tail = _run_claude_tui_session(
+        command=["sh", "-c", _FINITE_ANIMATION_SCRIPT],
+        cwd=tmp_path,
+        prompt="review this",
+        output_file=tmp_path / "panel-claude.txt",
+        timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"},
+        backstop_s=10,
+    )
+
+    assert time.monotonic() - started >= 1.0
+    assert status != "claude_tui_stalled"
+
+
+def test_transcript_activity_changes_when_tool_events_append(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    transcript = project / "session.jsonl"
+    monkeypatch.setattr(pi, "_claude_project_dir_for_cwd", lambda _cwd: project)
+
+    first = {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "Inspecting."}]},
+    }
+    transcript.write_text(json.dumps(first) + "\n", encoding="utf-8")
+    before = pi._latest_claude_transcript_activity(str(tmp_path), since=0)
+    text_before = pi._latest_claude_transcript_text(str(tmp_path), since=0)
+
+    tool = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/x"}}],
+        },
+    }
+    with transcript.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(tool) + "\n")
+
+    after = pi._latest_claude_transcript_activity(str(tmp_path), since=0)
+    assert pi._latest_claude_transcript_text(str(tmp_path), since=0) == text_before
+    assert after > before
 
 
 def test_novel_line_split_across_read_boundaries_is_detected_whole():

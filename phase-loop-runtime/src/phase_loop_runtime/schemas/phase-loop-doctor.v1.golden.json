@@ -1,6 +1,6 @@
 {
   "schema": "phase-loop-doctor.v1",
-  "summary": "13/17 tools present; BOM 2 current / 2 stale / 2 unknown (0 gating-stale)",
+  "summary": "13/18 tools present; BOM 2 current / 2 stale / 2 unknown (0 gating-stale)",
   "tools": [
     { "name": "git", "present": true, "authed": null, "unlocks": "version control" },
     { "name": "just", "present": true, "authed": null, "unlocks": "just task runner (repo agent:* contracts)" },
@@ -17,6 +17,7 @@
     { "name": "codex", "present": true, "authed": true, "unlocks": "codex executor leg" },
     { "name": "claude", "present": true, "authed": true, "unlocks": "claude executor leg" },
     { "name": "gemini", "present": true, "authed": false, "unlocks": "gemini executor leg" },
+    { "name": "grok", "present": true, "authed": true, "unlocks": "grok executor leg" },
     { "name": "opencode", "present": true, "authed": false, "unlocks": "opencode executor leg" },
     { "name": "pi", "present": false, "authed": null, "unlocks": "pi executor leg" }
   ],

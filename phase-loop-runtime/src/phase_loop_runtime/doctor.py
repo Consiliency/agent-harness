@@ -60,12 +60,13 @@ _CORE_TOOL_UNLOCKS: dict[str, str] = {
 }
 
 # Executor CLIs added on top of the repo-validate tool set; `authed` is meaningful.
-_EXECUTORS: tuple[tuple[str, str], ...] = (
-    ("codex", "codex executor leg"),
-    ("claude", "claude executor leg"),
-    ("gemini", "gemini executor leg"),
-    ("opencode", "opencode executor leg"),
-    ("pi", "pi executor leg"),
+_EXECUTORS: tuple[tuple[str, str, str], ...] = (
+    ("codex", "codex", "codex executor leg"),
+    ("claude", "claude", "claude executor leg"),
+    ("gemini", "agy", "gemini executor leg"),
+    ("grok", "grok", "grok executor leg"),
+    ("opencode", "opencode", "opencode executor leg"),
+    ("pi", "pi", "pi executor leg"),
 )
 
 # Best-effort auth heuristics: credential-file presence per executor CLI. Only a
@@ -74,6 +75,7 @@ _AUTH_HINTS: dict[str, tuple[str, ...]] = {
     "codex": ("~/.codex/auth.json",),
     "claude": ("~/.claude/.credentials.json", "~/.claude.json"),
     "gemini": ("~/.gemini/oauth_creds.json", "~/.gemini/antigravity/auth.json"),
+    "grok": ("~/.grok/auth.json",),
     "opencode": ("~/.local/share/opencode/auth.json",),
     "pi": ("~/.pi/agent/auth.json",),
 }
@@ -365,8 +367,8 @@ def _tools_report(core_tools: dict[str, Optional[str]]) -> list[dict[str, Any]]:
                 "unlocks": _CORE_TOOL_UNLOCKS.get(name, name),
             }
         )
-    for name, unlocks in _EXECUTORS:
-        present = shutil.which(name) is not None
+    for name, cli, unlocks in _EXECUTORS:
+        present = shutil.which(cli) is not None
         out.append(
             {
                 "name": name,
