@@ -669,7 +669,7 @@
                 "specs/roadmap-assumption-probes-v10.json",
                 "specs/roadmap-status.json"
               ],
-              "plan_sha256": "304e092bb96f07ea89eb056b94a68d6255b3435860ba9d5c785eb8c5df595b05",
+              "plan_sha256": "727016e59247ebcfb3f6fd61cff79887656ff00451b26a3e282f5385d4e218ae",
               "test_paths": [
                 "phase-loop-runtime/tests/test_legible_evidence.py",
                 "phase-loop-runtime/tests/test_legible_roadmap_contract.py"
@@ -693,7 +693,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T07:09:05Z"
+      "updated_at": "2026-07-30T08:37:37Z"
     },
     {
       "acceptance_criteria_count": null,
