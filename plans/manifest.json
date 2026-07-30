@@ -1064,13 +1064,126 @@
       ],
       "lifecycle": [
         {
-          "at": "2026-07-30T14:16:54Z",
+          "at": "2026-07-30T16:19:25Z",
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
-              "reason": "ec_conform_2_authoritative_roadmap_amendment",
+              "plan_sha256": "620d61374aa7228db9098495b6195b122cc17cb2267559f7e5885e1b05328613",
+              "reason": "validator_admissible_verification_command_repair",
               "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
+            },
+            "harden_plan_contract": {
+              "acceptance_criteria_count": 6,
+              "activation_env": "PHASE_LOOP_TDD_EXPECT_HARDEN",
+              "api_key_fallback": false,
+              "capability_marker": "phase_loop_runtime.verification_evidence:HARDEN_CAPABILITY_VERSION=1",
+              "checkpoint_paths": [
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
+                "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py",
+                "phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
+                "phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py",
+                "phase-loop-runtime/src/phase_loop_runtime/injection.py",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                "phase-loop-runtime/src/phase_loop_runtime/reconcile.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py",
+                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py"
+              ],
+              "checkpoint_paths_count": 14,
+              "checkpoint_paths_sha256": "4ae07bb2a4b895f3d4a0f812b51bd3f3212d69569f1c536dff83e641470811dc",
+              "cross_phase_overlap_phases": [
+                "CONFORM",
+                "FABPUB",
+                "LEGIBLE",
+                "PROOFGATE",
+                "REVIEWTRUTH"
+              ],
+              "cross_phase_serialization_required": true,
+              "default_pass_nodeids": 5,
+              "default_skip_nodeids": 19,
+              "expected_nodeids": 24,
+              "fresh_exact_digest_panel_required": [
+                "fable",
+                "gpt-5.6-sol",
+                "gemini",
+                "grok"
+              ],
+              "implementation_author_scope": "whole_phase",
+              "implementation_effort": "high",
+              "implementation_executor": "codex",
+              "implementation_model": "gpt-5.6-terra",
+              "lane_scheduler_mode": "off",
+              "latest_panel_plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
+              "latest_panel_sha256": "884b848d4fc93a7e4cc5661a082bd735fd2bdfd5cba1688b644ab7ae4c0db53c",
+              "latest_panel_verdict": "DISAGREE",
+              "lifecycle": "harden_tdd_candidate_main.v1",
+              "new_nodeids": 19,
+              "nodeid_delta": 2,
+              "nodeid_inventory_sha256": "20f358e6a3482a773cb28ed78eb6fa8e49353e2425a5d182a282eb8d7afb4b8f",
+              "owned_paths": [
+                "CHANGELOG.md",
+                "phase-loop-runtime/scripts/verify_harden_evidence.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
+                "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py",
+                "phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
+                "phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py",
+                "phase-loop-runtime/src/phase_loop_runtime/injection.py",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                "phase-loop-runtime/src/phase_loop_runtime/reconcile.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py",
+                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+                "phase-loop-runtime/tests/harden_tdd_guard.py",
+                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py",
+                "phase-loop-runtime/tests/test_advisor_board_composition.py",
+                "phase-loop-runtime/tests/test_goal_coverage.py",
+                "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
+                "phase-loop-runtime/tests/test_phase_loop_injection.py",
+                "phase-loop-runtime/tests/test_reconcile_portability_85c.py",
+                "phase-loop-runtime/tests/test_review_leg_sandbox.py",
+                "phase-loop-runtime/tests/test_verification_interpreter_guard_221.py"
+              ],
+              "owned_paths_count": 25,
+              "owned_paths_sha256": "24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2",
+              "phase_scheduler_mode": "off",
+              "plan_sha256": "620d61374aa7228db9098495b6195b122cc17cb2267559f7e5885e1b05328613",
+              "pre_auth_ordering_nodeids": [
+                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
+                "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
+              ],
+              "precomposition_entrypoints": [
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py"
+              ],
+              "predecessor_plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
+              "release_tag_policy": "no_release_no_tag_no_publish",
+              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
+              "sl1_nodeids": 13,
+              "sl2_nodeids": 7,
+              "sl3_evidence_nodeids": 4,
+              "subscription_auth_only": true,
+              "test_paths": [
+                "phase-loop-runtime/tests/harden_tdd_guard.py",
+                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py",
+                "phase-loop-runtime/tests/test_advisor_board_composition.py",
+                "phase-loop-runtime/tests/test_goal_coverage.py",
+                "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
+                "phase-loop-runtime/tests/test_phase_loop_injection.py",
+                "phase-loop-runtime/tests/test_reconcile_portability_85c.py",
+                "phase-loop-runtime/tests/test_review_leg_sandbox.py",
+                "phase-loop-runtime/tests/test_verification_interpreter_guard_221.py"
+              ],
+              "test_paths_count": 9,
+              "test_paths_sha256": "c46927b02d8d3cfa41198aae1d8a3185728f8df1e8096083191976f02628fbc9",
+              "tests_only_landing": "literal_red_first_default_green"
             }
           },
           "transition": "committed"
@@ -1089,7 +1202,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T14:16:54Z"
+      "updated_at": "2026-07-30T16:19:25Z"
     },
     {
       "acceptance_criteria_count": null,
