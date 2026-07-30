@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: HARDEN
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466
+roadmap_sha256: 1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071
 automation:
   suite_command: ["bash", "-lc", "set -euo pipefail; harden_junit=\"${PHASE_LOOP_RUN_DIR:+$PHASE_LOOP_RUN_DIR/harden-compatible-suite.xml}\"; if [[ -z \"$harden_junit\" ]]; then harden_junit=\"$(mktemp \"${TMPDIR:-/tmp}/harden-bootstrap-suite.XXXXXX.xml\")\"; fi; PYTHONPATH=phase-loop-runtime/src python3 -c 'from pathlib import Path; from phase_loop_runtime.plan_manifest import read_manifest, validate_manifest; p = Path(\"plans/manifest.json\"); v = validate_manifest(p); assert v.valid, \"; \".join(v.errors); matches = [e for e in read_manifest(Path(\".\")).plans if e.file == \"plans/phase-plan-v10-HARDEN.md\"]; assert len(matches) == 1, f\"expected one HARDEN manifest row, got {len(matches)}\"; e = matches[0]; actual = (e.phase_alias, e.roadmap_ref.file if e.roadmap_ref else None, e.lanes); expected = (\"HARDEN\", \"specs/phase-plans-v10.md\", (\"SL-0\", \"SL-1\", \"SL-2\", \"SL-3\")); assert actual == expected, f\"stale HARDEN manifest row: {actual!r}\"' && PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests -q -m \"not dotfiles_integration\" --junitxml=\"$harden_junit\""]
 ---

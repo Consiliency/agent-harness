@@ -646,8 +646,8 @@
                 "specs/roadmap-assumption-probes-v10.json",
                 "specs/roadmap-status.json"
               ],
-              "plan_sha256": "fdf2d75638e60fdda14a6ae636d63f146ec47655a6056bded3e3c93d0e5f7df7",
-              "roadmap_sha256": "e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466",
+              "plan_sha256": "aff9a02c37b9f7622492bf7143215880443c9de21f4a44579f15109453ccbcc4",
+              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
               "test_paths": [
                 "phase-loop-runtime/tests/test_legible_evidence.py",
                 "phase-loop-runtime/tests/test_legible_roadmap_contract.py"
@@ -671,7 +671,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T08:37:37Z"
+      "updated_at": "2026-07-30T14:16:54Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -702,8 +702,8 @@
               "ownership": "codex-plan-phase_not_reviewtruth_lane_implementation"
             },
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
-            "plan_sha256": "e34acaf5da2c3329f9f2a9559b767350f54a823fc7a7f21845508fc7ce79d86e",
-            "roadmap_sha256": "e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466",
+            "plan_sha256": "4b78d15f9d4f2322da89fac0654cc6ae841bd970281dee87ccdab9662346c8fa",
+            "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
             "run_id": "20260730T035938Z-01-reviewtruth-plan"
           },
           "transition": "committed"
@@ -722,7 +722,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T12:05:33Z"
+      "updated_at": "2026-07-30T14:16:54Z"
     },
     {
       "created_at": "2026-07-30T04:08:46Z",
@@ -814,7 +814,7 @@
               "ordinary_phase_nodeids": 39,
               "owned_path_patterns_count": 37,
               "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
-              "plan_sha256": "3e9c011c6d5dd7a579f7cc13f5948f89144454cee37c291fa3a9b4e74c882fcc",
+              "plan_sha256": "8da6045c6e13410f74f1e6402140eddb9e91f5ed14dcf2a8daa56c8b3f70195a",
               "positive_control_nodeids": 2,
               "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
               "predecessor_plan_sha256": "18422ee52d7a3a77adf6ecd75446abe7fea52da7ff4113f24209d0f292f3bff0",
@@ -827,7 +827,7 @@
                 "unsupported_control_metadata"
               ],
               "response_release_contract": "taint_clean_bounded_content_frame.v1",
-              "roadmap_sha256": "e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466"
+              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
             }
           },
           "transition": "committed"
@@ -845,7 +845,7 @@
       "slug": "v10-PROOFGATE",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-07-30T14:05:30Z"
+      "updated_at": "2026-07-30T14:16:54Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -860,7 +860,20 @@
         "SL-1",
         "SL-2"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T14:16:54Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "digest_rebind": {
+              "plan_sha256": "cf08ab677f3ee3c0d48b905be902c98ef81758fb884be17e87bf4db93cea821d",
+              "reason": "ec_conform_2_authoritative_roadmap_amendment",
+              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "CONFORM",
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
@@ -874,7 +887,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T06:09:12Z"
+      "updated_at": "2026-07-30T14:16:54Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -891,7 +904,20 @@
         "SL-3",
         "SL-4"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T14:16:54Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "digest_rebind": {
+              "plan_sha256": "d9cda3e05c1719111c50ed556625b7068fa28d623debad94276d170fd9d47100",
+              "reason": "ec_conform_2_authoritative_roadmap_amendment",
+              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "FABPUB",
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
@@ -905,7 +931,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T04:08:05Z"
+      "updated_at": "2026-07-30T14:16:54Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -919,7 +945,20 @@
         "SL-2",
         "SL-3"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T14:16:54Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "digest_rebind": {
+              "plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
+              "reason": "ec_conform_2_authoritative_roadmap_amendment",
+              "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "HARDEN",
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -933,7 +972,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T06:19:31Z"
+      "updated_at": "2026-07-30T14:16:54Z"
     },
     {
       "acceptance_criteria_count": null,

@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LEGIBLE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466
+roadmap_sha256: 1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071
 legible_lifecycle_contract: legible_tdd_candidate_main.v1
 legible_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_LEGIBLE
 legible_capability_marker: phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1
@@ -705,7 +705,7 @@ EC-LEGIBLE-4.
   repository-legibility contracts, not a public runtime feature or release.
 - Digest continuity is a preflight and closeout invariant: before every lane, and again before
   final verification, SHA-256 of `specs/phase-plans-v10.md` must equal
-  `e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466`. Any roadmap-byte
+  `1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071`. Any roadmap-byte
   change blocks as an unpaneled contract change; this plan provides no mid-phase rebind path
   because none is required by the sidecar architecture. In particular, Assumption 3 already
   declares both the pending and resolved REVIEWTRUTH states, so the fixed sidecar adapter
