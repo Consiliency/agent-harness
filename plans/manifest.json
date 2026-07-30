@@ -649,7 +649,7 @@
               ],
               "owned_paths_count": 16,
               "owned_paths_sha256": "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b",
-              "plan_sha256": "45a321c4fb38708d217b47021462311b06441fbafc5763bf12ac3f4a987014eb",
+              "plan_sha256": "2765aa6606242b5d68124e13d8ef798b0075a549371be1f4f23b53e3dbd56cef",
               "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
               "test_paths": [
                 "phase-loop-runtime/tests/test_legible_evidence.py",
