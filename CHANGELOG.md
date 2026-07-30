@@ -6,6 +6,76 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Contract-floor preflight: fail readably on a stale `consiliency-contract` (Consiliency/agent-harness#378)
+
+- **The reported "74 tests fail on `main`" was a stale-dependency environment, not a
+  `main` defect.** Both encodings the issue splits on — the `^0\.4\.\d+$` manifest
+  pattern and the emitted `contract_version` — live in the installed
+  `consiliency_contract` package, which this repo consumes and neither authors. An
+  installed `consiliency-contract 0.6.0` is below this repo's declared floor
+  (`phase-loop-runtime` requires `>=0.6.5,<0.7`) and is internally inconsistent
+  (`CONTRACT_VERSION="0.6.0"` against a bundled manifest schema still pinned to
+  `^0\.4\.\d+$`); one `jsonschema.ValidationError` then fans out across ~60 node IDs.
+  The failure is dependency-state-dependent, not code-dependent — which is why it
+  reproduced on a docs-only branch. On `main` in CI (which installs `0.6.5` from
+  `pyproject`) the failure count is **0**.
+- **New guard — the one fact this repo owns and previously left unenforced: the
+  installed contract satisfies the declared floor.** `consiliency_layout` gains
+  `assert_contract_floor_satisfied()` / `check_installed_contract_floor()`, and the
+  test-suite `conftest` aborts collection with a single actionable line
+  (`installed consiliency-contract 0.6.0 does not satisfy the declared floor …`)
+  instead of dozens of opaque validation failures.
+- **Both operands are sourced from the code that actually RUNS, not from a name
+  lookup (Consiliency/agent-harness#382, board review).** The declared floor is read
+  from the `phase-loop-runtime` distribution *proven to own the imported module*
+  (`importlib.metadata` resolves a name, and a name can be answered by a shadowing
+  install whose floor need not match the running code); when that ownership cannot be
+  proven the guard treats the floor as unknowable and does not raise. Ownership is
+  proven soundly (board #382 r2 Finding 1): the distribution must (A) **record**
+  shipping the package (`dist.files` names `<pkg>/__init__.py` — a bare
+  `locate_file` path-join is unsound, it accepts an empty-RECORD dist that shares the
+  root) **and** (B) be tied to the imported instance — either co-located with it, or,
+  via PEP 610 `direct_url.json`, installed **from** the tree that contains the imported
+  `__file__` (the CI matrix imports from `src/` while the wheel lives in
+  site-packages; without (B) a healthy checkout would false-skip the guard). The installed
+  contract version compared against the floor is the **imported**
+  `consiliency_contract.CONTRACT_VERSION` — the version whose bundled schema fans out
+  #378's failures — not the dist-metadata version, so a contract-shadow is judged on
+  what will run. The guard runs cleanly (no raise, no warning) when the floor is
+  satisfied (CI, clean-room wheel), and never becomes a new false failure.
+- **Fail-open is not fail-silent (Consiliency/agent-harness#382, board ruling).**
+  When the check is *skipped* because an operand is unreadable or its provenance is
+  unprovable — the shadowed-runtime case — the guard emits a `ContractFloorUnverified`
+  warning rather than returning quietly. Silence there would recreate exactly what
+  #378 removes: the guard goes mute, a stale contract survives, and the operator faces
+  ~60 opaque `jsonschema` failures with no sign a guard even ran. The condition is
+  abnormal, not a per-run noise source, so the warning names a real, bounded residual:
+  in a genuinely shadowed environment the floor is **unverified**, and #378's failure
+  mode can still occur. That is a named boundary, distinct from a guard that quietly
+  claims coverage it does not have.
+- **When a co-located dist has an adjacent `pyproject`, the PIN governs — not the
+  gitignored, install-stale metadata (Consiliency/agent-harness#382 r5, maintainer
+  ruling 2026-07-29).** The co-located `.egg-info` refreshes only on `pip install`, so
+  it persists across pin edits and branch switches and can enforce a floor the pin never
+  set — a stale-NEWER metadata floor false-aborting a healthy checkout, or a stale-OLDER
+  one silently under-enforcing. `declared_contract_requirement()` now reads the adjacent
+  `pyproject` pin and enforces that; agreeing metadata is corroboration, disagreeing
+  metadata emits the new `ContractFloorMetadataDivergence` warning naming both values and
+  which governed, but enforcement proceeds on the pin. The installed case (a wheel /
+  clean-room install with no adjacent `pyproject`) is unchanged: metadata governs there.
+- **The adjacent `pyproject` is trusted only when it is proven OURS, by identity not
+  location (Consiliency/agent-harness#382 r6).** Adjacency alone is a place a foreign
+  file can occupy: `parents[2]` of an installed `site-packages/phase_loop_runtime/__init__.py`
+  is `lib/pythonX.Y`, and a `pip install --target` vendoring or a Windows venv-in-project-root
+  can put a consumer's `pyproject` there whose foreign pin would otherwise govern and
+  false-abort a healthy install. The pin is now honored only when the file's `[project].name`
+  canonicalizes (PEP 503) to `phase-loop-runtime`, and the `consiliency-contract` dependency
+  is matched by canonical name equality — never a `startswith` prefix, which had read the
+  distinct package `consiliency-contracts` (plural) as ours. Name canonicalization is applied
+  everywhere the dependency identity is compared (pyproject extraction, the metadata-side
+  match, and divergence corroboration), so a spelling-only difference (`Consiliency_Contract`)
+  neither manufactures a false divergence nor silently drops the floor.
+
 ### Outside-agent contract: repin to `spec@v0.2.1` + per-file `sha256` verification (Consiliency/agent-harness#370)
 
 - **Repin the anchor. These are the pin facts, stated inline and verified in this

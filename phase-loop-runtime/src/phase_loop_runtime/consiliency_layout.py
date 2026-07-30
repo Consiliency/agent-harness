@@ -16,6 +16,7 @@ seam is for CS-0.12 once the adoption-profile consent check lands. Today,
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -154,6 +155,491 @@ def compose_required_documents(
 
 def installed_contract_version() -> str:
     return CONTRACT_VERSION
+
+
+class ContractFloorError(RuntimeError):
+    """The installed ``consiliency-contract`` distribution violates this package's
+    declared floor (Consiliency/agent-harness#378). Raised only when the violation
+    is PROVABLE from readable state -- see ``check_installed_contract_floor``."""
+
+
+class ContractFloorUnverified(UserWarning):
+    """The contract-floor check could not be run because a required operand was
+    unreadable or its provenance was unprovable (Consiliency/agent-harness#382,
+    board review). Emitted -- never silenced -- in the fail-open path so the
+    guard's ABSENCE is visible: silence in a shadowed-runtime environment would
+    reproduce the very opacity #378 exists to remove (~60 jsonschema failures with
+    no indication a guard even ran)."""
+
+
+class ContractFloorMetadataDivergence(UserWarning):
+    """The owning dist's metadata floor disagrees with the ADJACENT ``pyproject``
+    pin (Consiliency/agent-harness#382 r5, maintainer ruling 2026-07-29).
+
+    The co-located ``.egg-info`` is gitignored and refreshes only on ``pip
+    install``, so it persists across pin edits and branch switches and can name a
+    floor the pin never set -- stale-NEWER (which would false-abort a healthy
+    checkout) or stale-OLDER (which would silently under-enforce). When an adjacent
+    ``pyproject`` is present it is the single source of truth the metadata is BUILT
+    from, so the PIN governs enforcement and the metadata is corroboration only.
+    This warning fires -- never silenced -- naming BOTH values and which governed,
+    so a stale egg-info is visible rather than silently trusted or silently
+    dropped. It is not a fail-open signal: the floor IS enforced (on the pin)."""
+
+
+def _dist_records_package(dist: Any, needle: str) -> bool:
+    """True iff ``dist``'s OWN file manifest names ``needle`` (``<pkg>/__init__.py``).
+
+    Manifest precedence -- RECORD-authoritative, then the egg-info manifest (board #382 r2
+    py3.12, r3 RECORD-authority, r4 empty-RECORD ordering):
+
+      1. ``RECORD`` text, read DIRECTLY -- AUTHORITATIVE and consulted FIRST when present. A
+         wheel / ``.dist-info`` RECORD is the COMPLETE installed-file manifest, so it decides
+         ownership BOTH ways: names ``needle`` -> owner; omits it -> DECISIVE "not owned",
+         nothing else consulted. It MUST precede ``dist.files`` because CPython's
+         ``Distribution.files`` internally falls back through ``SOURCES.txt`` for a falsy
+         (EMPTY) RECORD, so a files-first probe would serve a stray SOURCES.txt as ownership
+         before this read ran (r4 finding 1, codex+fable).
+      2. ``dist.files`` -- consulted ONLY on the no-RECORD (``.egg-info``) path. A hit is
+         decisive; ANY miss (None, empty, or a py3.12 PARTIAL list that dropped the module)
+         falls through and is never a negative signal.
+      3. ``SOURCES.txt`` text, read DIRECTLY -- the egg-info manifest, load-bearing on
+         Python 3.12+ where ``importlib.metadata`` FILTERS an egg-info SOURCES.txt by on-disk
+         existence -- returning only entries that resolve relative to the egg-info parent,
+         where <= 3.11 returned the manifest verbatim -- so ``.files`` collapses to EMPTY
+         (this repo: 817 entries under 3.10, 0 under 3.12, the project-root-relative paths not
+         resolving from ``src/``) or NON-EMPTY PARTIAL. Reading the text directly recovers the
+         manifest the filter hid. Reached ONLY on the no-RECORD path, so it can never override
+         an authoritative RECORD.
+
+    Finding 1 stays closed for every RECORD shape: a readable RECORD that omits the package is
+    decisive not-owned regardless of any stray SOURCES.txt -- whether the RECORD names an
+    unrelated package (r3) or is EMPTY (r4, whose ``.files`` SOURCES-fallback no longer reaches
+    ownership because the RECORD read runs first). A same-root foreign floor cannot be carried
+    past this gate (Consiliency/agent-harness#382 r1/r2/r3/r4)."""
+
+    def _names_needle(entries: Any) -> bool:
+        for entry in entries:
+            # RECORD lines are ``path,hash,size``; SOURCES.txt / ``.files`` are bare
+            # paths. Split on the first comma so both shapes reduce to the path.
+            path = str(entry).split(",", 1)[0].strip().replace("\\", "/")
+            # Exact or slash-delimited match ONLY (board #382 r4, codex finding 2). A bare
+            # ``endswith(needle)`` accepts a FOREIGN co-located package whose name merely ends
+            # with ours -- ``"other_phase_loop_runtime/__init__.py".endswith(
+            # "phase_loop_runtime/__init__.py")`` is True -- so its floor could be enforced as
+            # if it were ours. Require the path boundary so a suffix collision is not ownership.
+            if path == needle or path.endswith("/" + needle):
+                return True
+        return False
+
+    # (1) RECORD is AUTHORITATIVE and read FIRST when present (board #382 r3 codex/lead, r4
+    # codex+fable). A wheel / ``.dist-info`` RECORD is the COMPLETE installed-file manifest,
+    # so a readable RECORD decides ownership BOTH ways: it names ``needle`` -> owner; it omits
+    # ``needle`` -> a DECISIVE "not owned" and NOTHING below is consulted. This MUST precede
+    # the ``dist.files`` probe: CPython's ``Distribution.files`` itself falls back
+    # ``_read_files_distinfo() or _read_files_egginfo_installed() or _read_files_egginfo_sources()``,
+    # so for a falsy (EMPTY) RECORD it serves the dist's stray ``SOURCES.txt`` THROUGH
+    # ``.files`` -- and a files-first probe would accept that stray manifest as ownership
+    # before this authoritative read ran. That was r4 finding 1: a same-root empty-RECORD
+    # ``.dist-info`` carrying a stray SOURCES.txt naming ours was wrongly accepted (and r3's
+    # analogous case, a RECORD naming an unrelated package plus a stray SOURCES.txt). Reading
+    # RECORD first gates both.
+    try:
+        record = dist.read_text("RECORD")
+    except Exception:
+        record = None
+    if record is not None:
+        return _names_needle(record.splitlines())
+    # (2) No readable RECORD -> the ``.egg-info`` layout. ``dist.files`` may still surface the
+    # manifest; a hit is decisive, but ANY miss (None, empty, or a py3.12 PARTIAL list that
+    # dropped the module) falls through and is never a negative signal.
+    try:
+        if _names_needle(dist.files or ()):
+            return True
+    except Exception:
+        pass
+    # (3) ``SOURCES.txt`` text, read DIRECTLY -- the egg-info manifest. Load-bearing on
+    # py3.12+, where ``importlib.metadata`` FILTERS an egg-info SOURCES.txt by on-disk
+    # existence (this repo: 817 entries under 3.10, 0 under 3.12, the project-root-relative
+    # paths not resolving from ``src/``), so ``.files`` collapses to EMPTY or NON-EMPTY
+    # PARTIAL and the direct read recovers the manifest the filter hid. Reached ONLY on the
+    # no-RECORD path, so it can never override an authoritative RECORD (the r3 invariant, now
+    # structural via ordering rather than a fall-through guard).
+    try:
+        sources = dist.read_text("SOURCES.txt")
+    except Exception:
+        sources = None
+    if sources and _names_needle(sources.splitlines()):
+        return True
+    return False
+
+
+def _dist_owns_imported_runtime(dist: Any) -> bool:
+    """True iff ``dist`` PROVABLY ships the imported ``phase_loop_runtime`` package.
+
+    Provenance check (Consiliency/agent-harness#378; board #382 r1 Finding 1, r2
+    Finding 1). ``importlib.metadata`` resolves a distribution by NAME, and a name
+    can be answered by an install that is not the running code -- a site-packages
+    ``phase-loop-runtime`` shadowed by this ``src/`` checkout, or a stale
+    ``.egg-info`` left beside a real one. That install's declared floor need not
+    match the running code, so trusting it by name lets the guard enforce a foreign
+    floor: pass a changed floor silently, or abort a healthy checkout.
+
+    A path comparison alone is UNSOUND (board #382 r2 Finding 1):
+    ``PathDistribution.locate_file(p)`` merely joins the metadata directory's parent
+    with ``p`` -- it never confirms the distribution RECORDS ``p``. An empty-RECORD
+    distribution sharing the same root therefore satisfies a ``locate_file``-equality
+    check, and its (foreign) floor gets enforced against a healthy contract -- a
+    false collection abort, the exact outcome this guard exists to prevent.
+
+    Ownership requires (A) AND (B):
+
+      (A) RECORDED PACKAGE -- the dist's own file manifest names ``<pkg>/__init__.py``
+          (``_dist_records_package``, ordered probes: an AUTHORITATIVE ``RECORD`` text
+          read FIRST when present -- decisive BOTH ways, names the package -> owner,
+          omits it -> not-owned, nothing else consulted -- else, on the no-RECORD
+          ``.egg-info`` path, ``dist.files`` and then the ``SOURCES.txt`` text read
+          DIRECTLY, load-bearing on Python 3.12+ where importlib FILTERS an egg-info
+          SOURCES.txt by on-disk existence into an empty OR partial ``.files``; see
+          ``_dist_records_package``). An empty-RECORD or foreign-package dist fails here
+          regardless of location, so a bare path-join can never carry a foreign floor
+          past this gate -- including a same-root ``.dist-info`` whose RECORD names an
+          unrelated package but which carries a stray SOURCES.txt naming ours (r3).
+
+      (B) BOUND TO THE IMPORTED INSTANCE -- either of:
+          B1 CO-LOCATION: the metadata directory is a sibling of the imported
+             top-level package dir. True for a wheel / regular install
+             (``site-packages/pkg`` beside ``site-packages/pkg-*.dist-info``), a
+             classic editable ``.egg-info`` (``src/pkg`` beside ``src/pkg.egg-info``),
+             and the clean-room wheel. ``locate_file("")`` yields that parent. B1 is
+             deliberately NOT version-gated: a co-located ``.dist-info`` is written
+             atomically with the wheel it installs, and a co-located ``.egg-info`` is
+             the build metadata for the very ``src/`` tree beside it -- if it lags that
+             tree after a rebuild it names an OLDER floor, which is fail-open only
+             (warn + skip), never a false abort, so the no-false-failure criterion
+             holds. Gating B1 on a version match would instead red the owns-sentinel on
+             ordinary dev egg-info/``src`` skew -- trading a documented boundary for a
+             brittle assertion (board #382 r2, advisor).
+          B2 INSTALL PROVENANCE: ``direct_url.json`` (PEP 610) records the local
+             directory the dist was installed FROM; when that directory contains the
+             imported ``__file__`` AND the dist's version equals the running module's
+             ``__version__``, the resolved dist IS this code even though it lives in
+             ``site-packages`` while the import resolves from ``src/``. This is the CI
+             matrix (``pip install ./phase-loop-runtime`` then ``python -m pytest``
+             with ``src`` on ``sys.path``): without B2 the guard would skip on a
+             healthy checkout -- a self-inflicted false failure, the exact acceptance
+             criterion this round protects. The version match is load-bearing for B2:
+             its install-source link is weaker than co-location -- a STALE non-editable
+             install of this same repo would name the tree yet carry an older floor.
+             Requiring ``dist.version == __version__`` rejects that stale install (warn
+             + skip, never a false abort) while a same-commit CI install matches. (B1
+             needs no such gate for a different reason -- see B1 above -- not because
+             versions there "cannot skew".) (board #382 r2, advisor).
+
+    Soundness: a PyPI shadow's ``direct_url`` is absent or names a different tree, a
+    wrong-location shadow fails B1, and a stale same-repo install fails B2's version
+    match, so none passes B (board #382 r1/r2). An empty-RECORD dist fails A.
+
+    Boundary (honest, board #382 r2): this ties the dist to the imported package by
+    NAME + LOCATION/INSTALL-SOURCE, not recorded bytes to imported bytes -- hashing
+    RECORD entries for byte identity is deliberately out of scope. And a PEP 660
+    editable install (whose RECORD lists a ``.pth`` finder, not the package files)
+    fails A and so fail-opens with a warning; this repo's CI is a non-editable dir
+    install, so that path is a documented boundary, not a live gap.
+
+    A further boundary (board #382 r4, fable F3): ``PathDistribution.read_text`` suppresses
+    ``PermissionError`` (verified against the 3.10 source), so an UNREADABLE RECORD is
+    indistinguishable from an ABSENT one -- both surface as ``None`` and fall to the
+    ``SOURCES.txt`` probe. A dist whose RECORD is permission-blocked while a stray SOURCES.txt
+    names the package would therefore be judged on SOURCES rather than treated as
+    record-authoritative. This needs a filesystem permission anomaly plus a planted
+    SOURCES.txt, and importlib exposes no way to tell "unreadable" from "absent" without
+    private attributes; it is recorded as a boundary, not closed.
+    """
+    try:
+        import json
+        from urllib.parse import unquote, urlparse
+
+        import phase_loop_runtime
+
+        imported = Path(phase_loop_runtime.__file__).resolve()
+        pkg = phase_loop_runtime.__name__.split(".")[0]
+
+        # (A) records the package -- required in every branch.
+        needle = f"{pkg}/__init__.py"
+        if not _dist_records_package(dist, needle):
+            return False
+
+        # (B1) co-location.
+        try:
+            if Path(dist.locate_file("")).resolve() == imported.parent.parent:
+                return True
+        except Exception:
+            pass
+
+        # (B2) install provenance via direct_url.json, gated on a version match so a
+        # STALE non-editable install of this same repo (right tree, older floor) is
+        # rejected rather than trusted (board #382 r2, advisor).
+        try:
+            raw = dist.read_text("direct_url.json")
+            if raw:
+                url = json.loads(raw).get("url") or ""
+                parsed = urlparse(url)
+                if parsed.scheme == "file":
+                    tree = Path(unquote(parsed.path)).resolve()
+                    running_version = getattr(phase_loop_runtime, "__version__", None)
+                    if (
+                        (tree == imported or tree in imported.parents)
+                        and running_version is not None
+                        and dist.version == running_version
+                    ):
+                        return True
+        except Exception:
+            pass
+
+        return False
+    except Exception:
+        return False
+
+
+def _requirement_from_adjacent_pyproject() -> str | None:
+    """The ``consiliency-contract`` requirement declared in the SOURCE
+    ``pyproject.toml`` adjacent to AND OWNED BY the imported module, or ``None``.
+
+    Adjacency mirrors the imported package's on-disk layout
+    (``src/phase_loop_runtime/__init__.py`` -> ``../../pyproject.toml``). But
+    adjacency is LOCATION, not IDENTITY (board #382 r6, codex B1 / fable F-1, all
+    seats): ``parents[2]`` of an INSTALLED ``site-packages/phase_loop_runtime/
+    __init__.py`` is ``lib/pythonX.Y``, and a ``pip install --target`` vendoring
+    (dist-info co-located, so ownership legitimately passes) or a Windows
+    venv-in-project-root (``Lib/site-packages`` is exactly two levels; Linux venvs
+    cannot hit it) can place a FOREIGN ``pyproject`` there whose pin would then
+    govern -- fable reproduced both shapes false-aborting a healthy install. So the
+    file is trusted ONLY when its ``[project].name`` canonicalises (PEP 503) to
+    ``phase-loop-runtime``: a consumer's pyproject carries its OWN name, so this one
+    check kills the entire class. The dependency is matched by CANONICAL name
+    equality, never a prefix -- a prefix accepted ``consiliency-contracts`` (plural,
+    a DIFFERENT package) and would let its pin govern (board #382 r6). The
+    requirement's environment marker is dropped so it is directly comparable with
+    the metadata form. Returns ``None`` when no adjacent ``pyproject`` exists (a
+    wheel / clean-room install ships none), it is not proven ours, or it declares no
+    ``consiliency-contract`` dependency -- in every such case metadata governs.
+    """
+    try:
+        try:
+            import tomllib  # Python 3.11+
+        except ModuleNotFoundError:  # pragma: no cover - 3.10 backport path
+            import tomli as tomllib
+
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+
+        import phase_loop_runtime
+
+        pyproject = (
+            Path(phase_loop_runtime.__file__).resolve().parents[2] / "pyproject.toml"
+        )
+        if not pyproject.is_file():
+            return None
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        project = data.get("project", {})
+        # OWNERSHIP GATE (board #382 r6): trust the pin ONLY when this pyproject is
+        # OURS. Adjacency alone is a location a foreign file can occupy.
+        name = project.get("name")
+        if not isinstance(name, str) or canonicalize_name(name) != "phase-loop-runtime":
+            return None
+        for dep in project.get("dependencies", ()):
+            try:
+                req = Requirement(dep)
+            except Exception:
+                continue
+            # CANONICAL identity, not a prefix: 'consiliency-contracts' (plural) is a
+            # different package and must not be read as ours.
+            if canonicalize_name(req.name) == "consiliency-contract":
+                # Drop any environment marker; keep name + specifier.
+                return dep.split(";", 1)[0].strip()
+        return None
+    except Exception:
+        return None
+
+
+def _requirements_equivalent(a: str, b: str) -> bool:
+    """True iff two requirement strings name the same dependency with the same
+    specifier, compared on the PARSED, CANONICALISED ``(name, specifier)``.
+
+    Two axes of normalisation, both load-bearing for corroboration (board #382 r5/r6):
+    the specifier is compared on its stringified set (which serialises in a normalised
+    order, so ``<0.7,>=0.6.5`` and ``>=0.6.5,<0.7`` corroborate), and the NAME is
+    compared PEP-503-canonical (so ``Consiliency_Contract`` and ``consiliency-contract``
+    -- the same package, different spelling -- corroborate rather than manufacture a
+    false divergence, board #382 r6 codex B2)."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    try:
+        ra, rb = Requirement(a), Requirement(b)
+    except Exception:
+        return a == b
+    return canonicalize_name(ra.name) == canonicalize_name(rb.name) and str(
+        ra.specifier
+    ) == str(rb.specifier)
+
+
+def declared_contract_requirement() -> str | None:
+    """The ``consiliency-contract`` floor this package enforces, for the
+    distribution PROVEN to own the imported ``phase_loop_runtime`` module.
+
+    The floor lives in exactly one place -- ``phase-loop-runtime``'s ``pyproject``
+    ``dependencies``. Two readings of it are possible and can DISAGREE:
+
+      * the dist metadata (``dist.requires``), which for a co-located editable
+        install is a gitignored ``.egg-info`` that refreshes only on ``pip
+        install`` and so persists across pin edits and branch switches, and
+      * the adjacent ``pyproject.toml`` -- the SOURCE the metadata is BUILT from.
+
+    Maintainer ruling (Consiliency/agent-harness#382 r5, 2026-07-29): when the
+    owning dist is co-located with an adjacent ``pyproject``, the PIN governs
+    enforcement -- metadata agreeing is corroboration; metadata DISAGREEING emits a
+    ``ContractFloorMetadataDivergence`` warning naming both values and which
+    governed, but enforcement proceeds on the pin. This closes both stale-egg-info
+    failure modes the metadata-only floor allowed: a stale-NEWER metadata floor
+    false-aborting a healthy checkout, and a stale-OLDER one silently
+    under-enforcing. In the ONLY case where disagreement is possible (a co-located
+    dist with an adjacent pin), the pin wins -- so this cannot silently disagree
+    with the pin it enforces.
+
+    Installed case (no adjacent ``pyproject`` -- a wheel / clean-room install):
+    metadata-based behaviour is unchanged, since the pin is not shipped there.
+
+    Ownership gates BOTH readings (board #382 r6, fable probe B): if the resolved
+    distribution cannot be shown to own the imported module
+    (``_dist_owns_imported_runtime``), this returns ``None`` outright -- the adjacent
+    pin does NOT rescue an unowned dist, because the pin path is reached only AFTER
+    ownership is proven. Given ownership, returns ``None`` only when neither the pin
+    (an adjacent ``pyproject`` proven OURS by ``[project].name``) nor the metadata
+    yields a ``consiliency-contract`` requirement, so the caller treats the floor as
+    unknowable rather than enforcing a floor that is not the running package's.
+    """
+    try:
+        import importlib.metadata as md
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+
+        dist = md.distribution("phase-loop-runtime")
+        if not _dist_owns_imported_runtime(dist):
+            return None
+
+        metadata_req: str | None = None
+        for raw in dist.requires or ():
+            try:
+                req = Requirement(raw)
+            except Exception:
+                continue
+            # CANONICAL identity (board #382 r6, 2c): an unnormalised ``== "consiliency-
+            # contract"`` SILENTLY MISSES a metadata dep spelled ``Consiliency_Contract``
+            # -- metadata_req stays None and the guard loses corroboration/divergence
+            # detection for that dist entirely (quiet-blind, the opposite failure to the
+            # false-divergence a raw equivalence compare produces).
+            if canonicalize_name(req.name) == "consiliency-contract":
+                # Drop any environment marker; keep name + specifier.
+                metadata_req = raw.split(";", 1)[0].strip()
+                break
+
+        # Maintainer ruling (agent-harness#382 r5): the ADJACENT pyproject pin -- not
+        # the gitignored, install-stale egg-info metadata -- is the enforced floor.
+        pyproject_req = _requirement_from_adjacent_pyproject()
+        if pyproject_req is not None:
+            if metadata_req is not None and not _requirements_equivalent(
+                metadata_req, pyproject_req
+            ):
+                warnings.warn(
+                    "consiliency-contract floor: dist metadata declares "
+                    f"'{metadata_req}' but the adjacent pyproject pin declares "
+                    f"'{pyproject_req}'. The co-located .egg-info is gitignored and "
+                    "refreshes only on 'pip install', so it can lag the pin across "
+                    "pin edits / branch switches; the PYPROJECT PIN governs "
+                    "enforcement here. The pin is proven OURS ([project].name), so "
+                    "this divergence means the metadata is merely stale relative to "
+                    "the pin -- reinstall (pip install -e ./phase-loop-runtime) to "
+                    "refresh it (Consiliency/agent-harness#382).",
+                    ContractFloorMetadataDivergence,
+                    stacklevel=2,
+                )
+            return pyproject_req
+
+        # No adjacent pin (installed / clean-room): metadata governs, as before.
+        return metadata_req
+    except Exception:
+        return None
+
+
+def assert_contract_floor_satisfied(installed_version: str, requirement: str) -> None:
+    """Raise ``ContractFloorError`` if ``installed_version`` does not satisfy the
+    specifier in ``requirement`` (a ``name>=x,<y`` string).
+
+    Pure: both inputs are explicit so the check is unit-testable with literals and
+    the falsifier runs deterministically regardless of what is installed.
+    """
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    specifier = Requirement(requirement).specifier
+    # ``prereleases=True`` so a legitimately-installed prerelease is judged against
+    # the specifier's own rules rather than silently excluded.
+    if not specifier.contains(Version(installed_version), prereleases=True):
+        # Remedy command is DERIVED from ``requirement`` (the single declared floor),
+        # never a second hardcoded copy of the specifier -- a second copy is exactly
+        # the drift shape that produced this issue.
+        raise ContractFloorError(
+            f"installed consiliency-contract {installed_version} does not satisfy the "
+            f"declared floor '{requirement}'. Reinstall a floor-satisfying contract: "
+            f"pip install -U '{requirement}'  (a contract below this floor ships a "
+            f"manifest schema that rejects its own version const, which fans out into "
+            f"dozens of opaque jsonschema errors -- Consiliency/agent-harness#378)."
+        )
+
+
+def check_installed_contract_floor() -> None:
+    """Raise ``ContractFloorError`` iff the installed ``consiliency-contract`` can be
+    PROVEN to violate this package's declared floor.
+
+    Fail-open on an unprovable state: if either the declared requirement or the
+    installed version is unreadable, this does NOT raise -- the guard exists to
+    convert a stale-dependency environment from ~60 opaque validation failures into
+    one actionable line, and must never itself become a new false failure.
+
+    But fail-open is not fail-SILENT (board #382, ruling): when the check is skipped
+    it emits a ``ContractFloorUnverified`` warning rather than returning quietly.
+    Silence here would recreate exactly what #378 removes -- in a shadowed-runtime
+    environment the guard would go mute, the stale contract would survive, and the
+    operator would face the ~60 opaque jsonschema failures with no sign a guard even
+    ran. The condition is abnormal (unreadable metadata, or a distribution that does
+    not own the imported module), not a per-run noise source, so the warning names a
+    real, bounded gap: the floor is UNVERIFIED, not verified-clean.
+
+    The installed operand is the IMPORTED ``consiliency_contract.CONTRACT_VERSION``
+    (via ``installed_contract_version``), not the dist metadata version
+    (Consiliency/agent-harness#378, board #382 r1): the manifest schema and version
+    const that actually fan out #378's failures ship inside the imported module, so
+    a contract-shadow (fresh metadata, stale imported module) must be judged on what
+    will RUN, not on what the name resolves to.
+    """
+    requirement = declared_contract_requirement()
+    installed = installed_contract_version()
+    if requirement is None or installed is None:
+        warnings.warn(
+            "consiliency-contract floor check SKIPPED (fail-open): could not "
+            "establish both operands for the RUNNING phase_loop_runtime -- the "
+            "declared floor was unreadable or resolved to a distribution not proven "
+            "to own the imported module, and/or the imported contract version was "
+            "unreadable. The floor is therefore UNVERIFIED here: a stale or "
+            "mismatched contract will NOT be reported and #378's opaque jsonschema "
+            "failures can still occur (Consiliency/agent-harness#378, board #382).",
+            ContractFloorUnverified,
+            stacklevel=2,
+        )
+        return
+    assert_contract_floor_satisfied(installed, requirement)
 
 
 def manifest_schema() -> dict[str, Any]:

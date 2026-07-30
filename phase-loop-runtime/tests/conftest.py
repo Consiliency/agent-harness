@@ -44,6 +44,32 @@ def pytest_configure(config):
         "dotfiles_integration: test requires a dotfiles fleet tree (skipped standalone)",
     )
 
+    # Consiliency/agent-harness#378: abort collection with ONE actionable line if
+    # the installed consiliency-contract violates this package's declared floor.
+    # A stale contract (e.g. 0.6.0 below the >=0.6.5 floor) ships a manifest schema
+    # that rejects its own version const, fanning a single ValidationError out into
+    # ~60 opaque node failures -- indistinguishable, in a raw "74 failed" count,
+    # from a real regression. Failing here converts that into a readable, non-zero
+    # exit before any scaffold-using test runs. It is a no-op when the contract
+    # satisfies the floor (CI, clean-room wheel) or when the state is unreadable.
+    from phase_loop_runtime.consiliency_layout import (
+        ContractFloorError,
+        check_installed_contract_floor,
+    )
+
+    from _contract_floor_wiring import CONTRACT_FLOOR_PREFLIGHT_RAN
+
+    try:
+        check_installed_contract_floor()
+    except ContractFloorError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    # WIRING sentinel (board #382 r3, Blocker 2): record that the preflight was actually
+    # invoked in THIS collection. test_conftest_actually_invokes_the_floor_preflight
+    # reds if this block is deleted -- a guard that is never called must not read as one
+    # that passed. Set only on the non-aborting path (a raise becomes a UsageError above,
+    # which aborts collection, so no test observes the stash anyway).
+    config.stash[CONTRACT_FLOOR_PREFLIGHT_RAN] = True
+
 
 def pytest_collection_modifyitems(config, items):
     """TESTDECOUPLE SL-0: skip ``dotfiles_integration``-marked items when no
