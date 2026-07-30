@@ -629,6 +629,63 @@
       "updated_at": "2026-07-29T00:00:00Z"
     },
     {
+      "created_at": "2026-07-30T04:08:46Z",
+      "file": "plans/phase-plan-v10-PROOFGATE.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-proofgate-plan.md",
+      "if_gates_produced": [
+        "IF-0-PROOFGATE-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T07:26:25Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "proofgate_plan_contract": {
+              "activated_red_failures": 37,
+              "activation_env": "PHASE_LOOP_TDD_EXPECT_PROOFGATE",
+              "bootstrap_paths": [
+                ".github/workflows/proofgate-receipt-attestation.yml",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                "phase-loop-runtime/src/phase_loop_runtime/proofgate_isolation.py",
+                "phase-loop-runtime/src/phase_loop_runtime/proofgate_receipts.py"
+              ],
+              "capability_marker": "phase_loop_runtime.proofgate_capability:PROOFGATE_CAPABILITY_VERSION=proofgate.v1",
+              "default_skip_nodeids": 36,
+              "expected_nodeids": 39,
+              "lifecycle": "proofgate_tdd_candidate_main.v1",
+              "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
+              "owned_path_patterns_count": 37,
+              "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
+              "plan_sha256": "57085190898cd7fe44d500768b428f90b8f837e8a2b952d3c63c5a0d0d7085ea",
+              "positive_control_nodeids": 2,
+              "predecessor_panel_sha256": "325833e22721a5a92d1e4e36578d61ae924e27af67a48648b1dfe294e4e41ac6",
+              "roadmap_sha256": "7f2590bdebf5a892cf0987b67916d2c3b95970b547117b8cbf4adc7c7220838e"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PROOFGATE",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/333d0320/codex-v10-plan-proofgate/20260730T035716Z-01-proofgate-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v10-PROOFGATE",
+      "status": "committed",
+      "type": "phase",
+      "updated_at": "2026-07-30T07:26:25Z"
+    },
+    {
       "acceptance_criteria_count": null,
       "created_at": "2026-06-30T22:00:00Z",
       "file": "plans/phase-plan-v4-PNLCLAUDE.md",
