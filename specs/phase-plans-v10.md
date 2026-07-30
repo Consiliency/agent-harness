@@ -264,7 +264,15 @@ Decompose into 4 lanes: lane A owns the typed outcome on `PanelLegResult` and pu
 IF-0-REVIEWTRUTH-1 day 1; lane B owns `governed_review._findings_from_panel` consuming it; lane C
 owns lens threading into the prompt plus the ratification coverage rule; lane D owns composition
 (fillable seat vs lens-distinct backfill), native-fill of the TUI-policy seat (EC-REVIEWTRUTH-14),
-and the typed unfillable signal. `panel_invoker.py` is a
+and the typed unfillable signal. **Lane D also OWNS the `agent-harness#398` design decision**
+(maintainer-sequenced 2026-07-30): the vendor legs' read-only posture is a deliberate flag choice
+in `panel_invoker.py`, not a CLI limitation, and the phase that types seat outcomes decides what
+seats CAN do — the lane produces the capability design (e.g. probe-execution against a THROWAWAY
+staged copy vs today's read-only bundle review) for maintainer ratification BEFORE hardening any
+typed outcome that assumes the current posture. The non-goal boundary survives regardless: no
+review leg receives arbitrary execution capability against the real tree; the empirical basis is
+that executing seats repeatedly caught behavioral defects read-only legs could not (`#382` rounds
+4–7). `panel_invoker.py` is a
 single-writer file — lanes A and D must partition it by function or serialize.
 
 **Non-goals**
