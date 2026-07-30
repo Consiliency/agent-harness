@@ -47,9 +47,24 @@ implementation.
 Planning-time operational probes on 2026-07-30 found
 `Consiliency/agent-harness#347` open, draft, mergeable, and green at head
 `a89dd82ed7253193a4084ab9f2e15136fe12ea05`; the six commit SHAs in its PR-body commit table
-are ancestors of that head. `Consiliency/agent-harness#367` remains open, so LEGIBLE must not
-use the catalog-deletion arm: it implements a populated, countable repo-owned catalog without
-claiming to resolve the separate client-document decision.
+(`10f1e3d`, `0a0438a`, `1b3f091`, `f22030e`, `a493b95`, and `a89dd82`) are
+ancestors of that head, and the exact body SHA-256 is
+`1b8410a0c2eab1c20f9d6e469336d933654003907425daded453b37faa7df0db`.
+The server then reported base ref `main` at
+`7cd76a6c14d70d00042ff9ab9721c75a2da1fa21`, but that planning-time base OID
+is observational rather than the later integration base: the tests-only landing must advance
+target main before implementation begins. The frozen PR contribution is exactly one modified
+regular file, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, mode `100644`, from
+Git blob `184ad9cbada7366c42602b3f6158360237329025` / SHA-256
+`041110e41e20c2c6eaf0d99fd9c73fc445a9222033b744d4cae9af072936351f` to
+Git blob `5b912bb9666981dda9c8760e40f693f357f693a6` / SHA-256
+`cd47f6bbae775d6554d55bf1ce6cb742ca29337786e7c08eb76ddf78b361a062`.
+The execution-time reducer must bind the then-current server base, exact pinned head, and final
+server merge commit as described below; any head/body/path/preimage/postimage drift requires
+plan repair and a new exact-digest panel rather than a broadened path exception.
+`Consiliency/agent-harness#367` remains open, so LEGIBLE must not use the catalog-deletion arm:
+it implements a populated, countable repo-owned catalog without claiming to resolve the
+separate client-document decision.
 
 ## Interface Freeze Gates
 
@@ -190,19 +205,29 @@ The chronology is exact and reducer-enforced:
    exists, implementation iterations force these tests with the env; SL-2 installs
    `legible_evidence.LEGIBLE_CAPABILITY_VERSION = "legible.v1"` only after every lane's
    production surface is complete, after which the same immutable tests run by default.
-7. Freeze and push a committed candidate. The remote branch OID, local `HEAD`, recorded
-   implementation head, and panel subject head must be the same 40-hex OID. The builder process
-   stops at `awaiting_phase_closeout`; its already-loaded `runner.py` or
-   `verification_evidence.py`, any verification it performs, and any executor-authored sidecar
-   are explicitly non-attesting.
-8. Launch a new repo-local `phase-loop attest --stage candidate` process from a clean worktree
-   checked out at that exact pushed candidate. That process alone runs the broad compatible
-   suite, final 83-nodeid JUnit, exact-head implementation panel, and candidate evidence.
-9. After candidate evidence and merge gates pass, merge the implementation PR. Fetch canonical
-   main, resolve one exact canonical main OID containing the candidate, create another clean
-   worktree at that OID, and launch a second new repo-local
-   `phase-loop attest --stage canonical-main` process. Only its exact-main-bound artifact can
-   close LEGIBLE.
+7. Freeze and push committed phase-authored candidate `P`. The remote branch OID, local `HEAD`,
+   and recorded phase-authored head must be the same 40-hex OID. The builder process stops at
+   `awaiting_phase_closeout`; its already-loaded `runner.py` or `verification_evidence.py`, any
+   verification it performs, and any executor-authored sidecar are explicitly non-attesting.
+8. Launch a new repo-local `phase-loop attest --stage candidate` transition process from a clean
+   worktree checked out at `P`. It snapshots the server-recorded `Consiliency/agent-harness#347`
+   base `B`, pinned head `H`, and body before any merge; requires `B` to equal the implementation
+   base and the fetched target head; proves the frozen path/blob contribution; and only then
+   merges that exact PR head with merge-commit method. Finalize server merge `M` only when its
+   ordered parents are exactly `[B, H]` and its first-parent delta is the frozen one-file
+   contribution.
+9. From the unchanged phase-authored candidate `P`, create target-integration merge `I` with
+   ordered parents exactly `[P, M]`, no conflict or manual resolution, and a tree equal to the
+   runner-recomputed clean merge. `I` must change exactly the frozen one-file contribution
+   relative to `P`; push `I` as the final candidate, then launch a different fresh clean-worktree
+   candidate attestation whose startup head and remote OID both equal `I`. That process alone
+   runs the broad compatible suite, final 83-nodeid JUnit, exact-head implementation panel, and
+   candidate evidence.
+10. After candidate evidence and merge gates pass, merge the implementation PR without changing
+    candidate `I`. Fetch canonical main, resolve one exact canonical main OID containing `I`,
+    create another clean worktree at that OID, and launch a third new repo-local
+    `phase-loop attest --stage canonical-main` process. Only its exact-main-bound artifact can
+    close LEGIBLE.
 
 The implementation range must contain no diff at either frozen test path. The implementation
 base/head and final canonical main must descend from the landed test commit, both test blobs
@@ -413,14 +438,14 @@ manifest is reported, never filtered out. `validate_manifest(...).valid` must al
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| LEGIBLE-C0 | test | SL-0, SL-1 | `phase-loop-runtime/tests/test_legible_roadmap_contract.py`, `phase-loop-runtime/tests/test_legible_evidence.py` | frozen catalog tests plus `test_status_evidence_rejects_registry_banner_drift_or_path_set_change`, `test_pr_evidence_rejects_non_ancestor_body_sha`, `test_pr_evidence_rejects_head_or_body_change_before_merge`, `test_pr_evidence_requires_merged_result_for_snapshotted_head`, `test_chronology_rejects_non_test_only_commit`, `test_chronology_rejects_same_branch_sequence`, `test_chronology_requires_test_landing_on_target_before_implementation_base`, `test_chronology_rejects_test_path_diff_in_implementation_pr_range`, `test_chronology_rejects_changed_frozen_test_blob`, candidate/main bootstrap-head and process-separation controls, exact manifest/frontmatter plan-digest ancestry, default/RED/final JUnit count/set/status controls, `test_verification_sidecar_runner_captures_bounded_redacted_fable_probe_evidence`, `test_verification_sidecar_runner_rejects_self_reported_fable_probe_evidence`, `test_runner_stamps_legible_sidecar_path_and_digest`, and missing/drift/path-escape/oversize sidecar controls | `cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_LEGIBLE=1 PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py tests/test_legible_evidence.py -k "catalog or status_evidence or pr_evidence or chronology or activation or junit or fresh_process or artifact_digest or verification_sidecar" -q` |
+| LEGIBLE-C0 | test | SL-0, SL-1 | `phase-loop-runtime/tests/test_legible_roadmap_contract.py`, `phase-loop-runtime/tests/test_legible_evidence.py` | frozen catalog tests plus `test_status_evidence_rejects_registry_banner_drift_or_path_set_change`, `test_pr_evidence_rejects_non_ancestor_body_sha`, `test_pr_evidence_rejects_head_or_body_change_before_merge`, `test_pr_evidence_requires_merged_result_for_snapshotted_head`, `test_pr_evidence_rejects_unbound_target_integration_delta`, `test_chronology_rejects_non_test_only_commit`, `test_chronology_rejects_same_branch_sequence`, `test_chronology_requires_test_landing_on_target_before_implementation_base`, `test_chronology_rejects_test_path_diff_in_implementation_pr_range`, `test_chronology_rejects_changed_frozen_test_blob`, candidate/main bootstrap-head and process-separation controls, exact manifest/frontmatter plan-digest ancestry, default/RED/final JUnit count/set/status controls, `test_verification_sidecar_runner_captures_bounded_redacted_fable_probe_evidence`, `test_verification_sidecar_runner_rejects_self_reported_fable_probe_evidence`, `test_runner_stamps_legible_sidecar_path_and_digest`, and missing/drift/path-escape/oversize sidecar controls | `cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_LEGIBLE=1 PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py tests/test_legible_evidence.py -k "catalog or status_evidence or pr_evidence or chronology or activation or junit or fresh_process or artifact_digest or verification_sidecar" -q` |
 | LEGIBLE-C1 | impl | LEGIBLE-C0 | `.claude/docs-catalog.json`, `phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py` | none; tests remain owned and frozen by SL-0 | add deterministic `rescan-catalog` and `check-catalog` module commands, populate repo-owned document entries, and make empty mean count zero; do not infer or catalog client-owned documents while `Consiliency/agent-harness#367` is unresolved |
-| LEGIBLE-C2 | impl | LEGIBLE-C0 | `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` | none; tests remain owned and frozen by SL-0 | implement strict schema parsing, coherent roadmap-status collection/revalidation, TDD activation/JUnit and exact-digest chronology collection/validation, implementation-PR test-path range rejection, candidate/main bootstrap provenance, PR snapshot/finalization, artifact SHA-256 calculation, atomic evidence writes, and staged `python -m phase_loop_runtime.legible_evidence verify`; have a freshly started runner invoke/capture the fixed `reviewtruth_fable_transition` adapter and implementation panel rather than accepting executor-authored JSON; parse the plan sidecar declaration; require, resolve, hash, and stamp the sidecar into `verification.json` before sealing it; re-resolve/re-hash on validation; reject same-process, stale-head, unknown-field, missing/path-escaping/oversized, digest-drift, registry/banner/scope-drift, self-reported/raw-probe, test-blob/nodeid/JUnit drift, same-branch chronology, implementation-range test diffs, zero/non-ancestor cited SHAs, head/body changes, and non-merged/mismatched results; install `LEGIBLE_CAPABILITY_VERSION = "legible.v1"` only after SL-0, SL-1, C1, and C2 are complete |
-| LEGIBLE-C3 | operational | LEGIBLE-C1, LEGIBLE-C2 | committed implementation candidate and its remote branch | frozen chronology, activation, scope, and fresh-process falsifiers | require the capability marker and every production surface to be present; run the broad candidate-compatible gate as subprocesses; commit all phase-owned production/manifest/catalog changes without either test path, push, require remote branch OID equals local `HEAD`, record builder run/process identity, and return `awaiting_phase_closeout` without treating same-process verification as evidence |
-| LEGIBLE-C4 | operational | LEGIBLE-C3 | external `Consiliency/agent-harness#347` state and runner-owned candidate-transition evidence | frozen PR-evidence falsifiers, especially `test_pr_evidence_rejects_non_ancestor_body_sha`, are consumed without modification | from a new clean worktree at the pushed candidate, launch fresh repo-local `phase-loop attest --stage candidate`; use the reducer to snapshot the exact `Consiliency/agent-harness#347` head/body/ancestry, confirm checks/reviews, merge without changing the body, and finalize only against the same snapshotted head/body; no handwritten JSON or builder-process substitute |
-| LEGIBLE-C5 | operational | LEGIBLE-C4 | refreshed committed implementation candidate and `.phase-loop/runs/<run-id>/legible-operational-evidence.json` | frozen exact-head, process-boundary, broad-suite, panel, JUnit, and sidecar falsifiers | fetch canonical main containing the `Consiliency/agent-harness#347` merge; refresh the implementation branch, rerun the broad compatible gate, commit/push the resulting exact candidate, then launch a different fresh clean-worktree `phase-loop attest --stage candidate` process whose startup head/imported runtime blobs equal that candidate and which runs the implementation panel plus seals candidate evidence |
-| LEGIBLE-C6 | operational | LEGIBLE-C5, mandatory exact-head implementation panel | implementation PR state | frozen merge-gate and exact-candidate evidence | require the full candidate gate and panel to bind the still-current pushed head, confirm required checks/reviews, and merge the implementation PR without head/body drift; no suite subset beyond the explicitly deferred canonical-main evidence wrapper is permitted |
-| LEGIBLE-C7 | verify | LEGIBLE-C6 | canonical main plus runner-owned metadata evidence | all 83 frozen nodeids and all pre-existing compatible tests | fetch canonical main, require one exact OID containing the implementation candidate, launch another fresh repo-local `phase-loop attest --stage canonical-main` process from a clean worktree at that OID, run every Verification command and the broad suite, require final JUnit `83 passed / 0 failed / 0 errors / 0 skipped`, and seal/validate the exact-main sidecar and `verification.json` |
+| LEGIBLE-C2 | impl | LEGIBLE-C0 | `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` | none; tests remain owned and frozen by SL-0 | implement strict schema parsing, coherent roadmap-status collection/revalidation, TDD activation/JUnit and exact-digest chronology collection/validation, phase-authored versus exact target-integration delta partitioning, implementation-PR test-path range rejection, candidate/main bootstrap provenance, PR snapshot/finalization, artifact SHA-256 calculation, atomic evidence writes, and staged `python -m phase_loop_runtime.legible_evidence verify`; have a freshly started runner invoke/capture the fixed `reviewtruth_fable_transition` adapter and implementation panel rather than accepting executor-authored JSON; parse the plan sidecar declaration; require, resolve, hash, and stamp the sidecar into `verification.json` before sealing it; re-resolve/re-hash on validation; reject same-process, stale-head, unknown-field, missing/path-escaping/oversized, digest-drift, registry/banner/scope-drift, self-reported/raw-probe, test-blob/nodeid/JUnit drift, same-branch chronology, phase-authored unowned/test/integration-path diffs, target-base/head/body/path/blob/tree/parent drift, zero/non-ancestor cited SHAs, and non-merged/mismatched results; install `LEGIBLE_CAPABILITY_VERSION = "legible.v1"` only after SL-0, SL-1, C1, and C2 are complete |
+| LEGIBLE-C3 | operational | LEGIBLE-C1, LEGIBLE-C2 | committed phase-authored candidate `P` and its remote branch | frozen chronology, activation, scope, and fresh-process falsifiers | require the capability marker and every production surface to be present; run the broad candidate-compatible gate as subprocesses; commit all phase-owned production/manifest/catalog changes without either test path or the frozen `agent-harness#347` integration path; push `P`, require remote branch OID equals local `HEAD`, record builder run/process identity, and return `awaiting_phase_closeout` without treating same-process verification as evidence |
+| LEGIBLE-C4 | operational | LEGIBLE-C3 | external `Consiliency/agent-harness#347` state and runner-owned candidate-transition evidence | all four frozen PR-evidence falsifiers, including exact target-base/head/body/path/blob/parent binding, are consumed without modification | from a new clean worktree at pushed phase-authored candidate `P`, launch fresh repo-local `phase-loop attest --stage candidate`; snapshot server base `B`, exact pinned head `H`, body, commit table, checks/reviews, and file/blob metadata; require `B` equals both the implementation base and fetched target head and retains the frozen integration-path preimage; merge with merge-commit method and finalize server merge `M` only when the PR remains bound to the snapshot, `M` has ordered parents `[B, H]`, and `B..M` is exactly the frozen one-path/preimage/postimage delta; no handwritten JSON, builder-process substitute, base advancement, squash/rebase merge, or body/head/path/blob drift |
+| LEGIBLE-C5 | operational | LEGIBLE-C4 | exact phase-authored candidate `P`, server merge `M`, two-parent target-integration merge `I`, and `.phase-loop/runs/<run-id>/legible-operational-evidence.json` | frozen exact-head, external-delta partition, process-boundary, broad-suite, panel, JUnit, and sidecar falsifiers | fetch target `M`; from unchanged `P`, create runner-controlled no-conflict target-integration merge `I` with ordered parents `[P, M]` and tree equal to the independently recomputed clean merge; require `P..I` to be exactly the frozen `agent-harness#347` path/blob transition and set final candidate equal to `I`; push `I`, rerun the broad compatible gate, then launch a different fresh clean-worktree `phase-loop attest --stage candidate` process whose startup head/imported runtime blobs/remote OID equal `I` and which runs the implementation panel plus seals candidate evidence |
+| LEGIBLE-C6 | operational | LEGIBLE-C5, mandatory exact-head implementation panel | implementation PR state | frozen merge-gate and exact-candidate evidence | require the full candidate gate and panel to bind still-current pushed integration candidate `I`, confirm required checks/reviews, and merge the implementation PR without head/body drift or any commit after `I`; no suite subset beyond the explicitly deferred canonical-main evidence wrapper is permitted |
+| LEGIBLE-C7 | verify | LEGIBLE-C6 | canonical main plus runner-owned metadata evidence | all 83 frozen nodeids and all pre-existing compatible tests | fetch canonical main, require one exact OID containing final candidate `I`, launch another fresh repo-local `phase-loop attest --stage canonical-main` process from a clean worktree at that OID, run every Verification command and the broad suite, re-prove the phase/external delta partition, require final JUnit `83 passed / 0 failed / 0 errors / 0 skipped`, and seal/validate the exact-main sidecar and `verification.json` |
 
 The catalog rescan is stable-sorted and idempotent, stores repo-relative paths only, and never
 turns an empty catalog into a positive count. It preserves the existing permissive read behavior
@@ -436,15 +461,16 @@ The reducer owns schema `legible_evidence.v1` at
   `verify --head HEAD` both call `validate_roadmap_status_coherence(required=True)`; mismatched
   status, changed path coverage, malformed/ambiguous/missing declaration, or digest drift fails.
 - `chronology`: pre-implementation base, tests-only source and canonical landing commits,
-  implementation base, every pushed candidate head, final candidate head, exact canonical-main
-  head, target/default branch name, target heads containing the landed tests before the
-  implementation base and after the `Consiliency/agent-harness#347` transition, exact
-  implementation PR range, exact two test paths, plan and roadmap paths/digests, blob OIDs and
+  implementation/target-integration base `B`, phase-authored candidate `P`, server-recorded
+  `agent-harness#347` head `H`, server merge `M`, two-parent target-integration merge/final
+  candidate `I`, every pushed candidate head, exact canonical-main head, target/default branch
+  name, exact phase-authored `B..P`, target PR `B..M`, integration `P..I`, combined `B..I`, and
+  implementation PR ranges, exact two test paths, plan and roadmap paths/digests, blob OIDs and
   SHA-256 values at every lifecycle ref, asserted mutation IDs, RED/default/final commands and
   exits, raw-log/JUnit digests and parsed counts/status sets, literal nodeid inventory digest,
   test-contract and implementation-panel subject digests/verdicts, remote-ref equality,
-  target-landing ancestry, candidate ancestry, implementation-merge identity, and canonical-main
-  ancestry.
+  ordered-parent identities, recomputed integration-tree identity, target-landing ancestry,
+  phase/external path partition, implementation-merge identity, and canonical-main ancestry.
 - `process_attestations`: builder, `agent-harness#347` transition, final-candidate, and
   canonical-main run IDs plus unguessable runner start tokens; process IDs/start times; repo and
   worktree realpaths; requested and observed stage; startup `HEAD`; expected head; fetched remote
@@ -463,9 +489,17 @@ The reducer owns schema `legible_evidence.v1` at
   (`83 passed`, zero failure/error/skip). It records marker absence/presence at each ref and
   rejects xfail/xpass, collection/import errors, deselection, missing/extra nodeids, or a skip
   reason outside the one test-owned guard.
-- `pull_request`: repository/number, pre-merge exact head OID, PR-body SHA-256, parsed
-  commit-table SHAs, one ancestry verdict per SHA, checks/review readiness, unchanged-body
-  proof, post-merge state, `mergedAt`, merge commit OID, and post-merge head equality.
+- `pull_request`: repository/number, base ref and pre-merge server base OID `B`, exact pinned
+  head OID `H`, PR-body SHA-256, parsed commit-table SHAs, one ancestry verdict per SHA,
+  checks/review readiness, exact changed-path set and per-path status/mode/preimage/postimage
+  Git blob OIDs, byte lengths, and SHA-256 values, unchanged-body/head/base proof, post-merge
+  state, `mergedAt`, server merge commit OID `M`, ordered merge parents `[B, H]`, and post-merge
+  head equality.
+- `target_integration`: phase-authored candidate `P`, server merge `M`, integration commit `I`,
+  ordered parents `[P, M]`, merge base `B`, independently recomputed clean-merge tree OID, exact
+  `B..P`, `B..M`, `P..I`, and `B..I` path sets, and the one frozen external path's mode/blob/
+  length/SHA-256 values at `B`, `P`, `H`, `M`, and `I`. This is an identity-bound
+  `Consiliency/agent-harness#347` transition record, not an unowned-path allowlist.
 - `assumption_probes`: runner-captured execution-head OID and one bounded record per probe. The
   Fable transition record contains only probe ID, classified state, issue state/reason and
   response digest, source/behavior booleans and blob digests, fixed route/model, capability
@@ -478,25 +512,47 @@ The reducer owns schema `legible_evidence.v1` at
 
 The collector reads committed blobs with Git object APIs rather than trusting working-tree
 bytes. It proves the canonical tests-only landing's first-parent diff changed exactly the two
-frozen test paths; the fetched target/default branch contained that landing before the recorded
-implementation base; implementation base and every candidate descend from it; the final
-candidate also descends from the target head containing the `Consiliency/agent-harness#347`
-merge; `git diff --name-only <implementation-base>..<final-candidate>` contains neither frozen
-test path; both test blobs and the literal nodeid inventory are byte-identical at the tests-only
-landing, implementation base, every candidate, and canonical main; and the plan/roadmap blobs
-match the manifest/frontmatter digests at each ref. It parses the LEGIBLE manifest entry's
+frozen test paths; the fetched target/default branch contained that landing before recorded
+implementation/target base `B`; and phase-authored candidate `P`, target PR head `H`, server
+merge `M`, integration candidate `I`, and canonical main have the exact ancestry and ordered
+parents above. The target cannot advance between the `B` snapshot and server merge: the
+server-recorded base OID, implementation base, and fetched target head must be the same `B`.
+
+The reducer partitions chronology instead of treating every `B..I` path as phase-owned. Let
+`O` be the exact 15-item manifest/lane-owned set and let `E` be the singleton frozen
+`Consiliency/agent-harness#347` path above. It requires `O ∩ E = ∅`;
+`changed(B, P) ⊆ O` with both frozen test paths and `E` absent; server merge `M` to have ordered
+parents `[B, H]` and `changed(B, M) = E`; integration merge `I` to have ordered parents `[P, M]`,
+final candidate exactly `I`, and `changed(P, I) = E`; and
+`changed(B, I) = changed(B, P) ∪ E`. After subtracting that exact identity-bound `E` delta, every
+remaining candidate path must be in `O`. For the external path, the mode/blob/length/SHA-256 at
+`B` and `P` must equal the frozen preimage, while those values at `H`, `M`, and `I` must equal
+the frozen postimage. The reducer requires `git merge-tree --write-tree P M` to succeed without
+conflicts and produce `I^{tree}`, and it requires no commit after `I` before the implementation
+merge. Thus neither a phase-authored commit nor a manual conflict resolution can modify,
+recreate, or launder the external path. Any extra `B..M` or `P..I` path, any blob/mode/digest
+drift, any different parent or tree, or any external delta other than that exact
+`Consiliency/agent-harness#347` contribution fails closed and requires plan repair; `E` is never
+added to lane ownership or generalized into an unowned-path allowlist.
+
+Both test blobs and the literal nodeid inventory remain byte-identical at the tests-only landing,
+`B`, `P`, `I`, and canonical main, and the plan/roadmap blobs match the
+manifest/frontmatter digests at each ref. The collector parses the LEGIBLE manifest entry's
 `lifecycle[0].metadata.legible_plan_contract`, requires its `plan_sha256`, exact 15-item
 `owned_paths`, two `test_paths`, activation env, capability marker, expected-nodeid count, and
 lifecycle literal to agree with the live plan frontmatter/lane IR, then requires the
-implementation diff to be a subset of those owned paths and the implementation-panel record to
-bind that same plan digest. A same-branch sequence, unlanded tests, test/activation edits,
-marker-present tests-only commit, stale plan digest, unpushed candidate, or earlier-head artifact
-fails even when local ancestry otherwise looks plausible.
+implementation-panel record to bind that same plan digest and exact partition. A same-branch
+sequence, unlanded tests, test/activation edits, marker-present tests-only commit, stale plan
+digest, unpushed candidate, phase-owned/integration-delta overlap, or earlier-head artifact fails
+even when local ancestry otherwise looks plausible.
 
-`phase-loop attest` is a runner-owned non-mutating attestation work unit, not an executor
-closeout field. The caller supplies `--stage candidate|canonical-main`, `--expected-head`, and
-the prior builder/candidate run identity. Before importing any phase-owned attestation helper,
-the fresh CLI process resolves the clean repo/worktree and exact `HEAD`, requires the expected
+`phase-loop attest` is a runner-owned attestation work unit that never edits its clean attesting
+worktree, not an executor closeout field. C4's separately typed runner-owned transition may merge
+the exact external PR only after its pre-merge snapshot passes, and C5 creates `I` before its
+fresh attestation starts; neither operation permits the attester or phase author to edit the
+external path. The caller supplies `--stage candidate|canonical-main`, `--expected-head`, and the
+prior builder/candidate run identity. Before importing any phase-owned attestation helper, the
+fresh CLI process resolves the clean repo/worktree and exact `HEAD`, requires the expected
 40-hex commit, snapshots its runner start token, then imports only from that worktree's
 `phase-loop-runtime/src`; it rejects installed-runtime, different-worktree, dirty-tree, remote
 OID, or loaded-module blob drift. Candidate stage runs the full broad compatible suite and every
@@ -546,10 +602,11 @@ EC-LEGIBLE-4.
   panel verdict, canonical target landing, implementation base/candidate/main heads, and both
   frozen test blob identities in `legible_evidence.v1`; the fresh-process verification artifact
   binds that record by digest. The reducer blocks unless the tests-only landing was first present
-  on the target/default branch before the implementation base, the implementation PR range
-  excludes both test paths, the marker was absent at the landing and present at the candidate,
-  all lifecycle refs retain the frozen tests, and the three JUnit observations have exactly the
-  required 83-nodeid status sets.
+  on the target/default branch before implementation/target base `B`, phase-authored `B..P`
+  contains only frozen owned paths, combined implementation range `B..I` excludes both test
+  paths and differs from `B..P` only by the exact target-integration delta, the marker was absent
+  at the landing and present at the candidate, all lifecycle refs retain the frozen tests, and
+  the three JUnit observations have exactly the required 83-nodeid status sets.
 - Ordinary CI stays GREEN by default on the tests-only landing; forced activation supplies the
   asserted pre-implementation RED evidence. There is no `xfail`, `xpass`, import failure, or
   collection failure escape hatch.
@@ -557,19 +614,22 @@ EC-LEGIBLE-4.
   assumption, and legacy-suite behavior SL-0 owns. The manifest falsifiers stay unsatisfied until
   LEGIBLE-B0/B1/B2, and the catalog, status-evidence, chronology, PR-evidence, fresh-runner-sidecar,
   and artifact-digest falsifiers stay unsatisfied until LEGIBLE-C0/C1/C2. The builder run may
-  execute subprocess tests but cannot attest; only the fresh C4/C5 candidate processes can clear
-  pre-merge evidence, and only the fresh C7 canonical-main process runs both frozen files and
-  every final wrapper as phase-closing evidence.
+  execute subprocess tests but cannot attest; only the fresh C4 transition and C5
+  final-candidate processes can clear pre-merge evidence, and only the fresh C7 canonical-main
+  process runs both frozen files and every final wrapper as phase-closing evidence.
 - SL-1 may proceed after SL-0. SL-2 may proceed only after both SL-0 and SL-1; it consumes the
   manifest report and must not be described or scheduled as ready after SL-0 alone. SL-2 is also
   operationally serialized because it changes external PR state. Re-read live
   `Consiliency/agent-harness#347` and `Consiliency/agent-harness#367`; never rely on this plan's
   point-in-time GitHub snapshot.
-- The candidate command is frozen to a fresh repo-local phase-loop process:
-  `PYTHONPATH=<candidate-worktree>/phase-loop-runtime/src <candidate-python> -m phase_loop_runtime.cli attest --repo <candidate-worktree> --roadmap specs/phase-plans-v10.md --phase LEGIBLE --stage candidate --expected-head <pushed-candidate-oid> --builder-run-id <builder-run-id>`.
-  After the implementation merge, the canonical command uses a different clean worktree/process
-  and replaces stage/head with
-  `--stage canonical-main --expected-head <fetched-canonical-main-oid> --candidate-head <pushed-candidate-oid>`.
+- The transition and final-candidate commands are frozen to fresh repo-local phase-loop
+  processes. C4 starts at phase-authored `P` with
+  `PYTHONPATH=<candidate-worktree>/phase-loop-runtime/src <candidate-python> -m phase_loop_runtime.cli attest --repo <candidate-worktree> --roadmap specs/phase-plans-v10.md --phase LEGIBLE --stage candidate --expected-head <phase-authored-P-oid> --builder-run-id <builder-run-id>`.
+  C5 uses a different clean worktree/process at integrated final candidate `I`, the same command
+  with `--expected-head <integration-I-oid>`, and the C4 transition run identity. After the
+  implementation merge, the canonical command uses a third clean worktree/process and replaces
+  stage/head with `--stage canonical-main --expected-head <fetched-canonical-main-oid>
+  --candidate-head <integration-I-oid>`.
   The command implementation rejects a module resolved outside the named worktree and records
   its fresh process token before importing phase-owned runner/evidence modules.
 - Candidate implementation-panel and merge gates run the frontmatter
@@ -580,8 +640,11 @@ EC-LEGIBLE-4.
   family, cleanroom gate, or candidate-stage evidence command may be filtered out. C7 runs that
   deferred wrapper plus the same broad suite again.
 - `Consiliency/agent-harness#347` readiness/merge occurs only after body-ancestry, exact-head CI,
-  and mandatory review gates pass. Missing merge authority blocks accurately rather than
-  rewriting the criterion or claiming an open PR merged.
+  and mandatory review gates pass. Its allowance is the frozen singleton path/blob transition
+  tied to server base `B`, pinned head `H`, server two-parent merge `M`, and deterministic
+  two-parent integration `I`; it does not alter the exact 15-item phase-owned set. Missing merge
+  authority, target-base drift, or any identity/path/blob mismatch blocks accurately rather than
+  rewriting the criterion, accepting a different PR contribution, or claiming an open PR merged.
 - `Consiliency/agent-harness#367` is not resolved by this phase. The selected catalog-population
   arm is valid whether that issue remains open or later ratifies a broader client-doc design;
   LEGIBLE must not claim the broader decision.
@@ -602,9 +665,11 @@ EC-LEGIBLE-4.
   lane-owned path set, two frozen test paths, lifecycle literal, activation env, capability
   marker, and expected-nodeid count. Every planning, tests-only, candidate, panel, and
   canonical-main artifact must recompute the plan digest and compare that metadata with the
-  plan frontmatter and parsed lane IR. The plan cannot carry its own SHA-256 in frontmatter;
-  omitting this manifest comparison, accepting a stale panel digest, or allowing any lifecycle
-  ref to contain different plan/roadmap bytes is a hard chronology failure.
+  plan frontmatter and parsed lane IR; the frozen `agent-harness#347` path must remain absent from
+  that owned set and is accepted only through the exact target-integration contract in this plan.
+  The plan cannot carry its own SHA-256 in frontmatter; omitting this manifest comparison,
+  accepting a stale panel digest, or allowing any lifecycle ref to contain different
+  plan/roadmap bytes is a hard chronology failure.
 - IF-0-VC-2 command preflight is satisfied only when the plan validator resolves the roadmap
   digest, `verification_commands_from_plan` extracts every command bullet, and
   `resolve_suite_command_doc` resolves the exact frontmatter `automation.suite_command` retained
@@ -639,13 +704,20 @@ EC-LEGIBLE-4.
 - `git diff --check`
 
 For `Consiliency/agent-harness#347`, the runner performs the equivalent of:
-fetch the exact PR head; parse only rows matching
+require server `baseRefName == main`; fetch server base `B` and require it equals both the
+implementation base and current target head; fetch exact pinned head
+`H == a89dd82ed7253193a4084ab9f2e15136fe12ea05`; require the body SHA-256 and singleton
+path/preimage/postimage contract frozen above; parse only rows matching
 `` | `<7-40 lowercase hex>` | `` from the PR body's commit table; run
-`git merge-base --is-ancestor <sha> <exact-pr-head>` for every parsed SHA; require at least one
+`git merge-base --is-ancestor <sha> H` for every parsed SHA; require at least one
 SHA and all results zero; require the PR to be non-draft with required checks/reviews satisfied;
-merge; then require `state == MERGED`, non-null `mergedAt`, and a non-null merge commit from
+merge with merge-commit method; then require `state == MERGED`, non-null `mergedAt`, and a
+non-null server merge commit `M` from
 `gh pr view 347 --repo Consiliency/agent-harness --json state,mergedAt,mergeCommit,headRefOid,body`.
-The runner writes only redacted metadata and digests to the operational evidence artifact.
+The runner requires `parents(M) == [B, H]`, `changed(B, M)` to be exactly the frozen path/blob
+transition, creates integration commit `I` with `parents(I) == [P, M]` and the independently
+recomputed clean-merge tree, and proves the phase/external partition above. The runner writes
+only redacted metadata and digests to the operational evidence artifact.
 
 ## Acceptance Criteria
 

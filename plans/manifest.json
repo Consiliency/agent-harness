@@ -669,7 +669,7 @@
                 "specs/roadmap-assumption-probes-v10.json",
                 "specs/roadmap-status.json"
               ],
-              "plan_sha256": "078827bc8e1dcc6a0eb1c438df38ab9363cfbbc47c822d492cfe4bb9b09c3820",
+              "plan_sha256": "304e092bb96f07ea89eb056b94a68d6255b3435860ba9d5c785eb8c5df595b05",
               "test_paths": [
                 "phase-loop-runtime/tests/test_legible_evidence.py",
                 "phase-loop-runtime/tests/test_legible_roadmap_contract.py"
