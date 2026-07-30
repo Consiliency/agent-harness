@@ -315,14 +315,19 @@ command — and so the three vacuity forms observed on 2026-07-28/29 are mechani
 - [ ] EC-PROOFGATE-4 — A falsifier for a guard must target the PRODUCTION CONSTRUCTION SITE, not only the helper; falsified by unwiring `epoch_blocked` and finding every test still passes
 - [ ] EC-PROOFGATE-5 — A parametrized falsifier must be shown to kill EVERY parameter; a surviving parameter is reported; falsified by a parametrized mutation that survives for one parameter while the run reports all-killed — the observable is a per-parameter kill table with a non-empty survivor set, not a file-level pass that hides it
 - [ ] EC-PROOFGATE-6 — An acceptance item asserting "X did not happen" must declare its path-entered control; falsified by an "X did not happen" item with no path-entered control validating green — the observable is the validator rejecting the item for a missing positive control, not accepting it
-- [ ] EC-PROOFGATE-7 — Legacy plans predating this grammar are grandfathered explicitly, not silently failed; falsified by a pre-grammar plan hard-failed by the new check with no grandfather record — the observable is a warn-level (grandfathered) disposition tagged with the plan's pre-grammar date, not a hard error
+- [ ] EC-PROOFGATE-7 — Legacy plans predating this grammar are grandfathered explicitly, not silently failed; falsified by exact same-ID complete raw criterion bytes proven at the trusted cutoff being hard-failed with no grandfather record — the sole grandfather observable is a warn-level disposition carrying the server-attested pre-grammar date for those exact bytes; changed/new bytes, missing cutoff proof, or invalid non-grandfathered structure/vacuity remain hard errors
 
 **Scope notes**
 Decompose into 3 lanes: lane A owns the grammar and validator check (extends check P alongside the
 existing check E test-before-impl); lane B owns the mutation-evidence record shape and its
 `mutation_not_applied` state, publishing IF-0-PROOFGATE-1 day 1; lane C owns the grandfathering
-rule and the regression corpus of known-bad criteria (ah#358 originals, ah#288 AC-1/AC-4). Warn
-level by default, per the standing autonomy-first guardrail — checks G and K are the precedent.
+rule and the regression corpus of known-bad criteria (ah#358 originals, ah#288 AC-1/AC-4).
+Invalid non-grandfathered structural or vacuity contracts satisfying the rejection cases in
+EC-PROOFGATE-1/-3/-6 are hard validator, intake, and closeout errors. The sole warn-level
+grandfather disposition is for exact same-ID complete raw bytes proven at the trusted cutoff and
+carries their server-attested pre-grammar date. Other advisory Check P findings may remain
+warning-level under the standing autonomy-first guardrail only when they do not satisfy an
+invalid/rejection case; checks G and K remain the advisory precedent.
 
 **Non-goals**
 Granting review legs execution capability. Review bundles are attacker-controlled by construction;

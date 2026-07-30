@@ -607,6 +607,287 @@
     },
     {
       "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:07:17Z",
+      "file": "plans/phase-plan-v10-LEGIBLE.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T040717Z-01-legible-plan.md",
+      "if_gates_produced": [
+        "IF-0-LEGIBLE-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T04:07:17Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T040717Z-01-legible-plan.md",
+            "legible_plan_contract": {
+              "activation_env": "PHASE_LOOP_TDD_EXPECT_LEGIBLE",
+              "capability_marker": "phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1",
+              "expected_nodeids": 83,
+              "lifecycle": "legible_tdd_candidate_main.v1",
+              "owned_paths": [
+                ".claude/docs-catalog.json",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/discovery.py",
+                "phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py",
+                "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+                "phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py",
+                "phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py",
+                "phase-loop-runtime/src/phase_loop_runtime/roadmap_lint.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+                "phase-loop-runtime/tests/test_legible_evidence.py",
+                "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
+                "plans/manifest.json",
+                "specs/roadmap-assumption-probes-v10.json",
+                "specs/roadmap-status.json"
+              ],
+              "plan_sha256": "70f36880e03e80561474b97013df3ca923bbbbe090c70d50171593979a64d0f1",
+              "test_paths": [
+                "phase-loop-runtime/tests/test_legible_evidence.py",
+                "phase-loop-runtime/tests/test_legible_roadmap_contract.py"
+              ]
+            },
+            "run_id": "20260730T040717Z-01-legible-plan"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "LEGIBLE",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/6a8f043f/codex-v10-plan-legible/20260730T040717Z-01-legible-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-LEGIBLE",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T08:37:37Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:13:47Z",
+      "file": "plans/phase-plan-v10-REVIEWTRUTH.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
+      "if_gates_produced": [
+        "IF-0-REVIEWTRUTH-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4",
+        "SL-5",
+        "SL-6"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T04:13:47Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
+            "plan_sha256": "67a448c622409515ed8c430013a13681ffb9b55446ec964b45142cd0c3cc24fe",
+            "run_id": "20260730T035938Z-01-reviewtruth-plan"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "REVIEWTRUTH",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/9256301e/codex-v10-plan-reviewtruth/20260730T035938Z-01-reviewtruth-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-REVIEWTRUTH",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T12:05:33Z"
+    },
+    {
+      "created_at": "2026-07-30T04:08:46Z",
+      "file": "plans/phase-plan-v10-PROOFGATE.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-proofgate-plan.md",
+      "if_gates_produced": [
+        "IF-0-PROOFGATE-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T07:26:25Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "proofgate_plan_contract": {
+              "activated_red_failures": 37,
+              "activation_env": "PHASE_LOOP_TDD_EXPECT_PROOFGATE",
+              "attended_live_env": "PHASE_LOOP_PROOFGATE_ATTENDED_LIVE",
+              "attended_phase_nodeids": 39,
+              "attended_real_provider_rows": 4,
+              "attested_core_contract": "proofgate_attested_core.v1",
+              "attested_core_digest_placement": "external_filename_attestation_subject_append_only",
+              "acceptance_invalid_enforcement": "validator_nonzero_intake_closeout_block",
+              "bootstrap_paths": [
+                ".github/workflows/proofgate-receipt-attestation.yml",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                "phase-loop-runtime/src/phase_loop_runtime/proofgate_isolation.py",
+                "phase-loop-runtime/src/phase_loop_runtime/proofgate_receipts.py"
+              ],
+              "capability_marker": "phase_loop_runtime.proofgate_capability:PROOFGATE_CAPABILITY_VERSION=proofgate.v1",
+              "credential_claim_scope": "active_transport_session_and_protocol_issued_credentials",
+              "credential_egress_response_protocol": "credential_egress_response_protocol.v1",
+              "credential_transform_contract": "credential_transform_closure.v1",
+              "default_skip_nodeids": 36,
+              "expected_nodeids": 39,
+              "external_head_append_contract": "proofgate_external_head_append.v1",
+              "external_head_contract": "proofgate_external_head.v1",
+              "external_head_ref": "refs/heads/proofgate-receipt-head-v1",
+              "grandfathered_acceptance_compatibility": "exact_cutoff_raw_bytes_server_attested_date_warn_only",
+              "identity_response_framing_contract": "identity_response_framing.v1",
+              "lifecycle": "proofgate_tdd_candidate_main.v1",
+              "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
+              "ordinary_phase_nodeids": 39,
+              "owned_path_patterns_count": 37,
+              "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
+              "plan_sha256": "a56901b7aa3a2a5299329a09c0fff01bf09d830412ac22cdd010707e3ce73fec",
+              "positive_control_nodeids": 2,
+              "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
+              "predecessor_plan_sha256": "18422ee52d7a3a77adf6ecd75446abe7fea52da7ff4113f24209d0f292f3bff0",
+              "response_control_canaries": [
+                "set_cookie",
+                "rotated_token",
+                "auth_challenge",
+                "redirect",
+                "refresh_response",
+                "unsupported_control_metadata"
+              ],
+              "response_release_contract": "taint_clean_bounded_content_frame.v1",
+              "roadmap_sha256": "e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PROOFGATE",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/333d0320/codex-v10-plan-proofgate/20260730T035716Z-01-proofgate-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v10-PROOFGATE",
+      "status": "committed",
+      "type": "phase",
+      "updated_at": "2026-07-30T12:12:58Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:11:08Z",
+      "file": "plans/phase-plan-v10-CONFORM.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T041108Z-65fd85.md",
+      "if_gates_produced": [
+        "IF-0-CONFORM-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "CONFORM",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-CONFORM",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T06:09:12Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:08:05Z",
+      "file": "plans/phase-plan-v10-FABPUB.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-fabpub-plan.md",
+      "if_gates_produced": [
+        "IF-0-FABPUB-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "FABPUB",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-FABPUB",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T04:08:05Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:16:33Z",
+      "file": "plans/phase-plan-v10-HARDEN.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035939Z-01-harden-plan.md",
+      "if_gates_produced": [],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "HARDEN",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-HARDEN",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T06:19:31Z"
+    },
+    {
+      "acceptance_criteria_count": null,
       "created_at": "2026-07-29T00:00:00Z",
       "file": "specs/phase-plans-v10.md",
       "handoff_ref": null,
