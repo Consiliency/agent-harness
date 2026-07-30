@@ -965,12 +965,12 @@
       ],
       "lifecycle": [
         {
-          "at": "2026-07-30T15:00:54Z",
+          "at": "2026-07-30T19:20:13Z",
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
-              "reason": "fabpub_exact_oid_and_shared_repository_allocator_panel_repair",
+              "plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
+              "reason": "fabpub_authenticated_legacy_store_cutover_panel_repair",
               "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
             },
             "fabpub_plan_contract": {
@@ -978,7 +978,8 @@
               "activation_env": "PHASE_LOOP_TDD_EXPECT_FABPUB",
               "capability_marker": "phase_loop_runtime.fabpub_capability:FABPUB_CAPABILITY_VERSION=1",
               "expected_commit_state_machine": "PREPARED_COMMIT_OBJECT_DURABLE_COMMITTED_HEAD_RESOLVED",
-              "expected_nodeid_delta_from_current_plan": 1,
+              "expected_nodeid_delta_from_current_plan": 4,
+              "expected_nodeid_delta_from_v10_fabpub_baseline": 5,
               "expected_oid_recovery": "ref_expected_finalize_ref_parent_retry_same_cas_every_other_oid_block",
               "fresh_exact_digest_panel_required": [
                 "fable",
@@ -986,12 +987,21 @@
                 "gemini",
                 "grok"
               ],
-              "latest_panel_plan_sha256": "59e8b589569d9f3a99f31e0c66c39ebab67e918b98c539ba12705e1e051c6ca2",
+              "latest_panel_plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
+              "latest_panel_record_sha256": "bcebe3f15c2f909ceb4146949f3eb44c70c66bac04d135ea2a22747d0b8b27cc",
+              "legacy_cutover_nodeids": [
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_high_water_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_replays_terminal_completed_effect_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_outcome_ambiguous_block_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_conflict_collision_and_idempotent_resume_before_activation"
+              ],
+              "legacy_store_cutover_contract": "authenticated_manifest_snapshot_archive_tombstone_receipt_armed_before_canonical_route",
               "lifecycle": "fabpub_tdd_candidate_main.v1",
               "owned_paths": [
                 "CHANGELOG.md",
                 "phase-loop-runtime/src/phase_loop_runtime/cli.py",
                 "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py",
                 "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py",
                 "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py",
                 "phase-loop-runtime/src/phase_loop_runtime/convergence/contracts.py",
@@ -1013,16 +1023,16 @@
                 "phase-loop-runtime/tests/test_train_prebuilt.py",
                 "phase-loop-runtime/tests/test_train_runner.py"
               ],
-              "owned_paths_count": 23,
-              "owned_paths_sha256": "70c3a3c3c292683db8942e40ce7feb8053c4a10957e063169a8eb48e4554c767",
-              "plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
-              "prior_manifest_plan_sha256": "d9cda3e05c1719111c50ed556625b7068fa28d623debad94276d170fd9d47100",
+              "owned_paths_count": 24,
+              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
+              "plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
+              "prior_manifest_plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
               "repository_identity_contract": "canonical_git_common_dir_and_object_format_full_sha256",
               "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
               "shared_allocator_nodeids": [
                 "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_allocator_shared_repository_epoch_across_linked_worktrees_and_train_roots"
               ],
-              "shared_allocator_store_contract": "one_repository_store_under_train_independent_broker_root",
+              "shared_allocator_store_contract": "one_repository_store_under_train_independent_broker_root_after_armed_legacy_cutover",
               "test_paths": [
                 "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
                 "phase-loop-runtime/tests/test_convergence_broker_admission.py",
@@ -1057,7 +1067,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T15:00:54Z"
+      "updated_at": "2026-07-30T19:20:13Z"
     },
     {
       "acceptance_criteria_count": null,
