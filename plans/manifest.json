@@ -704,8 +704,19 @@
               "lock_sha256": "b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce",
               "ownership": "codex-plan-phase_not_reviewtruth_lane_implementation"
             },
+            "gate_a_skip_freeze": {
+              "boundary_collection_count": 4,
+              "boundary_collection_sha256": "09e45269b62ec9c4ac0584600d77e883b9c3fbd67a89415ba6650ee9f6efe3be",
+              "boundary_runtime_count": 59,
+              "boundary_runtime_sha256": "760925fe088328171cd7dc83172736a10904275d50b4da675e1f4a0a583d4b69",
+              "expected_gate_a_count": 102,
+              "expected_gate_a_sha256": "57746ee994520651677a0b0dcdd50334eb52ccdc109ef71d6dd352ce95a8bcce",
+              "restricted_source_count": 39,
+              "restricted_source_sha256": "59dfdd0c70679e8e2356b8dcffbb78faa795c5caa5025ce949e96522923023ea",
+              "tuple_shape": "nodeid_phase_reason"
+            },
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
-            "plan_sha256": "9d30d412d2d9d47089b53634e29997591815c3e31f9cbe145f6c35d6b24fc027",
+            "plan_sha256": "fb6e8c1ec83c74f02abfa8b0c22c612e86a06bc4d2677483c58a90699a47d2c5",
             "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
             "run_id": "20260730T035938Z-01-reviewtruth-plan"
           },
@@ -725,7 +736,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T15:45:30Z"
+      "updated_at": "2026-07-30T18:59:17Z"
     },
     {
       "created_at": "2026-07-30T04:08:46Z",
