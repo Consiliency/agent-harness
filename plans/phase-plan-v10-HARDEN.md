@@ -46,6 +46,19 @@ pre-change runtime may author transition evidence or attest the candidate.
 
 `plans/manifest.json` is a runner-owned lifecycle-control path outside every
 HARDEN lane and outside the immutable 25/9/14 phase/test/checkpoint path sets.
+This repaired planning package normalizes every current manifest row to the
+exact sixteen-key shape emitted by `plan_manifest._entry_to_json()`: the sole
+pre-repair exception, `v10-PROOFGATE`, receives only
+`acceptance_criteria_count: null` and `task_summary: null`, with no lifecycle or
+semantic change. That one-time normalization is part of the planning package,
+not lifecycle-control PR `L` or `F`. Before dispatch, the coordinator requires
+the frozen manifest pre-image to survive
+`_manifest_to_json(read_manifest(repo))` with exact parsed row equality and
+uses the real `update_lifecycle()` on a disposable copy to simulate the exact
+`committed -> executing -> completed` HARDEN sequence. Each simulated step must
+change only the API-defined HARDEN fields and must leave every parsed sibling
+row exactly equal; any shape, optional-field, key, or value drift blocks before
+`SL-0`.
 After plan validation and before any `SL-0` write, the installed executor must
 perform its normal
 `update_lifecycle(repo, "v10-HARDEN", "executing", "codex-execute-phase",
@@ -764,7 +777,10 @@ command may invoke `verify_harden_evidence.py`, read an unsealed current-run
 artifact, or claim post-suite output as suite evidence.
 
 0. **Land the normal lifecycle append before lane work.** After validating the
-   plan and freezing the clean manifest pre-image, the installed executor calls
+   plan, proving the clean manifest pre-image is row-stable under the production
+   serializer, and passing the disposable exact
+   `committed -> executing -> completed` simulation with zero sibling drift, the
+   installed executor calls
    `update_lifecycle()` once for slug `v10-HARDEN`, transition `executing`,
    writer `codex-execute-phase`, and exact metadata
    `{"run_id": <run-id>, "phase_alias": "HARDEN"}`. Before any `SL-0` file is
@@ -954,9 +970,15 @@ commit/push/merge operations.
   a degraded 3-of-4 result blocks. Because the boundary does not exist yet,
   this pre-implementation record is a TDD/governance prerequisite, never
   `EC-HARDEN-5` route evidence and never a substitute for the isolated exact-`I`
-  or exact-`M` panel.
+  or exact-`M` panel. The prior exact-digest `DISAGREE` record remains immutable
+  historical evidence bound to its reviewed predecessor digest; it is not
+  relabeled as approval, and this repaired digest requires a fresh unanimous
+  panel before dispatch.
 - After that exact-plan panel and before any test write, the installed executor
-  performs its normal `committed -> executing` manifest lifecycle update. The
+  first proves the checked-in manifest is production-serializer row-stable and
+  that disposable real-API simulations of both HARDEN transitions preserve
+  every sibling row exactly, then performs its normal `committed -> executing`
+  manifest lifecycle update. The
   external coordinator treats `plans/manifest.json` as a single runner-owned
   control path, not a HARDEN lane path: it accepts only the exact API delta,
   lands it alone through the distinct two-parent control PR `L`, fetches the
@@ -1088,7 +1110,7 @@ must never be represented as pre-seal suite evidence.
 
 ## Acceptance Criteria
 
-- [ ] EC-HARDEN-0 — proven by the frozen guard's default 5-pass/19-skip JUnit, activated 24-nodeid and per-case raw intended-RED/JUnit records, and passed fresh-parent `_audit_harden_post_suite_outputs()` plus terminal lifecycle-control audit; the audits must prove immutable tests/guard; exact manifest validation through the stable unique contract record, including fail-closed missing/duplicate/conflict/drift cases, 25/9/14 path counts and SHA-256 values, and the 24-node inventory digest; the normal executing append as the sole pre-lane dirty path; exact manifest-only ordered two-parent control merge `L` before tests branch creation; ordered two-parent tests and implementation PR merges; implementation PR range excluding every `SL-0` path, the tests-only commit, and `plans/manifest.json`; immutable out-of-worktree coordinator identity; manual closeout plus rejected/manually reopened old-runtime false completion; whole-phase GPT-5.6 Terra child exit without commit; both runtime schedulers off; coordinator-only commits/push/merge; no release/tag/publish action; actual direct ancestry `L -> T -> C -> I`; checkpoint `C` containing exactly changed `SL-1`+`SL-2` paths while the manifest is clean; unchanged two-path `SL-3` residual containment with no hidden third manifest residual; no synthetic/history-laundering mechanism; a distinct clean exact-`C` process proving activated exact 13 green + 7 green + 4 RED with verifier absent; a distinct clean exact-`I` process proving environment-activation-absent all 24 green only after verifier/docs commit `I`; distinct candidate/main processes and exact loaded heads/modules; exported run dirs only in new runtimes; broad compatible suite before each isolated exact-head four-seat panel; candidate `--lifecycle-stage candidate` evidence; post-landing `--lifecycle-stage post_landing` evidence; exact completed append and manifest-only ordered two-parent closeout merge `F` preserving every non-manifest blob from audited `M`; and the lifecycle normal executing append → control merge `L` → tests merge → activated RED → Terra child exit → real checkpoint `C` → clean 13/7/4 proof → real direct-child `I` → clean all-24 proof → push/transition → fresh candidate suite/isolated four-seat panel/audit → ordered two-parent implementation merge → fresh canonical-main suite/isolated four-seat panel/final audit → completed-control merge `F` → terminal complete
+- [ ] EC-HARDEN-0 — proven by the frozen guard's default 5-pass/19-skip JUnit, activated 24-nodeid and per-case raw intended-RED/JUnit records, and passed fresh-parent `_audit_harden_post_suite_outputs()` plus terminal lifecycle-control audit; the audits must prove immutable tests/guard; exact manifest validation through the stable unique contract record, including fail-closed missing/duplicate/conflict/drift cases, canonical sixteen-key current-row normalization, production-serializer parsed-row stability, disposable real-API `committed -> executing -> completed` simulation with zero sibling drift, 25/9/14 path counts and SHA-256 values, and the 24-node inventory digest; the normal executing append as the sole pre-lane dirty path; exact manifest-only ordered two-parent control merge `L` before tests branch creation; ordered two-parent tests and implementation PR merges; implementation PR range excluding every `SL-0` path, the tests-only commit, and `plans/manifest.json`; immutable out-of-worktree coordinator identity; manual closeout plus rejected/manually reopened old-runtime false completion; whole-phase GPT-5.6 Terra child exit without commit; both runtime schedulers off; coordinator-only commits/push/merge; no release/tag/publish action; actual direct ancestry `L -> T -> C -> I`; checkpoint `C` containing exactly changed `SL-1`+`SL-2` paths while the manifest is clean; unchanged two-path `SL-3` residual containment with no hidden third manifest residual; no synthetic/history-laundering mechanism; a distinct clean exact-`C` process proving activated exact 13 green + 7 green + 4 RED with verifier absent; a distinct clean exact-`I` process proving environment-activation-absent all 24 green only after verifier/docs commit `I`; distinct candidate/main processes and exact loaded heads/modules; exported run dirs only in new runtimes; broad compatible suite before each isolated exact-head four-seat panel; candidate `--lifecycle-stage candidate` evidence; post-landing `--lifecycle-stage post_landing` evidence; exact completed append and manifest-only ordered two-parent closeout merge `F` preserving every non-manifest blob from audited `M`; and the lifecycle normal executing append → control merge `L` → tests merge → activated RED → Terra child exit → real checkpoint `C` → clean 13/7/4 proof → real direct-child `I` → clean all-24 proof → push/transition → fresh candidate suite/isolated four-seat panel/audit → ordered two-parent implementation merge → fresh canonical-main suite/isolated exact-head four-seat panel/final audit → completed-control merge `F` → terminal complete
 - [ ] EC-HARDEN-1 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_review_leg_sandbox.py -q -k review_stage_rejects_every_escape_form_before_launch`
 - [ ] EC-HARDEN-2 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_reconcile_portability_85c.py -q -k "cwd_independent or repo_anchored"`
 - [ ] EC-HARDEN-3 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests/test_goal_coverage.py -q -k "enforce_blocks_every_zero_declared or all_bare_legacy_is_distinct"`; both selected tests must pass, and the all-bare test must prove warn/default is nonblocking while every enforce completion gate returns non-human `contract_bug`

@@ -739,6 +739,7 @@
       "updated_at": "2026-07-30T18:59:17Z"
     },
     {
+      "acceptance_criteria_count": null,
       "created_at": "2026-07-30T04:08:46Z",
       "file": "plans/phase-plan-v10-PROOFGATE.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-proofgate-plan.md",
@@ -903,6 +904,7 @@
       },
       "slug": "v10-PROOFGATE",
       "status": "committed",
+      "task_summary": null,
       "type": "phase",
       "updated_at": "2026-07-30T15:33:39Z"
     },
@@ -1087,8 +1089,12 @@
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "plan_sha256": "ac7010e0f2e0e93edea051bf6c59e66d2a76ee17aa0609bfdf8cb37b030340e8",
-              "reason": "validator_admissible_verification_command_repair",
+              "historical_dissent_panel_sha256": "110487d9e27cde7af4e958bc1df03846003c7fccb17cc979f82b426a3fde0f0f",
+              "historical_dissent_plan_sha256": "ac7010e0f2e0e93edea051bf6c59e66d2a76ee17aa0609bfdf8cb37b030340e8",
+              "historical_dissent_verdict": "DISAGREE",
+              "plan_sha256": "6cb31b7a4a8ad5fb28c07203568361b00af9999e8195039d2a8970c8c8d114e5",
+              "predecessor_plan_sha256": "ac7010e0f2e0e93edea051bf6c59e66d2a76ee17aa0609bfdf8cb37b030340e8",
+              "reason": "exact_digest_panel_lifecycle_reachability_repair",
               "roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071"
             },
             "harden_plan_contract_record_id": "v10-HARDEN.harden-plan-contract.v1",
@@ -1174,7 +1180,7 @@
               "owned_paths_count": 25,
               "owned_paths_sha256": "24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2",
               "phase_scheduler_mode": "off",
-              "plan_sha256": "ac7010e0f2e0e93edea051bf6c59e66d2a76ee17aa0609bfdf8cb37b030340e8",
+              "plan_sha256": "6cb31b7a4a8ad5fb28c07203568361b00af9999e8195039d2a8970c8c8d114e5",
               "pre_auth_ordering_nodeids": [
                 "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
                 "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
