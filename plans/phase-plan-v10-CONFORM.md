@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CONFORM
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f
+roadmap_sha256: 158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"'
 ---
@@ -33,6 +33,25 @@ default legacy assertion, requires its activated missing-mirror RED and final ex
 assertion, adds `MANIFEST.in` ownership, and adds one exact wheel/sdist/sdist-derived-wheel
 archive node. The predecessor panel remains immutable historical dissent; the changed
 plan/roadmap pair requires a fresh full four-seat panel before CONFORM-T0.
+
+The newest immutable local-three review at
+`.phase-loop/reviews/v10-conform-plan-panel.json` has file SHA-256
+`755fd66590f5ba448c45046e277d9d19417c972f3f09c860bd33e143be3455b9`.
+It reviewed predecessor plan SHA-256
+`9fcefd70eb3cbffbcc603d8c741fa19d1c66a53815ee974e10ce306800463c2a`,
+roadmap SHA-256 `4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f`,
+bundle SHA-256 `73d7c6fa996b7c94abaf79185ec7771ccf9859caabf5636ea0f96c8651ffcece`
+(`125308` bytes), and instructions SHA-256
+`f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356`.
+Two legs returned usable `AGREE`; GPT-5.6 Sol returned usable `DISAGREE`, finding that the
+archive-inclusion singleton digest printed in this plan was only 62 characters and could not
+match the manifest. This immutable historical dissent authorizes nothing. The execution notes
+now carry the recomputed 64-character LF-terminated nodeid SHA-256 exactly.
+
+CONFORM is no longer an executable root: it starts only from the exact two-parent LEGIBLE
+landing, rechecks its owned-path/source anchors on that fetched base before CONFORM-T0, and
+repairs/re-panels if LEGIBLE changed an assumed byte. It may execute concurrently with PROOFGATE,
+the sole disjoint root-plan writer.
 
 Main already contains the merged `spec@v0.2.1` pin, per-schema digests, and refreshed handoff from agent-harness#377 (merge commit `77edd4635d6c866f2e6f18f68ab45b7b70553c85`). Draft agent-harness#372 at head `53efaf66adb255f868e1abf5fbc57fd82b1e8109` remains open and is evidence only: no file, commit ordering, or claim from that branch is an authority input. Execution must sync current main, record that commit as the exact `<execution-base>`, form the final contract tests and their immutable source fixture as a literal test-paths-only first landing, panel that exact test commit, observe and retain discriminating RED against `<execution-base>`, and only then change packaged data or production code. The chronology verifier must prove the conformance production paths at `<execution-base>` have not changed from the reviewed `1627e3f…` behavior baseline or require another plan review before treating that earlier RED premise as applicable.
 
@@ -214,7 +233,7 @@ The final evidence JSON must enumerate EC-CONFORM-0 through EC-CONFORM-8 exactly
 - Draft agent-harness#372 is evidence, not a merge source. Port reviewed behavior as needed, but do not preserve its commit ordering: all final tests, test-only source fixtures, mutation definitions/anchors, expected-case maps, command tables, and positive controls must be consolidated into SL-0 before any SL-1 path changes. Those frozen definitions do not constitute mutation evidence: all dispatch, schema-selection, redaction, and equivalent per-falsifier mutations execute only against immutable `<candidate-commit>` after SL-1. Packaged `_contract/` bytes belong only to SL-1. SL-1 and SL-2 must not modify SL-0-owned files.
 - The tests-only change lands independently before the implementation branch: exact pushed/panelled `<test-candidate>` → two-parent `<test-landing>` on canonical main. The implementation branch starts from that landing, preserves every SL-0 byte, freezes pushed `<candidate-commit>` for A2/B0, adds only SL-2 files to pushed `<final-candidate>`, clears the exact-head board, and lands as two-parent `<implementation-landing>`. Squash, rebase, direct-push, single-parent, octopus, test-and-code-in-one-merge, or a first parent other than the recorded canonical-main tip fails chronology.
 - Same-phase verifier self-attestation is forbidden. The coordinator checks the remote ref resolves to the expected pushed SHA and the checkout is clean before spawning each candidate process; checks canonical main separately in fresh processes at `<test-parent>`, `<test-landing>`, `<implementation-parent>`, and final `<canonical-main-head>`; and does not import `phase_loop_runtime`, `outside_agent_conform_evidence`, or any modified runner/verifier/parser module in the parent process. Final B2 replays all proof from exact canonical main and treats earlier verifier booleans only as untrusted inputs backed by raw bytes.
-- The complete tracked phase-owned write set is the 22-pattern union of SL-0 through SL-2, SHA-256 `285e9ddb9d6f1996e3746f809cbe240053b6efe81504fc8e8c2913fd2660e427` over the sorted LF-joined patterns plus terminal LF. Its six-pattern test subset has SHA-256 `d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145` under the same framing. The exact migrated no-copy node singleton digest is `7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe`; the exact archive-inclusion node singleton digest is `ccb295db192a045c224dc7f74819f8b83adb6db348d8b2d155a5c4f73005c0`. `outside_agent_pin.py`, `outside_agent_imports.py`, `outside_agent_provenance.py`, `conformance/__init__.py`, `README.md`, `specs/phase-plans-v10.md`, `ruff.toml`, release workflows, versions, lockfiles, environment examples, migrations, snapshots, governed-pipeline files, legacy `.codex/phase-loop/**`, and canonical `.phase-loop/**` state are read-only. The frozen tests assert exact preservation/importability of the entire current `conformance.__all__` surface. Runner-owned metadata under `.phase-loop/artifacts/CONFORM/**` is allowed but is not phase-owned product output.
+- The complete tracked phase-owned write set is the 22-pattern union of SL-0 through SL-2, SHA-256 `285e9ddb9d6f1996e3746f809cbe240053b6efe81504fc8e8c2913fd2660e427` over the sorted LF-joined patterns plus terminal LF. Its six-pattern test subset has SHA-256 `d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145` under the same framing. The exact migrated no-copy node singleton digest is `7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe`; the exact archive-inclusion node singleton digest is `ccb295db192a045c224dc7f74819f8b83adb6db348d8d8b2d155a5c4f73005c0`, recomputed over its full UTF-8 nodeid plus one terminal LF. `outside_agent_pin.py`, `outside_agent_imports.py`, `outside_agent_provenance.py`, `conformance/__init__.py`, `README.md`, `specs/phase-plans-v10.md`, `ruff.toml`, release workflows, versions, lockfiles, environment examples, migrations, snapshots, governed-pipeline files, legacy `.codex/phase-loop/**`, and canonical `.phase-loop/**` state are read-only. The frozen tests assert exact preservation/importability of the entire current `conformance.__all__` surface. Runner-owned metadata under `.phase-loop/artifacts/CONFORM/**` is allowed but is not phase-owned product output.
 - `jsonschema>=4,<5` is already declared in `phase-loop-runtime/pyproject.toml`; no dependency or lockfile change is expected. The only expected pyproject delta is package-data inclusion for `conformance/_contract/**`; the matching `MANIFEST.in` delta is separately required so the same exact mirror enters source distributions and their derived wheels. The exact `spec@v0.2.1` `consiliency_spec/outside_agent_router.py` bytes pass the current repo-root `ruff.toml` (`select=["F"]`, `ignore=["F841"]`); bind that result before the test freeze and re-run Ruff over the final mirrored path. No lint exclusion/config change is owned or allowed.
 - Preserve the canonical corpus byte-for-byte from `spec@v0.2.1`. `VENDOR.json` must enumerate exactly the 15 mirrored authority files with source path, mirror path, raw-byte sha256, tag, and dereferenced commit; it cannot self-hash. Preserve exact overall 3-valid/8-invalid set equality and the 3+7+1 `schema_target` role partition. Do not hand-edit canonical bytes to make agent-harness tests pass.
 - The one test-only normative oracle is the mirrored `consiliency_spec/outside_agent_router.py`; it may validate declared verdict/class metadata, but production must not import it or claim agent-harness emits canonical routing classes. agent-harness#379 remains the bounded follow-up.

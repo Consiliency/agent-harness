@@ -611,7 +611,8 @@
       "file": "plans/phase-plan-v10-LEGIBLE.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T040717Z-01-legible-plan.md",
       "if_gates_produced": [
-        "IF-0-LEGIBLE-1"
+        "IF-0-LEGIBLE-1",
+        "IF-0-LEGIBLE-2"
       ],
       "lanes": [
         "SL-0",
@@ -625,20 +626,25 @@
           "metadata": {
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
-              "predecessor_plan_sha256": "2765aa6606242b5d68124e13d8ef798b0075a549371be1f4f23b53e3dbd56cef",
-              "reason": "local_three_log_reseal_and_shared_v3_namespace_contract_repair",
-              "reviewed_bundle_sha256": "9c81cf956d851721064fa2f442dfe31010a7b589ef0a94eb4f86d2b9df61bcf8",
-              "reviewed_panel_sha256": "b2b306a2e56229df7194da489ab8a158616691c8f063f1515c3b4bc7b3bfc585",
-              "reviewed_plan_sha256": "2765aa6606242b5d68124e13d8ef798b0075a549371be1f4f23b53e3dbd56cef",
-              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+              "plan_sha256": "234a8412a875a58b447d2f9cbbf4ce7edd60397133594281c08165e7bed7e89f",
+              "predecessor_plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
+              "reason": "second_exact_digest_selector_fallback_and_root_dag_repair",
+              "reviewed_bundle_bytes": 140117,
+              "reviewed_bundle_sha256": "0a2ecfbeb2fecc6afade833d9c24ab1f3d05caae66541e79a66283715dbb0f05",
+              "reviewed_instructions_sha256": "4b166729c4352ac8c086b19b5c68d279258ffd08068c176122dee2533a3c5160",
+              "reviewed_panel_sha256": "3d9712c05aa988746c14549d6bda550efa9ddef6eb82470ba5e096a62554c538",
+              "reviewed_plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
+              "reviewed_roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d"
             },
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T040717Z-01-legible-plan.md",
             "legible_plan_contract": {
               "activation_env": "PHASE_LOOP_TDD_EXPECT_LEGIBLE",
+              "absent_registry_selector_falsifier_nodeid": "phase-loop-runtime/tests/test_legible_roadmap_contract.py::test_absent_registry_selector_rejects_recognized_non_active_banner_and_preserves_no_declaration_legacy",
+              "absent_registry_selector_falsifier_nodeid_sha256": "e65af55d0f3df427f8b1c1b001fbb69b92585f6790f2daa97f47a2f6adbab93a",
               "capability_marker": "phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1",
-              "expected_nodeids": 83,
+              "expected_nodeids": 84,
+              "legacy_selector_compatibility": "candidate_has_no_lifecycle_declaration",
               "lifecycle": "legible_tdd_candidate_main.v1",
               "log_sha256_scope": "complete_final_v3_sealed_log_bytes",
               "owned_paths": [
@@ -661,8 +667,10 @@
               ],
               "owned_paths_count": 16,
               "owned_paths_sha256": "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b",
-              "plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "phase_dependencies": [],
+              "plan_sha256": "234a8412a875a58b447d2f9cbbf4ce7edd60397133594281c08165e7bed7e89f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
+              "selector_common_return_contract": "parse_candidate_lifecycle_then_reject_recognized_non_active_with_or_without_registry",
               "test_paths": [
                 "phase-loop-runtime/tests/test_legible_evidence.py",
                 "phase-loop-runtime/tests/test_legible_roadmap_contract.py"
@@ -725,14 +733,16 @@
             },
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "ea668b6ebd5f09633d86d716d872c7da6a9cec73adcb903d52dcae82f70102ba",
-              "predecessor_plan_sha256": "fb6e8c1ec83c74f02abfa8b0c22c612e86a06bc4d2677483c58a90699a47d2c5",
-              "reason": "local_three_independent_persistent_gate_a_input_attestation_repair",
-              "reviewed_bundle_sha256": "43cd7ad8a963597b74054dbaa876a774611cd56666304be01bd7e4b2e45a7e3e",
-              "reviewed_panel_sha256": "03cfa5530ee33c0eb5a2a5982d26ca25c2893b7235a87608c37b71dffa7256e9",
-              "reviewed_plan_sha256": "fb6e8c1ec83c74f02abfa8b0c22c612e86a06bc4d2677483c58a90699a47d2c5",
-              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+              "plan_sha256": "23c9274c927890b636dcbdc5e3d89e0c21819cd33703fc774ad4ff0444525a93",
+              "predecessor_plan_sha256": "ea668b6ebd5f09633d86d716d872c7da6a9cec73adcb903d52dcae82f70102ba",
+              "reason": "second_exact_digest_portable_skip_and_root_dag_repair",
+              "reviewed_bundle_bytes": 293204,
+              "reviewed_bundle_sha256": "46e6cf1dca8ce0916ba403de707e48b8dd5e1f7a8c7bda8e3a857731846be035",
+              "reviewed_instructions_sha256": "0315045f8d03308717e5ec218b7341cfb996263d4205029e0679b0a05760d177",
+              "reviewed_panel_sha256": "e90e5b5e9a0ec08e6526beebd8f4259cf7b542dd059bd6cfe86ec4ab4baa0328",
+              "reviewed_plan_sha256": "ea668b6ebd5f09633d86d716d872c7da6a9cec73adcb903d52dcae82f70102ba",
+              "reviewed_roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d"
             },
             "gate_a_skip_freeze": {
               "boundary_collection_count": 4,
@@ -760,8 +770,27 @@
               "tests_only_paths_sha256": "3828b5cd50a38b7665d6520ba437e410ac77a34f15488ce035fb1b6febfdeb6f"
             },
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
-            "plan_sha256": "ea668b6ebd5f09633d86d716d872c7da6a9cec73adcb903d52dcae82f70102ba",
-            "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+            "phase_dependencies": [
+              "CONFORM",
+              "HARDEN"
+            ],
+            "plan_sha256": "23c9274c927890b636dcbdc5e3d89e0c21819cd33703fc774ad4ff0444525a93",
+            "portable_skip_classification": {
+              "allowed_disposition": "environment_interpreter_pair_unavailable",
+              "allowed_reason": "need both python3.10 and python3.12 on host",
+              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_portable_interpreter_pair_disposition_normalizes_host_dependent_skip",
+              "falsifier_nodeid_sha256": "c36541be134c6256e39693869d2038efb47eb8efe2ab099dd701f24c7dfe70cd",
+              "gate_a_normalization": false,
+              "normalized_nodeid": "phase-loop-runtime/tests/test_cr_fixes_pr220.py::test_bare_python_below_floor_shims_even_when_python3_satisfies",
+              "normalized_nodeid_sha256": "866c44921f3cba820cd182671f5df21ed4f51191105effa047958924de916d8a",
+              "portable_python_matrix": [
+                "3.10",
+                "3.11",
+                "3.12"
+              ]
+            },
+            "reanchor_contract": "after_CONFORM_and_HARDEN_land_recompute_owned_paths_tests_counts_digests_and_exact_head_evidence_before_agent_harness_398_gate",
+            "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
             "run_id": "20260730T035938Z-01-reviewtruth-plan"
           },
           "transition": "committed"
@@ -802,14 +831,16 @@
           "metadata": {
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "49be7a0be4d353449b134b64e7f4750e09ecb19dc779b18d9124645398b51af4",
-              "predecessor_plan_sha256": "4d4a94fac2c01028049142688deb8b16f983313384c9d085d7d4efdc6debc417",
-              "reason": "local_three_shared_v3_namespace_and_phase_dependency_repair",
-              "reviewed_bundle_sha256": "3fda3c600554fe1941668022ef73d889e6ecec6550a550b6a1410782c1a23c91",
-              "reviewed_panel_sha256": "272b3bb821cea2181aa7f9a8a138abeb67ef9e02c3d45e529570dc557acb25d2",
-              "reviewed_plan_sha256": "4d4a94fac2c01028049142688deb8b16f983313384c9d085d7d4efdc6debc417",
-              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+              "plan_sha256": "fd3029aa0df21cde4fc275aa21eddb1683bdb47a5cb999c3835b4f3d136983f9",
+              "predecessor_plan_sha256": "49be7a0be4d353449b134b64e7f4750e09ecb19dc779b18d9124645398b51af4",
+              "reason": "second_exact_digest_post_legible_v3_reader_reanchor",
+              "reviewed_bundle_bytes": 236715,
+              "reviewed_bundle_sha256": "0d1e8b5cc47f98781d1fd864ae9a57913006e929add914ffc1d4b57adb4c99fe",
+              "reviewed_instructions_sha256": "3aab131cb64e549dcad235ec97cec230d82300e4f7d6199d97af0088b9b69e6e",
+              "reviewed_panel_sha256": "6ed66c21c872367b3758c29f202bf4b3a875a498178cc9ecaffa172f2b26e54b",
+              "reviewed_plan_sha256": "49be7a0be4d353449b134b64e7f4750e09ecb19dc779b18d9124645398b51af4",
+              "reviewed_roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d"
             },
             "proofgate_plan_contract": {
               "activated_red_failures": 37,
@@ -850,10 +881,11 @@
               "implementation_model": "gemini-3.6-flash",
               "lane_scheduler_mode": "off",
               "latest_exact_digest_panel_blockers": [
-                "verification_evidence_v3_namespace_collision"
+                "stale_verification_evidence_v2_reader_anchor",
+                "roadmap_phantom_v3_producer"
               ],
-              "latest_exact_digest_panel_plan_sha256": "4d4a94fac2c01028049142688deb8b16f983313384c9d085d7d4efdc6debc417",
-              "latest_exact_digest_panel_sha256": "272b3bb821cea2181aa7f9a8a138abeb67ef9e02c3d45e529570dc557acb25d2",
+              "latest_exact_digest_panel_plan_sha256": "49be7a0be4d353449b134b64e7f4750e09ecb19dc779b18d9124645398b51af4",
+              "latest_exact_digest_panel_sha256": "6ed66c21c872367b3758c29f202bf4b3a875a498178cc9ecaffa172f2b26e54b",
               "lifecycle": "proofgate_tdd_candidate_main.v1",
               "manual_lane_order": [
                 "SL-0",
@@ -926,7 +958,7 @@
               "owned_path_patterns_sha256": "a19e9ae2714f414d92b12314e8e9370aa1518a400d638c6eef211eb05e4b6c9b",
               "phase_dependency": "LEGIBLE",
               "phase_scheduler_mode": "off",
-              "plan_sha256": "49be7a0be4d353449b134b64e7f4750e09ecb19dc779b18d9124645398b51af4",
+              "plan_sha256": "fd3029aa0df21cde4fc275aa21eddb1683bdb47a5cb999c3835b4f3d136983f9",
               "proofgate_extension_record": {
                 "fields": [
                   "schema",
@@ -950,7 +982,10 @@
                 "unsupported_control_metadata"
               ],
               "response_release_contract": "taint_clean_bounded_content_frame.v1",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
+              "source_anchor_rows": 11,
+              "source_anchor_rows_sha256": "80b4f521bcd4246375cb19ee54137c0954c87aac6f1fdc5f2d2bdcca37d55da9",
+              "source_reader_seam": "post_LEGIBLE_verification_evidence_v3_registry_reader",
               "tests_only_path_patterns_count": 18,
               "tests_only_path_patterns_sha256": "3b0c0914871e17d56c24fa34e4578c498110425bcc79c4cd3dc10277a1d50deb",
               "typed_oracle_migrated_nodeids": 2,
@@ -996,14 +1031,16 @@
           "metadata": {
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "9fcefd70eb3cbffbcc603d8c741fa19d1c66a53815ee974e10ce306800463c2a",
-              "predecessor_plan_sha256": "cf08ab677f3ee3c0d48b905be902c98ef81758fb884be17e87bf4db93cea821d",
-              "reason": "local_three_migrated_existing_and_source_distribution_contract_repair",
-              "reviewed_bundle_sha256": "45b6a2b2dd33b6bd34795832619f314e116b2ed8c4ac8cc08841595ba263fa62",
-              "reviewed_panel_sha256": "3ef3139c4e2a4fd6bfe1796a7ab26f441c7c92f337daa0263668b1669cd8ad11",
-              "reviewed_plan_sha256": "cf08ab677f3ee3c0d48b905be902c98ef81758fb884be17e87bf4db93cea821d",
-              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+              "plan_sha256": "ca965313ca5829a0956694d70105a2d1c18a152203670ffab3783e7791eedf91",
+              "predecessor_plan_sha256": "9fcefd70eb3cbffbcc603d8c741fa19d1c66a53815ee974e10ce306800463c2a",
+              "reason": "second_exact_digest_archive_nodeid_and_root_dag_repair",
+              "reviewed_bundle_bytes": 125308,
+              "reviewed_bundle_sha256": "73d7c6fa996b7c94abaf79185ec7771ccf9859caabf5636ea0f96c8651ffcece",
+              "reviewed_instructions_sha256": "f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356",
+              "reviewed_panel_sha256": "755fd66590f5ba448c45046e277d9d19417c972f3f09c860bd33e143be3455b9",
+              "reviewed_plan_sha256": "9fcefd70eb3cbffbcc603d8c741fa19d1c66a53815ee974e10ce306800463c2a",
+              "reviewed_roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d"
             },
             "conform_plan_contract": {
               "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
@@ -1016,8 +1053,11 @@
                 "phase-loop-runtime/MANIFEST.in",
                 "phase-loop-runtime/pyproject.toml"
               ],
-              "plan_sha256": "9fcefd70eb3cbffbcc603d8c741fa19d1c66a53815ee974e10ce306800463c2a",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "phase_dependencies": [
+                "LEGIBLE"
+              ],
+              "plan_sha256": "ca965313ca5829a0956694d70105a2d1c18a152203670ffab3783e7791eedf91",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
               "test_path_patterns_count": 6,
               "test_path_patterns_sha256": "d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145"
             }
@@ -1062,22 +1102,34 @@
           "metadata": {
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "e687852a20614ed8559c2c038cc2aa3a6cb0b60f1bec2bc8b2051a9f4b5f32ff",
-              "predecessor_plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
-              "reason": "local_three_exact_serialized_repo_and_global_partition_cutover_repair",
-              "reviewed_bundle_sha256": "d0d2e8210cd52a3a50da22c18a22031a0650905577cc720ae90c2411fc7bd67a",
-              "reviewed_panel_sha256": "3b3cda3d14442b909ec3078e0f749f7e11dcfa813227bf048a603da2197f3e6a",
-              "reviewed_plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
-              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+              "plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
+              "predecessor_plan_sha256": "e687852a20614ed8559c2c038cc2aa3a6cb0b60f1bec2bc8b2051a9f4b5f32ff",
+              "reason": "second_exact_digest_post_commit_authority_and_shared_adapter_start_fence_repair",
+              "reviewed_bundle_bytes": 143810,
+              "reviewed_bundle_sha256": "427fcfdfd7a94c2f85371b0b1b61ce9253bd188dfd18673896dd04e5d46d5c88",
+              "reviewed_instructions_sha256": "d90bdadb68b9c9d2b37ffbc0e9c7e82cca5bcdc1745f3e5b3200b6cbe71c4b85",
+              "reviewed_panel_sha256": "4c69ba8385a779a394bda39bd4317f68abe069bb8d0b7127fada03c63d398ff7",
+              "reviewed_plan_sha256": "e687852a20614ed8559c2c038cc2aa3a6cb0b60f1bec2bc8b2051a9f4b5f32ff",
+              "reviewed_roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d"
             },
             "fabpub_plan_contract": {
-              "acceptance_criteria_count": 8,
+              "acceptance_criteria_count": 9,
               "activation_env": "PHASE_LOOP_TDD_EXPECT_FABPUB",
+              "adapter_start_fence_nodeids": [
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_after_possible_provider_effect"
+              ],
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "adapter_start_ownership_contract": "AdapterStartOwnership.v1_repository_visible_locked_fsynced_before_provider_effect",
+              "allocator_next_epoch_formula": "max(canonical_admission_high_water(R),receipt.legacy_epoch_high_water(R))+1",
+              "authority_handoff_order": "PublishAuthorityPreimages_checkpoint_root_then_COMMITTED_HEAD_RESOLVED_then_PreAdmissionEnvelope_then_BrokerService.execute",
+              "authority_preimage_builder": "_default_build_publish_authority_returns_PublishAuthorityPreimages",
               "capability_marker": "phase_loop_runtime.fabpub_capability:FABPUB_CAPABILITY_VERSION=1",
+              "canonical_repository_identity_role": "storage_and_keying",
               "expected_commit_state_machine": "PREPARED_COMMIT_OBJECT_DURABLE_COMMITTED_HEAD_RESOLVED",
-              "expected_nodeid_delta_from_current_plan": 2,
-              "expected_nodeid_delta_from_v10_fabpub_baseline": 7,
+              "expected_nodeid_delta_from_current_plan": 1,
+              "expected_nodeid_delta_from_v10_fabpub_baseline": 8,
               "expected_oid_recovery": "ref_expected_finalize_ref_parent_retry_same_cas_every_other_oid_block",
               "fresh_exact_digest_panel_required": [
                 "fable",
@@ -1085,8 +1137,8 @@
                 "gemini",
                 "grok"
               ],
-              "latest_panel_plan_sha256": "c0b895a9f758edfd1944ed4a154f5aee429dab4b96d1fc828037e6ac9ab96857",
-              "latest_panel_record_sha256": "3b3cda3d14442b909ec3078e0f749f7e11dcfa813227bf048a603da2197f3e6a",
+              "latest_panel_plan_sha256": "e687852a20614ed8559c2c038cc2aa3a6cb0b60f1bec2bc8b2051a9f4b5f32ff",
+              "latest_panel_record_sha256": "4c69ba8385a779a394bda39bd4317f68abe069bb8d0b7127fada03c63d398ff7",
               "legacy_cutover_global_contract": "LegacyBrokerCutoverManifest.v2_to_LegacyBrokerCutoverTransaction.v2_to_repository_partition_receipts_to_global_ARMED",
               "legacy_cutover_nodeids": [
                 "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_global_legacy_cutover_partitions_multiple_repositories_crash_idempotently_before_activation",
@@ -1128,14 +1180,21 @@
               ],
               "owned_paths_count": 24,
               "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
-              "plan_sha256": "e687852a20614ed8559c2c038cc2aa3a6cb0b60f1bec2bc8b2051a9f4b5f32ff",
+              "phase_dependencies": [
+                "PROOFGATE",
+                "CONFORM"
+              ],
+              "plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
               "prior_manifest_plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
               "repository_identity_contract": "canonical_git_common_dir_and_object_format_full_sha256",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
               "shared_allocator_nodeids": [
                 "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_allocator_shared_repository_epoch_across_linked_worktrees_and_train_roots"
               ],
               "shared_allocator_store_contract": "one_repository_store_under_train_independent_broker_root_after_global_armed_legacy_cutover",
+              "shared_start_recovery": "unsealed_owner_promotes_to_permanent_OUTCOME_AMBIGUOUS_BLOCKED",
+              "train_local_adapter_started_authority": false,
+              "adapter_worktree_role": "validated_provider_execution_location_only",
               "test_paths": [
                 "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
                 "phase-loop-runtime/tests/test_convergence_broker_admission.py",
@@ -1190,15 +1249,17 @@
           "by": "codex-plan-phase",
           "metadata": {
             "digest_rebind": {
-              "historical_dissent_verdict": "NO_USABLE_DISAGREE_LOCAL_THREE_AGREE_FABLE_ABSENT",
-              "plan_sha256": "5e234a6c104d10fa7b452ed9afa975b2dadf2a87483dc24caeb350352e139f25",
-              "predecessor_plan_sha256": "6cb31b7a4a8ad5fb28c07203568361b00af9999e8195039d2a8970c8c8d114e5",
-              "reason": "cross_phase_roadmap_digest_rebind_after_legible_proofgate_ordering_repair",
-              "reviewed_bundle_sha256": "4693db05ab285c18a119046355348d368c3420a014746aad70defc40d35f8dda",
-              "reviewed_panel_sha256": "d7867d92262deeb5b47dd07a1fb03a09c207410c24eccd5fc84007208cd80fb6",
-              "reviewed_plan_sha256": "6cb31b7a4a8ad5fb28c07203568361b00af9999e8195039d2a8970c8c8d114e5",
-              "reviewed_roadmap_sha256": "1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+              "historical_dissent_verdict": "LOCAL_THREE_UNANIMOUS_AGREE_FABLE_ABSENT_NON_AUTHORIZING",
+              "plan_sha256": "f60b9373066b9537f0ea5e78b78b2462dc535cbb04d86e1fa384a14f4bee48da",
+              "predecessor_plan_sha256": "5e234a6c104d10fa7b452ed9afa975b2dadf2a87483dc24caeb350352e139f25",
+              "reason": "second_exact_digest_root_dag_and_manifest_rebind_only",
+              "reviewed_bundle_bytes": 168897,
+              "reviewed_bundle_sha256": "8fe0649119d6909a0e41034115d4e1f2ba6a0795f53f20f51d7ae4705da27c1b",
+              "reviewed_instructions_sha256": "41371fc43a293e7323265d3cd28422af266146f756b2d4c110d3f661ac034354",
+              "reviewed_panel_sha256": "724fdf39c3bd23459988f7f1b0f1a3fea278c56930b6b16c28998738a4c59ead",
+              "reviewed_plan_sha256": "5e234a6c104d10fa7b452ed9afa975b2dadf2a87483dc24caeb350352e139f25",
+              "reviewed_roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d"
             },
             "harden_plan_contract_record_id": "v10-HARDEN.harden-plan-contract.v1",
             "harden_plan_contract": {
@@ -1246,9 +1307,9 @@
               "implementation_executor": "codex",
               "implementation_model": "gpt-5.6-terra",
               "lane_scheduler_mode": "off",
-              "latest_panel_plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
-              "latest_panel_sha256": "884b848d4fc93a7e4cc5661a082bd735fd2bdfd5cba1688b644ab7ae4c0db53c",
-              "latest_panel_verdict": "DISAGREE",
+              "latest_panel_plan_sha256": "5e234a6c104d10fa7b452ed9afa975b2dadf2a87483dc24caeb350352e139f25",
+              "latest_panel_sha256": "724fdf39c3bd23459988f7f1b0f1a3fea278c56930b6b16c28998738a4c59ead",
+              "latest_panel_verdict": "LOCAL_THREE_UNANIMOUS_AGREE_NON_AUTHORIZING",
               "lifecycle": "harden_tdd_candidate_main.v1",
               "new_nodeids": 19,
               "nodeid_delta": 2,
@@ -1282,8 +1343,11 @@
               ],
               "owned_paths_count": 25,
               "owned_paths_sha256": "24ec10238f27645f38893625fc78f389bd6a97168d99c611f18cb2fab6a1d6d2",
+              "phase_dependencies": [
+                "FABPUB"
+              ],
               "phase_scheduler_mode": "off",
-              "plan_sha256": "5e234a6c104d10fa7b452ed9afa975b2dadf2a87483dc24caeb350352e139f25",
+              "plan_sha256": "f60b9373066b9537f0ea5e78b78b2462dc535cbb04d86e1fa384a14f4bee48da",
               "pre_auth_ordering_nodeids": [
                 "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
                 "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
@@ -1294,7 +1358,7 @@
               ],
               "predecessor_plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
               "release_tag_policy": "no_release_no_tag_no_publish",
-              "roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
               "sl1_nodeids": 13,
               "sl2_nodeids": 7,
               "sl3_evidence_nodeids": 4,

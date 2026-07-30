@@ -115,6 +115,10 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
 
 - **IF-0-LEGIBLE-1** — a roadmap status contract: the field/section that declares
   `active | delivered | superseded`, and the runtime accessor that reads it.
+- **IF-0-LEGIBLE-2** — the generic `verification_evidence.v3` envelope: version-relative
+  top-level fields, final-log seal/reseal protocol, the closed extension registry, and the
+  initial `phase_loop_runtime.legible_evidence` namespace. LEGIBLE owns this shared producer;
+  downstream phases own only their registered namespace payloads.
 - **IF-0-REVIEWTRUTH-1** — the typed per-seat outcome (`reviewed | unavailable | errored | timed_out | refused | capped | empty`)
   carried on `PanelLegResult`, distinct from its `text` payload, plus the reviewed-seat count exposed
   to ratification. This shape carries every per-seat OUTCOME state the lifecycle criteria require —
@@ -147,7 +151,19 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   the per-file digest record that guards drift.
 - **IF-0-FABPUB-1** — `make_request(epoch, attempt_id)` and the enforced equalities
   (`request.lease_epoch == epoch`, `request.attempt_id == attempt_id`), plus the commit-stable
-  approval identity resolution.
+  approval identity resolution, ordered post-commit admission-envelope construction, and
+  repository-visible adapter-start ownership. For repository partition `R`, the sole next-epoch
+  formula is
+  `max(canonical_admission_high_water(R), receipt.legacy_epoch_high_water(R)) + 1`; absence of a
+  legacy receipt contributes no floor but never permits caller-stamped authority. Train supplies
+  only authority preimages plus `checkpoint_root`; `publish_from_worktree` reaches
+  `COMMITTED_HEAD_RESOLVED`, then and only then constructs `PreAdmissionEnvelope` and calls
+  `BrokerService.execute`. Canonical repository identity is the storage/keying identity; the
+  separately validated adapter worktree is only the provider execution location. Before any
+  provider effect, the broker durably claims one shared-repository `AdapterStartOwnership.v1`
+  under the canonical evidence-store lock. A competing train/attempt fails closed, and recovery
+  promotes any unsealed shared start to permanent `OUTCOME_AMBIGUOUS_BLOCKED`; train-local
+  `ADAPTER_STARTED` alone is never authority.
 
 
 ## Absorbed Roadmaps (bookkeeping — this roadmap SUPERSEDES these)
@@ -209,6 +225,7 @@ trackable and a delivered roadmap is distinguishable from an abandoned one.
 - [ ] EC-LEGIBLE-5 — The `.claude/docs-catalog.json` scaffold either gains its rescan implementation or is removed; an empty catalog no longer reads as a populated one; falsified by leaving an empty `.claude/docs-catalog.json` in place and finding a reader still reports it populated — the observable is the reported catalog entry count read as >0 while the file enumerates none. (Disposition on the "or is removed" arm, verified against round-7 finding 5: this is a LEGIBILITY criterion — empty ≠ populated — and deletion is a legitimate resolution because a deleted scaffold cannot lie; it is NOT a carrier for `agent-harness#367`, a SEPARATE and UNRATIFIED decision about cataloging CLIENT-owned documents whose forks D1a-scan/D1b-declare are still open. v10 claims nowhere to deliver #367, so EC-LEGIBLE-5 does not DROP it — but because #367 names this exact scaffold as "closest to the intent," the removal arm must NOT be exercised while #367 is open and unresolved: deleting the scaffold here does not resolve #367, and if #367 later ratifies populating it, removal is off the table.)
 - [ ] EC-LEGIBLE-6 — **THE "ASSUMPTIONS (FAIL-LOUD IF WRONG)" BLOCK MUST ACTUALLY FAIL LOUD WHEN AN ASSUMPTION GOES STALE — no mechanism delivers this today (obligation-derived; sibling of EC-LEGIBLE-3's self-reported-drift shape, the phase objective being a roadmap that reports its own state — and this block reports none of its own).** The obligation is mechanism-AGNOSTIC: a stale assumption — one whose current live state contradicts what the assumption asserts — is DETECTED and fails loud by ANY means; the 5 assumptions carry machine-checkable references (`spec#102`, `governed-pipeline#128`, `v0.2.1`/`b862f977…`, `#170`, `ah#363`), but resolving those against a GitHub API is ONE possible mechanism, NOT the definition (#3/#5 do not resolve by the same call as #1/#2, so the criterion must not inherit that mechanism's coverage gaps). Falsified TODAY — operative, keyed on a MUTATION so it fires against the CURRENT doc and not on any already-remediated clause — by mutating any assumption to assert a fact its live state contradicts (e.g. flip #2 to claim `governed-pipeline#128` is CLOSED while it is open) and observing NO check flags it. Two-arm, so an always-fail audit cannot satisfy it: (a) that mutated assumption is flagged stale, AND (b) an UNMUTATED live assumption (#2 as written — `governed-pipeline#128` open, still shipping `0.7.13`) is NOT flagged. Motivation (historical, already materialized — explicitly NOT the falsifier): Assumption 1 sat asserting `spec#102` unmerged / `c1085483` pinned for ~4 hours AFTER `agent-harness#377` invalidated both facts with nothing failing loud, so the risk is demonstrated, not hypothetical (the "vacuous on a timer" form). NO mechanism exists today — same honest state as EC-INTEG-5/-6.
 - [ ] EC-LEGIBLE-7 — **DISCOVERY DOES NOT RESOLVE A ROADMAP WHOSE OWN BANNER MARKS IT SUPERSEDED / DO-NOT-EXECUTE — the MERGE-CARRIED lever is DELIVERED in this PR (the flip landed here on maintainer ratification, agent-harness#375, so this is no longer a follow-up); the box stays UNCHECKED against a named state-precedence residual the PR NARROWS but cannot fully close (obligation-derived; the consolidation's HEADLINE claim — "one active roadmap" — made BEHAVIOURALLY; sibling of EC-LEGIBLE-6 one step out: self-reported state a BEHAVIOURAL surface, not prose, contradicts).** The obligation is mechanism-AGNOSTIC: the roadmap resolver does not return a roadmap marked superseded/do-not-execute. DELIVERED path — `plans/manifest.json` now orphans the three live convergence-v1 selectors (`vergence-v1-BROKER`/`-FAULTS`/`-RUNTIME` → `orphaned`, the only legal non-execution terminal: `TRANSITIONS` (`plan_manifest.py:21-25`) admits `imported`/`committed → {executing, orphaned}` and NO direct `→ completed`, so `completed` is both a lifecycle violation AND the delivered-but-unmet lie this roadmap catalogues) and registers `specs/phase-plans-v10.md`, so `manifest_backed_roadmap` (`discovery.py:467`) resolves v10 with exactly one surviving candidate. The manifest is the ONLY discovery input this PR ships: authority markers live under `.git/` and `.phase-loop/state.json` is gitignored, so a FRESH clone has neither and discovery falls through to the manifest. Falsified — operative, keyed on a REGRESSION mutation so it fires against the SHIPPED manifest, not a since-fixed state — by un-orphaning any convergence-v1 entry (or dropping the v10 anchor) and finding `manifest_backed_roadmap` resolve `phase-plans-convergence-v1.md` (a do-not-execute roadmap) or `None`; the observable is the resolved path being a superseded roadmap or nothing. Two-arm, so an always-return-`None` resolver cannot satisfy it: (a) that regression FAILS, AND (b) the shipped manifest (three orphaned + v10 registered) resolves v10 and PASSES — verified in isolation against `manifest_backed_roadmap` (state/authority NOT consulted), with the pre-flip manifest confirmed to resolve convergence-v1 so the check discriminates. AUTO-DISCOVERY RESIDUAL — NOW CLOSED FOR THE MANIFEST-AUTHORITATIVE LEVERS (the merge-carried guard shipped in THIS PR as a `.py` change): `select_roadmap` (`discovery.py:411`) consults a persisted `.phase-loop/state.json` BEFORE the manifest, and convergence-v1.md still exists on disk (bannered, not deleted), so an EXISTING checkout whose local state still named convergence-v1 WOULD resolve the superseded roadmap even post-merge — DEMONSTRATED pre-guard: with the flipped manifest and a stale state, `select_roadmap` returned convergence-v1. This PR now REFUSES that path: the state lever (`discovery.py:444`) raises `SupersededRoadmapStateError` before returning when the manifest REGISTERS the state-selected roadmap and every registered entry is retired, reusing `manifest_backed_roadmap`'s own `_entry_is_retired` definition rather than re-deriving it from banner prose; the manifest lever (`discovery.py:450`) already filters retired entries; and the glob branch (`discovery.py:458`) is never REACHED, because `manifest_backed_roadmap` resolves v10 first — conditional on the v10 registration this PR ships, not an intrinsic property of glob. On a manifest-authoritative checkout all three levers now either resolve v10 or fail closed with the operator remedy (`rm .phase-loop/state.json`). REMAINING RESIDUAL — NARROWER, STATED HONESTLY (this is why the box stays unchecked): (1) the `active_authorized_roadmap` AUTHORITY branch (`discovery.py:440`, which precedes the state lever at `:444` in `select_roadmap`), the explicit branch, and the handoff branch are DELIBERATELY uncovered — an authority marker or the operator named the roadmap on purpose, handoff = a separate predecessor mechanism; a choice, not an oversight. The guard sits on the STATE lever only, so a superseded roadmap named by AUTHORITY (which runs first) is uncaught by design. (2) The guard keys on the MANIFEST, so where the manifest is NOT the discovery authority the state lever is unguarded: `_state_roadmap_is_superseded` no-fires when `_phase_manifest_disabled()` (`discovery.py:530`) and the state lever runs at `:444` BEFORE the manifest at `:450`, so a manifest-disabled checkout with stale state still resolves convergence-v1. (3) Even manifest-on, the guard keys on manifest STATUS as a PROXY for the banner; status and banner agree today only because this flip MADE them agree, and nothing structurally binds them — a future consolidation could register vN+1 without orphaning vN and silently re-open the gap. (4) With `PHASE_LOOP_DISCOVERY_ALLOW_COMPLETED=1` the guard's shared `_entry_is_retired` (`discovery.py:488`) treats `completed` entries as NOT retired (the hatch documented at `discovery.py:1185-1198`), and convergence-v1 carries `completed` FREEZE/INTEG entries, so under the hatch `_state_roadmap_is_superseded` sees a live entry, does not fire, and a stale-state checkout still resolves the do-not-execute roadmap (codex probe: `selected_with_stale_state_and_hatch …/phase-plans-convergence-v1.md`). Strictly narrower than pre-merge — where EVERY stale-state checkout selected it, and post-merge only opt-in-hatch ones do — but the opt-in bypass remains (tracked as `agent-harness#392`, under the `agent-harness#385` banner-binding umbrella). This is a residual of the guard, NOT a violation of this criterion: EC-LEGIBLE-7 is UNCHECKED, an open obligation a PR that does not claim it cannot violate. The proxy satisfies the obligation's CURRENT instance, not the mechanism-agnostic obligation itself. The durable fix binds on the BANNER directly (or an authority binding) that REFUSES a banner-superseded roadmap regardless of which input names it and regardless of whether the manifest is enabled — the same validator/authority blind spot filed as `agent-harness#385`.
+- [ ] EC-LEGIBLE-8 — LEGIBLE publishes the generic `verification_evidence.v3` producer contract, final-log seal/reseal protocol, closed extension registry, and initial `phase_loop_runtime.legible_evidence` namespace; falsified by a v3 artifact whose final log can change without invalidating `log_sha256`, by an unregistered namespace being accepted, by a LEGIBLE artifact being emitted without the registered LEGIBLE extension, or by PROOFGATE having to modify the generic envelope before it can register its own namespace. Positive controls preserve both legal schema-v2 shapes, including nonempty `operational_exemptions`, and reject v3 to legacy readers as unsupported rather than misreading it.
 
 **Scope notes**
 Decompose into 3 lanes over disjoint files: lane A owns the roadmap status contract and its
@@ -218,7 +235,8 @@ accessor shape before its implementation lands. LEGIBLE also owns the generic
 `verification_evidence.v3` envelope, seal protocol, and closed extension-namespace registry.
 Its initial registry contains only `phase_loop_runtime.legible_evidence`; PROOFGATE is the
 downstream owner of `phase_loop_runtime.proofgate_evidence` and may extend that registry only
-after LEGIBLE lands.
+after LEGIBLE lands. Lane C publishes IF-0-LEGIBLE-2 together with the generic writer, reader,
+validator, contract documentation, and the registered LEGIBLE producer/reader seam.
 
 **Non-goals**
 Reconciling the 284 open checkboxes across v1–v9. Classifying those is separate work that this
@@ -228,6 +246,10 @@ phase makes possible.
 - `specs/phase-plans-v*.md`
 - `phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py`
 - `phase-loop-runtime/src/phase_loop_runtime/roadmap_lint.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
+- `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`
+- `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`
 - `.claude/docs-catalog.json`
 
 **Depends on**
@@ -235,6 +257,7 @@ phase makes possible.
 
 **Produces**
 - IF-0-LEGIBLE-1
+- IF-0-LEGIBLE-2
 
 **Spec closeout policy**
 schema: `spec_delta_closeout.v1`; expected decision: `roadmap_amendment`; target surfaces:
@@ -242,7 +265,287 @@ schema: `spec_delta_closeout.v1`; expected decision: `roadmap_amendment`; target
 `redaction_posture: metadata_only`; missing or malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
-### Phase 1 — Board Reports Its Own Degradation (REVIEWTRUTH)
+### Phase 1 — Falsifier Gate (PROOFGATE)
+
+**Objective**
+Extend the existing plan grammar so an acceptance criterion binds to a falsifier, not only a proof
+command — and so the three vacuity forms observed on 2026-07-28/29 are mechanically rejected.
+
+**Exit criteria**
+- [ ] EC-PROOFGATE-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
+- [ ] EC-PROOFGATE-1 — An acceptance item lacking a `falsified by` clause is REJECTED by the plan validator; falsified by removing the clause check, after which a falsifier-less plan validates
+- [ ] EC-PROOFGATE-2 — Recorded mutation evidence whose injection anchor did NOT match is reported as `mutation_not_applied`, never as a pass; falsified by recording evidence whose `assert <anchor> in <source>` fails and finding the run reported PASS — the observable is the `mutation_not_applied` state, not a green result. Positive control: an anchor that DOES match still records a real kill, proving the state is anchor-driven, not always-emitted
+- [ ] EC-PROOFGATE-3 — Re-running the validator against ah#358's ORIGINAL acceptance criteria rejects them, since they could not have fired on any motivating incident; falsified by the validator ACCEPTING the ah#358 originals — the observable is a rejection verdict naming the vacuous clause; a green pass on the known-bad corpus is the failure
+- [ ] EC-PROOFGATE-4 — A falsifier for a guard must target the PRODUCTION CONSTRUCTION SITE, not only the helper; falsified by unwiring `epoch_blocked` and finding every test still passes
+- [ ] EC-PROOFGATE-5 — A parametrized falsifier must be shown to kill EVERY parameter; a surviving parameter is reported; falsified by a parametrized mutation that survives for one parameter while the run reports all-killed — the observable is a per-parameter kill table with a non-empty survivor set, not a file-level pass that hides it
+- [ ] EC-PROOFGATE-6 — An acceptance item asserting "X did not happen" must declare its path-entered control; falsified by an "X did not happen" item with no path-entered control validating green — the observable is the validator rejecting the item for a missing positive control, not accepting it
+- [ ] EC-PROOFGATE-7 — Legacy plans predating this grammar are grandfathered explicitly, not silently failed; falsified by exact same-ID complete raw criterion bytes proven at the trusted cutoff being hard-failed with no grandfather record — the sole grandfather observable is a warn-level disposition carrying the server-attested pre-grammar date for those exact bytes; changed/new bytes, missing cutoff proof, or invalid non-grandfathered structure/vacuity remain hard errors
+
+**Scope notes**
+Decompose into 3 lanes: lane A owns the grammar and validator check (extends check P alongside the
+existing check E test-before-impl); lane B owns the mutation-evidence record shape and its
+`mutation_not_applied` state, publishing IF-0-PROOFGATE-1 day 1; lane C owns the grandfathering
+rule and the regression corpus of known-bad criteria (ah#358 originals, ah#288 AC-1/AC-4).
+Invalid non-grandfathered structural or vacuity contracts satisfying the rejection cases in
+EC-PROOFGATE-1/-3/-6 are hard validator, intake, and closeout errors. The sole warn-level
+grandfather disposition is for exact same-ID complete raw bytes proven at the trusted cutoff and
+carries their server-attested pre-grammar date. Other advisory Check P findings may remain
+warning-level under the standing autonomy-first guardrail only when they do not satisfy an
+invalid/rejection case; checks G and K remain the advisory precedent.
+
+**Non-goals**
+Granting review legs execution capability. Review bundles are attacker-controlled by construction;
+that boundary stays closed and panels audit mutation ADEQUACY instead.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-plan-phase/scripts/validate_plan_doc.py`
+- `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`
+- `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
+
+**Depends on**
+- LEGIBLE
+
+**Produces**
+- IF-0-PROOFGATE-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `dotfiles_skill_source_update`; target
+surfaces: `skills-src/**`, the regenerated skills bundle; evidence paths: metadata-only refs to
+the amended grammar; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 2 — Canonical Contract Conformance (CONFORM)
+
+**Objective**
+Make our outside-agent validator read the contract it claims to conform to, and reconcile the pin
+so "vectors from spec" means the spec's vectors.
+
+**Exit criteria**
+- [ ] EC-CONFORM-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
+- [ ] EC-CONFORM-1 — The canonical corpus runs through `outside-agent-validate` and the 3 canonical VALID vectors pass; falsified by restoring the pre-#371 allow-list, which must reject them
+- [ ] EC-CONFORM-2 — Every reachable submitter-input scalar and every real/advisory serialized-output channel has a complete recursive inventory with exact one-of class assignment, and no raw, free-text, unclassified, sentinel-bearing, rejected, or otherwise forbidden submitter-controlled value reaches any serialized sink. Only explicitly closed, validated projections may appear: normalized safe repository-relative refs; validated fixed-shape digests and immutable Git object IDs; closed-vocabulary, boolean, and numeric values; and producer-derived structural diagnostics rendered solely from closed templates. Proven by exact equality between recursive input/output discovery and the declared channel inventory; per-channel negative sentinel/rejection controls; per-class positive controls for every legitimate projection; anchor-asserted mutations independently disabling the raw-construction guard and final-serializer guard; and byte-equivalent scans of stdout and output-file JSON. Falsified when any inventory channel is missing, duplicated, or unclassified; any forbidden/rejected raw sentinel appears in either byte sink; any allowed positive projection is suppressed or malformed; either guard mutation leaves its exact test green; or stdout/output-file bytes differ — the direct machine-observable failure is the named inventory, control, guard, or sink mismatch and nonzero verifier/test exit
+- [ ] EC-CONFORM-3 — `redaction_posture="metadata_only"` is emitted only where something enforces it; falsified by removing the enforcement on a path and finding the field still emitted — the observable is `metadata_only` present in output with no enforcing guard on that path. Positive control: a path that DOES enforce still emits it, proving the field tracks enforcement, not a constant
+- [ ] EC-CONFORM-4 — The vendored corpus cannot drift silently from its recorded source digests; falsified by mutating one vendored vector byte without updating its digest and finding the drift check green — the observable is a digest-mismatch report naming the drifted file, not silence
+- [x] EC-CONFORM-5 — `outside_agent_pin.py` records a per-schema content digest, so a byte change preserving `…v0.1` is detected; falsified by a byte change to a schema that preserves its `…v0.1` version string while the pin check stays green — the observable is a content-digest mismatch, not the unchanged version string. (Gate CLEARED 2026-07-29 — `spec#102` merged; `agent-harness#377` landed the per-schema digests on `main`, so `outside_agent_pin.py` now RECORDS `submission_schema_sha256`/`verdict_schema_sha256`. **CHECKED 2026-07-29: the DETECTION is proven on `main`, not just the mechanism** — `agent-harness#377`'s red-first falsifiers assert the typed failures `submission_schema_sha256_mismatch` (`tests/test_outside_agent_contract_imports.py:134`) and `verdict_schema_sha256_mismatch` (`:158`) fire on a version-preserving byte mutation, one mutation per schema so neither check is vacuous; suite green on `main` at `6b77dc3`. Mechanism-IS-obligation: a per-file digest detecting a const-preserving byte change stands in for nothing, so there is no residual proxy — contrast `EC-LEGIBLE-7`, which stays unchecked because status merely proxies the banner.)
+- [ ] EC-CONFORM-6 — `phase-plans-v7` OACORE-3 and OAREAL-2 are satisfiable against the MERGED contract (`spec#102` merged 2026-07-29; the "externally blocked" arm is no longer available — the gate is cleared); falsified by either criterion recorded "satisfied" WITHOUT citing the merged contract identity (`spec@v0.2.1`, git sha `b862f977…`, as pinned by `agent-harness#377`) — the observable is a satisfied disposition whose evidence does not resolve to the actually-merged contract. (Re-pointed from the pre-merge falsifier "recorded satisfied while `spec#102` is unmerged," which can NEVER fire now that #102 is merged — a falsifier-that-cannot-fire, re-anchored onto the merged state so it can.)
+- [ ] EC-CONFORM-7 — **OUTSIDE-AGENT RELEASE HANDOFF (carried from v7 OARELEASE, `phase-plans-v7.md:277-282`, which v10's table claimed absorbed into CONFORM but left with NO corresponding criterion — so CONFORM could close after materially changing the validator and vendored package surface while the 0.7.13 handoff and inventory went unrefreshed).** The outside-agent release handoff records the EXACT package version or git sha, validator version, contract pin, and vector-manifest hash; release checks and package-surface inventory pass; downstream instructions cover governed-pipeline authoritative pinning and outside-agent advisory usage; and the CHANGELOG distinguishes advisory availability from production merge enforcement. Publish dispatch stays maintainer-owned and is not claimed complete until performed. Falsified by a handoff omitting any of the four identity fields, or a CHANGELOG presenting advisory availability as merge enforcement — the observable is the missing field / the conflated language, not a green test. Positive control: the recorded pin and manifest-hash resolve to the actually-vendored `_contract/` bytes, so a stale or hand-typed hash fails. **GATE CLEARED 2026-07-29** — `spec#102` is merged and the post-merge identity is now KNOWN (`spec@v0.2.1`, git sha `b862f977…`, per-schema digests), so the handoff must describe THAT identity; `agent-harness#377` landed the refreshed handoff on `main`. Stays LIVE: satisfied only when the handoff records all four identity fields resolving to the merged contract, not merely when #377 landed
+- [ ] EC-CONFORM-8 — **ADVERSARIAL VECTORS STILL FAIL CLOSED AFTER THE #371 DIALECT CHANGE (positive-carried / negative-dropped, restored from v7's fail-closed obligations `phase-plans-v7.md:80,126-130,227-231` — "Unknown fields, unsupported versions, absolute paths, missing digests, raw payloads, and path traversal fail closed").** EC-CONFORM-1 asserts ONLY that the 3 canonical VALID vectors PASS; NO criterion asserts the corpus's invalid/adversarial vectors are still REJECTED, so the #371 validator-dialect change can over-accept — the exact fail-open direction #371 was fixing — while every exit criterion stays green. Every invalid vector in the vendored corpus (unknown field, unsupported schema/contract version, absolute path, missing digest, raw payload, path traversal, malformed submission — plus the `invalid-empty-evidence-refs` and `invalid-git-object-id-length` vectors agent-harness#372 adds at spec `v0.2.1`) runs through `run_outside_agent_vectors` and yields `expected_status == blocked` WITH each `expected_blocker_codes` entry present in the live verdict; the accept-direction (EC-CONFORM-1) and this reject-direction live in ONE suite so they move together and a dialect edit cannot relax one without the other going red. Falsified by, per adversarial vector, the #371 (or any later) dialect change relaxing the validator so that vector returns PASS or drops its expected blocker code while the suite stays green — the observable is a corpus vector whose recorded `expected_status: blocked` no longer matches the live verdict, i.e. a submission the contract forbids being admitted. Positive control: the 3 canonical VALID vectors still PASS in the same run, proving the reject-direction is discriminating rejection and not a blanket fail-closed that would also sink valid submissions. NOT externally gated — the adversarial vectors are in the vendored corpus today and `run_outside_agent_vectors` exercises the blocked-direction now, so gating this on `spec#118` would leave the over-accept regression unguarded during exactly the window it can occur
+
+**Scope notes**
+Decompose into 2 lanes: lane A owns the validator dialect, redaction separation, the
+projection-channel enumeration, and the adversarial-vector reject-direction guard
+(EC-CONFORM-8; agent-harness#372 is in flight and refreshes the corpus to spec `v0.2.1`); lane B
+owns the pin digest work and the v7 criterion disposition (EC-CONFORM-6 and EC-CONFORM-7).
+**EC-CONFORM-5, EC-CONFORM-6, and EC-CONFORM-7 are NO LONGER externally gated — the gate CLEARED
+2026-07-29** (`spec#102` merged, `spec#118` closed, `agent-harness#377` landed the `v0.2.1` pin +
+per-schema digests + refreshed handoff on `main`). Lane B now closes them against the merged
+contract (`spec@v0.2.1`, sha `b862f977…`); each stays LIVE and falsifiable — landing #377 records
+the mechanism, it does not by itself SATISFY the acceptance falsifier (a drift-detecting check for
+`-5`, a merged-contract-cited disposition for `-6`, a four-field handoff for `-7`). **EC-CONFORM-8 is NOT externally gated** — it guards lane A's own dialect change
+against over-acceptance and is testable against the vendored corpus today; gating it on the
+external contract would leave the regression unguarded during exactly the window it can occur.
+
+**Non-goals**
+Landing governed-pipeline's real-gate fixture alignment. That is theirs
+(`governed-pipeline#128`).
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_schema.py`
+- `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_core.py`
+- `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_vectors.py`
+- `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_pin.py`
+- `phase-loop-runtime/src/phase_loop_runtime/conformance/_contract/`
+
+**Depends on**
+- LEGIBLE
+
+**Produces**
+- IF-0-CONFORM-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; target surfaces:
+the vendored `_contract/` surface and the pin; evidence paths: metadata-only digest refs;
+`redaction_posture: metadata_only`; missing evidence routes non-human
+`blocker_class=contract_bug`. Downstream `mirror_cutover_required` is a metadata-only deferral,
+never write authorization.
+
+### Phase 3 — Shared Epoch Allocator: Publish Identity (FABPUB)
+
+**Objective**
+Migrate publish onto the shared monotonic allocator, solving publish's identity under a commit
+that moves HEAD mid-operation. This is where the density is.
+
+**Exit criteria**
+- [ ] EC-FABPUB-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
+- [ ] EC-FABPUB-1 — A publish presenting a stale epoch against a higher-water store is refused; falsified by the `admit()`-revert form, whose observable is the raise
+- [ ] EC-FABPUB-2 — `admit_next` ENFORCES `request.lease_epoch == epoch`; falsified by removing the guard, whose observable is a record with divergent `epoch`/`lease_epoch`, not a raise
+- [ ] EC-FABPUB-3 — `admit_next` ENFORCES `request.attempt_id == attempt_id`; falsified by a factory ignoring the supplied id so `lease()` defaults to `uuid4`
+- [ ] EC-FABPUB-4 — A faithful post-crash publish retry DEDUPS rather than re-allocating. The publish idempotency key is `publish_committed_branch_idempotency_key(repo, branch, head_sha)` (`broker/verbs.py:25,31`) — status-quo `base`-free, pending #368's publish-identity design call (see the deferred `EC-RESIDUAL-1`), so this criterion and RESIDUAL-1 are not contradictory concurrent roots; a retry with the same `(repo, branch, head_sha)` must resolve to the recorded effect via the `idempotency_key` equality at `broker/admission.py:46` and return the prior admission, never allocate a second. Falsified by mutating the dedup-key derivation to fold `attempt_id`/`uuid4` into the publish key (or forcing the `admission.py:46` idempotency-key equality to `False`), then replaying crash-then-retry with identical `(repo, branch, head_sha)` — the observable is TWO admission records / two published references for one committed head, not one deduped effect. Positive control: a publish of a genuinely different `head_sha` DOES allocate a fresh admission, proving the key discriminates on committed identity rather than blanket-suppressing retries
+- [ ] EC-FABPUB-5 — A legitimate post-crash retry is NOT rejected by the conflict comparison; this is the failure mode the round-2 fix introduced; falsified by re-introducing the round-2 over-strict conflict comparison and finding a genuine same-fields post-crash retry REJECTED — the observable is the retry raising a conflict where it should dedup. Positive control: a truly conflicting retry (different authority) is still refused, proving the comparison was loosened, not disabled
+- [ ] EC-FABPUB-6 — A conflicting resume (same attempt_id, different authority) is REFUSED; positive control: a genuine same-fields resume still dedups; falsified by removing the authority check and finding a different-authority resume ADMITTED under the same attempt_id — the observable is the admission record, not a refusal
+- [ ] EC-FABPUB-7 — Publish byte-neutrality is explicitly RETRACTED in the CHANGELOG, not claimed alongside renumbering; falsified by a CHANGELOG that claims byte-neutrality (or omits the retraction) while the renumbering lands — the observable is a byte-neutrality claim co-present with the epoch renumbering, not the explicit retraction sentence
+- [ ] EC-FABPUB-8 — Publish authority is constructed only after `publish_from_worktree` reaches `COMMITTED_HEAD_RESOLVED`, and a repository-visible adapter-start owner is durably fenced before any provider effect; falsified by a two-train, different-head replay that crashes after the shared start marker both before and after a possible provider effect and then permits the competing train to obtain an admission or call the adapter. The required observable is zero competing-train admissions, zero competing-train adapter calls, and recovery promoting the unsealed shared start to permanent `OUTCOME_AMBIGUOUS_BLOCKED`.
+
+**Scope notes**
+Decompose into 3 lanes: lane A owns the allocator, its enforced equalities, and repository-visible
+adapter-start ownership, publishing IF-0-FABPUB-1 day 1; lane B owns the publish-path seams
+(S1/S3/S3b) consuming that contract; lane C owns the ordered authority handoff. Train supplies
+only authority preimages plus `checkpoint_root`; `publish_from_worktree` commits and resolves
+`COMMITTED_HEAD_RESOLVED`, constructs `PreAdmissionEnvelope`, and only then calls
+`BrokerService.execute`. `train_runner.py` is a single-writer file — lanes B and C must partition
+by function. The §10 test-first contract applies: wave-0 tests land red against `main` before any
+production change.
+
+**Non-goals**
+The readmit consumer and the flag flip (FABREADMIT). The FAB review-round `epoch` namespace, which
+is a different `epoch` and out of scope.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/fencing.py`
+- `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/publishing.py`
+
+**Depends on**
+- PROOFGATE
+- CONFORM
+
+**Produces**
+- IF-0-FABPUB-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 4 — Shared Epoch Allocator: Readmit Consumer (FABREADMIT)
+
+**Objective**
+Wire the delta-readmit consumer through the broker and flip the engagement flag, on a base where
+publish is already migrated so the mixed-allocation interlock is a merge boundary rather than an
+in-plan promise.
+
+**Exit criteria**
+- [ ] EC-FABREADMIT-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
+- [ ] EC-FABREADMIT-1 — Both readmit commit points converge on ONE broker-gated path; falsified by restoring either direct append
+- [ ] EC-FABREADMIT-2 — A revoked FRESH delta re-admit does not merge; the assertion is the desired behaviour and is paired with a non-revoked reachability control proving the seam was entered; falsified by removing the revocation check on the FRESH path and finding a revoked delta merges — the observable is the merge completing despite an OUTCOME_AMBIGUOUS_BLOCKED/revoked marker. Positive control (the pairing): a non-revoked delta on the same path DOES merge, proving the seam was entered and the block is revocation-specific
+- [ ] EC-FABREADMIT-3 — A revoked CRASH-RESUME re-admit does not merge; same pairing, targeting the early append specifically; falsified by removing the revocation re-check on the crash-resume early-append path and finding a revoked resume merges — the observable is the early append completing despite revocation. Positive control: a non-revoked crash-resume still merges via the early append, proving that seam was entered
+- [ ] EC-FABREADMIT-4 — The engagement flag cannot be enabled while any publisher still stamps a hardcoded epoch; falsified by leaving a publisher that stamps a hardcoded epoch and finding the flag can still flip True — the observable is the interlock refusing the flip (a raise/guard) while any hardcoded-epoch stamp remains, not a silent enable
+- [ ] EC-FABREADMIT-5 — The enumeration of head-advancing append sites is recorded with a re-runnable method, so a future third site is detectable; falsified by adding a third head-advancing append site and finding the recorded method does not surface it — the observable is the enumeration method (a re-runnable grep/AST scan) listing the new site, not a hardcoded two-site list
+- [ ] EC-FABREADMIT-6 — **The delta-review shortcut ACTUALLY ENGAGES.** `_FAB_DELTA_BROKER_READMIT_READY` is flipped True and `fab_delta_shortcut_enabled()` returns True under production conditions, proven by an end-to-end test in which the shortcut FIRES — not merely that it is permitted to. Falsified by reverting the flag, after which that test must fail. **Note: EC-FABREADMIT-4 is a NEGATIVE-ONLY criterion — "the flag cannot be enabled prematurely" is satisfied by never enabling it, which would leave agent-harness#191 permanently dormant. This criterion supplies the positive case.**
+- [ ] EC-FABREADMIT-7 — agent-harness#191 (FAB delta review with reviewed-byte equivalence) is closeable: the consumer merged DORMANT in `ecd1258` is live, and the reviewed-byte-equivalence shortcut runs on a real delta; falsified by the shortcut path never executing on a real delta (flag still False or consumer unthreaded) while #191 is marked closeable — the observable is an end-to-end run recording the shortcut FIRING on a real delta, not merely that the consumer symbol is present
+
+**Scope notes**
+Two lanes: lane A owns the unified commit path and the consumer seam; lane B owns the flag-flip
+interlock and its ordering guarantees. Wave-0 tests here must be red against a FABPUB-merged
+`main`, not against today's `main` — the bypass still exists at that point, which is what makes
+them red.
+
+**Non-goals**
+Publish identity. That is FABPUB and must be merged first.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py`
+
+**Depends on**
+- FABPUB
+
+**Produces**
+- (none)
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 5 — Scheduler and Worktree Reclamation (SCHED)
+
+**Objective**
+Reclaim crash-residual worktrees without destroying recoverable work, and close the lane-scheduler
+dispatch cluster.
+
+**Exit criteria**
+- [ ] EC-SCHED-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
+- [ ] EC-SCHED-1 — A worktree preserved by the GC is NOT destroyed by the recreation path eight lines later; falsified by restoring the unconditional force-remove
+- [ ] EC-SCHED-2 — `test_create_is_idempotent_after_stale_worktree` no longer pins data loss as intended behaviour, and its replacement assertion is recorded as a ratified decision; falsified by the test still asserting the destructive path as intended, or a replacement landing with no recorded ratified decision — the observable is the test asserting preservation (not deletion) plus a decision-record reference
+- [ ] EC-SCHED-3 — A worktree whose only content is a gitignored handoff is not treated as empty; falsified by presenting a worktree containing only a gitignored handoff and finding the emptiness check reclaims it — the observable is the check classifying it non-empty (handoff detected), not empty
+- [ ] EC-SCHED-4 — The lane scheduler honours `work_unit_kind`, so a reducer lane is not dispatched as an executor; falsified by dispatching a `work_unit_kind=reducer` lane and finding it launched on the executor path — the observable is the dispatch decision reading `work_unit_kind` and routing to the reducer path
+- [ ] EC-SCHED-5 — Validated planner artifacts survive parent reduction under `--phase-scheduler concurrent`; falsified by running a concurrent reduction and finding validated planner artifacts destroyed or overwritten — the observable is the artifact files present and byte-unchanged after reduction. Positive control: the reduction still runs (a preservation-merge, not a skipped reduction), proving survival is not achieved by declining to reduce
+- [ ] EC-SCHED-6 — After a no-diff concurrent dispatch, the parent does not run phase verification against files that were never created; falsified by a no-diff concurrent dispatch triggering parent verification against absent files — the observable is verification being SKIPPED (or a typed no-diff signal raised) rather than failing on missing paths. Positive control: a dispatch that DID produce a diff still runs verification, proving the skip is diff-conditioned, not unconditional
+- [ ] EC-SCHED-7 — **WORKTREE-LOSS DISPOSITION (carried from v9 FAB lane (a), `phase-plans-v9.md:357`; v9's banner recorded it as "CANNOT-DETERMINE, not carried" (`v9:16`), and superseding v9 would otherwise make its acceptance condition silently unreachable — "cannot-determine" is not a disposition).** v9:357 required each of four divergent worktrees — `agent-harness-abdreg`, `ah-abdreg-pkg`, `ah-abdreg-rebase` (three copies on `feat/advisor-board-abdreg`) and `agent-harness-abdresolve` (`phase/abdresolve`) — to be landed, committed-and-parked, or explicitly discarded with a recorded decision, no silent loss. The verifiable, satisfiable obligation carried here is PRESERVATION OF THE SURVIVING COMMITTED TIPS (verified 2026-07-29, aligned to `plans/design-fab-191-delta-review.md:514-521`, NOT smoothed): NONE of the four worktrees still exists under `git worktree list`, and both branches `feat/advisor-board-abdreg` (`4c603c3`) and `phase/abdresolve` (`582037e`) survive on `origin` (confirmed by `git ls-remote`), so their committed state is parked-and-recoverable. Satisfied by those two `origin` tips confirmed retained under a recorded disposition. Falsified by either `feat/advisor-board-abdreg` or `phase/abdresolve` being deleted from `origin` with no recorded decision — the observable is the missing ref, a silent loss of committed state. STANDING FINDING (STATE, not satisfaction — this criterion does NOT turn green by recording it, and it is NOT satisfied by admitting the loss): the `phase/abdresolve` worktree's 25 uncommitted files were **discarded UN-INSPECTED** — whether they were re-appearing already-committed work or genuine un-committed progress is UNKNOWABLE, and the FAB design record `design-fab-191-delta-review.md:514-521` explicitly DECLINES to claim "no silent loss" for them — so v9:357's no-silent-loss is UNMET for `abdresolve`, carried as an accepted possible-loss exactly like EC-INTEG-5's 2-of-N residual, never a green. (The `abdreg` copies' 5 uncommitted files were by contrast INSPECTED — sibling copies reverting committed safety fixes, an abandoned experiment, no value forgone — a genuine recorded discard, outside the standing finding.)
+
+**Scope notes**
+Decompose into 2 lanes over disjoint files: lane A owns worktree reclamation
+(`phase_worktree_executor.py`), lane B owns the scheduler cluster (`lane_scheduler.py`,
+`runner.py`) for which a drafted plan already exists. **EC-SCHED-1/2/3 are BLOCKED on the ah#354
+design fork**, which has been paneled twice — options (a)/(b)/(c) were rejected 3/3, and
+resume-first was rejected on mechanism (the handoff is a closeout artifact, not a session
+checkpoint). A third framing is required before lane A starts.
+
+**Non-goals**
+Building a session-checkpoint mechanism. If resume-first is ever viable it needs one, and that is
+its own initiative.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py`
+- `phase-loop-runtime/src/phase_loop_runtime/lane_scheduler.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+
+**Depends on**
+- PROOFGATE
+
+**Produces**
+- (none)
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 6 — Isolation and Verification Hardening (HARDEN)
+
+**Objective**
+Close the reachable security and verification gaps carried as open findings, starting with the one
+that is exploitable rather than theoretical.
+
+**Exit criteria**
+- [ ] EC-HARDEN-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
+- [ ] EC-HARDEN-1 — An absolute symlink cannot escape the staged review tree; falsified by restoring `copytree(symlinks=True)` without the containment check
+- [ ] EC-HARDEN-2 — Path handling in the reconcile main loop is CWD-independent; falsified by invoking the reconcile main loop from a different CWD and finding a path resolves differently — the observable is identical resolved paths across two CWDs, where a relative-path use would diverge
+- [ ] EC-HARDEN-3 — Goal-coverage enforce mode fails closed rather than passing vacuously when no EC-IDs are declared; falsified by running enforce mode with zero declared EC-IDs and finding it PASSES — the observable is a fail-closed error on empty declarations, not a vacuous green
+- [ ] EC-HARDEN-4 — The login-shell interpreter shim resists the exotic bash-option and profile-introduced-version forms recorded in ah#241; falsified by feeding each ah#241 form (exotic bash-option, profile-introduced version) and finding the shim selects a non-satisfying interpreter — the observable is a fail-closed rejection per form, enumerated, not a silently-shadowed interpreter
+- [ ] EC-HARDEN-5 — **FLEET-WIDE REVIEW-LEG ISOLATION (ah#248; v10's first draft allowed satisfaction by an "explicitly operator-accepted residual with a recorded rationale," which marks the criterion MET while a review leg can still execute — the roadmap reports green with the hazard live).** Review-leg isolation is a SAFETY INVARIANT, not residual-risk hardening: review bundles are attacker-controlled by construction, which is the whole reason review legs are refused execution capability — a review leg that can execute, can execute regardless of what any register records. The obligation, per the ah#248 isolation standard, is that a review leg holds no mutation capability: it cannot issue a repository mutation or any credentialed/privileged side-effect from the review-leg environment. (A read-only review leg legitimately spawns its own reviewer subprocess — the bar is the absence of mutation/credentialed side-effects, NOT absolute-zero process or shell execution; the earlier "cannot spawn a process or run a shell command" wording overshot ah#248 and no correct read-only leg could satisfy it.) Falsified by a review leg that issues a repository mutation or a credentialed side-effect despite the standard — the observable is a successful mutation/credentialed operation issued from a review-leg environment, NOT the mere spawning of a process and not the presence or absence of a residual-register entry. This criterion is satisfied ONLY when the isolation checklist is fully met, full stop — it is a safety invariant and is NOT satisfiable by documenting its own failure. An operator genuinely may accept a security residual, but that belongs in the STATE, not the SATISFACTION: the standard is then UNMET with an accepted residual, carried here as a STANDING FINDING exactly like EC-INTEG-5's 2-of-N — never "met because we wrote it down." Its honest state: if the fleet-wide checklist is not fully met, this is UNMET and any residual recorded in the accepted-residual register (ah#361) is that standing finding, not a green
+
+**Scope notes**
+Decompose into 2 lanes: lane A owns the staging/symlink containment (ah#259) and the isolation
+standard (ah#248); lane B owns reconcile path handling, goal-coverage enforce mode, and the shim.
+Lane A is the security-reachable work and should start first even though the phase is otherwise
+parallel-safe.
+
+**Non-goals**
+Re-opening the accepted-residual register (ah#361). Items there are promoted individually only on
+new reachability evidence.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`
+
+**Depends on**
+- FABPUB
+
+**Produces**
+- (none)
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 7 — Board Reports Its Own Degradation (REVIEWTRUTH)
 
 **Objective**
 Stop the cross-vendor board silently losing seats. Carry a typed per-seat outcome distinct from
@@ -295,7 +598,8 @@ leg on its bound and reaping children — (LEGLIFE lane A). REVIEWTRUTH declares
 - `phase-loop-runtime/tests/test_advisor_board_golden.py`
 
 **Depends on**
-- (none)
+- CONFORM
+- HARDEN
 
 **Produces**
 - IF-0-REVIEWTRUTH-1
@@ -305,243 +609,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
-### Phase 2 — Falsifier Gate (PROOFGATE)
-
-**Objective**
-Extend the existing plan grammar so an acceptance criterion binds to a falsifier, not only a proof
-command — and so the three vacuity forms observed on 2026-07-28/29 are mechanically rejected.
-
-**Exit criteria**
-- [ ] EC-PROOFGATE-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
-- [ ] EC-PROOFGATE-1 — An acceptance item lacking a `falsified by` clause is REJECTED by the plan validator; falsified by removing the clause check, after which a falsifier-less plan validates
-- [ ] EC-PROOFGATE-2 — Recorded mutation evidence whose injection anchor did NOT match is reported as `mutation_not_applied`, never as a pass; falsified by recording evidence whose `assert <anchor> in <source>` fails and finding the run reported PASS — the observable is the `mutation_not_applied` state, not a green result. Positive control: an anchor that DOES match still records a real kill, proving the state is anchor-driven, not always-emitted
-- [ ] EC-PROOFGATE-3 — Re-running the validator against ah#358's ORIGINAL acceptance criteria rejects them, since they could not have fired on any motivating incident; falsified by the validator ACCEPTING the ah#358 originals — the observable is a rejection verdict naming the vacuous clause; a green pass on the known-bad corpus is the failure
-- [ ] EC-PROOFGATE-4 — A falsifier for a guard must target the PRODUCTION CONSTRUCTION SITE, not only the helper; falsified by unwiring `epoch_blocked` and finding every test still passes
-- [ ] EC-PROOFGATE-5 — A parametrized falsifier must be shown to kill EVERY parameter; a surviving parameter is reported; falsified by a parametrized mutation that survives for one parameter while the run reports all-killed — the observable is a per-parameter kill table with a non-empty survivor set, not a file-level pass that hides it
-- [ ] EC-PROOFGATE-6 — An acceptance item asserting "X did not happen" must declare its path-entered control; falsified by an "X did not happen" item with no path-entered control validating green — the observable is the validator rejecting the item for a missing positive control, not accepting it
-- [ ] EC-PROOFGATE-7 — Legacy plans predating this grammar are grandfathered explicitly, not silently failed; falsified by exact same-ID complete raw criterion bytes proven at the trusted cutoff being hard-failed with no grandfather record — the sole grandfather observable is a warn-level disposition carrying the server-attested pre-grammar date for those exact bytes; changed/new bytes, missing cutoff proof, or invalid non-grandfathered structure/vacuity remain hard errors
-
-**Scope notes**
-Decompose into 3 lanes: lane A owns the grammar and validator check (extends check P alongside the
-existing check E test-before-impl); lane B owns the mutation-evidence record shape and its
-`mutation_not_applied` state, publishing IF-0-PROOFGATE-1 day 1; lane C owns the grandfathering
-rule and the regression corpus of known-bad criteria (ah#358 originals, ah#288 AC-1/AC-4).
-Invalid non-grandfathered structural or vacuity contracts satisfying the rejection cases in
-EC-PROOFGATE-1/-3/-6 are hard validator, intake, and closeout errors. The sole warn-level
-grandfather disposition is for exact same-ID complete raw bytes proven at the trusted cutoff and
-carries their server-attested pre-grammar date. Other advisory Check P findings may remain
-warning-level under the standing autonomy-first guardrail only when they do not satisfy an
-invalid/rejection case; checks G and K remain the advisory precedent.
-
-**Non-goals**
-Granting review legs execution capability. Review bundles are attacker-controlled by construction;
-that boundary stays closed and panels audit mutation ADEQUACY instead.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-plan-phase/scripts/validate_plan_doc.py`
-- `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`
-- `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
-
-**Depends on**
-- LEGIBLE
-
-**Produces**
-- IF-0-PROOFGATE-1
-
-**Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `dotfiles_skill_source_update`; target
-surfaces: `skills-src/**`, the regenerated skills bundle; evidence paths: metadata-only refs to
-the amended grammar; `redaction_posture: metadata_only`; malformed evidence routes non-human
-`blocker_class=contract_bug`.
-
-### Phase 3 — Canonical Contract Conformance (CONFORM)
-
-**Objective**
-Make our outside-agent validator read the contract it claims to conform to, and reconcile the pin
-so "vectors from spec" means the spec's vectors.
-
-**Exit criteria**
-- [ ] EC-CONFORM-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
-- [ ] EC-CONFORM-1 — The canonical corpus runs through `outside-agent-validate` and the 3 canonical VALID vectors pass; falsified by restoring the pre-#371 allow-list, which must reject them
-- [ ] EC-CONFORM-2 — Every reachable submitter-input scalar and every real/advisory serialized-output channel has a complete recursive inventory with exact one-of class assignment, and no raw, free-text, unclassified, sentinel-bearing, rejected, or otherwise forbidden submitter-controlled value reaches any serialized sink. Only explicitly closed, validated projections may appear: normalized safe repository-relative refs; validated fixed-shape digests and immutable Git object IDs; closed-vocabulary, boolean, and numeric values; and producer-derived structural diagnostics rendered solely from closed templates. Proven by exact equality between recursive input/output discovery and the declared channel inventory; per-channel negative sentinel/rejection controls; per-class positive controls for every legitimate projection; anchor-asserted mutations independently disabling the raw-construction guard and final-serializer guard; and byte-equivalent scans of stdout and output-file JSON. Falsified when any inventory channel is missing, duplicated, or unclassified; any forbidden/rejected raw sentinel appears in either byte sink; any allowed positive projection is suppressed or malformed; either guard mutation leaves its exact test green; or stdout/output-file bytes differ — the direct machine-observable failure is the named inventory, control, guard, or sink mismatch and nonzero verifier/test exit
-- [ ] EC-CONFORM-3 — `redaction_posture="metadata_only"` is emitted only where something enforces it; falsified by removing the enforcement on a path and finding the field still emitted — the observable is `metadata_only` present in output with no enforcing guard on that path. Positive control: a path that DOES enforce still emits it, proving the field tracks enforcement, not a constant
-- [ ] EC-CONFORM-4 — The vendored corpus cannot drift silently from its recorded source digests; falsified by mutating one vendored vector byte without updating its digest and finding the drift check green — the observable is a digest-mismatch report naming the drifted file, not silence
-- [x] EC-CONFORM-5 — `outside_agent_pin.py` records a per-schema content digest, so a byte change preserving `…v0.1` is detected; falsified by a byte change to a schema that preserves its `…v0.1` version string while the pin check stays green — the observable is a content-digest mismatch, not the unchanged version string. (Gate CLEARED 2026-07-29 — `spec#102` merged; `agent-harness#377` landed the per-schema digests on `main`, so `outside_agent_pin.py` now RECORDS `submission_schema_sha256`/`verdict_schema_sha256`. **CHECKED 2026-07-29: the DETECTION is proven on `main`, not just the mechanism** — `agent-harness#377`'s red-first falsifiers assert the typed failures `submission_schema_sha256_mismatch` (`tests/test_outside_agent_contract_imports.py:134`) and `verdict_schema_sha256_mismatch` (`:158`) fire on a version-preserving byte mutation, one mutation per schema so neither check is vacuous; suite green on `main` at `6b77dc3`. Mechanism-IS-obligation: a per-file digest detecting a const-preserving byte change stands in for nothing, so there is no residual proxy — contrast `EC-LEGIBLE-7`, which stays unchecked because status merely proxies the banner.)
-- [ ] EC-CONFORM-6 — `phase-plans-v7` OACORE-3 and OAREAL-2 are satisfiable against the MERGED contract (`spec#102` merged 2026-07-29; the "externally blocked" arm is no longer available — the gate is cleared); falsified by either criterion recorded "satisfied" WITHOUT citing the merged contract identity (`spec@v0.2.1`, git sha `b862f977…`, as pinned by `agent-harness#377`) — the observable is a satisfied disposition whose evidence does not resolve to the actually-merged contract. (Re-pointed from the pre-merge falsifier "recorded satisfied while `spec#102` is unmerged," which can NEVER fire now that #102 is merged — a falsifier-that-cannot-fire, re-anchored onto the merged state so it can.)
-- [ ] EC-CONFORM-7 — **OUTSIDE-AGENT RELEASE HANDOFF (carried from v7 OARELEASE, `phase-plans-v7.md:277-282`, which v10's table claimed absorbed into CONFORM but left with NO corresponding criterion — so CONFORM could close after materially changing the validator and vendored package surface while the 0.7.13 handoff and inventory went unrefreshed).** The outside-agent release handoff records the EXACT package version or git sha, validator version, contract pin, and vector-manifest hash; release checks and package-surface inventory pass; downstream instructions cover governed-pipeline authoritative pinning and outside-agent advisory usage; and the CHANGELOG distinguishes advisory availability from production merge enforcement. Publish dispatch stays maintainer-owned and is not claimed complete until performed. Falsified by a handoff omitting any of the four identity fields, or a CHANGELOG presenting advisory availability as merge enforcement — the observable is the missing field / the conflated language, not a green test. Positive control: the recorded pin and manifest-hash resolve to the actually-vendored `_contract/` bytes, so a stale or hand-typed hash fails. **GATE CLEARED 2026-07-29** — `spec#102` is merged and the post-merge identity is now KNOWN (`spec@v0.2.1`, git sha `b862f977…`, per-schema digests), so the handoff must describe THAT identity; `agent-harness#377` landed the refreshed handoff on `main`. Stays LIVE: satisfied only when the handoff records all four identity fields resolving to the merged contract, not merely when #377 landed
-- [ ] EC-CONFORM-8 — **ADVERSARIAL VECTORS STILL FAIL CLOSED AFTER THE #371 DIALECT CHANGE (positive-carried / negative-dropped, restored from v7's fail-closed obligations `phase-plans-v7.md:80,126-130,227-231` — "Unknown fields, unsupported versions, absolute paths, missing digests, raw payloads, and path traversal fail closed").** EC-CONFORM-1 asserts ONLY that the 3 canonical VALID vectors PASS; NO criterion asserts the corpus's invalid/adversarial vectors are still REJECTED, so the #371 validator-dialect change can over-accept — the exact fail-open direction #371 was fixing — while every exit criterion stays green. Every invalid vector in the vendored corpus (unknown field, unsupported schema/contract version, absolute path, missing digest, raw payload, path traversal, malformed submission — plus the `invalid-empty-evidence-refs` and `invalid-git-object-id-length` vectors agent-harness#372 adds at spec `v0.2.1`) runs through `run_outside_agent_vectors` and yields `expected_status == blocked` WITH each `expected_blocker_codes` entry present in the live verdict; the accept-direction (EC-CONFORM-1) and this reject-direction live in ONE suite so they move together and a dialect edit cannot relax one without the other going red. Falsified by, per adversarial vector, the #371 (or any later) dialect change relaxing the validator so that vector returns PASS or drops its expected blocker code while the suite stays green — the observable is a corpus vector whose recorded `expected_status: blocked` no longer matches the live verdict, i.e. a submission the contract forbids being admitted. Positive control: the 3 canonical VALID vectors still PASS in the same run, proving the reject-direction is discriminating rejection and not a blanket fail-closed that would also sink valid submissions. NOT externally gated — the adversarial vectors are in the vendored corpus today and `run_outside_agent_vectors` exercises the blocked-direction now, so gating this on `spec#118` would leave the over-accept regression unguarded during exactly the window it can occur
-
-**Scope notes**
-Decompose into 2 lanes: lane A owns the validator dialect, redaction separation, the
-projection-channel enumeration, and the adversarial-vector reject-direction guard
-(EC-CONFORM-8; agent-harness#372 is in flight and refreshes the corpus to spec `v0.2.1`); lane B
-owns the pin digest work and the v7 criterion disposition (EC-CONFORM-6 and EC-CONFORM-7).
-**EC-CONFORM-5, EC-CONFORM-6, and EC-CONFORM-7 are NO LONGER externally gated — the gate CLEARED
-2026-07-29** (`spec#102` merged, `spec#118` closed, `agent-harness#377` landed the `v0.2.1` pin +
-per-schema digests + refreshed handoff on `main`). Lane B now closes them against the merged
-contract (`spec@v0.2.1`, sha `b862f977…`); each stays LIVE and falsifiable — landing #377 records
-the mechanism, it does not by itself SATISFY the acceptance falsifier (a drift-detecting check for
-`-5`, a merged-contract-cited disposition for `-6`, a four-field handoff for `-7`). **EC-CONFORM-8 is NOT externally gated** — it guards lane A's own dialect change
-against over-acceptance and is testable against the vendored corpus today; gating it on the
-external contract would leave the regression unguarded during exactly the window it can occur.
-
-**Non-goals**
-Landing governed-pipeline's real-gate fixture alignment. That is theirs
-(`governed-pipeline#128`).
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_schema.py`
-- `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_core.py`
-- `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_vectors.py`
-- `phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_pin.py`
-- `phase-loop-runtime/src/phase_loop_runtime/conformance/_contract/`
-
-**Depends on**
-- (none)
-
-**Produces**
-- IF-0-CONFORM-1
-
-**Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; target surfaces:
-the vendored `_contract/` surface and the pin; evidence paths: metadata-only digest refs;
-`redaction_posture: metadata_only`; missing evidence routes non-human
-`blocker_class=contract_bug`. Downstream `mirror_cutover_required` is a metadata-only deferral,
-never write authorization.
-
-### Phase 4 — Shared Epoch Allocator: Publish Identity (FABPUB)
-
-**Objective**
-Migrate publish onto the shared monotonic allocator, solving publish's identity under a commit
-that moves HEAD mid-operation. This is where the density is.
-
-**Exit criteria**
-- [ ] EC-FABPUB-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
-- [ ] EC-FABPUB-1 — A publish presenting a stale epoch against a higher-water store is refused; falsified by the `admit()`-revert form, whose observable is the raise
-- [ ] EC-FABPUB-2 — `admit_next` ENFORCES `request.lease_epoch == epoch`; falsified by removing the guard, whose observable is a record with divergent `epoch`/`lease_epoch`, not a raise
-- [ ] EC-FABPUB-3 — `admit_next` ENFORCES `request.attempt_id == attempt_id`; falsified by a factory ignoring the supplied id so `lease()` defaults to `uuid4`
-- [ ] EC-FABPUB-4 — A faithful post-crash publish retry DEDUPS rather than re-allocating. The publish idempotency key is `publish_committed_branch_idempotency_key(repo, branch, head_sha)` (`broker/verbs.py:25,31`) — status-quo `base`-free, pending #368's publish-identity design call (see the deferred `EC-RESIDUAL-1`), so this criterion and RESIDUAL-1 are not contradictory concurrent roots; a retry with the same `(repo, branch, head_sha)` must resolve to the recorded effect via the `idempotency_key` equality at `broker/admission.py:46` and return the prior admission, never allocate a second. Falsified by mutating the dedup-key derivation to fold `attempt_id`/`uuid4` into the publish key (or forcing the `admission.py:46` idempotency-key equality to `False`), then replaying crash-then-retry with identical `(repo, branch, head_sha)` — the observable is TWO admission records / two published references for one committed head, not one deduped effect. Positive control: a publish of a genuinely different `head_sha` DOES allocate a fresh admission, proving the key discriminates on committed identity rather than blanket-suppressing retries
-- [ ] EC-FABPUB-5 — A legitimate post-crash retry is NOT rejected by the conflict comparison; this is the failure mode the round-2 fix introduced; falsified by re-introducing the round-2 over-strict conflict comparison and finding a genuine same-fields post-crash retry REJECTED — the observable is the retry raising a conflict where it should dedup. Positive control: a truly conflicting retry (different authority) is still refused, proving the comparison was loosened, not disabled
-- [ ] EC-FABPUB-6 — A conflicting resume (same attempt_id, different authority) is REFUSED; positive control: a genuine same-fields resume still dedups; falsified by removing the authority check and finding a different-authority resume ADMITTED under the same attempt_id — the observable is the admission record, not a refusal
-- [ ] EC-FABPUB-7 — Publish byte-neutrality is explicitly RETRACTED in the CHANGELOG, not claimed alongside renumbering; falsified by a CHANGELOG that claims byte-neutrality (or omits the retraction) while the renumbering lands — the observable is a byte-neutrality claim co-present with the epoch renumbering, not the explicit retraction sentence
-
-**Scope notes**
-Decompose into 3 lanes: lane A owns the allocator and its enforced equalities, publishing
-IF-0-FABPUB-1 day 1; lane B owns the publish-path seams (S1/S3/S3b) consuming that contract; lane
-C owns the commit-stable approval identity sub-design (§5b), which is the open design question and
-should not gate the other two. `train_runner.py` is a single-writer file — lanes B and C must
-partition by function. The §10 test-first contract applies: wave-0 tests land red against `main`
-before any production change.
-
-**Non-goals**
-The readmit consumer and the flag flip (FABREADMIT). The FAB review-round `epoch` namespace, which
-is a different `epoch` and out of scope.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py`
-- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py`
-- `phase-loop-runtime/src/phase_loop_runtime/convergence/fencing.py`
-- `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
-- `phase-loop-runtime/src/phase_loop_runtime/publishing.py`
-
-**Depends on**
-- (none)
-
-**Produces**
-- IF-0-FABPUB-1
-
-**Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
-outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
-`blocker_class=contract_bug`.
-
-### Phase 5 — Shared Epoch Allocator: Readmit Consumer (FABREADMIT)
-
-**Objective**
-Wire the delta-readmit consumer through the broker and flip the engagement flag, on a base where
-publish is already migrated so the mixed-allocation interlock is a merge boundary rather than an
-in-plan promise.
-
-**Exit criteria**
-- [ ] EC-FABREADMIT-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
-- [ ] EC-FABREADMIT-1 — Both readmit commit points converge on ONE broker-gated path; falsified by restoring either direct append
-- [ ] EC-FABREADMIT-2 — A revoked FRESH delta re-admit does not merge; the assertion is the desired behaviour and is paired with a non-revoked reachability control proving the seam was entered; falsified by removing the revocation check on the FRESH path and finding a revoked delta merges — the observable is the merge completing despite an OUTCOME_AMBIGUOUS_BLOCKED/revoked marker. Positive control (the pairing): a non-revoked delta on the same path DOES merge, proving the seam was entered and the block is revocation-specific
-- [ ] EC-FABREADMIT-3 — A revoked CRASH-RESUME re-admit does not merge; same pairing, targeting the early append specifically; falsified by removing the revocation re-check on the crash-resume early-append path and finding a revoked resume merges — the observable is the early append completing despite revocation. Positive control: a non-revoked crash-resume still merges via the early append, proving that seam was entered
-- [ ] EC-FABREADMIT-4 — The engagement flag cannot be enabled while any publisher still stamps a hardcoded epoch; falsified by leaving a publisher that stamps a hardcoded epoch and finding the flag can still flip True — the observable is the interlock refusing the flip (a raise/guard) while any hardcoded-epoch stamp remains, not a silent enable
-- [ ] EC-FABREADMIT-5 — The enumeration of head-advancing append sites is recorded with a re-runnable method, so a future third site is detectable; falsified by adding a third head-advancing append site and finding the recorded method does not surface it — the observable is the enumeration method (a re-runnable grep/AST scan) listing the new site, not a hardcoded two-site list
-- [ ] EC-FABREADMIT-6 — **The delta-review shortcut ACTUALLY ENGAGES.** `_FAB_DELTA_BROKER_READMIT_READY` is flipped True and `fab_delta_shortcut_enabled()` returns True under production conditions, proven by an end-to-end test in which the shortcut FIRES — not merely that it is permitted to. Falsified by reverting the flag, after which that test must fail. **Note: EC-FABREADMIT-4 is a NEGATIVE-ONLY criterion — "the flag cannot be enabled prematurely" is satisfied by never enabling it, which would leave agent-harness#191 permanently dormant. This criterion supplies the positive case.**
-- [ ] EC-FABREADMIT-7 — agent-harness#191 (FAB delta review with reviewed-byte equivalence) is closeable: the consumer merged DORMANT in `ecd1258` is live, and the reviewed-byte-equivalence shortcut runs on a real delta; falsified by the shortcut path never executing on a real delta (flag still False or consumer unthreaded) while #191 is marked closeable — the observable is an end-to-end run recording the shortcut FIRING on a real delta, not merely that the consumer symbol is present
-
-**Scope notes**
-Two lanes: lane A owns the unified commit path and the consumer seam; lane B owns the flag-flip
-interlock and its ordering guarantees. Wave-0 tests here must be red against a FABPUB-merged
-`main`, not against today's `main` — the bypass still exists at that point, which is what makes
-them red.
-
-**Non-goals**
-Publish identity. That is FABPUB and must be merged first.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
-- `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`
-- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py`
-
-**Depends on**
-- FABPUB
-
-**Produces**
-- (none)
-
-**Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
-outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
-`blocker_class=contract_bug`.
-
-### Phase 6 — Scheduler and Worktree Reclamation (SCHED)
-
-**Objective**
-Reclaim crash-residual worktrees without destroying recoverable work, and close the lane-scheduler
-dispatch cluster.
-
-**Exit criteria**
-- [ ] EC-SCHED-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
-- [ ] EC-SCHED-1 — A worktree preserved by the GC is NOT destroyed by the recreation path eight lines later; falsified by restoring the unconditional force-remove
-- [ ] EC-SCHED-2 — `test_create_is_idempotent_after_stale_worktree` no longer pins data loss as intended behaviour, and its replacement assertion is recorded as a ratified decision; falsified by the test still asserting the destructive path as intended, or a replacement landing with no recorded ratified decision — the observable is the test asserting preservation (not deletion) plus a decision-record reference
-- [ ] EC-SCHED-3 — A worktree whose only content is a gitignored handoff is not treated as empty; falsified by presenting a worktree containing only a gitignored handoff and finding the emptiness check reclaims it — the observable is the check classifying it non-empty (handoff detected), not empty
-- [ ] EC-SCHED-4 — The lane scheduler honours `work_unit_kind`, so a reducer lane is not dispatched as an executor; falsified by dispatching a `work_unit_kind=reducer` lane and finding it launched on the executor path — the observable is the dispatch decision reading `work_unit_kind` and routing to the reducer path
-- [ ] EC-SCHED-5 — Validated planner artifacts survive parent reduction under `--phase-scheduler concurrent`; falsified by running a concurrent reduction and finding validated planner artifacts destroyed or overwritten — the observable is the artifact files present and byte-unchanged after reduction. Positive control: the reduction still runs (a preservation-merge, not a skipped reduction), proving survival is not achieved by declining to reduce
-- [ ] EC-SCHED-6 — After a no-diff concurrent dispatch, the parent does not run phase verification against files that were never created; falsified by a no-diff concurrent dispatch triggering parent verification against absent files — the observable is verification being SKIPPED (or a typed no-diff signal raised) rather than failing on missing paths. Positive control: a dispatch that DID produce a diff still runs verification, proving the skip is diff-conditioned, not unconditional
-- [ ] EC-SCHED-7 — **WORKTREE-LOSS DISPOSITION (carried from v9 FAB lane (a), `phase-plans-v9.md:357`; v9's banner recorded it as "CANNOT-DETERMINE, not carried" (`v9:16`), and superseding v9 would otherwise make its acceptance condition silently unreachable — "cannot-determine" is not a disposition).** v9:357 required each of four divergent worktrees — `agent-harness-abdreg`, `ah-abdreg-pkg`, `ah-abdreg-rebase` (three copies on `feat/advisor-board-abdreg`) and `agent-harness-abdresolve` (`phase/abdresolve`) — to be landed, committed-and-parked, or explicitly discarded with a recorded decision, no silent loss. The verifiable, satisfiable obligation carried here is PRESERVATION OF THE SURVIVING COMMITTED TIPS (verified 2026-07-29, aligned to `plans/design-fab-191-delta-review.md:514-521`, NOT smoothed): NONE of the four worktrees still exists under `git worktree list`, and both branches `feat/advisor-board-abdreg` (`4c603c3`) and `phase/abdresolve` (`582037e`) survive on `origin` (confirmed by `git ls-remote`), so their committed state is parked-and-recoverable. Satisfied by those two `origin` tips confirmed retained under a recorded disposition. Falsified by either `feat/advisor-board-abdreg` or `phase/abdresolve` being deleted from `origin` with no recorded decision — the observable is the missing ref, a silent loss of committed state. STANDING FINDING (STATE, not satisfaction — this criterion does NOT turn green by recording it, and it is NOT satisfied by admitting the loss): the `phase/abdresolve` worktree's 25 uncommitted files were **discarded UN-INSPECTED** — whether they were re-appearing already-committed work or genuine un-committed progress is UNKNOWABLE, and the FAB design record `design-fab-191-delta-review.md:514-521` explicitly DECLINES to claim "no silent loss" for them — so v9:357's no-silent-loss is UNMET for `abdresolve`, carried as an accepted possible-loss exactly like EC-INTEG-5's 2-of-N residual, never a green. (The `abdreg` copies' 5 uncommitted files were by contrast INSPECTED — sibling copies reverting committed safety fixes, an abandoned experiment, no value forgone — a genuine recorded discard, outside the standing finding.)
-
-**Scope notes**
-Decompose into 2 lanes over disjoint files: lane A owns worktree reclamation
-(`phase_worktree_executor.py`), lane B owns the scheduler cluster (`lane_scheduler.py`,
-`runner.py`) for which a drafted plan already exists. **EC-SCHED-1/2/3 are BLOCKED on the ah#354
-design fork**, which has been paneled twice — options (a)/(b)/(c) were rejected 3/3, and
-resume-first was rejected on mechanism (the handoff is a closeout artifact, not a session
-checkpoint). A third framing is required before lane A starts.
-
-**Non-goals**
-Building a session-checkpoint mechanism. If resume-first is ever viable it needs one, and that is
-its own initiative.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py`
-- `phase-loop-runtime/src/phase_loop_runtime/lane_scheduler.py`
-- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
-
-**Depends on**
-- PROOFGATE
-
-**Produces**
-- (none)
-
-**Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
-outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
-`blocker_class=contract_bug`.
-
-### Phase 7 — Leg Lifecycle and Board Extensibility (LEGLIFE)
+### Phase 8 — Leg Lifecycle and Board Extensibility (LEGLIFE)
 
 **Objective**
 Make board legs terminate, reap, and return an aggregate — then let a repo declare its own seats
@@ -572,46 +640,6 @@ REVIEWTRUTH — see EC-REVIEWTRUTH-14 / `agent-harness#396`.)
 
 **Depends on**
 - REVIEWTRUTH
-
-**Produces**
-- (none)
-
-**Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
-outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
-`blocker_class=contract_bug`.
-
-### Phase 8 — Isolation and Verification Hardening (HARDEN)
-
-**Objective**
-Close the reachable security and verification gaps carried as open findings, starting with the one
-that is exploitable rather than theoretical.
-
-**Exit criteria**
-- [ ] EC-HARDEN-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
-- [ ] EC-HARDEN-1 — An absolute symlink cannot escape the staged review tree; falsified by restoring `copytree(symlinks=True)` without the containment check
-- [ ] EC-HARDEN-2 — Path handling in the reconcile main loop is CWD-independent; falsified by invoking the reconcile main loop from a different CWD and finding a path resolves differently — the observable is identical resolved paths across two CWDs, where a relative-path use would diverge
-- [ ] EC-HARDEN-3 — Goal-coverage enforce mode fails closed rather than passing vacuously when no EC-IDs are declared; falsified by running enforce mode with zero declared EC-IDs and finding it PASSES — the observable is a fail-closed error on empty declarations, not a vacuous green
-- [ ] EC-HARDEN-4 — The login-shell interpreter shim resists the exotic bash-option and profile-introduced-version forms recorded in ah#241; falsified by feeding each ah#241 form (exotic bash-option, profile-introduced version) and finding the shim selects a non-satisfying interpreter — the observable is a fail-closed rejection per form, enumerated, not a silently-shadowed interpreter
-- [ ] EC-HARDEN-5 — **FLEET-WIDE REVIEW-LEG ISOLATION (ah#248; v10's first draft allowed satisfaction by an "explicitly operator-accepted residual with a recorded rationale," which marks the criterion MET while a review leg can still execute — the roadmap reports green with the hazard live).** Review-leg isolation is a SAFETY INVARIANT, not residual-risk hardening: review bundles are attacker-controlled by construction, which is the whole reason review legs are refused execution capability — a review leg that can execute, can execute regardless of what any register records. The obligation, per the ah#248 isolation standard, is that a review leg holds no mutation capability: it cannot issue a repository mutation or any credentialed/privileged side-effect from the review-leg environment. (A read-only review leg legitimately spawns its own reviewer subprocess — the bar is the absence of mutation/credentialed side-effects, NOT absolute-zero process or shell execution; the earlier "cannot spawn a process or run a shell command" wording overshot ah#248 and no correct read-only leg could satisfy it.) Falsified by a review leg that issues a repository mutation or a credentialed side-effect despite the standard — the observable is a successful mutation/credentialed operation issued from a review-leg environment, NOT the mere spawning of a process and not the presence or absence of a residual-register entry. This criterion is satisfied ONLY when the isolation checklist is fully met, full stop — it is a safety invariant and is NOT satisfiable by documenting its own failure. An operator genuinely may accept a security residual, but that belongs in the STATE, not the SATISFACTION: the standard is then UNMET with an accepted residual, carried here as a STANDING FINDING exactly like EC-INTEG-5's 2-of-N — never "met because we wrote it down." Its honest state: if the fleet-wide checklist is not fully met, this is UNMET and any residual recorded in the accepted-residual register (ah#361) is that standing finding, not a green
-
-**Scope notes**
-Decompose into 2 lanes: lane A owns the staging/symlink containment (ah#259) and the isolation
-standard (ah#248); lane B owns reconcile path handling, goal-coverage enforce mode, and the shim.
-Lane A is the security-reachable work and should start first even though the phase is otherwise
-parallel-safe.
-
-**Non-goals**
-Re-opening the accepted-residual register (ah#361). Items there are promoted individually only on
-new reachability evidence.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
-- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
-- `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`
-
-**Depends on**
-- (none)
 
 **Produces**
 - (none)
@@ -806,23 +834,30 @@ outside this repo; `redaction_posture: metadata_only`; malformed evidence routes
 ## Phase Dependency DAG
 
 ```
-LEGIBLE ──────────────→ PROOFGATE ────────┬─────────────→ SCHED
-                                          └─────────────→ RUNTIME
-REVIEWTRUTH ────────────────────────────────────────────→ LEGLIFE
+LEGIBLE ──┬──→ PROOFGATE ──┬──→ SCHED
+          │                 ├──→ RUNTIME
+          │                 └──┐
+          └──→ CONFORM ────────┴──→ FABPUB ──┬──→ HARDEN ──→ REVIEWTRUTH ──→ LEGLIFE
+                                             ├──→ FABREADMIT
+                                             └──→ RESIDUAL
 
-CONFORM ──────────────────────── [gate CLEARED 2026-07-29 — spec#102 merged,
-                                  agent-harness#377 landed the pin]
+Writer-safe root-plan frontier:
+  wave 1: LEGIBLE
+  wave 2: PROOFGATE ∥ CONFORM
+  wave 3: FABPUB
+  wave 4: HARDEN
+  wave 5: REVIEWTRUTH
 
-FABPUB ─────────────────────────┬───────────────────────→ FABREADMIT
-                                └───────────────────────→ RESIDUAL
+Required root-plan serialization:
+  LEGIBLE     → PROOFGATE    (generic verification-evidence v3 producer/registry)
+  LEGIBLE     → CONFORM      (shared cli.py writer)
+  PROOFGATE   → FABPUB       (train_runner.py and revocation-race test writers)
+  CONFORM     → FABPUB       (cli.py and CHANGELOG.md writers)
+  FABPUB      → HARDEN       (cli.py and CHANGELOG.md writers)
+  HARDEN      → REVIEWTRUTH  (composition.py, panel_invoker.py, cli.py, and runner.py writers)
+  CONFORM     → REVIEWTRUTH  (tests/conftest.py and cli.py writers; explicit even though transitive)
 
-HARDEN
-
-Parallel roots (no shared ancestor):
-  LEGIBLE ∥ REVIEWTRUTH ∥ CONFORM ∥ FABPUB ∥ HARDEN
-
-Serial edges (five, in the live v10 graph — the Absorbed convergence-v1 chain below is separate):
-  LEGIBLE     → PROOFGATE    (shared verification-evidence v3 envelope/registry lands first)
+Downstream semantic edges:
   REVIEWTRUTH → LEGLIFE     (lens must be load-bearing before custom lenses mean anything)
   FABPUB      → FABREADMIT  (merge boundary enforces the mixed-allocation interlock)
   FABPUB      → RESIDUAL    (RESIDUAL lane A rewrites the verbs.py/train_runner.py publish identity FABPUB owns)
@@ -832,9 +867,40 @@ Absorbed convergence-v1 chain:
   LEGIBLE → PROOFGATE → RUNTIME ─┐
   FABPUB → FABREADMIT ───────────┴→ INTEG → RELEASE
 
-Critical path (depth 5):
-  LEGIBLE → PROOFGATE → RUNTIME → INTEG → RELEASE
+Critical paths (depth 6):
+  LEGIBLE → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE
+  and LEGIBLE → PROOFGATE → FABPUB → FABREADMIT → INTEG → RELEASE
 ```
+
+The six detailed root plans own a conflict graph that is complete except for the
+PROOFGATE/CONFORM pair. The exhaustive pattern-expanded intersections are:
+
+| pair | shared owned paths or patterns | ordering |
+|---|---|---|
+| LEGIBLE / REVIEWTRUTH | `cli.py`, `runner.py` | LEGIBLE before REVIEWTRUTH (transitive) |
+| LEGIBLE / PROOFGATE | verification-evidence contract, `runner.py`, `verification_evidence.py` | LEGIBLE → PROOFGATE |
+| LEGIBLE / CONFORM | `cli.py` | LEGIBLE → CONFORM |
+| LEGIBLE / FABPUB | `cli.py` | LEGIBLE before FABPUB (transitive) |
+| LEGIBLE / HARDEN | `cli.py`, `runner.py`, `verification_evidence.py` | LEGIBLE before HARDEN (transitive) |
+| REVIEWTRUTH / PROOFGATE | `panel_invoker.py`, `runner.py`, `train_runner.py` | PROOFGATE before REVIEWTRUTH (transitive) |
+| REVIEWTRUTH / CONFORM | `tests/conftest.py`, `cli.py` | CONFORM → REVIEWTRUTH |
+| REVIEWTRUTH / FABPUB | `cli.py`, `train_runner.py` | FABPUB before REVIEWTRUTH (transitive) |
+| REVIEWTRUTH / HARDEN | `advisor_board/composition.py`, `cli.py`, `panel_invoker.py`, `runner.py` | HARDEN → REVIEWTRUTH |
+| PROOFGATE / CONFORM | none | parallel-safe |
+| PROOFGATE / FABPUB | `train_runner.py`, `test_convergence_broker_revocation_race.py` | PROOFGATE → FABPUB |
+| PROOFGATE / HARDEN | `launcher.py`, `panel_invoker.py`, `goal_coverage.py`, `runner.py`, `verification_evidence.py`, `test_goal_coverage.py`, `test_review_leg_sandbox.py` | PROOFGATE before HARDEN (transitive) |
+| CONFORM / FABPUB | `cli.py`, `CHANGELOG.md` | CONFORM → FABPUB |
+| CONFORM / HARDEN | `cli.py`, `CHANGELOG.md` | CONFORM before HARDEN (transitive) |
+| FABPUB / HARDEN | `cli.py`, `CHANGELOG.md` | FABPUB → HARDEN |
+
+Every nonempty intersection is ordered; PROOFGATE and CONFORM are the sole concurrent detailed
+root-plan authors. REVIEWTRUTH must re-anchor after fetching the exact canonical base containing
+the two-parent CONFORM and HARDEN landings, rerun its complete bootstrap observer and Gate A
+baseline before any edit, and re-freeze every source/path/provenance digest. Any retained
+REVIEWTRUTH assumption or owned-path byte changed by those landings invalidates predecessor
+evidence and requires plan repair plus a fresh exact-digest panel. Its unresolved
+`agent-harness#398` human ratification gate is therefore downstream and cannot block CONFORM or
+HARDEN.
 
 ## External Dependencies (NOT phases — we do not own these)
 
@@ -886,26 +952,26 @@ that later make the same controls machine-enforceable:
    called convergence and never authorizes this coordinated run to proceed. The coordinator keeps
    this bootstrap interlock until REVIEWTRUTH lands the equivalent runtime enforcement.
 
-The independent roots are exactly those listed under `Parallel roots` in the DAG above; plan
-and execute them concurrently. PROOFGATE is not among them: LEGIBLE and PROOFGATE both write
-`runner.py`, `verification_evidence.py`, and the public verification-evidence contract document,
-so PROOFGATE starts only after LEGIBLE's shared v3 envelope and registry land. RESIDUAL is also
-not a root — it `Depends on` FABPUB (its lane A rewrites the `verbs.py`/`train_runner.py` publish
-identity FABPUB owns), so plan and execute it only after FABPUB's publish-identity migration
-lands.
+The writer-safe frontier is exactly the five-wave sequence in the DAG above. Only PROOFGATE and
+CONFORM may plan or execute concurrently: they are the sole pair with no owned-path intersection.
+LEGIBLE lands first; FABPUB consumes both wave-2 landings; HARDEN consumes FABPUB; REVIEWTRUTH
+consumes both CONFORM and HARDEN and must rebuild its exact-head bootstrap evidence on that
+post-upstream base. RESIDUAL is also not a root — it `Depends on` FABPUB (its lane A rewrites the
+`verbs.py`/`train_runner.py` publish identity FABPUB owns), so plan and execute it only after
+FABPUB's publish-identity migration lands.
 
 Recommended start order when capacity is limited, and why:
 
-1. **LEGIBLE and REVIEWTRUTH first.** REVIEWTRUTH makes review verdicts trustworthy; LEGIBLE is
-   small, makes this roadmap's progress reportable, and publishes the verification-evidence v3
-   envelope that unblocks PROOFGATE.
-2. **PROOFGATE immediately after LEGIBLE**, because it makes proofs mechanical and lies on the
-   critical path. It may not overlap LEGIBLE's shared verification-evidence writers.
-3. **FABPUB** whenever capacity allows; it has no upstream dependency and lies on a longest chain
-   (see the DAG's *Critical path*), so prioritizing it shortens the schedule (RESIDUAL now hangs
-   off it downstream, so start FABPUB before, never beside, RESIDUAL).
-4. **SCHED** only after the ah#354 design fork is settled — lane B may proceed meanwhile.
-5. **RESIDUAL after FABPUB** — it serializes behind FABPUB's publish-identity migration (shared
+1. **LEGIBLE first.** It makes this roadmap's progress reportable and publishes the generic
+   verification-evidence v3 envelope and registry.
+2. **PROOFGATE and CONFORM together after LEGIBLE.** This is the only maximally parallel
+   writer-safe frontier among the six detailed root plans.
+3. **FABPUB after both wave-2 landings.** It shares writers with each predecessor and lies on both
+   a longest downstream broker chain and the hardening/review chain.
+4. **HARDEN after FABPUB, then REVIEWTRUTH after HARDEN and CONFORM.** REVIEWTRUTH's human
+   ratification gate remains last and cannot delay either predecessor.
+5. **SCHED** only after the agent-harness#354 design fork is settled — lane B may proceed meanwhile.
+6. **RESIDUAL after FABPUB** — it serializes behind FABPUB's publish-identity migration (shared
    `verbs.py`/`train_runner.py`), so it is never a concurrent root; RESIDUAL's own lanes B and C
    carry no FABPUB dependency but ride the phase-granularity edge.
 
@@ -913,8 +979,9 @@ For phase execution, use `--governed` and assign the next executor from
 `claude,codex,gemini,grok` explicitly per phase. Keep planning and execution as separate coordinator
 steps so the exact phase-plan digest can clear the mandatory four-seat panel before any test work
 begins. Keep both runtime schedulers off for these launches: lane scheduling currently bypasses
-phase rotation, and the coordinator must preserve an auditable single author vendor. Instead, launch
-the independent roots above concurrently in separate phase worktrees with explicit executors, and
+phase rotation, and the coordinator must preserve an auditable single author vendor. Instead,
+launch only the explicitly parallel-safe PROOFGATE/CONFORM frontier concurrently in separate phase
+worktrees with explicit executors, and
 allow same-vendor native workers only where a plan declares disjoint parallel-safe lanes. Do not use
 cross-vendor work-unit rotation until author-scoped work-unit closeout can preserve the non-author
 review quorum. Record the selected executor, model, effort, reviewed digest, reviewing seat count,
