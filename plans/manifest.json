@@ -630,6 +630,37 @@
     },
     {
       "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:08:05Z",
+      "file": "plans/phase-plan-v10-FABPUB.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-fabpub-plan.md",
+      "if_gates_produced": [
+        "IF-0-FABPUB-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "FABPUB",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-FABPUB",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T04:08:05Z"
+    },
+    {
+      "acceptance_criteria_count": null,
       "created_at": "2026-06-30T22:00:00Z",
       "file": "plans/phase-plan-v4-PNLCLAUDE.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260630-2200-PNLCLAUDE.md",
