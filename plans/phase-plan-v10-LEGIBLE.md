@@ -7,7 +7,8 @@ legible_lifecycle_contract: legible_tdd_candidate_main.v1
 legible_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_LEGIBLE
 legible_capability_marker: phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1
 legible_expected_nodeids: 83
-legible_owned_paths_count: 15
+legible_owned_paths_count: 16
+legible_owned_paths_sha256: 01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b
 automation:
   suite_command: [bash, -lc, 'cd phase-loop-runtime && PYTHONPATH=src python -m pytest -m "not dotfiles_integration" -q && bash scripts/gate_a_cleanroom.sh']
 ---
@@ -23,6 +24,20 @@ selection, plan-manifest coverage, and stale-assumption detection. The canonical
 mandatory dissent repair is grounded at source head
 `790924610b28ecf7e8e74664dec338a15bd9d52c`, and no legacy `.codex/phase-loop/`
 state is used.
+
+The latest exact-digest panel blocked plan digest
+`aff9a02c37b9f7622492bf7143215880443c9de21f4a44579f15109453ccbcc4`.
+Its authoritative dissent found that the plan added a
+`verification_evidence_sidecar.v1` record to schema-v2 `verification.json` and changed
+`run_verification` validation/call semantics even though
+`phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`
+freezes v2's exact top-level fields and the public function signature. The same digest omitted
+that public contract document from its fifteen-path ownership set and incorrectly claimed no
+public-document change even though `cli.py` and `_contract_docs` are public surfaces. This repair
+therefore owns the exact contract document, defines the versioned compatibility boundary below,
+and expands the closed owned set to sixteen paths. The blocked verdict does not transfer to this
+changed digest: before LEGIBLE-A0, the repaired exact plan digest must receive a fresh four-seat
+panel under the unchanged v10 policy.
 
 The repository currently has thirteen `specs/phase-plans-*.md` roadmaps whose primary banners
 describe one active roadmap, five delivered roadmaps, and seven superseded roadmaps, but there
@@ -163,7 +178,7 @@ SL-1 — Manifest presence reporting
   Blocks: SL-2
   Parallel-safe: yes
 
-SL-2 — agent-harness#347 evidence and docs-catalog rescan
+SL-2 — agent-harness#347 evidence, verification contract, and docs-catalog rescan
   Depends on: SL-0, SL-1
   Blocks: (none)
   Parallel-safe: no
@@ -172,20 +187,20 @@ SL-2 — agent-harness#347 evidence and docs-catalog rescan
 
 ### SL-0 — Test-first roadmap status, selection, and assumption contract
 
-- **Scope**: Land and panel the complete LEGIBLE falsifier suite before production changes, then freeze the banner-coherent roadmap registry/accessor and bounded assumption grammar while making status drift, stale assumptions, and every discovery return path fail closed.
+- **Scope**: Land and panel the complete LEGIBLE falsifier and public-contract compatibility suite before production or implementation-contract-document changes, then freeze the banner-coherent roadmap registry/accessor and bounded assumption grammar while making status drift, stale assumptions, and every discovery return path fail closed.
 - **Owned files**: `specs/roadmap-status.json`, `specs/roadmap-assumption-probes-v10.json`, `phase-loop-runtime/src/phase_loop_runtime/roadmap_lint.py`, `phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py`, `phase-loop-runtime/src/phase_loop_runtime/discovery.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/tests/test_legible_roadmap_contract.py`, `phase-loop-runtime/tests/test_legible_evidence.py`
 - **Interfaces provided**: `IF-0-LEGIBLE-1`, `roadmap_status_manifest.v1`, closed primary-banner grammar, `roadmap_assumption_probe.v1`, `reviewtruth_fable_transition`, `RoadmapStatus`, `RoadmapStatusError`, `parse_roadmap_status_manifest`, `parse_roadmap_banner_status`, `validate_roadmap_status_coherence`, `read_roadmap_status`, `declared_active_roadmap`, `_return_selectable_roadmap`, `audit_roadmap_assumptions`, `phase-loop attest`, `LEGIBLE frozen falsifier suite`
 - **Interfaces consumed**: `select_roadmap` (pre-existing), `validate-roadmap` (pre-existing), `RoadmapAuthorityError` (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
 
-- test: LEGIBLE-A0 creates the immutable two-file falsifier suite with the test-owned activation guard, proves the no-env tests-only state is `83 skipped / 0 failed / 0 errors`, then sets `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1` and proves the same exact 83 nodeids execute and fail by their intended `LEGIBLE_RED::<mutation-id>` assertions with zero skips, xfails, import failures, or collection errors before any production path changes.
+- test: LEGIBLE-A0 creates the immutable two-file falsifier suite with the test-owned activation guard, including contract-document assertions and compatibility controls for legacy-v2 round trip, exact no-sidecar behavior, the new sidecar-bearing schema, unknown-version rejection, and the frozen public CLI/function surface; it proves the no-env tests-only state is `83 skipped / 0 failed / 0 errors`, then sets `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1` and proves the same exact 83 nodeids execute and fail by their intended `LEGIBLE_RED::<mutation-id>` assertions with zero skips, xfails, import failures, or collection errors before any production or implementation-contract-document path changes.
 - impl: LEGIBLE-A1 depends on the landed LEGIBLE-A0 test-only commit, accepted test-tree/nodeid digests, default-CI JUnit, panel verdict, and raw asserted-anchor RED JUnit/log; it adds the roadmap registry, closed banner parser, typed coherence/accessor surface, bounded probes, CLI check, common discovery return gate, and the generic fresh-process attestation entrypoint without changing either frozen test blob or any roadmap bytes; the downstream evidence owner installs the capability marker only in the final complete implementation candidate.
 - verify: LEGIBLE-A2 depends on LEGIBLE-A1 and, until the marker is installed, forces the SL-0 subset with `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1`; after the final marker-bearing candidate it runs the same subset with no activation env plus the pre-existing roadmap/discovery suites, requiring every selected LEGIBLE nodeid to pass with zero skipped. Manifest, catalog, chronology, PR-evidence, runner-sidecar, and artifact-digest falsifiers remain unsatisfied until their owning lanes implement them.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| LEGIBLE-A0 | test | none | `phase-loop-runtime/tests/test_legible_roadmap_contract.py`, `phase-loop-runtime/tests/test_legible_evidence.py` | the complete exact-path, banner/parser/coherence, selector-source, status, assumption, manifest, catalog, chronology, activation, frozen-test-blob, artifact-digest, exact-PR-head/body, fresh-process, ancestry, JUnit, and post-merge evidence falsifiers; both files define their literal `LEGIBLE_EXPECTED_NODEIDS_V1` tuples and one shared immutable activation rule | no env: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py tests/test_legible_evidence.py --junitxml=../.phase-loop/runs/<run-id>/legible-tests-only-default.junit.xml -q` must exit 0 with exactly 83 skips; forced RED: prepend `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1`, write raw output and `legible-tests-only-red.junit.xml`, and require exit 1 with exactly 83 intended failures and zero skips/errors |
+| LEGIBLE-A0 | test | none | `phase-loop-runtime/tests/test_legible_roadmap_contract.py`, `phase-loop-runtime/tests/test_legible_evidence.py` | the complete exact-path, banner/parser/coherence, selector-source, status, assumption, manifest, catalog, chronology, activation, frozen-test-blob, artifact-digest, exact-PR-head/body, fresh-process, ancestry, JUnit, post-merge evidence, and verification-contract falsifiers; the frozen 83-nodeid inventory includes assertions that the contract document states v2's exact fields/signature and v3's extension boundary, a legacy-v2 load/round-trip control, an exact no-sidecar v2 behavior control, a valid sidecar-bearing v3 control, unknown top-level/extension-version rejection controls, and public `phase-loop` CLI plus `run_verification`/loader/validator signature-behavior controls; both files define their literal `LEGIBLE_EXPECTED_NODEIDS_V1` tuples and one shared immutable activation rule | no env: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py tests/test_legible_evidence.py --junitxml=../.phase-loop/runs/<run-id>/legible-tests-only-default.junit.xml -q` must exit 0 with exactly 83 skips; forced RED: prepend `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1`, write raw output and `legible-tests-only-red.junit.xml`, and require exit 1 with exactly 83 intended failures and zero skips/errors |
 | LEGIBLE-A1 | impl | LEGIBLE-A0 test-only landing is on the target/default branch, its exact two-file blob/nodeid-set digests are accepted by the mandatory panel, default-CI and forced-RED evidence are runner-owned, and the implementation branch is based from the landing | `specs/roadmap-status.json`, `specs/roadmap-assumption-probes-v10.json`, `phase-loop-runtime/src/phase_loop_runtime/roadmap_lint.py`, `phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py`, `phase-loop-runtime/src/phase_loop_runtime/discovery.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py` | both LEGIBLE-A0 test files and their activation logic are frozen; no implementation task may modify either path | add the closed status registry and assumption-probe sidecar without modifying roadmap bytes; implement the closed banner grammar, typed registry/banner/coherence/accessor surface, fixed assumption adapters, coherent repository `validate-roadmap --check-assumptions`, common `_return_selectable_roadmap` gate, and `phase-loop attest --stage candidate|canonical-main`; do not install or counterfeit the SL-2-owned capability marker |
 | LEGIBLE-A2 | verify | LEGIBLE-A1 | SL-0 owned files | frozen SL-0 subsets only; later-lane subsets remain unsatisfied until implemented | `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap --check-assumptions specs/phase-plans-v10.md`, forced-before-marker/default-after-marker `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py -k "roadmap_status or banner_status or declared_active_roadmap or assumption or superseded_selector" -q`, and `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_phase_loop_roadmap_validate.py tests/test_discovery_hygiene_legacy.py tests/test_roadmap_authority.py -q` |
 
@@ -194,7 +209,9 @@ The chronology is exact and reducer-enforced:
 1. Clear the four-vendor panel for the exact plan digest recorded in the LEGIBLE manifest
    entry metadata, with the plan frontmatter lifecycle fields and roadmap digest validated.
 2. Complete both LEGIBLE-A0 files on a tests-only branch whose first-parent diff contains only
-   those paths. The files share the activation rule
+   those paths. The tests include the contract-document and v1/v2/v3 compatibility controls above
+   before the owned public contract document or any production path changes. The files share the
+   activation rule
    `forced = os.environ.get("PHASE_LOOP_TDD_EXPECT_LEGIBLE") == "1"` or
    `installed = importlib.util.find_spec("phase_loop_runtime.legible_evidence") is not None`
    followed by
@@ -204,7 +221,10 @@ The chronology is exact and reducer-enforced:
 3. With the marker absent and no env override, run the tests-only targeted command and ordinary
    broad CI. The targeted JUnit must say `tests=83`, `skipped=83`, `failures=0`, `errors=0`;
    the broad suite must stay green and its only newly skipped nodeids must be those exact 83.
-4. Panel the exact two test-blob OIDs plus the SHA-256 of the sorted literal nodeid tuple. Then
+4. Panel the exact two test-blob OIDs plus the SHA-256 of the sorted literal nodeid tuple. The
+   panel must confirm that the frozen tests pin the exact public `run_verification` signature,
+   legacy-v2/no-sidecar behavior, v3 namespaced sidecar validation, unknown-version rejection,
+   and contract-document text before implementation. Then
    set `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1` against the unchanged pre-implementation production
    base. Raw RED output and JUnit must prove all 83 nodeids ran, every node failed its intended
    `LEGIBLE_RED::<mutation-id>` assertion after its source injection anchor assertion succeeded,
@@ -441,29 +461,77 @@ clean execution scope, the required result is
 `canonical=28 registered=28 unregistered=0`; a root present in scope but missing from the
 manifest is reported, never filtered out. `validate_manifest(...).valid` must also be true.
 
-### SL-2 — agent-harness#347 evidence and docs-catalog rescan
+### SL-2 — agent-harness#347 evidence, verification contract, and docs-catalog rescan
 
-- **Scope**: Populate the inert docs catalog, implement the executable LEGIBLE evidence reducer plus fresh-process runner-owned verification-sidecar stamping/validation, and promote and merge `Consiliency/agent-harness#347` only after exact-head body-ancestry and governance checks pass.
-- **Owned files**: `.claude/docs-catalog.json`, `phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
-- **Interfaces provided**: `docs_catalog_entry_count`, `docs-catalog rescan`, `legible_evidence.v1`, `verification_evidence_sidecar.v1`, `agent-harness#347 exact-head merge evidence`
-- **Interfaces consumed**: `LEGIBLE frozen falsifier suite`, `ManifestPresenceReport`, `reviewtruth_fable_transition`, `phase-loop attest`
+- **Scope**: Populate the inert docs catalog, evolve and document the verification-evidence contract without mutating schema v2 or the frozen public function/CLI behavior, implement the executable LEGIBLE evidence reducer plus fresh-process runner-owned verification-sidecar stamping/validation, and promote and merge `Consiliency/agent-harness#347` only after exact-head body-ancestry and governance checks pass.
+- **Owned files**: `.claude/docs-catalog.json`, `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`, `phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
+- **Interfaces provided**: `docs_catalog_entry_count`, `docs-catalog rescan`, `legible_evidence.v1`, `verification_evidence.v3`, `verification_evidence_sidecar.v1`, `agent-harness#347 exact-head merge evidence`
+- **Interfaces consumed**: `LEGIBLE frozen falsifier suite`, `ManifestPresenceReport`, `reviewtruth_fable_transition`, `phase-loop attest`, `verification_evidence.v2` (pre-existing), frozen `run_verification` signature (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
 
-- test: LEGIBLE-C0 consumes the SL-0/SL-1 frozen catalog, status-evidence, PR-evidence, chronology, activation/JUnit, fresh-process, runner-sidecar, and artifact-digest tests first and forces them with `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1` before LEGIBLE-C1 or LEGIBLE-C2 starts.
-- impl: LEGIBLE-C1 and LEGIBLE-C2 depend on LEGIBLE-C0 and implement catalog rescan, the strict evidence reducer, candidate/main attestation, and runner/verification-evidence sidecar binding; the candidate-building process may exercise these changes only as a subprocess test target and may not attest itself.
+- test: LEGIBLE-C0 consumes the SL-0/SL-1 frozen catalog, status-evidence, PR-evidence, chronology, activation/JUnit, fresh-process, runner-sidecar, artifact-digest, contract-document, legacy-v2/no-sidecar, v3-sidecar, unknown-version, and public CLI/function compatibility tests first and forces them with `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1` before LEGIBLE-C1 or LEGIBLE-C2 starts.
+- impl: LEGIBLE-C1 and LEGIBLE-C2 depend on LEGIBLE-C0 and implement catalog rescan, the public contract-document evolution, the strict evidence reducer, candidate/main attestation, and runner/verification-evidence sidecar binding without changing the public `run_verification` signature or ordinary v2 behavior; the candidate-building process may exercise these changes only as a subprocess test target and may not attest itself.
 - verify: LEGIBLE-C3 through LEGIBLE-C7 freeze/push the implementation candidate, use fresh exact-head processes for the `Consiliency/agent-harness#347` transition and implementation panel/evidence, merge only after the broad compatible gate, and finally use another fresh process bound to exact canonical main; only C7 may produce the phase-closing verification artifact.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| LEGIBLE-C0 | test | SL-0, SL-1 | `phase-loop-runtime/tests/test_legible_roadmap_contract.py`, `phase-loop-runtime/tests/test_legible_evidence.py` | frozen catalog tests plus `test_status_evidence_rejects_registry_banner_drift_or_path_set_change`, `test_pr_evidence_rejects_non_ancestor_body_sha`, `test_pr_evidence_rejects_head_or_body_change_before_merge`, `test_pr_evidence_requires_merged_result_for_snapshotted_head`, `test_pr_evidence_rejects_unbound_target_integration_delta`, `test_chronology_rejects_non_test_only_commit`, `test_chronology_rejects_same_branch_sequence`, `test_chronology_requires_test_landing_on_target_before_implementation_base`, `test_chronology_rejects_test_path_diff_in_implementation_pr_range`, `test_chronology_rejects_changed_frozen_test_blob`, candidate/main bootstrap-head and process-separation controls, exact manifest/frontmatter plan-digest ancestry, default/RED/final JUnit count/set/status controls, `test_verification_sidecar_runner_captures_bounded_redacted_fable_probe_evidence`, `test_verification_sidecar_runner_rejects_self_reported_fable_probe_evidence`, `test_runner_stamps_legible_sidecar_path_and_digest`, and missing/drift/path-escape/oversize sidecar controls | `cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_LEGIBLE=1 PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py tests/test_legible_evidence.py -k "catalog or status_evidence or pr_evidence or chronology or activation or junit or fresh_process or artifact_digest or verification_sidecar" -q` |
-| LEGIBLE-C1 | impl | LEGIBLE-C0 | `.claude/docs-catalog.json`, `phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py` | none; tests remain owned and frozen by SL-0 | add deterministic `rescan-catalog` and `check-catalog` module commands, populate repo-owned document entries, and make empty mean count zero; do not infer or catalog client-owned documents while `Consiliency/agent-harness#367` is unresolved |
-| LEGIBLE-C2 | impl | LEGIBLE-C0 | `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` | none; tests remain owned and frozen by SL-0 | implement strict schema parsing, coherent roadmap-status collection/revalidation, TDD activation/JUnit and exact-digest chronology collection/validation, phase-authored versus exact target-integration delta partitioning, implementation-PR test-path range rejection, candidate/main bootstrap provenance, PR snapshot/finalization, artifact SHA-256 calculation, atomic evidence writes, and staged `python -m phase_loop_runtime.legible_evidence verify`; have a freshly started runner invoke/capture the fixed `reviewtruth_fable_transition` adapter and implementation panel rather than accepting executor-authored JSON; parse the plan sidecar declaration; require, resolve, hash, and stamp the sidecar into `verification.json` before sealing it; re-resolve/re-hash on validation; reject same-process, stale-head, unknown-field, missing/path-escaping/oversized, digest-drift, registry/banner/scope-drift, self-reported/raw-probe, test-blob/nodeid/JUnit drift, same-branch chronology, phase-authored unowned/test/integration-path diffs, target-base/refreshed-head/body/refresh-parent/path/comment-only/blob/tree/result drift, zero/non-ancestor cited SHAs, and non-merged/mismatched results; install `LEGIBLE_CAPABILITY_VERSION = "legible.v1"` only after SL-0, SL-1, C1, and C2 are complete |
+| LEGIBLE-C0 | test | SL-0, SL-1 | `phase-loop-runtime/tests/test_legible_roadmap_contract.py`, `phase-loop-runtime/tests/test_legible_evidence.py` | frozen catalog tests plus `test_status_evidence_rejects_registry_banner_drift_or_path_set_change`, `test_pr_evidence_rejects_non_ancestor_body_sha`, `test_pr_evidence_rejects_head_or_body_change_before_merge`, `test_pr_evidence_requires_merged_result_for_snapshotted_head`, `test_pr_evidence_rejects_unbound_target_integration_delta`, `test_chronology_rejects_non_test_only_commit`, `test_chronology_rejects_same_branch_sequence`, `test_chronology_requires_test_landing_on_target_before_implementation_base`, `test_chronology_rejects_test_path_diff_in_implementation_pr_range`, `test_chronology_rejects_changed_frozen_test_blob`, candidate/main bootstrap-head and process-separation controls, exact manifest/frontmatter plan-digest ancestry, default/RED/final JUnit count/set/status controls, `test_verification_sidecar_runner_captures_bounded_redacted_fable_probe_evidence`, `test_verification_sidecar_runner_rejects_self_reported_fable_probe_evidence`, `test_runner_stamps_legible_sidecar_path_and_digest`, missing/drift/path-escape/oversize sidecar controls, and the contract-document/legacy-v2/no-sidecar/v3-sidecar/unknown-version/public-compatibility controls frozen by LEGIBLE-A0 | `cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_LEGIBLE=1 PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py tests/test_legible_evidence.py -k "catalog or status_evidence or pr_evidence or chronology or activation or junit or fresh_process or artifact_digest or verification_sidecar or verification_contract or public_compatibility" -q` |
+| LEGIBLE-C1 | impl | LEGIBLE-C0 | `.claude/docs-catalog.json`, `phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py` | none; tests remain owned and frozen by SL-0 | add deterministic `rescan-catalog` and `check-catalog` module commands, populate repo-owned document entries including the owned verification-evidence contract document, and make empty mean count zero; do not infer or catalog client-owned documents while `Consiliency/agent-harness#367` is unresolved |
+| LEGIBLE-C2 | impl | LEGIBLE-C0 | `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` | none; tests remain owned and frozen by SL-0 | update the public contract document and implement strict schema parsing, coherent roadmap-status collection/revalidation, TDD activation/JUnit and exact-digest chronology collection/validation, phase-authored versus exact target-integration delta partitioning, implementation-PR test-path range rejection, candidate/main bootstrap provenance, PR snapshot/finalization, artifact SHA-256 calculation, atomic evidence writes, and staged `python -m phase_loop_runtime.legible_evidence verify`; preserve the exact public `run_verification(repo, run_dir, commands, suite_command, env_refresh, timeout_s, operational_exemptions=None, python_pin=None, phase_alias=None) -> VerificationResult` signature and ordinary schema-v2 behavior; have a freshly started runner invoke/capture the fixed `reviewtruth_fable_transition` adapter and implementation panel rather than accepting executor-authored JSON; parse the plan sidecar declaration and use the internal post-run v3 binder below to require, resolve, hash, and seal the sidecar through the namespaced extension; re-resolve/re-hash on validation; reject unsupported top-level/extension versions, same-process, stale-head, unknown-field, missing/path-escaping/oversized, digest-drift, registry/banner/scope-drift, self-reported/raw-probe, test-blob/nodeid/JUnit drift, same-branch chronology, phase-authored unowned/test/integration-path diffs, target-base/refreshed-head/body/refresh-parent/path/comment-only/blob/tree/result drift, zero/non-ancestor cited SHAs, and non-merged/mismatched results; install `LEGIBLE_CAPABILITY_VERSION = "legible.v1"` only after SL-0, SL-1, C1, and C2 are complete |
 | LEGIBLE-C3 | operational | LEGIBLE-C1, LEGIBLE-C2 | committed phase-authored candidate `P` and its remote branch | frozen chronology, activation, scope, and fresh-process falsifiers | require the capability marker and every production surface to be present; run the broad candidate-compatible gate as subprocesses; commit all phase-owned production/manifest/catalog changes without either test path or the frozen `agent-harness#347` integration path; push `P`, require remote branch OID equals local `HEAD`, record builder run/process identity, and return `awaiting_phase_closeout` without treating same-process verification as evidence |
 | LEGIBLE-C4 | operational | LEGIBLE-C3 | external `Consiliency/agent-harness#347` state and runner-owned candidate-transition evidence | all four frozen PR-evidence falsifiers, including exact refresh-base/merge-base/refreshed-head/body/refresh-parent/net-path/comment-only/blob/result binding, are consumed without modification | from a new clean worktree at pushed phase-authored candidate `P`, launch fresh repo-local `phase-loop attest --stage candidate`; snapshot exact server merge-time base `B`, exact `H`, body, commit table, checks/reviews, paths/blobs, and `parents(H) == [H0, B0]`; require `B` equals the implementation base and fetched target head, descends from exact refresh base `B0`, contains the tests-only landing, and retains `B0`'s external preimage; revalidate singleton comment-only `B0..H` plus exact `T_B0H`/`R`, then require a private-index merge from merge base `B0` and tips `[B, H]` to be clean and yield `T_BH` with `changed(B, T_BH) == E` and result blob `R`; merge with merge-commit method and finalize server merge `M` only when the PR remains bound to the snapshot, `parents(M) == [B, H]`, `M^{tree} == T_BH`, and `B..M` is exactly the frozen path transition ending at `R`; no handwritten JSON, builder-process substitute, post-snapshot base advancement, squash/rebase merge, body/head/parent/path/blob drift, or phase-author refresh is allowed |
 | LEGIBLE-C5 | operational | LEGIBLE-C4 | exact phase-authored candidate `P`, server merge `M`, two-parent target-integration merge `I`, and `.phase-loop/runs/<run-id>/legible-operational-evidence.json` | frozen exact-head, external-delta partition, process-boundary, broad-suite, panel, JUnit, and sidecar falsifiers | fetch target `M`; from unchanged `P`, create runner-controlled no-conflict target-integration merge `I` with ordered parents `[P, M]` and tree equal to the private-index recomputation from merge base `B` and tips `[P, M]`; require `P..I` to be exactly the frozen `agent-harness#347` path transition with result blob `R`, not the raw `H0` blob, and set final candidate equal to `I`; push `I`, rerun the broad compatible gate, then launch a different fresh clean-worktree `phase-loop attest --stage candidate` process whose startup head/imported runtime blobs/remote OID equal `I` and which runs the implementation panel plus seals candidate evidence |
 | LEGIBLE-C6 | operational | LEGIBLE-C5, mandatory exact-head implementation panel | implementation PR state | frozen merge-gate and exact-candidate evidence | require the full candidate gate and panel to bind still-current pushed integration candidate `I`, confirm required checks/reviews, and merge the implementation PR without head/body drift or any commit after `I`; no suite subset beyond the explicitly deferred canonical-main evidence wrapper is permitted |
 | LEGIBLE-C7 | verify | LEGIBLE-C6 | canonical main plus runner-owned metadata evidence | all 83 frozen nodeids and all pre-existing compatible tests | fetch canonical main, require one exact OID containing final candidate `I`, launch another fresh repo-local `phase-loop attest --stage canonical-main` process from a clean worktree at that OID, run every Verification command and the broad suite, re-prove the phase/external delta partition, require final JUnit `83 passed / 0 failed / 0 errors / 0 skipped`, and seal/validate the exact-main sidecar and `verification.json` |
+
+The verification-evidence evolution is contract-first, explicit, and backward compatible:
+
+- Schema v2 remains frozen exactly as documented today: its nine top-level fields do not gain an
+  optional tenth field, and the public
+  `run_verification(repo, run_dir, commands, suite_command, env_refresh, timeout_s, operational_exemptions=None, python_pin=None, phase_alias=None) -> VerificationResult`
+  signature does not gain a sidecar parameter. An ordinary call, including every caller that
+  omits a LEGIBLE sidecar declaration, still writes schema version 2 with the exact legacy field
+  set, returns the same `VerificationResult` shape, preserves current phase-alias precedence and
+  failure/non-raise behavior, and follows the current seal/log validation path. Sidecar omission
+  therefore preserves exact legacy behavior; it never silently selects a new schema.
+- A sidecar-bearing attestation uses a new internal post-run binder after `run_verification`
+  returns. The binder accepts only the just-written, successfully validated v2 artifact and
+  runner-owned sidecar metadata, then atomically upgrades the artifact to schema version 3 and
+  re-seals the sibling log. Schema v3 contains exactly the nine frozen v2 fields plus one
+  `extensions` object. That object contains exactly the namespaced key
+  `phase_loop_runtime.legible_evidence`; its value is a
+  `verification_evidence_sidecar.v1` record containing exactly `schema`, `path`, `byte_length`,
+  `sha256`, `stage`, `expected_head`, `bootstrap_head`, and `process_start_token`. The binder
+  replaces the prior final seal trailer with the canonical v3 payload digest, recomputes
+  `log_sha256`, and uses same-directory temporary files plus atomic replacements; interruption
+  may leave a typed integrity mismatch but may never yield a false pass. No public CLI or
+  function caller can inject this extension through a new argument.
+- New readers accept schema versions 1, 2, and 3. Existing v1/v2 evidence remains readable with
+  its present defaults, result shape, seal/unsealed split, exit reduction, redaction, and
+  diagnostics behavior. Existing v2 readers remain compatible with all ordinary/no-sidecar output
+  because that output remains v2; when intentionally given a v3 artifact, a legacy reader rejects
+  the unsupported version rather than misreading it. A new reader requires the exact v3
+  `extensions` namespace and sidecar-v1 field set, reopens and rehashes the referenced sidecar,
+  and validates its stage/head/token binding before returning `ok`.
+- Unknown top-level schema versions, unknown v3 extension namespaces, incompatible sidecar
+  schema versions, missing required v3 fields, and additional fields fail closed. The loader keeps
+  its public call signature and raises a typed `ValueError` subclass carrying the stable contract
+  code; `validate_verification_artifact` keeps its public signature and converts that failure to
+  `VerificationArtifactValidation` with `unsupported_schema_version`,
+  `unsupported_extension_namespace`, or `unsupported_extension_version` as appropriate.
+  Structurally malformed known versions remain `malformed_artifact`. These new typed outcomes
+  apply only to the new/unsupported contract cases; valid v1/v2 verdict codes and CLI rendering
+  remain unchanged.
+
+LEGIBLE-C0 freezes these rules before C2 may edit either implementation or contract documentation.
+The frozen tests assert the exact contract-document field/signature tables, compare a deterministic
+no-sidecar call with the legacy v2 golden payload/result/CLI output, round-trip sealed and unsealed
+legacy v2 fixtures, validate a correctly sealed v3 sidecar extension, independently reject unknown
+top-level and extension versions, and inspect the public `run_verification`, loader, validator, and
+`phase-loop` CLI call surfaces. The document change and implementation must land together only
+after those assertions have been paneled RED; prose added after implementation cannot satisfy the
+gate.
 
 The catalog rescan is stable-sorted and idempotent, stores repo-relative paths only, and never
 turns an empty catalog into a positive count. It preserves the existing permissive read behavior
@@ -494,8 +562,9 @@ The reducer owns schema `legible_evidence.v1` at
   worktree realpaths; requested and observed stage; startup `HEAD`; expected head; fetched remote
   ref/OID; `sys.executable`; repo-local `PYTHONPATH`; loaded `runner.py`,
   `verification_evidence.py`, `cli.py`, and `legible_evidence.py` paths, blob OIDs, lengths, and
-  SHA-256 values; plan/manifest/frontmatter validation; worktree cleanliness; parent/builder
-  identity; suite, JUnit, panel, and sidecar digests. Candidate attestations require startup
+  SHA-256 values; the public verification-evidence contract document path/blob/length/SHA-256;
+  plan/manifest/frontmatter validation; worktree cleanliness; parent/builder identity; suite,
+  JUnit, panel, and sidecar digests. Candidate attestations require startup
   `HEAD == expected candidate == remote branch OID`; canonical-main requires startup
   `HEAD == expected head == fetched canonical main`, with the final candidate as an ancestor.
   The attesting process start token must differ from the builder's and from every earlier-stage
@@ -544,8 +613,12 @@ execution-time `B` snapshot and server merge: server PR base, implementation bas
 target head must all be the same exact recorded `B`.
 
 The reducer partitions chronology instead of treating every `B..I` path as phase-owned. Let
-`O` be the exact 15-item manifest/lane-owned set and let `E` be the singleton frozen
-`Consiliency/agent-harness#347` path above. It requires `O ∩ E = ∅` and
+`O` be the exact 16-item manifest/lane-owned set and let `E` be the singleton frozen
+`Consiliency/agent-harness#347` path above. The canonical `O` digest is SHA-256
+`01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b` over the
+UTF-8, bytewise path-sorted list with one repo-relative path plus `\n` per record. The plan
+frontmatter count/digest, parsed lane union, and manifest list/count/digest must all equal that
+same material. The reducer requires `O ∩ E = ∅` and
 `changed(B, P) ⊆ O`, with both frozen test paths and `E` absent. The separately server-bound
 external record requires exact PR/refresh-base/head/body identities,
 `parents(H) == [H0, B0]`, every body-table SHA to be an ancestor of `H`, and
@@ -584,9 +657,10 @@ added to lane ownership or generalized into an unowned-path allowlist.
 Both test blobs and the literal nodeid inventory remain byte-identical at the tests-only landing,
 `B`, `P`, `I`, and canonical main, and the plan/roadmap blobs match the
 manifest/frontmatter digests at each ref. The collector parses the LEGIBLE manifest entry's
-`lifecycle[0].metadata.legible_plan_contract`, requires its `plan_sha256`, exact 15-item
-`owned_paths`, two `test_paths`, activation env, capability marker, expected-nodeid count, and
-lifecycle literal to agree with the live plan frontmatter/lane IR, then requires the
+`lifecycle[0].metadata.legible_plan_contract`, requires its `plan_sha256`, exact 16-item
+`owned_paths`, `owned_paths_count`, `owned_paths_sha256`, two `test_paths`, activation env,
+capability marker, expected-nodeid count, and lifecycle literal to agree with the live plan
+frontmatter/lane IR, then requires the
 implementation-panel record to bind that same plan digest and exact partition. A same-branch
 sequence, unlanded tests, test/activation edits, marker-present tests-only commit, stale plan
 digest, unpushed candidate, phase-owned/integration-delta overlap, or earlier-head artifact fails
@@ -621,8 +695,12 @@ the freshly loaded `runner.py` parses the required sidecar declaration below, re
 `<run-id>` token to its own runner-owned run directory, rejects
 absolute/escaping/symlinked paths, requires the sidecar to exist, and passes its repo-relative
 path, byte length, schema, SHA-256, stage, expected head, bootstrap head, and process start token
-to `run_verification`. The freshly loaded `verification_evidence.py` writes those values as a
-`verification_evidence_sidecar.v1` record covered by the existing whole-artifact seal.
+to the internal post-run binder, never to the frozen public `run_verification` signature. The
+freshly loaded `verification_evidence.py` validates the just-written v2 artifact, upgrades only
+that sidecar-bearing artifact to v3, writes those values under
+`extensions.phase_loop_runtime.legible_evidence` as the separately versioned
+`verification_evidence_sidecar.v1` record, and replaces the seal/log digest so the extension is
+covered by whole-artifact integrity.
 `validate_verification_artifact` then reopens the sidecar, revalidates bootstrap/module blobs and
 head/plan/manifest/JUnit ancestry, requires the recorded schema/length/path/digest/stage/head/token
 to match, and fails on missing or drifted bytes. Prose, a handwritten record, builder-process
@@ -690,7 +768,7 @@ EC-LEGIBLE-4.
   and mandatory review gates pass. Its allowance is the refreshed singleton comment-only
   `B0..H` transition tied to exact refresh base `B0`, exact execution-time server base `B`,
   refreshed head `H`, refresh parents `[H0, B0]`, recomputed result `R`, server two-parent merge
-  `M`, and deterministic two-parent integration `I`; it does not alter the exact 15-item
+  `M`, and deterministic two-parent integration `I`; it does not alter the exact 16-item
   phase-owned set. Missing merge authority, target-base drift, or any
   head/body/parent/path/comment-only/blob/result mismatch blocks accurately rather than rewriting
   the criterion, accepting a different PR contribution, laundering it through a phase-authored
@@ -698,11 +776,15 @@ EC-LEGIBLE-4.
 - `Consiliency/agent-harness#367` is not resolved by this phase. The selected catalog-population
   arm is valid whether that issue remains open or later ratifies a broader client-doc design;
   LEGIBLE must not claim the broader decision.
-- Public-doc decision: no doc change. Documentation impact is deliberately confined to
-  `specs/roadmap-status.json`, `specs/roadmap-assumption-probes-v10.json`, and
-  `.claude/docs-catalog.json`. README, CHANGELOG, public API docs, package metadata, release
-  notes, and all `specs/phase-plans-*.md` bytes do not change because LEGIBLE adds internal
-  repository-legibility contracts, not a public runtime feature or release.
+- Public-document decision: implementation contract documentation changes at exactly
+  `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`.
+  SL-2 owns that public document along with the public `cli.py` surface, and the tests-first
+  contract assertions plus catalog/docs audit must prove the documented v2/v3 compatibility and
+  unchanged public function/CLI behavior. `.claude/docs-catalog.json` must account for the
+  contract document under the deterministic repo-owned rescan. No doc change is required for
+  README, CHANGELOG, other public API docs, package metadata, or release notes, and all
+  `specs/phase-plans-*.md` bytes remain unchanged because this is a documented
+  backward-compatible runtime-contract evolution, not a release or a roadmap-byte amendment.
 - Digest continuity is a preflight and closeout invariant: before every lane, and again before
   final verification, SHA-256 of `specs/phase-plans-v10.md` must equal
   `1e8ea70ceae55d326cd84b092e1b9e879180d7b0e774140c3dd00e6ed63b7071`. Any roadmap-byte
@@ -711,9 +793,9 @@ EC-LEGIBLE-4.
   declares both the pending and resolved REVIEWTRUTH states, so the fixed sidecar adapter
   classifies that transition without mutating or rebinding roadmap bytes.
 - The existing LEGIBLE manifest entry is the non-self-referential plan-digest authority. Its
-  `lifecycle[0].metadata.legible_plan_contract` records the final plan SHA-256, exact 15-item
-  lane-owned path set, two frozen test paths, lifecycle literal, activation env, capability
-  marker, and expected-nodeid count. Every planning, tests-only, candidate, panel, and
+  `lifecycle[0].metadata.legible_plan_contract` records the final plan SHA-256, exact 16-item
+  lane-owned path list/count/digest, two frozen test paths, lifecycle literal, activation env,
+  capability marker, and expected-nodeid count. Every planning, tests-only, candidate, panel, and
   canonical-main artifact must recompute the plan digest and compare that metadata with the
   plan frontmatter and parsed lane IR; the frozen `agent-harness#347` path must remain absent from
   that owned set and is accepted only through the exact target-integration contract in this plan.
@@ -737,15 +819,20 @@ EC-LEGIBLE-4.
 - downstream handling: `roadmap amendment`
 
 This closeout decision is metadata-only downstream routing, not implementation write
-authorization. LEGIBLE remains limited to the exact 15 lane-owned paths, does not mutate any
-`specs/phase-plans-*.md` bytes, and adds no public runtime documentation. The evidence paths
-carry only roadmap-status and digest references; they must not embed raw specifications or diffs.
+authorization. LEGIBLE remains limited to the exact 16 lane-owned paths and does not mutate any
+`specs/phase-plans-*.md` bytes. The owned verification-evidence contract document is an in-phase
+implementation/public-contract surface, not a `spec_delta_closeout` target; its edit and docs
+audit are governed by SL-2. The preserved `roadmap_amendment` decision and target surfaces
+`specs/**`, `plans/manifest.json` continue to route later source-spec reconciliation only and must
+not be conflated with that implementation documentation. The evidence paths carry only
+roadmap-status and digest references; they must not embed raw specifications or diffs.
 
 ## Verification Evidence Sidecars
 
 - schema: `legible_evidence.v1`
 - path: `.phase-loop/runs/<run-id>/legible-operational-evidence.json`
 - required: `true`
+- binding: `verification_evidence.v3.extensions.phase_loop_runtime.legible_evidence`
 
 ## Verification
 
@@ -754,6 +841,7 @@ carry only roadmap-status and digest references; they must not embed raw specifi
 - `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.plan_manifest check --repo .`
 - `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.docs_freshness check-catalog --repo .`
 - `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.legible_evidence verify --repo . --stage canonical-main --head HEAD`
+- `PYTHONPATH=phase-loop-runtime/src python -m pytest phase-loop-runtime/tests -k "verification_contract or verification_sidecar or public_compatibility" -q`
 - `PYTHONPATH=phase-loop-runtime/src python -m pytest phase-loop-runtime/tests -k "roadmap_status or banner_status or superseded_selector" -q`
 - `PYTHONPATH=phase-loop-runtime/src python -m pytest phase-loop-runtime/tests -k "legible_roadmap_contract or legible_evidence" -q`
 - `git diff --check`
@@ -785,7 +873,7 @@ metadata and digests to the operational evidence artifact.
 
 ## Acceptance Criteria
 
-- [ ] EC-LEGIBLE-0 — proven by `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.legible_evidence verify --repo . --stage canonical-main --head HEAD`, the frozen activation/default-83-skip/forced-83-RED/final-83-pass chronology and fresh-process falsifiers, exact immutable test/plan/roadmap ancestry, and canonical-main runner-stamped `.phase-loop/runs/<run-id>/verification.json` path/length/digest/head/process-token binding of the validated `legible_evidence.v1` artifact
+- [ ] EC-LEGIBLE-0 — proven by `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.legible_evidence verify --repo . --stage canonical-main --head HEAD`, the frozen activation/default-83-skip/forced-83-RED/final-83-pass chronology and fresh-process falsifiers, tests-first verification-contract/public-compatibility controls, exact immutable test/plan/roadmap ancestry, and canonical-main runner-stamped `.phase-loop/runs/<run-id>/verification.json` v3 extension path/length/digest/head/process-token binding of the validated `legible_evidence.v1` artifact
 - [ ] EC-LEGIBLE-1 — proven by `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v10.md`, `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py -k "roadmap_status or banner_status" -q`, and the verifier-bound `roadmap_status` record showing exact tracked-path coverage plus registry/banner agreement
 - [ ] EC-LEGIBLE-2 — proven by `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py -k declared_active_roadmap -q` requiring the on-disk selected path to equal the sole registry/banner-active roadmap
 - [ ] EC-LEGIBLE-3 — proven by `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.plan_manifest check --repo .` reporting computed `canonical=N registered=N unregistered=0` with exact HEAD/index/direct-filesystem union equality (and `canonical=28 registered=28 unregistered=0` when the clean scope contains all six root plans), plus `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py -k manifest -q`, including the untracked in-scope absent-manifest and index-only absent-manifest nonzero/name/origin falsifiers and malformed/symlink/path-escape controls
