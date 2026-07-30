@@ -66,6 +66,16 @@ class PhaseLoopLaneIRTest(unittest.TestCase):
             self.assertTrue(ir.lanes[1].parallel_safe)
             self.assertEqual(ir.lanes[1].reducer_kind, "acceptance_reducer")
             self.assertEqual(ir.lanes[1].execution_policy.work_unit_kind, "phase_reducer")
+            self.assertEqual(ir.lanes[0].tasks.test, ("Add parser tests.",))
+            self.assertEqual(ir.lanes[0].tasks.impl, ("Implement parser.",))
+            self.assertEqual(
+                ir.lanes[0].tasks.verify,
+                ("`python3 -m unittest tests.test_contract`",),
+            )
+            self.assertEqual(
+                ir.lanes[0].verification_commands,
+                ("python3 -m unittest tests.test_contract",),
+            )
             self.assertEqual(ir.dispatch_hints["default"].required_capabilities, ("structured_output",))
             self.assertIsNone(ir.merge_policy)
 
