@@ -768,12 +768,53 @@
               "external_head_ref": "refs/heads/proofgate-receipt-head-v1",
               "grandfathered_acceptance_compatibility": "exact_cutoff_raw_bytes_server_attested_date_warn_only",
               "identity_response_framing_contract": "identity_response_framing.v1",
+              "latest_exact_digest_panel_blocker": "mutation_nonzero_not_bound_to_declared_observable_or_failure_class",
               "lifecycle": "proofgate_tdd_candidate_main.v1",
+              "mutation_blocked_plan_sha256": "a56901b7aa3a2a5299329a09c0fff01bf09d830412ac22cdd010707e3ce73fec",
+              "mutation_expected_observable_fields": [
+                "roadmap_criterion_id",
+                "roadmap_criterion_sha256",
+                "rule_id",
+                "channel",
+                "target_nodeid",
+                "result_code"
+              ],
+              "mutation_failure_classes_by_criterion": {
+                "EC-PROOFGATE-0": "tdd_chronology_rejection",
+                "EC-PROOFGATE-1": "missing_falsifier_rejection",
+                "EC-PROOFGATE-2": "mutation_application_rejection",
+                "EC-PROOFGATE-3": "vacuous_falsifier_rejection",
+                "EC-PROOFGATE-4": "production_construction_site_rejection",
+                "EC-PROOFGATE-5": "parameter_coverage_rejection",
+                "EC-PROOFGATE-6": "missing_path_entered_control_rejection",
+                "EC-PROOFGATE-7": "grandfathering_rejection"
+              },
+              "mutation_fresh_exact_digest_panel_required": [
+                "fable",
+                "gpt-5.6-sol",
+                "gemini",
+                "grok"
+              ],
+              "mutation_harness_block_classes": [
+                "syntax_error",
+                "import_error",
+                "collection_error",
+                "setup_error",
+                "harness_error",
+                "timeout",
+                "missing_evidence",
+                "unrelated_failure",
+                "rejection_class_mismatch",
+                "observable_mismatch"
+              ],
+              "mutation_kill_contract": "green_pristine_baseline_exact_one_replacement_viable_target_call_exact_declared_oracle_match",
+              "mutation_oracle_contract": "mutation_oracle_result.v1",
+              "mutation_oracle_test_subcases": 11,
               "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
               "ordinary_phase_nodeids": 39,
               "owned_path_patterns_count": 37,
               "owned_path_patterns_sha256": "4b31338314b18029f1bbffb99dc95627ca012710ecea04e41d37170ef523c4b3",
-              "plan_sha256": "a56901b7aa3a2a5299329a09c0fff01bf09d830412ac22cdd010707e3ce73fec",
+              "plan_sha256": "3e9c011c6d5dd7a579f7cc13f5948f89144454cee37c291fa3a9b4e74c882fcc",
               "positive_control_nodeids": 2,
               "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
               "predecessor_plan_sha256": "18422ee52d7a3a77adf6ecd75446abe7fea52da7ff4113f24209d0f292f3bff0",
@@ -804,7 +845,7 @@
       "slug": "v10-PROOFGATE",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-07-30T12:12:58Z"
+      "updated_at": "2026-07-30T14:05:30Z"
     },
     {
       "acceptance_criteria_count": null,
