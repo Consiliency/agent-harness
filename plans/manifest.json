@@ -695,8 +695,15 @@
           "at": "2026-07-30T04:13:47Z",
           "by": "codex-plan-phase",
           "metadata": {
+            "bootstrap_prerequisite": {
+              "archive_member": "phase-loop-runtime/uv.lock",
+              "lifecycle": "planning_candidate_committed_on_main_before_reviewtruth_lane_dispatch",
+              "lock_sha256": "b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce",
+              "ownership": "codex-plan-phase_not_reviewtruth_lane_implementation"
+            },
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
-            "plan_sha256": "543e202b13359244d3da8a5a0f37032ed18451da8aae9b31f33439ef8ccfce94",
+            "plan_sha256": "e34acaf5da2c3329f9f2a9559b767350f54a823fc7a7f21845508fc7ce79d86e",
+            "roadmap_sha256": "e94a3bbce91074bbeca0b384f146642265089f93e00e2ba01b3efeaac7d12466",
             "run_id": "20260730T035938Z-01-reviewtruth-plan"
           },
           "transition": "committed"
