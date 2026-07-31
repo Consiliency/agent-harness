@@ -84,18 +84,19 @@ def _authority(text: str) -> Tuple[Set[Tuple[str, str]], Set[str], Set[str], Lis
     roots = {p.alias for p in phases if not any(d in aliases for d in p.depends_on)}
 
     @functools.lru_cache(maxsize=None)
-    def longest_from(a: str) -> Tuple[str, ...]:
-        best: Tuple[str, ...] = (a,)
-        for c in succ[a]:
-            cand = (a,) + longest_from(c)
-            if len(cand) > len(best):
-                best = cand
-        return best
+    def longest_from(a: str) -> Tuple[Tuple[str, ...], ...]:
+        child_paths = [path for c in succ[a] for path in longest_from(c)]
+        if not child_paths:
+            return ((a,),)
+        maxlen = max(len(path) for path in child_paths)
+        return tuple(sorted({(a,) + path for path in child_paths if len(path) == maxlen}))
 
     if aliases:
-        chains = [longest_from(r) for r in roots] or [longest_from(a) for a in aliases]
+        chains = [chain for r in roots for chain in longest_from(r)]
+        if not chains:
+            chains = [chain for a in aliases for chain in longest_from(a)]
         maxlen = max((len(c) for c in chains), default=0)
-        maximal = sorted({longest_from(r) for r in roots if len(longest_from(r)) == maxlen})
+        maximal = sorted({chain for chain in chains if len(chain) == maxlen})
     else:
         maximal = []
     return edges, aliases, roots, maximal
@@ -188,22 +189,30 @@ def _chain_on_line(line: str, aliases: Set[str]) -> Tuple[str, ...]:
 class _Regions:
     bracket: List[str]
     parallel: List[str]
+    frontier: List[str]
     serial: List[str]
+    downstream: List[str]
     absorbed: List[str]
     critical: List[str]
 
 
 def _split_regions(fence: str) -> _Regions:
-    reg = _Regions([], [], [], [], [])
+    reg = _Regions([], [], [], [], [], [], [])
     cur = reg.bracket
     for line in fence.splitlines():
         low = line.strip().lower()
         if low.startswith("parallel roots"):
             cur = reg.parallel
             continue
+        if low.startswith("writer-safe root-plan frontier"):
+            cur = reg.frontier
+            continue
         if low.startswith("serial edges"):
             cur = reg.serial
             reg.serial.append(line)  # keep header for count check
+            continue
+        if low.startswith("downstream semantic edges"):
+            cur = reg.downstream
             continue
         if low.startswith("absorbed"):
             cur = reg.absorbed
@@ -244,6 +253,7 @@ def check_representation_consistency(text: str) -> List[Finding]:
     # B → ..."), so dropping the header would blind the check to exactly that defect.
     claimed = [("ascii-dag", e) for e in _bracket_edges(reg.bracket, aliases)]
     for repname, lines in (("serial-edges", reg.serial),
+                           ("downstream-edges", reg.downstream),
                            ("absorbed-chain", reg.absorbed), ("critical-path", reg.critical)):
         claimed.extend((repname, e) for e in _claimed_edges(lines))
     for repname, (a, b) in claimed:
