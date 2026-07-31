@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CONFORM
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: fa7a81e1cadde52eddec78e2b806f3cb376c1eb58dc66a51be4c94188200436f
+roadmap_sha256: a5becca8a51ff740ea6856b6aace112dd8aa88e555322bda405542219d38aca0
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"'
 ---
@@ -77,7 +77,7 @@ changing the pinned contract, makes canonical validity and blocker class the cou
 keeps the live blocker-code map explicitly test-owned and complete, and adds a distinct
 `read_locator_only` input class whose raw path never serializes. The roadmap graph and 13-phase
 representation remain unchanged; its corrected SHA-256 is
-`fa7a81e1cadde52eddec78e2b806f3cb376c1eb58dc66a51be4c94188200436f`. The repaired plan digest is
+`a5becca8a51ff740ea6856b6aace112dd8aa88e555322bda405542219d38aca0`. The repaired plan digest is
 unreviewed and requires a fresh exact-digest four-seat panel before CONFORM-T0.
 
 CONFORM is no longer an executable root: it starts only from the exact two-parent LEGIBLE

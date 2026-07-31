@@ -80,8 +80,12 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
 3. The claude/fable board seat is structurally unavailable when the runtime drives the board from
    inside Claude Code today (`tui_adapter_required`). The coordinated v10 run therefore invokes its
    mandatory four-seat panels from the external coordinator host, where Fable is available through
-   its first-party subscription route. A runtime-internal 3-of-4 result remains evidence of a
-   degraded board but does not satisfy this run's panel gate. REVIEWTRUTH resolves the runtime gap
+   its first-party subscription route. For every verdict not already bound before maintainer comment
+   `5139609713`, the root procedure requires usable AGREE from local Grok, GPT-5.6 Sol, and Gemini
+   plus usable AGREE from Fable; Fable is the procedurally attested prover until the runtime can
+   express `required_prover`, and the coordinator does not launch direct `claude -p`. A
+   runtime-internal 3-of-4 result remains evidence of a degraded board but does not satisfy this
+   run's stricter panel gate. REVIEWTRUTH resolves the runtime gap
    in two parts: EC-REVIEWTRUTH-4 TYPES the vacancy (a natively-fillable seat is no longer silently
    dropped) and EC-REVIEWTRUTH-14 FILLS it natively under Claude Code with no TUI adapter
    (`agent-harness#396`), after which the runtime-driven board reaches full seat count.
@@ -101,8 +105,12 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   publish stays maintainer-gated (EC-RELEASE-4). The publication OUTCOME is NOT out of scope:
   EC-RELEASE-5 requires the publish PERFORMED before RELEASE is satisfied; user-gating the dispatch
   is sequencing, not exclusion.
-- Granting review legs arbitrary execution capability. (Native-fill for TUI-policy seats is IN
-  scope — see EC-REVIEWTRUTH-14 / `agent-harness#396` for the reversal and its narrow rationale.)
+- Granting vendor review legs arbitrary execution capability. Attesting and consuming the bounded
+  Option-2 prover capability of the claude/Fable correctness seat is IN scope, but that prover acts
+  through the maintainer-controlled route and stages redacted digest-bound evidence; codex/gemini/
+  grok stay read-only over the exact by-reference bundle, with no arbitrary real-tree or shared-DB
+  execution and no `PANEL_LEGS`/non-review-golden change. (Native-fill for TUI-policy seats is also
+  IN scope — see EC-REVIEWTRUTH-14 / `agent-harness#396`.)
 
 ## Cross-Cutting Principles
 
@@ -159,6 +167,25 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   on the frozen contract, not on each other. Publishing the timeout variant in this REVIEWTRUTH-owned
   freeze, before either implementation, is what dissolves the criterion-level LEGLIFE→REVIEWTRUTH
   edge a phase-granularity DAG cannot see.
+- **IF-0-REVIEWTRUTH-2** — REVIEWTRUTH owns the additive policy-interface extension named by the
+  maintainer directive. It extends the existing frozen `RatificationPolicy` / `BoardFacts`
+  import surface additively. `RatificationPolicy.required_prover: bool = True` is appended after
+  the existing four fields so every existing positional constructor remains valid. `BoardFacts`
+  keeps `reviewed_sha` in its existing fifth positional slot and appends
+  `prover_usable: bool = False`, so legacy/default construction fails closed. Policy remains typed
+  and parameterized: `gate_posture.resolve_ratification_policy` accepts additive per-repo
+  `required_prover` overrides alongside the existing vendor, lens, consensus, and shortfall fields,
+  and no gate-specific evaluator hardcodes those values. Only `DEFAULT_RATIFICATION_POLICIES` sets
+  all four default gates to three usable vendor families, three grounded prompt-lens proofs, and a
+  required prover while retaining each gate's existing consensus and `on_shortfall` value. When the
+  effective policy has `required_prover=true`, `!prover_usable` always returns `ESCALATE` with a
+  durable `prover` shortfall regardless of `on_shortfall`; an explicit valid
+  `required_prover=false` override disables only that prover requirement and leaves every other
+  effective field load-bearing. The capability fact originates in strict
+  `run_auth_preflight` execution-capability metadata, survives composition as an exact per-seat
+  attestation, and becomes true in `BoardFacts` only when that exact attested seat produced a usable,
+  grounded, artifact-bound review; PATH, auth, static seat presence, spawn, or an unbound native-fill
+  request is never enough.
 - **IF-0-PROOFGATE-1** — the acceptance-item grammar
   `- [ ] EC-<ALIAS>-<N> — proven by <command>, falsified by <mutation>` and the evidence record
   shape written alongside `verification.json`.
@@ -587,7 +614,9 @@ outside this repo; `redaction_posture: metadata_only`; malformed evidence routes
 
 **Objective**
 Stop the cross-vendor board silently losing seats. Carry a typed per-seat outcome distinct from
-`text`, enforce the reviewed-seat floor, and make `Seat.lens` actually reach the reviewer.
+`text`, enforce the reviewed-seat floor, make `Seat.lens` actually reach the reviewer, and require
+an execution-capability-attested usable prover at every ratification gate without granting vendor
+review legs execution or weakening Option 2.
 
 **Exit criteria**
 - [ ] EC-REVIEWTRUTH-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
@@ -606,19 +635,26 @@ Stop the cross-vendor board silently losing seats. Carry a typed per-seat outcom
 - [ ] EC-REVIEWTRUTH-13 — **THE GOVERNED GATE FAILS CLOSED ON EMPTY OR ELIDED REVIEW MATERIAL — INDEPENDENT OF LEG VERDICTS AND INDEPENDENT OF THE FAB FLAG (SOLE carrier; no FAB criterion asserts this ungated non-FAB guard — EC-CONFORM-8 is the sibling precedent, not an overlap).** The substance-completeness predicate ALREADY EXISTS and is correct — `_diff_text_elision`/`_numstat_binary_elision` keyed on `_DIFF_ELISION_SENTINELS` (`fab_producer.py:94,133,146`) encode "empty or elided material ⇒ the reviewer did not see the bytes ⇒ fail closed" — but it is QUARANTINED: those three symbols appear in `fab_producer.py` and NOWHERE ELSE, gated behind `_fab_closeout_enabled()` (`runner.py:9847`), DORMANT until #288, and `governed_review` plus the governed pre-merge path hold ZERO elision references. Worse, `governed_bundle.py:56` MANUFACTURES the exact `"(empty staged diff)"` sentinel the FAB guard would catch (`return out.stdout.rstrip() or "(empty staged diff)"`) yet nothing on the governed path checks it. Meanwhile `_resolve_artifact` (`panel_invoker.py:846`) returns `artifact or ""` and fails closed only on a MISSING ref path — its own docstring PROMISES "never a silent-empty bundle that would look like a real (empty) review," but that guarantee covers missing, NOT empty: an existing-but-empty file reads verbatim to `""` and sails through — and `PanelLegResult.usable` (`panel_invoker.py:297`) plus `governed_review._findings_from_panel` (keys BLOCK-vs-WARN on `leg.text.strip()`, per `panel_invoker.py:3185`) key on the LEG's text, NEVER on the artifact's substance, so the review authority can approve un-reviewable material on model judgment alone. The obligation: the governed decision points — `_advisor_board_command`'s exit code, `_governed_premerge_review` (`runner.py:10103`) / `_governed_planning_gate` (`runner.py:9802`) blockers — classify empty-or-sentinel reviewed material as a fail-closed BLOCK regardless of how many legs returned a usable AGREE, and this negative direction lives in the SAME suite as the positive path and is NOT gated on `_fab_closeout_enabled()`. Falsified (fires TODAY, no race window — instance 1) by feeding `_advisor_board_command` an empty FILE (it guards `is_file()` at `cli.py:1493` but NEVER non-empty) with ≥`FLOOR_SEATS` usable AGREE legs and observing exit 0 "review passed" rather than a fail-closed BLOCK — the observable is the gate OUTCOME (pass vs BLOCK) on empty material, MECHANISM-AGNOSTIC (any substance check satisfies it, not the `_diff_text_elision` symbol specifically reaching the governed path). Two further constructible instances, all non-FAB: (2) the local closeout gate `_governed_premerge_review` (`runner.py:10103`) — an `"executed"` closeout whose owned paths stage to an empty cached diff embeds the `"(empty staged diff)"` sentinel the gate never elision-checks; (3) `_default_train_review` (`train_runner.py:2002`) reviews `_build_train_review_bundle`'s cross-repo PR-SUMMARY bundle, diff-free BY DESIGN (draft-PR summaries in merge order, never diff bytes), so the predicate would have nothing to key on even if wired. Blast radius stated honestly: currently BOUNDED — FAB's dormant guard backstops live-PR merges and a pathspec-less commit over an empty index fails on the local closeout path, so this is NOT a silent bad-merge TODAY — but the review authority approves un-reviewable material, the only real guard is switched OFF, and NEITHER backstop travels to a new non-FAB merge gate or to FAB's non-live-PR paths. Positive control (two arms, so a blanket always-BLOCK fix cannot pass): (a) the same empty-or-sentinel artifact with a full pool of usable AGREE legs yields BLOCK; AND (b) a NON-EMPTY substantive artifact with the same usable AGREE legs still PASSES — proving the guard keys on emptiness, not on blocking every review. (Distinct from EC-REVIEWTRUTH-12, which is the SEATS approving nothing at the VERDICT layer — an ungrounded AGREE not counted; THIS is the GATE accepting nothing at the MATERIAL layer, model-INDEPENDENT: it fails closed on empty bytes BEFORE any leg verdict is weighed. Sibling of EC-CONFORM-8's rule — a negative-direction guard must NOT be gated on an external dependency, else it is unguarded during exactly the window it can occur; here the external dependency is the #288 FAB flag, and this instance is worse because the guard is not merely absent but written, correct, and switched off.)
 - [ ] EC-REVIEWTRUTH-14 — **NATIVE-FILL FOR THE TUI-POLICY CLAUDE/FABLE SEAT — a harness with native subagent capability FILLS the vacant seat natively rather than through a CLI/adapter (maintainer-ratified scope reversal 2026-07-29; `agent-harness#396`).** A board composed with a `claude-fable-*` seat and driven under Claude Code emits a `NativeAgentLegRequest` for that seat — carrying `seat_key`/`model`/`effort`/`lens` plus the SAME review-instructions brief the CLI legs received (the CR F5 same-contract path at `panel_invoker.py:4184`) — and `EC-REVIEWTRUTH-4`'s classifier counts that seat as REVIEWING **only once its VERDICT is BOUND back into the board result** — a board whose native seat delivered a terminal, valid verdict alongside 3 CLI seats classifies FULL; a fill whose report never arrives is typed (empty/timed-out per `EC-REVIEWTRUTH-7`'s retry path), never counted as REVIEWING, and never silently dropped (for a native fill, "retry" means RE-EMITTING the `NativeAgentLegRequest`; `EC-REVIEWTRUTH-7` states no retry bound — a pre-existing gap flagged for REVIEWTRUTH lane D, and no retry can re-inflate the count, since an unbound seat never counts), so a lost verdict preserves FLOOR-ONLY/BELOW-FLOOR and can never report FULL. ("Filled" and `EC-REVIEWTRUTH-1`'s "delivered" name the SAME event — verdict bound, not subagent spawned.) This REVERSES the former non-goal, and the reversal is narrow: the TUI-policy list (`panel_invoker.py:394-396`) governs how the runtime DRIVES a leg it drives itself, never whether a vacant seat is surfaced to the driving harness. Today `panel_invoker.py:2573` fails the leg closed under Claude Code while `:394-396` excludes every `claude-fable-*` model — via the gate at `:4172-4174` — from the ABDNATIVE attach at `:4184`, so `native_fill_requests` stays empty and every board runs 3-of-4. Falsified by (a) running a board under Claude Code with a fable seat and observing `native_fill_requests` EMPTY, OR (b) a natively-filled seat still reported as unfillable, OR (c) completing a native fill, DROPPING its report, and observing the board count the seat as REVIEWING or classify FULL. Positive control (so the fix is not an unconditional always-fill): a board with NO fable seat, or driven OUTSIDE a native-subagent harness, emits NO `NativeAgentLegRequest` and correctly holds its CLI seat count — proving the fill keys on native-capability AND seat presence. **Scope note — the security boundary that SURVIVES the reversal:** review legs still must NOT receive arbitrary execution capability; the old non-goal bundled two distinct things ("execution capability" and "native fill") and this keeps the first while reversing only the second. A native fill runs in the driving harness's OWN session under the harness's permission model, under the capability posture IN FORCE for review seats (today: read-only review constraints; the posture itself is lane D's `agent-harness#398` design decision per EC-REVIEWTRUTH-15 — this criterion does not pre-decide it). What is invariant regardless of that decision: no review seat receives arbitrary execution capability against the REAL tree. Precedent: the maintainer filled the fable seat natively for `agent-harness#382` round 4 (a fable subagent, same bundle, same provenance asserts, read-only, independent of the CLI legs — the session's first 4-seat board); this criterion schedules making that hand-rolled path the runtime's own behavior.
 - [ ] EC-REVIEWTRUTH-15 — **THE `agent-harness#398` LEG-CAPABILITY DESIGN IS DECIDED AND MAINTAINER-RATIFIED BEFORE ANY POSTURE-ASSUMING IMPLEMENTATION LANDS.** Lane D produces the capability design (e.g. probe execution against a THROWAWAY staged copy vs today's read-only bundle review) and a maintainer ratification RECORD exists (a committed disposition document — see the record rules below) before any Phase-1 change that encodes a seat-capability posture (typed-outcome semantics, grounding rules, leg launch flags in `panel_invoker.py`) merges; the ratified design may be "keep read-only" — the criterion binds the DECISION, not a direction. The ordering AND the content are bound by GIT ANCESTRY, not timestamps or references: the ratification record is a committed disposition document whose commit is an ancestor of the TARGET'S PRE-LANDING TIP — `git merge-base --is-ancestor <record> <landing>^1` — cited by full SHA in the LANDING COMMIT'S MESSAGE. Posture-assuming changes land ONLY as a TWO-PARENT non-fast-forward MERGE COMMIT whose first parent is the pre-landing target tip: single-parent landings (squash, rebase, direct push) are indistinguishable from one another in git history — an atomic direct push of record-then-implementation makes the record an 'ancestor of ^1' without ever having been on the target first — so only the two-parent shape gives a git-auditable landing boundary. Any posture-assuming change whose landing commit is not a two-parent merge is ITSELF a violation (falsifier arm below), regardless of any record's existence. First-parent ancestry is the load-bearing choice: a record riding the PR branch itself is an ancestor of the landing commit but NOT of `^1`, so ratified-BEFORE means already-on-main, never contemporaneous. Ancestry cannot be backdated (parent-hash ordering; committer timestamps are author-controlled and prove nothing) and an ancestor of canonical `main` cannot be GC-pruned. No other record form qualifies (issue-comment content is editable; same-message embedding is contemporaneous). TWO further obligations: (a) POSITIVE completion — the cited record must STATE the ratified design; (b) CONFORMANCE — the merged implementation must MATCH the recorded design, and a posture change beyond it requires a new ancestor record (a "keep read-only" record does not license a throwaway-copy-execution implementation). The AUDIT is performed on a full trusted clone with no grafts, shallow state, or replacement refs (this repo already regression-tests graft-faked reachability — `cli.py` reconcile guards), and "forever" is scoped to the landing commit remaining reachable from canonical `main`. THREAT MODEL (settled r8–r9, chair-ruled): this criterion guards SEQUENCING DISCIPLINE among honest cooperating agents — the observed failure modes are crash-dropped ratifications, forgotten ordering, and stale records, and every mechanism above makes THOSE visible and checkable forever. It does NOT claim to defeat deliberate forgery by a write-access holder: the board proved (r8: crafted graphs are clone-indistinguishable; r9: GitHub PR-merge records are acquirable via indirect merges and admin bypass) that every repo-adjacent witness can be spoofed by the root of trust — an actor who could equally rewrite this criterion. A repo-internal governance rule cannot outrank its own admin, and pretending otherwise would be the unfalsifiable-guarantee defect this roadmap exists to kill. Server-side hardening (branch protection with PR-only landings) is still lane D's first implementation act — it narrows honest-mistake surface — but it is defense-in-depth, not the criterion's soundness basis. DURABLE falsifiers (each checkable forever, within the stated threat model, from a trusted clone alone): a merged posture-assuming PR citing no record SHA; citing a SHA that is not an ancestor of its first parent; citing a record that does not state a decision; an implementation whose posture diverges from the cited record with no superseding ancestor record; or a posture-assuming change whose landing commit is not a two-parent merge. OPERATIONAL checks (performed AT LANDING TIME by lane D and recorded in its closeout — which, committed, becomes durable evidence itself; NOT forever-auditable from infrastructure state, since branch protection is mutable configuration absent from the PR record and audit-log retention is bounded): target protection enabled, landing matches a server-recorded PR merge regardless of body edits, backdating, grafts, or branch pruning.
+- [ ] EC-REVIEWTRUTH-16 — **EXECUTION-CAPABILITY-ATTESTED PROVER IS A PARAMETERIZED HARD REQUIREMENT AT ALL FOUR DEFAULT RATIFICATION GATES.** `run_auth_preflight` emits a strict execution-capability attestation rather than treating PATH/auth success as capability; composition records the attestation against the exact seat instance; and under the ratified current posture only the `claude` / `claude-fable-5` / `correctness` seat is prover-capable. `BoardFacts.prover_usable` becomes true only when that exact attested seat returns a usable, grounded, artifact-bound review; mere composition, a spawned task, an unbound native request, or a vendor leg that returned text cannot set it. Additive `IF-0-POLICY-1` compatibility is load-bearing: append `RatificationPolicy.required_prover: bool = True` after `on_shortfall`; preserve the existing four-argument positional constructors; keep `BoardFacts.reviewed_sha` as the fifth positional field and append fail-closed `prover_usable: bool = False`. `gate_posture.resolve_ratification_policy` must accept typed per-repo `required_prover` overrides alongside every existing policy field; evaluators consume the resolved policy and do not hardcode a fixed board, gate, consensus, or shortfall action. Only `DEFAULT_RATIFICATION_POLICIES` sets `required_vendors=3`, `required_lens_coverage=3`, and `required_prover=true` for `plan-ratify`, `design-ratify`, `pre-merge-CR`, and `release-dispatch`, retaining each gate's existing consensus and `on_shortfall` (`proceed_degraded` for plan/design, `escalate` for merge/release). When the effective policy has `required_prover=true` and `prover_usable=false`, `evaluate_ratification` records a `prover` shortfall and returns `ESCALATE` even for a `proceed_degraded` policy; when a valid explicit override sets `required_prover=false`, prover absence alone does not hard-block and all other resolved fields still govern. The strict policy/facts JSON and every production verdict/ledger/run-end summary persist the capability attestation identity, effective `required_prover`, `prover_usable`, and any hard-block reason. The directive self-applies on read: already-bound v10 verdicts stand; every not-yet-bound v10 verdict requires floor-3 plus a usable Fable prover, with ordinary vendor/lens shortfalls degrading only where the gate already allows it. Until runtime support lands, the root procedure enforces that fixed v10 posture by binding only a local usable Grok AGREE + GPT-5.6 Sol AGREE + Gemini AGREE + usable Fable AGREE result and recording the Fable prover check durably; no direct `claude -p`, no vendor-leg execution, no `PANEL_LEGS`/non-review-golden change, and no authority from `agent-harness#405`. Falsified by any PATH/auth-only seat being marked prover-capable; any codex/gemini/grok seat receiving prover capability; a composed-but-unusable Fable setting `prover_usable=true`; an effective `required_prover=true` policy yielding RATIFIED or PROCEED_DEGRADED without a usable prover; plan/design defaults remaining at vendor/lens floor 2; a per-repo `required_prover` override being ignored/rejected or overwriting unrelated fields; gate/consensus/`on_shortfall` being hardcoded; an existing four-argument `RatificationPolicy` constructor breaking; `BoardFacts` moving the `reviewed_sha` positional slot or defaulting prover true; durable output omitting the capability facts; or a not-yet-bound v10 gate binding without usable Fable. Positive controls require a floor-3 default board with a usable grounded Fable prover to follow its unchanged consensus/action policy, an otherwise identical default board with unusable Fable to hard-block specifically on `prover`, and a typed per-repo `required_prover=false` override to remove only that prover shortfall while preserving the overridden gate's remaining effective values and action.
+
+The human decisions required by EC-REVIEWTRUTH-15/16 are satisfied by exact maintainer comments
+`5139465317` (Option 2) and `5139609713` (capability/prover floors). REVIEWTRUTH SL-0 remains
+incomplete until the separate durable record binds both exact comment identities/bodies, an
+effective `pull_request` rule exists, and the record-only two-parent landing proof passes.
 
 **Scope notes**
 Decompose into 4 lanes: lane A owns the typed outcome on `PanelLegResult` and publishes
 IF-0-REVIEWTRUTH-1 day 1; lane B owns `governed_review._findings_from_panel` consuming it; lane C
 owns lens threading into the prompt plus the ratification coverage rule; lane D owns composition
 (fillable seat vs lens-distinct backfill), native-fill of the TUI-policy seat (EC-REVIEWTRUTH-14),
-and the typed unfillable signal. **Lane D also OWNS the `agent-harness#398` design decision**
-(maintainer-sequenced 2026-07-30): the vendor legs' read-only posture is a deliberate flag choice
-in `panel_invoker.py`, not a CLI limitation, and the phase that types seat outcomes decides what
-seats CAN do — the lane produces the capability design for maintainer ratification BEFORE hardening any
-typed outcome that assumes the current posture — bound as EC-REVIEWTRUTH-15 (decision + ratification
-RECORD, falsifiable; the ratified answer may be keep-read-only). The non-goal boundary survives regardless: no
-review leg receives arbitrary execution capability against the real tree; the empirical basis is
+and the typed unfillable signal. **Lane D also OWNS the already-ratified `agent-harness#398`
+capability posture and its strict preflight-to-composition attestation**: the vendor legs' read-only
+posture is deliberate, only the Fable correctness seat is currently prover-capable, and the durable
+record binds both exact maintainer directives before posture-assuming implementation. Lane C owns
+the additive `IF-0-POLICY-1` fields/evaluator and all-four-gate floor migration; production gate
+consumers persist those facts in lane D integration without reimplementing policy. The non-goal
+boundary survives: no vendor review leg receives arbitrary execution capability against the real
+tree or shared database; the empirical basis is
 that executing seats repeatedly caught behavioral defects read-only legs could not (`#382` rounds
 4–7). `panel_invoker.py` is a
 single-writer file — lanes A and D must partition it by function or serialize.
@@ -644,9 +680,13 @@ tests-only RED; it is not part of this planning repair.
 
 **Key files**
 - `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
+- `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
 - `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`
 - `phase-loop-runtime/src/phase_loop_runtime/ratification_policy.py`
+- `phase-loop-runtime/src/phase_loop_runtime/gate_posture.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py`
+- `phase-loop-runtime/tests/test_reviewtruth_phase.py`
 - `phase-loop-runtime/tests/test_advisor_board_golden.py`
 - `phase-loop-runtime/scripts/gate_a_cleanroom.sh`
 - `.github/workflows/test.yml`
@@ -657,6 +697,7 @@ tests-only RED; it is not part of this planning repair.
 
 **Produces**
 - IF-0-REVIEWTRUTH-1
+- IF-0-REVIEWTRUTH-2
 
 **Spec closeout policy**
 schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
@@ -950,10 +991,10 @@ PROOFGATE/CONFORM pair. The exhaustive pattern-expanded intersections are:
 | LEGIBLE / CONFORM | `cli.py` | LEGIBLE → CONFORM |
 | LEGIBLE / FABPUB | `cli.py` | LEGIBLE before FABPUB (transitive) |
 | LEGIBLE / HARDEN | `cli.py`, `runner.py`, `verification_evidence.py` | LEGIBLE before HARDEN (transitive) |
-| REVIEWTRUTH / PROOFGATE | `panel_invoker.py`, `runner.py`, `train_runner.py` | PROOFGATE before REVIEWTRUTH (transitive) |
+| REVIEWTRUTH / PROOFGATE | `launcher.py`, `panel_invoker.py`, `runner.py`, `train_runner.py` | PROOFGATE before REVIEWTRUTH (transitive) |
 | REVIEWTRUTH / CONFORM | `tests/conftest.py`, `cli.py` | CONFORM → REVIEWTRUTH |
 | REVIEWTRUTH / FABPUB | `cli.py`, `train_runner.py` | FABPUB before REVIEWTRUTH (transitive) |
-| REVIEWTRUTH / HARDEN | `advisor_board/composition.py`, `cli.py`, `panel_invoker.py`, `runner.py`, `test_advisor_board_golden.py`, `test_advisor_board_research.py`, `test_panel_native_fill_183.py` | HARDEN → REVIEWTRUTH |
+| REVIEWTRUTH / HARDEN | `launcher.py`, `advisor_board/composition.py`, `cli.py`, `panel_invoker.py`, `runner.py`, `test_advisor_board_golden.py`, `test_advisor_board_research.py`, `test_panel_native_fill_183.py` | HARDEN → REVIEWTRUTH |
 | PROOFGATE / CONFORM | none | parallel-safe |
 | PROOFGATE / FABPUB | `train_runner.py`, `test_convergence_broker_revocation_race.py` | PROOFGATE → FABPUB |
 | PROOFGATE / HARDEN | `launcher.py`, `panel_invoker.py`, `goal_coverage.py`, `runner.py`, `verification_evidence.py`, `test_goal_coverage.py`, `test_review_leg_sandbox.py` | PROOFGATE before HARDEN (transitive) |
@@ -966,9 +1007,9 @@ root-plan authors. REVIEWTRUTH must re-anchor after fetching the exact canonical
 the two-parent CONFORM and HARDEN landings, rerun its complete bootstrap observer and Gate A
 baseline before any edit, and re-freeze every source/path/provenance digest. Any retained
 REVIEWTRUTH assumption or owned-path byte changed by those landings invalidates predecessor
-evidence and requires plan repair plus a fresh exact-digest panel. Its unresolved
-`agent-harness#398` human ratification gate is therefore downstream and cannot block CONFORM or
-HARDEN.
+evidence and requires plan repair plus a fresh exact-digest panel. The two `agent-harness#398`
+human decisions are now satisfied, but REVIEWTRUTH's still-incomplete durable-record,
+effective-rule, and merge-topology gate remains downstream and cannot block CONFORM or HARDEN.
 
 ## External Dependencies (NOT phases — we do not own these)
 
