@@ -749,7 +749,7 @@
               },
               "fresh_exact_digest_panel_required": true,
               "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
-              "plan_sha256": "c7bc20c909a3a8c0d4c1c97a1e752fbf9611d88d0f9beea388a28183471e4a29",
+              "plan_sha256": "a1a788a52ed591af61eaeeedb3dc91be159b95f4ef0f5df5aa4d7eba9493c8da",
               "predecessor_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
               "reason": "semantic_repair_for_authenticated_dependency_completion_landings",
               "repaired_digest_review_status": "unreviewed_not_approved",
@@ -784,7 +784,7 @@
               "gemini_verdict": "AGREE",
               "grok_verdict": "AGREE",
               "instructions_sha256": "bd6550e88bd8944a8a384b50b55561cee88b8e683ab5095992da79855090e91a",
-              "repaired_plan_sha256": "c7bc20c909a3a8c0d4c1c97a1e752fbf9611d88d0f9beea388a28183471e4a29",
+              "repaired_plan_sha256": "a1a788a52ed591af61eaeeedb3dc91be159b95f4ef0f5df5aa4d7eba9493c8da",
               "repaired_review_status": "unreviewed_not_approved",
               "reviewed_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
               "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
@@ -805,7 +805,7 @@
                 "canonical_origin"
               ],
               "distinct_phase_completion_merges": true,
-              "plan_sha256": "c7bc20c909a3a8c0d4c1c97a1e752fbf9611d88d0f9beea388a28183471e4a29",
+              "plan_sha256": "a1a788a52ed591af61eaeeedb3dc91be159b95f4ef0f5df5aa4d7eba9493c8da",
               "reject_url_rewriting": true,
               "repaired_digest_review_status": "unreviewed_not_approved",
               "roadmap_sha256": "b26b4fd76efb7882578eae5e102fd577b26e66f590a531d3b3a738d840e5106e",
@@ -977,7 +977,7 @@
               "CONFORM",
               "HARDEN"
             ],
-            "plan_sha256": "c7bc20c909a3a8c0d4c1c97a1e752fbf9611d88d0f9beea388a28183471e4a29",
+            "plan_sha256": "a1a788a52ed591af61eaeeedb3dc91be159b95f4ef0f5df5aa4d7eba9493c8da",
             "portable_skip_classification": {
               "allowed_disposition": "environment_interpreter_pair_unavailable",
               "allowed_reason": "need both python3.10 and python3.12 on host",
