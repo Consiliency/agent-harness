@@ -743,38 +743,50 @@
               "ownership": "codex-plan-phase_not_reviewtruth_lane_implementation"
             },
             "digest_rebind": {
+              "coordinator_post_author_audit": {
+                "finding": "stage_b_plan_self_digest_placeholder_would_change_the_plan_being_hashed",
+                "resolution": "external_write_once_binding_record_over_computed_plan_sha_and_atomically_staged_review_artifacts"
+              },
               "fresh_exact_digest_panel_required": true,
               "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
-              "plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
-              "predecessor_plan_sha256": "f3a88c81f4120c19c7ee632c741aad8989b399059aecad39d0d307831707b99c",
-              "reason": "semantic_repair_for_REVIEWTRUTH_SL1_T2_post_RED_infrastructure_file_scope",
+              "plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
+              "predecessor_plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
+              "reason": "semantic_repair_for_REVIEWTRUTH_tmp_authority_stage_a_snapshot_lifecycle_and_stage_b_external_review_binding",
               "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 536915,
-              "reviewed_bundle_sha256": "2759d5dbf9869cda8a930c7045ec2c8d7ff3e203a8696dbd22933c1db51c4917",
-              "reviewed_instructions_sha256": "0b11bb9159f833a550df7ef69179ee9eff1bfeb1a55dd001f700b44b75924575",
-              "reviewed_panel_sha256": "3dd41789f693a9c6d79708f455f931f8b10b877ef584118ca2020e8c5cac5294",
-              "reviewed_plan_sha256": "f3a88c81f4120c19c7ee632c741aad8989b399059aecad39d0d307831707b99c",
+              "reviewed_bundle_bytes": 538155,
+              "reviewed_bundle_sha256": "3f3952b4d29e1dfc5ef710fcfc5aab9d63811b83537527cb8b1b8074328dc171",
+              "reviewed_early_evidence_sha256": "20271a6a76ae20e758b96e26bd61d7779a14458fd91469e066005f5860382578",
+              "reviewed_instructions_sha256": "c03bbe6bee8638d7c8b29b112106b2c38771a8240b4fe0bb21455d57b5796654",
+              "reviewed_panel_sha256": "ee125a63e4259cda103b432465f967fa47d9b2266ae37f7c11f6f2cf1e96e642",
+              "reviewed_plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
               "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
               "roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c"
             },
             "current_review": {
               "artifact_path": ".phase-loop/reviews/v10-reviewtruth-plan-panel.json",
-              "artifact_sha256": "3dd41789f693a9c6d79708f455f931f8b10b877ef584118ca2020e8c5cac5294",
-              "artifact_semantics": "historical_predecessor_content_at_repair_time_overwriteable_run_local_path",
-              "bundle_bytes": 536915,
-              "bundle_sha256": "2759d5dbf9869cda8a930c7045ec2c8d7ff3e203a8696dbd22933c1db51c4917",
-              "early_prover_artifact_sha256": "e3298689542528c7b43fa6e19ecf2e0a434ca78369e646b5537ad389f7025249",
+              "artifact_sha256": "ee125a63e4259cda103b432465f967fa47d9b2266ae37f7c11f6f2cf1e96e642",
+              "artifact_semantics": "non_authorizing_historical_predecessor_dissent_at_repair_time_overwriteable_run_local_path",
+              "authorizing": false,
+              "bundle_bytes": 538155,
+              "bundle_sha256": "3f3952b4d29e1dfc5ef710fcfc5aab9d63811b83537527cb8b1b8074328dc171",
+              "early_prover_artifact_sha256": "20271a6a76ae20e758b96e26bd61d7779a14458fd91469e066005f5860382578",
               "early_prover_capability": "can_probe",
               "early_prover_binding_prover": false,
               "fable_outcome": "deferred",
-              "finding": "sl1_t2_scope_omitted_post_red_infrastructure_paths",
-              "finding_detail": "SL1_T2_required_implementing_verify_reviewtruth_chronology_py_and_tests_conftest_py_after_RED_but_its_file_scope_named_only_the_RED_baseline_document",
+              "finding_details": {
+                "early_prover_extra_tmp_writable_authority": "reviewed_helper_omitted_sandbox_workspace_write_exclude_tmpdir_env_var_true_and_exclude_slash_tmp_true_so_slash_tmp_remained_extra_writable_authority",
+                "stage_a_manifest_bound_mutable_live_plan": "stage_a_candidate_manifest_hashed_the_live_REVIEWTRUTH_plan_that_stage_b_must_revise_then_impossibly_required_byte_identical_regeneration"
+              },
+              "findings": [
+                "early_prover_extra_tmp_writable_authority",
+                "stage_a_manifest_bound_mutable_live_plan"
+              ],
               "gemini_verdict": "AGREE",
               "grok_verdict": "AGREE",
-              "instructions_sha256": "0b11bb9159f833a550df7ef69179ee9eff1bfeb1a55dd001f700b44b75924575",
-              "repaired_plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
+              "instructions_sha256": "c03bbe6bee8638d7c8b29b112106b2c38771a8240b4fe0bb21455d57b5796654",
+              "repaired_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
               "repaired_review_status": "unreviewed_not_approved",
-              "reviewed_plan_sha256": "f3a88c81f4120c19c7ee632c741aad8989b399059aecad39d0d307831707b99c",
+              "reviewed_plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
               "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
               "sol_verdict": "DISAGREE",
               "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
@@ -942,7 +954,7 @@
               "CONFORM",
               "HARDEN"
             ],
-            "plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
+            "plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
             "portable_skip_classification": {
               "allowed_disposition": "environment_interpreter_pair_unavailable",
               "allowed_reason": "need both python3.10 and python3.12 on host",
@@ -1181,7 +1193,7 @@
                 "observations/gate-a",
                 "materialized",
                 "evidence",
-                "repository",
+                "repository-stage-a",
                 "runtime-tree/phase-loop-runtime",
                 "copied-tests/phase-loop-runtime/tests",
                 "exact-base"
@@ -1193,7 +1205,18 @@
                 "evidence/reviewtruth-stage-a-candidate-artifacts.json"
               ],
               "immediate_filesystem_regeneration_required": true,
-              "stage_b_fresh_process_reverification_required": true
+              "mutable_live_stage_b_plan_in_candidate_manifest": false,
+              "stage_a_repository_snapshots": {
+                "creation_contract": "absent_non_symlink_destinations_and_temporaries_regular_canonical_sources_private_temporary_files_chmod_0600_atomic_rename_canonical_owner_mode_non_symlink_cmp_and_sha_against_live_stage_a_sources",
+                "plan_identity": "repository-stage-a/plans/phase-plan-v10-REVIEWTRUTH.md",
+                "plan_path": "$REVIEWTRUTH_RUNNER_ROOT/stage-a-snapshots/plans/phase-plan-v10-REVIEWTRUTH.md",
+                "roadmap_identity": "repository-stage-a/specs/phase-plans-v10.md",
+                "roadmap_path": "$REVIEWTRUTH_RUNNER_ROOT/stage-a-snapshots/specs/phase-plans-v10.md",
+                "write_once_mode": "0600"
+              },
+              "stage_b_fresh_process_reverification_required": true,
+              "stage_b_manifest_regeneration_source": "immutable_external_stage_a_plan_and_roadmap_snapshots",
+              "stage_b_plan_binding": "external_write_once_record_over_computed_live_plan_sha_and_atomically_staged_manifest_early_evidence_bundle_panel_and_four_seat_outcomes_no_self_digest_literal_never_equal_to_stage_a_plan_snapshot"
             }
           },
           "transition": "committed"
