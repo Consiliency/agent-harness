@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: REVIEWTRUTH
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c
+roadmap_sha256: b26b4fd76efb7882578eae5e102fd577b26e66f590a531d3b3a738d840e5106e
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"'
 ---
@@ -31,7 +31,7 @@ Maintainer comment `5139955591` at `https://github.com/Consiliency/agent-harness
 
 Every older reference below to a simultaneous “mandatory four-seat panel” describes predecessor evidence only. For every executable Stage-B plan or change review, the mandatory panel semantics are the ordered directive: isolated early Codex evidence first, critics including GPT-5.6 Sol against the evidence-bearing exact bundle second, and a usable grounded artifact-bound Fable review last. The critic roster may still use the byte-frozen `PANEL_LEGS`; this order does not rewrite that tuple.
 
-This narrow three-plan repair leaves the roadmap bytes unchanged and reseals only the existing REVIEWTRUTH, CONFORM, and HARDEN manifest rows. Historical review and predecessor digests remain labeled as such; this branch binds the repaired producer/consumer dependency-completion contract and its unchanged roadmap input, and neither authorizes lane dispatch before the required Stage-B freeze and ordered review.
+This coordinated repair updates only the roadmap's EC-REVIEWTRUTH-17 contract from the superseded 13-node set to the exact 16-node set already required here, then reseals all six root plans' current roadmap bindings; only REVIEWTRUTH, CONFORM, and HARDEN receive semantic plan changes. Historical review and predecessor digests remain labeled as such. This branch binds the repaired producer/consumer dependency-completion contract and corrected roadmap input, and neither authorizes lane dispatch before the required Stage-B freeze and ordered review.
 
 The CONFORM and HARDEN completion event consumed by Stage A now carries one strict nested `review_wave` object rather than independent SHA-shaped claims. `metadata.phase_completion_landing` has exactly `audited_implementation_landing`, `audited_implementation_tree`, `canonical_origin`, `canonical_ref`, `final_audit`, `final_evidence`, `phase_alias`, `plan_sha256`, `review_wave`, `roadmap_sha256`, `run_id`, and `schema`; its only review evidence is `review_wave`. `review_wave` has exactly `schema`, `canonical_json`, `receipt`, and `receipt_sha256`; `schema="v10.review-wave-receipt.v1"`; and `canonical_json="utf8-sorted-keys-compact-lf.v1"`. Canonical bytes are UTF-8 JSON with duplicate keys, floats, NaN/Infinity, and surrogate code points rejected, keys sorted bytewise, separators exactly `,` and `:`, no insignificant whitespace, and one terminal LF. `receipt_sha256` is SHA-256 of only the canonical `receipt` bytes. The wrapper, its parent event, `FH`, and `F` are excluded from those hashed bytes, so neither the event nor any receipt self-references. `final_audit` and `final_evidence` are exact file references and must equal `review_wave.receipt.base.final_audit` and `.final_evidence`.
 

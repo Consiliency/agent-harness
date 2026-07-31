@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: FABPUB
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c
+roadmap_sha256: b26b4fd76efb7882578eae5e102fd577b26e66f590a531d3b3a738d840e5106e
 automation:
   suite_command:
     - env
