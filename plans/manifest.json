@@ -742,18 +742,35 @@
             },
             "digest_rebind": {
               "fresh_exact_digest_panel_required": true,
-              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
-              "plan_sha256": "4c7a4411c28c89ca365bb2b37d6961affa84c4845de84a370d6f5821b0760668",
-              "predecessor_plan_sha256": "7d1882d2e25c3f3e5ab7ec1b0dc392b45d450075c2b3f079fafe4feb8b3232c6",
-              "reason": "seat_outcome_degraded_fab_gate_strict_boolean_type_repair",
+              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT",
+              "plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
+              "predecessor_plan_sha256": "4c7a4411c28c89ca365bb2b37d6961affa84c4845de84a370d6f5821b0760668",
+              "reason": "exact_pypi_transport_skip_disposition_repair",
               "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 308801,
-              "reviewed_bundle_sha256": "c10032320ebef39f6bd24390b7b677cf9c3aed128df835457e14c1e06b7d7df3",
-              "reviewed_instructions_sha256": "0315045f8d03308717e5ec218b7341cfb996263d4205029e0679b0a05760d177",
-              "reviewed_panel_sha256": "971065025e1714fb032643c8638180489fc7bed45b14f5d1582cd486b99421af",
-              "reviewed_plan_sha256": "1b7f2683ec9ffcffebe85228e3853dac55a5f6cd554ce1fa66428a27dd63b6c8",
+              "reviewed_bundle_bytes": 324985,
+              "reviewed_bundle_sha256": "08541485569d46d8ebe27f99fa78dea4d5fe7f3e2bb334d8c3b92d8c82f19770",
+              "reviewed_instructions_sha256": "3256b7b304f46fca6b2978c78a432f92ddf5338401f3c90712290234e9c13cd7",
+              "reviewed_panel_sha256": "8a30abffe37a9060ccf8bacdca668dc8e1a236fd2aac1062887646c2b7fdba0b",
+              "reviewed_plan_sha256": "4c7a4411c28c89ca365bb2b37d6961affa84c4845de84a370d6f5821b0760668",
               "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba"
+            },
+            "current_review": {
+              "artifact_path": ".phase-loop/reviews/v10-reviewtruth-plan-panel.json",
+              "artifact_sha256": "8a30abffe37a9060ccf8bacdca668dc8e1a236fd2aac1062887646c2b7fdba0b",
+              "bundle_bytes": 324985,
+              "bundle_sha256": "08541485569d46d8ebe27f99fa78dea4d5fe7f3e2bb334d8c3b92d8c82f19770",
+              "fable_outcome": "absent_no_leg",
+              "finding": "exact_pypi_transport_skip_reason_nondeterminism",
+              "gemini_verdict": "AGREE",
+              "grok_verdict": "AGREE",
+              "instructions_sha256": "3256b7b304f46fca6b2978c78a432f92ddf5338401f3c90712290234e9c13cd7",
+              "repaired_plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
+              "repaired_review_status": "unreviewed_not_approved",
+              "reviewed_plan_sha256": "4c7a4411c28c89ca365bb2b37d6961affa84c4845de84a370d6f5821b0760668",
+              "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
+              "sol_verdict": "DISAGREE",
+              "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT"
             },
             "gate_a_skip_freeze": {
               "boundary_collection_count": 4,
@@ -807,7 +824,7 @@
               "CONFORM",
               "HARDEN"
             ],
-            "plan_sha256": "4c7a4411c28c89ca365bb2b37d6961affa84c4845de84a370d6f5821b0760668",
+            "plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
             "portable_skip_classification": {
               "allowed_disposition": "environment_interpreter_pair_unavailable",
               "allowed_reason": "need both python3.10 and python3.12 on host",
@@ -821,6 +838,37 @@
                 "3.11",
                 "3.12"
               ]
+            },
+            "pypi_availability_classification": {
+              "allowed_dispositions": [
+                "pypi_metadata_available_pass",
+                "pypi_transport_unavailable"
+              ],
+              "allowed_exception_types": [
+                "urllib.error.URLError",
+                "TimeoutError",
+                "OSError"
+              ],
+              "allowed_reason_prefix": "Skipped: PyPI unreachable (",
+              "allowed_reason_suffix": "); auto-track vs registry not checked offline",
+              "downstream_activated_red_member": false,
+              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip",
+              "falsifier_nodeid_sha256": "b8d7fedfe0b72b0f6e23d83a026c747a1a868630459bdb692b26b99b48b411a5",
+              "gate_a_normalization": false,
+              "gate_a_release_pin_skip_contract": "line_111_standalone_root_missing_remains_in_exact_39_plus_4_plus_59_equals_102_profile",
+              "green_requires_live_internet": false,
+              "normalized_nodeid": "phase-loop-runtime/tests/test_release_pin_autotrack.py::test_release_pin_is_not_behind_pypi_latest",
+              "normalized_nodeid_sha256": "7a54c34a8defee59045a9dfe403a5d89b2d87085ceb99358dde782184b87de6c",
+              "raw_exception_evidence_retained": true,
+              "required_python_matrix": [
+                "3.10",
+                "3.11",
+                "3.12"
+              ],
+              "skip_line": 116,
+              "source_path": "phase-loop-runtime/tests/test_release_pin_autotrack.py",
+              "source_sha256": "6b6c7f9f38bc815f37e2a3d86311867ea5a8ea907db2bad7d52fdeb0132b4d24",
+              "tdd_lifecycle": "sl1_literal_red_then_green_before_tests_only_landing"
             },
             "reanchor_contract": "after_CONFORM_and_HARDEN_land_recompute_owned_paths_tests_counts_digests_and_exact_head_evidence_before_agent_harness_398_gate",
             "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
@@ -867,7 +915,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-31T01:47:46Z"
+      "updated_at": "2026-07-31T02:17:07Z"
     },
     {
       "acceptance_criteria_count": null,
