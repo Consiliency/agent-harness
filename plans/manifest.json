@@ -741,16 +741,16 @@
               "ownership": "codex-plan-phase_not_reviewtruth_lane_implementation"
             },
             "digest_rebind": {
-              "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "7a56bccd4b19188e4d3faadfc074c6781e696207d0b74ce0854faffb20380c77",
-              "predecessor_plan_sha256": "23c9274c927890b636dcbdc5e3d89e0c21819cd33703fc774ad4ff0444525a93",
-              "reason": "exact_digest_gate_a_namespace_and_explicit_ci_contract_repair",
-              "reviewed_bundle_bytes": 300663,
-              "reviewed_bundle_sha256": "3007e612ab8515255527a4f2ee947e79e2263a88d82191becfb5ac87383d23c7",
+              "historical_dissent_verdict": "GROK_DISAGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT",
+              "plan_sha256": "1b7f2683ec9ffcffebe85228e3853dac55a5f6cd554ce1fa66428a27dd63b6c8",
+              "predecessor_plan_sha256": "7a56bccd4b19188e4d3faadfc074c6781e696207d0b74ce0854faffb20380c77",
+              "reason": "exact_digest_gate_a_attester_ownership_and_runner_root_artifact_repair",
+              "reviewed_bundle_bytes": 300690,
+              "reviewed_bundle_sha256": "4292eccce9037a7407e4b3d7fcbc7fd3e7796375deec2892a3a7d1dc202a8b8a",
               "reviewed_instructions_sha256": "0315045f8d03308717e5ec218b7341cfb996263d4205029e0679b0a05760d177",
-              "reviewed_panel_sha256": "a012d88c93ef788754f83d65b9fac2892bcd187bf65146be3c790c8c3aea163f",
-              "reviewed_plan_sha256": "23c9274c927890b636dcbdc5e3d89e0c21819cd33703fc774ad4ff0444525a93",
-              "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
+              "reviewed_panel_sha256": "1c434bf67d6e22c7e1d90ef240525aba1efea22d0bc1174b59782be1a5ae0cb0",
+              "reviewed_plan_sha256": "7a56bccd4b19188e4d3faadfc074c6781e696207d0b74ce0854faffb20380c77",
+              "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba"
             },
             "gate_a_skip_freeze": {
@@ -765,19 +765,31 @@
               "tuple_shape": "nodeid_phase_reason"
             },
             "gate_a_terminal_attestation_contract": {
+              "attester_consumer_lane": "SL-6",
+              "attester_owner_lane": "SL-5",
+              "attester_path": "phase-loop-runtime/scripts/verify_reviewtruth_evidence.py",
               "attester_process": "fresh_after_child_stdout_stderr_artifact_manifest_and_copy_fds_close",
+              "canonical_artifact_root": "$REVIEWTRUTH_RUNNER_ROOT/evidence",
+              "canonical_artifacts": [
+                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.stdout",
+                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.stderr",
+                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.json",
+                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite-attestation.json"
+              ],
               "external_copy_layout": "input-copy/tests/**_plus_input-copy/chronology-parser/verify_reviewtruth_chronology.py",
               "forbidden_copy_roots": [
                 "temporary-runtime/phase-loop-runtime/scripts",
                 "input-copy/phase-loop-runtime/scripts"
               ],
+              "forbidden_repo_local_gate_a_suite_root": ".phase-loop/evidence",
               "owned_paths_count": 34,
               "owned_paths_sha256": "3d096f13a72f825f77f0f1897ff29af58c82fe36b68ca0ba87d80a7995c8ec91",
               "persistent_copy_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_persists_independently_attestable_tests_conftest_and_parser_copy",
               "persistent_copy_nodeid_sha256": "c96415d6e2c94d3d2f4a42eeaf38a34572a2e88af2e743711f6b97751767071d",
               "terminal_attestation_nodeids_count": 2,
               "terminal_attestation_nodeids_sha256": "d17d8a218765ba3ce0ccea954a8a3cd082a828a7d9a4517810af0de53563a6dd",
-              "workflow_contract": "fresh_private_external_root_export_script_internal_cleanup_terminal_attestation_then_external_cleanup",
+              "workflow_contract": "fresh_private_external_root_export_sl5_gate_a_reducer_script_internal_cleanup_terminal_attestation_then_external_cleanup",
+              "workflow_gate": "github_ci_green_at_exact_sl5_implementation_head_before_golden_panel_merge_and_sl6",
               "workflow_path": ".github/workflows/test.yml",
               "workflow_falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_workflow_exports_private_copy_attests_before_external_cleanup",
               "persistent_copy_survives_temporary_tree_cleanup": true,
@@ -793,7 +805,7 @@
               "CONFORM",
               "HARDEN"
             ],
-            "plan_sha256": "7a56bccd4b19188e4d3faadfc074c6781e696207d0b74ce0854faffb20380c77",
+            "plan_sha256": "1b7f2683ec9ffcffebe85228e3853dac55a5f6cd554ce1fa66428a27dd63b6c8",
             "portable_skip_classification": {
               "allowed_disposition": "environment_interpreter_pair_unavailable",
               "allowed_reason": "need both python3.10 and python3.12 on host",
@@ -828,7 +840,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T18:59:17Z"
+      "updated_at": "2026-07-31T00:56:46Z"
     },
     {
       "acceptance_criteria_count": null,
