@@ -1100,7 +1100,7 @@ Downstream semantic edges:
   PROOFGATE   → SCHED       (SCHED's re-framed GC work should land under the falsifier gate)
 
 Lane-level writer edge:
-  SCHED lane B → HARDEN       (runner.py; lane B may land while SCHED lane A resolves agent-harness#354)
+  SCHED lane B before HARDEN  (runner.py; lane B may land while SCHED lane A resolves agent-harness#354)
 
 Absorbed convergence-v1 chain:
   LEGIBLE → PROOFGATE → RUNTIME ─┐

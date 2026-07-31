@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PROOFGATE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 7c31bef2cf7008969e0331a1aa7cba9da543674742324441785fb8d5d622846f
+roadmap_sha256: 370e1f12f97c872b71ef7183ae50973126a985c3261f38ad271f5c7fbbeb77d4
 proofgate_lifecycle_contract: proofgate_tdd_candidate_main.v1
 proofgate_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_PROOFGATE
 proofgate_capability_marker: phase_loop_runtime.proofgate_capability:PROOFGATE_CAPABILITY_VERSION=proofgate.v1

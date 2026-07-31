@@ -128,8 +128,8 @@ def test_detects_wrong_execution_notes_root_count():
     # This arm proves the root-count check still fires if a contradictory count sentence is
     # ever re-introduced into the notes: inject "Seven ... roots" while the field has 1.
     mutated = _mutate(
-        "The writer-safe frontier is exactly the five-wave sequence",
-        "Seven phases are independent roots. The writer-safe frontier is exactly the five-wave sequence",
+        "The writer-safe root-plan frontier is exactly the five-wave sequence",
+        "Seven phases are independent roots. The writer-safe root-plan frontier is exactly the five-wave sequence",
     )
     findings = check_representation_consistency(mutated)
     assert any(f.representation == "root-count" for f in findings), findings
@@ -137,7 +137,7 @@ def test_detects_wrong_execution_notes_root_count():
 
 @_needs_v10
 def test_detects_serial_edge_count_mismatch():
-    mutated = _mutate("Serial edges (seven,", "Serial edges (six,")
+    mutated = _mutate("Serial edges (eight,", "Serial edges (seven,")
     findings = check_representation_consistency(mutated)
     assert any(f.representation == "serial-edges" and "declares" in f.message for f in findings), findings
 
