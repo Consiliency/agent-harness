@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LEGIBLE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d
+roadmap_sha256: a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba
 legible_lifecycle_contract: legible_tdd_candidate_main.v1
 legible_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_LEGIBLE
 legible_capability_marker: phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1
@@ -78,6 +78,18 @@ accepted a recognized non-active lifecycle banner when `specs/roadmap-status.jso
 This immutable historical dissent authorizes nothing. The repair below parses every recognized
 lifecycle declaration on every common return, even without the registry, and preserves
 compatibility only when the roadmap has no lifecycle declaration.
+
+The current immutable local-three artifact at that path has SHA-256
+`1ee400d1c4aa4f6892675969b3b5b831dff5bc9418c71e71dd989e101295b702`.
+It reviewed plan SHA-256
+`234a8412a875a58b447d2f9cbbf4ce7edd60397133594281c08165e7bed7e89f`,
+roadmap SHA-256 `158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d`,
+bundle SHA-256 `23e65ab41a2ed96c9bb169eef61e067a3c40078cec9cd70c98ae09c5e0311232`
+(`146984` bytes), and instructions SHA-256
+`4b166729c4352ac8c086b19b5c68d279258ffd08068c176122dee2533a3c5160`;
+all three available legs returned usable `AGREE`. It remains immutable
+historical evidence only; the roadmap/digest rebind below requires review of
+the changed bytes before execution.
 
 The repository currently has thirteen `specs/phase-plans-*.md` roadmaps whose primary banners
 describe one active roadmap, five delivered roadmaps, and seven superseded roadmaps, but there

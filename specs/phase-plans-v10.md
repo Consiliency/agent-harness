@@ -9,6 +9,21 @@
 A single session on 2026-07-28/29 surfaced three overlapping problems that were previously
 invisible, and this roadmap sequences their resolution.
 
+The planning head for this exact-digest repair is
+`c692cd38f00e390fe4de73d960fd91099d09fd53`. Its local-three plan reviews are immutable
+historical inputs, never authorization for the changed bytes produced here: LEGIBLE artifact
+`1ee400d1c4aa4f6892675969b3b5b831dff5bc9418c71e71dd989e101295b702` was 3/3 AGREE;
+CONFORM artifact `e5570fad8f0e66d808374e28ee707e931ff3d40ab368aec43758453dcf13cfe6`
+was 3/3 AGREE; REVIEWTRUTH artifact
+`a012d88c93ef788754f83d65b9fac2892bcd187bf65146be3c790c8c3aea163f` was two AGREE
+and GPT-5.6 Sol DISAGREE; FABPUB artifact
+`46a3543d4a50f46dc78ef9cbe24158c3bbb33c1b658239bf991c332aa671025f` was two AGREE
+and GPT-5.6 Sol DISAGREE; and HARDEN artifact
+`6d18cbedf3e793c839dcd4a89883c2b5e82281e98e23fce7e0cfc68419cae7f5` was Grok
+DISAGREE, GPT-5.6 Sol AGREE, and an unusable Gemini DEGRADED result. The PROOFGATE
+wrapper terminated before writing a current artifact; its older immutable panel file reviewed
+older bytes and MUST NOT be cited as reviewing `c692cd38f00e390fe4de73d960fd91099d09fd53`.
+
 **The review instrument under-reports.** The cross-vendor board is this repo's merge gate, yet
 three real pre-merge boards each returned 3 reviewing seats against a declared floor of 3 with
 `native_fill_requests: 0` and **no degradation signal to the caller**. `Seat.lens` has "no
@@ -291,7 +306,15 @@ EC-PROOFGATE-1/-3/-6 are hard validator, intake, and closeout errors. The sole w
 grandfather disposition is for exact same-ID complete raw bytes proven at the trusted cutoff and
 carries their server-attested pre-grammar date. Other advisory Check P findings may remain
 warning-level under the standing autonomy-first guardrail only when they do not satisfy an
-invalid/rejection case; checks G and K remain the advisory precedent.
+invalid/rejection case; checks G and K remain the advisory precedent. Before PROOFGATE authors
+tests, the coordinator fetches and checks the exact two-parent LEGIBLE landing and freezes the
+semantic `LEGIBLE_PREDECESSOR_INTERFACE_ANCHOR_V1`: schema v3 is supported; the generic extension
+registry, generic reader, and final seal/reseal protocol are present; the registry contains
+`phase_loop_runtime.legible_evidence`; and `phase_loop_runtime.proofgate_evidence` is absent.
+PROOFGATE registers only that latter namespace. Current-head source text and the pre-LEGIBLE
+`frozenset({1, 2})` reader are neither anchors nor fallbacks; mutation RED maps target the landed
+registry/reader seam and must fail with their intended `PROOFGATE_RED` assertions rather than
+missing or stale source text.
 
 **Non-goals**
 Granting review legs execution capability. Review bundles are attacker-controlled by construction;
@@ -385,6 +408,8 @@ that moves HEAD mid-operation. This is where the density is.
 - [ ] EC-FABPUB-6 — A conflicting resume (same attempt_id, different authority) is REFUSED; positive control: a genuine same-fields resume still dedups; falsified by removing the authority check and finding a different-authority resume ADMITTED under the same attempt_id — the observable is the admission record, not a refusal
 - [ ] EC-FABPUB-7 — Publish byte-neutrality is explicitly RETRACTED in the CHANGELOG, not claimed alongside renumbering; falsified by a CHANGELOG that claims byte-neutrality (or omits the retraction) while the renumbering lands — the observable is a byte-neutrality claim co-present with the epoch renumbering, not the explicit retraction sentence
 - [ ] EC-FABPUB-8 — Publish authority is constructed only after `publish_from_worktree` reaches `COMMITTED_HEAD_RESOLVED`, and a repository-visible adapter-start owner is durably fenced before any provider effect; falsified by a two-train, different-head replay that crashes after the shared start marker both before and after a possible provider effect and then permits the competing train to obtain an admission or call the adapter. The required observable is zero competing-train admissions, zero competing-train adapter calls, and recovery promoting the unsealed shared start to permanent `OUTCOME_AMBIGUOUS_BLOCKED`.
+- [ ] EC-FABPUB-9 — **LEGACY WRITER QUIESCENCE AND EXCLUSIVE ACTIVATION.** Before `INVENTORY_SEALED`, every supported pre-FABPUB writer process is stopped and attested, and one authenticated exclusive deployment/activation lease is held across inventory, migration, `ARMED`, and canonical route activation. The attestation binds supported launcher/supervisor identity, process/version, host, shared root, and repository/train-root inventory; supported old-version restarts remain fenced throughout. Where software cannot prove process absence, attended admin/pilot evidence is mandatory and absence of that evidence blocks. Falsified by keeping one old writer alive and observing `ARMED` or route activation succeed, or by restarting through any supported launcher after quiescence and observing a legacy write. The observable in both arms is refusal with zero canonical admission and zero provider effect.
+- [ ] EC-FABPUB-10 — **SERIALIZED ZERO-LEGACY PARTITION ONBOARDING AFTER `ARMED`.** A repository first seen after global activation is admitted only while holding the global cutover lock and an authenticated onboarding authority, after proving no matching legacy source, tombstone, archive, or partition receipt exists and durably writing/fsyncing one zero-high-water `LegacyRepositoryPartitionReceipt.v2` bound to canonical identity plus the original serialized-identity preimages and resolution context. Falsified by racing two trains for the same new repository, bypassing the receipt, or introducing any matching legacy evidence: the required observable is one byte-equivalent receipt, a monotonic first epoch, no bypass/admission before that receipt, and fail-closed zero canonical/provider effect when legacy evidence appears.
 
 **Scope notes**
 Decompose into 3 lanes: lane A owns the allocator, its enforced equalities, and repository-visible
@@ -393,8 +418,12 @@ adapter-start ownership, publishing IF-0-FABPUB-1 day 1; lane B owns the publish
 only authority preimages plus `checkpoint_root`; `publish_from_worktree` commits and resolves
 `COMMITTED_HEAD_RESOLVED`, constructs `PreAdmissionEnvelope`, and only then calls
 `BrokerService.execute`. `train_runner.py` is a single-writer file — lanes B and C must partition
-by function. The §10 test-first contract applies: wave-0 tests land red against `main` before any
-production change.
+by function. Lane A also owns `LegacyWriterQuiescence.v1`,
+`ExclusiveActivationLease.v1`, and serialized zero-legacy partition onboarding: the global lease
+precedes inventory and remains held through route activation, while post-`ARMED` onboarding
+re-enters the same global lock and never treats absence of an inventoried leaf as authority. The
+§10 test-first contract applies: wave-0 tests land red against `main` before any production
+change.
 
 **Non-goals**
 The readmit consumer and the flag flip (FABREADMIT). The FAB review-round `epoch` namespace, which
@@ -402,8 +431,10 @@ is a different `epoch` and out of scope.
 
 **Key files**
 - `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py`
 - `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py`
 - `phase-loop-runtime/src/phase_loop_runtime/convergence/fencing.py`
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py`
 - `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
 - `phase-loop-runtime/src/phase_loop_runtime/publishing.py`
 
@@ -517,13 +548,14 @@ that is exploitable rather than theoretical.
 - [ ] EC-HARDEN-2 — Path handling in the reconcile main loop is CWD-independent; falsified by invoking the reconcile main loop from a different CWD and finding a path resolves differently — the observable is identical resolved paths across two CWDs, where a relative-path use would diverge
 - [ ] EC-HARDEN-3 — Goal-coverage enforce mode fails closed rather than passing vacuously when no EC-IDs are declared; falsified by running enforce mode with zero declared EC-IDs and finding it PASSES — the observable is a fail-closed error on empty declarations, not a vacuous green
 - [ ] EC-HARDEN-4 — The login-shell interpreter shim resists the exotic bash-option and profile-introduced-version forms recorded in ah#241; falsified by feeding each ah#241 form (exotic bash-option, profile-introduced version) and finding the shim selects a non-satisfying interpreter — the observable is a fail-closed rejection per form, enumerated, not a silently-shadowed interpreter
-- [ ] EC-HARDEN-5 — **FLEET-WIDE REVIEW-LEG ISOLATION (ah#248; v10's first draft allowed satisfaction by an "explicitly operator-accepted residual with a recorded rationale," which marks the criterion MET while a review leg can still execute — the roadmap reports green with the hazard live).** Review-leg isolation is a SAFETY INVARIANT, not residual-risk hardening: review bundles are attacker-controlled by construction, which is the whole reason review legs are refused execution capability — a review leg that can execute, can execute regardless of what any register records. The obligation, per the ah#248 isolation standard, is that a review leg holds no mutation capability: it cannot issue a repository mutation or any credentialed/privileged side-effect from the review-leg environment. (A read-only review leg legitimately spawns its own reviewer subprocess — the bar is the absence of mutation/credentialed side-effects, NOT absolute-zero process or shell execution; the earlier "cannot spawn a process or run a shell command" wording overshot ah#248 and no correct read-only leg could satisfy it.) Falsified by a review leg that issues a repository mutation or a credentialed side-effect despite the standard — the observable is a successful mutation/credentialed operation issued from a review-leg environment, NOT the mere spawning of a process and not the presence or absence of a residual-register entry. This criterion is satisfied ONLY when the isolation checklist is fully met, full stop — it is a safety invariant and is NOT satisfiable by documenting its own failure. An operator genuinely may accept a security residual, but that belongs in the STATE, not the SATISFACTION: the standard is then UNMET with an accepted residual, carried here as a STANDING FINDING exactly like EC-INTEG-5's 2-of-N — never "met because we wrote it down." Its honest state: if the fleet-wide checklist is not fully met, this is UNMET and any residual recorded in the accepted-residual register (ah#361) is that standing finding, not a green
+- [ ] EC-HARDEN-5 — **FLEET-WIDE REVIEW-LEG ISOLATION (`agent-harness#248`; v10's first draft allowed satisfaction by an "explicitly operator-accepted residual with a recorded rationale," which marks the criterion MET while a review leg can still execute — the roadmap reports green with the hazard live).** Review-leg isolation is a SAFETY INVARIANT, not residual-risk hardening: review bundles are attacker-controlled by construction, which is the whole reason review legs are refused execution capability — a review leg that can execute, can execute regardless of what any register records. The obligation, per the `agent-harness#248` isolation standard, is that a review leg holds no mutation capability: it cannot issue a repository mutation or any credentialed/privileged side-effect from the review-leg environment. (A read-only review leg legitimately spawns its own reviewer subprocess — the bar is the absence of mutation/credentialed side-effects, NOT absolute-zero process or shell execution; the earlier "cannot spawn a process or run a shell command" wording overshot `agent-harness#248` and no correct read-only leg could satisfy it.) Every production-reachable public board path that can perform availability/auth probing, create a provider/session/broker, invoke a gateway/adapter/callback, or spawn a child—including the live/default `compose_review_board` and `load_boards` modes, CLI, and `invoke_board`—must require a fresh operation-bound isolation authorization before its first such effect, and `invoke_board` must independently revalidate it. Pure config parsing and validation, static preset/catalog construction, injected hermetic composition, and `resolve_board` over an already constructed catalog remain authorization-free positive controls: they may construct or return data, but must perform zero capability/auth/session/provider/broker/callback/spawn work and cannot themselves execute a board. Injected spawn/gateway/adapters cannot bypass authorization on an execution-capable path. Existing hermetic execution success tests use an explicit sanctioned authorization/transport fixture and retain their original semantic assertions; pure controls retain their auth-free assertions; there is no global/autouse authorization shim. Falsified by a review leg that issues a repository mutation or a credentialed side-effect despite the standard, by missing/forged/stale/wrong-operation authorization causing any auth/session/child/callback effect, or by a nominally pure control reaching such an effect. The observable is a successful mutation/credentialed operation or a nonzero unauthorized effect, NOT the mere spawning of a process and not the presence or absence of a residual-register entry. This criterion is satisfied ONLY when the isolation checklist and classified public-API authorization matrix are fully met, full stop — it is a safety invariant and is NOT satisfiable by documenting its own failure. An operator genuinely may accept a security residual, but that belongs in the STATE, not the SATISFACTION: the standard is then UNMET with an accepted residual, carried here as a STANDING FINDING exactly like EC-INTEG-5's 2-of-N — never "met because we wrote it down." Its honest state: if the fleet-wide checklist is not fully met, this is UNMET and any residual recorded in the accepted-residual register (`agent-harness#361`) is that standing finding, not a green
 
 **Scope notes**
 Decompose into 2 lanes: lane A owns the staging/symlink containment (ah#259) and the isolation
-standard (ah#248); lane B owns reconcile path handling, goal-coverage enforce mode, and the shim.
-Lane A is the security-reachable work and should start first even though the phase is otherwise
-parallel-safe.
+standard (ah#248), including the public-board authorization/transport contract and every affected
+existing success test; lane B owns reconcile path handling, goal-coverage enforce mode, and the
+shim. Lane A is the security-reachable work and should start first even though the phase is
+otherwise parallel-safe. All affected test contracts land in SL-0 before any source change.
 
 **Non-goals**
 Re-opening the accepted-residual register (ah#361). Items there are promoted individually only on
@@ -533,6 +565,12 @@ new reachability evidence.
 - `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
 - `phase-loop-runtime/src/phase_loop_runtime/runner.py`
 - `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/__init__.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/resolver.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
 
 **Depends on**
 - FABPUB
@@ -590,12 +628,28 @@ Per-repo custom seats and RISCO lenses (LEGLIFE). Leg lifecycle and timeout ENFO
 leg on its bound and reaping children — (LEGLIFE lane A). REVIEWTRUTH declares only the typed
 `timed_out` OUTCOME variant in `IF-0-REVIEWTRUTH-1`; it does not enforce timeouts.
 
+Gate A preserves two disjoint namespaces. Its internal temporary copied runtime tree remains the
+observed standalone `phase-loop-runtime/tests/**` tree and MUST NOT contain
+`phase-loop-runtime/scripts/`. The external persistent evidence copy is neutral and non-importable:
+`input-copy/tests/**` (including `input-copy/tests/conftest.py`),
+`input-copy/chronology-parser/verify_reviewtruth_chronology.py`, and its manifest. It must not
+recreate a `phase-loop-runtime/scripts` root or alter the temporary tree used by pytest.
+The planned workflow change allocates a fresh private external copy root, exports
+`PHASE_LOOP_GATE_A_INPUT_COPY_ROOT` to `gate_a_cleanroom.sh`, waits for that script's internal
+temporary `WORK` cleanup, runs the terminal attester while the external copy is still readable,
+and cleans the external copy only after attestation. The old workflow invocation without the
+variable, either selector, attestation after cleanup, or either namespace violation is a frozen
+SL-1 failure. This workflow edit belongs to the later REVIEWTRUTH implementation landing, after
+tests-only RED; it is not part of this planning repair.
+
 **Key files**
 - `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
 - `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`
 - `phase-loop-runtime/src/phase_loop_runtime/ratification_policy.py`
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py`
 - `phase-loop-runtime/tests/test_advisor_board_golden.py`
+- `phase-loop-runtime/scripts/gate_a_cleanroom.sh`
+- `.github/workflows/test.yml`
 
 **Depends on**
 - CONFORM
@@ -834,12 +888,24 @@ outside this repo; `redaction_posture: metadata_only`; malformed evidence routes
 ## Phase Dependency DAG
 
 ```
-LEGIBLE ──┬──→ PROOFGATE ──┬──→ SCHED
-          │                 ├──→ RUNTIME
-          │                 └──┐
-          └──→ CONFORM ────────┴──→ FABPUB ──┬──→ HARDEN ──→ REVIEWTRUTH ──→ LEGLIFE
-                                             ├──→ FABREADMIT
-                                             └──→ RESIDUAL
+LEGIBLE ──→ PROOFGATE
+LEGIBLE ──→ CONFORM
+PROOFGATE ──→ SCHED
+PROOFGATE ──→ RUNTIME
+PROOFGATE ──→ FABPUB
+CONFORM ──→ FABPUB
+FABPUB ──→ HARDEN
+HARDEN ──→ REVIEWTRUTH
+CONFORM ──→ REVIEWTRUTH
+REVIEWTRUTH ──→ LEGLIFE
+FABPUB ──→ FABREADMIT
+FABPUB ──→ RESIDUAL
+FABREADMIT ──→ INTEG
+RUNTIME ──→ INTEG
+INTEG ──→ RELEASE
+
+Parallel roots:
+  LEGIBLE
 
 Writer-safe root-plan frontier:
   wave 1: LEGIBLE
@@ -848,13 +914,13 @@ Writer-safe root-plan frontier:
   wave 4: HARDEN
   wave 5: REVIEWTRUTH
 
-Required root-plan serialization:
+Serial edges (seven, required root-plan serialization):
   LEGIBLE     → PROOFGATE    (generic verification-evidence v3 producer/registry)
   LEGIBLE     → CONFORM      (shared cli.py writer)
   PROOFGATE   → FABPUB       (train_runner.py and revocation-race test writers)
   CONFORM     → FABPUB       (cli.py and CHANGELOG.md writers)
   FABPUB      → HARDEN       (cli.py and CHANGELOG.md writers)
-  HARDEN      → REVIEWTRUTH  (composition.py, panel_invoker.py, cli.py, and runner.py writers)
+  HARDEN      → REVIEWTRUTH  (composition.py, panel_invoker.py, cli.py, runner.py, and three public-board test writers)
   CONFORM     → REVIEWTRUTH  (tests/conftest.py and cli.py writers; explicit even though transitive)
 
 Downstream semantic edges:
@@ -869,7 +935,9 @@ Absorbed convergence-v1 chain:
 
 Critical paths (depth 6):
   LEGIBLE → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE
-  and LEGIBLE → PROOFGATE → FABPUB → FABREADMIT → INTEG → RELEASE
+  LEGIBLE → CONFORM → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE
+  LEGIBLE → PROOFGATE → FABPUB → FABREADMIT → INTEG → RELEASE
+  LEGIBLE → CONFORM → FABPUB → FABREADMIT → INTEG → RELEASE
 ```
 
 The six detailed root plans own a conflict graph that is complete except for the
@@ -885,7 +953,7 @@ PROOFGATE/CONFORM pair. The exhaustive pattern-expanded intersections are:
 | REVIEWTRUTH / PROOFGATE | `panel_invoker.py`, `runner.py`, `train_runner.py` | PROOFGATE before REVIEWTRUTH (transitive) |
 | REVIEWTRUTH / CONFORM | `tests/conftest.py`, `cli.py` | CONFORM → REVIEWTRUTH |
 | REVIEWTRUTH / FABPUB | `cli.py`, `train_runner.py` | FABPUB before REVIEWTRUTH (transitive) |
-| REVIEWTRUTH / HARDEN | `advisor_board/composition.py`, `cli.py`, `panel_invoker.py`, `runner.py` | HARDEN → REVIEWTRUTH |
+| REVIEWTRUTH / HARDEN | `advisor_board/composition.py`, `cli.py`, `panel_invoker.py`, `runner.py`, `test_advisor_board_golden.py`, `test_advisor_board_research.py`, `test_panel_native_fill_183.py` | HARDEN → REVIEWTRUTH |
 | PROOFGATE / CONFORM | none | parallel-safe |
 | PROOFGATE / FABPUB | `train_runner.py`, `test_convergence_broker_revocation_race.py` | PROOFGATE → FABPUB |
 | PROOFGATE / HARDEN | `launcher.py`, `panel_invoker.py`, `goal_coverage.py`, `runner.py`, `verification_evidence.py`, `test_goal_coverage.py`, `test_review_leg_sandbox.py` | PROOFGATE before HARDEN (transitive) |

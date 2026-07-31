@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CONFORM
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d
+roadmap_sha256: a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"'
 ---
@@ -47,6 +47,18 @@ Two legs returned usable `AGREE`; GPT-5.6 Sol returned usable `DISAGREE`, findin
 archive-inclusion singleton digest printed in this plan was only 62 characters and could not
 match the manifest. This immutable historical dissent authorizes nothing. The execution notes
 now carry the recomputed 64-character LF-terminated nodeid SHA-256 exactly.
+
+The current immutable local-three artifact at that path has SHA-256
+`e5570fad8f0e66d808374e28ee707e931ff3d40ab368aec43758453dcf13cfe6`.
+It reviewed plan SHA-256
+`ca965313ca5829a0956694d70105a2d1c18a152203670ffab3783e7791eedf91`,
+roadmap SHA-256 `158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d`,
+bundle SHA-256 `0974bc5de013cffbbdcbc6b203e1102eb4932d32fa75548eabdb8c8329518793`
+(`128199` bytes), and instructions SHA-256
+`f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356`;
+all three available legs returned usable `AGREE`. It remains immutable
+historical evidence only; the roadmap/digest rebind below requires review of
+the changed bytes before execution.
 
 CONFORM is no longer an executable root: it starts only from the exact two-parent LEGIBLE
 landing, rechecks its owned-path/source anchors on that fetched base before CONFORM-T0, and

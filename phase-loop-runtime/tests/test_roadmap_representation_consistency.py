@@ -101,17 +101,14 @@ def test_v10_representations_agree_with_structured_field():
 
 @_needs_v10
 def test_detects_invented_critical_path_edge():
-    # Reintroduce round-4's blocker: PROOFGATE -> FABPUB is not a structured edge, and the
-    # single chain drops the co-equal PROOFGATE -> RUNTIME -> INTEG -> RELEASE path.
+    # Corrupt one of the four co-equal longest chains with an unbacked RUNTIME -> HARDEN edge.
     mutated = _mutate(
-        "Critical path (depth 4; two co-equal longest chains, both ending at the shared sink):\n"
-        "  FABPUB    → FABREADMIT → INTEG → RELEASE\n"
-        "  PROOFGATE → RUNTIME    → INTEG → RELEASE",
-        "Critical path: PROOFGATE → FABPUB → FABREADMIT → INTEG → RELEASE",
+        "LEGIBLE → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE",
+        "LEGIBLE → PROOFGATE → RUNTIME → HARDEN → REVIEWTRUTH → LEGLIFE",
     )
     findings = check_representation_consistency(mutated)
     assert any(
-        f.representation == "critical-path" and "PROOFGATE → FABPUB" in f.message
+        f.representation == "critical-path" and "RUNTIME → HARDEN" in f.message
         for f in findings
     ), findings
 
@@ -119,7 +116,7 @@ def test_detects_invented_critical_path_edge():
 @_needs_v10
 def test_detects_non_root_listed_as_parallel_root():
     # LEGLIFE **Depends on** REVIEWTRUTH — it is not a root.
-    mutated = _mutate("∥ FABPUB ∥ HARDEN", "∥ FABPUB ∥ HARDEN ∥ LEGLIFE")
+    mutated = _mutate("Parallel roots:\n  LEGIBLE", "Parallel roots:\n  LEGIBLE ∥ LEGLIFE")
     findings = check_representation_consistency(mutated)
     assert any(f.representation == "parallel-roots" and "LEGLIFE" in f.message for f in findings), findings
 
@@ -129,11 +126,10 @@ def test_detects_wrong_execution_notes_root_count():
     # The Execution Notes now REFERENCE the fenced Parallel-roots list instead of restating a
     # count+list (agent-harness#375 dedup — a copy the checker cannot verify cannot drift).
     # This arm proves the root-count check still fires if a contradictory count sentence is
-    # ever re-introduced into the notes: inject "Seven ... roots" while the field has 6.
+    # ever re-introduced into the notes: inject "Seven ... roots" while the field has 1.
     mutated = _mutate(
-        "and execute them concurrently. RESIDUAL is not among them",
-        "and execute them concurrently. Seven phases are independent roots. "
-        "RESIDUAL is not among them",
+        "The writer-safe frontier is exactly the five-wave sequence",
+        "Seven phases are independent roots. The writer-safe frontier is exactly the five-wave sequence",
     )
     findings = check_representation_consistency(mutated)
     assert any(f.representation == "root-count" for f in findings), findings
@@ -141,7 +137,7 @@ def test_detects_wrong_execution_notes_root_count():
 
 @_needs_v10
 def test_detects_serial_edge_count_mismatch():
-    mutated = _mutate("Serial edges (four,", "Serial edges (three,")
+    mutated = _mutate("Serial edges (seven,", "Serial edges (six,")
     findings = check_representation_consistency(mutated)
     assert any(f.representation == "serial-edges" and "declares" in f.message for f in findings), findings
 
@@ -149,7 +145,7 @@ def test_detects_serial_edge_count_mismatch():
 @_needs_v10
 def test_detects_invented_ascii_dag_edge():
     # Same-line bracket arrow: PROOFGATE draws to SCHED; redirect it to an unbacked target.
-    mutated = _mutate("┼─────────────→ SCHED", "┼─────────────→ LEGLIFE")
+    mutated = _mutate("PROOFGATE ──→ SCHED", "PROOFGATE ──→ LEGLIFE")
     findings = check_representation_consistency(mutated)
     assert any(
         f.representation == "ascii-dag" and "PROOFGATE → LEGLIFE" in f.message for f in findings
@@ -157,11 +153,9 @@ def test_detects_invented_ascii_dag_edge():
 
 
 @_needs_v10
-def test_detects_invented_continuation_dag_edge():
-    # CONTINUATION bracket arrow: the "└──────→ RESIDUAL" row under FABPUB's fan-out carries
-    # no on-line left alias (source inherited). Corrupt the target to an unbacked alias — the
-    # exact shape `_edges_on_line` was blind to. Source resolves to FABPUB.
-    mutated = _mutate("└──────→ RESIDUAL", "└──────→ LEGLIFE")
+def test_detects_second_invented_ascii_dag_edge():
+    # A second direct edge protects the lower half of the exhaustive ASCII edge list.
+    mutated = _mutate("FABPUB ──→ RESIDUAL", "FABPUB ──→ LEGLIFE")
     findings = check_representation_consistency(mutated)
     assert any(
         f.representation == "ascii-dag" and "FABPUB → LEGLIFE" in f.message for f in findings

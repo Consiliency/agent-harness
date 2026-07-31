@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PROOFGATE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d
+roadmap_sha256: a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba
 proofgate_lifecycle_contract: proofgate_tdd_candidate_main.v1
 proofgate_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_PROOFGATE
 proofgate_capability_marker: phase_loop_runtime.proofgate_capability:PROOFGATE_CAPABILITY_VERSION=proofgate.v1
@@ -17,7 +17,7 @@ proofgate_ordinary_phase_nodeids: 39
 proofgate_attended_phase_nodeids: 39
 proofgate_attended_real_provider_rows: 4
 proofgate_source_anchor_rows: 11
-proofgate_source_anchor_rows_sha256: 80b4f521bcd4246375cb19ee54137c0954c87aac6f1fdc5f2d2bdcca37d55da9
+proofgate_source_anchor_rows_sha256: a09ab9aa6d5aeb835a4719f8096b23f5f46648fd55bebe92370c8b71f8209ef1
 automation:
   suite_command: ["bash", "-lc", "test -n \"${PHASE_LOOP_RUN_DIR:-}\" && PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v10.md && env -u PHASE_LOOP_TDD_EXPECT_PROOFGATE -u PHASE_LOOP_PROOFGATE_ATTENDED_LIVE PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests -q -m 'not dotfiles_integration' --junitxml=\"$PHASE_LOOP_RUN_DIR/proofgate-compatible-suite.junit.xml\" && ruff check phase-loop-runtime/src/phase_loop_runtime/ && PYTHONPATH=phase-loop-runtime/src python3 phase-loop-skills/plan-phase/scripts/validate_plan_doc.py plans/phase-plan-v10-PROOFGATE.md && git diff --check"]
   mutation_manifest: phase-loop-runtime/tests/fixtures/proofgate/v10-proofgate-mutations.json
@@ -72,6 +72,14 @@ Sol additionally found the pre-LEGIBLE `_SUPPORTED_SCHEMA_VERSIONS = {1,2}` lite
 load-bearing in PROOFGATE's source map. This immutable historical dissent authorizes nothing.
 The roadmap now makes IF-0-LEGIBLE-2 and EC-LEGIBLE-8 real LEGIBLE deliverables, and PROOFGATE
 re-anchors to the post-LEGIBLE v3 registry/reader seam while owning only its registered namespace.
+
+The review wrapper launched for the current planning head
+`c692cd38f00e390fe4de73d960fd91099d09fd53` terminated before writing a current
+artifact. The file at `.phase-loop/reviews/v10-proofgate-plan-panel.json` remains
+the older immutable review identified above; it did not review the current planning
+head, current plan digest, or current roadmap digest and must not be relabeled as
+current authorization. Coordinator inspection of the separately frozen current
+review input nevertheless confirmed the stale-anchor blocker repaired below.
 
 The phase remains three serial lanes but gains a staged bootstrap inside SL-0. A complete immutable tests-only PR containing exactly the 18 SL-0 test/helper/fixture path patterns lands first. A second, separately reviewed bootstrap implementation PR then lands only the minimum writer, attestation workflow, and OS-isolation call sites, with no test edit. Those two landings use a manually coordinator-controlled Bubblewrap launch and GitHub PR/merge metadata; they do not claim receipts from code that was not yet merged. Trust begins only after the merged bootstrap implementation is independently verified and its activation head is signed by the landed GitHub Actions attestation workflow. Every later author/reviewer, panel/RED observation, production dispatch, mutation run, and closeout uses that bootstrapped path.
 
@@ -337,7 +345,7 @@ separate because each must match exactly once:
 | `PG-A-PANEL` | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`: `env = _subscription_env() if env is None else dict(env)` |
 | `PG-A-RUNNER` | `phase-loop-runtime/src/phase_loop_runtime/runner.py`: `from .dispatch_lock import DispatchLock, DispatchLockContention` |
 | `PG-A-GOAL` | `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`: `_ACCEPTANCE_SECTION_RE = re.compile(` |
-| `PG-A-VERIFY-V3` | `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`: the LEGIBLE-landed schema-v3 reader branch and closed extension-registry entry for `phase_loop_runtime.legible_evidence`; before tests, freeze their exact post-LEGIBLE source bytes and prove plan-aware LEGIBLE validation accepts that namespace without requiring `phase_loop_runtime.proofgate_evidence` |
+| `PG-A-VERIFY-V3` | semantic predecessor interface captured from the exact fetched two-parent LEGIBLE landing: `verification_evidence.v3` is supported; one generic extension registry, reader, and seal protocol are present; `phase_loop_runtime.legible_evidence` is registered and accepted; and `phase_loop_runtime.proofgate_evidence` is absent. Before tests, bind the landing OID plus the exact implementing source blobs/semantic probe output and prove PROOFGATE will add only its own namespace |
 | `PG-A-CLOSEOUT` | `phase-loop-runtime/src/phase_loop_runtime/closeout.py`: `def _apply_verification_evidence_gate(` |
 | `PG-A-TRAIN` | `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`: `def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:` |
 | `PG-A-VALIDATOR` | `skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py`: `def _check_p_goal_id_coverage(` |
@@ -350,8 +358,14 @@ each including its leading/trailing `|` and terminal LF; its count and SHA-256 a
 literally into frontmatter and the manifest. `PG-A-VERIFY-V3` is captured only from the fetched
 two-parent LEGIBLE landing before `SL0-T1`; the stale pre-LEGIBLE
 `_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2})` literal is neither an anchor nor permitted
-fallback. Any row, path, identifier, semantic seam, count, or digest drift requires plan repair
-and a fresh exact-digest panel before tests.
+fallback. The semantic probe must fail if schema v3, the generic registry/reader/seal seam, or
+the LEGIBLE namespace is absent, or if the PROOFGATE namespace already exists. The tests-only
+RED/mutation map then binds the landed registry/reader seam and reaches its intended
+`PROOFGATE_RED` assertions; missing or stale source text is a pre-dispatch anchor failure, never
+accepted as RED. These are predecessor-produced semantics checked after LEGIBLE lands; this plan
+does not claim that their future source bytes exist at planning head `c692cd38…`. Any row, path,
+identifier, semantic seam, count, or digest drift requires plan repair and a fresh exact-digest
+panel before tests.
 
 The exact activated failure set is the 36 default-skip nodeids plus the one
 migrated nodeid. Each first asserts its mapped anchor(s), then fails with
