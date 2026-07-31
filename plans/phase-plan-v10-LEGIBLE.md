@@ -921,7 +921,7 @@ EC-LEGIBLE-4.
   it does not add release scope.
 - Digest continuity is a preflight and closeout invariant: before every lane, and again before
   final verification, SHA-256 of `specs/phase-plans-v10.md` must equal
-  `158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d`. Any roadmap-byte
+  `a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba`. Any roadmap-byte
   change blocks as an unpaneled contract change; this plan provides no mid-phase rebind path
   because none is required by the sidecar architecture. In particular, Assumption 3 already
   declares both the pending and resolved REVIEWTRUTH states, so the fixed sidecar adapter

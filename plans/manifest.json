@@ -626,7 +626,7 @@
           "metadata": {
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "56073b6db5d8a377ccaa2184fd6563e7c4c6ce78de26b81b33612ef6ad4466fe",
+              "plan_sha256": "f3e83669b0cc509ec424eba650f6f058c18ed0d92546f6283b00ac9b8b41211d",
               "predecessor_plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
               "reason": "second_exact_digest_selector_fallback_and_root_dag_repair",
               "reviewed_bundle_bytes": 140117,
@@ -677,7 +677,7 @@
               "owned_paths_count": 16,
               "owned_paths_sha256": "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b",
               "phase_dependencies": [],
-              "plan_sha256": "56073b6db5d8a377ccaa2184fd6563e7c4c6ce78de26b81b33612ef6ad4466fe",
+              "plan_sha256": "f3e83669b0cc509ec424eba650f6f058c18ed0d92546f6283b00ac9b8b41211d",
               "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "selector_common_return_contract": "parse_candidate_lifecycle_then_reject_recognized_non_active_with_or_without_registry",
               "test_paths": [
