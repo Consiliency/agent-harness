@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CONFORM
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: e291c10d11bb29e612492891b36cc5e7c1d19704da13874f4fd84ec21f2eda8a
+roadmap_sha256: 6b0ac640ce1faeae77798b877d65f8c40b706a518fa2df7c728425bd8b712e02
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"'
 ---
