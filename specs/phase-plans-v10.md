@@ -1125,14 +1125,25 @@ exact-base preflight and five bootstrap commands; the Codex external-tool prefli
 review command remain Stage-B templates. The executable exact-base preflight accepts the future
 full CONFORM/HARDEN landing SHAs, fetches canonical `main`, proves both are ancestors of the
 checked-out base, and writes an exact-base record; the sealed candidate digest binds that record
-and the internally consistent base/tree/observer/profile facts. Stage B revises the detailed plan to
-freeze those exact observed values plus the installed Codex executable/version/help, complete
-feature and MCP/plugin inventories, external-tool policy, effective preflight shape, and receipt
-schema; recomputes every suite/node/anchor aggregate; and passes an exact-digest review ordered as
-early Codex evidence, critics including GPT-5.6 Sol, then usable
-grounded artifact-bound Fable. Only the reviewed Stage-B digest can authorize SL-0 or tests-first
-mutation. Any retained assumption or owned-path byte changed by the dependencies invalidates
-predecessor evidence. All three `agent-harness#398` human decisions are satisfied, but
+and command five's complete canonical candidate-artifact manifest. That mode-`0600`, write-once
+manifest is outside both observation directories and directly binds, by unique canonical relative
+identity, mode, byte count, and SHA-256, every file in both complete observations including their
+attestations and all raw artifacts, both materialized observers, provisioning, exact Stage-A
+plan/roadmap, every authoritative runtime-tree and copied-test file, and the exact-base sidecar.
+Command five independently regenerates and byte-compares the manifest immediately before writing
+and re-verifying the acyclic domain-separated digest over the exact-base sidecar and manifest; it
+does not trust `paired-profile.json` or producer-supplied aggregates as the complete seal. Stage B
+revises the detailed plan to freeze those exact observed values, manifest bytes, and candidate
+digest plus the installed Codex executable/version/help, complete feature and MCP/plugin
+inventories, external-tool policy, effective preflight shape, and receipt schema; recomputes every
+suite/node/anchor aggregate; and passes an exact-digest review ordered as early Codex evidence,
+critics including GPT-5.6 Sol, then usable grounded artifact-bound Fable. In a fresh process before
+SL-0 or SL-1, Stage B independently re-enumerates and re-hashes the complete inventory, requires a
+byte-identical manifest, and recomputes the digest and every upstream binding. Any missing, extra,
+or drifted file, path, mode, byte count, SHA-256, manifest byte, digest format/value, or upstream
+binding fails. Only the reviewed Stage-B digest can authorize SL-0 or tests-first mutation. Any
+retained assumption or owned-path byte changed by the dependencies invalidates predecessor
+evidence. All three `agent-harness#398` human decisions are satisfied, but
 REVIEWTRUTH's still-incomplete exact-base plan, durable-record, effective-rule, and merge-topology
 gates remain downstream and cannot block CONFORM or HARDEN.
 
