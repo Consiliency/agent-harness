@@ -1192,10 +1192,22 @@ that later make the same controls machine-enforceable:
 
 1. **Planner boundary.** Plan only with Claude Fable 5 or GPT-5.6 Sol at maximum reasoning. The
    roadmap policy defaults to Sol; a Fable substitution must be explicit in the dispatch record.
-2. **Phase-plan panel.** Before any test or implementation work, review the exact phase-plan digest
-   with the four-vendor board: Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and Grok 4.5. Fable and Sol are
-   mandatory reviewing seats. An unavailable, errored, empty, capped, refused, or timed-out Fable or
-   Sol leg blocks dispatch. Resolve every material finding and re-panel every changed digest.
+2. **Phase-plan panel and chair disposition.** Before any test or implementation work, review the
+   exact phase-plan digest with the four-vendor board: Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and
+   Grok 4.5. Fable and Sol are mandatory reviewing seats. An unavailable, errored, empty, capped,
+   refused, or timed-out Fable or Sol leg blocks dispatch, and Fable retains its binding-prover veto.
+   Preserve every vote and finding verbatim, then run a separate Fable chair pass over the immutable
+   panel artifact and roadmap. The chair classifies each finding as `current_blocker`,
+   `scheduled_current_phase`, `scheduled_downstream`, `unscheduled_follow_up`, or `nit_no_action`.
+   Only a current acceptance-coverage, dependency/ownership, literal TDD-chronology, deterministic
+   green-base, immediate safety/authority, nonwaivable policy, or Fable-veto defect may block plan
+   dispatch. A finding already owned by the phase's RED tests or implementation is retained against
+   that criterion without rewriting the plan; a downstream finding is mapped to its existing
+   criterion, or filed as a repository-qualified issue when unscheduled. The chair cannot waive a
+   hard prover requirement or an `on_shortfall=escalate` vote/floor shortfall. For plan/design gates,
+   `on_shortfall=proceed_degraded` retains the raw consensus audit while permitting a Fable-chair
+   `PROCEED` disposition. Allow at most one chair-requested repair and one exact-digest confirmation;
+   if a current blocker remains, escalate to the operator instead of starting a third plan round.
 3. **TDD chronology.** Satisfy each phase's `EC-<ALIAS>-0` literally: write and panel the unit tests
    first, run them against the pre-implementation base, retain the expected RED output plus asserted
    injection anchor, and land the test change before production code. The implementation change must
