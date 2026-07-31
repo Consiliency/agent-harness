@@ -749,47 +749,70 @@
               },
               "fresh_exact_digest_panel_required": true,
               "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
-              "plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
-              "predecessor_plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
-              "reason": "semantic_repair_for_REVIEWTRUTH_tmp_authority_stage_a_snapshot_lifecycle_and_stage_b_external_review_binding",
+              "plan_sha256": "acd1f559db20363f7dd9e59798ed2d0c90702e13ebe3f9e637530617e9316ac8",
+              "predecessor_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
+              "reason": "semantic_repair_for_authenticated_dependency_completion_landings",
               "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 538155,
-              "reviewed_bundle_sha256": "3f3952b4d29e1dfc5ef710fcfc5aab9d63811b83537527cb8b1b8074328dc171",
-              "reviewed_early_evidence_sha256": "20271a6a76ae20e758b96e26bd61d7779a14458fd91469e066005f5860382578",
-              "reviewed_instructions_sha256": "c03bbe6bee8638d7c8b29b112106b2c38771a8240b4fe0bb21455d57b5796654",
-              "reviewed_panel_sha256": "ee125a63e4259cda103b432465f967fa47d9b2266ae37f7c11f6f2cf1e96e642",
-              "reviewed_plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
+              "reviewed_bundle_bytes": 557138,
+              "reviewed_bundle_sha256": "5a2c6c4d892aee180ce3b7ea05dd86d2b46228138e855db86959467d8aa991e8",
+              "reviewed_early_evidence_sha256": "35c4ec83250bb32fba8599530a11aebcf0088c98a41b87b07cd9df8ce47d8d8f",
+              "reviewed_instructions_sha256": "bd6550e88bd8944a8a384b50b55561cee88b8e683ab5095992da79855090e91a",
+              "reviewed_panel_sha256": "950a08facce1df02337d626301fc24af223812ef32c1cb99d18be6abc5ecd19b",
+              "reviewed_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
               "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
               "roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c"
             },
             "current_review": {
               "artifact_path": ".phase-loop/reviews/v10-reviewtruth-plan-panel.json",
-              "artifact_sha256": "ee125a63e4259cda103b432465f967fa47d9b2266ae37f7c11f6f2cf1e96e642",
-              "artifact_semantics": "non_authorizing_historical_predecessor_dissent_at_repair_time_overwriteable_run_local_path",
+              "artifact_sha256": "950a08facce1df02337d626301fc24af223812ef32c1cb99d18be6abc5ecd19b",
+              "artifact_semantics": "non_authorizing_dependency_landing_auth_predecessor_dissent_at_repair_time_overwriteable_run_local_path",
               "authorizing": false,
-              "bundle_bytes": 538155,
-              "bundle_sha256": "3f3952b4d29e1dfc5ef710fcfc5aab9d63811b83537527cb8b1b8074328dc171",
-              "early_prover_artifact_sha256": "20271a6a76ae20e758b96e26bd61d7779a14458fd91469e066005f5860382578",
+              "bundle_bytes": 557138,
+              "bundle_sha256": "5a2c6c4d892aee180ce3b7ea05dd86d2b46228138e855db86959467d8aa991e8",
+              "early_prover_artifact_sha256": "35c4ec83250bb32fba8599530a11aebcf0088c98a41b87b07cd9df8ce47d8d8f",
               "early_prover_capability": "can_probe",
               "early_prover_binding_prover": false,
               "fable_outcome": "deferred",
               "finding_details": {
-                "early_prover_extra_tmp_writable_authority": "reviewed_helper_omitted_sandbox_workspace_write_exclude_tmpdir_env_var_true_and_exclude_slash_tmp_true_so_slash_tmp_remained_extra_writable_authority",
-                "stage_a_manifest_bound_mutable_live_plan": "stage_a_candidate_manifest_hashed_the_live_REVIEWTRUTH_plan_that_stage_b_must_revise_then_impossibly_required_byte_identical_regeneration"
+                "arbitrary_or_identical_ancestor_landings": "Stage_A_accepted_operator_supplied_CONFORM_and_HARDEN_values_as_any_ancestors_of_base_without_phase_qualified_completion_topology_or_event_proof",
+                "unauthenticated_hardcoded_origin": "Stage_A_hardcoded_Consiliency_agent_harness_in_the_sidecar_without_authenticating_fetch_and_push_origin_or_rewrite_configuration"
               },
               "findings": [
-                "early_prover_extra_tmp_writable_authority",
-                "stage_a_manifest_bound_mutable_live_plan"
+                "arbitrary_or_identical_ancestor_landings",
+                "unauthenticated_hardcoded_origin"
               ],
               "gemini_verdict": "AGREE",
               "grok_verdict": "AGREE",
-              "instructions_sha256": "c03bbe6bee8638d7c8b29b112106b2c38771a8240b4fe0bb21455d57b5796654",
-              "repaired_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
+              "instructions_sha256": "bd6550e88bd8944a8a384b50b55561cee88b8e683ab5095992da79855090e91a",
+              "repaired_plan_sha256": "acd1f559db20363f7dd9e59798ed2d0c90702e13ebe3f9e637530617e9316ac8",
               "repaired_review_status": "unreviewed_not_approved",
-              "reviewed_plan_sha256": "a3b5d97890f3551ba8813a947c8cf892aa10c98f910d177873ed78b61a4a4a50",
+              "reviewed_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
               "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
               "sol_verdict": "DISAGREE",
               "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
+            },
+            "completion_record_contract": {
+              "accepted_origin_urls": [
+                "git@github.com:Consiliency/agent-harness.git",
+                "ssh://git@github.com/Consiliency/agent-harness.git",
+                "https://github.com/Consiliency/agent-harness.git"
+              ],
+              "canonical_origin": "Consiliency/agent-harness",
+              "consumer_bindings": [
+                "F",
+                "M",
+                "FH",
+                "canonical_origin"
+              ],
+              "distinct_phase_completion_merges": true,
+              "plan_sha256": "acd1f559db20363f7dd9e59798ed2d0c90702e13ebe3f9e637530617e9316ac8",
+              "reject_url_rewriting": true,
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
+              "role": "consumer",
+              "schema": "v10.phase-completion-landing.v1",
+              "stage_b_reverification": true,
+              "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
             },
             "subsequent_independent_audit": {
               "finding": "incomplete_source_observation_seal_and_incomplete_pre_edit_collection_identity_check",
@@ -954,7 +977,7 @@
               "CONFORM",
               "HARDEN"
             ],
-            "plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
+            "plan_sha256": "acd1f559db20363f7dd9e59798ed2d0c90702e13ebe3f9e637530617e9316ac8",
             "portable_skip_classification": {
               "allowed_disposition": "environment_interpreter_pair_unavailable",
               "allowed_reason": "need both python3.10 and python3.12 on host",
@@ -1468,9 +1491,9 @@
           "metadata": {
             "digest_rebind": {
               "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
-              "plan_sha256": "33c8b1e89ed25b45e50467dda827fa991af269daf08e3c5ce9ff14875ecccf97",
-              "predecessor_plan_sha256": "381f3f06b74172ddc96396a04127155ff20efad3b9489e944c7fba7cc841a9a0",
-              "reason": "mechanical_roadmap_digest_rollover_for_REVIEWTRUTH_stage_a_candidate_evidence_seal_repair",
+              "plan_sha256": "bb27b30a34d78a28a6ae17b6022f8443a100bf2593a58bcb4a6103bb919f8b5c",
+              "predecessor_plan_sha256": "33c8b1e89ed25b45e50467dda827fa991af269daf08e3c5ce9ff14875ecccf97",
+              "reason": "semantic_repair_for_strict_phase_completion_producer_record",
               "repaired_digest_review_status": "unreviewed_not_approved",
               "reviewed_bundle_bytes": 130557,
               "reviewed_bundle_sha256": "9e8f9663b0679132aeabb63f99822b3a52e33356241144b7f2a7f6723c3945b3",
@@ -1492,12 +1515,28 @@
               "gemini_verdict": "AGREE",
               "grok_verdict": "AGREE",
               "instructions_sha256": "f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356",
-              "repaired_plan_sha256": "794b9340655220bd390d956c074f73ddb0f4c204c2caa186fa7bcbe10fadd0c2",
+              "repaired_plan_sha256": "bb27b30a34d78a28a6ae17b6022f8443a100bf2593a58bcb4a6103bb919f8b5c",
               "repaired_review_status": "unreviewed_not_approved",
               "reviewed_plan_sha256": "2060a7694dd95a441826a0cf77d0a273a6b840a2fc038251c18379117c505f57",
               "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "sol_verdict": "DISAGREE",
               "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
+            },
+            "completion_record_contract": {
+              "canonical_origin": "Consiliency/agent-harness",
+              "event_metadata_key": "phase_completion_landing",
+              "event_self_reference": "forbidden",
+              "phase_alias": "CONFORM",
+              "plan_sha256": "bb27b30a34d78a28a6ae17b6022f8443a100bf2593a58bcb4a6103bb919f8b5c",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "required_agree_seats": [
+                "gpt-5.6-sol",
+                "fable"
+              ],
+              "roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
+              "role": "producer",
+              "schema": "v10.phase-completion-landing.v1",
+              "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
             },
             "conform_plan_contract": {
               "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
@@ -1513,7 +1552,7 @@
               "phase_dependencies": [
                 "LEGIBLE"
               ],
-              "plan_sha256": "33c8b1e89ed25b45e50467dda827fa991af269daf08e3c5ce9ff14875ecccf97",
+              "plan_sha256": "bb27b30a34d78a28a6ae17b6022f8443a100bf2593a58bcb4a6103bb919f8b5c",
               "roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
               "test_path_patterns_count": 6,
               "test_path_patterns_sha256": "d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145"
@@ -1737,9 +1776,10 @@
           "metadata": {
             "digest_rebind": {
               "historical_dissent_verdict": "GROK_DISAGREE_SOL_AGREE_GEMINI_UNUSABLE_DEGRADED",
-              "plan_sha256": "3ffb5b466ab45943827c7beb12c49cbc32af20f94a2acf56f9e56048de8d6617",
-              "predecessor_plan_sha256": "5ef0678b579c779b10cd4bc77a4446edded716585607478230fb117c5ff1da51",
-              "reason": "mechanical_roadmap_digest_rollover_for_REVIEWTRUTH_stage_a_candidate_evidence_seal_repair",
+              "plan_sha256": "b7aab0cd60b60975359c6145fdd0b73bc9a30363bd35f747df68dccc70b84372",
+              "predecessor_plan_sha256": "3ffb5b466ab45943827c7beb12c49cbc32af20f94a2acf56f9e56048de8d6617",
+              "reason": "semantic_repair_for_strict_phase_completion_producer_record",
+              "repaired_digest_review_status": "unreviewed_not_approved",
               "reviewed_bundle_bytes": 172064,
               "reviewed_bundle_sha256": "de0338490aeb6fbf82b72a28d8a6a3205b9a79d9348990548794b6580f03fb4d",
               "reviewed_instructions_sha256": "41371fc43a293e7323265d3cd28422af266146f756b2d4c110d3f661ac034354",
@@ -1747,6 +1787,22 @@
               "reviewed_plan_sha256": "f60b9373066b9537f0ea5e78b78b2462dc535cbb04d86e1fa384a14f4bee48da",
               "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
               "roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c"
+            },
+            "completion_record_contract": {
+              "canonical_origin": "Consiliency/agent-harness",
+              "event_metadata_key": "phase_completion_landing",
+              "event_self_reference": "forbidden",
+              "phase_alias": "HARDEN",
+              "plan_sha256": "b7aab0cd60b60975359c6145fdd0b73bc9a30363bd35f747df68dccc70b84372",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "required_agree_seats": [
+                "gpt-5.6-sol",
+                "fable"
+              ],
+              "roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
+              "role": "producer",
+              "schema": "v10.phase-completion-landing.v1",
+              "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
             },
             "harden_plan_contract_record_id": "v10-HARDEN.harden-plan-contract.v1",
             "harden_plan_contract": {
@@ -1861,7 +1917,7 @@
                 "FABPUB"
               ],
               "phase_scheduler_mode": "off",
-              "plan_sha256": "3ffb5b466ab45943827c7beb12c49cbc32af20f94a2acf56f9e56048de8d6617",
+              "plan_sha256": "b7aab0cd60b60975359c6145fdd0b73bc9a30363bd35f747df68dccc70b84372",
               "pre_auth_ordering_nodeids": [
                 "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
                 "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
