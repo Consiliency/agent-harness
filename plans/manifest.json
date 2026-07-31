@@ -742,37 +742,37 @@
             },
             "digest_rebind": {
               "fresh_exact_digest_panel_required": true,
-              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT",
-              "plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
-              "predecessor_plan_sha256": "d9bd1ddb7e23ad9af217604c764942349dbbc46992faacffa6a1dfe44436d559",
-              "reason": "complete_source_observation_seal_and_exact_pre_edit_collection_identity_repair",
+              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
+              "plan_sha256": "75865a90d553f25a97ba9cc2db9fa82bcd12691a781f591acfc098496ad1db90",
+              "predecessor_plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
+              "reason": "exact_source_layout_console_script_availability_disposition_repair",
               "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 358541,
-              "reviewed_bundle_sha256": "45026434ccd799f451463023847b02bf9dcc628dae16f88770832f6d982ed429",
-              "reviewed_instructions_sha256": "2f2fe5c18974619c7006c1075cdca1756cf7b029045539ecdfae092243723fcb",
-              "reviewed_panel_sha256": "9760fc9f5d9df3e6392d76e08d1b9d1502f04bbd987c3ed9017ee6864b33962c",
-              "reviewed_plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
+              "reviewed_bundle_bytes": 430313,
+              "reviewed_bundle_sha256": "d0ba9da3ba4a6b11843f0d484f11aaaadf039f405649f0f3790579e00d5ccd7d",
+              "reviewed_instructions_sha256": "e1b9544cfd128fa1a94069bc5b64c936a194e9a7b1ac165e717b7831e982464d",
+              "reviewed_panel_sha256": "f30d7a582e54d21bc5931e8b0aee2c95285f5195fb0b31b0dfc4c023fd4e012b",
+              "reviewed_plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
               "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba"
             },
             "current_review": {
               "artifact_path": ".phase-loop/reviews/v10-reviewtruth-plan-panel.json",
-              "artifact_sha256": "9760fc9f5d9df3e6392d76e08d1b9d1502f04bbd987c3ed9017ee6864b33962c",
+              "artifact_sha256": "f30d7a582e54d21bc5931e8b0aee2c95285f5195fb0b31b0dfc4c023fd4e012b",
               "artifact_semantics": "historical_predecessor_content_at_repair_time_overwriteable_run_local_path",
-              "bundle_bytes": 358541,
-              "bundle_sha256": "45026434ccd799f451463023847b02bf9dcc628dae16f88770832f6d982ed429",
-              "fable_outcome": "absent_no_leg",
-              "finding": "missing_pre_mutation_gate_a_copied_tree_observation",
-              "finding_detail": "PC_REVIEWTRUTH_2_required_paired_source_and_Gate_A_observations_but_the_pre_SL1_chain_observed_only_source_leaving_the_48_node_four_module_and_39_4_59_102_profile_without_contemporaneous_evidence",
+              "bundle_bytes": 430313,
+              "bundle_sha256": "d0ba9da3ba4a6b11843f0d484f11aaaadf039f405649f0f3790579e00d5ccd7d",
+              "fable_outcome": "deferred",
+              "finding": "source_console_script_skip_profile_not_portable_to_normative_bare_python_commands",
+              "finding_detail": "installed_wheel_bootstrap_and_GitHub_CI_have_an_adjacent_phase_loop_console_script_but_frontmatter_fresh_clone_default_candidate_and_final_source_commands_use_bare_python3_so_test_console_script_check_smoke_can_skip_outside_the_two_previously_allowed_dispositions",
               "gemini_verdict": "AGREE",
               "grok_verdict": "AGREE",
-              "instructions_sha256": "2f2fe5c18974619c7006c1075cdca1756cf7b029045539ecdfae092243723fcb",
-              "repaired_plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
+              "instructions_sha256": "e1b9544cfd128fa1a94069bc5b64c936a194e9a7b1ac165e717b7831e982464d",
+              "repaired_plan_sha256": "75865a90d553f25a97ba9cc2db9fa82bcd12691a781f591acfc098496ad1db90",
               "repaired_review_status": "unreviewed_not_approved",
-              "reviewed_plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
+              "reviewed_plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
               "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "sol_verdict": "DISAGREE",
-              "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT"
+              "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
             },
             "subsequent_independent_audit": {
               "finding": "incomplete_source_observation_seal_and_incomplete_pre_edit_collection_identity_check",
@@ -930,7 +930,7 @@
               "CONFORM",
               "HARDEN"
             ],
-            "plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
+            "plan_sha256": "75865a90d553f25a97ba9cc2db9fa82bcd12691a781f591acfc098496ad1db90",
             "portable_skip_classification": {
               "allowed_disposition": "environment_interpreter_pair_unavailable",
               "allowed_reason": "need both python3.10 and python3.12 on host",
@@ -975,6 +975,44 @@
               "source_path": "phase-loop-runtime/tests/test_release_pin_autotrack.py",
               "source_sha256": "6b6c7f9f38bc815f37e2a3d86311867ea5a8ea907db2bad7d52fdeb0132b4d24",
               "tdd_lifecycle": "sl1_literal_red_then_green_before_tests_only_landing"
+            },
+            "console_script_availability_classification": {
+              "allowed_dispositions": [
+                "console_script_available_pass",
+                "source_layout_console_script_unavailable"
+              ],
+              "allowed_reason": "Skipped: phase-loop console script not on this interpreter",
+              "downstream_activated_red_member": false,
+              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_console_script_availability_disposition_normalizes_only_source_layout_skip",
+              "falsifier_nodeid_sha256": "f548fec9689ec46975a085dd4dd1fee250ee6f199a0d6ae970b20beeb2a41640",
+              "gate_a_normalization": false,
+              "green_requires_external_command": false,
+              "normalized_nodeid": "phase-loop-runtime/tests/test_export_schema.py::test_console_script_check_smoke",
+              "normalized_nodeid_sha256": "582d2f4aa8395d9fa1205c9c7d52ea3b6a31b2f5750357c012a5c688b028def9",
+              "package_installed_bootstrap_ci_gate_a_disposition": "console_script_available_pass_only",
+              "raw_provenance_retained": [
+                "longrepr",
+                "reason",
+                "phase",
+                "line",
+                "source_sha256",
+                "sys_executable",
+                "derived_sibling_path",
+                "sibling_exists",
+                "module_origin",
+                "CI_observation"
+              ],
+              "source_layout_predicate": "repo_owned_source_module_and_CI_absent_and_Path_sys_executable_with_name_phase_loop_exists_false",
+              "skip_line": 189,
+              "source_path": "phase-loop-runtime/tests/test_export_schema.py",
+              "source_sha256": "355d74e6bbe823ecd0091e4cdb109b491e07ac5090d1a18a18e3e4a68bee4f06",
+              "tdd_lifecycle": "sl1_literal_red_then_green_before_broad_baseline_parse"
+            },
+            "sl1_infrastructure_tdd": {
+              "downstream_activated_red_members": 0,
+              "nodeids_count": 2,
+              "nodeids_sha256": "ad528b11ad08a3989aee135fcaf6fc5449d00da8188a074c5a126712924e2758",
+              "ordered_lifecycle": "exact_pypi_RED_then_exact_console_RED_then_exact_pypi_GREEN_then_exact_console_GREEN_before_operation_6_broad_baseline_parse"
             },
             "reanchor_contract": "before_SL0_refresh_static_source_ownership_cleanroom_conftest_and_dual_observer_digest_assumptions_only_then_after_SL0_proof_run_first_five_provision_dual_materialize_freeze_source_observe_gate_a_observe_and_constant_compare_before_SL1_mutation_then_parse_both_only_after_SL1_parser_authoring",
             "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
@@ -1021,7 +1059,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-31T03:37:33Z"
+      "updated_at": "2026-07-31T04:09:16Z"
     },
     {
       "acceptance_criteria_count": null,
