@@ -1383,17 +1383,27 @@
           "metadata": {
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
-              "predecessor_plan_sha256": "784a2ece2c65f3ea6bcc83adbe558ddbb48346f4311c5a6121bea4374020344a",
-              "reason": "mechanical_roadmap_digest_rollover_for_CONFORM_canonical_oracle_correction",
+              "plan_sha256": "744e5c07694dc534945b4fb5ed4a392f9048b963b50c70d793d55135753ad676",
+              "predecessor_plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
+              "reason": "git_common_dir_default_allocator_and_post_activation_writer_generation_fence_repair",
               "reviewed_bundle_bytes": 156648,
               "reviewed_bundle_sha256": "47a449cd6302037dec60910067265757b9b08c419b4964c3a2c7389ab7682237",
               "reviewed_instructions_sha256": "d90bdadb68b9c9d2b37ffbc0e9c7e82cca5bcdc1745f3e5b3200b6cbe71c4b85",
               "reviewed_panel_sha256": "46a3543d4a50f46dc78ef9cbe24158c3bbb33c1b658239bf991c332aa671025f",
               "reviewed_plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
               "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
-              "roadmap_sha256": "fa7a81e1cadde52eddec78e2b806f3cb376c1eb58dc66a51be4c94188200436f"
+              "roadmap_sha256": "fa7a81e1cadde52eddec78e2b806f3cb376c1eb58dc66a51be4c94188200436f",
+              "supplied_latest_review_artifact_sha256": null,
+              "supplied_latest_review_artifact_status": "not_supplied_do_not_infer_from_stale_run_local_path",
+              "supplied_latest_review_findings": [
+                "normal_default_train_file_parents_split_allocator_state_under_ledger_dir_broker",
+                "exclusive_activation_lease_does_not_fence_post_activation_pre_fabpub_or_direct_run_train_writers"
+              ],
+              "supplied_latest_reviewed_mechanical_plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
+              "supplied_latest_reviewed_semantic_plan_sha256": "784a2ece2c65f3ea6bcc83adbe558ddbb48346f4311c5a6121bea4374020344a"
             },
+            "fabpub_plan_contract_payload_sha256": "1693e93548e51209464d0a2833d7323e028fd8289dccc04e4c5b764c72de54d7",
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v2",
             "fabpub_plan_contract": {
               "acceptance_criteria_count": 11,
               "activation_env": "PHASE_LOOP_TDD_EXPECT_FABPUB",
@@ -1410,7 +1420,7 @@
               "canonical_repository_identity_role": "storage_and_keying",
               "expected_commit_state_machine": "PREPARED_COMMIT_OBJECT_DURABLE_COMMITTED_HEAD_RESOLVED",
               "expected_nodeid_delta_from_current_plan": 2,
-              "expected_nodeid_delta_from_v10_fabpub_baseline": 10,
+              "expected_nodeid_delta_from_v10_fabpub_baseline": 12,
               "expected_oid_recovery": "ref_expected_finalize_ref_parent_retry_same_cas_every_other_oid_block",
               "fresh_exact_digest_panel_required": [
                 "fable",
@@ -1418,10 +1428,13 @@
                 "gemini",
                 "grok"
               ],
-              "latest_panel_plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
-              "latest_panel_record_sha256": "46a3543d4a50f46dc78ef9cbe24158c3bbb33c1b658239bf991c332aa671025f",
-              "legacy_exclusive_activation_contract": "LegacyWriterQuiescence.v1_plus_ExclusiveActivationLease.v1_held_inventory_through_route_activation",
-              "legacy_cutover_global_contract": "LegacyBrokerCutoverManifest.v2_to_LegacyBrokerCutoverTransaction.v2_to_repository_partition_receipts_to_global_ARMED",
+              "historical_panel_plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
+              "historical_panel_record_sha256": "46a3543d4a50f46dc78ef9cbe24158c3bbb33c1b658239bf991c332aa671025f",
+              "latest_review_artifact_sha256": null,
+              "latest_review_artifact_status": "not_supplied_do_not_infer_from_stale_run_local_path",
+              "latest_reviewed_plan_sha256": "784a2ece2c65f3ea6bcc83adbe558ddbb48346f4311c5a6121bea4374020344a",
+              "legacy_exclusive_activation_contract": "quiescence_then_WriterGenerationLatch_LEGACY_OPEN_DRAINING_ACTIVE_with_per_write_effect_revalidation_and_irreversible_ACTIVE",
+              "legacy_cutover_global_contract": "LegacyBrokerCutoverManifest.v2_to_LegacyBrokerCutoverTransaction.v2_to_repository_partition_receipts_to_global_ARMED_then_WriterGenerationLatch_ACTIVE",
               "legacy_cutover_nodeids": [
                 "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_global_legacy_cutover_partitions_multiple_repositories_crash_idempotently_before_activation",
                 "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_conflict_collision_and_idempotent_resume_before_activation",
@@ -1434,8 +1447,8 @@
               ],
               "legacy_cutover_nodeids_count": 8,
               "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
-              "legacy_post_armed_onboarding_contract": "serialized_authenticated_zero_legacy_partition_receipt_before_first_admission",
-              "legacy_store_cutover_contract": "writer_quiescence_exclusive_activation_exact_serialized_repo_preimage_plus_resolution_context_global_inventory_partition_snapshot_archive_tombstone_receipts_armed_before_any_canonical_route",
+              "legacy_post_armed_onboarding_contract": "after_ARMED_and_ACTIVE_serialized_authenticated_zero_legacy_partition_receipt_before_first_admission",
+              "legacy_store_cutover_contract": "complete_legacy_root_set_quiescence_generation_drain_exact_serialized_repo_preimage_resolution_context_git_common_target_global_inventory_partition_snapshot_archive_root_leaf_tombstones_receipts_ARMED_ACTIVE_before_route",
               "lifecycle": "fabpub_tdd_candidate_main.v1",
               "owned_paths": [
                 "CHANGELOG.md",
@@ -1469,16 +1482,29 @@
                 "PROOFGATE",
                 "CONFORM"
               ],
-              "plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
-              "prior_manifest_plan_sha256": "a3c165ce36b85f137b0fedaa6bfa54b4713630444dd31b93e1831e6f53055d8a",
+              "plan_sha256": "744e5c07694dc534945b4fb5ed4a392f9048b963b50c70d793d55135753ad676",
+              "prior_manifest_plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
+              "repository_allocator_namespace_contract": "resolved_git_common_dir/phase-loop-fabpub-broker-v1/repositories/canonical_repository_identity",
               "repository_identity_contract": "canonical_git_common_dir_and_object_format_full_sha256",
               "roadmap_sha256": "fa7a81e1cadde52eddec78e2b806f3cb376c1eb58dc66a51be4c94188200436f",
+              "routing_store_selection_contract": "BrokerRequest.adapter_worktree_derives_git_common_namespace_and_must_match_BrokerRequest.repo_before_store_construction",
               "shared_allocator_nodeids": [
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_allocator_shared_repository_epoch_across_linked_worktrees_and_train_roots"
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_allocator_shared_repository_epoch_across_linked_worktrees_and_train_roots",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_default_cli_train_roots_share_git_common_repository_allocator_without_root_injection"
               ],
-              "shared_allocator_store_contract": "one_repository_store_under_train_independent_broker_root_after_global_armed_legacy_cutover",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "shared_allocator_store_contract": "one_repository_store_under_git_common_dir_with_no_production_allocator_root_injection_after_ARMED_ACTIVE_cutover",
               "shared_start_recovery": "unsealed_owner_promotes_to_permanent_OUTCOME_AMBIGUOUS_BLOCKED",
+              "train_local_coordinator_contract": "ledger_dir_broker_train_key_is_transaction_checkpoint_only_never_allocator_authority",
               "train_local_adapter_started_authority": false,
+              "writer_generation_fence_nodeids": [
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_post_activation_writer_generation_fence_blocks_direct_and_old_cli_restarts"
+              ],
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5",
+              "writer_generation_failure_code": "legacy_writer_after_fabpub_activation",
+              "writer_generation_rollback_contract": "rollback_only_from_pre_mutation_DRAINING_ACTIVE_irreversible",
               "adapter_worktree_role": "validated_provider_execution_location_only",
               "test_paths": [
                 "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
