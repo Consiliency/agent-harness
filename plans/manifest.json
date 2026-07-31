@@ -743,36 +743,46 @@
             "digest_rebind": {
               "fresh_exact_digest_panel_required": true,
               "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT",
-              "plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
-              "predecessor_plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
-              "reason": "sl0_sl1_authority_cycle_and_ratification_proof_repair",
+              "plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
+              "predecessor_plan_sha256": "d9bd1ddb7e23ad9af217604c764942349dbbc46992faacffa6a1dfe44436d559",
+              "reason": "complete_source_observation_seal_and_exact_pre_edit_collection_identity_repair",
               "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 342446,
-              "reviewed_bundle_sha256": "5f2cb7273caa7e760dfb43fcb8d10e492c6363034254f0c23a94fd3e64a979ef",
-              "reviewed_instructions_sha256": "9862f27d04ade47c3480342284ee1b5046e6261f9ac016c20f416eae52e13db0",
-              "reviewed_panel_sha256": "aa2e270f72c9dcfe190b17d80b6108b58346fbe30313e795b09153ac9c3366c1",
-              "reviewed_plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
+              "reviewed_bundle_bytes": 358541,
+              "reviewed_bundle_sha256": "45026434ccd799f451463023847b02bf9dcc628dae16f88770832f6d982ed429",
+              "reviewed_instructions_sha256": "2f2fe5c18974619c7006c1075cdca1756cf7b029045539ecdfae092243723fcb",
+              "reviewed_panel_sha256": "9760fc9f5d9df3e6392d76e08d1b9d1502f04bbd987c3ed9017ee6864b33962c",
+              "reviewed_plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
               "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba"
             },
             "current_review": {
               "artifact_path": ".phase-loop/reviews/v10-reviewtruth-plan-panel.json",
-              "artifact_sha256": "aa2e270f72c9dcfe190b17d80b6108b58346fbe30313e795b09153ac9c3366c1",
+              "artifact_sha256": "9760fc9f5d9df3e6392d76e08d1b9d1502f04bbd987c3ed9017ee6864b33962c",
               "artifact_semantics": "historical_predecessor_content_at_repair_time_overwriteable_run_local_path",
-              "bundle_bytes": 342446,
-              "bundle_sha256": "5f2cb7273caa7e760dfb43fcb8d10e492c6363034254f0c23a94fd3e64a979ef",
+              "bundle_bytes": 358541,
+              "bundle_sha256": "45026434ccd799f451463023847b02bf9dcc628dae16f88770832f6d982ed429",
               "fable_outcome": "absent_no_leg",
-              "finding": "sl0_sl1_verifier_authority_cycle",
-              "finding_detail": "SL0_completion_depended_on_SL1_owned_verifier_and_pre_SL0_broad_parse_depended_on_future_parser",
+              "finding": "missing_pre_mutation_gate_a_copied_tree_observation",
+              "finding_detail": "PC_REVIEWTRUTH_2_required_paired_source_and_Gate_A_observations_but_the_pre_SL1_chain_observed_only_source_leaving_the_48_node_four_module_and_39_4_59_102_profile_without_contemporaneous_evidence",
               "gemini_verdict": "AGREE",
               "grok_verdict": "AGREE",
-              "instructions_sha256": "9862f27d04ade47c3480342284ee1b5046e6261f9ac016c20f416eae52e13db0",
-              "repaired_plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
+              "instructions_sha256": "2f2fe5c18974619c7006c1075cdca1756cf7b029045539ecdfae092243723fcb",
+              "repaired_plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
               "repaired_review_status": "unreviewed_not_approved",
-              "reviewed_plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
+              "reviewed_plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
               "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "sol_verdict": "DISAGREE",
               "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT"
+            },
+            "subsequent_independent_audit": {
+              "finding": "incomplete_source_observation_seal_and_incomplete_pre_edit_collection_identity_check",
+              "finding_detail": "Gate_A_did_not_validate_and_freeze_the_complete_source_observation_before_and_after_execution_and_the_fifth_command_checked_only_omitted_count_modules_and_skip_profile_instead_of_exact_source_Gate_full_selected_marker_and_omission_identities",
+              "historical_panel_artifact_sha256": "9760fc9f5d9df3e6392d76e08d1b9d1502f04bbd987c3ed9017ee6864b33962c",
+              "historical_panel_status": "predecessor_dissent_only_did_not_review_follow_up_repair",
+              "predecessor_plan_sha256": "d9bd1ddb7e23ad9af217604c764942349dbbc46992faacffa6a1dfe44436d559",
+              "repaired_plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
+              "repair_review_status": "unreviewed_not_approved",
+              "source_observer_preserved_byte_for_byte": true
             },
             "sl0_coordinator_proof": {
               "authority": "existing_git_gh_jq_awk_sha256sum_only_before_sl1",
@@ -798,6 +808,86 @@
               "restricted_source_count": 39,
               "restricted_source_sha256": "59dfdd0c70679e8e2356b8dcffbb78faa795c5caa5025ce949e96522923023ea",
               "tuple_shape": "nodeid_phase_reason"
+            },
+            "gate_a_preimplementation_observation": {
+              "collection_identity_derivation": {
+                "git_head": "cee6cdc25f753a0f096444ee6f86fe724ef607e8",
+                "nodeid_mapping": "embedded_observer_canonical_repo_relative_mapping",
+                "profile": "pytest_-q_-p_no_cacheprovider_-m_not_dotfiles_integration_--collect-only",
+                "provenance": "exact_git_archive_locked_local_wheel_source_layout_and_private_tests_only_installed_wheel_gate_a_collection",
+                "python": "uv_managed_3.12",
+                "uv_version": "0.10.9"
+              },
+              "complete_source_observation_contract": {
+                "artifact_names": [
+                  "broad.xml",
+                  "full-nodeids.txt",
+                  "legitimate-skips.json",
+                  "marker-deselected-nodeids.txt",
+                  "plugin-events.json",
+                  "selected-nodeids.txt",
+                  "stderr.txt",
+                  "stdout.txt"
+                ],
+                "attestation_file": "attestation.json",
+                "gate_a_artifact": "source-observation-manifest.json",
+                "manifest_rechecked_byte_identical_after_gate_a": true,
+                "required_upstream_bindings": [
+                  "source_observer",
+                  "plan",
+                  "roadmap",
+                  "provisioning"
+                ],
+                "validation": "exact_file_set_bytes_sha256_private_canonical_paths_and_modes"
+              },
+              "copied_tests_source": "git_archive_HEAD_phase-loop-runtime/tests",
+              "copied_tree_path": "$REVIEWTRUTH_RUNNER_ROOT/gate-a-preimplementation-input/standalone/phase-loop-runtime/tests",
+              "first_five_pre_mutation_operations": [
+                "provision",
+                "dual_observer_materialize",
+                "provision_freeze",
+                "source_observe",
+                "installed_wheel_gate_a_observe_and_constant_compare"
+              ],
+              "gate_a_observation_path": "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-preimplementation",
+              "gate_a_observer_bytes": 45116,
+              "gate_a_observer_path": "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-gate-a-baseline-observer.py",
+              "gate_a_observer_sha256": "d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9",
+              "gate_a_runtime_import": "exact_isolated_installed_wheel_not_source_PYTHONPATH",
+              "exact_collection_profile": {
+                "gate_a_full_count": 4203,
+                "gate_a_full_sha256": "d2047b8e53d19310a428b6728d46f47901b5a225d1ac6f4ff45abf566019b4a7",
+                "gate_a_marker_deselected_count": 601,
+                "gate_a_marker_deselected_sha256": "76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907",
+                "gate_a_selected_count": 3602,
+                "gate_a_selected_sha256": "d57ade2c1a0a0d5292191efaca00b0fa18ba2b7e7b27c352f94dc3d9416bb803",
+                "omitted_full_count": 48,
+                "omitted_full_equals_omitted_selected": true,
+                "omitted_full_sha256": "da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527",
+                "omitted_selected_count": 48,
+                "omitted_selected_sha256": "da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527",
+                "source_full_count": 4251,
+                "source_full_sha256": "e25173c29fb2fc1964bf052cfbf8613160a6cce87f153dd513d6244bdfd37d24",
+                "source_marker_deselected_count": 601,
+                "source_marker_deselected_sha256": "76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907",
+                "source_selected_count": 3650,
+                "source_selected_sha256": "f4139af6cc291ee5867cf04807cdca25f5c39f4dd7f212c83cff4bfe75316b87"
+              },
+              "intentional_omissions_proved_at": [
+                "standalone_root",
+                "tests_parents_3_detector_root"
+              ],
+              "later_parser_consumes_both_observation_directories": true,
+              "later_parser_operation": 6,
+              "no_future_sl5_code_or_post_edit_parser_dependency": true,
+              "pair_profile_constant_check_before_first_sl1_edit": true,
+              "planning_constants_are_independent_second_witness": true,
+              "raw_collection_and_runtime_skip_reasons_separate": true,
+              "source_observation_path": "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-baseline-preimplementation",
+              "source_observer_bytes": 39420,
+              "source_observer_path": "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py",
+              "source_observer_sha256": "841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d",
+              "worktree_contract": "empty_all_untracked_status_and_identical_HEAD_HEAD_tree_index_before_and_after"
             },
             "gate_a_terminal_attestation_contract": {
               "attester_consumer_lane": "SL-6",
@@ -840,7 +930,7 @@
               "CONFORM",
               "HARDEN"
             ],
-            "plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
+            "plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
             "portable_skip_classification": {
               "allowed_disposition": "environment_interpreter_pair_unavailable",
               "allowed_reason": "need both python3.10 and python3.12 on host",
@@ -886,7 +976,7 @@
               "source_sha256": "6b6c7f9f38bc815f37e2a3d86311867ea5a8ea907db2bad7d52fdeb0132b4d24",
               "tdd_lifecycle": "sl1_literal_red_then_green_before_tests_only_landing"
             },
-            "reanchor_contract": "before_SL0_refresh_static_source_ownership_anchor_and_digest_assumptions_only_then_after_SL0_proof_run_provision_materialize_freeze_observe_before_SL1_mutation_and_parse_only_after_SL1_parser_authoring",
+            "reanchor_contract": "before_SL0_refresh_static_source_ownership_cleanroom_conftest_and_dual_observer_digest_assumptions_only_then_after_SL0_proof_run_first_five_provision_dual_materialize_freeze_source_observe_gate_a_observe_and_constant_compare_before_SL1_mutation_then_parse_both_only_after_SL1_parser_authoring",
             "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
             "seat_outcome_degraded_roundtrip": {
               "default_serialization": "omit_degraded_when_false_preserve_exact_legacy_bytes",
@@ -931,7 +1021,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-31T02:48:06Z"
+      "updated_at": "2026-07-31T03:37:33Z"
     },
     {
       "acceptance_criteria_count": null,

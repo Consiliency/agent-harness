@@ -179,27 +179,89 @@ cycle: SL0-T3 blocked SL-1 on a verifier and wrapper first owned and authored by
 pre-SL-0 provision/observe/broad-baseline wording also required parsing by that absent future
 parser. This repair gives SL-0 the exact coordinator proof below using only pre-existing
 `git`, `gh`, `jq`, `awk`, and `sha256sum` surfaces plus its landed record. That proof alone can
-complete SL-0 and unblock SL-1. After SL-0, the first four bootstrap operations provision and
-observe the untouched source before any SL-1 mutation; SL-1 then authors the parser, parses those
-sealed artifacts, and retrospectively and independently re-verifies every SL-0 fact before SL-2
+complete SL-0 and unblock SL-1. After SL-0, the complete pre-edit bootstrap operations provision,
+materialize both observers, freeze provisioning, and observe the untouched source plus exact
+installed-wheel Gate-A copy before any SL-1 mutation; SL-1 then authors the parser, parses both
+sealed observations, and retrospectively and independently re-verifies every SL-0 fact before SL-2
 through SL-5. The digest identifies historical predecessor evidence at repair time; the run-local
 path is overwriteable and is not claimed to remain current or immutable after the next panel run.
 The changed plan digest is unreviewed and not approved and requires a fresh exact-digest four-seat
 panel before SL-0.
 
+At repair time, the overwriteable run-local panel path contained historical predecessor content
+with independently computed SHA-256 `9760fc9f5d9df3e6392d76e08d1b9d1502f04bbd987c3ed9017ee6864b33962c`.
+That content reviewed plan SHA-256 `864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1`,
+roadmap SHA-256 `a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba`,
+bundle SHA-256 `45026434ccd799f451463023847b02bf9dcc628dae16f88770832f6d982ed429`
+(`358541` bytes), and instructions SHA-256
+`2f2fe5c18974619c7006c1075cdca1756cf7b029045539ecdfae092243723fcb`. Grok 4.5 and Gemini
+3.6 Flash returned usable `AGREE`; GPT-5.6 Sol returned usable `DISAGREE`; the artifact contains no
+Fable leg, so it authorizes nothing. Sol proved that PC-REVIEWTRUTH-2 required paired source-layout
+and Gate-A copied-tree observations before any SL-1 edit, while the executable pre-mutation chain
+observed only source; the exact four-module/48-node collection boundary and `39 + 4 + 59 = 102`
+skip profile therefore lacked contemporaneous Gate-A evidence and could only have been supplied by
+forbidden historical constants or post-edit reconstruction. This repair preserves the exact
+`39420`-byte source observer and adds a separately embedded `45116`-byte Gate-A observer at SHA-256
+`d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9`. A second payload is the
+smaller sound boundary because copied-tree Gate A uses the installed wheel, tests-only
+`PYTHONPATH`, external standalone root, and absent sibling/root profile rather than the source
+observer's source-layout environment. After SL-0, the first five operational commands provision,
+materialize both exact observers, freeze provisioning, observe source, and observe the private
+committed-tests-only Gate-A copy before any SL-1 edit. The fifth command immediately compares the
+paired observation against the independently planned four-module/48-node and `39 + 4 + 59 = 102`
+constants and aborts on mismatch. Only after the literal tests-first transition does the newly
+authored SL-1 parser independently consume both sealed directories and retrospectively re-verify
+the already-proved SL-0 facts. The content digest above is historical predecessor evidence at
+repair time; the path is not claimed to remain current or immutable after a later review rewrites
+it. The changed plan digest is unreviewed and not approved and requires a fresh exact-digest
+four-seat panel before SL-0.
+
+An independent follow-up audit of repaired plan SHA-256
+`d9bd1ddb7e23ad9af217604c764942349dbbc46992faacffa6a1dfe44436d559` found two fail-closed
+gaps in that pre-edit pair. The Gate-A observer did not validate or freeze the complete already
+sealed source observation, and the fifth operational command did not enforce the exact source,
+Gate-A, marker, and omitted-nodeid identities promised by PC-REVIEWTRUTH-2. This repair preserves
+the source observer byte-for-byte at `39420` bytes and SHA-256
+`841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d`. It extends only the Gate-A
+observer so that, before pairing, it validates the exact complete source artifact set, byte counts,
+SHA-256 values, private canonical paths and modes, and source-observer/plan/roadmap/provisioning
+bindings; freezes a canonical complete source-observation manifest as a Gate-A artifact; and
+requires the manifest plus all four bound files to remain byte-identical after Gate A. The repaired
+Gate-A payload is `45116` bytes at SHA-256
+`d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9`.
+
+The collection constants were mechanically reproduced from exact committed Git `HEAD`
+`cee6cdc25f753a0f096444ee6f86fe724ef607e8`: archive the committed tree, build and install its
+exact wheel in a uv `0.10.9` managed Python 3.12 environment from the frozen project, and collect
+once with `-q -p no:cacheprovider -m "not dotfiles_integration" --collect-only` in source-layout
+mode and once from the private external committed-tests-only Gate-A layout with tests-only
+`PYTHONPATH` and the installed wheel. Both passes used the embedded observer's canonical nodeid
+mapping. Sorted-LF hashing produced source full `4251` /
+`e25173c29fb2fc1964bf052cfbf8613160a6cce87f153dd513d6244bdfd37d24`, source selected `3650` /
+`f4139af6cc291ee5867cf04807cdca25f5c39f4dd7f212c83cff4bfe75316b87`, Gate-A full `4203` /
+`d2047b8e53d19310a428b6728d46f47901b5a225d1ac6f4ff45abf566019b4a7`, Gate-A selected `3602` /
+`d57ade2c1a0a0d5292191efaca00b0fa18ba2b7e7b27c352f94dc3d9416bb803`, and both marker-deselected
+sets `601` / `76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907`. Both full and selected
+source-minus-Gate-A sets are the same exact `48` nodeids at sorted-LF SHA-256
+`da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527`. The fifth command now
+requires every one of those identities before the existing four-module and `39 + 4 + 59 = 102`
+checks. The `9760fc9f...` panel content remains historical predecessor dissent only; it did not
+review or approve this follow-up repair.
+
 REVIEWTRUTH must begin only from an exact fetched canonical base containing the two-parent
 CONFORM and HARDEN landings. Before SL-0, the coordinator refreshes only static source, ownership,
-owned-path, observer-byte, plan, roadmap, lock, and implementation-anchor assumptions against that
-fetched base. It does not provision the external environment, execute the bootstrap observer, or
-claim broad-baseline parser evidence before SL-0. Any changed owned-path byte or invalidated static
-anchor requires plan repair and a fresh exact-digest panel; no predecessor exact-head evidence may
-be reused. After the independent SL-0 coordinator proof passes and before any SL-1-owned file is
-mutated, SL-1 creates a fresh external runner root and executes provision, materialize,
-provision-freeze, and raw observation on that exact ratified canonical-main tip. Broad-baseline
-parsing occurs only after SL-1 authors the parser and its literal tests-first contract. This static
-re-anchoring occurs before the still-unresolved `agent-harness#398` human gate, so that gate cannot
-block CONFORM or HARDEN; all executable baseline observation remains correctly downstream of the
-gate.
+owned-path, both embedded-observer-byte, plan, roadmap, lock, clean-room-script/conftest, and
+implementation-anchor assumptions against that fetched base. It does not provision the external
+environment, execute either observer, or claim broad-baseline parser evidence before SL-0. Any
+changed owned-path byte or invalidated static anchor requires plan repair and a fresh exact-digest
+panel; no predecessor exact-head evidence may be reused. After the independent SL-0 coordinator
+proof passes and before any SL-1-owned file is mutated, SL-1 creates a fresh external runner root
+and executes provision, dual materialization, provision-freeze, source observation, and copied-tree
+Gate-A observation on that exact ratified canonical-main tip. Broad-baseline parsing occurs only
+after SL-1 authors the parser and its literal tests-first contract, and consumes both observations.
+This static re-anchoring occurs before the still-unresolved `agent-harness#398` human gate, so that
+gate cannot block CONFORM or HARDEN; the complete executable provision/paired-observe chain remains
+correctly downstream of the gate.
 
 Current implementation anchors were rechecked rather than copied from drifted roadmap line references: `_render_leg_prompt` is at `panel_invoker.py:1065`; the TUI-policy exclusion and native-request attach are at `panel_invoker.py:4205-4232`; `_default_train_review` is at `train_runner.py:2006`; the count-only train-resume short circuit and ledger write are at `train_runner.py:2911-2957`; the legacy durable fields are at `train_ledger.py:166-180`; the legacy `leg.text.strip()` governed finding branch is at `governed_review.py:137`; and the separate governed pre-merge threshold is `_MIN_USABLE_REVIEWERS` at `governed_premerge.py:57`, consumed at `governed_premerge.py:405`.
 
@@ -220,19 +282,23 @@ The native-fill seam was also rechecked directly. `SeatOutcomeRecord` already do
 
 - [ ] PC-REVIEWTRUTH-0 — The `agent-harness#398` capability disposition is stated in `docs/research/reviewtruth-leg-capability-ratification.md`, explicitly maintainer-ratified, merged separately before the tests-only landing, and binding on every later posture-assuming change. General roadmap execution authorization and panel approval are non-substitutes. The record contains exactly one `REVIEWTRUTH_CAPABILITY_RATIFICATION_JSON` envelope with the strict keys `schema`, `issue`, `disposition_id`, `disposition_summary`, `real_tree_arbitrary_execution`, `ratification_comment_id`, `ratification_comment_sha256`, and `ratifier_login`; the schema is `reviewtruth.capability-ratification.v1`, the issue is `Consiliency/agent-harness#398`, the disposition ID is a nonempty lowercase identifier, the summary is nonempty, and real-tree arbitrary execution is exactly `forbidden`. SL0-T3 runs the frozen coordinator proof in `## Verification` using only the already-present `git`, `gh`, `jq`, `awk`, and `sha256sum` tools plus the merged record. It fetches canonical `origin/main`; rejects shallow, grafted, or replacement-ref history; proves the ratification comment body digest and exact `REVIEWTRUTH-RATIFY-V1 disposition_id=<id> real_tree_arbitrary_execution=forbidden` token; proves the comment author still has GitHub `admin` or `maintain` repository permission; requires both the comment's `.created_at` and `.updated_at` to be no later than the PR `.merged_at`; queries the effective `main` branch rules at proof time, canonicalizes the complete response as sorted compact JSON plus terminal LF, requires at least one effective `pull_request` rule, and records its SHA-256 separately from merge topology; derives exactly one server-recorded merged PR whose merge commit is the record introduction commit; requires exactly two parents with the PR head as second parent; requires both the PR file list and first-parent landing diff to contain only the record; proves the record is unchanged and reachable from fetched canonical `main`; and emits canonical `reviewtruth.sl0-coordinator-proof.v1` JSON with `branch_rules_sha256`, `effective_pull_request_rule=true`, both comment timestamps, and the distinct two-parent landing fields. That successful command is the sole authority needed to complete SL-0 and unblock SL-1. No future wrapper, chronology parser, provisioned environment, raw baseline observation, or manual exception participates in that decision. After SL-1 lands, its chronology verifier must independently repeat all of those checks from fresh GitHub and Git metadata, require the fresh branch-rules digest and effective-PR-rule boolean to equal the retained SL0-T3 proof, and gate SL-2 through SL-5; that retrospective check cannot retroactively become SL-0's authority.
 - [ ] PC-REVIEWTRUTH-1 — Chronology has three non-substitutable proof moments. First, the existing-tool SL-0 coordinator proof completes the ratification lane and alone unblocks SL-1. Second, the SL-1-owned pre-implementation mode can pass only after the separate tests-only landing by retrospectively re-verifying every SL-0 fact, then proving disposition ancestry, distinct PR/head identity, PANELLED RED evidence, allowed test-only paths, and no production change; only that mode unblocks SL-2 through SL-5. Third, final mode runs only after the separately merged SL-2-through-SL-5 implementation PR and additionally requires a two-parent implementation landing whose first parent already contains the disposition and tests-only landings, a distinct implementation PR/head, no SL-1-owned path in `implementation^1..implementation^2` or the implementation PR range, and no SL-1 tests-only commit carried on the implementation branch. Same-branch, squash, rebase, direct-push, shallow, grafted, replacement-ref, or tests-in-range history fails the applicable proof without creating a dependency back from SL-0 to SL-1.
-- [ ] PC-REVIEWTRUTH-2 — Broad compatibility accounting is independent from phase-node accounting, separates marker deselections from skips, and begins with a contemporaneous observation rather than retroactive inference. Only after the exact SL-0 coordinator proof passes, and before any SL-1-owned file is edited, the coordinator supplies `REVIEWTRUTH_RUNNER_ROOT` as a new canonical absolute path outside the exact git toplevel and `REVIEWTRUTH_UV` as a canonical absolute executable path. Execute the first four operational commands below in order before mutation: provision the isolated external environment, materialize the exact embedded observer, freeze provisioning with that environment's exact interpreter, and run the one-process observation. SL-1 then authors the literal exact-PyPI falsifier RED, authors only the parser/conftest contract needed for its GREEN transition, and only afterward executes the fifth operational command to parse the already-sealed result. The parser cannot be required before it exists and cannot authorize SL-0. The runner root and every non-venv bootstrap boundary must be newly created, owned by the effective UID, private (`0700` directories and `0600`/`0700` files), canonical, non-symlinked, and disjoint from the worktree; the only permitted internal symlink is the venv's interpreter link whose real target must remain beneath the runner root's uv-managed Python directory. No bootstrap path may be covered by a Git status allowlist.
+- [ ] PC-REVIEWTRUTH-2 — Broad compatibility accounting is independent from phase-node accounting, separates marker deselections from skips, and begins with paired contemporaneous observations rather than retroactive inference. Only after the exact SL-0 coordinator proof passes, and before any SL-1-owned file is edited, the coordinator supplies `REVIEWTRUTH_RUNNER_ROOT` as a new canonical absolute path outside the exact git toplevel and `REVIEWTRUTH_UV` as a canonical absolute executable path. Execute the first five operational commands below in order before mutation: provision the isolated external environment, materialize both exact embedded observers in one write-once bootstrap operation, freeze provisioning with that environment's exact interpreter, run the one-process source-layout observation, and run the one-process installed-wheel Gate-A copied-tree observation. Before Gate-A pytest starts, that fifth command must independently validate the complete sealed source observation and exact source-observer/plan/roadmap/provisioning bindings, freeze its deterministic manifest, and after pytest require the complete manifest and bound bytes to be identical. It must then seal `$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-preimplementation` and immediately require its independently derived exact source/Gate-A full and selected identities, marker identities, identical full/selected 48-node omission identity, four-module boundary, and `39 + 4 + 59 = 102` tuple profile to equal the planning-author constants before any SL-1 edit. SL-1 then authors the literal exact-PyPI falsifier RED, authors only the parser/conftest contract needed for its GREEN transition, and only afterward executes the sixth operational command to parse both already-sealed results. The parser cannot be required before it exists and cannot authorize SL-0. The runner root and every non-venv bootstrap boundary must be newly created, owned by the effective UID, private (`0700` directories and `0600`/`0700` files), canonical, non-symlinked, and disjoint from the worktree; the only permitted internal symlink is the venv's interpreter link whose real target must remain beneath the runner root's uv-managed Python directory. No bootstrap path may be covered by a Git status allowlist.
 
   `phase-loop-runtime/uv.lock` is a plan-authoring/bootstrap prerequisite at exact SHA-256 `b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce`. It must already be a regular tracked blob on canonical `main` before SL-0 dispatch, remain byte-identical through the SL-1 observation, and appear exactly once in both `git ls-tree -r HEAD -- phase-loop-runtime` and the `git archive HEAD:phase-loop-runtime` source. The plan/lock/manifest prerequisite landing precedes and is separate from the later `agent-harness#398` disposition, tests-only, implementation, and closeout landings. The lock is excluded from every REVIEWTRUTH lane's owned files: a later tests, implementation, or closeout edit cannot supply, regenerate, or amend it and cannot retroactively redefine the untouched baseline.
 
   Provisioning runs beneath `env -i`, exports HOME, TMPDIR, uv cache, and uv-managed-Python storage only under the runner root, archives the exact committed `phase-loop-runtime` tree — including that exact lock blob — to an external source directory, builds the exact local wheel from that copy, installs the lockfile-resolved runtime and `visual` dependencies with `uv sync --frozen --no-install-project`, then installs that exact wheel with `--no-deps` and the repository's explicit `pytest` test dependency under strict uv checks in the new external venv. This is the repository's established full-suite CI dependency shape; the checkout has no root `pyproject.toml`, while `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, and `.github/workflows/test.yml` are the grounded package/lock/test sources. The provisioning freeze must import at least `pytest`, `pydantic`, `consiliency_contract`, `PIL`, and `phase_loop_runtime`, enumerate every installed distribution, verify every hashed installed `RECORD` member, and record the exact uv executable/version/digest, uv-managed interpreter and `pyvenv.cfg`, package inventory, external source manifest, wheel members/digest/RECORD, installed distribution metadata/RECORD, `sys.path`, required module paths/digests, and entry-point inventory. Every recorded digest must match the bytes it describes, every required field must be present, and the same-run provision/observe chain must remain internally consistent. The source manifest independently records every committed runtime path/blob/file digest plus `pyproject_sha256` and `uv_lock_sha256`; absence of the archive lock fails the freeze, repo/archive substitution fails byte equality, and the later parser requires the recorded lock digest to equal the exact plan-bound digest. It also rejects `include-system-site-packages`, enabled user site, a user/system `site-packages` or `dist-packages` path outside the venv, a distribution outside the venv, repo-owned source or local-wheel drift, a tampered/self-inconsistent installed `RECORD`, or any missing collected-suite import before observation. Pytest/pluggy distribution versions, absolute module/distribution paths, and module/file digests describe this observed environment only; they are mandatory provenance and diagnostics, not cross-environment semantic equality keys.
 
-  Materialize the exact embedded bootstrap observer bytes only at `$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py`, require SHA-256 `841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d`, and run both observer modes with `$REVIEWTRUTH_RUNNER_ROOT/venv/bin/python`, never a bare system interpreter. Each mode starts beneath `env -i` and requires the complete initial environment to equal the exact nine-key allowlist `HOME`, `PATH`, `LANG`, `LC_ALL`, `PYTHONNOUSERSITE`, `PYTHONDONTWRITEBYTECODE`, `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, `PYTHONPATH`, and `TMPDIR` with the frozen external values in the command; this rejects ambient `PYTEST_ADDOPTS`, `PYTEST_PLUGINS`, every `PHASE_LOOP_*` selector, `CI`, user/system-site fallback, bytecode/cache writes into the worktree, and every unlisted process key rather than merely failing to record them. Provision-freeze writes one canonical file at `$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-bootstrap-provisioning.json`; observation requires and rechecks that exact file before invoking one GREEN pytest process with exact argv `phase-loop-runtime/tests -q -m "not dotfiles_integration" -p no:cacheprovider --junitxml=<external write-once observation>/broad.xml`. Its try-first hookwrapper records the complete canonical repo-relative item set before built-in marker selection and the selected item set after selection in that same process; its `pytest_deselected`, runtime-report, and collection-report hooks contemporaneously record the exact deselection multiset, each item's marker names, and legitimate item/module skip tuples and reasons. Every provisioning/materialization/freeze/observation snapshot requires empty `git status --porcelain=v1 -z --untracked-files=all` before and after and byte-identical HEAD, HEAD tree, and index tree; no relative or in-worktree bootstrap output is accepted.
+  Materialize the source bootstrap observer's exact `39420` bytes only at `$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py`, require SHA-256 `841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d`, and in the same write-once operation materialize the dedicated Gate-A observer's exact `45116` bytes only at `$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-gate-a-baseline-observer.py`, requiring SHA-256 `d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9`. Run all modes with `$REVIEWTRUTH_RUNNER_ROOT/venv/bin/python`, never a bare system interpreter. Each mode starts beneath `env -i` and requires the complete initial environment to equal the exact nine-key allowlist `HOME`, `PATH`, `LANG`, `LC_ALL`, `PYTHONNOUSERSITE`, `PYTHONDONTWRITEBYTECODE`, `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, `PYTHONPATH`, and `TMPDIR` with the mode-specific frozen external values in the commands; this rejects ambient `PYTEST_ADDOPTS`, `PYTEST_PLUGINS`, every `PHASE_LOOP_*` selector, `CI`, user/system-site fallback, bytecode/cache writes into the worktree, and every unlisted process key rather than merely failing to record them. Provision-freeze writes one canonical file at `$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-bootstrap-provisioning.json`; source observation requires and rechecks that exact file before invoking one GREEN pytest process with exact argv `phase-loop-runtime/tests -q -m "not dotfiles_integration" -p no:cacheprovider --junitxml=<external write-once source observation>/broad.xml`. Its try-first hookwrapper records the complete canonical repo-relative item set before built-in marker selection and the selected item set after selection in that same process; its `pytest_deselected`, runtime-report, and collection-report hooks contemporaneously record the exact deselection multiset, each item's marker names, and legitimate item/module skip tuples and reasons. Every provisioning/materialization/freeze/source-observation/Gate-A-observation snapshot requires empty `git status --porcelain=v1 -z --untracked-files=all` before and after and byte-identical HEAD, HEAD tree, and index tree; no relative or in-worktree bootstrap output is accepted.
 
   The same process attests the complete post-pytest environment, not a hand-picked subset. Suite initialization may add only `PHASE_LOOP_PROFILE_PLUGINS=phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands` and `PHASE_LOOP_SKILL_SOURCE_PLUGINS=phase_loop_runtime.skill_sources_plugin:register_skill_sources`; `PHASE_LOOP_RUNNER_REPO_ROOT`, `PHASE_LOOP_CLAUDE_ROUTE`, `CI`, `PHASE_LOOP_REVIEWTRUTH_POST_PARSER_COLLECTION`, `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH`, and `PHASE_LOOP_SKIP_GATE_A_SUITE` must remain absent. Because the isolated environment installs the exact local wheel, both application entry-point groups must contain exactly the wheel's one `dotfiles` entry and no ambient distribution; source-mode opt-ins and installed entry points must deduplicate to exactly one profile registrar and one skill-source provider. Their loaded module/callable source files must live beneath `phase-loop-runtime/src/phase_loop_runtime/`, their repo-relative paths and source digests remain semantic equality keys, their distribution metadata/RECORD must live beneath the external venv, and the provider's complete harness-to-root output is frozen. Any extra registrar/provider, entry point, distribution, source outside the repo/venv boundary, selector value, absolute/extra root, or missing source fails before sealing. The write-once external observation contains `full-nodeids.txt`, `selected-nodeids.txt`, `marker-deselected-nodeids.txt`, `legitimate-skips.json`, raw stdout/stderr, ordinary JUnit, raw plugin events, and a terminal canonical attestation that binds their byte counts/digests plus observation UUID, provisioning-file digest, observer/plan/roadmap digests, exact `sys.orig_argv`, `/proc/self/cmdline`, internal pytest argv and their digests, the exact initial/post-pytest environment maps, every runtime selector and application entry point, the loaded registrar/provider source/digest/root profile, PID/PPID/PGID/SID/UID/GID, boot ID and process-start ticks, CWD, uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path` provenance, pytest/`_pytest`/`pluggy` module paths and file digests, pytest version, and every loaded pytest plugin's name/module/class/distribution/version/path/digest. Those pytest/pluggy and non-repo core-plugin version/path/digest fields are mandatory diagnostic provenance; recording and self-consistency are required, but their raw values do not define semantic parity across bootstrap, CI, Gate A, or another supported environment.
 
-  After, not before, that observation is sealed, SL-1 authors `verify_reviewtruth_chronology.py` and independently parses the raw files from the explicit canonical absolute `--runner-root`, `--provisioning`, `--observation-dir`, and `--observer-source` arguments. It must re-hash the exact embedded observer bytes, provisioning freeze, and observation artifacts; independently verify the private external-root boundary; require the exact tracked/archive `phase-loop-runtime/uv.lock` digest; recompute the uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/module/plugin provenance; and recompute the full `REVIEWTRUTH_BROAD_PREIMPLEMENTATION_COLLECTED_NODEIDS`, selected `REVIEWTRUTH_BROAD_PREIMPLEMENTATION_SELECTED_NODEIDS`, exact `REVIEWTRUTH_BROAD_MARKER_DESELECTED_NODEIDS = full - selected`, legitimate raw `REVIEWTRUTH_BROAD_BASELINE_SKIP_TUPLES`, their counts and sorted-LF/canonical-JSON SHA-256 values, JUnit outcomes, command/runtime/provenance records, the full-minus-selected/deselection/marker relations, both complete environment maps, every forbidden-selector absence, both exact local-wheel entry-point registries, the exact loaded application registrar/provider sources and digests, and the complete skill-source root mapping without trusting attestation-derived counts or summaries. The exact full and selected pre-edit sets remain frozen, not merely their counts: the immutable test/record surface retains their canonical compressed bytes plus counts/digests, while the explicit marker difference tuple and raw skip tuples remain readable literals. For source/CI semantic parity, the parser then applies PC-REVIEWTRUTH-5A and PC-REVIEWTRUTH-5B as two exact singleton classifiers: it uses structured parsing of the observer's sealed stringified longrepr for the PyPI tuple, retains the unmodified raw reason/exception evidence, and removes at most the one fully validated transport tuple. The embedded observer is not changed and performs no normalization beyond repo-root replacement. SL-1 also derives and freezes the only allowed source-capable post-SL-1 collection transformation: the pre-edit full/selected sets plus exactly the declared new REVIEWTRUTH nodeids, with migrated nodeids unchanged and exactly five new post-parser wrappers removed by the ordinary hook.
+  After, not before, both observations are sealed and the fifth command's constant comparison passes, SL-1 authors `verify_reviewtruth_chronology.py` and independently parses the raw files from explicit canonical absolute `--runner-root`, `--provisioning`, `--observation-dir`, `--observer-source`, `--gate-a-observation-dir`, `--gate-a-tests-root`, `--gate-a-observer-source`, and both observer-digest arguments. It must re-hash both exact embedded observer payloads, the provisioning freeze, and both observation directories; independently verify the private external-root and copied-tree boundaries; require the exact tracked/archive `phase-loop-runtime/uv.lock` digest; recompute the uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/module/plugin provenance; and recompute the full `REVIEWTRUTH_BROAD_PREIMPLEMENTATION_COLLECTED_NODEIDS`, selected `REVIEWTRUTH_BROAD_PREIMPLEMENTATION_SELECTED_NODEIDS`, exact `REVIEWTRUTH_BROAD_MARKER_DESELECTED_NODEIDS = full - selected`, legitimate raw `REVIEWTRUTH_BROAD_BASELINE_SKIP_TUPLES`, their counts and sorted-LF/canonical-JSON SHA-256 values, JUnit outcomes, command/runtime/provenance records, the full-minus-selected/deselection/marker relations, both complete environment maps, every forbidden-selector absence, both exact local-wheel entry-point registries, the exact loaded application registrar/provider sources and digests, and the complete skill-source root mapping without trusting attestation-derived counts or summaries. The exact full and selected pre-edit sets remain frozen, not merely their counts: the immutable test/record surface retains their canonical compressed bytes plus counts/digests, while the explicit marker difference tuple and raw skip tuples remain readable literals. For source/CI semantic parity, the parser then applies PC-REVIEWTRUTH-5A and PC-REVIEWTRUTH-5B as two exact singleton classifiers: it uses structured parsing of the source observer's sealed stringified longrepr for the PyPI tuple, retains the unmodified raw reason/exception evidence, and removes at most the one fully validated transport tuple. Neither observer performs any broad normalization; Gate A applies no PyPI disposition. SL-1 also derives and freezes the only allowed source-capable post-SL-1 collection transformation: the pre-edit full/selected sets plus exactly the declared new REVIEWTRUTH nodeids, with migrated nodeids unchanged and exactly five new post-parser wrappers removed by the ordinary hook.
 
-  SL-1 separately freezes the Gate-A-specific transformation imposed by the unmodified clean-room script from paired source-layout and copied-tree observations made before any SL-1 edit. Both observers emit sorted canonical JSON rows shaped exactly as `{"nodeid": <repo-relative nodeid>, "phase": "collect"|"setup"|"call"|"teardown", "reason": <repo-root-normalized longrepr>}`; collection reports and runtime reports are stored in separate tuples before any union is formed. `REVIEWTRUTH_GATE_A_OMITTED_SELECTED_NODEIDS` is the exact 48-nodeid source-capable set contributed by `phase-loop-runtime/tests/test_execute_phase_handoff_mode.py`, `phase-loop-runtime/tests/test_validate_plan_doc_docs_lane.py`, `phase-loop-runtime/tests/test_validate_plan_doc_goal_coverage.py`, and `phase-loop-runtime/tests/test_validate_plan_doc_producer_dependency.py`; `REVIEWTRUTH_GATE_A_COLLECTED_NODEIDS` and `REVIEWTRUTH_GATE_A_SELECTED_NODEIDS` equal the corresponding source/CI post-SL-1 sets minus exactly those nodeids. `REVIEWTRUTH_GATE_A_RESTRICTED_SOURCE_COLLECTION_SKIP_TUPLES` and `REVIEWTRUTH_GATE_A_RESTRICTED_SOURCE_RUNTIME_SKIP_TUPLES` are the exact source/CI baseline tuples that remain byte-identical in the Gate-A retained collection. `REVIEWTRUTH_GATE_A_BOUNDARY_COLLECTION_SKIP_TUPLES` is the exact four-module Gate-A-minus-source collection delta, count `4`, canonical-JSON SHA-256 `09e45269b62ec9c4ac0584600d77e883b9c3fbd67a89415ba6650ee9f6efe3be`. `REVIEWTRUTH_GATE_A_BOUNDARY_RUNTIME_SKIP_TUPLES` is the complete Gate-A-minus-source runtime delta, not a hand-picked skills subset: count `59`, canonical-JSON SHA-256 `760925fe088328171cd7dc83172736a10904275d50b4da675e1f4a0a583d4b69`, with exact per-file counts `5,3,11,3,5,4,8,1,1,7,1,9,1` for, respectively, `test_advisor_board_alias_install.py`, `test_contract_floor_guard_378.py`, `test_model_id_source_guard.py`, `test_outside_agent_release_surface.py`, `test_prune_merged_worktrees_script.py`, `test_release_pin_autotrack.py`, `test_roadmap_representation_consistency.py`, `test_skill_bundle_pinned.py`, `test_skills_bundle_drift.py`, `test_skills_canon_parity.py`, `test_skills_src_claude_literal_lint.py`, `test_sweep_fleet_worktrees_script.py`, and `test_train_roadmap.py`; all 59 complete nodeid/phase/reason tuples remain readable literals in the immutable SL-1 surface. `REVIEWTRUTH_GATE_A_EXPECTED_COLLECTION_SKIP_TUPLES` is the disjoint union of the restricted source collection baseline and the four collection-boundary tuples; `REVIEWTRUTH_GATE_A_EXPECTED_RUNTIME_SKIP_TUPLES` is the disjoint union of the restricted source runtime baseline and all 59 runtime-boundary tuples; `REVIEWTRUTH_GATE_A_EXPECTED_SKIP_TUPLES` is their disjoint union. On the empirically inspected pre-edit tree, the restricted source baseline is count `39` and SHA-256 `59dfdd0c70679e8e2356b8dcffbb78faa795c5caa5025ce949e96522923023ea`, while the complete Gate-A expected union is count `102` and SHA-256 `57746ee994520651677a0b0dcdd50334eb52ccdc109ef71d6dd352ce95a8bcce`; SL-1 must reproduce all tuples/counts/digests on its exact clean pre-edit base and fail instead of editing if they differ. The immutable surface proves the temporary copied runtime tree contains only the standalone `phase-loop-runtime/tests/**` namespace and lacks every root whose absence explains those deltas — sibling `phase-loop-skills/`, repo `skills-src/`, `phase-loop-runtime/scripts/`, the adjacent package `pyproject.toml`, root release pins/installers/docs/workflows, and roadmap/spec inputs. A separate external persistent evidence copy uses only `input-copy/tests/**` (including `input-copy/tests/conftest.py`), `input-copy/chronology-parser/verify_reviewtruth_chronology.py`, and its manifest; it is non-importable and never creates `input-copy/phase-loop-runtime/scripts/` or mutates the temporary runtime tree. Every copied test/conftest/parser byte equals its exact committed repo-owned byte and the 48 omitted nodeids are unmarked and are the complete full/selected delta. Unexpected source-only tuple loss outside the four omitted modules, unexpected sibling/root presence or absence, any `phase-loop-runtime/scripts` root in either copied namespace, a parser anywhere outside `input-copy/chronology-parser/`, a fifth collection-boundary module, 47 or 49 omitted nodeids, a boundary skip becoming pass/fail, a category or phase change, or any unrelated skip is a hard failure.
+  SL-1 separately freezes the Gate-A-specific transformation imposed by the unmodified clean-room script from the paired source-layout and copied-tree observations already made before any SL-1 edit. The dedicated pre-edit Gate-A observer runs from `$REVIEWTRUTH_RUNNER_ROOT/gate-a-preimplementation-input/standalone` with `PYTHONPATH` equal only to its copied `phase-loop-runtime/tests` directory and imports `phase_loop_runtime` only from the exact installed wheel. Before invoking pytest, it requires the sealed source observation to contain exactly `attestation.json` plus the eight artifacts declared by that attestation, verifies every direct child as canonical, regular, owner-private, exact-mode, and byte/count/SHA-256-equal to its declaration, independently recomputes all raw source sets and skip artifacts from `plugin-events.json`, and verifies the exact source observer, plan, roadmap, provisioning, environment, runner-root, and clean-Git bindings. It canonicalizes all nine source files into `source-observation-manifest.json`, records that manifest's digest and all four upstream binding digests in the Gate-A attestation, and after pytest re-reads the complete source directory and all four bound files and rejects any byte change. Its input is produced directly from `git archive HEAD phase-loop-runtime/tests`, includes the exact committed `tests/**` inventory and `tests/conftest.py`, contains no ignored/untracked additions, and is recursively private. It proves the runtime directory contains only `tests`, the standalone directory contains only `phase-loop-runtime`, the tests' `parents[3]` detector directory contains only `standalone`, and every intentional omission is absent at both relevant roots: sibling `phase-loop-skills/`, repo `skills-src/`, `phase-loop-runtime/scripts/`, adjacent package `pyproject.toml` and lock, root release pins/installers/docs/workflows, plans, and specs. It records exact Git blob IDs, modes, byte counts, and SHA-256 values for every copied file, rejects any symlink/extra/missing byte, canonicalizes copied nodeids back to `phase-loop-runtime/tests/...`, and emits full/selected sets, marker accounting, raw stdout/stderr/JUnit, complete plugin/environment/wheel provenance, and collection/runtime skips as separate full normalized-longrepr rows. It invokes neither future SL-5 code nor any post-edit conftest/parser and requires the worktree HEAD/tree/index/empty all-untracked status and complete source observation manifest to remain unchanged.
+
+  The independent planning-author collection witness was mechanically derived from committed Git `HEAD` `cee6cdc25f753a0f096444ee6f86fe724ef607e8` by exact archive, locked wheel installation, and source-layout plus installed-wheel copied-tree collection using the observer's canonical nodeid mapping. The source full set is count `4251`, sorted-LF SHA-256 `e25173c29fb2fc1964bf052cfbf8613160a6cce87f153dd513d6244bdfd37d24`; source selected is `3650`, `f4139af6cc291ee5867cf04807cdca25f5c39f4dd7f212c83cff4bfe75316b87`; Gate-A full is `4203`, `d2047b8e53d19310a428b6728d46f47901b5a225d1ac6f4ff45abf566019b4a7`; and Gate-A selected is `3602`, `d57ade2c1a0a0d5292191efaca00b0fa18ba2b7e7b27c352f94dc3d9416bb803`. Both marker-deselected sets are count `601`, sorted-LF SHA-256 `76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907`. Source-full minus Gate-A-full and source-selected minus Gate-A-selected must be the same exact count-`48` sorted set at SHA-256 `da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527`; any unequal transform fails even when counts or module names happen to match.
+
+  Both observers emit sorted canonical JSON rows shaped exactly as `{"nodeid": <repo-relative nodeid>, "phase": "collect"|"setup"|"call"|"teardown", "reason": <repo-root-normalized longrepr>}`; collection reports and runtime reports are stored in separate tuples before any union is formed. The Gate-A observer independently derives the pair profile into its write-once directory, and the exact fifth operational command refuses to return until `paired-profile.json` matches the planning-author constants below. Those constants are an independent second witness, never a substitute for observation; any mismatch aborts before the first SL-1 edit. `REVIEWTRUTH_GATE_A_OMITTED_SELECTED_NODEIDS` is the exact 48-nodeid source-capable set contributed by `phase-loop-runtime/tests/test_execute_phase_handoff_mode.py`, `phase-loop-runtime/tests/test_validate_plan_doc_docs_lane.py`, `phase-loop-runtime/tests/test_validate_plan_doc_goal_coverage.py`, and `phase-loop-runtime/tests/test_validate_plan_doc_producer_dependency.py`; `REVIEWTRUTH_GATE_A_COLLECTED_NODEIDS` and `REVIEWTRUTH_GATE_A_SELECTED_NODEIDS` equal the corresponding source/CI post-SL-1 sets minus exactly those nodeids. `REVIEWTRUTH_GATE_A_RESTRICTED_SOURCE_COLLECTION_SKIP_TUPLES` and `REVIEWTRUTH_GATE_A_RESTRICTED_SOURCE_RUNTIME_SKIP_TUPLES` are the exact source/CI baseline tuples that remain byte-identical in the Gate-A retained collection. `REVIEWTRUTH_GATE_A_BOUNDARY_COLLECTION_SKIP_TUPLES` is the exact four-module Gate-A-minus-source collection delta, count `4`, canonical-JSON SHA-256 `09e45269b62ec9c4ac0584600d77e883b9c3fbd67a89415ba6650ee9f6efe3be`. `REVIEWTRUTH_GATE_A_BOUNDARY_RUNTIME_SKIP_TUPLES` is the complete Gate-A-minus-source runtime delta, not a hand-picked skills subset: count `59`, canonical-JSON SHA-256 `760925fe088328171cd7dc83172736a10904275d50b4da675e1f4a0a583d4b69`, with exact per-file counts `5,3,11,3,5,4,8,1,1,7,1,9,1` for, respectively, `test_advisor_board_alias_install.py`, `test_contract_floor_guard_378.py`, `test_model_id_source_guard.py`, `test_outside_agent_release_surface.py`, `test_prune_merged_worktrees_script.py`, `test_release_pin_autotrack.py`, `test_roadmap_representation_consistency.py`, `test_skill_bundle_pinned.py`, `test_skills_bundle_drift.py`, `test_skills_canon_parity.py`, `test_skills_src_claude_literal_lint.py`, `test_sweep_fleet_worktrees_script.py`, and `test_train_roadmap.py`; all 59 complete nodeid/phase/reason tuples remain readable literals in the immutable SL-1 surface. `REVIEWTRUTH_GATE_A_EXPECTED_COLLECTION_SKIP_TUPLES` is the disjoint union of the restricted source collection baseline and the four collection-boundary tuples; `REVIEWTRUTH_GATE_A_EXPECTED_RUNTIME_SKIP_TUPLES` is the disjoint union of the restricted source runtime baseline and all 59 runtime-boundary tuples; `REVIEWTRUTH_GATE_A_EXPECTED_SKIP_TUPLES` is their disjoint union. On the empirically inspected pre-edit tree, the restricted source baseline is count `39` and SHA-256 `59dfdd0c70679e8e2356b8dcffbb78faa795c5caa5025ce949e96522923023ea`, while the complete Gate-A expected union is count `102` and SHA-256 `57746ee994520651677a0b0dcdd50334eb52ccdc109ef71d6dd352ce95a8bcce`; the pre-edit paired observation must reproduce all tuples/counts/digests on its exact clean base and fail instead of permitting an edit if they differ. The later immutable surface independently parses both observations and freezes the same facts. A separate SL-5 external persistent evidence copy later uses only `input-copy/tests/**` (including `input-copy/tests/conftest.py`), `input-copy/chronology-parser/verify_reviewtruth_chronology.py`, and its manifest; it is non-importable and never creates `input-copy/phase-loop-runtime/scripts/` or mutates the temporary runtime tree. Every copied test/conftest/parser byte equals its exact committed repo-owned byte and the 48 omitted nodeids are unmarked and are the complete full/selected delta. Unexpected source-only tuple loss outside the four omitted modules, unexpected sibling/root presence or absence, any `phase-loop-runtime/scripts` root in either copied namespace, a parser anywhere outside `input-copy/chronology-parser/`, a fifth collection-boundary module, 47 or 49 omitted nodeids, a boundary skip becoming pass/fail, a category or phase change, or any unrelated skip is a hard failure.
 
   The cross-environment semantic record is deliberately narrower than the diagnostic provenance record and explicitly profile-aware. Source-capable bootstrap, source checkout, GitHub CI, candidate, and broad-final environments require exact equality to the frozen source/CI full/selected and skip sets. Gate A requires exact equality to the separately frozen Gate-A full/selected sets, expected collection/runtime skip unions, and their complete baseline-plus-boundary total; it must not be compared to the impossible source-capable nodeid/skip sets. Both profiles require exact repo-owned test/conftest/parser bytes and digests; declared environment selector names and values; exact application-plugin entry-point groups/names/values/distribution origin plus repo-relative registrar/provider source paths and digests; their declared repository/source/root maps; absence of ambient, autoloaded, or unapproved third-party collection plugins; their own canonical full and selected nodeid sets; marker and hook deselection tuples/categories/reasons; profile-specific legitimate skip tuples/reasons; hook activation and notification behavior; pytest command/profile; collection/import success; exit status; JUnit nodeid/outcome/result accounting; and every other repo-governed behavior already frozen here. The collection-plugin behavioral profile normalizes approved pytest-core/pluggy implementation details to their role and trusted origin and excludes their distribution versions, absolute module/distribution paths, module/file digests, and version-bearing metadata. Those excluded values must still be present, parseable, bound to the artifact that reported them, and emitted in mismatch diagnostics, but changing only one or more of them across environments is not drift and cannot fail the phase.
 
@@ -319,16 +385,16 @@ SL-6 — REVIEWTRUTH evidence, documentation, and verification reducer
 - **Interfaces consumed**: `REVIEWTRUTH-capability-ratification`
 - **Parallel-safe**: no; this lane must start from the separately merged disposition record and land as a tests/evidence-only, production-change-free change before every implementation lane rebases from that target tip.
 - **Tasks**:
-  - test: SL1-T1 — After SL0-T3's independent coordinator proof and before any SL-1 mutation, require the planning candidate's exact lock blob and ratification record landing to be committed and reachable on canonical `main`, retain the coordinator proof's canonical branch-rules digest/effective-PR-rule boolean and both ratification timestamps for later independent comparison, provision a new private absolute runner root outside Git from the exact lock-bearing archive, build/install/freeze the exact isolated local-wheel-plus-test environment, materialize and hash-check the exact embedded observer there, then execute its one-process GREEN broad observation to freeze the source-capable full collected set, selected set, exact marker difference, legitimate skips, JUnit/raw output, argv, empty all-untracked Git status, HEAD/tree/index/process, lock/uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/module/plugin provenance, and artifact digests; only afterward add every named REVIEWTRUTH falsifier plus mutation-specific injection-anchor and positive-control coverage, including retrospective SL-0 Git/GitHub proof controls for edited-after-merge comments, missing effective PR rules, and branch-rules digest drift, plus paired controls proving pytest/pluggy version/path/digest-only changes preserve parity while behavior-changing or unsupported toolchains fail; migrate every live floor-2, train-resume, serializer, native-request, and all three native-fill expectations; independently reproduce the exact Gate-A profile from the unmodified tests-only copy boundary before editing, split collection reports from runtime reports, and freeze the 39-tuple restricted source baseline, four named collection-boundary tuples with the exact 48 omitted selected nodeids, complete 59-tuple runtime boundary, 102-tuple expected union, all canonical nodeid/phase/reason rows and digests, sibling/root-absence proof, and retained repo-byte/behavior equality. Freeze `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_persists_independently_attestable_tests_conftest_and_parser_copy`, which requires the temporary pytest runtime tree to lack `phase-loop-runtime/scripts/`, the external copy to use only `tests/**` plus `chronology-parser/verify_reviewtruth_chronology.py`, and any implementation that recreates either forbidden scripts root to fail at `REVIEWTRUTH_RED::gate_a_persistent_attestable_input_copy`. Also freeze `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_workflow_exports_private_copy_attests_before_external_cleanup`, which rejects the old workflow invocation, either inherited selector, attestation after cleanup, reuse/symlinking of the copy root, or external cleanup before terminal attestation. Freeze `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_sl2_seat_outcome_degraded_true_survives_append_strict_read_rewrite_strict_reread` as one literal tests-first node: it appends a `degraded=True` record, requires strict read to return true, rewrites exactly those reconstructed records, and requires strict reread to remain true; its legacy fixture omits the field and reconstructs false; its default-false serializer equals one frozen pre-REVIEWTRUTH JSON byte literal and contains no `degraded` key; its true serializer contains exactly the additive known key; and an injected unknown key still raises `ProvenanceInvalid` at the strict reader. Its RED anchor is `REVIEWTRUTH_RED::seat_outcome_degraded_strict_roundtrip`, and its sorted-LF singleton nodeid digest is `0c6a18f9cae6e9061943c5908c0a4ec127033fdbd757fd231e3d6947da6f278e`. Freeze `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip` at singleton sorted-LF SHA-256 `b8d7fedfe0b72b0f6e23d83a026c747a1a868630459bdb692b26b99b48b411a5` and RED anchor `REVIEWTRUTH_RED::exact_pypi_transport_disposition`; it must exercise every PC-REVIEWTRUTH-5B positive and rejection arm without live internet and prove Gate A remains unnormalized. Freeze collision/retry/late/replay/cross-seat/exactly-once report tests; and freeze the sanctioned golden delta, marker guard, dual-mode conftest hook, independent phase/broad nodeid sets/counts/digests, raw RED anchors, the exact marker deselection baseline plus five separately owned post-parser deselections, executable JUnit runner/parser modes, both chronology modes, and final evidence wrappers.
+  - test: SL1-T1 — After SL0-T3's independent coordinator proof and before any SL-1 mutation, require the planning candidate's exact lock blob and ratification record landing to be committed and reachable on canonical `main`, retain the coordinator proof's canonical branch-rules digest/effective-PR-rule boolean and both ratification timestamps for later independent comparison, provision a new private absolute runner root outside Git from the exact lock-bearing archive, build/install/freeze the exact isolated local-wheel-plus-test environment, materialize and hash-check both exact embedded observers there, then execute the source-layout and installed-wheel copied-tree Gate-A GREEN observations in order. The paired write-once evidence freezes the source-capable full/selected/marker/skip profile and the Gate-A full/selected/marker profile; separate collection/runtime skip rows; exact committed copied-test bytes including conftest; intentional root omissions; JUnit/raw output; argv; empty all-untracked Git status; HEAD/tree/index/process; lock/uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/module/plugin provenance; and artifact digests. Before any edit, require the pair to independently reproduce the 39-tuple restricted source baseline, four named collection-boundary tuples with the exact 48 omitted selected nodeids, complete 59-tuple runtime boundary, 102-tuple expected union, all canonical nodeid/phase/reason rows and digests, sibling/root-absence proof, and retained repo-byte/behavior equality; abort on any difference from the planning-author constants. Only afterward add every named REVIEWTRUTH falsifier plus mutation-specific injection-anchor and positive-control coverage, including retrospective SL-0 Git/GitHub proof controls for edited-after-merge comments, missing effective PR rules, and branch-rules digest drift, plus paired controls proving pytest/pluggy version/path/digest-only changes preserve parity while behavior-changing or unsupported toolchains fail; migrate every live floor-2, train-resume, serializer, native-request, and all three native-fill expectations. Freeze `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_persists_independently_attestable_tests_conftest_and_parser_copy`, which requires the temporary pytest runtime tree to lack `phase-loop-runtime/scripts/`, the external copy to use only `tests/**` plus `chronology-parser/verify_reviewtruth_chronology.py`, and any implementation that recreates either forbidden scripts root to fail at `REVIEWTRUTH_RED::gate_a_persistent_attestable_input_copy`. Also freeze `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_workflow_exports_private_copy_attests_before_external_cleanup`, which rejects the old workflow invocation, either inherited selector, attestation after cleanup, reuse/symlinking of the copy root, or external cleanup before terminal attestation. Freeze `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_sl2_seat_outcome_degraded_true_survives_append_strict_read_rewrite_strict_reread` as one literal tests-first node: it appends a `degraded=True` record, requires strict read to return true, rewrites exactly those reconstructed records, and requires strict reread to remain true; its legacy fixture omits the field and reconstructs false; its default-false serializer equals one frozen pre-REVIEWTRUTH JSON byte literal and contains no `degraded` key; its true serializer contains exactly the additive known key; and an injected unknown key still raises `ProvenanceInvalid` at the strict reader. Its RED anchor is `REVIEWTRUTH_RED::seat_outcome_degraded_strict_roundtrip`, and its sorted-LF singleton nodeid digest is `0c6a18f9cae6e9061943c5908c0a4ec127033fdbd757fd231e3d6947da6f278e`. Freeze `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip` at singleton sorted-LF SHA-256 `b8d7fedfe0b72b0f6e23d83a026c747a1a868630459bdb692b26b99b48b411a5` and RED anchor `REVIEWTRUTH_RED::exact_pypi_transport_disposition`; it must exercise every PC-REVIEWTRUTH-5B positive and rejection arm without live internet and prove Gate A remains unnormalized. Freeze collision/retry/late/replay/cross-seat/exactly-once report tests; and freeze the sanctioned golden delta, marker guard, dual-mode conftest hook, independent phase/broad nodeid sets/counts/digests, raw RED anchors, the exact marker deselection baseline plus five separately owned post-parser deselections, executable JUnit runner/parser modes, both chronology modes, and final evidence wrappers.
   - test: SL1-T1 degraded trust-root type arm — Within that same immutable node and unchanged nodeid, construct legacy absent, present `true`, and present `false` records and require exact reconstruction of `False`, `True`, and `False`, respectively. Feed known-key wrong types including the JSON string `"false"` and integer `1` and require the existing malformed-record/`ProvenanceInvalid` path before construction or rewrite; retain the unknown-field rejection in the same node. No coercive truthiness helper may satisfy the test.
-  - impl: SL1-T2 — Author the chronology parser only after the raw observation is sealed; independently test the exact bootstrap bytes, provisioning contract, retrospective SL-0 Git/GitHub proof including both comment timestamps and canonical effective-rules equality, and parser against synthetic repos and tampered external roots/observations; recompute and freeze the pre-edit source/CI full/selected collections, marker-deselection and broad-skip baselines, isolated environment provenance, allowed source/CI post-SL-1 transformation, the independent PC-REVIEWTRUTH-5A and exact-node PC-REVIEWTRUTH-5B dispositions, and the separate Gate-A full/selected/collection-skip/runtime-skip/root transformation as non-substitutable behavioral profiles; retain complete pytest/pluggy provenance and both dispositions' raw diagnostics while excluding only approved provenance-only tool drift and the one validated PyPI transport tuple from semantic equality; mutation-test every disposition, boundary count/digest/category, and unexpected sibling-present/extra-absence arm; then generate and parse default phase/broad JUnit and activated phase JUnit in the stated order, prove ordinary-suite/final-collection dual mode and deselection provenance plus all native-identity falsifiers, panel the exact tests-only digest, and merge the dedicated tests-only landing with all required SL-0/provisioning/observer/plan/base/tree, conftest/set, marker/raw/XML, parser-attestation, panel, and landing digests recorded.
-  - verify: SL1-T3 — Retrospectively and independently re-prove every SL-0 ratification, both-comment-timestamps-before-or-at-merge, maintainer-permission, effective-PR-rule and exact canonical branch-rules digest equality, dedicated-PR, two-parent, record-only diff, canonical-main ancestry, and no-posture-implementation fact without treating the retained SL0-T3 stdout as authority; then prove record ancestry, PANELLED and RED status, restricted landing paths, exact observer bytes and contemporaneous observation, independently reproduced source/CI full/selected/difference/skip/provenance accounting with separate interpreter and exact-PyPI dispositions plus retained raw diagnostics, and the independently reproduced Gate-A four-module/48-nodeid collection boundary plus complete unchanged 39-retained/4-collection/59-runtime/102-total skip freeze and repo-byte equality; then prove exact phase default/activated accounting, exact broad marker/skip baseline and default hook/plugin/root accounting, the provenance-only drift positive controls and behavior-changing toolchain negative controls, every PC-REVIEWTRUTH-5B acceptance/rejection arm, native identity/digest falsifiers, fired injection anchors, and no production changes before implementation lanes unblock. This retrospective verifier gates SL-2 through SL-5 only; it is not and never was required to start SL-1.
+  - impl: SL1-T2 — Author the chronology parser only after both raw observations and their pre-edit constant comparison are sealed; independently test both exact observer payloads, the provisioning contract, retrospective SL-0 Git/GitHub proof including both comment timestamps and canonical effective-rules equality, and parser against synthetic repos and tampered external roots/observations; consume both exact observation directories, independently verify the complete source-observation manifest and exact source-observer/plan/roadmap/provisioning bindings before and after Gate A, and recompute and freeze the pre-edit source/CI full/selected collections, marker-deselection and broad-skip baselines, isolated environment provenance, allowed source/CI post-SL-1 transformation, the independent PC-REVIEWTRUTH-5A and exact-node PC-REVIEWTRUTH-5B dispositions, and the separate Gate-A full/selected/collection-skip/runtime-skip/root transformation as non-substitutable behavioral profiles; retain complete pytest/pluggy provenance and both dispositions' raw diagnostics while excluding only approved provenance-only tool drift and the one validated PyPI transport tuple from source/CI semantic equality; mutation-test every observer, source-manifest/artifact/binding arm, disposition, exact source/Gate-A full/selected/marker/omission identity, boundary count/digest/category, and unexpected sibling-present/extra-absence arm; then generate and parse default phase/broad JUnit and activated phase JUnit in the stated order, prove ordinary-suite/final-collection dual mode and deselection provenance plus all native-identity falsifiers, panel the exact tests-only digest, and merge the dedicated tests-only landing with all required SL-0/provisioning/dual-observer/plan/base/tree, conftest/set, marker/raw/XML, parser-attestation, panel, and landing digests recorded.
+  - verify: SL1-T3 — Retrospectively and independently re-prove every SL-0 ratification, both-comment-timestamps-before-or-at-merge, maintainer-permission, effective-PR-rule and exact canonical branch-rules digest equality, dedicated-PR, two-parent, record-only diff, canonical-main ancestry, and no-posture-implementation fact without treating the retained SL0-T3 stdout as authority; then prove record ancestry, PANELLED and RED status, restricted landing paths, both exact observer payloads, the complete byte-identical source-observation manifest and four upstream bindings, and contemporaneous paired observations, independently reproduced source/CI full/selected/difference/skip/provenance accounting with separate interpreter and exact-PyPI dispositions plus retained raw diagnostics, and the independently reproduced Gate-A exact source/full/selected/marker identities, identical full/selected 48-nodeid omission, four-module collection boundary plus complete unchanged 39-retained/4-collection/59-runtime/102-total skip freeze and exact committed copied-test/conftest equality; then prove exact phase default/activated accounting, exact broad marker/skip baseline and default hook/plugin/root accounting, the provenance-only drift positive controls and behavior-changing toolchain negative controls, every PC-REVIEWTRUTH-5B acceptance/rejection arm, native identity/digest falsifiers, fired injection anchors, and no production changes before implementation lanes unblock. This retrospective verifier gates SL-2 through SL-5 only; it is not and never was required to start SL-1.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command | Work |
 |---|---|---|---|---|---|---|
-| SL1-T1 | test | SL-0 | all ten SL-1 owned paths except `docs/research/reviewtruth-red-baseline.md`; the coordinator-provided absolute external runner root is operational evidence, never a landing path | `test_ec_reviewtruth_1_*` through `test_ec_reviewtruth_15_*`; exact bootstrap-byte, provisioning/source/wheel/RECORD/parser mutation, synthetic observer, hook mutation/subprocess, source/CI collection/plugin controls, Gate-A four-module/48-nodeid plus complete 39-retained/4-collection/59-runtime/102-total boundary controls, exact `test_gate_a_persists_independently_attestable_tests_conftest_and_parser_copy`, exact `test_gate_a_workflow_exports_private_copy_attests_before_external_cleanup`, exact `test_reviewtruth_sl2_seat_outcome_degraded_true_survives_append_strict_read_rewrite_strict_reread`, and exact `test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip`; EC-14 duplicate-`seat_key`, retry/late, stale, replay, cross-seat/collision/digest substitution, and exactly-once-count controls; the amended EC-6 golden expected-delta assertions; the migrated `agent-harness#358` and train-resume controls; all five full existing compatibility nodeids named by this plan; immutable chronology, live-panel, evidence, collection, and JUnit contracts | the exact five operational provision/materialize/freeze/observe/parse commands with the inserted exact-node SL-1 RED/then-GREEN commands, then the default/activated/golden commands in `## Verification`, in displayed order | Provision the new external root and exact isolated suite environment, materialize the observer there, freeze provisioning, and run the one-process collection before editing any SL-1 file. Require exact private canonical runner paths; no non-venv symlinks; exact uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/module/plugin provenance; exact observer, plan, roadmap, empty all-untracked Git status, HEAD/tree/index, process, raw output/JUnit, full/selected/difference, skip, and artifact attestations. Only after the write-once external observation exists may the ten owned paths be authored. Author the exact PyPI disposition falsifier first and retain its literal RED output at `REVIEWTRUTH_RED::exact_pypi_transport_disposition`; then implement only its SL-1 parser/conftest contract and prove that same immutable node GREEN before broad-baseline parsing. Freeze canonical compressed `REVIEWTRUTH_BROAD_PREIMPLEMENTATION_COLLECTED_NODEIDS` and `REVIEWTRUTH_BROAD_PREIMPLEMENTATION_SELECTED_NODEIDS`; readable literal `REVIEWTRUTH_BROAD_MARKER_DESELECTED_NODEIDS`, `REVIEWTRUTH_BROAD_BASELINE_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_OMITTED_SELECTED_NODEIDS`, `REVIEWTRUTH_GATE_A_COLLECTED_NODEIDS`, `REVIEWTRUTH_GATE_A_SELECTED_NODEIDS`, `REVIEWTRUTH_GATE_A_RESTRICTED_SOURCE_COLLECTION_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_RESTRICTED_SOURCE_RUNTIME_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_BOUNDARY_COLLECTION_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_BOUNDARY_RUNTIME_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_EXPECTED_COLLECTION_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_EXPECTED_RUNTIME_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_EXPECTED_SKIP_TUPLES`, `REVIEWTRUTH_EXPECTED_NODEIDS`, `REVIEWTRUTH_PHASE_NODEIDS`, `REVIEWTRUTH_POST_PARSER_NODEIDS`, `REVIEWTRUTH_NEW_NODEIDS`, `REVIEWTRUTH_MIGRATED_NODEIDS`, `REVIEWTRUTH_DEFAULT_PREMARKER_SKIP_NODEIDS`, `REVIEWTRUTH_ACTIVATED_RED_NODEIDS`, `REVIEWTRUTH_SL1_INFRASTRUCTURE_TDD_NODEIDS`, and `REVIEWTRUTH_RED_ANCHORS_BY_NODEID`; all counts/digests/reasons; exact allowed source/CI post-SL-1 transformation; exact Gate-A four-module/48-nodeid plus 39-retained/4-collection/59-runtime/102-total transformation and sibling/root proof; and source/CI versus Gate-A collection-plugin/root profiles. Include the frozen degraded-seat round-trip node in every expected/new/activated/node-anchor count and sorted-LF digest, require its exact singleton nodeid digest `0c6a18f9cae6e9061943c5908c0a4ec127033fdbd757fd231e3d6947da6f278e`, and require its legacy bytes, true round trip, absent-field false default, and unknown-field rejection branches. Include the exact PyPI disposition falsifier in every expected/phase/new/infrastructure-TDD/node-anchor count and sorted-LF digest but not the post-SL-1 activated-RED set, require its exact singleton nodeid digest `b8d7fedfe0b72b0f6e23d83a026c747a1a868630459bdb692b26b99b48b411a5`, and bind the normalized node singleton digest `7a54c34a8defee59045a9dfe403a5d89b2d87085ceb99358dde782184b87de6c`, source digest `6b6c7f9f38bc815f37e2a3d86311867ea5a8ea907db2bad7d52fdeb0132b4d24`, exact line/prefix/suffix/exception evidence, and all rejection arms. Freeze the five wrappers exactly as `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_ec_reviewtruth_0_tdd_chronology`, `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_ec_reviewtruth_9_live_panel_inspection`, `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_chronology_all`, `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_evidence_all`, and `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_final_evidence_all`. Freeze the two Gate A namespace/workflow nodeids as separate production assertions; their sorted-LF pair digest is `d17d8a218765ba3ce0ccea954a8a3cd082a828a7d9a4517810af0de53563a6dd`, and the workflow nodeid alone has SHA-256 `35e39b1f6a676a24231aab1bb6cf3c97dddeab0c9011017dffee015081e5f99d`. Include both in every expected/new/activated/node-anchor count and sorted-LF digest. Independently test observer digest/preconditions and parser rejection of every tampered provenance/artifact/set/reason/plugin/boundary field. Preserve the exact dual-mode hook, wrapper input boundary, legacy/forced/marker compatibility branches, native identity protocol, activated-RED authority, chronology modes, and all prior acyclic finalization constraints. |
-| SL1-T2 | impl | SL1-T1 | `docs/research/reviewtruth-red-baseline.md` | bootstrap-byte/provisioning/parser mutation tests, retrospective SL-0 controls, and synthetic observer subprocess controls | the exact ordered SL1-T1 commands | From the target tip that already contains the independently proved disposition record, execute only the first four operational bootstrap commands before any SL-1 edit. After the raw observation is sealed, author the exact-PyPI falsifier RED, author only the parser/conftest contract needed for its GREEN transition, and then run the fifth broad-baseline parse command. The parser independently re-queries both comment timestamps and effective branch rules, requires the comment creation and last edit no later than merge, requires a `pull_request` rule, and requires the fresh canonical rules digest/boolean to equal retained SL0-T3 evidence while separately repeating the two-parent landing proof. It rejects every tampered bootstrap, provenance, artifact, source/CI, Gate-A, disposition, plugin, collection, skip, deselection, and native-identity arm frozen above; then it generates and parses default phase/broad and activated phase JUnit in order. Panel only after all parser attestations exist. Merge only the ten lane-owned production-free paths, with exact SL-0, rules, provisioning, observer, raw XML, parser, set/category, disposition, and panel digests bound in `reviewtruth-red-baseline.md`. |
-| SL1-T3 | verify | SL1-T2 | all ten SL-1 owned paths | retrospective SL-0 authority, pre-implementation chronology, bootstrap trust, activation, collection, JUnit, degraded-seat round-trip, native-identity, and immutable-boundary verification | `PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -k reviewtruth_preimplementation_chronology_all` | Independently re-prove the maintainer comment token/body digest/permission, both comment timestamps no later than merge, current effective `pull_request` branch rule, exact rules digest/boolean equality to retained SL0-T3 evidence, dedicated record PR, separate two-parent/second-parent-head landing, record-only server and Git paths, unchanged record, and canonical-main ancestry. Then prove the disposition record is on the tests-only landing's first parent, the tests-only landing has a distinct server-recorded two-parent PR/head, is PANELLED and RED, changes only the ten frozen paths, and contains no production change. Recompute every bootstrap/raw observation, source/CI, Gate-A 39+4+59=102, marker/hook, JUnit, exact-PyPI, portable-disposition, native-identity, RED-anchor, and immutable-path fact frozen above. This check intentionally requests no future implementation metadata; it gates SL-2 through SL-5 only and was not required to start SL-1. |
+| SL1-T1 | test | SL-0 | all ten SL-1 owned paths except `docs/research/reviewtruth-red-baseline.md`; the coordinator-provided absolute external runner root is operational evidence, never a landing path | `test_ec_reviewtruth_1_*` through `test_ec_reviewtruth_15_*`; exact dual-observer-byte, provisioning/source/wheel/RECORD/parser mutation, synthetic observer, hook mutation/subprocess, source/CI collection/plugin controls, Gate-A four-module/48-nodeid plus complete 39-retained/4-collection/59-runtime/102-total boundary controls, exact `test_gate_a_persists_independently_attestable_tests_conftest_and_parser_copy`, exact `test_gate_a_workflow_exports_private_copy_attests_before_external_cleanup`, exact `test_reviewtruth_sl2_seat_outcome_degraded_true_survives_append_strict_read_rewrite_strict_reread`, and exact `test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip`; EC-14 duplicate-`seat_key`, retry/late, stale, replay, cross-seat/collision/digest substitution, and exactly-once-count controls; the amended EC-6 golden expected-delta assertions; the migrated `agent-harness#358` and train-resume controls; all five full existing compatibility nodeids named by this plan; immutable chronology, live-panel, evidence, collection, and JUnit contracts | the exact six operational provision/dual-materialize/freeze/source-observe/Gate-A-observe/parse commands with the inserted exact-node SL-1 RED/then-GREEN commands, then the default/activated/golden commands in `## Verification`, in displayed order | Provision the new external root and exact isolated suite environment, materialize both observers there, freeze provisioning, and run the source-layout plus installed-wheel copied-tree Gate-A collections before editing any SL-1 file. Require exact private canonical runner/copy paths; no non-venv symlinks; exact committed copied-test/conftest bytes and omitted roots; exact uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/module/plugin provenance; both exact observers, plan, roadmap, empty all-untracked Git status, HEAD/tree/index, process, raw output/JUnit, full/selected/difference, separate collection/runtime skips, pair profile, complete source-observation manifest with all nine private canonical files, exact source-observer/plan/roadmap/provisioning bindings, and artifact attestations. The fifth command must compare the observed source 4251/3650, Gate-A 4203/3602, marker 601/601, identical exact full/selected 48-node omission, four-module boundary, and 39+4+59=102 profile against every independent planning count/digest constant and abort on mismatch. Only after both write-once external observations exist and that comparison passes may the ten owned paths be authored. Author the exact PyPI disposition falsifier first and retain its literal RED output at `REVIEWTRUTH_RED::exact_pypi_transport_disposition`; then implement only its SL-1 parser/conftest contract and prove that same immutable node GREEN before the sixth-command broad-baseline parse. Freeze canonical compressed `REVIEWTRUTH_BROAD_PREIMPLEMENTATION_COLLECTED_NODEIDS` and `REVIEWTRUTH_BROAD_PREIMPLEMENTATION_SELECTED_NODEIDS`; readable literal `REVIEWTRUTH_BROAD_MARKER_DESELECTED_NODEIDS`, `REVIEWTRUTH_BROAD_BASELINE_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_OMITTED_SELECTED_NODEIDS`, `REVIEWTRUTH_GATE_A_COLLECTED_NODEIDS`, `REVIEWTRUTH_GATE_A_SELECTED_NODEIDS`, `REVIEWTRUTH_GATE_A_RESTRICTED_SOURCE_COLLECTION_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_RESTRICTED_SOURCE_RUNTIME_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_BOUNDARY_COLLECTION_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_BOUNDARY_RUNTIME_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_EXPECTED_COLLECTION_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_EXPECTED_RUNTIME_SKIP_TUPLES`, `REVIEWTRUTH_GATE_A_EXPECTED_SKIP_TUPLES`, `REVIEWTRUTH_EXPECTED_NODEIDS`, `REVIEWTRUTH_PHASE_NODEIDS`, `REVIEWTRUTH_POST_PARSER_NODEIDS`, `REVIEWTRUTH_NEW_NODEIDS`, `REVIEWTRUTH_MIGRATED_NODEIDS`, `REVIEWTRUTH_DEFAULT_PREMARKER_SKIP_NODEIDS`, `REVIEWTRUTH_ACTIVATED_RED_NODEIDS`, `REVIEWTRUTH_SL1_INFRASTRUCTURE_TDD_NODEIDS`, and `REVIEWTRUTH_RED_ANCHORS_BY_NODEID`; all counts/digests/reasons; exact allowed source/CI post-SL-1 transformation; exact Gate-A four-module/48-nodeid plus 39-retained/4-collection/59-runtime/102-total transformation and sibling/root proof; and source/CI versus Gate-A collection-plugin/root profiles. Include the frozen degraded-seat round-trip node in every expected/new/activated/node-anchor count and sorted-LF digest, require its exact singleton nodeid digest `0c6a18f9cae6e9061943c5908c0a4ec127033fdbd757fd231e3d6947da6f278e`, and require its legacy bytes, true round trip, absent-field false default, and unknown-field rejection branches. Include the exact PyPI disposition falsifier in every expected/phase/new/infrastructure-TDD/node-anchor count and sorted-LF digest but not the post-SL-1 activated-RED set, require its exact singleton nodeid digest `b8d7fedfe0b72b0f6e23d83a026c747a1a868630459bdb692b26b99b48b411a5`, and bind the normalized node singleton digest `7a54c34a8defee59045a9dfe403a5d89b2d87085ceb99358dde782184b87de6c`, source digest `6b6c7f9f38bc815f37e2a3d86311867ea5a8ea907db2bad7d52fdeb0132b4d24`, exact line/prefix/suffix/exception evidence, and all rejection arms. Freeze the five wrappers exactly as `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_ec_reviewtruth_0_tdd_chronology`, `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_ec_reviewtruth_9_live_panel_inspection`, `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_chronology_all`, `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_evidence_all`, and `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_final_evidence_all`. Freeze the two Gate A namespace/workflow nodeids as separate production assertions; their sorted-LF pair digest is `d17d8a218765ba3ce0ccea954a8a3cd082a828a7d9a4517810af0de53563a6dd`, and the workflow nodeid alone has SHA-256 `35e39b1f6a676a24231aab1bb6cf3c97dddeab0c9011017dffee015081e5f99d`. Include both in every expected/new/activated/node-anchor count and sorted-LF digest. Independently test observer digest/preconditions and parser rejection of every tampered provenance/artifact/set/reason/plugin/boundary field. Preserve the exact dual-mode hook, wrapper input boundary, legacy/forced/marker compatibility branches, native identity protocol, activated-RED authority, chronology modes, and all prior acyclic finalization constraints. |
+| SL1-T2 | impl | SL1-T1 | `docs/research/reviewtruth-red-baseline.md` | dual-observer-byte/provisioning/parser mutation tests, retrospective SL-0 controls, and synthetic observer subprocess controls | the exact ordered SL1-T1 commands | From the target tip that already contains the independently proved disposition record, execute all first five operational bootstrap commands before any SL-1 edit. After both raw observations and the immediate pair-profile constant comparison are sealed, author the exact-PyPI falsifier RED, author only the parser/conftest contract needed for its GREEN transition, and then run the sixth broad-baseline parse command with both observation directories, the copied tests root, both observer sources, and both digests. The parser independently re-queries both comment timestamps and effective branch rules, requires the comment creation and last edit no later than merge, requires a `pull_request` rule, and requires the fresh canonical rules digest/boolean to equal retained SL0-T3 evidence while separately repeating the two-parent landing proof. It rejects every tampered bootstrap, observer, complete source-manifest/artifact/upstream-binding, provenance, source/CI collection identity, Gate-A collection identity, copied-byte/root, disposition, plugin, collection, skip, deselection, and native-identity arm frozen above; then it generates and parses default phase/broad and activated phase JUnit in order. Panel only after all parser attestations exist. Merge only the ten lane-owned production-free paths, with exact SL-0, rules, provisioning, both observers, paired raw XML, parser, set/category, disposition, and panel digests bound in `reviewtruth-red-baseline.md`. |
+| SL1-T3 | verify | SL1-T2 | all ten SL-1 owned paths | retrospective SL-0 authority, pre-implementation chronology, bootstrap trust, activation, collection, JUnit, degraded-seat round-trip, native-identity, and immutable-boundary verification | `PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -k reviewtruth_preimplementation_chronology_all` | Independently re-prove the maintainer comment token/body digest/permission, both comment timestamps no later than merge, current effective `pull_request` branch rule, exact rules digest/boolean equality to retained SL0-T3 evidence, dedicated record PR, separate two-parent/second-parent-head landing, record-only server and Git paths, unchanged record, and canonical-main ancestry. Then prove the disposition record is on the tests-only landing's first parent, the tests-only landing has a distinct server-recorded two-parent PR/head, is PANELLED and RED, changes only the ten frozen paths, and contains no production change. Recompute every bootstrap/paired raw observation, complete source manifest and observer/plan/roadmap/provisioning binding, exact committed Gate-A input copy, source/CI full/selected/marker identities, Gate-A full/selected/marker/omission identities and 39+4+59=102, marker/hook, JUnit, exact-PyPI, portable-disposition, native-identity, RED-anchor, and immutable-path fact frozen above. This check intentionally requests no future implementation metadata; it gates SL-2 through SL-5 only and was not required to start SL-1. |
 
 ### SL-2 — Typed Seat Outcome, Lens Prompt, And Native-Fill Binding
 
@@ -436,8 +502,8 @@ Within SL5-T2's workflow description, “invoke the script” and “invoke the 
 - Plan review is a pre-dispatch gate, not a lane. At repair time the overwriteable run-local panel path contained historical predecessor content SHA-256 `aa2e270f72c9dcfe190b17d80b6108b58346fbe30313e795b09153ac9c3366c1`; that content reviewed predecessor `d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229` and records Sol's SL-0/SL-1 verifier-authority deadlock dissent. The content digest is historical evidence; the path itself is neither immutable nor promised to remain current after the next review. Fable is absent, and neither that predecessor digest nor this repaired digest is approved. Record a fresh exact repaired-plan digest, executor/model/effort, Fable/Sol reviewed outcomes, all four seat outcomes, and resolution of every material finding in the canonical runner ledger before SL-0. Any changed byte after that review requires another exact-digest panel.
 - Before the REVIEWTRUTH lane DAG begins, this planning candidate owns and lands `phase-loop-runtime/uv.lock` at SHA-256 `b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce` together with this plan and its manifest metadata. That prerequisite must be on canonical `main` before SL-0 dispatch and is intentionally absent from every lane's `Owned files`: SL-0 through SL-6 consume the frozen committed input but may not create, regenerate, replace, or claim it in tests-only, implementation, or closeout history. A different or later lock invalidates the reviewed plan/bootstrap identity; it cannot retroactively alter the observation.
 - The complete tracked phase-owned write set is the independently recomputed sorted 35-pattern union of SL-0 through SL-6, SHA-256 `e1c925f2c22fd6186db28bdf9ea488de2b3ff9d0f835d1c96d279f8df37bc028` over LF-joined repo-relative patterns plus terminal LF. The sole new union member is `phase-loop-runtime/src/phase_loop_runtime/fab_gate.py`, owned only by SL-2. The immutable ten-path SL-1 tests/evidence boundary uses the same framing and remains SHA-256 `3828b5cd50a38b7665d6520ba437e410ac77a34f15488ce035fb1b6febfdeb6f`. This repair adds no SL-1 path. It retains the literal singleton `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_sl2_seat_outcome_degraded_true_survives_append_strict_read_rewrite_strict_reread` at sorted-LF SHA-256 `0c6a18f9cae6e9061943c5908c0a4ec127033fdbd757fd231e3d6947da6f278e` and adds the literal singleton `phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip` at sorted-LF SHA-256 `b8d7fedfe0b72b0f6e23d83a026c747a1a868630459bdb692b26b99b48b411a5` in that already-owned test file. The expected/phase/new/infrastructure-TDD and anchor maps each add exactly that one literal member and every corresponding count/sorted-LF digest is recomputed mechanically at SL-1; the downstream activated-RED set/count/digest does not add it because its own SL-1 RED-to-GREEN transition completes before the tests-only landing. The existing two Gate A namespace/workflow nodeids retain their sorted-LF pair digest `d17d8a218765ba3ce0ccea954a8a3cd082a828a7d9a4517810af0de53563a6dd`. The prior transfer of `phase-loop-runtime/scripts/verify_reviewtruth_evidence.py` from SL-6 to SL-5 changes only its single-writer lane. That executable, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, and `.github/workflows/test.yml` remain the atomic SL-5 implementation boundary paths and participate in the 35-pattern union.
-- SL-0 and SL-1 require separate landings before production work. The capability record must reach canonical `main` first in its own PR after the plan/lock prerequisite landing. The tests-only change starts from that main tip and, before editing any SL-1 file, creates a coordinator-selected private absolute runner root outside Git; provisions an isolated uv-managed environment from the exact lock-bearing external Git-archive source and exact local wheel; materializes the exact panel-reviewed bootstrap bytes there; freezes environment provenance; and executes one controlled GREEN `-m "not dotfiles_integration"` process with the environment's exact interpreter. The bootstrap chain freezes exact plan/roadmap/observer/provisioning/lock digests; empty all-untracked status plus identical HEAD/tree/index before and after every step; process and argv; uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/pytest/module/plugin provenance; raw output/JUnit; full pre-marker and selected post-marker collections; exact marker difference; and legitimate skips. Only afterward are the tests/conftest/parser authored; the parser independently recomputes the external observation from explicit absolute paths and the runner generates/parses phase default, broad default, and activated phase XML in the exact SL1-T1 order. Only after those parser attestations and the provisioning/observer/parser/collection/native-identity mutation controls exist is the exact tests-only digest PANELLED by the required four-seat board and landed in a separate production-change-free PR. `reviewtruth_preimplementation_chronology_all` is the only chronology gate that unblocks implementation and intentionally needs no future landing. Implementation starts from the tests-only canonical-main tip under a distinct PR/head identity. The ten frozen SL-1 paths are exactly `phase-loop-runtime/tests/conftest.py`, `phase-loop-runtime/tests/test_reviewtruth_phase.py`, `phase-loop-runtime/tests/test_train_merge.py`, `phase-loop-runtime/tests/test_governed_cross_vendor_floor_358.py`, `phase-loop-runtime/tests/test_advisor_board_golden.py`, `phase-loop-runtime/tests/test_advisor_board_research.py`, `phase-loop-runtime/tests/test_panel_invoker_spawn.py`, `phase-loop-runtime/tests/test_panel_native_fill_183.py`, `phase-loop-runtime/scripts/verify_reviewtruth_chronology.py`, and `docs/research/reviewtruth-red-baseline.md`; the external runner root is bound evidence, never a landing path, and none of the ten tracked paths may appear in `implementation^1..implementation^2`, the server-recorded implementation PR diff/range, or any tests-only commit carried on the implementation branch.
-- SL0-T3's existing-tool proof is the only gate that completes SL-0 and unblocks SL-1. It separately proves effective PR-only target protection from the canonical branch-rules response, actual two-parent landing topology from Git/PR metadata, and unedited-before-merge ratification from both comment timestamps; none substitutes for another. The post-SL-0 provision/materialize/freeze/observe operations then run before any SL-1 mutation; no broad-baseline parse is claimed until the parser is authored within SL-1. `reviewtruth_preimplementation_chronology_all` freshly recomputes the rules digest/boolean and all other SL-0 facts, requires equality to the retained proof, and is the only chronology gate that unblocks SL-2 through SL-5. Neither verifier delegates authority backward to a future lane, and neither has a manual bypass.
+- SL-0 and SL-1 require separate landings before production work. The capability record must reach canonical `main` first in its own PR after the plan/lock prerequisite landing. The tests-only change starts from that main tip and, before editing any SL-1 file, creates a coordinator-selected private absolute runner root outside Git; provisions an isolated uv-managed environment from the exact lock-bearing external Git-archive source and exact local wheel; materializes both exact panel-reviewed observer payloads there; freezes environment provenance; executes the controlled GREEN source-layout observation, and then executes the installed-wheel Gate-A observation from an exact committed tests-only copy with the environment's exact interpreter. The paired bootstrap chain freezes exact plan/roadmap/both-observer/provisioning/lock digests; empty all-untracked status plus identical HEAD/tree/index before and after every step; process and argv; uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/pytest/module/plugin provenance; raw output/JUnit for both profiles; the complete source-observation manifest and exact source-observer/plan/roadmap/provisioning bindings before and after Gate A; full pre-marker and selected post-marker collections; exact marker differences; separate collection/runtime skips; exact copied-test/conftest bytes and omitted roots; and the observed exact source/Gate-A full/selected/marker identities, identical full/selected 48-node omission, four-module boundary, and 39+4+59=102 pair profile. The fifth command compares every count/digest identity to independent planning constants before permitting any edit. Only afterward are the tests/conftest/parser authored; the parser independently recomputes both external observations from explicit absolute paths and the runner generates/parses phase default, broad default, and activated phase XML in the exact SL1-T1 order. Only after those parser attestations and the provisioning/dual-observer/parser/collection/native-identity mutation controls exist is the exact tests-only digest PANELLED by the required four-seat board and landed in a separate production-change-free PR. `reviewtruth_preimplementation_chronology_all` is the only chronology gate that unblocks implementation and intentionally needs no future landing. Implementation starts from the tests-only canonical-main tip under a distinct PR/head identity. The ten frozen SL-1 paths are exactly `phase-loop-runtime/tests/conftest.py`, `phase-loop-runtime/tests/test_reviewtruth_phase.py`, `phase-loop-runtime/tests/test_train_merge.py`, `phase-loop-runtime/tests/test_governed_cross_vendor_floor_358.py`, `phase-loop-runtime/tests/test_advisor_board_golden.py`, `phase-loop-runtime/tests/test_advisor_board_research.py`, `phase-loop-runtime/tests/test_panel_invoker_spawn.py`, `phase-loop-runtime/tests/test_panel_native_fill_183.py`, `phase-loop-runtime/scripts/verify_reviewtruth_chronology.py`, and `docs/research/reviewtruth-red-baseline.md`; the external runner root is bound evidence, never a landing path, and none of the ten tracked paths may appear in `implementation^1..implementation^2`, the server-recorded implementation PR diff/range, or any tests-only commit carried on the implementation branch.
+- SL0-T3's existing-tool proof is the only gate that completes SL-0 and unblocks SL-1. It separately proves effective PR-only target protection from the canonical branch-rules response, actual two-parent landing topology from Git/PR metadata, and unedited-before-merge ratification from both comment timestamps; none substitutes for another. The post-SL-0 provision/dual-materialize/freeze/source-observe/Gate-A-observe operations then run before any SL-1 mutation and seal both evidence directories plus the independent-constant comparison; no broad-baseline parse is claimed until the parser is authored within SL-1. `reviewtruth_preimplementation_chronology_all` freshly recomputes the rules digest/boolean and all other SL-0 facts, requires equality to the retained proof, and is the only chronology gate that unblocks SL-2 through SL-5. Neither verifier delegates authority backward to a future lane, and neither has a manual bypass.
 - The tests-only production-activation boundary, post-parser collection boundary, exact source/CI and Gate-A collection-profile freezes, collection-plugin/root profiles, and all marker/hook/collection-skip/runtime-skip accounting categories are immutable. `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1` forces new production behavior only for the pre-implementation RED proof; absent that variable, the exact `REVIEWTRUTH_CAPABILITY_MARKER = "reviewtruth@1"` switches the same non-wrapper test bodies from default legacy/skip behavior to new assertions. Neither activates the five post-parser wrappers. Ordinary/default tests-only CI, marker-present implementation CI, the frontmatter suite command, the explicitly amended workflow, and fresh source-clone default suites are GREEN because their canonical collection must equal the frozen source-capable pre-edit sets plus exactly the declared new REVIEWTRUTH nodeids; built-in `-m "not dotfiles_integration"` selection contributes exactly the frozen pre-edit marker deselection baseline; and the try-last conftest hook separately contributes exactly the five wrapper deselections unless the exact value `PHASE_LOOP_REVIEWTRUTH_POST_PARSER_COLLECTION=junit-run:final:v1` is set by final `junit-run` after broad-final attestation. Clean-room Gate A is GREEN under its separate exact profile: identical copied repo-owned bytes; source/CI sets minus exactly the 48 unmarked nodeids from the four named collection-skipped modules; the exact expected collection/runtime skip unions composed from the retained source baselines plus the proved four-tuple collection and 59-tuple runtime boundaries; and the same retained marker baseline UNION exact five wrapper deselections. Phase-selected default/RED/candidate use the frozen non-wrapper phase set; final uses the full expected set and requires zero phase skips/deselections. Source/CI broad default/candidate/broad-final retain exact source-capable full/selected and skip equality; Gate A must equal only its separately frozen profile. The implementation installs only the marker and production behavior. It cannot edit conftest, test imports, guards, branch/collection predicates, activation name/value, nodeids, selectors, expected counts/digests, collection/plugin/root profiles, any skip set/reason, any deselection tuple/category/reason, RED anchors, JUnit runner/parser, or evidence wrappers. No `xfail`, external `--deselect`, arbitrary deselection, unapproved collection-capable plugin, category substitution, source/CI or Gate-A full/selected/marker/plugin/root drift, or hook drift is permitted; any collection/import failure or skip beyond the exact frozen Gate-A expected collection-skip union, unexpected/drifted skip or deselection, ordinary-suite/CI/Gate-A red status, or compatibility test that first fails after merge is a hard failure.
 - The degraded-seat compatibility node is part of the same immutable SL-1 activation/RED/nodeid/anchor surface. Before any SL-2 edit, SL2-T1 runs that exact node under `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1` and retains RED only at `REVIEWTRUTH_RED::seat_outcome_degraded_strict_roundtrip`. SL-2 then changes only its three owned files: `panel_invoker.py` adds the default-false field and conditional true-only serialization, while `fab_gate.py` maps absence to false and passes through only an actual present boolean without changing the dataclass-derived known-field set or unknown-field rejection. Marker-driven GREEN must prove present true and false reconstruct exactly, true survives append → strict read → rewrite → strict reread, legacy absence maps false, false serialization is byte-identical to the frozen legacy literal, true adds only the known key, known-key string `"false"` and integer `1` fail through the existing malformed-record/`ProvenanceInvalid` path before construction or rewrite, and an unrelated key still fails before rewrite. No later lane may edit the node, rebaseline its legacy bytes, or weaken the trust-root reader.
 - Pytest/pluggy distribution versions, interpreter and absolute module or distribution paths, module/file digests, and version-bearing approved core-plugin metadata remain mandatory in every bootstrap, source/CI, and Gate-A provenance record and mismatch diagnostic, but are never semantic equality keys by themselves. Cross-environment parity compares the repo-owned test/conftest/parser bytes and digests, declared selectors, exact application-plugin entry points and repo-owned origins, declared repository/root maps, normalized approved core-plugin roles/origins, and each environment's frozen source/CI or Gate-A canonical nodeid/skip profile, hook behavior, command profile, collection outcome, exit status, and JUnit/result accounting. The parser and conftest controls must accept a fixture that changes only those pytest/pluggy diagnostic values while preserving the applicable semantic profile, and must reject a paired toolchain fixture that changes plugin origin, repo-owned bytes, profile selection, collection, nodeids, skip/deselect accounting, hook behavior, exit status, or results. Missing or internally inconsistent provenance also fails; provenance-only release drift does not.
@@ -455,9 +521,9 @@ Within SL5-T2's workflow description, “invoke the script” and “invoke the 
 - This plan is intentionally pre-PROOFGATE. Its Acceptance Criteria use the currently accepted `proven by <command>` plan grammar; each roadmap criterion's `falsified by` mutation is bound in SL-1 to a named test, asserted injection anchor, and positive control, and the RED/evidence records retain that mapping. `IF-0-PROOFGATE-1` is produced and mechanically required only by the later PROOFGATE phase, so this plan neither claims that future interface nor drops its falsifiers.
 - Documentation impact: SL-6 updates the normative board contract and capability card because the roadmap reverses the Fable native-fill prohibition narrowly. Record `no_doc_delta` for `README.md`, `CHANGELOG.md`, packaging dependency declarations, env examples, migrations, and release notes because REVIEWTRUTH changes no public release/package surface. The newly tracked `phase-loop-runtime/uv.lock` is instead this plan repair's frozen bootstrap prerequisite and is complete before SL-0; it is not an SL-6 documentation delta or a later REVIEWTRUTH implementation change.
 
-### Exact bootstrap observer payload
+### Exact bootstrap observer payloads
 
-No suitable immutable coordinator/runner observer exists. The materialization command in `## Verification` extracts the exact bytes between the sentinels below, appends the one displayed terminal LF, and refuses any digest other than `841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d` (`39420` bytes). The bootstrap is intentionally external to every SL-1 tracked path: a coordinator supplies a new canonical absolute runner root outside Git, and the provisioning environment, exact lock-bearing external Git-archive source, wheel, uv-managed Python, HOME/TMPDIR, materialized observer, provisioning freeze, and successful observation all stay beneath it. The root, its direct bootstrap directories, observer, freeze, and evidence paths are write-once, privately owned/mode-checked, and non-symlinked; a venv interpreter link is accepted only when its real target stays under the root's uv-managed Python directory. Its trust chain is: exact bytes and digest reviewed with this plan; committed planning lock digest `b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce`; external provisioning from grounded repository package/CI sources; exact `env -i` allowlist and uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/module/application-selector/plugin/root profile frozen by the observer's provision mode; plan digest and empty all-untracked Git status recorded before any SL-1 edit; one-process raw observation sealed before repo verifier authorship; independent post-observation parser and synthetic/tamper tests over the same exact bytes and provisioning/environment/plugin/root contract; tests-only four-seat panel binding of provisioning, observer, raw-observation, parser, and record digests; and immutable final chronology. The observer's own attestation is necessary raw evidence, not sufficient authority.
+No suitable immutable coordinator/runner observer exists for either complete pre-edit profile. The materialization command in `## Verification` extracts both exact payloads between their separate sentinels, appends each displayed terminal LF, and refuses any source-observer digest other than `841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d` (`39420` bytes) or Gate-A-observer digest other than `d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9` (`45116` bytes). The dedicated second payload preserves the already-reviewed source observer and keeps the installed-wheel/tests-only copied namespace, external standalone cwd, and absent sibling/root profile explicit rather than branching the source-layout contract. The bootstrap is intentionally external to every SL-1 tracked path: a coordinator supplies a new canonical absolute runner root outside Git, and the provisioning environment, exact lock-bearing external Git-archive source, wheel, uv-managed Python, HOME/TMPDIR, both materialized observers, provisioning freeze, exact committed Gate-A input copy, and both successful observations all stay beneath it. The root, its direct bootstrap directories, observers, freeze, copied input, and evidence paths are write-once, privately owned/mode-checked, and non-symlinked; a venv interpreter link is accepted only when its real target stays under the root's uv-managed Python directory. Its trust chain is: both exact payloads and digests reviewed with this plan; committed planning lock digest `b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce`; external provisioning from grounded repository package/CI sources; exact mode-specific `env -i` allowlists and uv/interpreter/package/source/wheel/distribution/RECORD/`sys.path`/module/application-selector/plugin/root profiles; plan digest and empty all-untracked Git status recorded before any SL-1 edit; source-layout and copied-tree raw observations sealed before repo verifier authorship; immediate independent-constant comparison of the observed four-module/48-node and `39 + 4 + 59 = 102` pair; independent post-observation parser and synthetic/tamper tests over both exact payloads and their provisioning/environment/plugin/root contracts; tests-only four-seat panel binding of provisioning, both observers, both raw observations, parser, and record digests; and immutable final chronology. Each observer's own attestation is necessary raw evidence, not sufficient authority.
 
 <!-- REVIEWTRUTH_BASELINE_OBSERVER_BEGIN -->
 ```python
@@ -1413,6 +1479,954 @@ if __name__ == "__main__":
 ```
 <!-- REVIEWTRUTH_BASELINE_OBSERVER_END -->
 
+<!-- REVIEWTRUTH_GATE_A_BASELINE_OBSERVER_BEGIN -->
+```python
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hashlib
+import importlib
+import importlib.metadata
+import inspect
+import io
+import json
+import os
+from pathlib import Path
+import site
+import stat
+import subprocess
+import sys
+import uuid
+import zipfile
+
+import pytest
+
+SCHEMA = "reviewtruth.gate-a-preimplementation-observation.v1"
+SOURCE_SCHEMA = "reviewtruth.baseline-observation.v3"
+PROVISION_SCHEMA = "reviewtruth.bootstrap-provisioning.v1"
+SOURCE_OBSERVER_SHA256 = "841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d"
+SOURCE_ARTIFACT_NAMES = (
+    "broad.xml",
+    "full-nodeids.txt",
+    "legitimate-skips.json",
+    "marker-deselected-nodeids.txt",
+    "plugin-events.json",
+    "selected-nodeids.txt",
+    "stderr.txt",
+    "stdout.txt",
+)
+MARKER = "dotfiles_integration"
+PROFILE_SELECTOR = "phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands"
+SKILL_SOURCE_SELECTOR = "phase_loop_runtime.skill_sources_plugin:register_skill_sources"
+APPLICATION_PLUGIN_GROUPS = (
+    "phase_loop_runtime.profile_commands",
+    "phase_loop_runtime.skill_sources",
+)
+EXPECTED_ENTRY_POINTS = {
+    "phase_loop_runtime.profile_commands": ("dotfiles", PROFILE_SELECTOR),
+    "phase_loop_runtime.skill_sources": ("dotfiles", SKILL_SOURCE_SELECTOR),
+}
+OMITTED_STANDALONE_PATHS = (
+    ".github/workflows",
+    "RELEASE_PIN",
+    "bootstrap.sh",
+    "docs",
+    "install.sh",
+    "phase-loop-runtime/pyproject.toml",
+    "phase-loop-runtime/scripts",
+    "phase-loop-runtime/uv.lock",
+    "phase-loop-skills",
+    "plans",
+    "skills-src",
+    "specs",
+)
+
+
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical_json(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def sorted_lf(values: list[str]) -> bytes:
+    return "".join(f"{value}\n" for value in sorted(values)).encode()
+
+
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def exact_absolute(raw: str, label: str, *, exists: bool = True) -> Path:
+    path = Path(raw)
+    if not path.is_absolute():
+        raise RuntimeError(f"{label} must be absolute")
+    resolved = path.resolve(strict=exists)
+    if path != resolved:
+        raise RuntimeError(f"{label} must be canonical and non-symlinked")
+    return path
+
+
+def require_private(path: Path, *, directory: bool) -> None:
+    if not path.is_absolute() or path != path.resolve(strict=True):
+        raise RuntimeError(f"private path is not canonical: {path}")
+    metadata = path.lstat()
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise RuntimeError(f"private path has wrong type: {path}")
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise RuntimeError(f"private path has wrong owner or mode: {path}")
+
+
+def git(repo: Path, *argv: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(repo), *argv],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout
+
+
+def snapshot(repo: Path) -> dict[str, object]:
+    status = git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    return {
+        "head": git(repo, "rev-parse", "HEAD").decode().strip(),
+        "head_tree": git(repo, "rev-parse", "HEAD^{tree}").decode().strip(),
+        "index_tree": git(repo, "write-tree").decode().strip(),
+        "status_porcelain_v1_z_hex": status.hex(),
+        "status_sha256": sha(status),
+        "clean": status == b"",
+    }
+
+
+def write_new(path: Path, data: bytes, mode: int = 0o600) -> None:
+    if not path.is_absolute() or path.parent != path.parent.resolve(strict=True):
+        raise RuntimeError(f"output parent must be canonical and absolute: {path}")
+    if path.exists() or path.is_symlink():
+        raise RuntimeError(f"output must be new and non-symlinked: {path}")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
+
+
+def source_observation_manifest(
+    source_observation: Path, source_attestation: dict[str, object]
+) -> list[dict[str, object]]:
+    require_private(source_observation, directory=True)
+    if stat.S_IMODE(source_observation.stat().st_mode) != 0o700:
+        raise RuntimeError("source observation directory mode is not exactly 0700")
+    artifacts = source_attestation.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(SOURCE_ARTIFACT_NAMES):
+        raise RuntimeError("source attestation artifact set is not exact")
+    expected_names = set(SOURCE_ARTIFACT_NAMES) | {"attestation.json"}
+    children = sorted(source_observation.iterdir(), key=lambda path: path.name)
+    if {path.name for path in children} != expected_names:
+        raise RuntimeError("complete source observation file set drifted")
+    records = []
+    for path in children:
+        require_private(path, directory=False)
+        if path.parent != source_observation or path != path.resolve(strict=True):
+            raise RuntimeError(f"source observation path is not canonical and direct: {path}")
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode != 0o600:
+            raise RuntimeError(f"source observation file mode is not exactly 0600: {path}")
+        data = path.read_bytes()
+        record = {
+            "relative_path": path.name,
+            "mode": "0600",
+            "bytes": len(data),
+            "sha256": sha(data),
+        }
+        if path.name != "attestation.json":
+            expected = artifacts.get(path.name)
+            if not isinstance(expected, dict) or set(expected) != {"bytes", "sha256"}:
+                raise RuntimeError(f"source artifact metadata is malformed: {path.name}")
+            if expected != {"bytes": len(data), "sha256": sha(data)}:
+                raise RuntimeError(f"source artifact bytes or digest drifted: {path.name}")
+        records.append(record)
+    return records
+
+
+def expected_initial_environment(runner_root: Path, tests_root: Path) -> dict[str, str]:
+    return {
+        "HOME": str(runner_root / "home"),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": f"{runner_root / 'venv' / 'bin'}:/usr/bin:/bin",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONPATH": str(tests_root),
+        "TMPDIR": str(runner_root / "tmp"),
+    }
+
+
+def expected_post_environment(runner_root: Path, tests_root: Path) -> dict[str, str]:
+    return {
+        **expected_initial_environment(runner_root, tests_root),
+        "PHASE_LOOP_PROFILE_PLUGINS": PROFILE_SELECTOR,
+        "PHASE_LOOP_SKILL_SOURCE_PLUGINS": SKILL_SOURCE_SELECTOR,
+    }
+
+
+def environment_snapshot() -> dict[str, str]:
+    return {key: os.environ[key] for key in sorted(os.environ)}
+
+
+def copied_tests_manifest(repo: Path, tests_root: Path) -> list[dict[str, object]]:
+    raw = git(repo, "ls-tree", "-r", "-z", "HEAD", "--", "phase-loop-runtime/tests")
+    expected_paths: set[str] = set()
+    records: list[dict[str, object]] = []
+    for entry in raw.split(b"\0"):
+        if not entry:
+            continue
+        metadata, encoded_path = entry.split(b"\t", 1)
+        mode, kind, oid = metadata.decode().split()
+        repo_path_text = encoded_path.decode()
+        if kind != "blob" or mode not in {"100644", "100755"}:
+            raise RuntimeError(f"unsupported committed tests entry: {repo_path_text}")
+        relative = Path(repo_path_text).relative_to("phase-loop-runtime/tests").as_posix()
+        expected_paths.add(relative)
+        repo_path = repo / repo_path_text
+        copied_path = tests_root / relative
+        if repo_path.is_symlink() or copied_path.is_symlink():
+            raise RuntimeError(f"symlinked test input is forbidden: {repo_path_text}")
+        repo_bytes = repo_path.read_bytes()
+        copied_bytes = copied_path.read_bytes()
+        blob_bytes = git(repo, "cat-file", "blob", oid)
+        if repo_bytes != blob_bytes or copied_bytes != blob_bytes:
+            raise RuntimeError(f"copied test differs from committed blob: {repo_path_text}")
+        copied_mode = stat.S_IMODE(copied_path.stat().st_mode)
+        if copied_path.stat().st_uid != os.getuid() or copied_mode & 0o077:
+            raise RuntimeError(f"copied test is not private: {copied_path}")
+        records.append(
+            {
+                "repo_path": repo_path_text,
+                "copied_relative_path": relative,
+                "git_mode": mode,
+                "git_oid": oid,
+                "copied_mode": oct(copied_mode),
+                "sha256": sha(copied_bytes),
+                "bytes": len(copied_bytes),
+            }
+        )
+    actual_paths: set[str] = set()
+    for path in tests_root.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(f"symlink in copied tests tree: {path}")
+        metadata = path.lstat()
+        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise RuntimeError(f"copied tests owner or mode escaped privacy: {path}")
+        if path.is_file():
+            actual_paths.add(path.relative_to(tests_root).as_posix())
+    if actual_paths != expected_paths or not records:
+        raise RuntimeError("copied tests inventory differs from exact committed tests inventory")
+    return sorted(records, key=lambda row: str(row["repo_path"]))
+
+
+def omitted_roots_record(tests_root: Path) -> dict[str, object]:
+    runtime_root = tests_root.parent
+    standalone_root = runtime_root.parent
+    detector_root = (tests_root / "x").resolve().parents[3]
+    if sorted(path.name for path in runtime_root.iterdir()) != ["tests"]:
+        raise RuntimeError("standalone runtime root must contain only tests")
+    if sorted(path.name for path in standalone_root.iterdir()) != ["phase-loop-runtime"]:
+        raise RuntimeError("standalone root must contain only phase-loop-runtime")
+    if sorted(path.name for path in detector_root.iterdir()) != ["standalone"]:
+        raise RuntimeError("parents[3] detector root must contain only standalone")
+    rows = []
+    for scope, root in (("standalone", standalone_root), ("parents_3", detector_root)):
+        for relative in OMITTED_STANDALONE_PATHS:
+            path = root / relative
+            rows.append(
+                {
+                    "scope": scope,
+                    "relative_path": relative,
+                    "exists": path.exists() or path.is_symlink(),
+                }
+            )
+    if any(row["exists"] for row in rows):
+        raise RuntimeError(f"intentional standalone omission unexpectedly exists: {rows!r}")
+    detector_present = (detector_root / "claude-config").is_dir() and (
+        detector_root / "bootstrap.sh"
+    ).is_file()
+    if detector_present:
+        raise RuntimeError("copied tests parents[3] resolves a dotfiles tree")
+    return {
+        "standalone_root": str(standalone_root),
+        "runtime_root": str(runtime_root),
+        "tests_root": str(tests_root),
+        "parents_3_detector_root": str(detector_root),
+        "parents_3_dotfiles_present": detector_present,
+        "omitted": rows,
+        "omitted_sha256": sha(canonical_json(rows)),
+    }
+
+
+def canonical_nodeid(nodeid: str, tests_root: Path, rootpath: Path) -> str:
+    path_text, marker, suffix = nodeid.partition("::")
+    path = Path(path_text)
+    if not path.is_absolute():
+        path = rootpath / path
+    resolved = path.resolve()
+    try:
+        relative = resolved.relative_to(tests_root).as_posix()
+    except ValueError as exc:
+        raise RuntimeError(f"nodeid escaped copied tests tree: {nodeid}") from exc
+    return "phase-loop-runtime/tests/" + relative + ((marker + suffix) if marker else "")
+
+
+def normalized_reason(value: object, repo: Path, standalone_root: Path) -> str:
+    text = str(value).replace(str(standalone_root), "<REPO>")
+    return text.replace(str(repo), "<REPO>")
+
+
+def file_record(path: Path | None, repo: Path, tests_root: Path, venv: Path) -> dict[str, object] | None:
+    if path is None or not path.exists():
+        return None
+    resolved = path.resolve()
+    if is_within(resolved, repo):
+        raise RuntimeError(f"Gate A loaded source from the git worktree: {resolved}")
+    if is_within(resolved, tests_root):
+        location = "copied_tests"
+        relative = resolved.relative_to(tests_root).as_posix()
+    elif is_within(resolved, venv):
+        location = "isolated_venv"
+        relative = resolved.relative_to(venv).as_posix()
+    else:
+        location = "managed_python_or_stdlib"
+        relative = None
+    data = resolved.read_bytes() if resolved.is_file() else b""
+    return {
+        "path": str(resolved),
+        "location": location,
+        "relative_path": relative,
+        "sha256": sha(data) if data else None,
+        "bytes": len(data) if data else None,
+    }
+
+
+def wheel_module_record(module_name: str, wheel: Path, runner_root: Path) -> dict[str, object]:
+    module = importlib.import_module(module_name)
+    module_path = Path(module.__file__).resolve()
+    venv = (runner_root / "venv").resolve()
+    if not is_within(module_path, venv):
+        raise RuntimeError(f"installed module escaped isolated venv: {module_name}")
+    distribution = importlib.metadata.distribution("phase-loop-runtime")
+    distribution_root = Path(distribution.locate_file("")).resolve()
+    member = module_path.relative_to(distribution_root).as_posix()
+    with zipfile.ZipFile(wheel) as archive:
+        wheel_bytes = archive.read(member)
+    installed_bytes = module_path.read_bytes()
+    if installed_bytes != wheel_bytes:
+        raise RuntimeError(f"installed module differs from local wheel member: {member}")
+    return {
+        "module": module_name,
+        "installed_path": str(module_path),
+        "wheel_member": member,
+        "sha256": sha(installed_bytes),
+        "bytes": len(installed_bytes),
+    }
+
+
+def entry_point_records(group: str) -> list[dict[str, object]]:
+    try:
+        points = importlib.metadata.entry_points(group=group)
+    except TypeError:
+        points = importlib.metadata.entry_points().get(group, [])
+    return sorted(
+        [
+            {
+                "group": group,
+                "name": point.name,
+                "value": point.value,
+                "distribution": getattr(getattr(point, "dist", None), "name", None),
+                "distribution_version": getattr(getattr(point, "dist", None), "version", None),
+                "distribution_path": str(getattr(getattr(point, "dist", None), "_path", "")),
+            }
+            for point in points
+        ],
+        key=lambda row: (str(row["name"]), str(row["value"])),
+    )
+
+
+def application_profile(repo: Path, runner_root: Path, tests_root: Path, wheel: Path) -> dict[str, object]:
+    post_environment = environment_snapshot()
+    if post_environment != expected_post_environment(runner_root, tests_root):
+        raise RuntimeError(f"Gate A post-pytest environment drift: {post_environment!r}")
+    entry_points = {group: entry_point_records(group) for group in APPLICATION_PLUGIN_GROUPS}
+    for group, expected in EXPECTED_ENTRY_POINTS.items():
+        records = entry_points[group]
+        if len(records) != 1:
+            raise RuntimeError(f"Gate A expected one installed entry point for {group}")
+        record = records[0]
+        if (record["name"], record["value"]) != expected:
+            raise RuntimeError(f"Gate A entry-point value drift for {group}")
+        if str(record["distribution"]).lower() != "phase-loop-runtime":
+            raise RuntimeError(f"Gate A entry point is not from phase-loop-runtime: {record!r}")
+        if not is_within(Path(str(record["distribution_path"])).resolve(), runner_root / "venv"):
+            raise RuntimeError(f"Gate A entry point escaped isolated venv: {record!r}")
+    from phase_loop_runtime.cli import _profile_command_registrars
+    from phase_loop_runtime.skill_inventory import iter_skill_source_roots
+
+    registrars = list(_profile_command_registrars())
+    if len(registrars) != 1:
+        raise RuntimeError("Gate A did not load exactly one profile registrar")
+    module_name, _, attribute = SKILL_SOURCE_SELECTOR.partition(":")
+    provider = getattr(importlib.import_module(module_name), attribute)
+    if getattr(registrars[0], "__module__", None) != "phase_loop_runtime.dotfiles_profile_plugin":
+        raise RuntimeError("Gate A loaded wrong profile registrar")
+    if getattr(provider, "__module__", None) != "phase_loop_runtime.skill_sources_plugin":
+        raise RuntimeError("Gate A loaded wrong skill-source provider")
+    roots = [
+        {"harness": harness, "roots": list(values)}
+        for harness, values in iter_skill_source_roots()
+    ]
+    expected_roots = [
+        {"harness": "claude", "roots": ["skills-src/claude"]},
+        {"harness": "codex", "roots": ["skills-src/codex"]},
+        {"harness": "gemini", "roots": ["skills-src/gemini"]},
+        {"harness": "opencode", "roots": ["skills-src/opencode"]},
+    ]
+    if roots != expected_roots:
+        raise RuntimeError(f"Gate A skill-source declaration drift: {roots!r}")
+    modules = [
+        wheel_module_record("phase_loop_runtime", wheel, runner_root),
+        wheel_module_record("phase_loop_runtime.dotfiles_profile_plugin", wheel, runner_root),
+        wheel_module_record("phase_loop_runtime.skill_sources_plugin", wheel, runner_root),
+    ]
+    if any(is_within(Path(entry or os.getcwd()).resolve(), repo) for entry in sys.path):
+        raise RuntimeError("Gate A sys.path reaches the git worktree")
+    if site.ENABLE_USER_SITE:
+        raise RuntimeError("Gate A user site is enabled")
+    return {
+        "post_pytest_environment": post_environment,
+        "entry_points": entry_points,
+        "installed_wheel_modules": modules,
+        "skill_source_roots": roots,
+        "sys_path": list(sys.path),
+        "enable_user_site": site.ENABLE_USER_SITE,
+    }
+
+
+class Observer:
+    def __init__(self, repo: Path, runner_root: Path, tests_root: Path, wheel: Path) -> None:
+        self.repo = repo
+        self.runner_root = runner_root
+        self.tests_root = tests_root
+        self.standalone_root = tests_root.parent.parent
+        self.wheel = wheel
+        self.rootpath = tests_root
+        self.process = {"pid": os.getpid(), "ppid": os.getppid(), "cwd": os.getcwd()}
+        self.initial_environment = environment_snapshot()
+        self.full: list[str] = []
+        self.selected: list[str] = []
+        self.deselected: list[str] = []
+        self.markers: dict[str, list[str]] = {}
+        self.collection_skips: list[dict[str, str]] = []
+        self.runtime_skips: list[dict[str, str]] = []
+        self.plugins: list[dict[str, object]] = []
+        self.application_plugins: dict[str, object] = {}
+
+    def nodeid(self, value: str) -> str:
+        return canonical_nodeid(value, self.tests_root, self.rootpath)
+
+    @pytest.hookimpl(hookwrapper=True, tryfirst=True)
+    def pytest_collection_modifyitems(self, session, config, items):
+        self.rootpath = Path(config.rootpath).resolve()
+        self.full = [self.nodeid(item.nodeid) for item in items]
+        self.markers = {
+            self.nodeid(item.nodeid): sorted({marker.name for marker in item.iter_markers()})
+            for item in items
+        }
+        yield
+        self.selected = [self.nodeid(item.nodeid) for item in items]
+
+    def pytest_deselected(self, items):
+        self.deselected.extend(self.nodeid(item.nodeid) for item in items)
+
+    def pytest_runtest_logreport(self, report):
+        if report.skipped:
+            self.runtime_skips.append(
+                {
+                    "nodeid": self.nodeid(report.nodeid),
+                    "phase": report.when,
+                    "reason": normalized_reason(report.longrepr, self.repo, self.standalone_root),
+                }
+            )
+
+    def pytest_collectreport(self, report):
+        if report.skipped:
+            self.collection_skips.append(
+                {
+                    "nodeid": self.nodeid(report.nodeid),
+                    "phase": "collect",
+                    "reason": normalized_reason(report.longrepr, self.repo, self.standalone_root),
+                }
+            )
+
+    def pytest_sessionfinish(self, session, exitstatus):
+        manager = session.config.pluginmanager
+        distributions = {id(plugin): dist for plugin, dist in manager.list_plugin_distinfo()}
+        venv = (self.runner_root / "venv").resolve()
+        records = []
+        for name, plugin in manager.list_name_plugin():
+            module = plugin if inspect.ismodule(plugin) else inspect.getmodule(plugin)
+            module_name = getattr(module, "__name__", type(plugin).__module__)
+            module_path = (
+                Path(module.__file__)
+                if module is not None and getattr(module, "__file__", None)
+                else None
+            )
+            dist = distributions.get(id(plugin))
+            records.append(
+                {
+                    "plugin_name": str(name),
+                    "module": module_name,
+                    "class": type(plugin).__qualname__,
+                    "distribution": getattr(dist, "project_name", None),
+                    "distribution_version": getattr(dist, "version", None),
+                    "file": file_record(module_path, self.repo, self.tests_root, venv),
+                }
+            )
+        self.plugins = sorted(records, key=lambda row: (row["plugin_name"], row["module"]))
+        self.application_plugins = application_profile(
+            self.repo, self.runner_root, self.tests_root, self.wheel
+        )
+
+    def payload(self, pytest_argv: list[str], exit_code: int) -> dict[str, object]:
+        full = sorted(self.full)
+        selected = sorted(self.selected)
+        deselected = sorted(self.deselected)
+        difference = sorted(set(full) - set(selected))
+        if len(full) != len(set(full)) or len(selected) != len(set(selected)):
+            raise RuntimeError("Gate A duplicate collected or selected nodeid")
+        if difference != deselected or len(deselected) != len(set(deselected)):
+            raise RuntimeError("Gate A deselection notification differs from full-minus-selected")
+        if any(MARKER not in self.markers.get(nodeid, []) for nodeid in difference):
+            raise RuntimeError("Gate A non-marker nodeid appeared in marker difference")
+        if any(MARKER in self.markers.get(nodeid, []) for nodeid in selected):
+            raise RuntimeError("Gate A marker-filtered nodeid survived selection")
+        post_environment = environment_snapshot()
+        if post_environment != expected_post_environment(self.runner_root, self.tests_root):
+            raise RuntimeError("Gate A environment drifted after pytest")
+        return {
+            "schema": SCHEMA,
+            "process": self.process,
+            "pytest_argv": pytest_argv,
+            "pytest_argv_sha256": sha(canonical_json(pytest_argv)),
+            "exit_code": exit_code,
+            "full_nodeids": full,
+            "selected_nodeids": selected,
+            "marker_deselected_nodeids": difference,
+            "markers_by_nodeid": {key: self.markers[key] for key in sorted(self.markers)},
+            "collection_skips": sorted(
+                self.collection_skips,
+                key=lambda row: (row["nodeid"], row["phase"], row["reason"]),
+            ),
+            "runtime_skips": sorted(
+                self.runtime_skips,
+                key=lambda row: (row["nodeid"], row["phase"], row["reason"]),
+            ),
+            "plugins": self.plugins,
+            "environment_before_pytest": self.initial_environment,
+            "environment_after_pytest": post_environment,
+            "application_plugins": self.application_plugins,
+        }
+
+
+def row_key(row: dict[str, str]) -> tuple[str, str, str]:
+    return row["nodeid"], row["phase"], row["reason"]
+
+
+def rows_from_keys(values: set[tuple[str, str, str]]) -> list[dict[str, str]]:
+    return [
+        {"nodeid": nodeid, "phase": phase, "reason": reason}
+        for nodeid, phase, reason in sorted(values)
+    ]
+
+
+def rows_digest(rows: list[dict[str, str]]) -> str:
+    return sha(canonical_json(rows))
+
+
+def paired_profile(source: dict[str, object], gate: dict[str, object]) -> dict[str, object]:
+    if len(source["full_nodeids"]) != len(set(source["full_nodeids"])):
+        raise RuntimeError("source observation contains duplicate full nodeids")
+    if len(source["selected_nodeids"]) != len(set(source["selected_nodeids"])):
+        raise RuntimeError("source observation contains duplicate selected nodeids")
+    source_full = set(source["full_nodeids"])
+    source_selected = set(source["selected_nodeids"])
+    gate_full = set(gate["full_nodeids"])
+    gate_selected = set(gate["selected_nodeids"])
+    if not gate_full <= source_full or not gate_selected <= source_selected:
+        raise RuntimeError("Gate A introduced a nodeid absent from source observation")
+    omitted_full = sorted(source_full - gate_full)
+    omitted_selected = sorted(source_selected - gate_selected)
+    omitted_modules = sorted({nodeid.split("::", 1)[0] for nodeid in omitted_selected})
+    source_rows = source["legitimate_skips"]
+    source_collection = {row_key(row) for row in source_rows if row["phase"] == "collect"}
+    source_runtime = {row_key(row) for row in source_rows if row["phase"] != "collect"}
+    gate_collection = {row_key(row) for row in gate["collection_skips"]}
+    gate_runtime = {row_key(row) for row in gate["runtime_skips"]}
+    restricted_collection = rows_from_keys(source_collection & gate_collection)
+    restricted_runtime = rows_from_keys(source_runtime & gate_runtime)
+    boundary_collection = rows_from_keys(gate_collection - source_collection)
+    boundary_runtime = rows_from_keys(gate_runtime - source_runtime)
+    expected_collection = rows_from_keys(
+        {row_key(row) for row in restricted_collection + boundary_collection}
+    )
+    expected_runtime = rows_from_keys(
+        {row_key(row) for row in restricted_runtime + boundary_runtime}
+    )
+    restricted_union = rows_from_keys(
+        {row_key(row) for row in restricted_collection + restricted_runtime}
+    )
+    expected_union = rows_from_keys(
+        {row_key(row) for row in expected_collection + expected_runtime}
+    )
+    if expected_collection != rows_from_keys(gate_collection):
+        raise RuntimeError("Gate A collection pair decomposition is incomplete")
+    if expected_runtime != rows_from_keys(gate_runtime):
+        raise RuntimeError("Gate A runtime pair decomposition is incomplete")
+    source_marker = set(source["marker_deselected_nodeids"])
+    gate_marker = set(gate["marker_deselected_nodeids"])
+    if gate_marker != source_marker - set(omitted_selected):
+        raise RuntimeError("Gate A marker accounting is not the source marker set minus omissions")
+    return {
+        "source_full_count": len(source_full),
+        "source_full_sha256": sha(sorted_lf(list(source_full))),
+        "source_selected_count": len(source_selected),
+        "source_selected_sha256": sha(sorted_lf(list(source_selected))),
+        "gate_a_full_count": len(gate_full),
+        "gate_a_full_sha256": sha(sorted_lf(list(gate_full))),
+        "gate_a_selected_count": len(gate_selected),
+        "gate_a_selected_sha256": sha(sorted_lf(list(gate_selected))),
+        "omitted_full_count": len(omitted_full),
+        "omitted_full_sha256": sha(sorted_lf(omitted_full)),
+        "omitted_selected_count": len(omitted_selected),
+        "omitted_selected_sha256": sha(sorted_lf(omitted_selected)),
+        "omitted_full_equals_omitted_selected": omitted_full == omitted_selected,
+        "omitted_modules": omitted_modules,
+        "omitted_modules_count": len(omitted_modules),
+        "restricted_source_collection_count": len(restricted_collection),
+        "restricted_source_collection_sha256": rows_digest(restricted_collection),
+        "restricted_source_runtime_count": len(restricted_runtime),
+        "restricted_source_runtime_sha256": rows_digest(restricted_runtime),
+        "restricted_source_count": len(restricted_union),
+        "restricted_source_sha256": rows_digest(restricted_union),
+        "boundary_collection_count": len(boundary_collection),
+        "boundary_collection_sha256": rows_digest(boundary_collection),
+        "boundary_runtime_count": len(boundary_runtime),
+        "boundary_runtime_sha256": rows_digest(boundary_runtime),
+        "expected_collection_count": len(expected_collection),
+        "expected_collection_sha256": rows_digest(expected_collection),
+        "expected_runtime_count": len(expected_runtime),
+        "expected_runtime_sha256": rows_digest(expected_runtime),
+        "expected_gate_a_count": len(expected_union),
+        "expected_gate_a_sha256": rows_digest(expected_union),
+        "source_marker_deselected_count": len(source_marker),
+        "source_marker_deselected_sha256": sha(sorted_lf(list(source_marker))),
+        "gate_a_marker_deselected_count": len(gate_marker),
+        "gate_a_marker_deselected_sha256": sha(sorted_lf(list(gate_marker))),
+    }
+
+
+def main() -> int:
+    os.umask(0o077)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--plan", required=True)
+    parser.add_argument("--roadmap", required=True)
+    parser.add_argument("--runner-root", required=True)
+    parser.add_argument("--wheel", required=True)
+    parser.add_argument("--provisioning", required=True)
+    parser.add_argument("--source-observation-dir", required=True)
+    parser.add_argument("--tests-root", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--observer-sha256", required=True)
+    args = parser.parse_args()
+
+    repo = exact_absolute(args.repo, "--repo")
+    if Path(git(repo, "rev-parse", "--show-toplevel").decode().strip()).resolve() != repo:
+        raise RuntimeError("--repo is not the exact git toplevel")
+    runner_root = exact_absolute(args.runner_root, "--runner-root")
+    require_private(runner_root, directory=True)
+    plan = exact_absolute(args.plan, "--plan")
+    roadmap = exact_absolute(args.roadmap, "--roadmap")
+    wheel = exact_absolute(args.wheel, "--wheel")
+    provisioning_path = exact_absolute(args.provisioning, "--provisioning")
+    source_observation = exact_absolute(args.source_observation_dir, "--source-observation-dir")
+    tests_root = exact_absolute(args.tests_root, "--tests-root")
+    final = exact_absolute(args.out, "--out", exists=False)
+    expected_tests_root = (
+        runner_root
+        / "gate-a-preimplementation-input"
+        / "standalone"
+        / "phase-loop-runtime"
+        / "tests"
+    )
+    expected_source_observation = runner_root / "evidence" / "reviewtruth-baseline-preimplementation"
+    expected_final = runner_root / "evidence" / "reviewtruth-gate-a-preimplementation"
+    expected_provisioning = runner_root / "evidence" / "reviewtruth-bootstrap-provisioning.json"
+    if plan != repo / "plans" / "phase-plan-v10-REVIEWTRUTH.md":
+        raise RuntimeError("Gate A plan path is not exact")
+    if roadmap != repo / "specs" / "phase-plans-v10.md":
+        raise RuntimeError("Gate A roadmap path is not exact")
+    if provisioning_path != expected_provisioning:
+        raise RuntimeError("Gate A provisioning path is not exact")
+    if tests_root != expected_tests_root:
+        raise RuntimeError("Gate A tests root is not the exact external standalone copy path")
+    if source_observation != expected_source_observation:
+        raise RuntimeError("source observation path is not the exact paired write-once path")
+    if final != expected_final or final.exists() or final.is_symlink():
+        raise RuntimeError("Gate A output is not the exact new write-once path")
+    observer_path = exact_absolute(str(Path(__file__)), "observer source")
+    expected_observer = runner_root / "materialized" / "reviewtruth-gate-a-baseline-observer.py"
+    observer_bytes = observer_path.read_bytes()
+    if observer_path != expected_observer or sha(observer_bytes) != args.observer_sha256:
+        raise RuntimeError("Gate A observer path or digest mismatch")
+    initial_environment = environment_snapshot()
+    if initial_environment != expected_initial_environment(runner_root, tests_root):
+        raise RuntimeError(f"Gate A initial environment drift: {initial_environment!r}")
+    if Path(sys.executable) != runner_root / "venv" / "bin" / "python":
+        raise RuntimeError("Gate A observer did not use exact isolated interpreter")
+    if any((runner_root / "home").iterdir()):
+        raise RuntimeError("Gate A controlled HOME must be empty")
+
+    provisioning_bytes = provisioning_path.read_bytes()
+    provisioning = json.loads(provisioning_bytes)
+    if provisioning.get("schema") != PROVISION_SCHEMA:
+        raise RuntimeError("Gate A provisioning schema mismatch")
+    if canonical_json(provisioning) != provisioning_bytes:
+        raise RuntimeError("Gate A provisioning record is not canonical JSON")
+    source_observer_path = exact_absolute(
+        str(runner_root / "materialized" / "reviewtruth-baseline-observer.py"),
+        "source observer",
+    )
+    source_observer_bytes = source_observer_path.read_bytes()
+    if sha(source_observer_bytes) != SOURCE_OBSERVER_SHA256:
+        raise RuntimeError("source observer bytes differ from exact embedded payload")
+    expected_plan_binding = {"path": str(plan), "sha256": sha(plan.read_bytes())}
+    expected_roadmap_binding = {"path": str(roadmap), "sha256": sha(roadmap.read_bytes())}
+    expected_source_observer_binding = {
+        "path": str(source_observer_path),
+        "sha256": SOURCE_OBSERVER_SHA256,
+    }
+    if provisioning.get("observer") != expected_source_observer_binding:
+        raise RuntimeError("provisioning record is not bound to exact source observer")
+    if provisioning.get("plan") != expected_plan_binding:
+        raise RuntimeError("provisioning record is not bound to exact plan")
+    if provisioning.get("roadmap") != expected_roadmap_binding:
+        raise RuntimeError("provisioning record is not bound to exact roadmap")
+    if provisioning.get("plan", {}).get("sha256") != sha(plan.read_bytes()):
+        raise RuntimeError("plan changed after provisioning freeze")
+    if provisioning.get("roadmap", {}).get("sha256") != sha(roadmap.read_bytes()):
+        raise RuntimeError("roadmap changed after provisioning freeze")
+    wheel_record = provisioning.get("environment_contract", {}).get("wheel", {})
+    if wheel_record.get("path") != str(wheel) or wheel_record.get("sha256") != sha(wheel.read_bytes()):
+        raise RuntimeError("Gate A wheel differs from provisioning freeze")
+
+    source_attestation_path = source_observation / "attestation.json"
+    source_events_path = source_observation / "plugin-events.json"
+    source_attestation_bytes = source_attestation_path.read_bytes()
+    source_events_bytes = source_events_path.read_bytes()
+    source_attestation = json.loads(source_attestation_bytes)
+    source_events = json.loads(source_events_bytes)
+    if canonical_json(source_attestation) != source_attestation_bytes:
+        raise RuntimeError("source attestation is not canonical JSON")
+    if canonical_json(source_events) != source_events_bytes:
+        raise RuntimeError("source plugin events are not canonical JSON")
+    if source_attestation.get("schema") != SOURCE_SCHEMA or source_events.get("schema") != SOURCE_SCHEMA:
+        raise RuntimeError("source observation schema mismatch")
+    if source_attestation.get("runner_root") != str(runner_root):
+        raise RuntimeError("source observation runner root mismatch")
+    if source_attestation.get("observer") != expected_source_observer_binding:
+        raise RuntimeError("source observation is not bound to exact source observer")
+    if source_attestation.get("plan") != expected_plan_binding:
+        raise RuntimeError("source observation is not bound to exact plan")
+    if source_attestation.get("roadmap") != expected_roadmap_binding:
+        raise RuntimeError("source observation is not bound to exact roadmap")
+    if source_attestation.get("provisioning") != {
+        "path": str(provisioning_path),
+        "sha256": sha(provisioning_bytes),
+    }:
+        raise RuntimeError("source observation provisioning binding mismatch")
+    if source_attestation.get("environment_contract") != provisioning.get("environment_contract"):
+        raise RuntimeError("source observation environment contract mismatch")
+    if source_attestation.get("git_before") != source_attestation.get("git_after"):
+        raise RuntimeError("source observation did not preserve Git state")
+    if source_attestation.get("provisioning", {}).get("sha256") != sha(provisioning_bytes):
+        raise RuntimeError("source observation is not bound to exact provisioning record")
+    source_counts = source_attestation.get("counts")
+    expected_source_counts = {
+        "full": len(source_events["full_nodeids"]),
+        "selected": len(source_events["selected_nodeids"]),
+        "marker_deselected": len(source_events["marker_deselected_nodeids"]),
+        "legitimate_skips": len(source_events["legitimate_skips"]),
+    }
+    if source_counts != expected_source_counts:
+        raise RuntimeError("source observation counts do not match raw plugin events")
+    source_event_files = {
+        "full-nodeids.txt": sorted_lf(source_events["full_nodeids"]),
+        "selected-nodeids.txt": sorted_lf(source_events["selected_nodeids"]),
+        "marker-deselected-nodeids.txt": sorted_lf(source_events["marker_deselected_nodeids"]),
+        "legitimate-skips.json": canonical_json(source_events["legitimate_skips"]),
+    }
+    for name, expected_bytes in source_event_files.items():
+        if (source_observation / name).read_bytes() != expected_bytes:
+            raise RuntimeError(f"source raw event artifact differs from plugin events: {name}")
+    expected_source_set_sha256 = {
+        "full_sorted_lf": sha(source_event_files["full-nodeids.txt"]),
+        "selected_sorted_lf": sha(source_event_files["selected-nodeids.txt"]),
+        "marker_deselected_sorted_lf": sha(source_event_files["marker-deselected-nodeids.txt"]),
+    }
+    if source_attestation.get("set_sha256") != expected_source_set_sha256:
+        raise RuntimeError("source observation set digests differ from raw plugin events")
+    source_manifest_before = source_observation_manifest(source_observation, source_attestation)
+    source_manifest_bytes = canonical_json(source_manifest_before)
+    source_bound_bytes_before = {
+        "source_observer": source_observer_bytes,
+        "provisioning": provisioning_bytes,
+        "plan": plan.read_bytes(),
+        "roadmap": roadmap.read_bytes(),
+    }
+
+    before = snapshot(repo)
+    if not before["clean"] or before != source_attestation.get("git_after"):
+        raise RuntimeError("Gate A observation is not paired to the exact clean source HEAD")
+    tests_manifest_before = copied_tests_manifest(repo, tests_root)
+    omitted_roots = omitted_roots_record(tests_root)
+    observation_id = str(uuid.uuid4())
+    temporary = final.with_name(final.name + ".tmp-" + observation_id)
+    temporary.mkdir(mode=0o700, parents=False, exist_ok=False)
+    require_private(temporary, directory=True)
+    pytest_argv = [
+        str(tests_root),
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "-m",
+        "not dotfiles_integration",
+        f"--junitxml={temporary / 'broad.xml'}",
+    ]
+    observer = Observer(repo, runner_root, tests_root, wheel)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        exit_code = int(pytest.main(pytest_argv, plugins=[observer]))
+    events = observer.payload(pytest_argv, exit_code)
+    tests_manifest_after = copied_tests_manifest(repo, tests_root)
+    after = snapshot(repo)
+    if exit_code != 0:
+        raise RuntimeError(f"Gate A preimplementation suite exited {exit_code}")
+    if before != after or not after["clean"]:
+        raise RuntimeError("Git state changed during Gate A observation")
+    source_manifest_after = source_observation_manifest(source_observation, source_attestation)
+    if canonical_json(source_manifest_after) != source_manifest_bytes:
+        raise RuntimeError("complete source observation changed during Gate A observation")
+    source_bound_bytes_after = {
+        "source_observer": source_observer_path.read_bytes(),
+        "provisioning": provisioning_path.read_bytes(),
+        "plan": plan.read_bytes(),
+        "roadmap": roadmap.read_bytes(),
+    }
+    if source_bound_bytes_after != source_bound_bytes_before:
+        raise RuntimeError("source observer/plan/roadmap/provisioning binding changed during Gate A")
+    if tests_manifest_after != tests_manifest_before:
+        raise RuntimeError("copied tests changed during Gate A observation")
+    if any((runner_root / "home").iterdir()):
+        raise RuntimeError("Gate A controlled HOME changed during observation")
+
+    pair = paired_profile(source_events, events)
+    write_new(temporary / "stdout.txt", stdout.getvalue().encode())
+    write_new(temporary / "stderr.txt", stderr.getvalue().encode())
+    write_new(temporary / "plugin-events.json", canonical_json(events))
+    write_new(temporary / "full-nodeids.txt", sorted_lf(events["full_nodeids"]))
+    write_new(temporary / "selected-nodeids.txt", sorted_lf(events["selected_nodeids"]))
+    write_new(
+        temporary / "marker-deselected-nodeids.txt",
+        sorted_lf(events["marker_deselected_nodeids"]),
+    )
+    write_new(temporary / "collection-skips.json", canonical_json(events["collection_skips"]))
+    write_new(temporary / "runtime-skips.json", canonical_json(events["runtime_skips"]))
+    write_new(temporary / "copied-tests-manifest.json", canonical_json(tests_manifest_before))
+    write_new(temporary / "omitted-roots.json", canonical_json(omitted_roots))
+    write_new(temporary / "paired-profile.json", canonical_json(pair))
+    write_new(temporary / "source-observation-manifest.json", source_manifest_bytes)
+    artifacts = {}
+    for path in sorted(temporary.iterdir()):
+        if path.is_file():
+            data = path.read_bytes()
+            artifacts[path.name] = {"sha256": sha(data), "bytes": len(data)}
+    attestation = {
+        "schema": SCHEMA,
+        "observation_id": observation_id,
+        "runner_root": str(runner_root),
+        "tests_root": str(tests_root),
+        "observer": {"path": str(observer_path), "sha256": sha(observer_bytes)},
+        "provisioning": {"path": str(provisioning_path), "sha256": sha(provisioning_bytes)},
+        "source_observation": {
+            "path": str(source_observation),
+            "attestation_sha256": sha(source_attestation_bytes),
+            "plugin_events_sha256": sha(source_events_bytes),
+            "manifest_sha256": sha(source_manifest_bytes),
+            "manifest_entries": len(source_manifest_before),
+            "source_observer_sha256": sha(source_observer_bytes),
+            "plan_sha256": sha(source_bound_bytes_before["plan"]),
+            "roadmap_sha256": sha(source_bound_bytes_before["roadmap"]),
+            "provisioning_sha256": sha(provisioning_bytes),
+        },
+        "plan": {"path": str(plan), "sha256": sha(plan.read_bytes())},
+        "roadmap": {"path": str(roadmap), "sha256": sha(roadmap.read_bytes())},
+        "git_before": before,
+        "git_after": after,
+        "environment": {
+            "initial_allowlist": events["environment_before_pytest"],
+            "post_pytest": events["environment_after_pytest"],
+        },
+        "wheel": {"path": str(wheel), "sha256": sha(wheel.read_bytes())},
+        "pytest": {
+            "version": pytest.__version__,
+            "argv": pytest_argv,
+            "argv_sha256": events["pytest_argv_sha256"],
+            "plugins": events["plugins"],
+        },
+        "counts": {
+            "full": len(events["full_nodeids"]),
+            "selected": len(events["selected_nodeids"]),
+            "marker_deselected": len(events["marker_deselected_nodeids"]),
+            "collection_skips": len(events["collection_skips"]),
+            "runtime_skips": len(events["runtime_skips"]),
+        },
+        "pair_profile": pair,
+        "copied_tests_manifest_sha256": sha(canonical_json(tests_manifest_before)),
+        "omitted_roots_sha256": sha(canonical_json(omitted_roots)),
+        "artifacts": artifacts,
+    }
+    write_new(temporary / "attestation.json", canonical_json(attestation))
+    temporary.rename(final)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+<!-- REVIEWTRUTH_GATE_A_BASELINE_OBSERVER_END -->
+
 ## Spec Closeout Plan
 
 - schema: `spec_delta_closeout.v1`
@@ -1541,15 +2555,16 @@ jq -cn \
 REVIEWTRUTH_SL0_COORDINATOR_PROOF
 ```
 
-After that block has completed SL-0, SL-1 executes the following command bullets from top to bottom in exact order. Before the first command, the exact `phase-loop-runtime/uv.lock` planning prerequisite, this plan, and the separately ratified record must already be committed on canonical `main`; the lock must retain SHA-256 `b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce` and be visible in the exact `HEAD` tree/archive. The coordinator supplies an unset/nonexistent canonical absolute `REVIEWTRUTH_RUNNER_ROOT` whose existing parent is privately owned and not group/world-writable, plus canonical absolute `REVIEWTRUTH_UV`. The first operational command creates and provisions the external trust root from that exact lock-bearing archive without touching the worktree. The second materializes the exact reviewed observer payload without overwriting an existing path. The third uses the isolated environment's exact interpreter to freeze provisioning and its source/lock digests. The fourth runs the single-process observation on the untouched clean ratified base before any SL-1 edit, when the wrappers and tracked parser do not exist. Between the fourth and fifth operational commands, SL1-T1 authors only the literal exact-PyPI falsifier and runs its displayed RED command, then SL1-T2 implements only the parser/conftest disposition contract and runs the same immutable node GREEN; both outputs are retained. The fifth operational command runs only after `verify_reviewtruth_chronology.py` and its independent bootstrap/parser tests have been authored, consumes the explicit absolute write-once records, and retrospectively re-verifies the already-proved SL-0 facts. The first four commands form the complete pre-mutation provision/observe chain; the fifth is the post-authoring broad-baseline parse. The five commands marked `evidence: operational` remain the operational evidence chain; the inserted RED/then-GREEN commands and all later bullets are ordinary non-operational verifier commands. Every parser runs only after all named inputs exist:
+After that block has completed SL-0, SL-1 executes the following command bullets from top to bottom in exact order. Before the first command, the exact `phase-loop-runtime/uv.lock` planning prerequisite, this plan, and the separately ratified record must already be committed on canonical `main`; the lock must retain SHA-256 `b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce` and be visible in the exact `HEAD` tree/archive. The coordinator supplies an unset/nonexistent canonical absolute `REVIEWTRUTH_RUNNER_ROOT` whose existing parent is privately owned and not group/world-writable, plus canonical absolute `REVIEWTRUTH_UV`. The first operational command creates and provisions the external trust root from that exact lock-bearing archive without touching the worktree. The second materializes both exact reviewed observer payloads without overwriting either path. The third uses the isolated environment's exact interpreter to freeze provisioning and its source/lock digests. The fourth runs the source-layout single-process observation on the untouched clean ratified base. The fifth first independently validates the complete source observation and upstream bindings, freezes its canonical manifest, constructs a private external tests-only tree directly from the exact committed `phase-loop-runtime/tests/**` archive, runs the installed-wheel Gate-A observation from its standalone cwd, rechecks the complete source manifest byte-for-byte, seals the distinct write-once evidence directory, and immediately compares every exact source/Gate-A full/selected/marker/omission identity plus the skip profile to the planning-author constants. Both observations run before any SL-1 edit, when the wrappers and tracked parser do not exist. Between the fifth and sixth operational commands, SL1-T1 authors only the literal exact-PyPI falsifier and runs its displayed RED command, then SL1-T2 implements only the parser/conftest disposition contract and runs the same immutable node GREEN; both outputs are retained. The sixth operational command runs only after `verify_reviewtruth_chronology.py` and its independent bootstrap/parser tests have been authored, consumes both explicit absolute write-once observation records, and retrospectively re-verifies the already-proved SL-0 facts. The first five commands form the complete pre-mutation provision/paired-observe chain; the sixth is the post-authoring broad-baseline parse. The six commands marked `evidence: operational` remain the operational evidence chain; the inserted RED/then-GREEN commands and all later bullets are ordinary non-operational verifier commands. Every parser runs only after all named inputs exist:
 
 - `env -i REVIEWTRUTH_RUNNER_ROOT="$REVIEWTRUTH_RUNNER_ROOT" REVIEWTRUTH_UV="$REVIEWTRUTH_UV" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 /bin/bash -euo pipefail -c 'repo=$(git rev-parse --show-toplevel); root=$REVIEWTRUTH_RUNNER_ROOT; uv=$REVIEWTRUTH_UV; case "$root" in /*) ;; *) exit 71;; esac; case "$uv" in /*) ;; *) exit 72;; esac; test "$repo" = "$(realpath -e -- "$repo")"; test "$uv" = "$(realpath -e -- "$uv")"; test -x "$uv"; test ! -L "$uv"; parent=${root%/*}; test -n "$parent"; test "$parent" = "$(realpath -e -- "$parent")"; test "$(stat -c %u -- "$parent")" = "$(id -u)"; test $((8#$(stat -c %a -- "$parent") & 8#22)) -eq 0; case "$root/" in "$repo/"*) exit 73;; esac; case "$repo/" in "$root/"*) exit 74;; esac; test ! -e "$root"; test ! -L "$root"; test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"; before_head=$(git -C "$repo" rev-parse HEAD); before_tree=$(git -C "$repo" rev-parse "HEAD^{tree}"); before_index=$(git -C "$repo" write-tree); umask 077; mkdir -m 700 -- "$root"; mkdir -m 700 -- "$root"/{build,evidence,home,materialized,python,source,tmp,uv-cache,venv,wheels}; export HOME="$root/home" TMPDIR="$root/tmp" UV_CACHE_DIR="$root/uv-cache" UV_PYTHON_INSTALL_DIR="$root/python"; git -C "$repo" archive --format=tar HEAD:phase-loop-runtime | tar -xf - -C "$root/source"; cp -a -- "$root/source/." "$root/build/"; "$uv" venv --no-project --managed-python --python 3.12 --link-mode copy "$root/venv"; "$uv" build --wheel --no-create-gitignore --cache-dir "$root/uv-cache" --out-dir "$root/wheels" "$root/build"; wheels=("$root"/wheels/*.whl); test "${#wheels[@]}" -eq 1; test "${wheels[0]}" = "$root/wheels/phase_loop_runtime-0.7.13-py3-none-any.whl"; UV_PROJECT_ENVIRONMENT="$root/venv" "$uv" sync --frozen --extra visual --no-install-project --project "$root/source" --cache-dir "$root/uv-cache" --link-mode copy; "$uv" pip install --python "$root/venv/bin/python" --strict --link-mode copy --no-deps "${wheels[0]}"; "$uv" pip install --python "$root/venv/bin/python" --strict --link-mode copy pytest; "$uv" pip check --python "$root/venv/bin/python"; find "$root"/{build,evidence,home,materialized,source,tmp,wheels} -type d -exec chmod 700 {} +; find "$root"/{build,evidence,home,materialized,source,tmp,wheels} -type f -exec chmod 600 {} +; test -z "$(find "$root"/{build,evidence,home,materialized,source,tmp,wheels} ! -user "$(id -u)" -print -quit)"; test -z "$(find "$root"/{build,evidence,home,materialized,source,tmp,wheels} -perm /077 -print -quit)"; for name in build evidence home materialized python source tmp uv-cache venv wheels; do path="$root/$name"; test "$path" = "$(realpath -e -- "$path")"; test ! -L "$path"; test "$(stat -c %u -- "$path")" = "$(id -u)"; test $((8#$(stat -c %a -- "$path") & 8#77)) -eq 0; done; test -z "$(find "$root/source" "$root/build" "$root/evidence" "$root/home" "$root/materialized" "$root/tmp" "$root/wheels" -type l -print -quit)"; python_real=$(realpath -e -- "$root/venv/bin/python"); case "$python_real/" in "$root/python/"*) ;; *) exit 75;; esac; test "$before_head" = "$(git -C "$repo" rev-parse HEAD)"; test "$before_tree" = "$(git -C "$repo" rev-parse "HEAD^{tree}")"; test "$before_index" = "$(git -C "$repo" write-tree)"; test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"'` evidence: operational
-- `env -i REVIEWTRUTH_RUNNER_ROOT="$REVIEWTRUTH_RUNNER_ROOT" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 /bin/bash -euo pipefail -c 'repo=$(git rev-parse --show-toplevel); root=$(realpath -e -- "$REVIEWTRUTH_RUNNER_ROOT"); test "$root" = "$REVIEWTRUTH_RUNNER_ROOT"; test "$(stat -c %u -- "$root")" = "$(id -u)"; test "$(stat -c %a -- "$root")" = 700; observer="$root/materialized/reviewtruth-baseline-observer.py"; temporary="$observer.tmp"; test ! -e "$observer"; test ! -L "$observer"; test ! -e "$temporary"; before_head=$(git -C "$repo" rev-parse HEAD); before_tree=$(git -C "$repo" rev-parse "HEAD^{tree}"); before_index=$(git -C "$repo" write-tree); test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"; awk '\''BEGIN { fence=sprintf("%c%c%c",96,96,96) } /^<!-- REVIEWTRUTH_BASELINE_OBSERVER_BEGIN -->$/ { begin=1; next } begin == 1 { if ($0 != fence "python") exit 81; begin=2; next } begin == 2 && $0 == fence { done=1; exit } begin == 2 { print } END { if (begin != 2 || done != 1) exit 82 }'\'' "$repo/plans/phase-plan-v10-REVIEWTRUTH.md" >"$temporary"; test "$(sha256sum "$temporary" | cut -d" " -f1)" = 841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d; chmod 700 "$temporary"; mv -T -- "$temporary" "$observer"; test "$observer" = "$(realpath -e -- "$observer")"; test ! -L "$observer"; test "$(stat -c %u -- "$observer")" = "$(id -u)"; test "$(stat -c %a -- "$observer")" = 700; test "$before_head" = "$(git -C "$repo" rev-parse HEAD)"; test "$before_tree" = "$(git -C "$repo" rev-parse "HEAD^{tree}")"; test "$before_index" = "$(git -C "$repo" write-tree)"; test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"'` evidence: operational
+- `env -i REVIEWTRUTH_RUNNER_ROOT="$REVIEWTRUTH_RUNNER_ROOT" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 /bin/bash -euo pipefail -c 'repo=$(git rev-parse --show-toplevel); root=$(realpath -e -- "$REVIEWTRUTH_RUNNER_ROOT"); test "$root" = "$REVIEWTRUTH_RUNNER_ROOT"; test "$(stat -c %u -- "$root")" = "$(id -u)"; test "$(stat -c %a -- "$root")" = 700; source_observer="$root/materialized/reviewtruth-baseline-observer.py"; gate_observer="$root/materialized/reviewtruth-gate-a-baseline-observer.py"; source_temporary="$source_observer.tmp"; gate_temporary="$gate_observer.tmp"; for path in "$source_observer" "$gate_observer" "$source_temporary" "$gate_temporary"; do test ! -e "$path"; test ! -L "$path"; done; before_head=$(git -C "$repo" rev-parse HEAD); before_tree=$(git -C "$repo" rev-parse "HEAD^{tree}"); before_index=$(git -C "$repo" write-tree); test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"; awk '\''BEGIN { fence=sprintf("%c%c%c",96,96,96) } /^<!-- REVIEWTRUTH_BASELINE_OBSERVER_BEGIN -->$/ { begin=1; next } begin == 1 { if ($0 != fence "python") exit 81; begin=2; next } begin == 2 && $0 == fence { done=1; exit } begin == 2 { print } END { if (begin != 2 || done != 1) exit 82 }'\'' "$repo/plans/phase-plan-v10-REVIEWTRUTH.md" >"$source_temporary"; awk '\''BEGIN { fence=sprintf("%c%c%c",96,96,96) } /^<!-- REVIEWTRUTH_GATE_A_BASELINE_OBSERVER_BEGIN -->$/ { begin=1; next } begin == 1 { if ($0 != fence "python") exit 83; begin=2; next } begin == 2 && $0 == fence { done=1; exit } begin == 2 { print } END { if (begin != 2 || done != 1) exit 84 }'\'' "$repo/plans/phase-plan-v10-REVIEWTRUTH.md" >"$gate_temporary"; test "$(wc -c <"$source_temporary")" -eq 39420; test "$(sha256sum "$source_temporary" | cut -d" " -f1)" = 841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d; test "$(wc -c <"$gate_temporary")" -eq 45116; test "$(sha256sum "$gate_temporary" | cut -d" " -f1)" = d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9; chmod 700 "$source_temporary" "$gate_temporary"; mv -T -- "$source_temporary" "$source_observer"; mv -T -- "$gate_temporary" "$gate_observer"; for observer in "$source_observer" "$gate_observer"; do test "$observer" = "$(realpath -e -- "$observer")"; test ! -L "$observer"; test "$(stat -c %u -- "$observer")" = "$(id -u)"; test "$(stat -c %a -- "$observer")" = 700; done; test "$before_head" = "$(git -C "$repo" rev-parse HEAD)"; test "$before_tree" = "$(git -C "$repo" rev-parse "HEAD^{tree}")"; test "$before_index" = "$(git -C "$repo" write-tree)"; test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"'` evidence: operational
 - `env -i HOME="$REVIEWTRUTH_RUNNER_ROOT/home" PATH="$REVIEWTRUTH_RUNNER_ROOT/venv/bin:/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH="$PWD/phase-loop-runtime/src" TMPDIR="$REVIEWTRUTH_RUNNER_ROOT/tmp" "$REVIEWTRUTH_RUNNER_ROOT/venv/bin/python" "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py" --mode provision --repo "$PWD" --plan "$PWD/plans/phase-plan-v10-REVIEWTRUTH.md" --roadmap "$PWD/specs/phase-plans-v10.md" --runner-root "$REVIEWTRUTH_RUNNER_ROOT" --wheel "$REVIEWTRUTH_RUNNER_ROOT/wheels/phase_loop_runtime-0.7.13-py3-none-any.whl" --uv "$REVIEWTRUTH_UV" --out "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-bootstrap-provisioning.json" --observer-sha256 841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d` evidence: operational
 - `env -i HOME="$REVIEWTRUTH_RUNNER_ROOT/home" PATH="$REVIEWTRUTH_RUNNER_ROOT/venv/bin:/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH="$PWD/phase-loop-runtime/src" TMPDIR="$REVIEWTRUTH_RUNNER_ROOT/tmp" "$REVIEWTRUTH_RUNNER_ROOT/venv/bin/python" "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py" --mode observe --repo "$PWD" --plan "$PWD/plans/phase-plan-v10-REVIEWTRUTH.md" --roadmap "$PWD/specs/phase-plans-v10.md" --runner-root "$REVIEWTRUTH_RUNNER_ROOT" --wheel "$REVIEWTRUTH_RUNNER_ROOT/wheels/phase_loop_runtime-0.7.13-py3-none-any.whl" --uv "$REVIEWTRUTH_UV" --provisioning "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-bootstrap-provisioning.json" --out "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-baseline-preimplementation" --observer-sha256 841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d` evidence: operational
+- `env -i REVIEWTRUTH_RUNNER_ROOT="$REVIEWTRUTH_RUNNER_ROOT" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 /bin/bash -euo pipefail -c 'repo=$(git rev-parse --show-toplevel); root=$(realpath -e -- "$REVIEWTRUTH_RUNNER_ROOT"); input="$root/gate-a-preimplementation-input"; standalone="$input/standalone"; tests="$standalone/phase-loop-runtime/tests"; output="$root/evidence/reviewtruth-gate-a-preimplementation"; test ! -e "$input"; test ! -L "$input"; test ! -e "$output"; test ! -L "$output"; before_head=$(git -C "$repo" rev-parse HEAD); before_tree=$(git -C "$repo" rev-parse "HEAD^{tree}"); before_index=$(git -C "$repo" write-tree); test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"; umask 077; mkdir -m 700 "$input" "$standalone"; git -C "$repo" archive --format=tar HEAD phase-loop-runtime/tests | tar -xf - -C "$standalone"; find "$input" -type d -exec chmod 700 {} +; find "$input" -type f -exec chmod go-rwx {} +; test -z "$(find "$input" ! -user "$(id -u)" -print -quit)"; test -z "$(find "$input" -perm /077 -print -quit)"; test -z "$(find "$input" -type l -print -quit)"; test "$tests" = "$(realpath -e -- "$tests")"; (cd "$standalone"; env -i HOME="$root/home" PATH="$root/venv/bin:/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH="$tests" TMPDIR="$root/tmp" "$root/venv/bin/python" "$root/materialized/reviewtruth-gate-a-baseline-observer.py" --repo "$repo" --plan "$repo/plans/phase-plan-v10-REVIEWTRUTH.md" --roadmap "$repo/specs/phase-plans-v10.md" --runner-root "$root" --wheel "$root/wheels/phase_loop_runtime-0.7.13-py3-none-any.whl" --provisioning "$root/evidence/reviewtruth-bootstrap-provisioning.json" --source-observation-dir "$root/evidence/reviewtruth-baseline-preimplementation" --tests-root "$tests" --out "$output" --observer-sha256 d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9); jq -e '\''(.source_full_count == 4251) and (.source_full_sha256 == "e25173c29fb2fc1964bf052cfbf8613160a6cce87f153dd513d6244bdfd37d24") and (.source_selected_count == 3650) and (.source_selected_sha256 == "f4139af6cc291ee5867cf04807cdca25f5c39f4dd7f212c83cff4bfe75316b87") and (.gate_a_full_count == 4203) and (.gate_a_full_sha256 == "d2047b8e53d19310a428b6728d46f47901b5a225d1ac6f4ff45abf566019b4a7") and (.gate_a_selected_count == 3602) and (.gate_a_selected_sha256 == "d57ade2c1a0a0d5292191efaca00b0fa18ba2b7e7b27c352f94dc3d9416bb803") and (.source_marker_deselected_count == 601) and (.source_marker_deselected_sha256 == "76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907") and (.gate_a_marker_deselected_count == 601) and (.gate_a_marker_deselected_sha256 == "76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907") and (.omitted_full_count == 48) and (.omitted_full_sha256 == "da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527") and (.omitted_selected_count == 48) and (.omitted_selected_sha256 == "da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527") and (.omitted_full_equals_omitted_selected == true) and (.omitted_modules_count == 4) and (.omitted_modules == ["phase-loop-runtime/tests/test_execute_phase_handoff_mode.py","phase-loop-runtime/tests/test_validate_plan_doc_docs_lane.py","phase-loop-runtime/tests/test_validate_plan_doc_goal_coverage.py","phase-loop-runtime/tests/test_validate_plan_doc_producer_dependency.py"]) and (.restricted_source_count == 39) and (.restricted_source_sha256 == "59dfdd0c70679e8e2356b8dcffbb78faa795c5caa5025ce949e96522923023ea") and (.boundary_collection_count == 4) and (.boundary_collection_sha256 == "09e45269b62ec9c4ac0584600d77e883b9c3fbd67a89415ba6650ee9f6efe3be") and (.boundary_runtime_count == 59) and (.boundary_runtime_sha256 == "760925fe088328171cd7dc83172736a10904275d50b4da675e1f4a0a583d4b69") and (.expected_gate_a_count == 102) and (.expected_gate_a_sha256 == "57746ee994520651677a0b0dcdd50334eb52ccdc109ef71d6dd352ce95a8bcce")'\'' "$output/paired-profile.json" >/dev/null; test "$before_head" = "$(git -C "$repo" rev-parse HEAD)"; test "$before_tree" = "$(git -C "$repo" rev-parse "HEAD^{tree}")"; test "$before_index" = "$(git -C "$repo" write-tree)"; test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"'` evidence: operational
 - `env PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip -q` (SL1-T1 expected RED at `REVIEWTRUTH_RED::exact_pypi_transport_disposition` after the falsifier alone is authored and before parser/conftest implementation; retain exact output)
 - `env PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip -q` (SL1-T2 required GREEN for the same immutable node after only the parser/conftest contract is implemented; uses synthetic fixtures and requires no live internet)
-- `env -i HOME="$REVIEWTRUTH_RUNNER_ROOT/home" PATH="$REVIEWTRUTH_RUNNER_ROOT/venv/bin:/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH="$PWD/phase-loop-runtime/src" TMPDIR="$REVIEWTRUTH_RUNNER_ROOT/tmp" "$REVIEWTRUTH_RUNNER_ROOT/venv/bin/python" "$PWD/phase-loop-runtime/scripts/verify_reviewtruth_chronology.py" junit --mode broad-baseline --runner-root "$REVIEWTRUTH_RUNNER_ROOT" --provisioning "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-bootstrap-provisioning.json" --observation-dir "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-baseline-preimplementation" --observer-source "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py" --observer-sha256 841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d` evidence: operational
+- `env -i HOME="$REVIEWTRUTH_RUNNER_ROOT/home" PATH="$REVIEWTRUTH_RUNNER_ROOT/venv/bin:/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH="$PWD/phase-loop-runtime/src" TMPDIR="$REVIEWTRUTH_RUNNER_ROOT/tmp" "$REVIEWTRUTH_RUNNER_ROOT/venv/bin/python" "$PWD/phase-loop-runtime/scripts/verify_reviewtruth_chronology.py" junit --mode broad-baseline --runner-root "$REVIEWTRUTH_RUNNER_ROOT" --provisioning "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-bootstrap-provisioning.json" --observation-dir "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-baseline-preimplementation" --observer-source "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py" --observer-sha256 841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d --gate-a-observation-dir "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-preimplementation" --gate-a-tests-root "$REVIEWTRUTH_RUNNER_ROOT/gate-a-preimplementation-input/standalone/phase-loop-runtime/tests" --gate-a-observer-source "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-gate-a-baseline-observer.py" --gate-a-observer-sha256 d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9` evidence: operational
 - `env REVIEWTRUTH_JUNIT_XML=.phase-loop/evidence/reviewtruth-phase-default.xml sh -c 'PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py junit-run --mode default-premarker --xml "$REVIEWTRUTH_JUNIT_XML"'`
 - `env REVIEWTRUTH_JUNIT_XML=.phase-loop/evidence/reviewtruth-broad-default.xml sh -c 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration" --junitxml="$REVIEWTRUTH_JUNIT_XML"'`
 - `env REVIEWTRUTH_PHASE_JUNIT_XML=.phase-loop/evidence/reviewtruth-phase-default.xml REVIEWTRUTH_BROAD_JUNIT_XML=.phase-loop/evidence/reviewtruth-broad-default.xml sh -c 'PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py junit --mode default-premarker --phase-xml "$REVIEWTRUTH_PHASE_JUNIT_XML" --broad-xml "$REVIEWTRUTH_BROAD_JUNIT_XML"'`
@@ -1602,6 +2617,20 @@ Candidate phase-selected JUnit uses the frozen non-wrapper phase set and require
 ## Acceptance Criteria
 
 Every criterion inherits the independently executable SL0-T3 coordinator proof as a chronology prerequisite, including both ratification timestamps no later than merge, an effective `pull_request` branch rule and canonical response digest, and separate two-parent landing evidence. EC-REVIEWTRUTH-15's final pytest command is a retrospective immutable test of the same facts after SL-1 exists; it is not the authority that completes SL-0 or starts SL-1. Before any SL-2-through-SL-5 mutation, `reviewtruth_preimplementation_chronology_all` must independently re-run those Git/GitHub checks, require fresh rules digest/boolean equality to the retained proof, and bind the result to the tests-only landing. No wrapper, future parser, baseline parse, or manual inspection can substitute for either ordered proof.
+
+Every criterion also inherits PC-REVIEWTRUTH-2's paired pre-edit source-layout and installed-wheel
+Gate-A observations. Before the first SL-1 edit, the first five operational commands must have
+sealed both exact observer payloads, the complete validated source-observation manifest and its
+source-observer/plan/roadmap/provisioning bindings, exact committed copied-test/conftest bytes,
+full/selected and marker records, separately retained collection/runtime skip reasons, omitted-root
+proof, unchanged Git state, and the Gate-A pair profile at the two write-once evidence directories;
+the fifth command must have matched the independently planned source `4251/3650`, Gate-A
+`4203/3602`, marker `601/601`, identical exact 48-node full/selected omission, four-module boundary,
+and `39 + 4 + 59 = 102` count/digest constants.
+After parser authorship, the sixth command must independently consume and re-verify both directories
+before default/activated evidence or any SL-2-through-SL-5 mutation. Historical constants,
+post-edit reconstruction, one-sided source observation, or a future SL-5 Gate A run cannot satisfy
+this prerequisite.
 
 The normative EC-REVIEWTRUTH-0 and EC-REVIEWTRUTH-9 commands run only at SL6-T3 after SL6-T2 has frozen every wrapper input. Each command explicitly clears inherited final collection, generates and parses broad-final first, delegates final activation only to immutable `junit-run --mode final`, and then parses phase-final; neither a plain pytest selector, hand-set activation, nor wrapper-before-attestation can satisfy either criterion.
 
