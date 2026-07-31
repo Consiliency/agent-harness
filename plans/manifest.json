@@ -743,34 +743,50 @@
             "digest_rebind": {
               "fresh_exact_digest_panel_required": true,
               "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT",
-              "plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
-              "predecessor_plan_sha256": "4c7a4411c28c89ca365bb2b37d6961affa84c4845de84a370d6f5821b0760668",
-              "reason": "exact_pypi_transport_skip_disposition_repair",
+              "plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
+              "predecessor_plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
+              "reason": "sl0_sl1_authority_cycle_and_ratification_proof_repair",
               "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 324985,
-              "reviewed_bundle_sha256": "08541485569d46d8ebe27f99fa78dea4d5fe7f3e2bb334d8c3b92d8c82f19770",
-              "reviewed_instructions_sha256": "3256b7b304f46fca6b2978c78a432f92ddf5338401f3c90712290234e9c13cd7",
-              "reviewed_panel_sha256": "8a30abffe37a9060ccf8bacdca668dc8e1a236fd2aac1062887646c2b7fdba0b",
-              "reviewed_plan_sha256": "4c7a4411c28c89ca365bb2b37d6961affa84c4845de84a370d6f5821b0760668",
+              "reviewed_bundle_bytes": 342446,
+              "reviewed_bundle_sha256": "5f2cb7273caa7e760dfb43fcb8d10e492c6363034254f0c23a94fd3e64a979ef",
+              "reviewed_instructions_sha256": "9862f27d04ade47c3480342284ee1b5046e6261f9ac016c20f416eae52e13db0",
+              "reviewed_panel_sha256": "aa2e270f72c9dcfe190b17d80b6108b58346fbe30313e795b09153ac9c3366c1",
+              "reviewed_plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
               "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba"
             },
             "current_review": {
               "artifact_path": ".phase-loop/reviews/v10-reviewtruth-plan-panel.json",
-              "artifact_sha256": "8a30abffe37a9060ccf8bacdca668dc8e1a236fd2aac1062887646c2b7fdba0b",
-              "bundle_bytes": 324985,
-              "bundle_sha256": "08541485569d46d8ebe27f99fa78dea4d5fe7f3e2bb334d8c3b92d8c82f19770",
+              "artifact_sha256": "aa2e270f72c9dcfe190b17d80b6108b58346fbe30313e795b09153ac9c3366c1",
+              "artifact_semantics": "historical_predecessor_content_at_repair_time_overwriteable_run_local_path",
+              "bundle_bytes": 342446,
+              "bundle_sha256": "5f2cb7273caa7e760dfb43fcb8d10e492c6363034254f0c23a94fd3e64a979ef",
               "fable_outcome": "absent_no_leg",
-              "finding": "exact_pypi_transport_skip_reason_nondeterminism",
+              "finding": "sl0_sl1_verifier_authority_cycle",
+              "finding_detail": "SL0_completion_depended_on_SL1_owned_verifier_and_pre_SL0_broad_parse_depended_on_future_parser",
               "gemini_verdict": "AGREE",
               "grok_verdict": "AGREE",
-              "instructions_sha256": "3256b7b304f46fca6b2978c78a432f92ddf5338401f3c90712290234e9c13cd7",
-              "repaired_plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
+              "instructions_sha256": "9862f27d04ade47c3480342284ee1b5046e6261f9ac016c20f416eae52e13db0",
+              "repaired_plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
               "repaired_review_status": "unreviewed_not_approved",
-              "reviewed_plan_sha256": "4c7a4411c28c89ca365bb2b37d6961affa84c4845de84a370d6f5821b0760668",
+              "reviewed_plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
               "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
               "sol_verdict": "DISAGREE",
               "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_ABSENT"
+            },
+            "sl0_coordinator_proof": {
+              "authority": "existing_git_gh_jq_awk_sha256sum_only_before_sl1",
+              "branch_rules_canonicalization": "jq_compact_sorted_json_plus_terminal_lf_sha256",
+              "branch_rules_endpoint": "repos/Consiliency/agent-harness/rules/branches/main",
+              "comment_timestamp_contract": "created_at_and_updated_at_less_than_or_equal_to_record_pr_merged_at",
+              "effective_pull_request_rule_required": true,
+              "landing_topology_contract": "separate_exact_two_parent_merge_with_pr_head_as_second_parent",
+              "planning_rules_observation_effective_pull_request_rule": false,
+              "planning_rules_observation_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+              "planning_rules_observation_status": "unsatisfied_not_execution_proof",
+              "proof_schema": "reviewtruth.sl0-coordinator-proof.v1",
+              "retrospective_sl1_contract": "fresh_rules_digest_and_true_boolean_must_equal_retained_sl0_proof_before_sl2_through_sl5",
+              "sl0_unblocks_sl1_without_future_wrapper": true
             },
             "gate_a_skip_freeze": {
               "boundary_collection_count": 4,
@@ -824,7 +840,7 @@
               "CONFORM",
               "HARDEN"
             ],
-            "plan_sha256": "d58b36bf56f1911ef70cf475d6eb0caab01facdb306a71b3679332010ec42229",
+            "plan_sha256": "864270f3b9f32c02f0717cb9ad53c8d27bedbdb2b484deb4b19ffcdecf3989f1",
             "portable_skip_classification": {
               "allowed_disposition": "environment_interpreter_pair_unavailable",
               "allowed_reason": "need both python3.10 and python3.12 on host",
@@ -870,7 +886,7 @@
               "source_sha256": "6b6c7f9f38bc815f37e2a3d86311867ea5a8ea907db2bad7d52fdeb0132b4d24",
               "tdd_lifecycle": "sl1_literal_red_then_green_before_tests_only_landing"
             },
-            "reanchor_contract": "after_CONFORM_and_HARDEN_land_recompute_owned_paths_tests_counts_digests_and_exact_head_evidence_before_agent_harness_398_gate",
+            "reanchor_contract": "before_SL0_refresh_static_source_ownership_anchor_and_digest_assumptions_only_then_after_SL0_proof_run_provision_materialize_freeze_observe_before_SL1_mutation_and_parse_only_after_SL1_parser_authoring",
             "roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
             "seat_outcome_degraded_roundtrip": {
               "default_serialization": "omit_degraded_when_false_preserve_exact_legacy_bytes",
@@ -915,7 +931,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-31T02:17:07Z"
+      "updated_at": "2026-07-31T02:48:06Z"
     },
     {
       "acceptance_criteria_count": null,
