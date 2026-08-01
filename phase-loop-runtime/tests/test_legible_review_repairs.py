@@ -395,6 +395,36 @@ def test_attest_command_is_registered_and_enforces_exact_head(tmp_path, capsys):
     assert payload["head"] == head
 
 
+def test_attest_cli_without_repo_still_runs_preimport_bootstrap(monkeypatch):
+    from phase_loop_runtime import cli
+
+    repo = Path(__file__).resolve().parents[2]
+    head = "a" * 40
+    monkeypatch.chdir(repo)
+
+    def fake_run(argv, **kwargs):
+        stdout = f"{head}\n" if "rev-parse" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    payload = cli._preimport_attest_bootstrap(
+        [
+            "attest",
+            "--stage",
+            "candidate",
+            "--expected-head",
+            head,
+            "--builder-run-id",
+            "builder-no-repo",
+        ]
+    )
+
+    assert payload is not None
+    assert payload["bootstrap_head"] == head
+    assert payload["repo_realpath"] == str(repo.resolve())
+
+
 def test_canonical_main_attest_rejects_nonexistent_candidate(tmp_path):
     repo = make_repo(tmp_path)
     head = subprocess.run(
