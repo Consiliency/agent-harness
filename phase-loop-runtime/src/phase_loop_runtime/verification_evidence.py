@@ -888,6 +888,12 @@ def _bind_sidecar_extension(artifact_path: Path, *, namespace: str, record: Mapp
     run_dir = artifact_path.parent
     log_path = run_dir / LOG_NAME
 
+    validation = validate_verification_artifact(artifact_path)
+    if not validation.ok:
+        raise VerificationArtifactContractError(
+            validation.code,
+            "; ".join(validation.findings) or f"schema-v2 artifact failed validation: {validation.code}",
+        )
     result = load_verification_artifact(artifact_path)
     if result.schema_version != 2:
         raise VerificationArtifactContractError(

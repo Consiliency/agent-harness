@@ -400,6 +400,24 @@ def validate_verification_sidecar(repo: Path, *, sidecar: Mapping[str, Any]) -> 
         raise LegibleSidecarError("sidecar_digest_drift", f"{rel_path}: bytes do not match recorded length/digest")
     if len(data) > _SIDECAR_PROBE_RECORD_MAX_BYTES:
         raise LegibleSidecarError("sidecar_oversize", f"{rel_path}: exceeds {_SIDECAR_PROBE_RECORD_MAX_BYTES} bytes")
+    if sidecar.get("schema") != _SIDECAR_RECORD_SCHEMA:
+        raise LegibleSidecarError("sidecar_schema_mismatch", f"unexpected sidecar schema: {sidecar.get('schema')!r}")
+    if sidecar.get("stage") not in {"candidate", "canonical-main", "phase_execute"}:
+        raise LegibleSidecarError("sidecar_stage_mismatch", f"unsupported sidecar stage: {sidecar.get('stage')!r}")
+    current_head = _rev_parse(repo, "HEAD")
+    if sidecar.get("expected_head") != current_head:
+        raise LegibleSidecarError(
+            "sidecar_head_mismatch",
+            f"sidecar expected_head {sidecar.get('expected_head')!r} != repository HEAD {current_head!r}",
+        )
+    if sidecar.get("bootstrap_head") != sidecar.get("expected_head"):
+        raise LegibleSidecarError(
+            "sidecar_bootstrap_mismatch",
+            "sidecar bootstrap_head does not match expected_head",
+        )
+    process_start_token = sidecar.get("process_start_token")
+    if not isinstance(process_start_token, str) or not process_start_token.strip():
+        raise LegibleSidecarError("sidecar_process_token_missing", "sidecar process_start_token is empty")
     return SidecarValidation(ok=True)
 
 
