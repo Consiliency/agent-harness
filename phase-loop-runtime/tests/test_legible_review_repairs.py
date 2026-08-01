@@ -1955,7 +1955,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         events.append("snapshot")
         snapshot = {
             "state": "OPEN",
-            "isDraft": True,
+            "isDraft": "ready" not in events,
             "headRefOid": head,
             "baseRefName": "main",
             "baseRefOid": base,
@@ -2069,7 +2069,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
             "candidate-remote", "snapshot",
         ]
         if main_advances_at_publish:
-            expected.extend(("ready", "push-rejected"))
+            expected.extend(("ready", "candidate-remote", "snapshot", "push-rejected"))
         assert events == expected
         return
 
@@ -2088,6 +2088,8 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         "candidate-remote",
         "snapshot",
         "ready",
+        "candidate-remote",
+        "snapshot",
         "merge",
     ]
     assert result["run_id"].startswith("legible-transition-")
