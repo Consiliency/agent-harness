@@ -138,6 +138,10 @@ else
   SUITE_TREE="$WORK/standalone/phase-loop-runtime"
   mkdir -p "$SUITE_TREE"
   cp -r "$PKG_ROOT/tests" "$SUITE_TREE/tests"
+  # Repo-contract tests resolve canonical roadmap fixtures from the monorepo
+  # root (tests/../..). Keep those immutable inputs available without exposing
+  # the source package tree to the installed-wheel test process.
+  cp -r "$PKG_ROOT/../specs" "$WORK/standalone/specs"
   # Sanity: the copied tree's parents[3] must NOT be a dotfiles checkout.
   if env -i "$PY" - "$SUITE_TREE/tests" <<'PYEOF'
 import sys
