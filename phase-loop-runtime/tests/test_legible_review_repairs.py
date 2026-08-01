@@ -44,12 +44,14 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     cli_path.write_text("# fixture CLI\n", encoding="utf-8")
     roadmap_v1 = repo / "specs" / "phase-plans-v1.md"
     roadmap_v1.write_text(
-        "# Roadmap\n\n> # SUPERSEDED - fixture\n\n### Phase 0 - Old (OLD)\n",
+        "# Roadmap\n\n> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10.md` (2026-07-29)\n\n"
+        "### Phase 0 - Old (OLD)\n",
         encoding="utf-8",
     )
     roadmap_v10 = repo / "specs" / "phase-plans-v10.md"
     roadmap_v10.write_text(
-        "# Roadmap\n\n> **Status: ACTIVE - fixture.**\n\n### Phase 0 - LEGIBLE (LEGIBLE)\n",
+        "# Roadmap\n\n> **Status (2026-07-29): ACTIVE — created this date, nothing executed yet.**\n\n"
+        "### Phase 0 - LEGIBLE (LEGIBLE)\n",
         encoding="utf-8",
     )
     plan_path = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
