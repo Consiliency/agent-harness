@@ -501,7 +501,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
                 "pytest",
                 "tests/test_legible_roadmap_contract.py",
                 "tests/test_legible_evidence.py",
-                f"--junitxml={junit_path.relative_to(repo).as_posix()}",
+                f"--junitxml={junit_path.resolve()}",
                 "-q",
             ],
             "execution_head": execution_head,
