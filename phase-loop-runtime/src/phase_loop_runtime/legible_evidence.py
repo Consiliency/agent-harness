@@ -1097,7 +1097,10 @@ def _validate_operational_sections(
         panel = json.loads(artifact_data[panel_paths[0]])
     except json.JSONDecodeError:
         return "artifacts: implementation panel is malformed"
-    required_models = {"claude-fable-5", "gemini-3.6-flash", "gpt-5.6-sol", "grok-4.5"}
+    required_models = {
+        panel_invoker.DEFAULT_LEG_MODELS[leg]
+        for leg in ("claude", "gemini", "codex", "grok")
+    }
     if (
         not isinstance(panel, Mapping)
         or panel.get("head") != expected_head
