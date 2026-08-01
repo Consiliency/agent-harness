@@ -296,7 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "goal-coverage-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "goal-coverage-audit", "validate-roadmap", "attest", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -308,6 +308,11 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--output", help="Path where exactly one closeout JSON file must be written.")
             sub.add_argument("--mode", help="The execution mode: execute, repair, or review.")
         _add_common_subparser_args(sub, name=name)
+        if name == "attest":
+            sub.add_argument("--stage", choices=("candidate", "canonical-main"), required=True)
+            sub.add_argument("--expected-head", required=True)
+            sub.add_argument("--builder-run-id", required=True)
+            sub.add_argument("--candidate-head")
         if name in {"run", "resume", "dry-run"}:
             # PUSHFLOW: closeout pushes by DEFAULT for run/resume/dry-run (the outer
             # orchestration loop). An explicit --closeout-mode always wins; when none
@@ -1071,6 +1076,22 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 return 1
         argv_extra = ["--train"] if getattr(args, "train", False) else []
         return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
+    if command == "attest":
+        from . import legible_evidence
+
+        try:
+            record = legible_evidence.attest(
+                repo=Path(args.repo or "."),
+                stage=args.stage,
+                expected_head=args.expected_head,
+                builder_run_id=args.builder_run_id,
+                candidate_head=args.candidate_head,
+            )
+        except legible_evidence.LegibleProcessBootstrapError as exc:
+            print(f"phase-loop attest: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(record, indent=2, sort_keys=True) if args.json else json.dumps(record, sort_keys=True))
+        return 0
     if command == "run-train":
         return _run_train_command(parser=parser, args=args)
     if command == "train-status":

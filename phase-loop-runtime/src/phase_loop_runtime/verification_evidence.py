@@ -894,6 +894,12 @@ def _bind_sidecar_extension(artifact_path: Path, *, namespace: str, record: Mapp
             validation.code,
             "; ".join(validation.findings) or f"schema-v2 artifact failed validation: {validation.code}",
         )
+    raw_log = log_path.read_bytes()
+    if _artifact_seal_region_start(raw_log) is None:
+        raise VerificationArtifactContractError(
+            "artifact_seal_missing",
+            "sidecar binding requires the whole-artifact seal emitted by the current schema-v2 writer",
+        )
     result = load_verification_artifact(artifact_path)
     if result.schema_version != 2:
         raise VerificationArtifactContractError(
@@ -919,7 +925,6 @@ def _bind_sidecar_extension(artifact_path: Path, *, namespace: str, record: Mapp
     payload["schema_version"] = 3
     payload[_EXTENSIONS_FIELD] = {namespace: dict(record)}
 
-    raw_log = log_path.read_bytes()
     seal_start = _artifact_seal_region_start(raw_log)
     body = raw_log if seal_start is None else raw_log[:seal_start]
     new_seal = _canonical_artifact_digest(payload)
@@ -944,7 +949,7 @@ def validate_verification_artifact_for_plan(
     compatible even after PROOFGATE's reserved namespace is later registered
     -- this never requires the PROOFGATE namespace."""
     base = validate_verification_artifact(path)
-    if not base.ok:
+    if not base.ok and base.code != "nonzero_exit":
         return base
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))

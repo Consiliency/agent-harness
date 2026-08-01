@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import time
@@ -364,6 +365,8 @@ def bind_verification_sidecar(
     repo = Path(repo).resolve()
     run_dir = Path(run_dir)
     sidecar_path = run_dir / _SIDECAR_FILE_NAME
+    if sidecar_path.is_symlink():
+        raise LegibleSidecarError("sidecar_symlink", f"sidecar must not be a symlink: {sidecar_path}")
     if not sidecar_path.is_file():
         raise LegibleSidecarError("sidecar_missing", f"sidecar not found: {sidecar_path}")
     resolved = sidecar_path.resolve()
@@ -388,6 +391,8 @@ def validate_verification_sidecar(repo: Path, *, sidecar: Mapping[str, Any]) -> 
     repo = Path(repo).resolve()
     rel_path = sidecar["path"]
     full_path = repo / rel_path
+    if full_path.is_symlink():
+        raise LegibleSidecarError("sidecar_symlink", f"sidecar must not be a symlink: {rel_path}")
     resolved = full_path.resolve()
     try:
         resolved.relative_to(repo)
@@ -671,6 +676,23 @@ def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, c
     chain (broad suite, implementation panel, PR/merge evidence) is a
     coordinator-run operational process outside this function's scope."""
     repo = Path(repo).resolve()
+    if stage not in {"candidate", "canonical-main"}:
+        raise LegibleProcessBootstrapError(f"unsupported attestation stage: {stage!r}")
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise LegibleProcessBootstrapError(f"expected head is not a lowercase 40-hex commit: {expected_head!r}")
+    if not builder_run_id.strip():
+        raise LegibleProcessBootstrapError("builder run identity is empty")
+    if stage == "canonical-main" and not candidate_head:
+        raise LegibleProcessBootstrapError("canonical-main attestation requires candidate_head")
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode != 0 or status.stdout:
+        raise LegibleProcessBootstrapError(f"attestation requires a clean git worktree: {repo}")
     actual_head = _rev_parse(repo, "HEAD")
     if actual_head is None or actual_head != expected_head:
         raise LegibleProcessBootstrapError(
