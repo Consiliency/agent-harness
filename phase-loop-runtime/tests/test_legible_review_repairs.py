@@ -1943,8 +1943,36 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("merge_snapshot_drift", "main_advances_during_review", "main_advances_at_publish"),
-    ((False, False, False), (True, False, False), (False, True, False), (False, False, True)),
+    ("decision", "expected"),
+    (
+        ("", True),
+        ("APPROVED", True),
+        ("CHANGES_REQUESTED", False),
+        ("REVIEW_REQUIRED", False),
+    ),
+)
+def test_pr_review_readiness_rejects_unsatisfied_decisions(decision, expected):
+    from phase_loop_runtime import runner
+
+    assert runner._legible_reviews_ready({"reviewDecision": decision}) is expected
+
+
+@pytest.mark.parametrize(
+    (
+        "merge_snapshot_drift",
+        "main_advances_during_review",
+        "main_advances_at_publish",
+        "post_publish_failure",
+    ),
+    (
+        (False, False, False, None),
+        (True, False, False, None),
+        (False, True, False, None),
+        (False, False, True, None),
+        (False, False, False, "fetch"),
+        (False, False, False, "poll_error"),
+        (False, False, False, "poll_timeout"),
+    ),
 )
 def test_pr_transition_persists_identity_and_reviews_before_mutation(
     tmp_path,
@@ -1952,6 +1980,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     merge_snapshot_drift,
     main_advances_during_review,
     main_advances_at_publish,
+    post_publish_failure,
 ):
     from phase_loop_runtime import runner
 
@@ -1963,20 +1992,32 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     body = "reviewed transition"
     events = []
     merged = False
+    post_failure_pending = post_publish_failure
+    poll_timeout_remaining = 30 if post_publish_failure == "poll_timeout" else 0
 
     monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_BASE", base)
     monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_HEAD", head)
     monkeypatch.setattr(runner, "_LEGIBLE_PR_BODY_SHA256", hashlib.sha256(body.encode()).hexdigest())
     def fake_pr_view(_repo):
+        nonlocal post_failure_pending, poll_timeout_remaining
         events.append("snapshot")
+        if merged and post_failure_pending == "poll_error":
+            post_failure_pending = None
+            raise legible_evidence.LegibleProcessBootstrapError("transient GitHub read failure")
+        snapshot_merged = merged
+        if merged and poll_timeout_remaining:
+            poll_timeout_remaining -= 1
+            snapshot_merged = False
+            if poll_timeout_remaining == 0:
+                post_failure_pending = None
         snapshot = {
-            "state": "MERGED" if merged else "OPEN",
+            "state": "MERGED" if snapshot_merged else "OPEN",
             "isDraft": "ready" not in events,
             "headRefOid": head,
             "baseRefName": "main",
             "baseRefOid": base,
-            "mergeCommit": {"oid": server_merge} if merged else None,
-            "mergedAt": "2026-08-01T16:00:00Z" if merged else None,
+            "mergeCommit": {"oid": server_merge} if snapshot_merged else None,
+            "mergedAt": "2026-08-01T16:00:00Z" if snapshot_merged else None,
             "body": body,
             "statusCheckRollup": [{"conclusion": "SUCCESS"}],
             "reviewDecision": "",
@@ -2055,9 +2096,11 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         return panel
 
     monkeypatch.setattr(runner, "_run_legible_panel", fake_panel)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
 
     def fake_run(argv, **kwargs):
-        nonlocal merged
+        nonlocal merged, post_failure_pending
         if argv[:3] == ["gh", "pr", "ready"]:
             events.append("ready")
         elif argv[:3] == ["gh", "pr", "merge"]:
@@ -2070,6 +2113,9 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
                 raise subprocess.CalledProcessError(1, argv, stderr="non-fast-forward")
             events.append("merge")
             merged = True
+        elif merged and post_failure_pending == "fetch" and argv[-2:] == ["origin", "main"]:
+            post_failure_pending = None
+            raise subprocess.CalledProcessError(1, argv, stderr="transient fetch failure")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
@@ -2089,6 +2135,37 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         if main_advances_at_publish:
             expected.extend(("ready", "candidate-remote", "snapshot", "push-rejected"))
         assert events == expected
+        return
+
+    if post_publish_failure:
+        with pytest.raises((legible_evidence.LegibleProcessBootstrapError, subprocess.CalledProcessError)):
+            runner._run_legible_pr_transition(
+                repo=repo,
+                expected_head=base,
+                builder_run_id="builder-1",
+                process_start_token="transition-token",
+            )
+        intent_paths = list(
+            (repo / ".phase-loop" / "runs").glob("*/legible-pr-transition-intent.json")
+        )
+        assert len(intent_paths) == 1
+        assert not list((repo / ".phase-loop" / "runs").glob("*/legible-pr-transition.json"))
+
+        result = runner._run_legible_operational_attestation(
+            repo=repo,
+            plan=repo / "plans" / "phase-plan-v10-LEGIBLE.md",
+            stage="candidate",
+            expected_head=base,
+            builder_run_id="builder-1",
+            candidate_head=None,
+            process_start_token="recovery-token",
+            loaded_runtime_blobs={},
+        )
+        payload = json.loads((repo / result["transition_artifact"]).read_text(encoding="utf-8"))
+        assert payload["status"] == "transition_sealed"
+        assert payload["pr_state"] == "MERGED"
+        assert payload["pr_merged_at"] == "2026-08-01T16:00:00Z"
+        assert payload["pr_merge_commit"] == server_merge
         return
 
     result = runner._run_legible_pr_transition(
@@ -2117,6 +2194,9 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     payload = json.loads(transition_path.read_text(encoding="utf-8"))
     assert payload["builder_run_id"] == "builder-1"
     assert payload["process_start_token"] == "transition-token"
+    assert payload["pr_state"] == "MERGED"
+    assert payload["pr_merged_at"] == "2026-08-01T16:00:00Z"
+    assert payload["pr_merge_commit"] == server_merge
 
 
 def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
