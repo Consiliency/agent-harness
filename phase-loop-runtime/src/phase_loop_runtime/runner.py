@@ -109,7 +109,7 @@ from .fleet_metrics import record_phase_fleet_metrics
 from .evidence_audit import run_tier3_runner_audit
 from .evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
 from .events import append_work_unit_event
-from .fab_provenance import atomic_write_text_durable
+from .fab_provenance import atomic_write_text_durable, fsync_run_store_durable
 from .git_ops import expand_dir_dirty_paths, pipeline_write_boundary_diagnostic
 from .git_topology import collect_git_topology, resolve_closeout_push_target
 from .handoff import tui_handoff_path, write_tui_handoff
@@ -7357,6 +7357,7 @@ def _run_legible_pr_transition(
         intent_path,
         json.dumps(intent_payload, indent=2, sort_keys=True) + "\n",
     )
+    fsync_run_store_durable(repo, run_id)
     try:
         publish = subprocess.run(
             ["git", "-C", str(repo), "push", "origin", f"{server_merge}:refs/heads/main"],
