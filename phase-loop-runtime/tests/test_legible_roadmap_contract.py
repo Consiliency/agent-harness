@@ -1548,30 +1548,19 @@ ASSUMPTION_PROBES: tuple[dict[str, object], ...] = (
     {
         "id": "LEGIBLE-A3-EC14",
         "assumption": 3,
-        "kind": "ast_call_predicate",
+        "kind": "roadmap_predicate",
         "anchor": "EC-REVIEWTRUTH-14 FILLS it natively under Claude Code with no TUI adapter",
         "mutation_id": "remove-the-verdict-binding-edge",
         "positive_control_id": "current-criterion",
         "subject": {
-            "module": "phase_loop_runtime.review_board",
-            "edges": [
-                ["native_fill_request", "bind_native_verdict"],
-                ["bind_native_verdict", "count_seat"],
-            ],
+            "roadmap": "specs/phase-plans-v10.md",
+            "criterion": "EC-REVIEWTRUTH-14",
         },
         "expected": {
-            "required_edges": [
-                ["native_fill_request", "bind_native_verdict"],
-                ["bind_native_verdict", "count_seat"],
-            ]
+            "required_atoms": ["NativeAgentLegRequest", "no TUI adapter", "VERDICT is BOUND"]
         },
-        "observation": {
-            "edges": [
-                ["native_fill_request", "bind_native_verdict"],
-                ["bind_native_verdict", "count_seat"],
-            ]
-        },
-        "mutation": {"edges": [["bind_native_verdict", "count_seat"]]},
+        "observation": {"atoms": ["NativeAgentLegRequest", "no TUI adapter", "VERDICT is BOUND"]},
+        "mutation": {"atoms": ["NativeAgentLegRequest", "no TUI adapter"]},
     },
     {
         "id": "LEGIBLE-A4-DISCOVERY",
