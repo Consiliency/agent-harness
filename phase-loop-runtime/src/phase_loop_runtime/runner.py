@@ -7014,7 +7014,7 @@ def _run_legible_pr_transition(
         raise legible_evidence.LegibleProcessBootstrapError(
             "Consiliency/agent-harness#347 body commit is not an ancestor of its head"
         )
-    _legible_successful_checks(snapshot)
+    checks = _legible_successful_checks(snapshot)
     expected_tree = legible_evidence._recomputed_merge_tree(
         repo, _LEGIBLE_REFRESH_BASE, base, _LEGIBLE_REFRESH_HEAD
     )
@@ -7030,11 +7030,36 @@ def _run_legible_pr_transition(
     bundle_path = run_dir / "agent-harness-347-review-bundle.md"
     bundle_path.write_text(
         "# Consiliency/agent-harness#347 transition review\n\n"
+        "- PR: `https://github.com/Consiliency/agent-harness/pull/347`\n"
         f"- candidate head: `{expected_head}`\n"
         f"- frozen PR head: `{_LEGIBLE_REFRESH_HEAD}`\n"
         f"- merge-time base: `{base}`\n"
-        "- inspect the exact PR, body ancestry, checks, semantic-token equality, and recomputed merge tree\n"
-        "- end with exactly AGREE or DISAGREE\n",
+        f"- frozen PR body SHA-256: `{_LEGIBLE_PR_BODY_SHA256}`\n"
+        f"- body ancestor commits: `{json.dumps(body_ancestors)}`\n"
+        f"- successful check conclusions: `{json.dumps(checks)}`\n"
+        "- singleton changed path: `"
+        f"{legible_evidence._FROZEN_AGENT_HARNESS_347_PATH}`\n"
+        "- semantic-token equality at the frozen path: `true`\n"
+        "- candidate descends from the merge-time base: `true`\n"
+        f"- recomputed private-index merge tree: `{expected_tree}`\n"
+        "- recomputed merge changes exactly the singleton frozen path: `true`\n",
+        encoding="utf-8",
+    )
+    early_prover_path = _run_legible_c4_early_prover(
+        repo, run_dir, expected_head, bundle_path
+    )
+    early_prover = json.loads(early_prover_path.read_text(encoding="utf-8"))
+    bundle_path.write_text(
+        bundle_path.read_text(encoding="utf-8")
+        + "\n## Early prover evidence\n\n"
+        + f"- artifact: `{early_prover_path.relative_to(repo).as_posix()}`\n"
+        + f"- artifact SHA-256: `{hashlib.sha256(early_prover_path.read_bytes()).hexdigest()}`\n"
+        + f"- capability: `{early_prover.get('capability')}`\n"
+        + f"- degraded evidence audit: `{early_prover.get('degraded_evidence_reason')}`\n"
+        + f"- status: `{early_prover.get('status')}`\n"
+        + f"- verdict: `{early_prover.get('verdict')}`\n\n"
+        + str(early_prover.get("text", ""))
+        + "\n",
         encoding="utf-8",
     )
     panel_path = _run_legible_panel(repo, run_dir, expected_head, bundle_path)
@@ -7137,6 +7162,56 @@ def _legible_test_record(
     return record
 
 
+def _run_legible_c4_early_prover(
+    repo: Path, run_dir: Path, expected_head: str, bundle_path: Path
+) -> Path:
+    from .advisor_board.schema import Board
+    from .advisor_board.presets import CODE_REVIEW_BOARD
+    from .panel_invoker import invoke_board
+
+    codex_seat = next(seat for seat in CODE_REVIEW_BOARD.seats if seat.harness == "codex")
+    board = Board(
+        name="legible-c4-early-prover",
+        purpose="premerge-review",
+        seats=(codex_seat,),
+    )
+    result = invoke_board(
+        board,
+        "",
+        repo_dir=repo,
+        artifact_ref=str(bundle_path),
+        stream_dir=run_dir / "c4-early-prover-stream",
+    )
+    if len(result.legs) != 1:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "LEGIBLE C4 early prover returned an invalid seat count"
+        )
+    outcome = result.legs[0]
+    lines = [line.strip() for line in outcome.text.splitlines() if line.strip()]
+    verdict = lines[-1] if lines and lines[-1] in {"AGREE", "PARTIALLY AGREE", "DISAGREE"} else "EMPTY"
+    payload = {
+        "schema": "legible_c4_early_prover.v1",
+        "head": expected_head,
+        "bundle_path": bundle_path.relative_to(repo).as_posix(),
+        "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+        "capability": "read_only_live_probe",
+        "degraded_evidence_reason": (
+            "write-capable worktree and DB isolation remain deferred to Consiliency/agent-harness#405"
+        ),
+        "status": outcome.status,
+        "usable": outcome.usable,
+        "verdict": verdict,
+        "text": outcome.text,
+    }
+    path = run_dir / "c4-early-prover.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if outcome.status != "OK" or outcome.usable is not True or verdict != "AGREE":
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "LEGIBLE C4 early prover did not produce usable AGREE evidence"
+        )
+    return path
+
+
 def _run_legible_panel(repo: Path, run_dir: Path, expected_head: str, bundle_path: Path) -> Path:
     from .advisor_board.presets import CODE_REVIEW_BOARD
     from .panel_invoker import invoke_board
@@ -7145,7 +7220,7 @@ def _run_legible_panel(repo: Path, run_dir: Path, expected_head: str, bundle_pat
         CODE_REVIEW_BOARD,
         "",
         repo_dir=repo,
-        context_refs=(str(bundle_path),),
+        artifact_ref=str(bundle_path),
         stream_dir=run_dir / "implementation-panel-stream",
     )
     legs: list[dict[str, object]] = []
