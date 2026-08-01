@@ -1918,9 +1918,12 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
     assert "reviews" in requested
 
 
-@pytest.mark.parametrize("merge_snapshot_drift", (False, True))
+@pytest.mark.parametrize(
+    ("merge_snapshot_drift", "main_advances_during_review"),
+    ((False, False), (True, False), (False, True)),
+)
 def test_pr_transition_persists_identity_and_reviews_before_mutation(
-    tmp_path, monkeypatch, merge_snapshot_drift
+    tmp_path, monkeypatch, merge_snapshot_drift, main_advances_during_review
 ):
     from phase_loop_runtime import runner
 
@@ -1965,7 +1968,11 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
 
     def fake_git(_repo, *args):
         if args == ("rev-parse", "origin/main"):
-            return server_merge if merged else base
+            if merged:
+                return server_merge
+            if main_advances_during_review and "panel" in events:
+                return "5" * 40
+            return base
         if args == ("rev-parse", f"{server_merge}^{{tree}}"):
             return expected_tree
         return base
@@ -2030,7 +2037,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
 
-    if merge_snapshot_drift:
+    if merge_snapshot_drift or main_advances_during_review:
         with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
             runner._run_legible_pr_transition(
                 repo=repo,
