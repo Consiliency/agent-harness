@@ -188,9 +188,10 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     probe_path.write_bytes(probe_bytes)
     pr_snapshot_path = evidence_dir / "agent-harness-347-snapshot.json"
     changed_paths = [pr_delta_path.relative_to(repo).as_posix()]
+    pr_body = "LEGIBLE exact transition"
     pr_snapshot = {
         "base": base,
-        "body": "LEGIBLE exact transition",
+        "body": pr_body,
         "changed_paths": changed_paths,
         "checks": ["SUCCESS"],
         "head": pr_head,
@@ -276,7 +277,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         },
         "test_execution": {
             "nodeid_count": 84,
-            "nodeid_digest": hashlib.sha256("\n".join(frozen_nodeids).encode()).hexdigest(),
+            "nodeid_digest": hashlib.sha256("\n".join(sorted(frozen_nodeids)).encode()).hexdigest(),
             "default": {
                 "junit_path": default_junit.relative_to(repo).as_posix(),
                 "passed": 0,
@@ -309,6 +310,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "parents": [base, pr_head],
             "snapshot_path": pr_snapshot_path.relative_to(repo).as_posix(),
             "snapshot_sha256": hashlib.sha256(pr_snapshot_path.read_bytes()).hexdigest(),
+            "body_sha256": hashlib.sha256(pr_body.encode()).hexdigest(),
             "changed_paths": changed_paths,
         },
         "target_integration": {
@@ -433,6 +435,8 @@ def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
 
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
     repo = make_repo(tmp_path)
+    marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
+    marker.write_text("---\nphase: LEGIBLE\n---\n# LEGIBLE\n", encoding="utf-8")
 
     with pytest.raises(roadmap_lint.RoadmapStatusError):
         roadmap_lint.validate_roadmap_status_coherence(repo, required=True)
