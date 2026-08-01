@@ -1973,15 +1973,17 @@ def test_pr_review_readiness_rejects_unsatisfied_decisions(decision, expected):
         "main_advances_during_review",
         "main_advances_at_publish",
         "post_publish_failure",
+        "durability_failure",
     ),
     (
-        (False, False, False, None),
-        (True, False, False, None),
-        (False, True, False, None),
-        (False, False, True, None),
-        (False, False, False, "fetch"),
-        (False, False, False, "poll_error"),
-        (False, False, False, "poll_timeout"),
+        (False, False, False, None, False),
+        (True, False, False, None, False),
+        (False, True, False, None, False),
+        (False, False, True, None, False),
+        (False, False, False, "fetch", False),
+        (False, False, False, "poll_error", False),
+        (False, False, False, "poll_timeout", False),
+        (False, False, False, None, True),
     ),
 )
 def test_pr_transition_persists_identity_and_reviews_before_mutation(
@@ -1991,6 +1993,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     main_advances_during_review,
     main_advances_at_publish,
     post_publish_failure,
+    durability_failure,
 ):
     from phase_loop_runtime import runner
 
@@ -2109,6 +2112,13 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
 
+    def fake_durability_sync(_repo, _run_id):
+        events.append("durable")
+        if durability_failure:
+            raise OSError("durability sync failed")
+
+    monkeypatch.setattr(runner, "fsync_run_store_durable", fake_durability_sync, raising=False)
+
     def fake_run(argv, **kwargs):
         nonlocal merged, post_failure_pending
         if argv[:3] == ["gh", "pr", "ready"]:
@@ -2130,8 +2140,13 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
 
-    if merge_snapshot_drift or main_advances_during_review or main_advances_at_publish:
-        with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+    if (
+        merge_snapshot_drift
+        or main_advances_during_review
+        or main_advances_at_publish
+        or durability_failure
+    ):
+        with pytest.raises((legible_evidence.LegibleProcessBootstrapError, OSError)):
             runner._run_legible_pr_transition(
                 repo=repo,
                 expected_head=base,
@@ -2143,7 +2158,9 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
             "candidate-remote", "snapshot",
         ]
         if main_advances_at_publish:
-            expected.extend(("ready", "candidate-remote", "snapshot", "push-rejected"))
+            expected.extend(("ready", "candidate-remote", "snapshot", "durable", "push-rejected"))
+        elif durability_failure:
+            expected.extend(("ready", "candidate-remote", "snapshot", "durable"))
         assert events == expected
         return
 
@@ -2195,6 +2212,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         "ready",
         "candidate-remote",
         "snapshot",
+        "durable",
         "merge",
         "snapshot",
     ]
