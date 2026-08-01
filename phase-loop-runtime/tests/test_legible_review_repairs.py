@@ -15,7 +15,7 @@ legible_evidence = pytest.importorskip(
     "phase_loop_runtime.legible_evidence",
     reason="LEGIBLE implementation capability is not installed",
 )
-from phase_loop_runtime import docs_freshness, plan_manifest, roadmap_lint
+from phase_loop_runtime import discovery, docs_freshness, plan_manifest, roadmap_assumptions, roadmap_lint
 from phase_loop_runtime.docs_freshness import check_catalog
 from phase_loop_runtime.plan_manifest import check
 from phase_loop_runtime.roadmap_assumptions import _classify_reviewtruth_transition
@@ -32,6 +32,52 @@ from phase_loop_runtime.verification_evidence import (
 from phase_loop_test_utils import make_repo
 
 
+LEGIBLE_PROBE_IDS = (
+    "LEGIBLE-A1-CONFORM-UNGATED",
+    "LEGIBLE-A1-I118",
+    "LEGIBLE-A1-PIN-SHA",
+    "LEGIBLE-A1-PIN-TAG",
+    "LEGIBLE-A1-PR102",
+    "LEGIBLE-A1-PR377",
+    "LEGIBLE-A1-SUBMISSION-DIGEST",
+    "LEGIBLE-A1-TAG-DEREF",
+    "LEGIBLE-A1-VERDICT-DIGEST",
+    "LEGIBLE-A2-GP-PIN",
+    "LEGIBLE-A2-I128",
+    "LEGIBLE-A2-LOCAL-VERSION",
+    "LEGIBLE-A2-NO-DEPENDENCY",
+    "LEGIBLE-A3-EC14",
+    "LEGIBLE-A3-EC4",
+    "LEGIBLE-A3-NO-DEGRADED-GATE",
+    "LEGIBLE-A3-REVIEWTRUTH-TRANSITION",
+    "LEGIBLE-A4-DISCOVERY",
+    "LEGIBLE-A4-PER-ENTRY",
+    "LEGIBLE-A4-PR170",
+    "LEGIBLE-A5-RATIFICATION",
+    "LEGIBLE-A5-RETRACTION",
+    "LEGIBLE-A5-SHARED-EPOCH",
+)
+
+LEGIBLE_OWNED_PATHS = (
+    ".claude/docs-catalog.json",
+    "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
+    "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+    "phase-loop-runtime/src/phase_loop_runtime/discovery.py",
+    "phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py",
+    "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+    "phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py",
+    "phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py",
+    "phase-loop-runtime/src/phase_loop_runtime/roadmap_lint.py",
+    "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+    "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+    "phase-loop-runtime/tests/test_legible_evidence.py",
+    "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
+    "plans/manifest.json",
+    "specs/roadmap-assumption-probes-v10.json",
+    "specs/roadmap-status.json",
+)
+
+
 def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
     rel = f"plans/{name}"
     (repo / rel).write_text("---\nphase: RUNNER\n---\n# Runner\n", encoding="utf-8")
@@ -41,6 +87,22 @@ def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
 
 
 def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
+    def git(*args: str, input_text: str | None = None) -> str:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            input=input_text,
+        ).stdout.strip()
+
+    def blob(commit: str, rel: str) -> str:
+        return git("rev-parse", f"{commit}:{rel}")
+
+    def tree(commit: str) -> str:
+        return git("rev-parse", f"{commit}^{{tree}}")
+
     cli_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
     cli_path.parent.mkdir(parents=True, exist_ok=True)
     cli_path.write_text("# fixture CLI\n", encoding="utf-8")
@@ -57,7 +119,12 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         encoding="utf-8",
     )
     plan_path = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
-    plan_path.write_text("---\nphase: LEGIBLE\n---\n# LEGIBLE fixture\n", encoding="utf-8")
+    owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
+    plan_path.write_text(
+        "---\nphase: LEGIBLE\nlegible_owned_paths_count: 16\n"
+        f"legible_owned_paths_sha256: {owned_digest}\n---\n# LEGIBLE fixture\n",
+        encoding="utf-8",
+    )
     registry_path = repo / "specs" / "roadmap-status.json"
     registry_path.write_text(
         json.dumps(
@@ -75,20 +142,58 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         + "\n",
         encoding="utf-8",
     )
+    for rel in LEGIBLE_OWNED_PATHS:
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text(f"# fixture {rel}\n", encoding="utf-8")
+
     frozen_nodeids = tuple(
         f"phase-loop-runtime/tests/test_legible_{'roadmap_contract' if index < 64 else 'evidence'}.py::"
         f"test_fixture_{index:03d}"
         for index in range(84)
     )
-    for rel, nodeids in (
+    frozen_by_path = (
         ("phase-loop-runtime/tests/test_legible_roadmap_contract.py", frozen_nodeids[:64]),
         ("phase-loop-runtime/tests/test_legible_evidence.py", frozen_nodeids[64:]),
-    ):
+    )
+    for rel, _nodeids in frozen_by_path:
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"LEGIBLE_EXPECTED_NODEIDS_V1 = {nodeids!r}\n", encoding="utf-8")
+        path.write_text("# pre-landing test placeholder\n", encoding="utf-8")
     pr_delta_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "panel_invoker.py"
     pr_delta_path.write_text("# base panel invoker\n", encoding="utf-8")
+    manifest_path = repo / "plans" / "manifest.json"
+    plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": "plans/phase-plan-v10-LEGIBLE.md",
+                        "phase_alias": "LEGIBLE",
+                        "lifecycle": [
+                            {
+                                "metadata": {
+                                    "legible_plan_contract": {
+                                        "plan_sha256": plan_digest,
+                                        "owned_paths": list(LEGIBLE_OWNED_PATHS),
+                                        "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
+                                        "owned_paths_sha256": owned_digest,
+                                        "test_paths": [rel for rel, _ in frozen_by_path],
+                                    }
+                                }
+                            },
+                            {"metadata": {"note": "ordinary later lifecycle event"}},
+                        ],
+                    }
+                ]
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(
         ["git", "commit", "-m", "operational base"],
@@ -96,39 +201,50 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         check=True,
         capture_output=True,
     )
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    refresh_base = git("rev-parse", "HEAD")
 
-    subprocess.run(["git", "switch", "-c", "candidate"], cwd=repo, check=True, capture_output=True)
-    candidate_path = repo / "candidate.txt"
-    candidate_path.write_text("candidate\n", encoding="utf-8")
-    subprocess.run(["git", "add", candidate_path.name], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "candidate"], cwd=repo, check=True, capture_output=True)
-    candidate = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
-
-    subprocess.run(["git", "switch", "-c", "pr-head", base], cwd=repo, check=True, capture_output=True)
-    pr_delta_path.write_text("# reviewed external delta\n", encoding="utf-8")
-    subprocess.run(
-        ["git", "add", pr_delta_path.relative_to(repo).as_posix()], cwd=repo, check=True
+    git("switch", "-c", "refresh-work", refresh_base)
+    body_ancestors: list[str] = []
+    for index in range(6):
+        with pr_delta_path.open("a", encoding="utf-8") as stream:
+            stream.write(f"# reviewed external delta {index + 1}\n")
+        git("add", pr_delta_path.relative_to(repo).as_posix())
+        git("commit", "-m", f"external PR row {index + 1}")
+        body_ancestors.append(git("rev-parse", "HEAD"))
+    refresh_parent = body_ancestors[-1]
+    pr_head = git(
+        "commit-tree",
+        tree(refresh_parent),
+        "-p",
+        refresh_parent,
+        "-p",
+        refresh_base,
+        input_text="refresh merge\n",
     )
-    subprocess.run(["git", "commit", "-m", "external PR"], cwd=repo, check=True, capture_output=True)
-    pr_head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    git("branch", "pr-head", pr_head)
 
-    subprocess.run(["git", "switch", "-c", "target", base], cwd=repo, check=True, capture_output=True)
+    git("switch", "-c", "target", refresh_base)
+    for rel, nodeids in frozen_by_path:
+        (repo / rel).write_text(f"LEGIBLE_EXPECTED_NODEIDS_V1 = {nodeids!r}\n", encoding="utf-8")
+    git("add", *(rel for rel, _ in frozen_by_path))
+    git("commit", "-m", "tests-only landing")
+    implementation_base = git("rev-parse", "HEAD")
+
+    git("switch", "-c", "candidate", implementation_base)
+    candidate_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "roadmap_assumptions.py"
+    candidate_path.write_text("# fixture roadmap assumptions\nCAPABILITY = True\n", encoding="utf-8")
+    git("add", candidate_path.relative_to(repo).as_posix())
+    git("commit", "-m", "phase candidate")
+    candidate = git("rev-parse", "HEAD")
+
+    git("switch", "target")
     subprocess.run(
         ["git", "merge", "--no-ff", "pr-head", "-m", "server merge"],
         cwd=repo,
         check=True,
         capture_output=True,
     )
-    server_merge = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    server_merge = git("rev-parse", "HEAD")
 
     subprocess.run(["git", "switch", "candidate"], cwd=repo, check=True, capture_output=True)
     subprocess.run(
@@ -137,9 +253,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         check=True,
         capture_output=True,
     )
-    integration = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    integration = git("rev-parse", "HEAD")
 
     evidence_dir = repo / "evidence"
     evidence_dir.mkdir()
@@ -166,50 +280,86 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     write_junit(default_junit, "skipped")
     write_junit(forced_red_junit, "failure")
     write_junit(final_junit, "passed")
+    bundle_path = evidence_dir / "implementation-review-bundle.md"
+    bundle_path.write_text(f"exact head: {integration}\n", encoding="utf-8")
+    panel_models = {
+        "claude": "claude-fable-5",
+        "codex": "gpt-5.6-sol",
+        "gemini": "gemini-3.6-flash",
+        "grok": "grok-4.5",
+    }
+    leg_records = []
+    leg_paths: list[Path] = []
+    for leg, model in panel_models.items():
+        leg_path = evidence_dir / f"implementation-panel-{leg}.json"
+        leg_payload = {
+            "leg": leg,
+            "model": model,
+            "seat_key": f"{leg}:{model}:max:review",
+            "status": "OK",
+            "usable": True,
+            "verdict": "AGREE",
+            "text": "Exact-head review complete.\n\nAGREE",
+        }
+        leg_path.write_text(json.dumps(leg_payload, sort_keys=True) + "\n", encoding="utf-8")
+        leg_paths.append(leg_path)
+        leg_records.append(
+            {
+                **{key: leg_payload[key] for key in ("leg", "model", "seat_key", "status", "usable", "verdict")},
+                "artifact_path": leg_path.relative_to(repo).as_posix(),
+                "artifact_sha256": hashlib.sha256(leg_path.read_bytes()).hexdigest(),
+            }
+        )
     panel_path = evidence_dir / "implementation-panel.json"
     panel_path.write_text(
         json.dumps(
             {
+                "schema": "advisor_board.v1",
                 "head": integration,
-                "verdicts": {
-                    "claude-fable-5": "AGREE",
-                    "gemini-3.6-flash": "AGREE",
-                    "gpt-5.6-sol": "AGREE",
-                    "grok-4.5": "AGREE",
-                },
+                "bundle_path": bundle_path.relative_to(repo).as_posix(),
+                "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                "legs": leg_records,
+                "verdicts": {model: "AGREE" for model in panel_models.values()},
             },
             sort_keys=True,
         )
         + "\n",
         encoding="utf-8",
     )
-    probe_path = evidence_dir / "reviewtruth-probe.json"
-    probe_bytes = b'{"state":"pending"}\n'
-    probe_path.write_bytes(probe_bytes)
+    probe_records = []
+    probe_paths: list[Path] = []
+    for probe_id in LEGIBLE_PROBE_IDS:
+        state = "pending" if probe_id == "LEGIBLE-A3-REVIEWTRUTH-TRANSITION" else "resolved"
+        probe_path = evidence_dir / f"{probe_id.lower()}.json"
+        probe_bytes = (json.dumps({"probe_id": probe_id, "state": state}, sort_keys=True) + "\n").encode()
+        probe_path.write_bytes(probe_bytes)
+        probe_paths.append(probe_path)
+        probe_records.append(
+            {
+                "schema": "roadmap_assumption_probe.v1",
+                "probe_id": probe_id,
+                "state": state,
+                "response_path": probe_path.relative_to(repo).as_posix(),
+                "response_sha256": hashlib.sha256(probe_bytes).hexdigest(),
+                "response_byte_length": len(probe_bytes),
+            }
+        )
     pr_snapshot_path = evidence_dir / "agent-harness-347-snapshot.json"
     changed_paths = [pr_delta_path.relative_to(repo).as_posix()]
     pr_body = "LEGIBLE exact transition"
     pr_snapshot = {
-        "base": base,
+        "base": implementation_base,
+        "refresh_base": refresh_base,
         "body": pr_body,
+        "body_ancestor_commits": body_ancestors,
         "changed_paths": changed_paths,
         "checks": ["SUCCESS"],
         "head": pr_head,
-        "head_tree": subprocess.run(
-            ["git", "rev-parse", f"{pr_head}^{{tree}}"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip(),
+        "head_tree": tree(pr_head),
         "merge_commit": server_merge,
-        "merge_tree": subprocess.run(
-            ["git", "rev-parse", f"{server_merge}^{{tree}}"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip(),
+        "merge_tree": tree(server_merge),
+        "refresh_parents": [refresh_parent, refresh_base],
+        "remote_head_oid": pr_head,
     }
     pr_snapshot_path.write_text(json.dumps(pr_snapshot, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -252,8 +402,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             ],
         },
         "chronology": {
-            "tests_landing": base,
-            "implementation_base": base,
+            "refresh_base": refresh_base,
+            "tests_landing": implementation_base,
+            "implementation_base": implementation_base,
             "phase_candidate": candidate,
             "pr_head": pr_head,
             "server_merge": server_merge,
@@ -262,6 +413,21 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "plan_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
             "roadmap_path": "specs/phase-plans-v10.md",
             "roadmap_sha256": hashlib.sha256(roadmap_v10.read_bytes()).hexdigest(),
+            "owned_paths": list(LEGIBLE_OWNED_PATHS),
+            "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
+            "owned_paths_sha256": owned_digest,
+            "frozen_test_blobs": {
+                rel: {
+                    ref: blob(commit, rel)
+                    for ref, commit in {
+                        "tests_landing": implementation_base,
+                        "implementation_base": implementation_base,
+                        "phase_candidate": candidate,
+                        "candidate_head": integration,
+                    }.items()
+                }
+                for rel, _ in frozen_by_path
+            },
         },
         "process_attestations": {
             "builder": {"run_id": "builder-1", "process_start_token": "builder-token"},
@@ -273,6 +439,14 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
                 "cli_sha256": hashlib.sha256(cli_path.read_bytes()).hexdigest(),
                 "python_executable": sys.executable,
                 "process_start_token": "attester-token",
+                "loaded_runtime_blobs": {
+                    rel: blob(integration, rel)
+                    for rel in (
+                        "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                        "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+                        "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                    )
+                },
             },
         },
         "test_execution": {
@@ -304,45 +478,59 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "repository": "Consiliency/agent-harness",
             "number": 347,
             "state": "MERGED",
-            "base": base,
+            "base": implementation_base,
+            "refresh_base": refresh_base,
             "head": pr_head,
+            "remote_head_oid": pr_head,
             "merge_commit": server_merge,
-            "parents": [base, pr_head],
+            "parents": [implementation_base, pr_head],
+            "refresh_parents": [refresh_parent, refresh_base],
+            "body_ancestor_commits": body_ancestors,
             "snapshot_path": pr_snapshot_path.relative_to(repo).as_posix(),
             "snapshot_sha256": hashlib.sha256(pr_snapshot_path.read_bytes()).hexdigest(),
             "body_sha256": hashlib.sha256(pr_body.encode()).hexdigest(),
             "changed_paths": changed_paths,
+            "comment_tokens_equal": True,
+            "external_blobs": {
+                "refresh_base": blob(refresh_base, changed_paths[0]),
+                "implementation_base": blob(implementation_base, changed_paths[0]),
+                "phase_candidate": blob(candidate, changed_paths[0]),
+                "head": blob(pr_head, changed_paths[0]),
+                "server_merge": blob(server_merge, changed_paths[0]),
+                "integration": blob(integration, changed_paths[0]),
+            },
+            "recomputed_trees": {
+                "refresh": tree(pr_head),
+                "server": tree(server_merge),
+                "integration": tree(integration),
+            },
         },
         "target_integration": {
             "candidate": candidate,
             "server_merge": server_merge,
             "integration": integration,
             "parents": [candidate, server_merge],
+            "recomputed_tree": tree(integration),
         },
         "assumption_probes": {
             "execution_head": integration,
-            "records": [
-                {
-                    "schema": "roadmap_assumption_probe.v1",
-                    "probe_id": "LEGIBLE-A3-REVIEWTRUTH-TRANSITION",
-                    "state": "pending",
-                    "response_path": probe_path.relative_to(repo).as_posix(),
-                    "response_sha256": hashlib.sha256(probe_bytes).hexdigest(),
-                    "response_byte_length": len(probe_bytes),
-                }
-            ],
+            "records": probe_records,
         },
         "artifacts": {
             "records": [
                 file_record(registry_path),
                 file_record(roadmap_v10),
                 file_record(plan_path),
+                file_record(manifest_path),
                 file_record(cli_path),
+                *(file_record(repo / rel) for rel, _ in frozen_by_path),
                 file_record(default_junit),
                 file_record(forced_red_junit),
                 file_record(final_junit),
+                file_record(bundle_path),
                 file_record(panel_path),
-                file_record(probe_path),
+                *(file_record(path) for path in leg_paths),
+                *(file_record(path) for path in probe_paths),
                 file_record(pr_snapshot_path),
             ]
         },
@@ -1065,3 +1253,264 @@ def test_plan_aware_validation_rejects_invalid_sidecar_identity_binding(
 
     assert not result.ok
     assert result.code == expected_code
+
+
+def test_attest_delegates_to_runner_owned_operational_workflow(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    observed = {}
+
+    def fake_attest(**kwargs):
+        observed.update(kwargs)
+        return {
+            "status": "sealed",
+            "head": kwargs["expected_head"],
+            "evidence_path": ".phase-loop/runs/attest/legible-operational-evidence.json",
+        }
+
+    monkeypatch.setattr(runner, "run_legible_operational_attestation", fake_attest, raising=False)
+
+    result = legible_evidence.attest(
+        repo=repo,
+        stage="candidate",
+        expected_head=head,
+        builder_run_id="builder-1",
+    )
+
+    assert result["status"] == "sealed"
+    assert result["evidence_path"].endswith("legible-operational-evidence.json")
+    assert observed["repo"] == repo.resolve()
+    assert observed["stage"] == "candidate"
+    assert observed["expected_head"] == head
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "owned_partition",
+        "frozen_test_blob",
+        "remote_oid",
+        "loaded_runtime_blob",
+        "refresh_parents",
+        "body_ancestors",
+        "comment_tokens",
+        "external_blob",
+        "recomputed_tree",
+        "probe_set",
+        "panel_legs",
+    ),
+)
+def test_operational_evidence_rejects_unproven_frozen_semantics(tmp_path, mutation):
+    repo = make_repo(tmp_path)
+    head, sections = _operational_fixture(repo)
+    baseline_path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / f"baseline-{mutation}",
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+    assert legible_evidence.validate_operational_evidence(
+        repo=repo, path=baseline_path, stage="candidate", expected_head=head
+    ).ok
+
+    if mutation == "owned_partition":
+        sections["chronology"]["owned_paths"].pop()
+    elif mutation == "frozen_test_blob":
+        first = next(iter(sections["chronology"]["frozen_test_blobs"].values()))
+        first["candidate_head"] = "0" * 40
+    elif mutation == "remote_oid":
+        sections["pull_request"]["remote_head_oid"] = "0" * 40
+    elif mutation == "loaded_runtime_blob":
+        first_key = next(iter(sections["process_attestations"]["attester"]["loaded_runtime_blobs"]))
+        sections["process_attestations"]["attester"]["loaded_runtime_blobs"][first_key] = "0" * 40
+    elif mutation == "refresh_parents":
+        sections["pull_request"]["refresh_parents"].reverse()
+    elif mutation == "body_ancestors":
+        sections["pull_request"]["body_ancestor_commits"].pop()
+    elif mutation == "comment_tokens":
+        sections["pull_request"]["comment_tokens_equal"] = False
+    elif mutation == "external_blob":
+        sections["pull_request"]["external_blobs"]["head"] = "0" * 40
+    elif mutation == "recomputed_tree":
+        sections["pull_request"]["recomputed_trees"]["server"] = "0" * 40
+    elif mutation == "probe_set":
+        sections["assumption_probes"]["records"].pop(0)
+    else:
+        panel_path = repo / "evidence" / "implementation-panel.json"
+        panel = json.loads(panel_path.read_text(encoding="utf-8"))
+        panel.pop("legs")
+        panel_path.write_text(json.dumps(panel, sort_keys=True) + "\n", encoding="utf-8")
+        panel_record = next(
+            record
+            for record in sections["artifacts"]["records"]
+            if record["path"] == panel_path.relative_to(repo).as_posix()
+        )
+        panel_record["byte_length"] = len(panel_path.read_bytes())
+        panel_record["sha256"] = hashlib.sha256(panel_path.read_bytes()).hexdigest()
+
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / f"mutated-{mutation}",
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+    result = legible_evidence.validate_operational_evidence(
+        repo=repo, path=path, stage="candidate", expected_head=head
+    )
+
+    assert not result.ok, mutation
+    assert result.code == "operational_evidence_sections"
+
+
+def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = True) -> tuple[str, dict]:
+    rel = _commit_plan(repo, "phase-plan-v10-LEGIBLE.md")
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
+    contract = {
+        "plan_sha256": plan_digest,
+        "owned_paths": list(LEGIBLE_OWNED_PATHS),
+        "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
+        "owned_paths_sha256": owned_digest,
+        "test_paths": list(legible_evidence.FROZEN_TEST_PATHS),
+    }
+    lifecycle = [{"metadata": {"legible_plan_contract": contract}}] if include_contract else []
+    lifecycle.append({"metadata": {"note": "ordinary later event"}})
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps(
+            {"plans": [{"file": rel, "phase_alias": "LEGIBLE", "lifecycle": lifecycle}]},
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return rel, contract
+
+
+def test_legible_manifest_contract_survives_later_ordinary_lifecycle_event(tmp_path):
+    repo = make_repo(tmp_path)
+    rel, _contract = _write_legible_manifest_contract(repo)
+    (repo / rel).write_text((repo / rel).read_text(encoding="utf-8") + "drift\n", encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-digest") in [(item.path, item.kind) for item in result.malformed]
+
+
+@pytest.mark.parametrize("defect", ("missing", "owned_paths", "owned_paths_count", "owned_paths_sha256", "test_paths"))
+def test_legible_manifest_contract_is_mandatory_and_complete(tmp_path, defect):
+    repo = make_repo(tmp_path)
+    rel, contract = _write_legible_manifest_contract(repo, include_contract=defect != "missing")
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if defect != "missing":
+        del manifest["plans"][0]["lifecycle"][0]["metadata"]["legible_plan_contract"][defect]
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [(item.path, item.kind) for item in result.malformed]
+
+
+@pytest.mark.parametrize("mutation", ("roadmap_path", "missing_probe", "arbitrary_import", "extra_subject_key"))
+def test_assumption_sidecar_is_exact_closed_v10_data_boundary(tmp_path, mutation):
+    source_repo = Path(__file__).resolve().parents[2]
+    source_sidecar = json.loads(
+        (source_repo / roadmap_assumptions.PROBE_SIDECAR_REL).read_text(encoding="utf-8")
+    )
+    repo = tmp_path / "sidecar-repo"
+    roadmap_bytes = (source_repo / "specs" / "phase-plans-v10.md").read_bytes()
+    roadmap_path = repo / "specs" / "phase-plans-v10.md"
+    roadmap_path.parent.mkdir(parents=True)
+    roadmap_path.write_bytes(roadmap_bytes)
+    if mutation == "roadmap_path":
+        alternate = repo / "specs" / "alternate.md"
+        alternate.write_bytes(roadmap_bytes)
+        source_sidecar["roadmap"] = "specs/alternate.md"
+    elif mutation == "missing_probe":
+        source_sidecar["probes"].pop()
+    else:
+        probe = next(item for item in source_sidecar["probes"] if item["kind"] == "repo_constant")
+        if mutation == "arbitrary_import":
+            probe["subject"] = {
+                "module": "test_legible_review_repairs",
+                "attribute": "LEGIBLE_PROBE_IDS",
+                "field": "count",
+            }
+        else:
+            probe["subject"]["unexpected"] = "accepted-by-open-mapping"
+    selected_roadmap = repo / source_sidecar["roadmap"]
+    source_sidecar["roadmap_sha256"] = hashlib.sha256(selected_roadmap.read_bytes()).hexdigest()
+    sidecar_path = repo / roadmap_assumptions.PROBE_SIDECAR_REL
+    sidecar_path.write_text(json.dumps(source_sidecar, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(roadmap_assumptions.RoadmapAssumptionError) as excinfo:
+        roadmap_assumptions.load_probe_sidecar(repo)
+
+    assert excinfo.value.code in {"sidecar_contract_drift", "probe_contract_drift"}
+
+
+def test_registry_free_selector_rejects_case_variant_status_like_banner(tmp_path):
+    repo = make_repo(tmp_path)
+    candidate = repo / "specs" / "phase-plans-v1.md"
+    candidate.write_text(
+        "# Roadmap\n\n> **STATUS (2026-08-01): ACTIVE - malformed declaration.**\n\n## Body\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(roadmap_lint.MalformedBannerError):
+        discovery._return_selectable_roadmap(repo, candidate, "test")
+
+
+def test_selector_read_failure_is_typed_not_selectable(tmp_path):
+    repo = make_repo(tmp_path)
+    candidate = repo / "specs" / "phase-plans-v1.md"
+    candidate.write_text("# Roadmap\n", encoding="utf-8")
+
+    with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+        with pytest.raises(roadmap_lint.RoadmapStatusError):
+            discovery._return_selectable_roadmap(repo, candidate, "test")
+
+
+def test_manifest_git_source_failure_is_typed(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    real_run = plan_manifest.subprocess.run
+
+    def fail_ls_tree(argv, **kwargs):
+        if "ls-tree" in argv:
+            return subprocess.CompletedProcess(argv, 128, b"", b"fatal: unavailable")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(plan_manifest.subprocess, "run", fail_ls_tree)
+
+    with pytest.raises(plan_manifest.ManifestSourceError):
+        plan_manifest.canonical_plan_files(repo, head)
+
+
+@pytest.mark.parametrize("defect", ("missing", "symlink", "unreadable"))
+def test_manifest_physical_source_failure_is_typed(tmp_path, monkeypatch, defect):
+    repo = make_repo(tmp_path)
+    plans = repo / "plans"
+    hidden = repo / "plans-hidden"
+    plans.rename(hidden)
+    if defect == "symlink":
+        plans.symlink_to(hidden, target_is_directory=True)
+    elif defect == "unreadable":
+        plans.mkdir()
+        monkeypatch.setattr(plan_manifest.os, "listdir", lambda _path: (_ for _ in ()).throw(PermissionError("denied")))
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    with pytest.raises(plan_manifest.ManifestSourceError):
+        plan_manifest.canonical_plan_files(repo, head)
