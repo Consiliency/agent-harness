@@ -11,7 +11,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The two frozen LEGIBLE files (`test_legible_roadmap_contract.py`, `test_legible_evidence.py`)
   distinguish a full-history canonical repo from an installed consumer. GitHub's shallow
   `actions/checkout` is neither, so `.github/workflows/test.yml` now runs those two files
-  from a copied tests tree while every other test keeps its existing source-checkout mode.
+  from a copied tests tree with the canonical roadmap at its repository-relative sibling
+  path, while every other test keeps its existing source-checkout mode.
   This is a CI-execution change only; no shipped runtime behaviour changes.
 
 ### Advisor-board Fable liveness: tool activity counts as progress

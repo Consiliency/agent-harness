@@ -83,8 +83,9 @@ jobs:
             --ignore tests/test_legible_roadmap_contract.py \
             --ignore tests/test_legible_evidence.py
           suite_root="$(mktemp -d)/phase-loop-runtime"
-          mkdir -p "$suite_root"
+          mkdir -p "$suite_root" "$(dirname "$suite_root")/specs"
           cp -r tests "$suite_root/tests"
+          cp ../specs/phase-plans-v10.md "$(dirname "$suite_root")/specs/phase-plans-v10.md"
           PYTHONPATH="$suite_root/tests" python -m pytest \
             "$suite_root/tests/test_legible_roadmap_contract.py" \
             "$suite_root/tests/test_legible_evidence.py" \
