@@ -2002,22 +2002,13 @@ def _write_historical_plan_files(repo: Path) -> None:
 
 
 def test_unregistered_plan_files_names_all_eleven_in_stable_order(tmp_path):
-    if _canonical_repo_ready():
-        for rel in HISTORICAL_PLAN_FILES:
-            assert (REPO_ROOT / rel).is_file(), f"historical plan missing from live repo: {rel}"
-        registered = _real_manifest_registered_files()
-        for rel in HISTORICAL_PLAN_FILES:
-            assert rel not in registered, f"{rel} is unexpectedly already registered"
-        target_repo = REPO_ROOT
-    else:
-        # Installed-wheel clean room: no canonical plans/ tree to scan, so
-        # exercise the identical public contract against a synthetic repo
-        # carrying the same eleven closed historical-plan relative paths,
-        # none of them registered.
-        target_repo = _init_repo(tmp_path)
-        _write_historical_plan_files(target_repo)
-        _write_all_tracked_roadmaps(target_repo)
-        _commit_all(target_repo)
+    # Exercise enumeration against a closed synthetic scope. The integrated
+    # repository is required below to register all 28 canonical plans, so it
+    # cannot simultaneously serve as an eleven-unregistered positive fixture.
+    target_repo = _init_repo(tmp_path)
+    _write_historical_plan_files(target_repo)
+    _write_all_tracked_roadmaps(target_repo)
+    _commit_all(target_repo)
     try:
         unregistered_fn = _new_symbol("phase_loop_runtime.plan_manifest", "unregistered_plan_files")
     except (ImportError, AttributeError) as exc:
