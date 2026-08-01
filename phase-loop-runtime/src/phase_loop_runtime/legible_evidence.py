@@ -65,6 +65,7 @@ _LEGIBLE_OWNED_PATHS: tuple[str, ...] = (
 )
 _LOADED_ATTESTATION_RUNTIME_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+    "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
     "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
     "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
@@ -1643,12 +1644,24 @@ def finalize_operational_attestation(
         raise LegibleProcessBootstrapError("attestation bootstrap head does not match expected head")
     if not process_start_token.strip():
         raise LegibleProcessBootstrapError("attestation process start token is empty")
+    self_referential_paths = {
+        artifact_path.relative_to(repo).as_posix(),
+        (run_dir / "verification.log").relative_to(repo).as_posix(),
+    }
+    filtered_sections = dict(sections)
+    artifacts = dict(sections["artifacts"])
+    artifacts["records"] = [
+        record
+        for record in artifacts["records"]
+        if not isinstance(record, Mapping) or record.get("path") not in self_referential_paths
+    ]
+    filtered_sections["artifacts"] = artifacts
     output_path = _assemble_operational_evidence(
         repo=repo,
         run_dir=run_dir,
         stage=stage,
         expected_head=expected_head,
-        sections=sections,
+        sections=filtered_sections,
     )
     validation = validate_operational_evidence(
         repo=repo,
@@ -1689,6 +1702,7 @@ def attest(
     builder_run_id: str,
     candidate_head: str | None = None,
     process_start_token: str | None = None,
+    preimport_bootstrap: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Runner-owned attestation bootstrap: resolves the clean repo/worktree
     and exact HEAD, and requires it to equal ``expected_head`` before
@@ -1732,7 +1746,40 @@ def attest(
         raise LegibleProcessBootstrapError(
             f"candidate head {candidate_head!r} is not an ancestor of {actual_head!r}"
         )
-    process_start_token = process_start_token or secrets.token_hex(32)
+    canonical_plan = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
+    loaded_runtime_blobs: Mapping[str, object] | None = None
+    if canonical_plan.is_file():
+        if not isinstance(preimport_bootstrap, Mapping):
+            raise LegibleProcessBootstrapError(
+                "canonical LEGIBLE attestation requires CLI pre-import bootstrap provenance"
+            )
+        loaded_runtime_blobs = preimport_bootstrap.get("loaded_runtime_blobs")
+        bootstrap_token = preimport_bootstrap.get("process_start_token")
+        if (
+            preimport_bootstrap.get("bootstrap_head") != expected_head
+            or Path(str(preimport_bootstrap.get("repo_realpath", ""))).resolve() != repo
+            or not isinstance(bootstrap_token, str)
+            or not bootstrap_token
+            or (process_start_token is not None and process_start_token != bootstrap_token)
+            or not isinstance(loaded_runtime_blobs, Mapping)
+            or set(loaded_runtime_blobs) != set(_LOADED_ATTESTATION_RUNTIME_PATHS)
+        ):
+            raise LegibleProcessBootstrapError("canonical LEGIBLE pre-import bootstrap identity is invalid")
+        for rel, record in loaded_runtime_blobs.items():
+            blob_bytes = _blob_bytes(repo, expected_head, rel)
+            if (
+                not isinstance(record, Mapping)
+                or set(record) != {"path", "blob_oid", "byte_length", "sha256"}
+                or record.get("path") != rel
+                or record.get("blob_oid") != _blob_oid(repo, expected_head, rel)
+                or blob_bytes is None
+                or record.get("byte_length") != len(blob_bytes)
+                or record.get("sha256") != hashlib.sha256(blob_bytes).hexdigest()
+            ):
+                raise LegibleProcessBootstrapError(f"canonical LEGIBLE pre-import source drift: {rel}")
+        process_start_token = bootstrap_token
+    else:
+        process_start_token = process_start_token or secrets.token_hex(32)
     bootstrap = {
         "repo": str(repo),
         "stage": stage,
@@ -1751,6 +1798,7 @@ def attest(
         builder_run_id=builder_run_id,
         candidate_head=candidate_head,
         process_start_token=process_start_token,
+        loaded_runtime_blobs=loaded_runtime_blobs,
     )
     return {**bootstrap, **result}
 
@@ -1759,26 +1807,36 @@ def attest(
 # Frozen 84-nodeid inventory + JUnit reduction
 
 
+def _load_frozen_test_module(repo: Path, rel: str) -> Any:
+    path = Path(repo) / rel
+    spec = importlib.util.spec_from_file_location(f"_legible_frozen_{Path(rel).stem}", path)
+    if spec is None or spec.loader is None:
+        raise LegibleTestExecutionError(f"cannot load frozen test module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(path.parent))
+    return module
+
+
 def _load_frozen_nodeids(repo: Path) -> tuple[str, ...]:
-    """The exact frozen 84-nodeid union, read from the two frozen test files'
-    own ``LEGIBLE_EXPECTED_NODEIDS_V1`` literal tuples -- never re-derived
-    from a live pytest collection or hand-typed placeholders."""
-    repo = Path(repo)
+    """The exact frozen 84-nodeid union from the frozen tests' own literals."""
     nodeids: set[str] = set()
     for rel in FROZEN_TEST_PATHS:
-        path = repo / rel
-        spec = importlib.util.spec_from_file_location(f"_legible_frozen_{Path(rel).stem}", path)
-        if spec is None or spec.loader is None:
-            raise LegibleTestExecutionError(f"cannot load frozen test module: {path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.path.insert(0, str(path.parent))
-        try:
-            spec.loader.exec_module(module)
-        finally:
-            if str(path.parent) in sys.path:
-                sys.path.remove(str(path.parent))
-        nodeids.update(module.LEGIBLE_EXPECTED_NODEIDS_V1)
+        nodeids.update(_load_frozen_test_module(repo, rel).LEGIBLE_EXPECTED_NODEIDS_V1)
     return tuple(sorted(nodeids))
+
+
+def _load_frozen_skip_reason(repo: Path) -> str:
+    reasons = {
+        _load_frozen_test_module(repo, rel).pytestmark.mark.kwargs.get("reason")
+        for rel in FROZEN_TEST_PATHS
+    }
+    if len(reasons) != 1 or not all(isinstance(reason, str) and reason for reason in reasons):
+        raise LegibleTestExecutionError("frozen tests do not share one nonempty skip reason")
+    return next(iter(reasons))
 
 
 @dataclass(frozen=True)
@@ -1804,7 +1862,11 @@ def _parse_junit(junit_path: Path) -> dict[str, tuple[str, str]]:
             status, message = "passed", ""
         else:
             child = children[0]
-            status = child.tag
+            status = (
+                "xfail"
+                if child.tag == "skipped" and child.get("type") not in {None, "pytest.skip"}
+                else child.tag
+            )
             message = child.get("message", "")
         observed[nodeid] = (status, message)
     return observed
@@ -1854,6 +1916,8 @@ def collect_test_execution_evidence(
 
     if mode == "forced_red" and len(set(mutation_ids)) != len(mutation_ids):
         raise LegibleTestExecutionError("forced-RED mutation ids are not one-to-one over the frozen inventory")
+    if mode == "default" and skip_reasons != {_load_frozen_skip_reason(repo)}:
+        raise LegibleTestExecutionError("default skips do not use the single frozen test-owned guard reason")
 
     return TestExecutionEvidence(
         nodeids=expected_nodeids,

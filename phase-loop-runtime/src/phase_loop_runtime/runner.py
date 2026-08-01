@@ -6791,9 +6791,86 @@ def _legible_transition_digest(payload: Mapping[str, object]) -> str:
     ).hexdigest()
 
 
+def _legible_transition_artifact_paths(repo: Path, run_id: str) -> tuple[Path, Path]:
+    run_dir = Path(repo) / ".phase-loop" / "runs" / run_id
+    return run_dir / "legible-pr-transition.json", run_dir / "implementation-panel.json"
+
+
+def _validate_legible_transition_panel(repo: Path, panel_path: Path, expected_head: str) -> None:
+    from .advisor_board.presets import CODE_REVIEW_BOARD
+
+    try:
+        panel = json.loads(panel_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition review panel is unreadable: {exc}"
+        ) from exc
+    if not isinstance(panel, dict) or set(panel) != {
+        "schema", "head", "bundle_path", "bundle_sha256", "legs", "verdicts"
+    }:
+        raise legible_evidence.LegibleProcessBootstrapError("transition review panel schema is invalid")
+    bundle_rel = panel.get("bundle_path")
+    bundle_path = (repo / str(bundle_rel)).resolve()
+    try:
+        bundle_path.relative_to(panel_path.parent)
+        bundle_bytes = bundle_path.read_bytes()
+    except (OSError, ValueError) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition review bundle is unavailable: {exc}"
+        ) from exc
+    legs = panel.get("legs")
+    verdicts = panel.get("verdicts")
+    if (
+        panel.get("schema") != "advisor_board.v1"
+        or panel.get("head") != expected_head
+        or not isinstance(bundle_rel, str)
+        or bundle_path.is_symlink()
+        or hashlib.sha256(bundle_bytes).hexdigest() != panel.get("bundle_sha256")
+        or not isinstance(legs, list)
+        or len(legs) != len(CODE_REVIEW_BOARD.seats)
+        or verdicts != {seat.model: "AGREE" for seat in CODE_REVIEW_BOARD.seats}
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError("transition review panel identity is invalid")
+    for seat, leg in zip(CODE_REVIEW_BOARD.seats, legs, strict=True):
+        if not isinstance(leg, dict) or set(leg) != {
+            "leg", "model", "seat_key", "status", "usable", "verdict", "artifact_path", "artifact_sha256"
+        }:
+            raise legible_evidence.LegibleProcessBootstrapError("transition review panel leg schema is invalid")
+        expected = {
+            "leg": seat.harness,
+            "model": seat.model,
+            "seat_key": seat.seat_key,
+            "status": "OK",
+            "usable": True,
+            "verdict": "AGREE",
+        }
+        if any(leg.get(key) != value for key, value in expected.items()):
+            raise legible_evidence.LegibleProcessBootstrapError("transition review panel is not unanimous")
+        leg_path = (repo / str(leg.get("artifact_path"))).resolve()
+        try:
+            leg_path.relative_to(panel_path.parent)
+            leg_bytes = leg_path.read_bytes()
+            leg_payload = json.loads(leg_bytes)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                f"transition review panel leg is unavailable: {exc}"
+            ) from exc
+        if (
+            leg_path.is_symlink()
+            or hashlib.sha256(leg_bytes).hexdigest() != leg.get("artifact_sha256")
+            or not isinstance(leg_payload, dict)
+            or set(leg_payload) != {*expected, "text"}
+            or any(leg_payload.get(key) != value for key, value in expected.items())
+            or [line.strip() for line in str(leg_payload.get("text", "")).splitlines() if line.strip()][-1:]
+            != ["AGREE"]
+        ):
+            raise legible_evidence.LegibleProcessBootstrapError("transition review panel leg failed validation")
+
+
 def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
     run_root = (repo / ".phase-loop" / "runs").resolve()
-    path = (run_root / run_id / "legible-pr-transition.json").resolve()
+    transition_path, expected_panel_path = _legible_transition_artifact_paths(repo, run_id)
+    path = transition_path.resolve()
     try:
         path.relative_to(run_root)
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -6824,6 +6901,7 @@ def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
         ) from exc
     if (
         not isinstance(panel_rel, str)
+        or panel_path != expected_panel_path.resolve()
         or raw_panel_path.is_symlink()
         or not panel_path.is_file()
         or hashlib.sha256(panel_bytes).hexdigest() != payload.get("review_panel_sha256")
@@ -6831,6 +6909,7 @@ def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
         raise legible_evidence.LegibleProcessBootstrapError(
             f"transition run {run_id!r} review panel failed digest validation"
         )
+    _validate_legible_transition_panel(repo, panel_path, str(payload.get("head", "")))
     return payload
 
 
@@ -7132,6 +7211,7 @@ def _run_legible_operational_attestation(
     builder_run_id: str,
     candidate_head: str | None,
     process_start_token: str,
+    loaded_runtime_blobs: Mapping[str, object],
 ) -> dict[str, object]:
     repo = repo.resolve()
     snapshot = _legible_pr_view(repo)
@@ -7385,7 +7465,7 @@ def _run_legible_operational_attestation(
         "cli_sha256": hashlib.sha256(cli_path.read_bytes()).hexdigest(),
         "python_executable": sys.executable,
         "process_start_token": process_start_token,
-        "loaded_runtime_blobs": _legible_loaded_runtime_records(repo, expected_head),
+        "loaded_runtime_blobs": dict(loaded_runtime_blobs),
     }
     process_attestations: dict[str, Mapping[str, object]] = {
         "builder": {"run_id": source_builder_run_id, "process_start_token": builder_token},
@@ -7523,7 +7603,7 @@ def _run_legible_operational_attestation(
         plan,
         repo / "plans" / "manifest.json",
         *(repo / rel for rel in legible_evidence._LOADED_ATTESTATION_RUNTIME_PATHS),
-        repo / ".phase-loop" / "runs" / builder_run_id / "legible-pr-transition.json",
+        *_legible_transition_artifact_paths(repo, builder_run_id),
         *(repo / rel for rel in legible_evidence.FROZEN_TEST_PATHS),
         default_junit,
         red_junit,
@@ -7581,6 +7661,7 @@ def run_legible_operational_attestation(
     builder_run_id: str,
     candidate_head: str | None,
     process_start_token: str,
+    loaded_runtime_blobs: Mapping[str, object] | None,
 ) -> dict[str, object]:
     """Fresh-process LEGIBLE attestation entrypoint.
 
@@ -7597,6 +7678,12 @@ def run_legible_operational_attestation(
             "candidate_head": candidate_head,
             "process_start_token": process_start_token,
         }
+    if not isinstance(loaded_runtime_blobs, Mapping) or set(loaded_runtime_blobs) != set(
+        legible_evidence._LOADED_ATTESTATION_RUNTIME_PATHS
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "canonical LEGIBLE attestation lacks pre-import runtime records"
+        )
     return _run_legible_operational_attestation(
         repo=Path(repo),
         plan=plan,
@@ -7605,6 +7692,7 @@ def run_legible_operational_attestation(
         builder_run_id=builder_run_id,
         candidate_head=candidate_head,
         process_start_token=process_start_token,
+        loaded_runtime_blobs=loaded_runtime_blobs,
     )
 
 

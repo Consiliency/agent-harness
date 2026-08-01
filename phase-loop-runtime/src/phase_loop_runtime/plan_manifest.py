@@ -800,15 +800,15 @@ def _git_ls_tree_plans(repo: Path, tree_oid: str) -> list[str]:
     return [chunk.decode("utf-8", "surrogateescape") for chunk in proc.stdout.split(b"\0") if chunk]
 
 
-def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str]]:
-    """Stage-0 index entries under ``plans/`` as ``(rel_path, blob_oid)``."""
+def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str, str]]:
+    """Stage-0 index entries under ``plans/`` as ``(rel_path, blob_oid, mode)``."""
     proc = subprocess.run(
         ["git", "-C", str(repo), "ls-files", "-z", "--stage", "--", "plans/"],
         capture_output=True, check=False,
     )
     if proc.returncode != 0:
         raise ManifestSourceError(f"git ls-files failed: {proc.stderr.decode(errors='replace').strip()}")
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for chunk in proc.stdout.split(b"\0"):
         if not chunk:
             continue
@@ -816,7 +816,13 @@ def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str]]:
         fields = meta.split()
         if len(fields) != 3 or fields[2] != b"0":
             continue  # not stage-0 (conflicted); handled separately
-        out.append((path_bytes.decode("utf-8", "surrogateescape"), fields[1].decode("ascii")))
+        out.append(
+            (
+                path_bytes.decode("utf-8", "surrogateescape"),
+                fields[1].decode("ascii"),
+                fields[0].decode("ascii"),
+            )
+        )
     return out
 
 
@@ -911,12 +917,20 @@ def canonical_plan_files(repo: Path, tree_oid: str) -> CanonicalPlanFiles:
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"head"})))
 
-    for raw, _blob in _git_ls_files_stage_plans(repo):
+    for raw, _blob, mode in _git_ls_files_stage_plans(repo):
         rel = _repo_relative_posix(repo, raw)
         if rel is None or "/" in rel[len("plans/"):]:
             continue
         basename = rel.rsplit("/", 1)[-1]
         classification = _classify_basename(basename)
+        if mode == "120000":
+            malformed.append(MalformedPlanFinding(path=rel, kind="symlink-index", origin=frozenset({"index"})))
+            continue
+        if mode not in {"100644", "100755"}:
+            malformed.append(
+                MalformedPlanFinding(path=rel, kind="non-regular-index", origin=frozenset({"index"}))
+            )
+            continue
         if classification == "canonical":
             origins.setdefault(rel, set()).add("index")
         elif classification == "lookalike":

@@ -14,6 +14,14 @@ from pathlib import Path
 
 _LOGGER = logging.getLogger("phase_loop_runtime.cli")
 
+_ATTEST_RUNTIME_PATHS = (
+    "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+    "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
+    "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+    "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+    "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+)
+
 
 def _preimport_attest_bootstrap(argv: list[str]) -> dict[str, object] | None:
     """Fail closed before importing phase-owned runtime helpers for attest."""
@@ -51,6 +59,34 @@ def _preimport_attest_bootstrap(argv: list[str]) -> dict[str, object] | None:
     )
     if status.returncode != 0 or status.stdout:
         raise RuntimeError(f"phase-loop attest requires a clean worktree: {repo}")
+    loaded_runtime_blobs: dict[str, dict[str, object]] = {}
+    for rel in _ATTEST_RUNTIME_PATHS:
+        runtime_path = repo / rel
+        if runtime_path.is_symlink() or not runtime_path.is_file():
+            raise RuntimeError(f"phase-loop attest runtime source is not a regular file: {runtime_path}")
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", f"{expected_head}:{rel}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if blob.returncode != 0:
+            raise RuntimeError(f"phase-loop attest runtime source is absent at {expected_head}: {rel}")
+        blob_oid = blob.stdout.strip()
+        committed = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "blob", blob_oid],
+            capture_output=True,
+            check=False,
+        )
+        runtime_bytes = runtime_path.read_bytes()
+        if committed.returncode != 0 or committed.stdout != runtime_bytes:
+            raise RuntimeError(f"phase-loop attest runtime source differs from {expected_head}: {rel}")
+        loaded_runtime_blobs[rel] = {
+            "path": rel,
+            "blob_oid": blob_oid,
+            "byte_length": len(runtime_bytes),
+            "sha256": hashlib.sha256(runtime_bytes).hexdigest(),
+        }
     source_bytes = source_path.read_bytes()
     return {
         "process_start_token": secrets.token_hex(32),
@@ -59,6 +95,7 @@ def _preimport_attest_bootstrap(argv: list[str]) -> dict[str, object] | None:
         "cli_path": str(source_path),
         "cli_sha256": hashlib.sha256(source_bytes).hexdigest(),
         "python_executable": sys.executable,
+        "loaded_runtime_blobs": loaded_runtime_blobs,
     }
 
 
@@ -1143,6 +1180,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                     if _ATTEST_PREIMPORT_BOOTSTRAP is not None
                     else None
                 ),
+                preimport_bootstrap=_ATTEST_PREIMPORT_BOOTSTRAP,
             )
         except legible_evidence.LegibleProcessBootstrapError as exc:
             print(f"phase-loop attest: {exc}", file=sys.stderr)

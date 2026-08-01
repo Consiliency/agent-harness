@@ -667,6 +667,11 @@ def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
     data = parse_roadmap_status_manifest(text)
 
     registered_paths = sorted(entry["path"] for entry in data["roadmaps"])
+    active_paths = [entry["path"] for entry in data["roadmaps"] if entry["status"] == "active"]
+    if active_paths != [data["selected_roadmap"]]:
+        raise StatusCoherenceError(
+            f"roadmap-status.json must declare exactly the selected roadmap active: active={active_paths}"
+        )
     tracked_paths = _tracked_roadmap_paths(repo)
     if registered_paths != tracked_paths:
         missing = sorted(set(tracked_paths) - set(registered_paths))
