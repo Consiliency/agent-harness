@@ -7074,6 +7074,11 @@ def _run_legible_pr_transition(
         raise legible_evidence.LegibleProcessBootstrapError(
             "Consiliency/agent-harness#347 changed after review and before mutation"
         )
+    subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], check=True)
+    if _legible_git(repo, "rev-parse", "origin/main") != base:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness main advanced after review and before mutation"
+        )
     if snapshot.get("isDraft") is True:
         subprocess.run(
             ["gh", "pr", "ready", "347", "--repo", "Consiliency/agent-harness"],
