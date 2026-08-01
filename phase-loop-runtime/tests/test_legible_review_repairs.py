@@ -71,8 +71,10 @@ LEGIBLE_OWNED_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
     "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
     "phase-loop-runtime/tests/test_legible_evidence.py",
+    "phase-loop-runtime/tests/test_legible_review_repairs.py",
     "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
     "plans/manifest.json",
+    "plans/phase-plan-v10-LEGIBLE.md",
     "specs/roadmap-assumption-probes-v10.json",
     "specs/roadmap-status.json",
 )
@@ -167,7 +169,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     plan_path = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
     owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
     plan_path.write_text(
-        "---\nphase: LEGIBLE\nlegible_owned_paths_count: 16\n"
+        "---\nphase: LEGIBLE\nlegible_owned_paths_count: 18\n"
         f"legible_owned_paths_sha256: {owned_digest}\n---\n# LEGIBLE fixture\n",
         encoding="utf-8",
     )

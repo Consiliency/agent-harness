@@ -645,8 +645,10 @@ _LEGIBLE_OWNED_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
     "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
     "phase-loop-runtime/tests/test_legible_evidence.py",
+    "phase-loop-runtime/tests/test_legible_review_repairs.py",
     "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
     "plans/manifest.json",
+    "plans/phase-plan-v10-LEGIBLE.md",
     "specs/roadmap-assumption-probes-v10.json",
     "specs/roadmap-status.json",
 )
