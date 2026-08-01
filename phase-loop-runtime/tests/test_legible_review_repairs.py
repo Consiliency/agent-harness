@@ -104,11 +104,16 @@ LEGIBLE_CONTRACT_FIXED_FIELDS = {
 
 LEGIBLE_LOADED_RUNTIME_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+    "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
     "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
     "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
 )
 LEGIBLE_ROADMAP_SHA256 = "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+LEGIBLE_SKIP_REASON = (
+    "LEGIBLE capability absent (set PHASE_LOOP_TDD_EXPECT_LEGIBLE=1, or install "
+    "phase_loop_runtime.legible_evidence with LEGIBLE_CAPABILITY_VERSION == 'legible.v1')"
+)
 
 
 def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
@@ -268,7 +273,12 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
 
     git("switch", "-c", "target", refresh_base)
     for rel, nodeids in frozen_by_path:
-        (repo / rel).write_text(f"LEGIBLE_EXPECTED_NODEIDS_V1 = {nodeids!r}\n", encoding="utf-8")
+        (repo / rel).write_text(
+            "import pytest\n"
+            f"pytestmark = pytest.mark.skipif(True, reason={LEGIBLE_SKIP_REASON!r})\n"
+            f"LEGIBLE_EXPECTED_NODEIDS_V1 = {nodeids!r}\n",
+            encoding="utf-8",
+        )
     git("add", *(rel for rel, _ in frozen_by_path))
     git("commit", "-m", "tests-only landing")
     implementation_base = git("rev-parse", "HEAD")
@@ -319,7 +329,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
                 name=test_name,
             )
             if status == "skipped":
-                ET.SubElement(case, "skipped", message="LEGIBLE capability absent")
+                ET.SubElement(case, "skipped", type="pytest.skip", message=LEGIBLE_SKIP_REASON)
             elif status == "failure":
                 ET.SubElement(case, "failure", message=f"LEGIBLE_RED::fixture-{index:03d}: expected")
         ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
@@ -1119,15 +1129,28 @@ def test_attest_cli_without_repo_still_runs_preimport_bootstrap(tmp_path, monkey
     from phase_loop_runtime import cli
 
     repo = tmp_path / "repo"
-    source_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
-    source_path.parent.mkdir(parents=True)
-    source_path.write_text("# repo-local fixture\n", encoding="utf-8")
+    blobs = {}
+    blob_by_rel = {}
+    for index, rel in enumerate(cli._ATTEST_RUNTIME_PATHS, start=1):
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# repo-local fixture {rel}\n", encoding="utf-8")
+        blob_oid = f"{index:040x}"
+        blobs[blob_oid] = path.read_bytes()
+        blob_by_rel[rel] = blob_oid
+    source_path = repo / cli._ATTEST_RUNTIME_PATHS[0]
     head = "a" * 40
     monkeypatch.chdir(repo)
     monkeypatch.setattr(cli, "__file__", str(source_path))
 
     def fake_run(argv, **kwargs):
-        stdout = f"{head}\n" if "rev-parse" in argv else ""
+        if "cat-file" in argv:
+            return subprocess.CompletedProcess(argv, 0, blobs[argv[-1]], b"")
+        if "rev-parse" in argv:
+            revision = argv[-1]
+            stdout = f"{blob_by_rel[revision.split(':', 1)[1]]}\n" if ":" in revision else f"{head}\n"
+        else:
+            stdout = ""
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
@@ -1147,6 +1170,7 @@ def test_attest_cli_without_repo_still_runs_preimport_bootstrap(tmp_path, monkey
     assert payload is not None
     assert payload["bootstrap_head"] == head
     assert payload["repo_realpath"] == str(repo.resolve())
+    assert set(payload["loaded_runtime_blobs"]) == set(cli._ATTEST_RUNTIME_PATHS)
 
 
 def test_canonical_main_attest_rejects_nonexistent_candidate(tmp_path):
@@ -1336,6 +1360,15 @@ def test_finalize_operational_attestation_binds_aggregate_to_verification(tmp_pa
     head, sections = _operational_fixture(repo)
     run_dir = repo / ".phase-loop" / "runs" / "attest-final"
     run_verification(repo, run_dir, [], None, None, 10, phase_alias="LEGIBLE")
+    for path in (run_dir / ARTIFACT_NAME, run_dir / LOG_NAME):
+        data = path.read_bytes()
+        sections["artifacts"]["records"].append(
+            {
+                "path": path.relative_to(repo).as_posix(),
+                "byte_length": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        )
 
     evidence_path = legible_evidence.finalize_operational_attestation(
         repo=repo,
@@ -1357,6 +1390,16 @@ def test_finalize_operational_attestation_binds_aggregate_to_verification(tmp_pa
     assert payload["extensions"][legible_evidence.EXTENSION_NAMESPACE]["path"].endswith(
         "/legible-operational-evidence.json"
     )
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    recorded_paths = {record["path"] for record in evidence["sections"]["artifacts"]["records"]}
+    assert (run_dir / ARTIFACT_NAME).relative_to(repo).as_posix() not in recorded_paths
+    assert (run_dir / LOG_NAME).relative_to(repo).as_posix() not in recorded_paths
+    assert legible_evidence.validate_operational_evidence(
+        repo=repo,
+        path=evidence_path,
+        stage="candidate",
+        expected_head=head,
+    ).ok
 
 
 @pytest.mark.parametrize(
@@ -1743,6 +1786,7 @@ def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path
         ]
     ) == 0
     assert observed["process_start_token"] == "preimport-token"
+    assert observed["preimport_bootstrap"] == cli._ATTEST_PREIMPORT_BOOTSTRAP
 
 
 def test_candidate_operational_evidence_requires_distinct_builder_transition_candidate_chain(tmp_path):
@@ -1950,8 +1994,51 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
     run_id = "legible-transition-fixture"
     run_dir = repo / ".phase-loop" / "runs" / run_id
     run_dir.mkdir(parents=True)
+    from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
+
+    bundle_path = run_dir / "implementation-review-bundle.md"
+    bundle_path.write_text("exact-head review bundle\n", encoding="utf-8")
+    legs = []
+    verdicts = {}
+    for seat in CODE_REVIEW_BOARD.seats:
+        leg_path = run_dir / f"implementation-panel-{seat.harness}.json"
+        leg_payload = {
+            "leg": seat.harness,
+            "model": seat.model,
+            "seat_key": seat.seat_key,
+            "status": "OK",
+            "usable": True,
+            "verdict": "AGREE",
+            "text": "reviewed exact head\nAGREE",
+        }
+        leg_path.write_text(json.dumps(leg_payload, sort_keys=True) + "\n", encoding="utf-8")
+        legs.append(
+            {
+                key: leg_payload[key]
+                for key in ("leg", "model", "seat_key", "status", "usable", "verdict")
+            }
+            | {
+                "artifact_path": leg_path.relative_to(repo).as_posix(),
+                "artifact_sha256": hashlib.sha256(leg_path.read_bytes()).hexdigest(),
+            }
+        )
+        verdicts[seat.model] = "AGREE"
     panel_path = run_dir / "implementation-panel.json"
-    panel_path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+    panel_path.write_text(
+        json.dumps(
+            {
+                "schema": "advisor_board.v1",
+                "head": "1" * 40,
+                "bundle_path": bundle_path.relative_to(repo).as_posix(),
+                "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                "legs": legs,
+                "verdicts": verdicts,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     payload = {
         "schema": "legible_pr_transition.v1",
         "run_id": run_id,
@@ -1977,3 +2064,167 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
 
     with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
         runner._load_legible_transition(repo, run_id)
+
+
+def test_pr_transition_loader_rejects_resealed_handwritten_panel(tmp_path):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    run_id = "legible-transition-handwritten"
+    run_dir = repo / ".phase-loop" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    panel_path = run_dir / "implementation-panel.json"
+    panel_path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+    payload = {
+        "schema": "legible_pr_transition.v1",
+        "run_id": run_id,
+        "status": "transition_sealed",
+        "head": "1" * 40,
+        "builder_run_id": "builder-1",
+        "process_start_token": "transition-token",
+        "server_base": "2" * 40,
+        "server_merge": "3" * 40,
+        "pr_head": "4" * 40,
+        "review_decision": "",
+        "github_review_count": 0,
+        "review_panel_path": panel_path.relative_to(repo).as_posix(),
+        "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "candidate_requires_integration": True,
+    }
+    payload["seal_sha256"] = runner._legible_transition_digest(payload)
+    (run_dir / "legible-pr-transition.json").write_text(
+        json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+        runner._load_legible_transition(repo, run_id)
+
+
+def test_transition_artifact_inventory_includes_panel(tmp_path):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    run_id = "legible-transition-inventory"
+    run_dir = repo / ".phase-loop" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    transition = run_dir / "legible-pr-transition.json"
+    panel = run_dir / "implementation-panel.json"
+    transition.write_text("{}\n", encoding="utf-8")
+    panel.write_text("{}\n", encoding="utf-8")
+
+    assert runner._legible_transition_artifact_paths(repo, run_id) == (transition, panel)
+
+
+def test_canonical_attest_rejects_direct_call_without_preimport_bootstrap(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    (repo / "plans" / "phase-plan-v10-LEGIBLE.md").write_text(
+        "# LEGIBLE\nverification_sidecar: required\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add legible plan"], cwd=repo, check=True, capture_output=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    called = False
+
+    def fake_attest(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "sealed"}
+
+    monkeypatch.setattr(runner, "run_legible_operational_attestation", fake_attest)
+
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+        legible_evidence.attest(
+            repo=repo,
+            stage="candidate",
+            expected_head=head,
+            builder_run_id="builder-1",
+            process_start_token="forged-direct-token",
+        )
+    assert not called
+
+
+def test_roadmap_registry_rejects_two_coherent_active_roadmaps(tmp_path):
+    repo = make_repo(tmp_path)
+    first = repo / "specs" / "phase-plans-v1.md"
+    second = repo / "specs" / "phase-plans-v2.md"
+    active_banner = (
+        "# Roadmap\n\n> **Status (2026-08-01): ACTIVE — created this date, nothing executed yet.**\n"
+    )
+    first.write_text(active_banner, encoding="utf-8")
+    second.write_text(active_banner, encoding="utf-8")
+    registry = repo / "specs" / "roadmap-status.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "roadmap_status_manifest.v1",
+                "selected_roadmap": "specs/phase-plans-v2.md",
+                "roadmaps": [
+                    {"path": "specs/phase-plans-v1.md", "status": "active"},
+                    {"path": "specs/phase-plans-v2.md", "status": "active"},
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "specs"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add roadmaps"], cwd=repo, check=True, capture_output=True)
+
+    with pytest.raises(roadmap_lint.StatusCoherenceError):
+        roadmap_lint.read_roadmap_status(repo, registry)
+
+
+def test_manifest_rejects_index_symlink_with_regular_worktree_file(tmp_path):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    target_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="phase-plan-v2-TARGET.md\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--cacheinfo", "120000", target_blob, rel], cwd=repo, check=True
+    )
+
+    files = plan_manifest.canonical_plan_files(repo, head)
+
+    assert (rel, "symlink-index") in [(item.path, item.kind) for item in files.malformed]
+
+
+@pytest.mark.parametrize("mutation", ("wrong_reason", "xfail"))
+def test_default_execution_rejects_non_guard_skip_semantics(tmp_path, mutation):
+    source_repo = Path(__file__).resolve().parents[2]
+    nodeids = legible_evidence._load_frozen_nodeids(source_repo)
+    suite = ET.Element("testsuite", tests=str(len(nodeids)), skipped=str(len(nodeids)))
+    for index, nodeid in enumerate(nodeids):
+        file_part, test_name = nodeid.split("::", 1)
+        case = ET.SubElement(
+            suite,
+            "testcase",
+            classname=file_part.removesuffix(".py"),
+            name=test_name,
+        )
+        skip_type = "pytest.xfail" if mutation == "xfail" and index == 0 else "pytest.skip"
+        reason = "not the shared guard" if mutation == "wrong_reason" and index == 0 else LEGIBLE_SKIP_REASON
+        ET.SubElement(case, "skipped", type=skip_type, message=reason)
+    junit = tmp_path / f"{mutation}.xml"
+    ET.ElementTree(suite).write(junit, encoding="utf-8", xml_declaration=True)
+
+    with pytest.raises(legible_evidence.LegibleTestExecutionError):
+        legible_evidence.collect_test_execution_evidence(
+            source_repo,
+            junit_path=junit,
+            expected_total=84,
+            mode="default",
+        )
