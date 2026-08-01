@@ -1877,6 +1877,8 @@ def _parse_junit(junit_path: Path) -> dict[str, tuple[str, str]]:
                 else child.tag
             )
             message = child.get("message", "")
+            if status == "failure" and message.startswith("Failed: LEGIBLE_RED::"):
+                message = message.removeprefix("Failed: ")
         observed[nodeid] = (status, message)
     return observed
 
