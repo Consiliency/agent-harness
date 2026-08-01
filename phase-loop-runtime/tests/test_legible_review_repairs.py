@@ -471,6 +471,8 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     pr_snapshot = {
         "base": implementation_base,
         "refresh_base": refresh_base,
+        "state": "MERGED",
+        "merged_at": "2026-08-01T16:00:00Z",
         "body": pr_body,
         "body_ancestor_commits": body_ancestors,
         "changed_paths": changed_paths,
@@ -479,6 +481,8 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         "head_tree": tree(pr_head),
         "merge_commit": server_merge,
         "merge_tree": tree(server_merge),
+        "review_decision": "APPROVED",
+        "github_review_count": 1,
         "refresh_parents": [refresh_parent, refresh_base],
         "remote_head_oid": pr_head,
     }
@@ -631,6 +635,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "repository": "Consiliency/agent-harness",
             "number": 347,
             "state": "MERGED",
+            "merged_at": "2026-08-01T16:00:00Z",
+            "review_decision": "APPROVED",
+            "github_review_count": 1,
             "base": implementation_base,
             "refresh_base": refresh_base,
             "head": pr_head,
@@ -1276,6 +1283,7 @@ def test_operational_evidence_rejects_placeholder_sections(tmp_path):
         "panel_semantics",
         "probe_payload_digest",
         "pr_changed_paths",
+        "pr_merged_at",
     ),
 )
 def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
@@ -1317,8 +1325,10 @@ def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
         record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     elif mutation == "probe_payload_digest":
         sections["assumption_probes"]["records"][0]["response_sha256"] = "0" * 64
-    else:
+    elif mutation == "pr_changed_paths":
         sections["pull_request"]["changed_paths"] = ["README.md"]
+    else:
+        sections["pull_request"]["merged_at"] = ""
     path = legible_evidence._assemble_operational_evidence(
         repo=repo,
         run_dir=repo / ".phase-loop" / "runs" / f"attest-{mutation}",
@@ -1697,6 +1707,41 @@ def test_registry_free_selector_rejects_case_variant_status_like_banner(tmp_path
         discovery._return_selectable_roadmap(repo, candidate, "test")
 
 
+@pytest.mark.parametrize(
+    "declaration",
+    (
+        " > # SUPERSEDED - malformed declaration.",
+        "> ** Status (2026-08-01): SUPERSEDED - malformed declaration.**",
+        "> *Status (2026-08-01): SUPERSEDED - malformed declaration.*",
+    ),
+)
+def test_registry_free_selector_rejects_indented_status_like_banner(tmp_path, declaration):
+    repo = make_repo(tmp_path)
+    candidate = repo / "specs" / "phase-plans-v1.md"
+    candidate.write_text(
+        f"# Roadmap\n\n{declaration}\n\n## Body\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(roadmap_lint.MalformedBannerError):
+        discovery._return_selectable_roadmap(repo, candidate, "test")
+
+
+@pytest.mark.parametrize(
+    "prose",
+    (
+        "> This roadmap remains active for migration context.",
+        "> The delivered artifacts are retained for reference.",
+    ),
+)
+def test_registry_free_selector_preserves_declaration_free_legacy_prose(tmp_path, prose):
+    repo = make_repo(tmp_path)
+    candidate = repo / "specs" / "phase-plans-v1.md"
+    candidate.write_text(f"# Roadmap\n\n{prose}\n\n## Body\n", encoding="utf-8")
+
+    assert discovery._return_selectable_roadmap(repo, candidate, "test") == candidate.resolve()
+
+
 def test_selector_read_failure_is_typed_not_selectable(tmp_path):
     repo = make_repo(tmp_path)
     candidate = repo / "specs" / "phase-plans-v1.md"
@@ -1901,11 +1946,55 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
     runner._legible_pr_view(tmp_path)
 
     requested = observed["argv"][observed["argv"].index("--json") + 1]
+    assert "baseRefName" in requested
+    assert "mergedAt" in requested
     assert "reviewDecision" in requested
     assert "reviews" in requested
 
 
-def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("decision", "expected"),
+    (
+        ("", True),
+        ("APPROVED", True),
+        ("CHANGES_REQUESTED", False),
+        ("REVIEW_REQUIRED", False),
+    ),
+)
+def test_pr_review_readiness_rejects_unsatisfied_decisions(decision, expected):
+    from phase_loop_runtime import runner
+
+    assert runner._legible_reviews_ready({"reviewDecision": decision}) is expected
+
+
+@pytest.mark.parametrize(
+    (
+        "merge_snapshot_drift",
+        "main_advances_during_review",
+        "main_advances_at_publish",
+        "post_publish_failure",
+        "durability_failure",
+    ),
+    (
+        (False, False, False, None, False),
+        (True, False, False, None, False),
+        (False, True, False, None, False),
+        (False, False, True, None, False),
+        (False, False, False, "fetch", False),
+        (False, False, False, "poll_error", False),
+        (False, False, False, "poll_timeout", False),
+        (False, False, False, None, True),
+    ),
+)
+def test_pr_transition_persists_identity_and_reviews_before_mutation(
+    tmp_path,
+    monkeypatch,
+    merge_snapshot_drift,
+    main_advances_during_review,
+    main_advances_at_publish,
+    post_publish_failure,
+    durability_failure,
+):
     from phase_loop_runtime import runner
 
     repo = make_repo(tmp_path)
@@ -1916,28 +2005,58 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
     body = "reviewed transition"
     events = []
     merged = False
+    post_failure_pending = post_publish_failure
+    poll_timeout_remaining = 30 if post_publish_failure == "poll_timeout" else 0
 
     monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_BASE", base)
     monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_HEAD", head)
     monkeypatch.setattr(runner, "_LEGIBLE_PR_BODY_SHA256", hashlib.sha256(body.encode()).hexdigest())
-    monkeypatch.setattr(
-        runner,
-        "_legible_pr_view",
-        lambda _repo: {
-            "state": "OPEN",
-            "isDraft": True,
+    def fake_pr_view(_repo):
+        nonlocal post_failure_pending, poll_timeout_remaining
+        events.append("snapshot")
+        if merged and post_failure_pending == "poll_error":
+            post_failure_pending = None
+            raise legible_evidence.LegibleProcessBootstrapError("transient GitHub read failure")
+        snapshot_merged = merged
+        if merged and poll_timeout_remaining:
+            poll_timeout_remaining -= 1
+            snapshot_merged = False
+            if poll_timeout_remaining == 0:
+                post_failure_pending = None
+        snapshot = {
+            "state": "MERGED" if snapshot_merged else "OPEN",
+            "isDraft": "ready" not in events,
             "headRefOid": head,
+            "baseRefName": "main",
             "baseRefOid": base,
+            "mergeCommit": {"oid": server_merge} if snapshot_merged else None,
+            "mergedAt": "2026-08-01T16:00:00Z" if snapshot_merged else None,
             "body": body,
             "statusCheckRollup": [{"conclusion": "SUCCESS"}],
             "reviewDecision": "",
             "reviews": [],
-        },
+        }
+        if merge_snapshot_drift and events.count("snapshot") == 2:
+            snapshot["baseRefName"] = "release"
+        return snapshot
+
+    monkeypatch.setattr(runner, "_legible_pr_view", fake_pr_view)
+    monkeypatch.setattr(
+        runner,
+        "_legible_candidate_remote",
+        lambda _repo, candidate_head: (
+            events.append("candidate-remote") or "refs/remotes/origin/candidate",
+            candidate_head,
+        ),
     )
 
     def fake_git(_repo, *args):
         if args == ("rev-parse", "origin/main"):
-            return server_merge if merged else base
+            if merged:
+                return server_merge
+            if main_advances_during_review and "panel" in events:
+                return "5" * 40
+            return base
         if args == ("rev-parse", f"{server_merge}^{{tree}}"):
             return expected_tree
         return base
@@ -1990,17 +2109,91 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
         return panel
 
     monkeypatch.setattr(runner, "_run_legible_panel", fake_panel)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
+
+    def fake_durability_sync(_repo, _run_id):
+        events.append("durable")
+        if durability_failure:
+            raise OSError("durability sync failed")
+
+    monkeypatch.setattr(runner, "fsync_run_store_durable", fake_durability_sync, raising=False)
 
     def fake_run(argv, **kwargs):
-        nonlocal merged
+        nonlocal merged, post_failure_pending
         if argv[:3] == ["gh", "pr", "ready"]:
             events.append("ready")
         elif argv[:3] == ["gh", "pr", "merge"]:
+            pytest.fail("C4 must not use a head-only GitHub merge mutation")
+        elif "commit-tree" in argv:
+            return subprocess.CompletedProcess(argv, 0, server_merge + "\n", "")
+        elif "push" in argv and any(str(item).endswith(":refs/heads/main") for item in argv):
+            if main_advances_at_publish:
+                events.append("push-rejected")
+                raise subprocess.CalledProcessError(1, argv, stderr="non-fast-forward")
             events.append("merge")
             merged = True
+        elif merged and post_failure_pending == "fetch" and argv[-2:] == ["origin", "main"]:
+            post_failure_pending = None
+            raise subprocess.CalledProcessError(1, argv, stderr="transient fetch failure")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    if (
+        merge_snapshot_drift
+        or main_advances_during_review
+        or main_advances_at_publish
+        or durability_failure
+    ):
+        with pytest.raises((legible_evidence.LegibleProcessBootstrapError, OSError)):
+            runner._run_legible_pr_transition(
+                repo=repo,
+                expected_head=base,
+                builder_run_id="builder-1",
+                process_start_token="transition-token",
+            )
+        expected = [
+            "candidate-remote", "snapshot", "early-prover", "panel",
+            "candidate-remote", "snapshot",
+        ]
+        if main_advances_at_publish:
+            expected.extend(("ready", "candidate-remote", "snapshot", "durable", "push-rejected"))
+        elif durability_failure:
+            expected.extend(("ready", "candidate-remote", "snapshot", "durable"))
+        assert events == expected
+        return
+
+    if post_publish_failure:
+        with pytest.raises((legible_evidence.LegibleProcessBootstrapError, subprocess.CalledProcessError)):
+            runner._run_legible_pr_transition(
+                repo=repo,
+                expected_head=base,
+                builder_run_id="builder-1",
+                process_start_token="transition-token",
+            )
+        intent_paths = list(
+            (repo / ".phase-loop" / "runs").glob("*/legible-pr-transition-intent.json")
+        )
+        assert len(intent_paths) == 1
+        assert not list((repo / ".phase-loop" / "runs").glob("*/legible-pr-transition.json"))
+
+        result = runner._run_legible_operational_attestation(
+            repo=repo,
+            plan=repo / "plans" / "phase-plan-v10-LEGIBLE.md",
+            stage="candidate",
+            expected_head=base,
+            builder_run_id="builder-1",
+            candidate_head=None,
+            process_start_token="recovery-token",
+            loaded_runtime_blobs={},
+        )
+        payload = json.loads((repo / result["transition_artifact"]).read_text(encoding="utf-8"))
+        assert payload["status"] == "transition_sealed"
+        assert payload["pr_state"] == "MERGED"
+        assert payload["pr_merged_at"] == "2026-08-01T16:00:00Z"
+        assert payload["pr_merge_commit"] == server_merge
+        return
 
     result = runner._run_legible_pr_transition(
         repo=repo,
@@ -2009,13 +2202,29 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
         process_start_token="transition-token",
     )
 
-    assert events == ["early-prover", "panel", "ready", "merge"]
+    assert events == [
+        "candidate-remote",
+        "snapshot",
+        "early-prover",
+        "panel",
+        "candidate-remote",
+        "snapshot",
+        "ready",
+        "candidate-remote",
+        "snapshot",
+        "durable",
+        "merge",
+        "snapshot",
+    ]
     assert result["run_id"].startswith("legible-transition-")
     transition_path = repo / result["transition_artifact"]
     assert transition_path.is_file()
     payload = json.loads(transition_path.read_text(encoding="utf-8"))
     assert payload["builder_run_id"] == "builder-1"
     assert payload["process_start_token"] == "transition-token"
+    assert payload["pr_state"] == "MERGED"
+    assert payload["pr_merged_at"] == "2026-08-01T16:00:00Z"
+    assert payload["pr_merge_commit"] == server_merge
 
 
 def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
@@ -2137,6 +2346,26 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         + "\n",
         encoding="utf-8",
     )
+    intent_path = run_dir / "legible-pr-transition-intent.json"
+    intent_payload = {
+        "schema": "legible_pr_transition_intent.v1",
+        "run_id": run_id,
+        "status": "transition_intent",
+        "head": "1" * 40,
+        "builder_run_id": "builder-1",
+        "process_start_token": "transition-token",
+        "server_base": "2" * 40,
+        "server_merge": "3" * 40,
+        "pr_head": "4" * 40,
+        "expected_tree": "5" * 40,
+        "ready_snapshot": {"state": "OPEN"},
+        "review_decision": "",
+        "github_review_count": 0,
+        "review_panel_path": panel_path.relative_to(repo).as_posix(),
+        "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+    }
+    intent_payload["seal_sha256"] = runner._legible_transition_digest(intent_payload)
+    intent_path.write_text(json.dumps(intent_payload, sort_keys=True) + "\n", encoding="utf-8")
     payload = {
         "schema": "legible_pr_transition.v1",
         "run_id": run_id,
@@ -2147,10 +2376,15 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         "server_base": "2" * 40,
         "server_merge": "3" * 40,
         "pr_head": "4" * 40,
+        "pr_state": "MERGED",
+        "pr_merged_at": "2026-08-01T16:00:00Z",
+        "pr_merge_commit": "3" * 40,
         "review_decision": "",
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "transition_intent_path": intent_path.relative_to(repo).as_posix(),
+        "transition_intent_sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
         "candidate_requires_integration": True,
     }
     payload["seal_sha256"] = runner._legible_transition_digest(payload)
@@ -2183,6 +2417,9 @@ def test_pr_transition_loader_rejects_resealed_handwritten_panel(tmp_path):
         "server_base": "2" * 40,
         "server_merge": "3" * 40,
         "pr_head": "4" * 40,
+        "pr_state": "MERGED",
+        "pr_merged_at": "2026-08-01T16:00:00Z",
+        "pr_merge_commit": "3" * 40,
         "review_decision": "",
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
