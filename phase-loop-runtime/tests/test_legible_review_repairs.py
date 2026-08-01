@@ -1941,3 +1941,39 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
     payload = json.loads(transition_path.read_text(encoding="utf-8"))
     assert payload["builder_run_id"] == "builder-1"
     assert payload["process_start_token"] == "transition-token"
+
+
+def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    run_id = "legible-transition-fixture"
+    run_dir = repo / ".phase-loop" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    panel_path = run_dir / "implementation-panel.json"
+    panel_path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+    payload = {
+        "schema": "legible_pr_transition.v1",
+        "run_id": run_id,
+        "status": "transition_sealed",
+        "head": "1" * 40,
+        "builder_run_id": "builder-1",
+        "process_start_token": "transition-token",
+        "server_base": "2" * 40,
+        "server_merge": "3" * 40,
+        "pr_head": "4" * 40,
+        "review_decision": "",
+        "github_review_count": 0,
+        "review_panel_path": panel_path.relative_to(repo).as_posix(),
+        "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "candidate_requires_integration": True,
+    }
+    payload["seal_sha256"] = runner._legible_transition_digest(payload)
+    transition_path = run_dir / "legible-pr-transition.json"
+    transition_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+    assert runner._load_legible_transition(repo, run_id)["run_id"] == run_id
+    panel_path.write_text('{"verdict":"DISAGREE"}\n', encoding="utf-8")
+
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+        runner._load_legible_transition(repo, run_id)
