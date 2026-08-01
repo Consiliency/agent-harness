@@ -6714,7 +6714,7 @@ def _legible_pr_view(repo: Path) -> dict[str, object]:
     proc = subprocess.run(
         [
             "gh", "pr", "view", "347", "--repo", "Consiliency/agent-harness", "--json",
-            "state,isDraft,headRefOid,baseRefOid,mergeCommit,body,statusCheckRollup,reviewDecision,reviews",
+            "state,isDraft,headRefOid,baseRefName,baseRefOid,mergeCommit,body,statusCheckRollup,reviewDecision,reviews",
         ],
         cwd=repo,
         capture_output=True,
@@ -6994,6 +6994,7 @@ def _run_legible_pr_transition(
     if (
         snapshot.get("state") != "OPEN"
         or snapshot.get("headRefOid") != _LEGIBLE_REFRESH_HEAD
+        or snapshot.get("baseRefName") != "main"
         or snapshot.get("baseRefOid") != _LEGIBLE_REFRESH_BASE
         or not isinstance(body, str)
         or hashlib.sha256(body.encode("utf-8")).hexdigest() != _LEGIBLE_PR_BODY_SHA256
