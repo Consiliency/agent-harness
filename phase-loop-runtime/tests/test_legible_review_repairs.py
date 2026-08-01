@@ -2036,7 +2036,14 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
                 builder_run_id="builder-1",
                 process_start_token="transition-token",
             )
-        assert events == ["candidate-remote", "snapshot", "early-prover", "panel", "snapshot"]
+        assert events == [
+            "candidate-remote",
+            "snapshot",
+            "early-prover",
+            "panel",
+            "candidate-remote",
+            "snapshot",
+        ]
         return
 
     result = runner._run_legible_pr_transition(
@@ -2051,6 +2058,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         "snapshot",
         "early-prover",
         "panel",
+        "candidate-remote",
         "snapshot",
         "ready",
         "merge",
