@@ -1097,15 +1097,19 @@ def _validate_operational_sections(
         panel = json.loads(artifact_data[panel_paths[0]])
     except json.JSONDecodeError:
         return "artifacts: implementation panel is malformed"
+    gemini_model = panel_invoker.DEFAULT_LEG_MODELS["gemini"]
+    gemini_aliases = {gemini_model, gemini_model.removesuffix("-high")}
     required_models = {
         panel_invoker.DEFAULT_LEG_MODELS[leg]
-        for leg in ("claude", "gemini", "codex", "grok")
+        for leg in ("claude", "codex", "grok")
     }
+    panel_models = set(panel["verdicts"]) if isinstance(panel, Mapping) and isinstance(panel.get("verdicts"), Mapping) else set()
     if (
         not isinstance(panel, Mapping)
         or panel.get("head") != expected_head
         or not isinstance(panel.get("verdicts"), Mapping)
-        or set(panel["verdicts"]) != required_models
+        or panel_models - gemini_aliases != required_models
+        or len(panel_models & gemini_aliases) != 1
         or any(verdict != "AGREE" for verdict in panel["verdicts"].values())
     ):
         return "artifacts: implementation panel is not exact-head unanimous"
