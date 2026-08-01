@@ -1932,6 +1932,12 @@ def test_manifest_plan_entry_lstat_failure_is_typed(tmp_path, monkeypatch):
         plan_manifest.canonical_plan_files(repo, head)
 
 
+def test_attester_uses_latest_pre_base_frozen_test_anchor():
+    from phase_loop_runtime import runner
+
+    assert runner._LEGIBLE_TESTS_LANDING == "a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea"
+
+
 def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
     from phase_loop_runtime import runner
 
