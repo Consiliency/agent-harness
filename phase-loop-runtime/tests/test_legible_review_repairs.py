@@ -1697,11 +1697,19 @@ def test_registry_free_selector_rejects_case_variant_status_like_banner(tmp_path
         discovery._return_selectable_roadmap(repo, candidate, "test")
 
 
-def test_registry_free_selector_rejects_indented_status_like_banner(tmp_path):
+@pytest.mark.parametrize(
+    "declaration",
+    (
+        " > # SUPERSEDED - malformed declaration.",
+        "> ** Status (2026-08-01): SUPERSEDED - malformed declaration.**",
+        "> *Status (2026-08-01): SUPERSEDED - malformed declaration.*",
+    ),
+)
+def test_registry_free_selector_rejects_indented_status_like_banner(tmp_path, declaration):
     repo = make_repo(tmp_path)
     candidate = repo / "specs" / "phase-plans-v1.md"
     candidate.write_text(
-        "# Roadmap\n\n > # SUPERSEDED - malformed declaration.\n\n## Body\n",
+        f"# Roadmap\n\n{declaration}\n\n## Body\n",
         encoding="utf-8",
     )
 
@@ -1919,11 +1927,15 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("merge_snapshot_drift", "main_advances_during_review"),
-    ((False, False), (True, False), (False, True)),
+    ("merge_snapshot_drift", "main_advances_during_review", "main_advances_at_publish"),
+    ((False, False, False), (True, False, False), (False, True, False), (False, False, True)),
 )
 def test_pr_transition_persists_identity_and_reviews_before_mutation(
-    tmp_path, monkeypatch, merge_snapshot_drift, main_advances_during_review
+    tmp_path,
+    monkeypatch,
+    merge_snapshot_drift,
+    main_advances_during_review,
+    main_advances_at_publish,
 ):
     from phase_loop_runtime import runner
 
@@ -2031,13 +2043,20 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         if argv[:3] == ["gh", "pr", "ready"]:
             events.append("ready")
         elif argv[:3] == ["gh", "pr", "merge"]:
+            pytest.fail("C4 must not use a head-only GitHub merge mutation")
+        elif "commit-tree" in argv:
+            return subprocess.CompletedProcess(argv, 0, server_merge + "\n", "")
+        elif "push" in argv and any(str(item).endswith(":refs/heads/main") for item in argv):
+            if main_advances_at_publish:
+                events.append("push-rejected")
+                raise subprocess.CalledProcessError(1, argv, stderr="non-fast-forward")
             events.append("merge")
             merged = True
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
 
-    if merge_snapshot_drift or main_advances_during_review:
+    if merge_snapshot_drift or main_advances_during_review or main_advances_at_publish:
         with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
             runner._run_legible_pr_transition(
                 repo=repo,
@@ -2045,14 +2064,13 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
                 builder_run_id="builder-1",
                 process_start_token="transition-token",
             )
-        assert events == [
-            "candidate-remote",
-            "snapshot",
-            "early-prover",
-            "panel",
-            "candidate-remote",
-            "snapshot",
+        expected = [
+            "candidate-remote", "snapshot", "early-prover", "panel",
+            "candidate-remote", "snapshot",
         ]
+        if main_advances_at_publish:
+            expected.extend(("ready", "push-rejected"))
+        assert events == expected
         return
 
     result = runner._run_legible_pr_transition(
