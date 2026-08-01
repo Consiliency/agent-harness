@@ -566,6 +566,13 @@ def check_catalog(repo: Path) -> DocsCatalogCheckResult:
         if not (repo / entry_path).is_file():
             findings.append(f"stale catalog entry (file does not exist): {entry_path}")
 
+    current = set(rescan_catalog(repo))
+    tracked = set(paths)
+    for entry_path in sorted(current - tracked):
+        findings.append(f"catalog disagrees with current rescan (missing): {entry_path}")
+    for entry_path in sorted(tracked - current):
+        findings.append(f"catalog disagrees with current rescan (extra): {entry_path}")
+
     exit_code = 1 if findings else 0
     return DocsCatalogCheckResult(exit_code, tuple(findings))
 

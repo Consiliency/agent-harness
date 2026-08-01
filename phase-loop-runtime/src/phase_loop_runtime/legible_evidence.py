@@ -551,8 +551,8 @@ def _flatten_reviewtruth_observation(raw: Mapping[str, Any]) -> dict[str, Any]:
         "seat_result": seat_result_label,
         "first_party_route_available": route_info.get("capability") == "ok" if isinstance(route_info, Mapping) else False,
         "fable_leg": "succeeded" if fable_leg_succeeded else "failed",
-        "verdict_bound": False,
-        "seat_count": "degraded",
+        "verdict_bound": bool(leg.get("verdict_bound", False)) if isinstance(leg, Mapping) else False,
+        "seat_count": leg.get("seat_count", "degraded") if isinstance(leg, Mapping) else "degraded",
     }
 
 

@@ -892,16 +892,22 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
         if not isinstance(entry, dict):
             continue
         file_value = entry.get("file")
-        if not isinstance(file_value, str) or not file_value or not file_value.startswith("plans/"):
+        if not isinstance(file_value, str) or not file_value:
+            continue
+        normalized = file_value.replace("\\", "/")
+        basename = normalized.rstrip("/").rsplit("/", 1)[-1]
+        classification = _classify_basename(basename)
+        if classification == "irrelevant":
             continue
         rel = _repo_relative_posix(repo, file_value)
         if rel is None:
             malformed.append(MalformedPlanFinding(path=file_value, kind="path-escape", origin=frozenset({"manifest"})))
             continue
-        basename = rel.rsplit("/", 1)[-1]
-        if "/" in rel[len("plans/"):]:
+        if not rel.startswith("plans/") or "\\" in rel or "/" in rel[len("plans/"):]:
+            malformed.append(
+                MalformedPlanFinding(path=file_value, kind="noncanonical", origin=frozenset({"manifest"}))
+            )
             continue
-        classification = _classify_basename(basename)
         if classification == "canonical":
             if rel in registered:
                 malformed.append(

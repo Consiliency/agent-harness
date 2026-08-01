@@ -951,6 +951,18 @@ def validate_verification_artifact_for_plan(
             base, ok=False, code="missing_required_extension_namespace",
             findings=(f"missing required extension namespace(s): {missing}",),
         )
+    artifact_path = Path(path).resolve()
+    phase_loop_dir = next((parent for parent in artifact_path.parents if parent.name == ".phase-loop"), None)
+    if phase_loop_dir is not None and "phase_loop_runtime.legible_evidence" in required_namespaces:
+        from .legible_evidence import LegibleSidecarError, validate_verification_sidecar
+
+        try:
+            validate_verification_sidecar(
+                phase_loop_dir.parent,
+                sidecar=extensions["phase_loop_runtime.legible_evidence"],
+            )
+        except LegibleSidecarError as exc:
+            return replace(base, ok=False, code=exc.code, findings=(str(exc),))
     return base
 
 
