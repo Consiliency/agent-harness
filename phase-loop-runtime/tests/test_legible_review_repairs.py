@@ -276,7 +276,13 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     git("switch", "-c", "candidate", implementation_base)
     candidate_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "roadmap_assumptions.py"
     candidate_path.write_text("# fixture roadmap assumptions\nCAPABILITY = True\n", encoding="utf-8")
-    git("add", candidate_path.relative_to(repo).as_posix())
+    capability_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "legible_evidence.py"
+    capability_path.write_text('LEGIBLE_CAPABILITY_VERSION = "legible.v1"\n', encoding="utf-8")
+    git(
+        "add",
+        candidate_path.relative_to(repo).as_posix(),
+        capability_path.relative_to(repo).as_posix(),
+    )
     git("commit", "-m", "phase candidate")
     candidate = git("rev-parse", "HEAD")
 
@@ -324,6 +330,25 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     write_junit(default_junit, "skipped")
     write_junit(forced_red_junit, "failure")
     write_junit(final_junit, "passed")
+    default_log = evidence_dir / "default.log"
+    forced_red_log = evidence_dir / "forced-red.log"
+    final_log = evidence_dir / "final.log"
+    default_log.write_text(
+        "\n".join(f"{nodeid} SKIPPED LEGIBLE capability absent" for nodeid in frozen_nodeids) + "\n",
+        encoding="utf-8",
+    )
+    forced_red_log.write_text(
+        "\n".join(
+            f"{nodeid} FAILED anchor_reached LEGIBLE_RED::fixture-{index:03d}"
+            for index, nodeid in enumerate(frozen_nodeids)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    final_log.write_text(
+        "\n".join(f"{nodeid} PASSED" for nodeid in frozen_nodeids) + "\n",
+        encoding="utf-8",
+    )
     bundle_path = evidence_dir / "implementation-review-bundle.md"
     bundle_path.write_text(f"exact head: {integration}\n", encoding="utf-8")
     panel_models = {
@@ -457,6 +482,41 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "sha256": hashlib.sha256(data).hexdigest(),
         }
 
+    def execution_record(
+        *,
+        junit_path: Path,
+        log_path: Path,
+        execution_head: str,
+        exit_code: int,
+        marker_present: bool,
+        passed: int,
+        skipped: int,
+        failed: int,
+    ) -> dict[str, object]:
+        log_bytes = log_path.read_bytes()
+        return {
+            "argv": [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/test_legible_roadmap_contract.py",
+                "tests/test_legible_evidence.py",
+                f"--junitxml={junit_path.relative_to(repo).as_posix()}",
+                "-q",
+            ],
+            "execution_head": execution_head,
+            "exit_code": exit_code,
+            "capability_marker_present": marker_present,
+            "log_path": log_path.relative_to(repo).as_posix(),
+            "log_byte_length": len(log_bytes),
+            "log_sha256": hashlib.sha256(log_bytes).hexdigest(),
+            "junit_path": junit_path.relative_to(repo).as_posix(),
+            "passed": passed,
+            "skipped": skipped,
+            "failed": failed,
+            "errors": 0,
+        }
+
     sections = {
         "roadmap_status": legible_evidence.collect_roadmap_status(repo, required=True),
         "chronology": {
@@ -520,27 +580,42 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         "test_execution": {
             "nodeid_count": 84,
             "nodeid_digest": hashlib.sha256("\n".join(sorted(frozen_nodeids)).encode()).hexdigest(),
-            "default": {
-                "junit_path": default_junit.relative_to(repo).as_posix(),
-                "passed": 0,
-                "skipped": 84,
-                "failed": 0,
-                "errors": 0,
+            "default": execution_record(
+                junit_path=default_junit,
+                log_path=default_log,
+                execution_head=implementation_base,
+                exit_code=0,
+                marker_present=False,
+                passed=0,
+                skipped=84,
+                failed=0,
+            ),
+            "forced_red": execution_record(
+                junit_path=forced_red_junit,
+                log_path=forced_red_log,
+                execution_head=implementation_base,
+                exit_code=1,
+                marker_present=False,
+                passed=0,
+                skipped=0,
+                failed=84,
+            )
+            | {
+                "failure_markers": {
+                    nodeid: f"fixture-{index:03d}" for index, nodeid in enumerate(frozen_nodeids)
+                },
+                "anchor_nodeids": list(frozen_nodeids),
             },
-            "forced_red": {
-                "junit_path": forced_red_junit.relative_to(repo).as_posix(),
-                "passed": 0,
-                "skipped": 0,
-                "failed": 84,
-                "errors": 0,
-            },
-            "final": {
-                "junit_path": final_junit.relative_to(repo).as_posix(),
-                "passed": 84,
-                "skipped": 0,
-                "failed": 0,
-                "errors": 0,
-            },
+            "final": execution_record(
+                junit_path=final_junit,
+                log_path=final_log,
+                execution_head=integration,
+                exit_code=0,
+                marker_present=True,
+                passed=84,
+                skipped=0,
+                failed=0,
+            ),
         },
         "pull_request": {
             "repository": "Consiliency/agent-harness",
@@ -596,6 +671,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
                 file_record(default_junit),
                 file_record(forced_red_junit),
                 file_record(final_junit),
+                file_record(default_log),
+                file_record(forced_red_log),
+                file_record(final_log),
                 file_record(bundle_path),
                 file_record(panel_path),
                 *(file_record(path) for path in leg_paths),
@@ -1372,6 +1450,12 @@ def test_attest_delegates_to_runner_owned_operational_workflow(tmp_path, monkeyp
         "external_blob",
         "recomputed_tree",
         "probe_set",
+        "raw_log_digest",
+        "raw_red_semantics",
+        "test_command",
+        "test_exit_code",
+        "marker_state",
+        "failure_markers",
         "panel_legs",
     ),
 )
@@ -1416,6 +1500,29 @@ def test_operational_evidence_rejects_unproven_frozen_semantics(tmp_path, mutati
         sections["pull_request"]["recomputed_trees"]["server"] = "0" * 40
     elif mutation == "probe_set":
         sections["assumption_probes"]["records"].pop(0)
+    elif mutation == "raw_log_digest":
+        sections["test_execution"]["forced_red"]["log_sha256"] = "0" * 64
+    elif mutation == "raw_red_semantics":
+        path = repo / sections["test_execution"]["forced_red"]["log_path"]
+        path.write_text(path.read_text(encoding="utf-8").replace("LEGIBLE_RED::", "LEGIBLE_MASKED::", 1))
+        data = path.read_bytes()
+        sections["test_execution"]["forced_red"]["log_byte_length"] = len(data)
+        sections["test_execution"]["forced_red"]["log_sha256"] = hashlib.sha256(data).hexdigest()
+        record = next(
+            item
+            for item in sections["artifacts"]["records"]
+            if item["path"] == path.relative_to(repo).as_posix()
+        )
+        record["byte_length"] = len(data)
+        record["sha256"] = hashlib.sha256(data).hexdigest()
+    elif mutation == "test_command":
+        sections["test_execution"]["forced_red"]["argv"][-1] = "--collect-only"
+    elif mutation == "test_exit_code":
+        sections["test_execution"]["forced_red"]["exit_code"] = 0
+    elif mutation == "marker_state":
+        sections["test_execution"]["forced_red"]["capability_marker_present"] = True
+    elif mutation == "failure_markers":
+        sections["test_execution"]["forced_red"]["failure_markers"].popitem()
     else:
         panel_path = repo / "evidence" / "implementation-panel.json"
         panel = json.loads(panel_path.read_text(encoding="utf-8"))
