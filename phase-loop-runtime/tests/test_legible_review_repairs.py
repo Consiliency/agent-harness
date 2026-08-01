@@ -38,6 +38,10 @@ def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
 def _operational_sections(repo: Path, head: str) -> dict[str, dict]:
     artifact_path = "README.md"
     artifact_bytes = (repo / artifact_path).read_bytes()
+    cli_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
+    cli_path.parent.mkdir(parents=True, exist_ok=True)
+    cli_path.write_text("# fixture CLI\n", encoding="utf-8")
+    cli_bytes = cli_path.read_bytes()
     return {
         "roadmap_status": {
             "registry_path": "specs/roadmap-status.json",
@@ -60,10 +64,8 @@ def _operational_sections(repo: Path, head: str) -> dict[str, dict]:
                 "head": head,
                 "bootstrap_head": head,
                 "repo_realpath": str(repo.resolve()),
-                "cli_path": str(
-                    repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
-                ),
-                "cli_sha256": "5" * 64,
+                "cli_path": str(cli_path),
+                "cli_sha256": hashlib.sha256(cli_bytes).hexdigest(),
                 "python_executable": sys.executable,
                 "process_start_token": "attester-token",
             },
@@ -572,6 +574,29 @@ def test_operational_evidence_rejects_placeholder_sections(tmp_path):
     path = legible_evidence._assemble_operational_evidence(
         repo=repo,
         run_dir=repo / ".phase-loop" / "runs" / "attest-placeholder",
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+
+    validation = legible_evidence.validate_operational_evidence(
+        repo=repo, path=path, stage="candidate", expected_head=head
+    )
+
+    assert not validation.ok
+    assert validation.code == "operational_evidence_sections"
+
+
+def test_operational_evidence_rejects_unbound_process_cli(tmp_path):
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    sections = _operational_sections(repo, head)
+    sections["process_attestations"]["attester"]["cli_sha256"] = "0" * 64
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / "attest-cli-drift",
         stage="candidate",
         expected_head=head,
         sections=sections,
