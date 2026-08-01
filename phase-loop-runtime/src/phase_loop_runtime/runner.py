@@ -7280,6 +7280,12 @@ def _run_legible_pr_transition(
         + f"- usable: `{early_prover.get('usable')}`\n"
         + f"- codex_process_count: {early_prover.get('codex_process_count')}\n"
         + f"- grok_process_count: {early_prover.get('grok_process_count')}\n\n"
+        + "## Ratified degraded-evidence interpretation\n\n"
+        + "- `EC-REVIEWTRUTH-17` defines this zero-launch receipt as the ratified "
+        + "degraded-evidence path when Codex preflight fails and Grok confinement is unavailable; "
+        + "review continues over the disclosed receipt.\n"
+        + "- Codex and Grok attest only `can_probe`; only Fable can satisfy binding_prover, "
+        + "and no vendor-leg verdict substitutes for that required Fable review.\n\n"
         + str(early_prover.get("text", ""))
         + "\n",
         encoding="utf-8",
