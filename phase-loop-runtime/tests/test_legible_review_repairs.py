@@ -395,6 +395,104 @@ def test_attest_command_is_registered_and_enforces_exact_head(tmp_path, capsys):
     assert payload["head"] == head
 
 
+def test_canonical_main_attest_rejects_nonexistent_candidate(tmp_path):
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+        legible_evidence.attest(
+            repo=repo,
+            stage="canonical-main",
+            expected_head=head,
+            builder_run_id="candidate-run",
+            candidate_head="0" * 40,
+        )
+
+
+def test_operational_evidence_round_trip_is_sealed_and_closed(tmp_path):
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    run_dir = repo / ".phase-loop" / "runs" / "attest-1"
+    sections = {
+        name: {"head": head}
+        for name in (
+            "roadmap_status",
+            "chronology",
+            "process_attestations",
+            "test_execution",
+            "pull_request",
+            "target_integration",
+            "assumption_probes",
+            "artifacts",
+        )
+    }
+
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=run_dir,
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+
+    validation = legible_evidence.validate_operational_evidence(
+        repo=repo,
+        path=path,
+        stage="candidate",
+        expected_head=head,
+    )
+    assert validation.ok
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema"] == "legible_evidence.v1"
+    assert set(payload["sections"]) == set(sections)
+    assert len(payload["seal_sha256"]) == 64
+
+
+def test_operational_evidence_rejects_section_drift(tmp_path):
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    run_dir = repo / ".phase-loop" / "runs" / "attest-1"
+    sections = {
+        name: {"head": head}
+        for name in (
+            "roadmap_status",
+            "chronology",
+            "process_attestations",
+            "test_execution",
+            "pull_request",
+            "target_integration",
+            "assumption_probes",
+            "artifacts",
+        )
+    }
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=run_dir,
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["sections"]["chronology"]["head"] = "0" * 40
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    validation = legible_evidence.validate_operational_evidence(
+        repo=repo,
+        path=path,
+        stage="candidate",
+        expected_head=head,
+    )
+
+    assert not validation.ok
+    assert validation.code == "operational_evidence_seal_mismatch"
+
+
 @pytest.mark.parametrize(
     ("field", "invalid_value", "expected_code"),
     [
