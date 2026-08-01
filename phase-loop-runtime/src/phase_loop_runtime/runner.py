@@ -6714,7 +6714,7 @@ def _legible_pr_view(repo: Path) -> dict[str, object]:
     proc = subprocess.run(
         [
             "gh", "pr", "view", "347", "--repo", "Consiliency/agent-harness", "--json",
-            "state,isDraft,headRefOid,baseRefName,baseRefOid,mergeCommit,body,statusCheckRollup,reviewDecision,reviews",
+            "state,isDraft,headRefOid,baseRefName,baseRefOid,mergeCommit,mergedAt,body,statusCheckRollup,reviewDecision,reviews",
         ],
         cwd=repo,
         capture_output=True,
@@ -7134,6 +7134,30 @@ def _run_legible_pr_transition(
     ):
         raise legible_evidence.LegibleProcessBootstrapError(
             "Consiliency/agent-harness#347 server merge does not match the recomputed tree"
+        )
+    final_snapshot: dict[str, object] | None = None
+    for _attempt in range(30):
+        observed_snapshot = _legible_pr_view(repo)
+        merged_at = observed_snapshot.get("mergedAt")
+        expected_merged_snapshot = dict(expected_ready_snapshot)
+        expected_merged_snapshot.update(
+            {
+                "state": "MERGED",
+                "mergeCommit": {"oid": server_merge},
+                "mergedAt": merged_at,
+            }
+        )
+        if (
+            isinstance(merged_at, str)
+            and merged_at
+            and observed_snapshot == expected_merged_snapshot
+        ):
+            final_snapshot = observed_snapshot
+            break
+        time.sleep(1)
+    if final_snapshot is None:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 was not recognized as the exact server merge"
         )
     transition_path = run_dir / "legible-pr-transition.json"
     transition_payload: dict[str, object] = {
