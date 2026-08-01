@@ -903,7 +903,12 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             continue
         classification = _classify_basename(basename)
         if classification == "canonical":
-            registered.add(rel)
+            if rel in registered:
+                malformed.append(
+                    MalformedPlanFinding(path=rel, kind="duplicate", origin=frozenset({"manifest"}))
+                )
+            else:
+                registered.add(rel)
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"manifest"})))
     return registered, malformed
@@ -922,7 +927,11 @@ def check(repo: Path) -> ManifestCheckResult:
         MissingPlanFinding(path=path, origin=sorted(canonical.origins_of(path))[0])
         for path in sorted(canonical_set - registered)
     )
-    malformed = tuple(canonical.malformed) + tuple(manifest_malformed)
+    extra = tuple(
+        MalformedPlanFinding(path=path, kind="extra", origin=frozenset({"manifest"}))
+        for path in sorted(registered - canonical_set)
+    )
+    malformed = tuple(canonical.malformed) + tuple(manifest_malformed) + extra
     exit_code = 0 if not missing and not malformed else 1
     return ManifestCheckResult(
         exit_code=exit_code,

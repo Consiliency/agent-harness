@@ -536,7 +536,13 @@ def _flatten_reviewtruth_observation(raw: Mapping[str, Any]) -> dict[str, Any]:
     final_verdict_token = leg.get("final_verdict_token") if isinstance(leg, Mapping) else None
     seat_result_label = f"{seat_result}/{final_verdict_token}" if final_verdict_token else str(seat_result)
 
-    external_status = leg.get("external_status", leg.get("status")) if isinstance(leg, Mapping) else None
+    if isinstance(leg, Mapping) and "external_status" in leg:
+        fable_leg_succeeded = leg.get("external_status") == "OK"
+    else:
+        # Backward-compatible raw adapter observations predate the split
+        # external-status field. Their typed UNAVAILABLE seat result means the
+        # adapter ran successfully and observed the under-Claude marker.
+        fable_leg_succeeded = isinstance(leg, Mapping) and leg.get("status") not in (None, "", "ERROR")
 
     return {
         "issue_state": issue_info.get("state") if isinstance(issue_info, Mapping) else raw.get("issue_state"),
@@ -544,7 +550,7 @@ def _flatten_reviewtruth_observation(raw: Mapping[str, Any]) -> dict[str, Any]:
         "native_fill_request": native_fill_request,
         "seat_result": seat_result_label,
         "first_party_route_available": route_info.get("capability") == "ok" if isinstance(route_info, Mapping) else False,
-        "fable_leg": "succeeded" if external_status == "OK" else "failed",
+        "fable_leg": "succeeded" if fable_leg_succeeded else "failed",
         "verdict_bound": False,
         "seat_count": "degraded",
     }
@@ -774,13 +780,27 @@ def collect_test_execution_evidence(
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
+    if args.stage not in {"candidate", "canonical-main"}:
+        print(f"legible_evidence verify: FAIL [unsupported_stage] {args.stage}", file=sys.stderr)
+        return 1
+    expected_head = _rev_parse(repo, args.head)
+    actual_head = _rev_parse(repo, "HEAD")
+    if expected_head is None:
+        print(f"legible_evidence verify: FAIL [unresolved_head] {args.head}", file=sys.stderr)
+        return 1
+    if actual_head != expected_head:
+        print(
+            f"legible_evidence verify: FAIL [head_mismatch] expected={expected_head} actual={actual_head}",
+            file=sys.stderr,
+        )
+        return 1
     try:
         record = collect_roadmap_status(repo, required=True)
         validate_roadmap_status_evidence(repo, record, required=True)
     except LegibleStatusEvidenceError as exc:
         print(f"legible_evidence verify: FAIL [{exc.code}] {exc}", file=sys.stderr)
         return 1
-    print(f"legible_evidence verify: roadmap_status OK (stage={args.stage}, head={args.head})")
+    print(f"legible_evidence verify: roadmap_status OK (stage={args.stage}, head={expected_head})")
     return 0
 
 
