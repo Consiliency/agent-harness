@@ -1951,9 +1951,33 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
     monkeypatch.setattr(legible_evidence, "_recomputed_merge_tree", lambda *_args: expected_tree)
     monkeypatch.setattr(legible_evidence, "_commit_parents", lambda *_args: [base, head])
 
+    def fake_early_prover(_repo, run_dir, expected_head, bundle_path):
+        events.append("early-prover")
+        prover = run_dir / "c4-early-prover.json"
+        prover.write_text(
+            json.dumps(
+                {
+                    "schema": "legible_c4_early_prover.v1",
+                    "head": expected_head,
+                    "bundle_path": bundle_path.relative_to(repo).as_posix(),
+                    "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                    "status": "OK",
+                    "usable": True,
+                    "verdict": "AGREE",
+                    "text": "verified transition evidence\nAGREE",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return prover
+
+    monkeypatch.setattr(runner, "_run_legible_c4_early_prover", fake_early_prover, raising=False)
+
     def fake_panel(_repo, run_dir, _expected_head, bundle_path):
         events.append("panel")
-        bundle_path.write_text("review bundle\n", encoding="utf-8")
+        assert "verified transition evidence" in bundle_path.read_text(encoding="utf-8")
         panel = run_dir / "implementation-panel.json"
         panel.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
         return panel
@@ -1978,13 +2002,49 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
         process_start_token="transition-token",
     )
 
-    assert events[0] == "panel"
+    assert events[:2] == ["early-prover", "panel"]
     assert result["run_id"].startswith("legible-transition-")
     transition_path = repo / result["transition_artifact"]
     assert transition_path.is_file()
     payload = json.loads(transition_path.read_text(encoding="utf-8"))
     assert payload["builder_run_id"] == "builder-1"
     assert payload["process_start_token"] == "transition-token"
+
+
+def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker, runner
+    from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
+
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "panel"
+    run_dir.mkdir(parents=True)
+    bundle = run_dir / "bundle.md"
+    bundle.write_text("staged transition evidence\n", encoding="utf-8")
+    observed = {}
+
+    def fake_invoke(_board, artifact, **kwargs):
+        observed["artifact"] = artifact
+        observed.update(kwargs)
+        return SimpleNamespace(
+            legs=tuple(
+                SimpleNamespace(
+                    leg=seat.harness,
+                    seat_key=seat.seat_key,
+                    status="OK",
+                    usable=True,
+                    text="reviewed staged evidence\nAGREE",
+                )
+                for seat in CODE_REVIEW_BOARD.seats
+            )
+        )
+
+    monkeypatch.setattr(panel_invoker, "invoke_board", fake_invoke)
+
+    runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+
+    assert observed["artifact"] == ""
+    assert observed["artifact_ref"] == str(bundle)
+    assert "context_refs" not in observed
 
 
 def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
