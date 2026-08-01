@@ -471,6 +471,8 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     pr_snapshot = {
         "base": implementation_base,
         "refresh_base": refresh_base,
+        "state": "MERGED",
+        "merged_at": "2026-08-01T16:00:00Z",
         "body": pr_body,
         "body_ancestor_commits": body_ancestors,
         "changed_paths": changed_paths,
@@ -479,6 +481,8 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         "head_tree": tree(pr_head),
         "merge_commit": server_merge,
         "merge_tree": tree(server_merge),
+        "review_decision": "APPROVED",
+        "github_review_count": 1,
         "refresh_parents": [refresh_parent, refresh_base],
         "remote_head_oid": pr_head,
     }
@@ -631,6 +635,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "repository": "Consiliency/agent-harness",
             "number": 347,
             "state": "MERGED",
+            "merged_at": "2026-08-01T16:00:00Z",
+            "review_decision": "APPROVED",
+            "github_review_count": 1,
             "base": implementation_base,
             "refresh_base": refresh_base,
             "head": pr_head,
@@ -1276,6 +1283,7 @@ def test_operational_evidence_rejects_placeholder_sections(tmp_path):
         "panel_semantics",
         "probe_payload_digest",
         "pr_changed_paths",
+        "pr_merged_at",
     ),
 )
 def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
@@ -1317,8 +1325,10 @@ def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
         record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     elif mutation == "probe_payload_digest":
         sections["assumption_probes"]["records"][0]["response_sha256"] = "0" * 64
-    else:
+    elif mutation == "pr_changed_paths":
         sections["pull_request"]["changed_paths"] = ["README.md"]
+    else:
+        sections["pull_request"]["merged_at"] = ""
     path = legible_evidence._assemble_operational_evidence(
         repo=repo,
         run_dir=repo / ".phase-loop" / "runs" / f"attest-{mutation}",
@@ -2328,6 +2338,9 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         "server_base": "2" * 40,
         "server_merge": "3" * 40,
         "pr_head": "4" * 40,
+        "pr_state": "MERGED",
+        "pr_merged_at": "2026-08-01T16:00:00Z",
+        "pr_merge_commit": "3" * 40,
         "review_decision": "",
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
@@ -2364,6 +2377,9 @@ def test_pr_transition_loader_rejects_resealed_handwritten_panel(tmp_path):
         "server_base": "2" * 40,
         "server_merge": "3" * 40,
         "pr_head": "4" * 40,
+        "pr_state": "MERGED",
+        "pr_merged_at": "2026-08-01T16:00:00Z",
+        "pr_merge_commit": "3" * 40,
         "review_decision": "",
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
