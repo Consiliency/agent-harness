@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,6 +15,7 @@ legible_evidence = pytest.importorskip(
     "phase_loop_runtime.legible_evidence",
     reason="LEGIBLE implementation capability is not installed",
 )
+from phase_loop_runtime import docs_freshness, plan_manifest, roadmap_lint
 from phase_loop_runtime.docs_freshness import check_catalog
 from phase_loop_runtime.plan_manifest import check
 from phase_loop_runtime.roadmap_assumptions import _classify_reviewtruth_transition
@@ -73,11 +75,20 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         + "\n",
         encoding="utf-8",
     )
-    junit_path = repo / "evidence" / "final.junit.xml"
-    junit_path.parent.mkdir()
-    junit_path.write_text('<testsuite tests="84" failures="0" errors="0" skipped="0"/>\n')
-    panel_path = repo / "evidence" / "implementation-panel.json"
-    panel_path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+    frozen_nodeids = tuple(
+        f"phase-loop-runtime/tests/test_legible_{'roadmap_contract' if index < 64 else 'evidence'}.py::"
+        f"test_fixture_{index:03d}"
+        for index in range(84)
+    )
+    for rel, nodeids in (
+        ("phase-loop-runtime/tests/test_legible_roadmap_contract.py", frozen_nodeids[:64]),
+        ("phase-loop-runtime/tests/test_legible_evidence.py", frozen_nodeids[64:]),
+    ):
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"LEGIBLE_EXPECTED_NODEIDS_V1 = {nodeids!r}\n", encoding="utf-8")
+    pr_delta_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "panel_invoker.py"
+    pr_delta_path.write_text("# base panel invoker\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(
         ["git", "commit", "-m", "operational base"],
@@ -99,9 +110,10 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     ).stdout.strip()
 
     subprocess.run(["git", "switch", "-c", "pr-head", base], cwd=repo, check=True, capture_output=True)
-    external_path = repo / "external.txt"
-    external_path.write_text("reviewed external delta\n", encoding="utf-8")
-    subprocess.run(["git", "add", external_path.name], cwd=repo, check=True)
+    pr_delta_path.write_text("# reviewed external delta\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", pr_delta_path.relative_to(repo).as_posix()], cwd=repo, check=True
+    )
     subprocess.run(["git", "commit", "-m", "external PR"], cwd=repo, check=True, capture_output=True)
     pr_head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
@@ -128,6 +140,77 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     integration = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
+
+    evidence_dir = repo / "evidence"
+    evidence_dir.mkdir()
+
+    def write_junit(path: Path, status: str) -> None:
+        root = ET.Element("testsuite", tests="84")
+        for index, nodeid in enumerate(frozen_nodeids):
+            file_part, test_name = nodeid.split("::", 1)
+            case = ET.SubElement(
+                root,
+                "testcase",
+                classname=file_part.removesuffix(".py"),
+                name=test_name,
+            )
+            if status == "skipped":
+                ET.SubElement(case, "skipped", message="LEGIBLE capability absent")
+            elif status == "failure":
+                ET.SubElement(case, "failure", message=f"LEGIBLE_RED::fixture-{index:03d}: expected")
+        ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+
+    default_junit = evidence_dir / "default.junit.xml"
+    forced_red_junit = evidence_dir / "forced-red.junit.xml"
+    final_junit = evidence_dir / "final.junit.xml"
+    write_junit(default_junit, "skipped")
+    write_junit(forced_red_junit, "failure")
+    write_junit(final_junit, "passed")
+    panel_path = evidence_dir / "implementation-panel.json"
+    panel_path.write_text(
+        json.dumps(
+            {
+                "head": integration,
+                "verdicts": {
+                    "claude-fable-5": "AGREE",
+                    "gemini-3.6-flash": "AGREE",
+                    "gpt-5.6-sol": "AGREE",
+                    "grok-4.5": "AGREE",
+                },
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    probe_path = evidence_dir / "reviewtruth-probe.json"
+    probe_bytes = b'{"state":"pending"}\n'
+    probe_path.write_bytes(probe_bytes)
+    pr_snapshot_path = evidence_dir / "agent-harness-347-snapshot.json"
+    changed_paths = [pr_delta_path.relative_to(repo).as_posix()]
+    pr_snapshot = {
+        "base": base,
+        "body": "LEGIBLE exact transition",
+        "changed_paths": changed_paths,
+        "checks": ["SUCCESS"],
+        "head": pr_head,
+        "head_tree": subprocess.run(
+            ["git", "rev-parse", f"{pr_head}^{{tree}}"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+        "merge_commit": server_merge,
+        "merge_tree": subprocess.run(
+            ["git", "rev-parse", f"{server_merge}^{{tree}}"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    }
+    pr_snapshot_path.write_text(json.dumps(pr_snapshot, sort_keys=True) + "\n", encoding="utf-8")
 
     tracked_paths = ["specs/phase-plans-v1.md", "specs/phase-plans-v10.md"]
 
@@ -193,10 +276,28 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         },
         "test_execution": {
             "nodeid_count": 84,
-            "nodeid_digest": "8b6d153cd009bdc68ebf0f3eca2f60c505386f9d164afca3aafead981a84be22",
-            "default": {"passed": 0, "skipped": 84, "failed": 0, "errors": 0},
-            "forced_red": {"passed": 0, "skipped": 0, "failed": 84, "errors": 0},
-            "final": {"passed": 84, "skipped": 0, "failed": 0, "errors": 0},
+            "nodeid_digest": hashlib.sha256("\n".join(frozen_nodeids).encode()).hexdigest(),
+            "default": {
+                "junit_path": default_junit.relative_to(repo).as_posix(),
+                "passed": 0,
+                "skipped": 84,
+                "failed": 0,
+                "errors": 0,
+            },
+            "forced_red": {
+                "junit_path": forced_red_junit.relative_to(repo).as_posix(),
+                "passed": 0,
+                "skipped": 0,
+                "failed": 84,
+                "errors": 0,
+            },
+            "final": {
+                "junit_path": final_junit.relative_to(repo).as_posix(),
+                "passed": 84,
+                "skipped": 0,
+                "failed": 0,
+                "errors": 0,
+            },
         },
         "pull_request": {
             "repository": "Consiliency/agent-harness",
@@ -206,6 +307,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "head": pr_head,
             "merge_commit": server_merge,
             "parents": [base, pr_head],
+            "snapshot_path": pr_snapshot_path.relative_to(repo).as_posix(),
+            "snapshot_sha256": hashlib.sha256(pr_snapshot_path.read_bytes()).hexdigest(),
+            "changed_paths": changed_paths,
         },
         "target_integration": {
             "candidate": candidate,
@@ -220,8 +324,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
                     "schema": "roadmap_assumption_probe.v1",
                     "probe_id": "LEGIBLE-A3-REVIEWTRUTH-TRANSITION",
                     "state": "pending",
-                    "response_sha256": "6" * 64,
-                    "response_byte_length": 0,
+                    "response_path": probe_path.relative_to(repo).as_posix(),
+                    "response_sha256": hashlib.sha256(probe_bytes).hexdigest(),
+                    "response_byte_length": len(probe_bytes),
                 }
             ],
         },
@@ -231,8 +336,12 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
                 file_record(roadmap_v10),
                 file_record(plan_path),
                 file_record(cli_path),
-                file_record(junit_path),
+                file_record(default_junit),
+                file_record(forced_red_junit),
+                file_record(final_junit),
                 file_record(panel_path),
+                file_record(probe_path),
+                file_record(pr_snapshot_path),
             ]
         },
     }
@@ -291,6 +400,66 @@ def test_manifest_check_rejects_duplicate_registered_plan_path(tmp_path):
     assert [(item.path, item.kind) for item in result.malformed] == [(canonical, "duplicate")]
 
 
+def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
+    repo = make_repo(tmp_path)
+    canonical = _commit_plan(repo)
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": canonical,
+                        "phase_alias": "RUNNER",
+                        "lifecycle": [
+                            {
+                                "metadata": {
+                                    "legible_plan_contract": {"plan_sha256": "0" * 60}
+                                }
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (canonical, "plan-digest") in [(item.path, item.kind) for item in result.malformed]
+
+
+def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
+    repo = make_repo(tmp_path)
+
+    with pytest.raises(roadmap_lint.RoadmapStatusError):
+        roadmap_lint.validate_roadmap_status_coherence(repo, required=True)
+
+
+def test_manifest_scan_propagates_roadmap_status_failure(tmp_path):
+    repo = make_repo(tmp_path)
+    registry = repo / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text("{}\n", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    with pytest.raises(roadmap_lint.RoadmapStatusError):
+        plan_manifest.canonical_plan_files(repo, head)
+
+
+def test_docs_catalog_check_rejects_absence(tmp_path):
+    repo = make_repo(tmp_path)
+
+    result = docs_freshness.check_catalog(repo)
+
+    assert result.exit_code == 1
+    assert result.findings == ("catalog is absent",)
+
+
 def test_legible_verify_rejects_head_that_does_not_resolve(tmp_path):
     repo = make_repo(tmp_path)
     args = SimpleNamespace(repo=str(repo), stage="candidate", head="0" * 40)
@@ -301,6 +470,14 @@ def test_legible_verify_rejects_head_that_does_not_resolve(tmp_path):
         patch.object(legible_evidence, "validate_roadmap_status_evidence"),
     ):
         assert legible_evidence._cmd_verify(args) == 1
+
+
+def test_legible_verify_rejects_missing_operational_aggregate(tmp_path):
+    repo = make_repo(tmp_path)
+    head, _sections = _operational_fixture(repo)
+    args = SimpleNamespace(repo=str(repo), stage="candidate", head=head)
+
+    assert legible_evidence._cmd_verify(args) == 1
 
 
 def test_plan_aware_validation_reopens_bound_sidecar_bytes(tmp_path):
@@ -725,7 +902,18 @@ def test_operational_evidence_rejects_placeholder_sections(tmp_path):
 
 @pytest.mark.parametrize(
     "mutation",
-    ("registry_digest", "chronology_ancestry", "pr_parent_identity", "probe_semantics", "artifact_inventory"),
+    (
+        "registry_digest",
+        "chronology_ancestry",
+        "pr_parent_identity",
+        "probe_semantics",
+        "artifact_inventory",
+        "nodeid_digest",
+        "junit_contents",
+        "panel_semantics",
+        "probe_payload_digest",
+        "pr_changed_paths",
+    ),
 )
 def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
     repo = make_repo(tmp_path)
@@ -741,7 +929,7 @@ def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
         ]
     elif mutation == "probe_semantics":
         sections["assumption_probes"]["records"] = [{"probe_id": "fixture"}]
-    else:
+    elif mutation == "artifact_inventory":
         readme = (repo / "README.md").read_bytes()
         sections["artifacts"]["records"] = [
             {
@@ -750,6 +938,24 @@ def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
                 "sha256": hashlib.sha256(readme).hexdigest(),
             }
         ]
+    elif mutation == "nodeid_digest":
+        sections["test_execution"]["nodeid_digest"] = "0" * 64
+    elif mutation == "junit_contents":
+        path = repo / sections["test_execution"]["final"]["junit_path"]
+        path.write_text('<testsuite tests="84" failures="0" errors="0" skipped="0"/>\n')
+        record = next(item for item in sections["artifacts"]["records"] if item["path"] == path.relative_to(repo).as_posix())
+        record["byte_length"] = len(path.read_bytes())
+        record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    elif mutation == "panel_semantics":
+        path = repo / "evidence" / "implementation-panel.json"
+        path.write_text('{"head":"' + head + '","verdicts":{"gpt-5.6-sol":"DISAGREE"}}\n')
+        record = next(item for item in sections["artifacts"]["records"] if item["path"] == path.relative_to(repo).as_posix())
+        record["byte_length"] = len(path.read_bytes())
+        record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    elif mutation == "probe_payload_digest":
+        sections["assumption_probes"]["records"][0]["response_sha256"] = "0" * 64
+    else:
+        sections["pull_request"]["changed_paths"] = ["README.md"]
     path = legible_evidence._assemble_operational_evidence(
         repo=repo,
         run_dir=repo / ".phase-loop" / "runs" / f"attest-{mutation}",
