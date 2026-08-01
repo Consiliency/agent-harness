@@ -1129,15 +1129,28 @@ def test_attest_cli_without_repo_still_runs_preimport_bootstrap(tmp_path, monkey
     from phase_loop_runtime import cli
 
     repo = tmp_path / "repo"
-    source_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
-    source_path.parent.mkdir(parents=True)
-    source_path.write_text("# repo-local fixture\n", encoding="utf-8")
+    blobs = {}
+    blob_by_rel = {}
+    for index, rel in enumerate(cli._ATTEST_RUNTIME_PATHS, start=1):
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# repo-local fixture {rel}\n", encoding="utf-8")
+        blob_oid = f"{index:040x}"
+        blobs[blob_oid] = path.read_bytes()
+        blob_by_rel[rel] = blob_oid
+    source_path = repo / cli._ATTEST_RUNTIME_PATHS[0]
     head = "a" * 40
     monkeypatch.chdir(repo)
     monkeypatch.setattr(cli, "__file__", str(source_path))
 
     def fake_run(argv, **kwargs):
-        stdout = f"{head}\n" if "rev-parse" in argv else ""
+        if "cat-file" in argv:
+            return subprocess.CompletedProcess(argv, 0, blobs[argv[-1]], b"")
+        if "rev-parse" in argv:
+            revision = argv[-1]
+            stdout = f"{blob_by_rel[revision.split(':', 1)[1]]}\n" if ":" in revision else f"{head}\n"
+        else:
+            stdout = ""
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
@@ -1157,6 +1170,7 @@ def test_attest_cli_without_repo_still_runs_preimport_bootstrap(tmp_path, monkey
     assert payload is not None
     assert payload["bootstrap_head"] == head
     assert payload["repo_realpath"] == str(repo.resolve())
+    assert set(payload["loaded_runtime_blobs"]) == set(cli._ATTEST_RUNTIME_PATHS)
 
 
 def test_canonical_main_attest_rejects_nonexistent_candidate(tmp_path):
