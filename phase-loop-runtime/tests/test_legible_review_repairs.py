@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from phase_loop_runtime.verification_evidence import (
     ARTIFACT_NAME,
     LOG_NAME,
     VerificationArtifactContractError,
+    _artifact_seal_region_start,
     _bind_sidecar_extension,
     run_verification,
     validate_verification_artifact,
@@ -259,6 +261,138 @@ def test_sidecar_binder_allows_integrity_valid_nonzero_verification(tmp_path):
     assert validate_verification_artifact_for_plan(
         artifact_path, (legible_evidence.EXTENSION_NAMESPACE,)
     ).code == "nonzero_exit"
+
+
+def test_sidecar_binder_rejects_unsealed_v2_artifact(tmp_path):
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "probe"
+    run_verification(repo, run_dir, [], None, None, 10, phase_alias="LEGIBLE")
+    artifact_path = run_dir / ARTIFACT_NAME
+    log_path = run_dir / LOG_NAME
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    raw_log = log_path.read_bytes()
+    seal_start = _artifact_seal_region_start(raw_log)
+    assert seal_start is not None
+    log_body = raw_log[:seal_start]
+    log_path.write_bytes(log_body)
+    payload["phase_alias"] = "ALTERED-BEFORE-BIND"
+    payload["log_sha256"] = hashlib.sha256(log_body).hexdigest()
+    artifact_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    assert validate_verification_artifact(artifact_path).ok
+    sidecar_path = run_dir / "legible-verification-sidecar.json"
+    sidecar_path.write_text("{}", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    record = legible_evidence.bind_verification_sidecar(
+        repo,
+        run_dir=run_dir,
+        stage="candidate",
+        expected_head=head,
+        bootstrap_head=head,
+        process_start_token="fresh-process-token",
+    )
+
+    with pytest.raises(VerificationArtifactContractError) as excinfo:
+        _bind_sidecar_extension(
+            artifact_path,
+            namespace=legible_evidence.EXTENSION_NAMESPACE,
+            record=record.__dict__,
+        )
+
+    assert excinfo.value.code == "artifact_seal_missing"
+
+
+def test_plan_aware_validation_checks_sidecar_after_nonzero_exit(tmp_path):
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "probe"
+    run_verification(
+        repo,
+        run_dir,
+        [[sys.executable, "-c", "raise SystemExit(7)"]],
+        None,
+        None,
+        10,
+        phase_alias="LEGIBLE",
+    )
+    sidecar_path = run_dir / "legible-verification-sidecar.json"
+    sidecar_path.write_text("{}", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    record = legible_evidence.bind_verification_sidecar(
+        repo,
+        run_dir=run_dir,
+        stage="candidate",
+        expected_head=head,
+        bootstrap_head=head,
+        process_start_token="fresh-process-token",
+    )
+    artifact_path = run_dir / ARTIFACT_NAME
+    _bind_sidecar_extension(
+        artifact_path,
+        namespace=legible_evidence.EXTENSION_NAMESPACE,
+        record=record.__dict__,
+    )
+    sidecar_path.write_text('{"drifted":true}', encoding="utf-8")
+
+    result = validate_verification_artifact_for_plan(
+        artifact_path, (legible_evidence.EXTENSION_NAMESPACE,)
+    )
+
+    assert not result.ok
+    assert result.code == "sidecar_digest_drift"
+
+
+def test_sidecar_binder_rejects_symlinked_declared_sidecar(tmp_path):
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "probe"
+    run_dir.mkdir(parents=True)
+    target = repo / ".phase-loop" / "runs" / "other-sidecar.json"
+    target.write_text("{}", encoding="utf-8")
+    (run_dir / "legible-verification-sidecar.json").symlink_to(target)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    with pytest.raises(legible_evidence.LegibleSidecarError) as excinfo:
+        legible_evidence.bind_verification_sidecar(
+            repo,
+            run_dir=run_dir,
+            stage="candidate",
+            expected_head=head,
+            bootstrap_head=head,
+            process_start_token="fresh-process-token",
+        )
+
+    assert excinfo.value.code == "sidecar_symlink"
+
+
+def test_attest_command_is_registered_and_enforces_exact_head(tmp_path, capsys):
+    from phase_loop_runtime import cli
+
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    assert cli.main(
+        [
+            "attest",
+            "--repo",
+            str(repo),
+            "--stage",
+            "candidate",
+            "--expected-head",
+            head,
+            "--builder-run-id",
+            "builder-1",
+            "--json",
+        ]
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stage"] == "candidate"
+    assert payload["head"] == head
 
 
 @pytest.mark.parametrize(
