@@ -77,6 +77,39 @@ LEGIBLE_OWNED_PATHS = (
     "specs/roadmap-status.json",
 )
 
+LEGIBLE_CONTRACT_FIXED_FIELDS = {
+    "absent_registry_selector_falsifier_nodeid": (
+        "phase-loop-runtime/tests/test_legible_roadmap_contract.py::"
+        "test_absent_registry_selector_rejects_recognized_non_active_banner_and_preserves_no_declaration_legacy"
+    ),
+    "absent_registry_selector_falsifier_nodeid_sha256": (
+        "e65af55d0f3df427f8b1c1b001fbb69b92585f6790f2daa97f47a2f6adbab93a"
+    ),
+    "activation_env": "PHASE_LOOP_TDD_EXPECT_LEGIBLE",
+    "capability_marker": "phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1",
+    "expected_nodeids": 84,
+    "legacy_selector_compatibility": "candidate_has_no_lifecycle_declaration",
+    "lifecycle": "legible_tdd_candidate_main.v1",
+    "log_sha256_scope": "complete_final_v3_sealed_log_bytes",
+    "phase_dependencies": [],
+    "selector_common_return_contract": (
+        "parse_candidate_lifecycle_then_reject_recognized_non_active_with_or_without_registry"
+    ),
+    "v2_to_v3_preservation": "all_v2_json_values_except_schema_version_and_derived_log_sha256",
+    "verification_evidence_contract": "verification_evidence.v3",
+    "verification_extension_namespaces": {"phase_loop_runtime.legible_evidence": "LEGIBLE"},
+    "verification_extension_registry_owner": "LEGIBLE",
+    "verification_extension_reserved_downstream_namespace": "phase_loop_runtime.proofgate_evidence",
+}
+
+LEGIBLE_LOADED_RUNTIME_PATHS = (
+    "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+    "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+    "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+    "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+)
+LEGIBLE_ROADMAP_SHA256 = "040fe81fd36fd484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+
 
 def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
     rel = f"plans/{name}"
@@ -87,6 +120,8 @@ def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
 
 
 def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
+    source_repo = Path(__file__).resolve().parents[2]
+
     def git(*args: str, input_text: str | None = None) -> str:
         return subprocess.run(
             ["git", *args],
@@ -113,10 +148,16 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         encoding="utf-8",
     )
     roadmap_v10 = repo / "specs" / "phase-plans-v10.md"
-    roadmap_v10.write_text(
-        "# Roadmap\n\n> **Status (2026-07-29): ACTIVE — created this date, nothing executed yet.**\n\n"
-        "### Phase 0 - LEGIBLE (LEGIBLE)\n",
-        encoding="utf-8",
+    roadmap_v10.write_bytes((source_repo / "specs" / "phase-plans-v10.md").read_bytes())
+    sidecar_path = repo / roadmap_assumptions.PROBE_SIDECAR_REL
+    sidecar_path.write_bytes(
+        (
+            source_repo
+            / "phase-loop-runtime"
+            / "tests"
+            / "fixtures"
+            / "roadmap-assumption-probes-v10.json"
+        ).read_bytes()
     )
     plan_path = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
     owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
@@ -176,7 +217,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
                             {
                                 "metadata": {
                                     "legible_plan_contract": {
+                                        **LEGIBLE_CONTRACT_FIXED_FIELDS,
                                         "plan_sha256": plan_digest,
+                                        "roadmap_sha256": hashlib.sha256(roadmap_v10.read_bytes()).hexdigest(),
                                         "owned_paths": list(LEGIBLE_OWNED_PATHS),
                                         "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
                                         "owned_paths_sha256": owned_digest,
@@ -254,6 +297,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         capture_output=True,
     )
     integration = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/codex/fixture", integration)
 
     evidence_dir = repo / "evidence"
     evidence_dir.mkdir()
@@ -326,12 +370,54 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         + "\n",
         encoding="utf-8",
     )
+    probe_declarations = json.loads(sidecar_path.read_text(encoding="utf-8"))["probes"]
+    probe_by_id = {probe["id"]: probe for probe in probe_declarations}
+
+    def passing_observation(probe: dict) -> dict:
+        if probe["kind"] == "reviewtruth_fable_transition":
+            return {
+                "issue_state": "OPEN",
+                "native_fill_request": False,
+                "seat_result": "UNAVAILABLE/tui_adapter_required",
+                "first_party_route_available": True,
+                "fable_leg": "succeeded",
+            }
+        observation: dict[str, object] = {}
+        expected = probe["expected"]
+        for key, value in expected.items():
+            if key == "required_present":
+                observation.update({field: "present" for field in value})
+            elif key == "required_atoms":
+                observation.setdefault("atoms", []).extend(value)
+            elif key == "forbidden_atoms":
+                observation.setdefault("atoms", [])
+            elif key == "required_edges":
+                observation["edges"] = value
+            elif key == "fields":
+                observation["fields"] = value
+            elif key == "must_agree":
+                if value:
+                    observation["values"] = [expected["agreed_value"]]
+            elif key not in {"agreed_value", "declared_states"}:
+                observation[key] = value
+        return observation
+
     probe_records = []
     probe_paths: list[Path] = []
     for probe_id in LEGIBLE_PROBE_IDS:
         state = "pending" if probe_id == "LEGIBLE-A3-REVIEWTRUTH-TRANSITION" else "resolved"
         probe_path = evidence_dir / f"{probe_id.lower()}.json"
-        probe_bytes = (json.dumps({"probe_id": probe_id, "state": state}, sort_keys=True) + "\n").encode()
+        probe_bytes = (
+            json.dumps(
+                {
+                    "probe_id": probe_id,
+                    "state": state,
+                    "observation": passing_observation(probe_by_id[probe_id]),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
         probe_path.write_bytes(probe_bytes)
         probe_paths.append(probe_path)
         probe_records.append(
@@ -363,8 +449,6 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     }
     pr_snapshot_path.write_text(json.dumps(pr_snapshot, sort_keys=True) + "\n", encoding="utf-8")
 
-    tracked_paths = ["specs/phase-plans-v1.md", "specs/phase-plans-v10.md"]
-
     def file_record(path: Path) -> dict[str, object]:
         data = path.read_bytes()
         return {
@@ -374,33 +458,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         }
 
     sections = {
-        "roadmap_status": {
-            "registry_path": "specs/roadmap-status.json",
-            "registry_sha256": hashlib.sha256(registry_path.read_bytes()).hexdigest(),
-            "registry_byte_length": len(registry_path.read_bytes()),
-            "selected_roadmap": "specs/phase-plans-v10.md",
-            "tracked_path_set_sha256": hashlib.sha256("\n".join(tracked_paths).encode()).hexdigest(),
-            "roadmaps": [
-                {
-                    "path": "specs/phase-plans-v1.md",
-                    "registry_status": "superseded",
-                    "banner_status": "superseded",
-                    "declaration_line": 3,
-                    "declaration_sha256": hashlib.sha256(
-                        roadmap_v1.read_text(encoding="utf-8").splitlines()[2].encode()
-                    ).hexdigest(),
-                },
-                {
-                    "path": "specs/phase-plans-v10.md",
-                    "registry_status": "active",
-                    "banner_status": "active",
-                    "declaration_line": 3,
-                    "declaration_sha256": hashlib.sha256(
-                        roadmap_v10.read_text(encoding="utf-8").splitlines()[2].encode()
-                    ).hexdigest(),
-                },
-            ],
-        },
+        "roadmap_status": legible_evidence.collect_roadmap_status(repo, required=True),
         "chronology": {
             "refresh_base": refresh_base,
             "tests_landing": implementation_base,
@@ -409,6 +467,8 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "pr_head": pr_head,
             "server_merge": server_merge,
             "candidate_head": integration,
+            "candidate_remote_ref": "refs/remotes/origin/codex/fixture",
+            "candidate_remote_oid": integration,
             "plan_path": "plans/phase-plan-v10-LEGIBLE.md",
             "plan_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
             "roadmap_path": "specs/phase-plans-v10.md",
@@ -431,21 +491,29 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         },
         "process_attestations": {
             "builder": {"run_id": "builder-1", "process_start_token": "builder-token"},
-            "attester": {
+            "transition": {
+                "run_id": "transition-1",
+                "parent_run_id": "builder-1",
+                "process_start_token": "transition-token",
+            },
+            "candidate": {
+                "run_id": "candidate-1",
+                "parent_run_id": "transition-1",
                 "head": integration,
                 "bootstrap_head": integration,
                 "repo_realpath": str(repo.resolve()),
                 "cli_path": str(cli_path),
                 "cli_sha256": hashlib.sha256(cli_path.read_bytes()).hexdigest(),
                 "python_executable": sys.executable,
-                "process_start_token": "attester-token",
+                "process_start_token": "candidate-token",
                 "loaded_runtime_blobs": {
-                    rel: blob(integration, rel)
-                    for rel in (
-                        "phase-loop-runtime/src/phase_loop_runtime/cli.py",
-                        "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
-                        "phase-loop-runtime/src/phase_loop_runtime/runner.py",
-                    )
+                    rel: {
+                        "path": rel,
+                        "blob_oid": blob(integration, rel),
+                        "byte_length": len((repo / rel).read_bytes()),
+                        "sha256": hashlib.sha256((repo / rel).read_bytes()).hexdigest(),
+                    }
+                    for rel in LEGIBLE_LOADED_RUNTIME_PATHS
                 },
             },
         },
@@ -520,9 +588,10 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "records": [
                 file_record(registry_path),
                 file_record(roadmap_v10),
+                file_record(sidecar_path),
                 file_record(plan_path),
                 file_record(manifest_path),
-                file_record(cli_path),
+                *(file_record(repo / rel) for rel in LEGIBLE_LOADED_RUNTIME_PATHS),
                 *(file_record(repo / rel) for rel, _ in frozen_by_path),
                 file_record(default_junit),
                 file_record(forced_red_junit),
@@ -1167,7 +1236,7 @@ def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
 def test_operational_evidence_rejects_unbound_process_cli(tmp_path):
     repo = make_repo(tmp_path)
     head, sections = _operational_fixture(repo)
-    sections["process_attestations"]["attester"]["cli_sha256"] = "0" * 64
+    sections["process_attestations"]["candidate"]["cli_sha256"] = "0" * 64
     path = legible_evidence._assemble_operational_evidence(
         repo=repo,
         run_dir=repo / ".phase-loop" / "runs" / "attest-cli-drift",
@@ -1197,7 +1266,7 @@ def test_finalize_operational_attestation_binds_aggregate_to_verification(tmp_pa
         stage="candidate",
         expected_head=head,
         bootstrap_head=head,
-        process_start_token="attester-token",
+        process_start_token="candidate-token",
         sections=sections,
     )
 
@@ -1295,6 +1364,8 @@ def test_attest_delegates_to_runner_owned_operational_workflow(tmp_path, monkeyp
         "frozen_test_blob",
         "remote_oid",
         "loaded_runtime_blob",
+        "loaded_runtime_record",
+        "remote_candidate_oid",
         "refresh_parents",
         "body_ancestors",
         "comment_tokens",
@@ -1326,8 +1397,13 @@ def test_operational_evidence_rejects_unproven_frozen_semantics(tmp_path, mutati
     elif mutation == "remote_oid":
         sections["pull_request"]["remote_head_oid"] = "0" * 40
     elif mutation == "loaded_runtime_blob":
-        first_key = next(iter(sections["process_attestations"]["attester"]["loaded_runtime_blobs"]))
-        sections["process_attestations"]["attester"]["loaded_runtime_blobs"][first_key] = "0" * 40
+        first_key = next(iter(sections["process_attestations"]["candidate"]["loaded_runtime_blobs"]))
+        sections["process_attestations"]["candidate"]["loaded_runtime_blobs"][first_key]["blob_oid"] = "0" * 40
+    elif mutation == "loaded_runtime_record":
+        first = next(iter(sections["process_attestations"]["candidate"]["loaded_runtime_blobs"].values()))
+        first["sha256"] = "0" * 64
+    elif mutation == "remote_candidate_oid":
+        sections["chronology"]["candidate_remote_oid"] = "0" * 40
     elif mutation == "refresh_parents":
         sections["pull_request"]["refresh_parents"].reverse()
     elif mutation == "body_ancestors":
@@ -1373,7 +1449,9 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
     plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
     owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
     contract = {
+        **LEGIBLE_CONTRACT_FIXED_FIELDS,
         "plan_sha256": plan_digest,
+        "roadmap_sha256": LEGIBLE_ROADMAP_SHA256,
         "owned_paths": list(LEGIBLE_OWNED_PATHS),
         "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
         "owned_paths_sha256": owned_digest,
@@ -1514,3 +1592,245 @@ def test_manifest_physical_source_failure_is_typed(tmp_path, monkeypatch, defect
 
     with pytest.raises(plan_manifest.ManifestSourceError):
         plan_manifest.canonical_plan_files(repo, head)
+
+
+def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path, monkeypatch):
+    from phase_loop_runtime import cli
+
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    observed = {}
+    monkeypatch.setattr(
+        cli,
+        "_ATTEST_PREIMPORT_BOOTSTRAP",
+        {
+            "process_start_token": "preimport-token",
+            "bootstrap_head": head,
+            "repo_realpath": str(repo.resolve()),
+            "cli_path": str(Path(cli.__file__).resolve()),
+            "cli_sha256": "0" * 64,
+            "python_executable": sys.executable,
+        },
+    )
+
+    def fake_attest(**kwargs):
+        observed.update(kwargs)
+        return {"status": "sealed", "head": head}
+
+    monkeypatch.setattr(legible_evidence, "attest", fake_attest)
+
+    assert cli.main(
+        [
+            "attest",
+            "--repo",
+            str(repo),
+            "--stage",
+            "candidate",
+            "--expected-head",
+            head,
+            "--builder-run-id",
+            "builder-1",
+            "--json",
+        ]
+    ) == 0
+    assert observed["process_start_token"] == "preimport-token"
+
+
+def test_candidate_operational_evidence_requires_distinct_builder_transition_candidate_chain(tmp_path):
+    repo = make_repo(tmp_path)
+    head, sections = _operational_fixture(repo)
+    sections["process_attestations"]["transition"]["process_start_token"] = "candidate-token"
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / "duplicate-process-token",
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+
+    result = legible_evidence.validate_operational_evidence(
+        repo=repo, path=path, stage="candidate", expected_head=head
+    )
+
+    assert not result.ok
+    assert result.code == "operational_evidence_sections"
+
+
+def test_probe_response_semantics_are_replayed_not_inferred_from_state():
+    probe = {
+        "id": "fixture-probe",
+        "kind": "github_issue",
+        "expected": {"state": "CLOSED"},
+    }
+    payload = {
+        "probe_id": "fixture-probe",
+        "state": "resolved",
+        "observation": {"state": "OPEN"},
+    }
+
+    finding = legible_evidence._probe_response_finding(probe, payload)
+
+    assert finding is not None
+
+
+@pytest.mark.parametrize("field", (*LEGIBLE_CONTRACT_FIXED_FIELDS, "roadmap_sha256"))
+def test_legible_manifest_contract_rejects_every_frozen_field_drift(tmp_path, field):
+    repo = make_repo(tmp_path)
+    rel, _contract = _write_legible_manifest_contract(repo)
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["plans"][0]["lifecycle"][0]["metadata"]["legible_plan_contract"][field]
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [(item.path, item.kind) for item in result.malformed]
+
+
+def test_assumption_sidecar_rejects_coordinated_roadmap_and_digest_drift(tmp_path):
+    source_repo = Path(__file__).resolve().parents[2]
+    repo = tmp_path / "coordinated-roadmap-drift"
+    roadmap_path = repo / roadmap_assumptions.CANONICAL_ROADMAP_REL
+    roadmap_path.parent.mkdir(parents=True)
+    roadmap_path.write_bytes(
+        (source_repo / roadmap_assumptions.CANONICAL_ROADMAP_REL).read_bytes() + b"\n"
+    )
+    sidecar = json.loads(
+        (
+            source_repo
+            / "phase-loop-runtime"
+            / "tests"
+            / "fixtures"
+            / "roadmap-assumption-probes-v10.json"
+        ).read_text(encoding="utf-8")
+    )
+    sidecar["roadmap_sha256"] = hashlib.sha256(roadmap_path.read_bytes()).hexdigest()
+    sidecar_path = repo / roadmap_assumptions.PROBE_SIDECAR_REL
+    sidecar_path.write_text(json.dumps(sidecar, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(roadmap_assumptions.RoadmapAssumptionError) as excinfo:
+        roadmap_assumptions.load_probe_sidecar(repo)
+
+    assert excinfo.value.code == "sidecar_contract_drift"
+
+
+def test_manifest_plan_entry_lstat_failure_is_typed(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    target = repo / _commit_plan(repo)
+    real_lstat = Path.lstat
+
+    def fail_target(path):
+        if path == target:
+            raise PermissionError("denied")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", fail_target)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    with pytest.raises(plan_manifest.ManifestSourceError):
+        plan_manifest.canonical_plan_files(repo, head)
+
+
+def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    observed = {}
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    runner._legible_pr_view(tmp_path)
+
+    requested = observed["argv"][observed["argv"].index("--json") + 1]
+    assert "reviewDecision" in requested
+    assert "reviews" in requested
+
+
+def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    base = "1" * 40
+    head = "2" * 40
+    server_merge = "3" * 40
+    expected_tree = "4" * 40
+    body = "reviewed transition"
+    events = []
+    merged = False
+
+    monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_BASE", base)
+    monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_HEAD", head)
+    monkeypatch.setattr(runner, "_LEGIBLE_PR_BODY_SHA256", hashlib.sha256(body.encode()).hexdigest())
+    monkeypatch.setattr(
+        runner,
+        "_legible_pr_view",
+        lambda _repo: {
+            "state": "OPEN",
+            "isDraft": True,
+            "headRefOid": head,
+            "baseRefOid": base,
+            "body": body,
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
+            "reviews": [],
+        },
+    )
+
+    def fake_git(_repo, *args):
+        if args == ("rev-parse", "origin/main"):
+            return server_merge if merged else base
+        if args == ("rev-parse", f"{server_merge}^{{tree}}"):
+            return expected_tree
+        return base
+
+    monkeypatch.setattr(runner, "_legible_git", fake_git)
+    monkeypatch.setattr(runner, "_legible_body_ancestors", lambda *_args: [base] * 6)
+    monkeypatch.setattr(runner, "_legible_successful_checks", lambda *_args: ["SUCCESS"])
+    monkeypatch.setattr(legible_evidence, "_changed_paths", lambda *_args: [legible_evidence._FROZEN_AGENT_HARNESS_347_PATH])
+    monkeypatch.setattr(legible_evidence, "_python_semantic_tokens", lambda *_args: ("same",))
+    monkeypatch.setattr(legible_evidence, "_is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(legible_evidence, "_recomputed_merge_tree", lambda *_args: expected_tree)
+    monkeypatch.setattr(legible_evidence, "_commit_parents", lambda *_args: [base, head])
+
+    def fake_panel(_repo, run_dir, _expected_head, bundle_path):
+        events.append("panel")
+        bundle_path.write_text("review bundle\n", encoding="utf-8")
+        panel = run_dir / "implementation-panel.json"
+        panel.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+        return panel
+
+    monkeypatch.setattr(runner, "_run_legible_panel", fake_panel)
+
+    def fake_run(argv, **kwargs):
+        nonlocal merged
+        if argv[:3] == ["gh", "pr", "ready"]:
+            events.append("ready")
+        elif argv[:3] == ["gh", "pr", "merge"]:
+            events.append("merge")
+            merged = True
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner._run_legible_pr_transition(
+        repo=repo,
+        expected_head=base,
+        builder_run_id="builder-1",
+        process_start_token="transition-token",
+    )
+
+    assert events[0] == "panel"
+    assert result["run_id"].startswith("legible-transition-")
+    transition_path = repo / result["transition_artifact"]
+    assert transition_path.is_file()
+    payload = json.loads(transition_path.read_text(encoding="utf-8"))
+    assert payload["builder_run_id"] == "builder-1"
+    assert payload["process_start_token"] == "transition-token"
