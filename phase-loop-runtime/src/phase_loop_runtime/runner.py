@@ -109,6 +109,7 @@ from .fleet_metrics import record_phase_fleet_metrics
 from .evidence_audit import run_tier3_runner_audit
 from .evidence_audit_config import EvidenceAuditConfigError, load_evidence_audit_config
 from .events import append_work_unit_event
+from .fab_provenance import atomic_write_text_durable
 from .git_ops import expand_dir_dirty_paths, pipeline_write_boundary_diagnostic
 from .git_topology import collect_git_topology, resolve_closeout_push_target
 from .handoff import tui_handoff_path, write_tui_handoff
@@ -6766,6 +6767,10 @@ def _legible_successful_checks(snapshot: Mapping[str, object]) -> list[str]:
     return ["SUCCESS" for value in conclusions if value == "SUCCESS"]
 
 
+def _legible_reviews_ready(snapshot: Mapping[str, object]) -> bool:
+    return snapshot.get("reviewDecision") in {"", "APPROVED"}
+
+
 def _legible_loaded_runtime_records(repo: Path, head: str) -> dict[str, dict[str, object]]:
     records: dict[str, dict[str, object]] = {}
     for rel in legible_evidence._LOADED_ATTESTATION_RUNTIME_PATHS:
@@ -6794,6 +6799,10 @@ def _legible_transition_digest(payload: Mapping[str, object]) -> str:
 def _legible_transition_artifact_paths(repo: Path, run_id: str) -> tuple[Path, Path]:
     run_dir = Path(repo) / ".phase-loop" / "runs" / run_id
     return run_dir / "legible-pr-transition.json", run_dir / "implementation-panel.json"
+
+
+def _legible_transition_intent_path(repo: Path, run_id: str) -> Path:
+    return Path(repo) / ".phase-loop" / "runs" / run_id / "legible-pr-transition-intent.json"
 
 
 def _validate_legible_transition_panel(repo: Path, panel_path: Path, expected_head: str) -> None:
@@ -6867,6 +6876,168 @@ def _validate_legible_transition_panel(repo: Path, panel_path: Path, expected_he
             raise legible_evidence.LegibleProcessBootstrapError("transition review panel leg failed validation")
 
 
+def _load_legible_transition_intent(repo: Path, path: Path) -> dict[str, object]:
+    run_root = (repo / ".phase-loop" / "runs").resolve()
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(run_root)
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"cannot load transition intent {path}: {exc}"
+        ) from exc
+    run_id = resolved.parent.name
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != "legible_pr_transition_intent.v1"
+        or payload.get("run_id") != run_id
+        or payload.get("status") != "transition_intent"
+        or payload.get("seal_sha256") != _legible_transition_digest(payload)
+        or not isinstance(payload.get("ready_snapshot"), dict)
+        or not isinstance(payload.get("expected_tree"), str)
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition intent {run_id!r} failed identity validation"
+        )
+    panel_rel = payload.get("review_panel_path")
+    raw_panel_path = repo / str(panel_rel)
+    panel_path = raw_panel_path.resolve()
+    try:
+        panel_path.relative_to(resolved.parent)
+        panel_bytes = panel_path.read_bytes()
+    except (OSError, ValueError) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition intent {run_id!r} review panel is unavailable: {exc}"
+        ) from exc
+    if (
+        not isinstance(panel_rel, str)
+        or raw_panel_path.is_symlink()
+        or not panel_path.is_file()
+        or hashlib.sha256(panel_bytes).hexdigest() != payload.get("review_panel_sha256")
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition intent {run_id!r} review panel failed digest validation"
+        )
+    _validate_legible_transition_panel(repo, panel_path, str(payload.get("head", "")))
+    return payload
+
+
+def _seal_legible_transition(
+    repo: Path,
+    intent_path: Path,
+    intent: Mapping[str, object],
+    final_snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    merged_at = final_snapshot.get("mergedAt")
+    merge_commit = final_snapshot.get("mergeCommit")
+    expected_snapshot = dict(intent["ready_snapshot"])
+    expected_snapshot.update(
+        {
+            "state": "MERGED",
+            "mergeCommit": {"oid": intent["server_merge"]},
+            "mergedAt": merged_at,
+        }
+    )
+    if (
+        not isinstance(merged_at, str)
+        or not merged_at
+        or merge_commit != {"oid": intent.get("server_merge")}
+        or final_snapshot != expected_snapshot
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 merged snapshot does not match the transition intent"
+        )
+    transition_path, _panel_path = _legible_transition_artifact_paths(
+        repo, str(intent["run_id"])
+    )
+    transition_payload: dict[str, object] = {
+        "schema": "legible_pr_transition.v1",
+        "run_id": intent["run_id"],
+        "status": "transition_sealed",
+        "head": intent["head"],
+        "builder_run_id": intent["builder_run_id"],
+        "process_start_token": intent["process_start_token"],
+        "server_base": intent["server_base"],
+        "server_merge": intent["server_merge"],
+        "pr_head": intent["pr_head"],
+        "pr_state": "MERGED",
+        "pr_merged_at": merged_at,
+        "pr_merge_commit": intent["server_merge"],
+        "review_decision": intent["review_decision"],
+        "github_review_count": intent["github_review_count"],
+        "review_panel_path": intent["review_panel_path"],
+        "review_panel_sha256": intent["review_panel_sha256"],
+        "transition_intent_path": intent_path.relative_to(repo).as_posix(),
+        "transition_intent_sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
+        "candidate_requires_integration": True,
+    }
+    transition_payload["seal_sha256"] = _legible_transition_digest(transition_payload)
+    atomic_write_text_durable(
+        transition_path,
+        json.dumps(transition_payload, indent=2, sort_keys=True) + "\n",
+    )
+    return {
+        **transition_payload,
+        "transition_artifact": transition_path.relative_to(repo).as_posix(),
+    }
+
+
+def _recover_legible_pr_transition(
+    repo: Path,
+    *,
+    expected_head: str,
+    builder_run_id: str,
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    matches: list[tuple[Path, dict[str, object]]] = []
+    for path in (repo / ".phase-loop" / "runs").glob(
+        "*/legible-pr-transition-intent.json"
+    ):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        merge_commit = snapshot.get("mergeCommit")
+        merge_oid = merge_commit.get("oid") if isinstance(merge_commit, Mapping) else None
+        if (
+            not isinstance(raw, dict)
+            or raw.get("builder_run_id") != builder_run_id
+            or raw.get("server_merge") != merge_oid
+        ):
+            continue
+        intent = _load_legible_transition_intent(repo, path)
+        if intent.get("head") == expected_head:
+            matches.append((path, intent))
+    if len(matches) != 1:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"expected one recoverable transition intent for {builder_run_id!r}, found {len(matches)}"
+        )
+    intent_path, intent = matches[0]
+    transition_path, _panel_path = _legible_transition_artifact_paths(
+        repo, str(intent["run_id"])
+    )
+    if transition_path.is_file():
+        payload = _load_legible_transition(repo, str(intent["run_id"]))
+        return {
+            **payload,
+            "transition_artifact": transition_path.relative_to(repo).as_posix(),
+        }
+    _legible_candidate_remote(repo, expected_head)
+    subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], check=True)
+    server_merge = str(intent["server_merge"])
+    if (
+        _legible_git(repo, "rev-parse", "origin/main") != server_merge
+        or legible_evidence._commit_parents(repo, server_merge)
+        != [intent["server_base"], intent["pr_head"]]
+        or _legible_git(repo, "rev-parse", f"{server_merge}^{{tree}}")
+        != intent["expected_tree"]
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "published Consiliency/agent-harness#347 merge does not match its recovery intent"
+        )
+    return _seal_legible_transition(repo, intent_path, intent, snapshot)
+
+
 def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
     run_root = (repo / ".phase-loop" / "runs").resolve()
     transition_path, expected_panel_path = _legible_transition_artifact_paths(repo, run_id)
@@ -6885,6 +7056,9 @@ def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
         or payload.get("seal_sha256") != _legible_transition_digest(payload)
         or not payload.get("builder_run_id")
         or not payload.get("process_start_token")
+        or payload.get("pr_state") != "MERGED"
+        or not payload.get("pr_merged_at")
+        or payload.get("pr_merge_commit") != payload.get("server_merge")
     ):
         raise legible_evidence.LegibleProcessBootstrapError(
             f"transition run {run_id!r} failed identity validation"
@@ -6910,6 +7084,44 @@ def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
             f"transition run {run_id!r} review panel failed digest validation"
         )
     _validate_legible_transition_panel(repo, panel_path, str(payload.get("head", "")))
+    intent_rel = payload.get("transition_intent_path")
+    raw_intent_path = repo / str(intent_rel)
+    intent_path = raw_intent_path.resolve()
+    try:
+        intent_path.relative_to(path.parent)
+        intent_bytes = intent_path.read_bytes()
+    except (OSError, ValueError) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition run {run_id!r} intent is unavailable: {exc}"
+        ) from exc
+    if (
+        not isinstance(intent_rel, str)
+        or raw_intent_path.is_symlink()
+        or hashlib.sha256(intent_bytes).hexdigest() != payload.get("transition_intent_sha256")
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition run {run_id!r} intent failed digest validation"
+        )
+    intent = _load_legible_transition_intent(repo, intent_path)
+    if any(
+        payload.get(key) != intent.get(key)
+        for key in (
+            "run_id",
+            "head",
+            "builder_run_id",
+            "process_start_token",
+            "server_base",
+            "server_merge",
+            "pr_head",
+            "review_decision",
+            "github_review_count",
+            "review_panel_path",
+            "review_panel_sha256",
+        )
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition run {run_id!r} drifted from its publish intent"
+        )
     return payload
 
 
@@ -7017,6 +7229,10 @@ def _run_legible_pr_transition(
             "Consiliency/agent-harness#347 body commit is not an ancestor of its head"
         )
     checks = _legible_successful_checks(snapshot)
+    if not _legible_reviews_ready(snapshot):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 required reviews are not satisfied"
+        )
     expected_tree = legible_evidence._recomputed_merge_tree(
         repo, _LEGIBLE_REFRESH_BASE, base, _LEGIBLE_REFRESH_HEAD
     )
@@ -7092,6 +7308,10 @@ def _run_legible_pr_transition(
         raise legible_evidence.LegibleProcessBootstrapError(
             "Consiliency/agent-harness#347 changed while being marked ready"
         )
+    if not _legible_reviews_ready(expected_ready_snapshot):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 required reviews are not satisfied"
+        )
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], check=True)
     if _legible_git(repo, "rev-parse", "origin/main") != base:
         raise legible_evidence.LegibleProcessBootstrapError(
@@ -7112,6 +7332,31 @@ def _run_legible_pr_transition(
         raise legible_evidence.LegibleProcessBootstrapError(
             "could not create the exact Consiliency/agent-harness#347 merge object"
         )
+    intent_path = _legible_transition_intent_path(repo, run_id)
+    intent_payload: dict[str, object] = {
+        "schema": "legible_pr_transition_intent.v1",
+        "run_id": run_id,
+        "status": "transition_intent",
+        "head": expected_head,
+        "builder_run_id": builder_run_id,
+        "process_start_token": process_start_token,
+        "server_base": base,
+        "server_merge": server_merge,
+        "pr_head": _LEGIBLE_REFRESH_HEAD,
+        "expected_tree": expected_tree,
+        "ready_snapshot": expected_ready_snapshot,
+        "review_decision": snapshot.get("reviewDecision"),
+        "github_review_count": len(snapshot.get("reviews", []))
+        if isinstance(snapshot.get("reviews"), list)
+        else 0,
+        "review_panel_path": panel_path.relative_to(repo).as_posix(),
+        "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+    }
+    intent_payload["seal_sha256"] = _legible_transition_digest(intent_payload)
+    atomic_write_text_durable(
+        intent_path,
+        json.dumps(intent_payload, indent=2, sort_keys=True) + "\n",
+    )
     try:
         publish = subprocess.run(
             ["git", "-C", str(repo), "push", "origin", f"{server_merge}:refs/heads/main"],
@@ -7159,31 +7404,7 @@ def _run_legible_pr_transition(
         raise legible_evidence.LegibleProcessBootstrapError(
             "Consiliency/agent-harness#347 was not recognized as the exact server merge"
         )
-    transition_path = run_dir / "legible-pr-transition.json"
-    transition_payload: dict[str, object] = {
-        "schema": "legible_pr_transition.v1",
-        "run_id": run_id,
-        "status": "transition_sealed",
-        "head": expected_head,
-        "builder_run_id": builder_run_id,
-        "process_start_token": process_start_token,
-        "server_base": base,
-        "server_merge": server_merge,
-        "pr_head": _LEGIBLE_REFRESH_HEAD,
-        "review_decision": snapshot.get("reviewDecision"),
-        "github_review_count": len(snapshot.get("reviews", [])) if isinstance(snapshot.get("reviews"), list) else 0,
-        "review_panel_path": panel_path.relative_to(repo).as_posix(),
-        "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
-        "candidate_requires_integration": True,
-    }
-    transition_payload["seal_sha256"] = _legible_transition_digest(transition_payload)
-    transition_path.write_text(
-        json.dumps(transition_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return {
-        **transition_payload,
-        "transition_artifact": transition_path.relative_to(repo).as_posix(),
-    }
+    return _seal_legible_transition(repo, intent_path, intent_payload, final_snapshot)
 
 
 def _legible_test_record(
@@ -7372,6 +7593,25 @@ def _run_legible_operational_attestation(
             f"Consiliency/agent-harness#347 has unsupported state {snapshot.get('state')!r}"
         )
 
+    if stage == "candidate" and candidate_head is None:
+        transition_path, _panel_path = _legible_transition_artifact_paths(repo, builder_run_id)
+        if transition_path.is_file():
+            transition = _load_legible_transition(repo, builder_run_id)
+            if transition.get("head") != expected_head:
+                raise legible_evidence.LegibleProcessBootstrapError(
+                    "completed C4 transition is bound to a different candidate"
+                )
+            return {
+                **transition,
+                "transition_artifact": transition_path.relative_to(repo).as_posix(),
+            }
+        return _recover_legible_pr_transition(
+            repo,
+            expected_head=expected_head,
+            builder_run_id=builder_run_id,
+            snapshot=snapshot,
+        )
+
     transition = _load_legible_transition(repo, builder_run_id)
     source_builder_run_id = str(transition["builder_run_id"])
 
@@ -7400,6 +7640,8 @@ def _run_legible_operational_attestation(
         merge_oid != server_merge
         or snapshot.get("headRefOid") != pr_head
         or pr_head != _LEGIBLE_REFRESH_HEAD
+        or not isinstance(snapshot.get("mergedAt"), str)
+        or not snapshot.get("mergedAt")
         or not isinstance(body, str)
         or hashlib.sha256(body.encode("utf-8")).hexdigest() != _LEGIBLE_PR_BODY_SHA256
     ):
@@ -7410,12 +7652,19 @@ def _run_legible_operational_attestation(
         transition.get("head") != phase_candidate
         or transition.get("server_merge") != server_merge
         or transition.get("pr_head") != pr_head
+        or transition.get("pr_state") != snapshot.get("state")
+        or transition.get("pr_merged_at") != snapshot.get("mergedAt")
+        or transition.get("pr_merge_commit") != merge_oid
     ):
         raise legible_evidence.LegibleProcessBootstrapError(
             "C4 transition identity is not bound to the merged PR and phase candidate"
         )
     body_ancestors = _legible_body_ancestors(repo, body)
     checks = _legible_successful_checks(snapshot)
+    if not _legible_reviews_ready(snapshot):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "merged Consiliency/agent-harness#347 review state is not satisfied"
+        )
 
     builder_dir = (repo / ".phase-loop" / "runs" / source_builder_run_id).resolve()
     try:
@@ -7559,6 +7808,8 @@ def _run_legible_operational_attestation(
     pr_snapshot = {
         "base": implementation_base,
         "refresh_base": _LEGIBLE_REFRESH_BASE,
+        "state": transition["pr_state"],
+        "merged_at": transition["pr_merged_at"],
         "body": body,
         "body_ancestor_commits": body_ancestors,
         "changed_paths": [legible_evidence._FROZEN_AGENT_HARNESS_347_PATH],
@@ -7567,6 +7818,8 @@ def _run_legible_operational_attestation(
         "head_tree": _legible_git(repo, "rev-parse", f"{pr_head}^{{tree}}"),
         "merge_commit": server_merge,
         "merge_tree": _legible_git(repo, "rev-parse", f"{server_merge}^{{tree}}"),
+        "review_decision": transition["review_decision"],
+        "github_review_count": transition["github_review_count"],
         "refresh_parents": refresh_parents,
         "remote_head_oid": pr_head,
     }
@@ -7699,7 +7952,10 @@ def _run_legible_operational_attestation(
         "pull_request": {
             "repository": "Consiliency/agent-harness",
             "number": 347,
-            "state": "MERGED",
+            "state": transition["pr_state"],
+            "merged_at": transition["pr_merged_at"],
+            "review_decision": transition["review_decision"],
+            "github_review_count": transition["github_review_count"],
             "base": implementation_base,
             "refresh_base": _LEGIBLE_REFRESH_BASE,
             "head": pr_head,
@@ -7745,6 +8001,7 @@ def _run_legible_operational_attestation(
         repo / "plans" / "manifest.json",
         *(repo / rel for rel in legible_evidence._LOADED_ATTESTATION_RUNTIME_PATHS),
         *_legible_transition_artifact_paths(repo, builder_run_id),
+        _legible_transition_intent_path(repo, builder_run_id),
         *(repo / rel for rel in legible_evidence.FROZEN_TEST_PATHS),
         default_junit,
         red_junit,

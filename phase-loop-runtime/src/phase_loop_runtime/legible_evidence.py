@@ -131,6 +131,9 @@ _OPERATIONAL_SECTION_FIELDS = {
             "repository",
             "number",
             "state",
+            "merged_at",
+            "review_decision",
+            "github_review_count",
             "base",
             "head",
             "merge_commit",
@@ -1329,6 +1332,11 @@ def _validate_operational_sections(
         pull_request["repository"] != "Consiliency/agent-harness"
         or pull_request["number"] != 347
         or pull_request["state"] != "MERGED"
+        or not isinstance(pull_request["merged_at"], str)
+        or not pull_request["merged_at"]
+        or pull_request["review_decision"] not in {"", "APPROVED"}
+        or not isinstance(pull_request["github_review_count"], int)
+        or pull_request["github_review_count"] < 0
         or any(not _is_commit(repo, value) for value in (refresh_base, implementation_base, pr_head, server_merge))
         or implementation_base != chronology["implementation_base"]
         or refresh_base != chronology["refresh_base"]
@@ -1350,6 +1358,10 @@ def _validate_operational_sections(
         or not isinstance(snapshot, Mapping)
         or snapshot.get("base") != implementation_base
         or snapshot.get("refresh_base") != refresh_base
+        or snapshot.get("state") != pull_request["state"]
+        or snapshot.get("merged_at") != pull_request["merged_at"]
+        or snapshot.get("review_decision") != pull_request["review_decision"]
+        or snapshot.get("github_review_count") != pull_request["github_review_count"]
         or snapshot.get("head") != pr_head
         or snapshot.get("remote_head_oid") != pr_head
         or snapshot.get("merge_commit") != server_merge
