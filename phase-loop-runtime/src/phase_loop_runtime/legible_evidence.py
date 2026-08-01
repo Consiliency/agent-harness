@@ -391,13 +391,13 @@ def validate_verification_sidecar(repo: Path, *, sidecar: Mapping[str, Any]) -> 
     repo = Path(repo).resolve()
     rel_path = sidecar["path"]
     full_path = repo / rel_path
-    if full_path.is_symlink():
-        raise LegibleSidecarError("sidecar_symlink", f"sidecar must not be a symlink: {rel_path}")
     resolved = full_path.resolve()
     try:
         resolved.relative_to(repo)
     except ValueError as exc:
         raise LegibleSidecarError("sidecar_path_escape", f"sidecar path escapes repo: {rel_path}") from exc
+    if full_path.is_symlink():
+        raise LegibleSidecarError("sidecar_symlink", f"sidecar must not be a symlink: {rel_path}")
     if not full_path.is_file():
         raise LegibleSidecarError("sidecar_missing", f"sidecar file missing: {rel_path}")
     data = full_path.read_bytes()
