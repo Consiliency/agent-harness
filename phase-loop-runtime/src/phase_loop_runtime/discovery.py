@@ -464,10 +464,9 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
     return _return_selectable_roadmap(repo, assert_roadmap_authorized(repo, candidates[0]), "singleton-glob")
 
 
-_BANNER_DECLARATION_ATTEMPT_PREFIXES = (
-    re.compile(r"^\s*>\s*(?:\*\*)?STATUS\b", re.IGNORECASE),
-    re.compile(r"^\s*>\s*#\s*DELIVERED\b", re.IGNORECASE),
-    re.compile(r"^\s*>\s*#\s*SUPERSEDED\b", re.IGNORECASE),
+_BANNER_DECLARATION_ATTEMPT = re.compile(
+    r"^\s*>\s*.*\b(?:STATUS|ACTIVE|DELIVERED|SUPERSEDED)\b",
+    re.IGNORECASE,
 )
 
 
@@ -486,9 +485,7 @@ def _banner_has_no_declaration(text: str) -> bool:
             if line.startswith("## "):
                 banner_end = index
                 break
-        return not any(
-            prefix.match(line) for line in lines[:banner_end] for prefix in _BANNER_DECLARATION_ATTEMPT_PREFIXES
-        )
+        return not any(_BANNER_DECLARATION_ATTEMPT.match(line) for line in lines[:banner_end])
     except Exception:
         return False
 

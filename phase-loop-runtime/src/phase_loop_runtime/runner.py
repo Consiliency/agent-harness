@@ -7085,17 +7085,50 @@ def _run_legible_pr_transition(
             cwd=repo,
             check=True,
         )
-    subprocess.run(
-        [
-            "gh", "pr", "merge", "347", "--repo", "Consiliency/agent-harness", "--merge",
-            "--match-head-commit", _LEGIBLE_REFRESH_HEAD,
-        ],
-        cwd=repo,
-        check=True,
-    )
+    expected_ready_snapshot = dict(snapshot)
+    expected_ready_snapshot["isDraft"] = False
+    _legible_candidate_remote(repo, expected_head)
+    if _legible_pr_view(repo) != expected_ready_snapshot:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 changed while being marked ready"
+        )
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], check=True)
-    server_merge = _legible_git(repo, "rev-parse", "origin/main")
+    if _legible_git(repo, "rev-parse", "origin/main") != base:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness main advanced while the transition was marked ready"
+        )
+    merge_object = subprocess.run(
+        [
+            "git", "-C", str(repo), "commit-tree", expected_tree,
+            "-p", base, "-p", _LEGIBLE_REFRESH_HEAD,
+        ],
+        input="Merge Consiliency/agent-harness#347\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    server_merge = merge_object.stdout.strip()
+    if merge_object.returncode != 0 or re.fullmatch(r"[0-9a-f]{40}", server_merge) is None:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "could not create the exact Consiliency/agent-harness#347 merge object"
+        )
+    try:
+        publish = subprocess.run(
+            ["git", "-C", str(repo), "push", "origin", f"{server_merge}:refs/heads/main"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except subprocess.CalledProcessError as exc:
+        publish = exc
+    if publish.returncode != 0:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "atomic Consiliency/agent-harness#347 merge publish was rejected"
+        )
+    subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], check=True)
     if (
+        _legible_git(repo, "rev-parse", "origin/main") != server_merge
+        or
         legible_evidence._commit_parents(repo, server_merge) != [base, _LEGIBLE_REFRESH_HEAD]
         or _legible_git(repo, "rev-parse", f"{server_merge}^{{tree}}") != expected_tree
     ):
