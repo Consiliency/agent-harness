@@ -2228,3 +2228,75 @@ def test_default_execution_rejects_non_guard_skip_semantics(tmp_path, mutation):
             expected_total=84,
             mode="default",
         )
+
+
+def _install_two_panel_artifact_inventory(repo: Path, sections: dict) -> Path:
+    records = sections["artifacts"]["records"]
+    old_record = next(record for record in records if record["path"] == "evidence/implementation-panel.json")
+    old_panel = repo / old_record["path"]
+    panel_bytes = old_panel.read_bytes()
+    records.remove(old_record)
+
+    candidate_run_id = sections["process_attestations"]["candidate"]["run_id"]
+    current_panel = repo / ".phase-loop" / "runs" / candidate_run_id / "implementation-panel.json"
+    transition_panel = repo / ".phase-loop" / "runs" / "transition-1" / "implementation-panel.json"
+    for panel in (current_panel, transition_panel):
+        panel.parent.mkdir(parents=True, exist_ok=True)
+        panel.write_bytes(panel_bytes)
+        records.append(
+            {
+                "path": panel.relative_to(repo).as_posix(),
+                "byte_length": len(panel_bytes),
+                "sha256": hashlib.sha256(panel_bytes).hexdigest(),
+            }
+        )
+    return current_panel
+
+
+def test_operational_evidence_selects_attester_panel_from_two_panel_inventory(tmp_path):
+    repo = make_repo(tmp_path)
+    head, sections = _operational_fixture(repo)
+    _install_two_panel_artifact_inventory(repo, sections)
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / "two-panel-positive",
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+
+    result = legible_evidence.validate_operational_evidence(
+        repo=repo, path=path, stage="candidate", expected_head=head
+    )
+
+    assert result.ok, result.finding
+
+
+def test_operational_evidence_rejects_duplicate_panel_in_attester_run(tmp_path):
+    repo = make_repo(tmp_path)
+    head, sections = _operational_fixture(repo)
+    current_panel = _install_two_panel_artifact_inventory(repo, sections)
+    duplicate = current_panel.parent / "duplicate" / "implementation-panel.json"
+    duplicate.parent.mkdir()
+    duplicate.write_bytes(current_panel.read_bytes())
+    sections["artifacts"]["records"].append(
+        {
+            "path": duplicate.relative_to(repo).as_posix(),
+            "byte_length": len(duplicate.read_bytes()),
+            "sha256": hashlib.sha256(duplicate.read_bytes()).hexdigest(),
+        }
+    )
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / "two-panel-duplicate",
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+
+    result = legible_evidence.validate_operational_evidence(
+        repo=repo, path=path, stage="candidate", expected_head=head
+    )
+
+    assert not result.ok
+    assert result.finding == "artifacts: implementation panel inventory is ambiguous"
