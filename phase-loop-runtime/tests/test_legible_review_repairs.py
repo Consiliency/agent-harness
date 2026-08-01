@@ -2104,6 +2104,8 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         assert "DEGRADED_NO_LAUNCH" in staged
         assert "codex_process_count: 0" in staged
         assert "grok_process_count: 0" in staged
+        assert "ratified degraded-evidence path" in staged
+        assert "only Fable can satisfy binding_prover" in staged
         panel = run_dir / "implementation-panel.json"
         panel.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
         return panel
