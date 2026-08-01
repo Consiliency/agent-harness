@@ -28,9 +28,9 @@ def _preimport_attest_bootstrap(argv: list[str]) -> dict[str, object] | None:
                 return item.partition("=")[2]
         return None
 
-    repo_value = _value("--repo")
+    repo_value = _value("--repo") or "."
     expected_head = _value("--expected-head")
-    if not repo_value or not expected_head:
+    if not expected_head:
         return None
     repo = Path(repo_value).resolve()
     source_path = Path(__file__).resolve()

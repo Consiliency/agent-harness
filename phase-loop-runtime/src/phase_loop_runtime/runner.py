@@ -6660,6 +6660,30 @@ def _capture_and_bind_legible_sidecar(*, repo: Path, run_dir: Path, artifact_pat
     )
 
 
+def _finalize_legible_operational_evidence(
+    *,
+    repo: Path,
+    run_dir: Path,
+    artifact_path: Path,
+    stage: str,
+    expected_head: str,
+    bootstrap_head: str,
+    process_start_token: str,
+    sections: Mapping[str, Mapping[str, object]],
+) -> Path:
+    """Runner-owned C5/C7 entrypoint for the complete operational aggregate."""
+    return legible_evidence.finalize_operational_attestation(
+        repo=repo,
+        run_dir=run_dir,
+        artifact_path=artifact_path,
+        stage=stage,
+        expected_head=expected_head,
+        bootstrap_head=bootstrap_head,
+        process_start_token=process_start_token,
+        sections=sections,
+    )
+
+
 def _run_execute_verification_impl(
     *,
     repo: Path,

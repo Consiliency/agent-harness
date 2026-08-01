@@ -1225,7 +1225,7 @@
             },
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-          "plan_sha256": "a97b14004a5934b71fca3753b18336403a593b00d8129d9fd3bad8a71fc051dd",
+          "plan_sha256": "365fc7aebe650b8dfad5e83cbf3700eaefe3982adcf987e2b526351570446807",
           "predecessor_plan_sha256": "1f9bb643a9650b01c600c4862391a74df9af3d911ba7158c5570276fd8b0b2e0",
           "reason": "sol_exact_head_pre_freeze_ownership_and_integrity_correction",
               "reviewed_bundle_bytes": 140117,
@@ -1267,7 +1267,7 @@
               "owned_paths_count": 16,
               "owned_paths_sha256": "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b",
               "phase_dependencies": [],
-          "plan_sha256": "a97b14004a5934b71fca3753b18336403a593b00d8129d9fd3bad8a71fc051dd",
+          "plan_sha256": "365fc7aebe650b8dfad5e83cbf3700eaefe3982adcf987e2b526351570446807",
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
               "selector_common_return_contract": "parse_candidate_lifecycle_then_reject_recognized_non_active_with_or_without_registry",
               "test_paths": [

@@ -53,6 +53,7 @@ _SIDECAR_PROBE_RECORD_MAX_BYTES = 16 * 1024
 _FABLE_PROBE_RESPONSE_MAX_BYTES = 64 * 1024
 _OPERATIONAL_EVIDENCE_SCHEMA = "legible_evidence.v1"
 _OPERATIONAL_EVIDENCE_FILE_NAME = "legible-operational-evidence.json"
+_OPERATIONAL_EVIDENCE_MAX_BYTES = 4 * 1024 * 1024
 _OPERATIONAL_EVIDENCE_SECTIONS = frozenset(
     {
         "roadmap_status",
@@ -65,6 +66,27 @@ _OPERATIONAL_EVIDENCE_SECTIONS = frozenset(
         "artifacts",
     }
 )
+_OPERATIONAL_SECTION_FIELDS = {
+    "roadmap_status": frozenset(
+        {
+            "registry_path",
+            "registry_sha256",
+            "registry_byte_length",
+            "selected_roadmap",
+            "tracked_path_set_sha256",
+            "roadmaps",
+        }
+    ),
+    "chronology": frozenset(
+        {"tests_landing", "implementation_base", "candidate_head", "plan_sha256", "roadmap_sha256"}
+    ),
+    "process_attestations": frozenset({"builder", "attester"}),
+    "test_execution": frozenset({"nodeid_count", "nodeid_digest", "final"}),
+    "pull_request": frozenset({"repository", "number", "state", "head", "merge_commit"}),
+    "target_integration": frozenset({"candidate", "server_merge", "integration", "parents"}),
+    "assumption_probes": frozenset({"execution_head", "records"}),
+    "artifacts": frozenset({"records"}),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -427,8 +449,10 @@ def validate_verification_sidecar(repo: Path, *, sidecar: Mapping[str, Any]) -> 
     data = full_path.read_bytes()
     if len(data) != sidecar["byte_length"] or hashlib.sha256(data).hexdigest() != sidecar["sha256"]:
         raise LegibleSidecarError("sidecar_digest_drift", f"{rel_path}: bytes do not match recorded length/digest")
-    if len(data) > _SIDECAR_PROBE_RECORD_MAX_BYTES:
-        raise LegibleSidecarError("sidecar_oversize", f"{rel_path}: exceeds {_SIDECAR_PROBE_RECORD_MAX_BYTES} bytes")
+    is_operational_evidence = full_path.name == _OPERATIONAL_EVIDENCE_FILE_NAME
+    max_bytes = _OPERATIONAL_EVIDENCE_MAX_BYTES if is_operational_evidence else _SIDECAR_PROBE_RECORD_MAX_BYTES
+    if len(data) > max_bytes:
+        raise LegibleSidecarError("sidecar_oversize", f"{rel_path}: exceeds {max_bytes} bytes")
     if sidecar.get("schema") != _SIDECAR_RECORD_SCHEMA:
         raise LegibleSidecarError("sidecar_schema_mismatch", f"unexpected sidecar schema: {sidecar.get('schema')!r}")
     if sidecar.get("stage") not in {"candidate", "canonical-main", "phase_execute"}:
@@ -447,6 +471,15 @@ def validate_verification_sidecar(repo: Path, *, sidecar: Mapping[str, Any]) -> 
     process_start_token = sidecar.get("process_start_token")
     if not isinstance(process_start_token, str) or not process_start_token.strip():
         raise LegibleSidecarError("sidecar_process_token_missing", "sidecar process_start_token is empty")
+    if is_operational_evidence:
+        validation = validate_operational_evidence(
+            repo=repo,
+            path=full_path,
+            stage=sidecar["stage"],
+            expected_head=sidecar["expected_head"],
+        )
+        if not validation.ok:
+            raise LegibleSidecarError(validation.code, validation.finding or validation.code)
     return SidecarValidation(ok=True)
 
 
@@ -698,6 +731,143 @@ def _operational_evidence_digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _is_commit(repo: Path, value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[0-9a-f]{40}", value) is not None
+        and _rev_parse(repo, f"{value}^{{commit}}") == value
+    )
+
+
+def _validate_operational_sections(
+    repo: Path, sections: Mapping[str, Any], *, stage: str, expected_head: str
+) -> str | None:
+    if set(sections) != _OPERATIONAL_EVIDENCE_SECTIONS:
+        return "section inventory mismatch"
+    for name, required_fields in _OPERATIONAL_SECTION_FIELDS.items():
+        section = sections.get(name)
+        if not isinstance(section, Mapping) or not required_fields.issubset(section):
+            present_fields = set(section) if isinstance(section, Mapping) else set()
+            return f"{name}: missing required fields {sorted(required_fields - present_fields)}"
+
+    roadmap_status = sections["roadmap_status"]
+    if (
+        not isinstance(roadmap_status["registry_path"], str)
+        or not roadmap_status["registry_path"]
+        or not _is_sha256(roadmap_status["registry_sha256"])
+        or not isinstance(roadmap_status["registry_byte_length"], int)
+        or roadmap_status["registry_byte_length"] < 0
+        or not isinstance(roadmap_status["selected_roadmap"], str)
+        or not _is_sha256(roadmap_status["tracked_path_set_sha256"])
+        or not isinstance(roadmap_status["roadmaps"], list)
+        or not roadmap_status["roadmaps"]
+        or any(not isinstance(record, Mapping) or not record.get("path") for record in roadmap_status["roadmaps"])
+    ):
+        return "roadmap_status: malformed registry evidence"
+
+    chronology = sections["chronology"]
+    if any(not _is_commit(repo, chronology[field]) for field in ("tests_landing", "implementation_base", "candidate_head")):
+        return "chronology: unresolved commit identity"
+    if not _is_sha256(chronology["plan_sha256"]) or not _is_sha256(chronology["roadmap_sha256"]):
+        return "chronology: malformed plan or roadmap digest"
+
+    attestations = sections["process_attestations"]
+    builder = attestations["builder"]
+    attester = attestations["attester"]
+    if not isinstance(builder, Mapping) or not isinstance(attester, Mapping):
+        return "process_attestations: builder and attester must be records"
+    builder_token = builder.get("process_start_token")
+    attester_token = attester.get("process_start_token")
+    cli_path = Path(str(attester.get("cli_path", "")))
+    expected_cli_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
+    try:
+        cli_bytes = cli_path.read_bytes()
+        cli_is_bound = (
+            not cli_path.is_symlink()
+            and cli_path.resolve() == expected_cli_path.resolve()
+            and hashlib.sha256(cli_bytes).hexdigest() == attester.get("cli_sha256")
+        )
+    except OSError:
+        cli_is_bound = False
+    if (
+        not builder.get("run_id")
+        or not isinstance(builder_token, str)
+        or not builder_token
+        or not isinstance(attester_token, str)
+        or not attester_token
+        or builder_token == attester_token
+        or attester.get("head") != expected_head
+        or attester.get("bootstrap_head") != expected_head
+        or Path(str(attester.get("repo_realpath", ""))).resolve() != repo
+        or not _is_sha256(attester.get("cli_sha256"))
+        or not cli_is_bound
+        or not attester.get("python_executable")
+    ):
+        return "process_attestations: malformed or unbound process identity"
+
+    test_execution = sections["test_execution"]
+    final = test_execution["final"]
+    if (
+        test_execution["nodeid_count"] != 84
+        or not _is_sha256(test_execution["nodeid_digest"])
+        or not isinstance(final, Mapping)
+        or {key: final.get(key) for key in ("passed", "skipped", "failed", "errors")}
+        != {"passed": 84, "skipped": 0, "failed": 0, "errors": 0}
+    ):
+        return "test_execution: final frozen inventory is not 84 passed"
+
+    pull_request = sections["pull_request"]
+    if (
+        pull_request["repository"] != "Consiliency/agent-harness"
+        or pull_request["number"] != 347
+        or pull_request["state"] != "MERGED"
+        or not _is_commit(repo, pull_request["head"])
+        or not _is_commit(repo, pull_request["merge_commit"])
+    ):
+        return "pull_request: exact merged agent-harness#347 identity is absent"
+
+    integration = sections["target_integration"]
+    integration_commits = (integration["candidate"], integration["server_merge"], integration["integration"])
+    if (
+        any(not _is_commit(repo, value) for value in integration_commits)
+        or integration["parents"] != [integration["candidate"], integration["server_merge"]]
+        or (stage == "candidate" and integration["integration"] != expected_head)
+        or (stage == "canonical-main" and not _is_ancestor(repo, integration["integration"], expected_head))
+    ):
+        return "target_integration: commit or ordered-parent binding is invalid"
+
+    assumption_probes = sections["assumption_probes"]
+    if (
+        assumption_probes["execution_head"] != expected_head
+        or not isinstance(assumption_probes["records"], list)
+        or not assumption_probes["records"]
+        or any(not isinstance(record, Mapping) or not record for record in assumption_probes["records"])
+    ):
+        return "assumption_probes: execution-head-bound records are absent"
+
+    artifact_records = sections["artifacts"]["records"]
+    if not isinstance(artifact_records, list) or not artifact_records:
+        return "artifacts: records are absent"
+    for record in artifact_records:
+        if not isinstance(record, Mapping) or not {"path", "byte_length", "sha256"}.issubset(record):
+            return "artifacts: malformed record"
+        artifact_path = repo / str(record["path"])
+        try:
+            artifact_path.resolve(strict=True).relative_to(repo)
+        except (OSError, ValueError):
+            return f"artifacts: path escapes or is missing: {record['path']}"
+        if artifact_path.is_symlink() or not artifact_path.is_file():
+            return f"artifacts: path is not a regular file: {record['path']}"
+        data = artifact_path.read_bytes()
+        if record["byte_length"] != len(data) or record["sha256"] != hashlib.sha256(data).hexdigest():
+            return f"artifacts: digest drift: {record['path']}"
+    return None
+
+
 def _assemble_operational_evidence(
     *,
     repo: Path,
@@ -778,7 +948,69 @@ def validate_operational_evidence(
         return OperationalEvidenceValidation(False, "operational_evidence_seal_mismatch", "payload digest drift")
     if _rev_parse(repo, "HEAD") != expected_head:
         return OperationalEvidenceValidation(False, "operational_evidence_head_mismatch", "repository HEAD drift")
+    section_finding = _validate_operational_sections(repo, sections, stage=stage, expected_head=expected_head)
+    if section_finding is not None:
+        return OperationalEvidenceValidation(False, "operational_evidence_sections", section_finding)
     return OperationalEvidenceValidation(True)
+
+
+def finalize_operational_attestation(
+    *,
+    repo: Path,
+    run_dir: Path,
+    artifact_path: Path,
+    stage: str,
+    expected_head: str,
+    bootstrap_head: str,
+    process_start_token: str,
+    sections: Mapping[str, Mapping[str, Any]],
+) -> Path:
+    """Seal, validate, and bind the C5/C7 aggregate to verification.json."""
+    repo = Path(repo).resolve()
+    run_dir = Path(run_dir).resolve()
+    artifact_path = Path(artifact_path).resolve()
+    if artifact_path.parent != run_dir:
+        raise LegibleProcessBootstrapError("verification artifact must belong to the attestation run directory")
+    if bootstrap_head != expected_head:
+        raise LegibleProcessBootstrapError("attestation bootstrap head does not match expected head")
+    if not process_start_token.strip():
+        raise LegibleProcessBootstrapError("attestation process start token is empty")
+    output_path = _assemble_operational_evidence(
+        repo=repo,
+        run_dir=run_dir,
+        stage=stage,
+        expected_head=expected_head,
+        sections=sections,
+    )
+    validation = validate_operational_evidence(
+        repo=repo,
+        path=output_path,
+        stage=stage,
+        expected_head=expected_head,
+    )
+    if not validation.ok:
+        raise LegibleProcessBootstrapError(
+            f"operational evidence validation failed [{validation.code}]: {validation.finding}"
+        )
+    evidence_bytes = output_path.read_bytes()
+    sidecar = SidecarRecord(
+        schema=_SIDECAR_RECORD_SCHEMA,
+        path=output_path.relative_to(repo).as_posix(),
+        byte_length=len(evidence_bytes),
+        sha256=hashlib.sha256(evidence_bytes).hexdigest(),
+        stage=stage,
+        expected_head=expected_head,
+        bootstrap_head=bootstrap_head,
+        process_start_token=process_start_token,
+    )
+    from .verification_evidence import _bind_sidecar_extension
+
+    _bind_sidecar_extension(
+        artifact_path,
+        namespace=EXTENSION_NAMESPACE,
+        record=sidecar.__dict__,
+    )
+    return output_path
 
 
 def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, candidate_head: str | None = None) -> dict[str, Any]:
