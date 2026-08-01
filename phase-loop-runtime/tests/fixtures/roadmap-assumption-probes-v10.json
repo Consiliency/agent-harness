@@ -1,0 +1,458 @@
+{
+  "probes": [
+    {
+      "assumption": 1,
+      "expected": {
+        "forbidden_atoms": [
+          "CONFORM depends on spec#118 closing"
+        ]
+      },
+      "id": "LEGIBLE-A1-CONFORM-UNGATED",
+      "kind": "roadmap_predicate",
+      "mutation_id": "inject-a-spec118-must-close-dependency",
+      "positive_control_id": "current-dependency-graph",
+      "source_anchor": "NO LONGER externally gated",
+      "subject": {
+        "phase": "CONFORM",
+        "predicate": "dependencies",
+        "roadmap": "specs/phase-plans-v10.md"
+      }
+    },
+    {
+      "assumption": 1,
+      "expected": {
+        "state": "CLOSED"
+      },
+      "id": "LEGIBLE-A1-I118",
+      "kind": "github_issue",
+      "mutation_id": "observe-open",
+      "positive_control_id": "current-closed-payload",
+      "source_anchor": "`spec#118` is CLOSED",
+      "subject": {
+        "number": 118,
+        "repository": "Consiliency/spec"
+      }
+    },
+    {
+      "assumption": 1,
+      "expected": {
+        "value": "b862f977897a7b87c4419680a3e83735d4ff07b0"
+      },
+      "id": "LEGIBLE-A1-PIN-SHA",
+      "kind": "repo_constant",
+      "mutation_id": "change-only-the-sha-including-back-to-c1085483",
+      "positive_control_id": "current-sha",
+      "source_anchor": "contract_git_sha=\"b862f977",
+      "subject": {
+        "attribute": "EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN",
+        "field": "contract_git_sha",
+        "module": "phase_loop_runtime.conformance.outside_agent_pin"
+      }
+    },
+    {
+      "assumption": 1,
+      "expected": {
+        "value": "v0.2.1"
+      },
+      "id": "LEGIBLE-A1-PIN-TAG",
+      "kind": "repo_constant",
+      "mutation_id": "change-only-the-tag",
+      "positive_control_id": "current-tag",
+      "source_anchor": "contract_git_tag=\"v0.2.1\"",
+      "subject": {
+        "attribute": "EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN",
+        "field": "contract_git_tag",
+        "module": "phase_loop_runtime.conformance.outside_agent_pin"
+      }
+    },
+    {
+      "assumption": 1,
+      "expected": {
+        "required_present": [
+          "merged_at",
+          "merge_commit_oid"
+        ],
+        "state": "MERGED"
+      },
+      "id": "LEGIBLE-A1-PR102",
+      "kind": "github_pr",
+      "mutation_id": "observe-open-or-closed-unmerged",
+      "positive_control_id": "current-merged-payload",
+      "source_anchor": "`spec#102` MERGED",
+      "subject": {
+        "number": 102,
+        "repository": "Consiliency/spec"
+      }
+    },
+    {
+      "assumption": 1,
+      "expected": {
+        "ancestor_of_default_branch": true,
+        "required_present": [
+          "merged_at",
+          "merge_commit_oid"
+        ],
+        "state": "MERGED"
+      },
+      "id": "LEGIBLE-A1-PR377",
+      "kind": "github_pr",
+      "mutation_id": "remove-merge-timestamp",
+      "positive_control_id": "current-merged-reachable-payload",
+      "source_anchor": "`agent-harness#377` landed",
+      "subject": {
+        "number": 377,
+        "repository": "Consiliency/agent-harness"
+      }
+    },
+    {
+      "assumption": 1,
+      "expected": {
+        "algorithm": "sha256",
+        "computed": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a",
+        "pinned": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"
+      },
+      "id": "LEGIBLE-A1-SUBMISSION-DIGEST",
+      "kind": "repo_digest",
+      "mutation_id": "flip-one-schema-byte",
+      "positive_control_id": "unchanged-bytes-and-digest",
+      "source_anchor": "submission_schema_sha256`",
+      "subject": {
+        "attribute": "EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN",
+        "field": "submission_schema_sha256",
+        "module": "phase_loop_runtime.conformance.outside_agent_pin",
+        "resource": "consiliency_spec/_data/schemas/outside-agent-submission.schema.json"
+      }
+    },
+    {
+      "assumption": 1,
+      "expected": {
+        "peeled_sha": "b862f977897a7b87c4419680a3e83735d4ff07b0",
+        "reachable_from_default_branch": true
+      },
+      "id": "LEGIBLE-A1-TAG-DEREF",
+      "kind": "github_ref",
+      "mutation_id": "return-a-different-tag-target",
+      "positive_control_id": "current-dereference-and-reachability",
+      "source_anchor": "contract_git_sha=\"b862f977",
+      "subject": {
+        "peel": true,
+        "repository": "Consiliency/spec",
+        "tag": "v0.2.1"
+      }
+    },
+    {
+      "assumption": 1,
+      "expected": {
+        "algorithm": "sha256",
+        "computed": "86169277d3a0823db1a6c9fa4d20a838b0bc2820818ad00ebd53dcdd03c2b1c2",
+        "pinned": "86169277d3a0823db1a6c9fa4d20a838b0bc2820818ad00ebd53dcdd03c2b1c2"
+      },
+      "id": "LEGIBLE-A1-VERDICT-DIGEST",
+      "kind": "repo_digest",
+      "mutation_id": "flip-the-recorded-digest",
+      "positive_control_id": "unchanged-bytes-and-digest",
+      "source_anchor": "verdict_schema_sha256`",
+      "subject": {
+        "attribute": "EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN",
+        "field": "verdict_schema_sha256",
+        "module": "phase_loop_runtime.conformance.outside_agent_pin",
+        "resource": "consiliency_spec/_data/schemas/outside-agent-route-verdict.schema.json"
+      }
+    },
+    {
+      "assumption": 2,
+      "expected": {
+        "fields": {
+          "expected_version": "0.5.0",
+          "package": "phase-loop-runtime",
+          "pip_spec": "phase-loop-runtime==0.5.0"
+        }
+      },
+      "id": "LEGIBLE-A2-GP-PIN",
+      "kind": "remote_json_field",
+      "mutation_id": "change-expected-version-field-alone",
+      "positive_control_id": "current-remote-json",
+      "source_anchor": "pin agent-harness 0.5.0",
+      "subject": {
+        "path": "tools/agent-harness.pin.json",
+        "ref": "default-branch",
+        "repository": "Consiliency/governed-pipeline"
+      }
+    },
+    {
+      "assumption": 2,
+      "expected": {
+        "state": "OPEN"
+      },
+      "id": "LEGIBLE-A2-I128",
+      "kind": "github_issue",
+      "mutation_id": "observe-closed",
+      "positive_control_id": "current-open-payload",
+      "source_anchor": "`governed-pipeline#128`",
+      "subject": {
+        "number": 128,
+        "repository": "Consiliency/governed-pipeline"
+      }
+    },
+    {
+      "assumption": 2,
+      "expected": {
+        "agreed_value": "0.7.13",
+        "must_agree": true
+      },
+      "id": "LEGIBLE-A2-LOCAL-VERSION",
+      "kind": "repo_constant",
+      "mutation_id": "change-either-surface-alone",
+      "positive_control_id": "current-equal-pair",
+      "source_anchor": "we ship 0.7.13",
+      "subject": {
+        "surfaces": [
+          {
+            "field": "project.version",
+            "file": "phase-loop-runtime/pyproject.toml"
+          },
+          {
+            "attribute": "__version__",
+            "module": "phase_loop_runtime"
+          }
+        ]
+      }
+    },
+    {
+      "assumption": 2,
+      "expected": {
+        "forbidden_atoms": [
+          "phase requires governed-pipeline#128 closed"
+        ]
+      },
+      "id": "LEGIBLE-A2-NO-DEPENDENCY",
+      "kind": "roadmap_predicate",
+      "mutation_id": "inject-one-phase-dependency-on-issue-closure",
+      "positive_control_id": "current-roadmap",
+      "source_anchor": "No phase here depends on that being resolved.",
+      "subject": {
+        "predicate": "closure-prerequisites",
+        "roadmap": "specs/phase-plans-v10.md"
+      }
+    },
+    {
+      "assumption": 3,
+      "expected": {
+        "required_atoms": [
+          "NativeAgentLegRequest",
+          "no TUI adapter",
+          "VERDICT is BOUND"
+        ]
+      },
+      "id": "LEGIBLE-A3-EC14",
+      "kind": "roadmap_predicate",
+      "mutation_id": "remove-the-verdict-binding-edge",
+      "positive_control_id": "current-criterion",
+      "source_anchor": "EC-REVIEWTRUTH-14 FILLS it natively under Claude Code with no TUI adapter",
+      "subject": {
+        "criterion": "EC-REVIEWTRUTH-14",
+        "roadmap": "specs/phase-plans-v10.md"
+      }
+    },
+    {
+      "assumption": 3,
+      "expected": {
+        "required_atoms": [
+          "FULL",
+          "FLOOR-ONLY",
+          "BELOW-FLOOR",
+          "typed unfillable signal"
+        ]
+      },
+      "id": "LEGIBLE-A3-EC4",
+      "kind": "roadmap_predicate",
+      "mutation_id": "remove-one-state-or-signal",
+      "positive_control_id": "current-criterion",
+      "source_anchor": "EC-REVIEWTRUTH-4 TYPES the vacancy",
+      "subject": {
+        "criterion": "EC-REVIEWTRUTH-4",
+        "roadmap": "specs/phase-plans-v10.md"
+      }
+    },
+    {
+      "assumption": 3,
+      "expected": {
+        "forbidden_atoms": [
+          "degraded 3-of-4 promotion authorized"
+        ],
+        "required_atoms": [
+          "four-vendor exact-digest review required"
+        ]
+      },
+      "id": "LEGIBLE-A3-NO-DEGRADED-GATE",
+      "kind": "roadmap_predicate",
+      "mutation_id": "authorize-three-of-four-promotion",
+      "positive_control_id": "current-no-degraded-policy",
+      "source_anchor": "stricter panel gate",
+      "subject": {
+        "predicate": "execution-policy",
+        "roadmap": "specs/phase-plans-v10.md"
+      }
+    },
+    {
+      "assumption": 3,
+      "expected": {
+        "declared_states": [
+          "pending",
+          "resolved"
+        ]
+      },
+      "id": "LEGIBLE-A3-REVIEWTRUTH-TRANSITION",
+      "kind": "reviewtruth_fable_transition",
+      "mutation_id": "open-issue-with-native-fill-request",
+      "positive_control_id": "current-pending-observation",
+      "source_anchor": "agent-harness#396",
+      "subject": {
+        "issue": 396,
+        "model": "claude-fable-5",
+        "repository": "Consiliency/agent-harness",
+        "source_anchor": "agent-harness#396"
+      }
+    },
+    {
+      "assumption": 4,
+      "expected": {
+        "required_edges": [
+          [
+            "manifest_backed_roadmap",
+            "_phase_manifest_entries"
+          ],
+          [
+            "_phase_manifest_entries",
+            "valid_phase_entries"
+          ]
+        ]
+      },
+      "id": "LEGIBLE-A4-DISCOVERY",
+      "kind": "ast_call_predicate",
+      "mutation_id": "remove-the-manifest-entries-call-edge",
+      "positive_control_id": "current-call-chain",
+      "source_anchor": "load-bearing for roadmap discovery",
+      "subject": {
+        "edges": [
+          [
+            "manifest_backed_roadmap",
+            "_phase_manifest_entries"
+          ],
+          [
+            "_phase_manifest_entries",
+            "valid_phase_entries"
+          ]
+        ],
+        "module": "phase_loop_runtime.discovery"
+      }
+    },
+    {
+      "assumption": 4,
+      "expected": {
+        "invalid_sibling_excluded": true,
+        "valid_entry_discoverable": true
+      },
+      "id": "LEGIBLE-A4-PER-ENTRY",
+      "kind": "manifest_behavior",
+      "mutation_id": "restore-whole-manifest-invalidation",
+      "positive_control_id": "current-per-entry-behavior",
+      "source_anchor": "fixed per-entry in",
+      "subject": {
+        "injected_invalid_sibling": true,
+        "manifest": "plans/manifest.json",
+        "valid_entry_roadmap": "specs/phase-plans-v10.md"
+      }
+    },
+    {
+      "assumption": 4,
+      "expected": {
+        "required_present": [
+          "merged_at"
+        ],
+        "state": "MERGED"
+      },
+      "id": "LEGIBLE-A4-PR170",
+      "kind": "github_pr",
+      "mutation_id": "observe-closed-unmerged",
+      "positive_control_id": "current-merged-payload",
+      "source_anchor": "agent-harness#170",
+      "subject": {
+        "number": 170,
+        "repository": "Consiliency/agent-harness"
+      }
+    },
+    {
+      "assumption": 5,
+      "expected": {
+        "author": "ViperJuice",
+        "required_atoms": [
+          "ONE shared monotonic epoch allocator",
+          "publish byte-neutrality is RETRACTED"
+        ],
+        "sha256": "5c165d83193477de52c5a41018316208e07e56192c9b18c7e9ad1bac45757b4f"
+      },
+      "id": "LEGIBLE-A5-RATIFICATION",
+      "kind": "github_comment",
+      "mutation_id": "mutate-the-comment-digest",
+      "positive_control_id": "current-comment",
+      "source_anchor": "agent-harness#363",
+      "subject": {
+        "author": "ViperJuice",
+        "comment_id": "5109553368",
+        "issue": 363,
+        "repository": "Consiliency/agent-harness"
+      }
+    },
+    {
+      "assumption": 5,
+      "expected": {
+        "forbidden_atoms": [
+          "publish is byte-neutral"
+        ],
+        "required_atoms": [
+          "assumption-5: publish byte-neutrality is RETRACTED",
+          "EC-FABPUB-7: publish byte-neutrality is RETRACTED"
+        ]
+      },
+      "id": "LEGIBLE-A5-RETRACTION",
+      "kind": "roadmap_predicate",
+      "mutation_id": "delete-the-ec-fabpub-7-retraction-and-reintroduce-neutrality",
+      "positive_control_id": "current-roadmap-predicates",
+      "source_anchor": "publish byte-neutrality is RETRACTED",
+      "subject": {
+        "predicate": "publish-byte-neutrality",
+        "roadmap": "specs/phase-plans-v10.md",
+        "sources": [
+          "assumption-5",
+          "EC-FABPUB-7"
+        ]
+      }
+    },
+    {
+      "assumption": 5,
+      "expected": {
+        "required_atoms": [
+          "assumption-5: ONE shared monotonic epoch allocator",
+          "FABPUB: ONE shared monotonic epoch allocator"
+        ]
+      },
+      "id": "LEGIBLE-A5-SHARED-EPOCH",
+      "kind": "roadmap_predicate",
+      "mutation_id": "change-fabpub-to-scoped-allocation",
+      "positive_control_id": "current-roadmap-predicates",
+      "source_anchor": "shared monotonic epoch",
+      "subject": {
+        "predicate": "epoch-allocation",
+        "roadmap": "specs/phase-plans-v10.md",
+        "sources": [
+          "assumption-5",
+          "FABPUB objective/criteria"
+        ]
+      }
+    }
+  ],
+  "roadmap": "specs/phase-plans-v10.md",
+  "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+  "schema": "roadmap_assumption_probe.v1"
+}
