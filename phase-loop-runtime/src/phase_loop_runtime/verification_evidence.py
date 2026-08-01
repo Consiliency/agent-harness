@@ -889,7 +889,7 @@ def _bind_sidecar_extension(artifact_path: Path, *, namespace: str, record: Mapp
     log_path = run_dir / LOG_NAME
 
     validation = validate_verification_artifact(artifact_path)
-    if not validation.ok:
+    if not validation.ok and validation.code != "nonzero_exit":
         raise VerificationArtifactContractError(
             validation.code,
             "; ".join(validation.findings) or f"schema-v2 artifact failed validation: {validation.code}",

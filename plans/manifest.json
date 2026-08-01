@@ -1225,9 +1225,9 @@
             },
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "9bd1b54027f96f9ccdf76bcc990012410b2b58450c7813c790904882cf194ba6",
-              "predecessor_plan_sha256": "5b61b3cb8af1f53454bc5cea3b12663089ffec679c372ebd2fbc5419a364f585",
-              "reason": "mechanical_roadmap_digest_rollover_for_REVIEWTRUTH_stage_a_candidate_evidence_seal_repair",
+              "plan_sha256": "1f9bb643a9650b01c600c4862391a74df9af3d911ba7158c5570276fd8b0b2e0",
+              "predecessor_plan_sha256": "9bd1b54027f96f9ccdf76bcc990012410b2b58450c7813c790904882cf194ba6",
+              "reason": "fable_president_staged_evidence_contract_correction",
               "reviewed_bundle_bytes": 140117,
               "reviewed_bundle_sha256": "0a2ecfbeb2fecc6afade833d9c24ab1f3d05caae66541e79a66283715dbb0f05",
               "reviewed_instructions_sha256": "4b166729c4352ac8c086b19b5c68d279258ffd08068c176122dee2533a3c5160",
@@ -1267,7 +1267,7 @@
               "owned_paths_count": 16,
               "owned_paths_sha256": "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b",
               "phase_dependencies": [],
-              "plan_sha256": "9bd1b54027f96f9ccdf76bcc990012410b2b58450c7813c790904882cf194ba6",
+              "plan_sha256": "1f9bb643a9650b01c600c4862391a74df9af3d911ba7158c5570276fd8b0b2e0",
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
               "selector_common_return_contract": "parse_candidate_lifecycle_then_reject_recognized_non_active_with_or_without_registry",
               "test_paths": [
@@ -1281,6 +1281,12 @@
               },
               "verification_extension_registry_owner": "LEGIBLE",
               "verification_extension_reserved_downstream_namespace": "phase_loop_runtime.proofgate_evidence"
+            },
+            "president_amendment": {
+              "decision": "REVISE_PHASE_CONTRACT",
+              "evidence_sha256": "ea6ad231ac54ba4d2c778a472bbe6198a72f86098d3085475d291975c50340e5",
+              "predecessor_plan_sha256": "9bd1b54027f96f9ccdf76bcc990012410b2b58450c7813c790904882cf194ba6",
+              "reason": "stage_merge_dependent_legible_evidence_v1_assembly_in_C4_C5_C7"
             },
             "run_id": "20260730T040717Z-01-legible-plan"
           },

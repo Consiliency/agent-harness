@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -219,6 +220,45 @@ def test_sidecar_binder_rejects_invalid_v2_artifact_before_resealing(tmp_path):
         )
 
     assert excinfo.value.code == "log_sha256_mismatch"
+
+
+def test_sidecar_binder_allows_integrity_valid_nonzero_verification(tmp_path):
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "probe"
+    run_verification(
+        repo,
+        run_dir,
+        [[sys.executable, "-c", "raise SystemExit(7)"]],
+        None,
+        None,
+        10,
+        phase_alias="LEGIBLE",
+    )
+    artifact_path = run_dir / ARTIFACT_NAME
+    assert validate_verification_artifact(artifact_path).code == "nonzero_exit"
+    sidecar_path = run_dir / "legible-verification-sidecar.json"
+    sidecar_path.write_text("{}", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    record = legible_evidence.bind_verification_sidecar(
+        repo,
+        run_dir=run_dir,
+        stage="candidate",
+        expected_head=head,
+        bootstrap_head=head,
+        process_start_token="fresh-process-token",
+    )
+
+    _bind_sidecar_extension(
+        artifact_path,
+        namespace=legible_evidence.EXTENSION_NAMESPACE,
+        record=record.__dict__,
+    )
+
+    assert validate_verification_artifact_for_plan(
+        artifact_path, (legible_evidence.EXTENSION_NAMESPACE,)
+    ).code == "nonzero_exit"
 
 
 @pytest.mark.parametrize(
