@@ -1717,6 +1717,21 @@ def test_registry_free_selector_rejects_indented_status_like_banner(tmp_path, de
         discovery._return_selectable_roadmap(repo, candidate, "test")
 
 
+@pytest.mark.parametrize(
+    "prose",
+    (
+        "> This roadmap remains active for migration context.",
+        "> The delivered artifacts are retained for reference.",
+    ),
+)
+def test_registry_free_selector_preserves_declaration_free_legacy_prose(tmp_path, prose):
+    repo = make_repo(tmp_path)
+    candidate = repo / "specs" / "phase-plans-v1.md"
+    candidate.write_text(f"# Roadmap\n\n{prose}\n\n## Body\n", encoding="utf-8")
+
+    assert discovery._return_selectable_roadmap(repo, candidate, "test") == candidate.resolve()
+
+
 def test_selector_read_failure_is_typed_not_selectable(tmp_path):
     repo = make_repo(tmp_path)
     candidate = repo / "specs" / "phase-plans-v1.md"
@@ -1922,6 +1937,7 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
 
     requested = observed["argv"][observed["argv"].index("--json") + 1]
     assert "baseRefName" in requested
+    assert "mergedAt" in requested
     assert "reviewDecision" in requested
     assert "reviews" in requested
 
@@ -1954,11 +1970,13 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     def fake_pr_view(_repo):
         events.append("snapshot")
         snapshot = {
-            "state": "OPEN",
+            "state": "MERGED" if merged else "OPEN",
             "isDraft": "ready" not in events,
             "headRefOid": head,
             "baseRefName": "main",
             "baseRefOid": base,
+            "mergeCommit": {"oid": server_merge} if merged else None,
+            "mergedAt": "2026-08-01T16:00:00Z" if merged else None,
             "body": body,
             "statusCheckRollup": [{"conclusion": "SUCCESS"}],
             "reviewDecision": "",
@@ -2091,6 +2109,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         "candidate-remote",
         "snapshot",
         "merge",
+        "snapshot",
     ]
     assert result["run_id"].startswith("legible-transition-")
     transition_path = repo / result["transition_artifact"]
