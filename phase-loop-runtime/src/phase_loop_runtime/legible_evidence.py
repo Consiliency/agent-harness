@@ -1467,10 +1467,19 @@ def _validate_operational_sections(
     ):
         return "artifacts: required registry/source/JUnit/panel inventory is incomplete"
     panel_paths = [path for path in artifact_paths if Path(path).name == "implementation-panel.json"]
-    if len(panel_paths) != 1:
+    attester_panel_path = f".phase-loop/runs/{attester['run_id']}/implementation-panel.json"
+    attester_run_prefix = f".phase-loop/runs/{attester['run_id']}/"
+    attester_panel_paths = [path for path in panel_paths if path.startswith(attester_run_prefix)]
+    if attester_panel_paths:
+        if attester_panel_paths != [attester_panel_path]:
+            return "artifacts: implementation panel inventory is ambiguous"
+        selected_panel_path = attester_panel_path
+    elif len(panel_paths) == 1:
+        selected_panel_path = panel_paths[0]
+    else:
         return "artifacts: implementation panel inventory is ambiguous"
     try:
-        panel = json.loads(artifact_data[panel_paths[0]])
+        panel = json.loads(artifact_data[selected_panel_path])
     except json.JSONDecodeError:
         return "artifacts: implementation panel is malformed"
     gemini_model = panel_invoker.DEFAULT_LEG_MODELS["gemini"]
