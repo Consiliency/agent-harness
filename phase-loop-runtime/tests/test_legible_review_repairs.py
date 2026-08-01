@@ -1913,6 +1913,7 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
     runner._legible_pr_view(tmp_path)
 
     requested = observed["argv"][observed["argv"].index("--json") + 1]
+    assert "baseRefName" in requested
     assert "reviewDecision" in requested
     assert "reviews" in requested
 
@@ -1941,6 +1942,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
             "state": "OPEN",
             "isDraft": True,
             "headRefOid": head,
+            "baseRefName": "main",
             "baseRefOid": base,
             "body": body,
             "statusCheckRollup": [{"conclusion": "SUCCESS"}],
@@ -1948,7 +1950,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
             "reviews": [],
         }
         if merge_snapshot_drift and events.count("snapshot") == 2:
-            snapshot["body"] = "changed after review"
+            snapshot["baseRefName"] = "release"
         return snapshot
 
     monkeypatch.setattr(runner, "_legible_pr_view", fake_pr_view)
