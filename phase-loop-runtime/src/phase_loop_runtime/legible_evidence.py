@@ -78,11 +78,22 @@ _OPERATIONAL_SECTION_FIELDS = {
         }
     ),
     "chronology": frozenset(
-        {"tests_landing", "implementation_base", "candidate_head", "plan_sha256", "roadmap_sha256"}
+        {
+            "tests_landing",
+            "implementation_base",
+            "phase_candidate",
+            "pr_head",
+            "server_merge",
+            "candidate_head",
+            "plan_path",
+            "plan_sha256",
+            "roadmap_path",
+            "roadmap_sha256",
+        }
     ),
     "process_attestations": frozenset({"builder", "attester"}),
-    "test_execution": frozenset({"nodeid_count", "nodeid_digest", "final"}),
-    "pull_request": frozenset({"repository", "number", "state", "head", "merge_commit"}),
+    "test_execution": frozenset({"nodeid_count", "nodeid_digest", "default", "forced_red", "final"}),
+    "pull_request": frozenset({"repository", "number", "state", "base", "head", "merge_commit", "parents"}),
     "target_integration": frozenset({"candidate", "server_merge", "integration", "parents"}),
     "assumption_probes": frozenset({"execution_head", "records"}),
     "artifacts": frozenset({"records"}),
@@ -743,6 +754,34 @@ def _is_commit(repo: Path, value: Any) -> bool:
     )
 
 
+def _commit_parents(repo: Path, commit: str) -> list[str] | None:
+    proc = _git_ok(repo, "rev-list", "--parents", "-n", "1", commit)
+    if proc.returncode != 0:
+        return None
+    fields = proc.stdout.strip().split()
+    return fields[1:] if fields and fields[0] == commit else None
+
+
+def _bound_repo_file(repo: Path, path_value: Any, sha256_value: Any, expected_head: str) -> bool:
+    if not isinstance(path_value, str) or not path_value or not _is_sha256(sha256_value):
+        return False
+    path = repo / path_value
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(repo)
+        data = path.read_bytes()
+    except (OSError, ValueError):
+        return False
+    if path.is_symlink() or not path.is_file() or hashlib.sha256(data).hexdigest() != sha256_value:
+        return False
+    committed = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{expected_head}:{path_value}"],
+        capture_output=True,
+        check=False,
+    )
+    return committed.returncode == 0 and committed.stdout == data
+
+
 def _validate_operational_sections(
     repo: Path, sections: Mapping[str, Any], *, stage: str, expected_head: str
 ) -> str | None:
@@ -755,25 +794,83 @@ def _validate_operational_sections(
             return f"{name}: missing required fields {sorted(required_fields - present_fields)}"
 
     roadmap_status = sections["roadmap_status"]
+    roadmap_records = roadmap_status["roadmaps"]
     if (
-        not isinstance(roadmap_status["registry_path"], str)
-        or not roadmap_status["registry_path"]
-        or not _is_sha256(roadmap_status["registry_sha256"])
+        roadmap_status["registry_path"] != roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
         or not isinstance(roadmap_status["registry_byte_length"], int)
         or roadmap_status["registry_byte_length"] < 0
         or not isinstance(roadmap_status["selected_roadmap"], str)
         or not _is_sha256(roadmap_status["tracked_path_set_sha256"])
-        or not isinstance(roadmap_status["roadmaps"], list)
-        or not roadmap_status["roadmaps"]
-        or any(not isinstance(record, Mapping) or not record.get("path") for record in roadmap_status["roadmaps"])
+        or not isinstance(roadmap_records, list)
+        or not roadmap_records
+        or any(
+            not isinstance(record, Mapping)
+            or not {
+                "path",
+                "registry_status",
+                "banner_status",
+                "declaration_line",
+                "declaration_sha256",
+            }.issubset(record)
+            for record in roadmap_records
+        )
     ):
         return "roadmap_status: malformed registry evidence"
+    registry_path = repo / roadmap_status["registry_path"]
+    try:
+        registry_bytes = registry_path.read_bytes()
+        current_status = roadmap_lint.validate_roadmap_status_coherence(repo, required=True)
+        validate_roadmap_status_evidence(repo, roadmap_status, required=True)
+    except (OSError, roadmap_lint.RoadmapStatusError, LegibleStatusEvidenceError, KeyError, TypeError):
+        return "roadmap_status: registry or banner coherence failed"
+    if (
+        current_status is None
+        or len(registry_bytes) != roadmap_status["registry_byte_length"]
+        or hashlib.sha256(registry_bytes).hexdigest() != roadmap_status["registry_sha256"]
+        or current_status["selected_roadmap"] != roadmap_status["selected_roadmap"]
+    ):
+        return "roadmap_status: registry identity drift"
+    recorded_paths = [record["path"] for record in roadmap_records]
+    if (
+        recorded_paths != sorted(set(recorded_paths))
+        or hashlib.sha256("\n".join(recorded_paths).encode()).hexdigest()
+        != roadmap_status["tracked_path_set_sha256"]
+    ):
+        return "roadmap_status: tracked path-set identity drift"
+    status_by_path = {entry["path"]: entry["status"] for entry in current_status["roadmaps"]}
+    if any(
+        status_by_path.get(record["path"]) != record["registry_status"]
+        or record["registry_status"] != record["banner_status"]
+        for record in roadmap_records
+    ):
+        return "roadmap_status: recorded status disagrees with the coherent registry"
 
     chronology = sections["chronology"]
-    if any(not _is_commit(repo, chronology[field]) for field in ("tests_landing", "implementation_base", "candidate_head")):
+    chronology_commits = (
+        "tests_landing",
+        "implementation_base",
+        "phase_candidate",
+        "pr_head",
+        "server_merge",
+        "candidate_head",
+    )
+    if any(not _is_commit(repo, chronology[field]) for field in chronology_commits):
         return "chronology: unresolved commit identity"
-    if not _is_sha256(chronology["plan_sha256"]) or not _is_sha256(chronology["roadmap_sha256"]):
-        return "chronology: malformed plan or roadmap digest"
+    if (
+        not _bound_repo_file(repo, chronology["plan_path"], chronology["plan_sha256"], expected_head)
+        or not _bound_repo_file(repo, chronology["roadmap_path"], chronology["roadmap_sha256"], expected_head)
+    ):
+        return "chronology: plan or roadmap bytes are not bound to expected HEAD"
+    if (
+        not _is_ancestor(repo, chronology["tests_landing"], chronology["implementation_base"])
+        or not _is_ancestor(repo, chronology["implementation_base"], chronology["phase_candidate"])
+        or not _is_ancestor(repo, chronology["phase_candidate"], chronology["candidate_head"])
+        or not _is_ancestor(repo, chronology["pr_head"], chronology["server_merge"])
+        or not _is_ancestor(repo, chronology["server_merge"], chronology["candidate_head"])
+        or (stage == "candidate" and chronology["candidate_head"] != expected_head)
+        or (stage == "canonical-main" and not _is_ancestor(repo, chronology["candidate_head"], expected_head))
+    ):
+        return "chronology: required ancestry is absent"
 
     attestations = sections["process_attestations"]
     builder = attestations["builder"]
@@ -810,23 +907,35 @@ def _validate_operational_sections(
         return "process_attestations: malformed or unbound process identity"
 
     test_execution = sections["test_execution"]
+    default = test_execution["default"]
+    forced_red = test_execution["forced_red"]
     final = test_execution["final"]
     if (
         test_execution["nodeid_count"] != 84
         or not _is_sha256(test_execution["nodeid_digest"])
-        or not isinstance(final, Mapping)
+        or not all(isinstance(record, Mapping) for record in (default, forced_red, final))
+        or {key: default.get(key) for key in ("passed", "skipped", "failed", "errors")}
+        != {"passed": 0, "skipped": 84, "failed": 0, "errors": 0}
+        or {key: forced_red.get(key) for key in ("passed", "skipped", "failed", "errors")}
+        != {"passed": 0, "skipped": 0, "failed": 84, "errors": 0}
         or {key: final.get(key) for key in ("passed", "skipped", "failed", "errors")}
         != {"passed": 84, "skipped": 0, "failed": 0, "errors": 0}
     ):
-        return "test_execution: final frozen inventory is not 84 passed"
+        return "test_execution: frozen default/RED/final inventory is invalid"
 
     pull_request = sections["pull_request"]
     if (
         pull_request["repository"] != "Consiliency/agent-harness"
         or pull_request["number"] != 347
         or pull_request["state"] != "MERGED"
+        or not _is_commit(repo, pull_request["base"])
         or not _is_commit(repo, pull_request["head"])
         or not _is_commit(repo, pull_request["merge_commit"])
+        or pull_request["parents"] != [pull_request["base"], pull_request["head"]]
+        or _commit_parents(repo, pull_request["merge_commit"]) != pull_request["parents"]
+        or pull_request["base"] != chronology["implementation_base"]
+        or pull_request["head"] != chronology["pr_head"]
+        or pull_request["merge_commit"] != chronology["server_merge"]
     ):
         return "pull_request: exact merged agent-harness#347 identity is absent"
 
@@ -835,23 +944,40 @@ def _validate_operational_sections(
     if (
         any(not _is_commit(repo, value) for value in integration_commits)
         or integration["parents"] != [integration["candidate"], integration["server_merge"]]
+        or _commit_parents(repo, integration["integration"]) != integration["parents"]
+        or integration["candidate"] != chronology["phase_candidate"]
+        or integration["server_merge"] != chronology["server_merge"]
+        or integration["integration"] != chronology["candidate_head"]
         or (stage == "candidate" and integration["integration"] != expected_head)
         or (stage == "canonical-main" and not _is_ancestor(repo, integration["integration"], expected_head))
     ):
         return "target_integration: commit or ordered-parent binding is invalid"
 
     assumption_probes = sections["assumption_probes"]
+    probe_records = assumption_probes["records"]
     if (
         assumption_probes["execution_head"] != expected_head
-        or not isinstance(assumption_probes["records"], list)
-        or not assumption_probes["records"]
-        or any(not isinstance(record, Mapping) or not record for record in assumption_probes["records"])
+        or not isinstance(probe_records, list)
+        or not probe_records
+        or any(
+            not isinstance(record, Mapping)
+            or record.get("schema") != "roadmap_assumption_probe.v1"
+            or not record.get("probe_id")
+            or record.get("state") not in {"pending", "resolved"}
+            or not _is_sha256(record.get("response_sha256"))
+            or not isinstance(record.get("response_byte_length"), int)
+            or record["response_byte_length"] < 0
+            for record in probe_records
+        )
+        or len({record["probe_id"] for record in probe_records}) != len(probe_records)
+        or "LEGIBLE-A3-REVIEWTRUTH-TRANSITION" not in {record["probe_id"] for record in probe_records}
     ):
         return "assumption_probes: execution-head-bound records are absent"
 
     artifact_records = sections["artifacts"]["records"]
     if not isinstance(artifact_records, list) or not artifact_records:
         return "artifacts: records are absent"
+    artifact_paths: set[str] = set()
     for record in artifact_records:
         if not isinstance(record, Mapping) or not {"path", "byte_length", "sha256"}.issubset(record):
             return "artifacts: malformed record"
@@ -865,6 +991,20 @@ def _validate_operational_sections(
         data = artifact_path.read_bytes()
         if record["byte_length"] != len(data) or record["sha256"] != hashlib.sha256(data).hexdigest():
             return f"artifacts: digest drift: {record['path']}"
+        artifact_paths.add(str(record["path"]))
+    cli_rel = Path(str(attester["cli_path"])).resolve().relative_to(repo).as_posix()
+    required_artifacts = {
+        roadmap_status["registry_path"],
+        chronology["plan_path"],
+        chronology["roadmap_path"],
+        cli_rel,
+    }
+    if (
+        not required_artifacts.issubset(artifact_paths)
+        or not any(path.endswith(".junit.xml") for path in artifact_paths)
+        or not any("panel" in Path(path).name and path.endswith(".json") for path in artifact_paths)
+    ):
+        return "artifacts: required registry/source/JUnit/panel inventory is incomplete"
     return None
 
 
