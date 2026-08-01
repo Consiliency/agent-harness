@@ -7055,9 +7055,13 @@ def _run_legible_pr_transition(
         + f"- artifact: `{early_prover_path.relative_to(repo).as_posix()}`\n"
         + f"- artifact SHA-256: `{hashlib.sha256(early_prover_path.read_bytes()).hexdigest()}`\n"
         + f"- capability: `{early_prover.get('capability')}`\n"
+        + f"- binding prover: `{early_prover.get('binding_prover')}`\n"
+        + f"- outcome: `{early_prover.get('outcome')}`\n"
         + f"- degraded evidence audit: `{early_prover.get('degraded_evidence_reason')}`\n"
         + f"- status: `{early_prover.get('status')}`\n"
-        + f"- verdict: `{early_prover.get('verdict')}`\n\n"
+        + f"- usable: `{early_prover.get('usable')}`\n"
+        + f"- codex_process_count: {early_prover.get('codex_process_count')}\n"
+        + f"- grok_process_count: {early_prover.get('grok_process_count')}\n\n"
         + str(early_prover.get("text", ""))
         + "\n",
         encoding="utf-8",
@@ -7165,50 +7169,43 @@ def _legible_test_record(
 def _run_legible_c4_early_prover(
     repo: Path, run_dir: Path, expected_head: str, bundle_path: Path
 ) -> Path:
-    from .advisor_board.schema import Board
-    from .advisor_board.presets import CODE_REVIEW_BOARD
-    from .panel_invoker import invoke_board
-
-    codex_seat = next(seat for seat in CODE_REVIEW_BOARD.seats if seat.harness == "codex")
-    board = Board(
-        name="legible-c4-early-prover",
-        purpose="premerge-review",
-        seats=(codex_seat,),
+    degraded_reason = (
+        "the REVIEWTRUTH external-tool preflight and isolated workspace-write executor "
+        "required by Consiliency/agent-harness#398 are not installed"
     )
-    result = invoke_board(
-        board,
-        "",
-        repo_dir=repo,
-        artifact_ref=str(bundle_path),
-        stream_dir=run_dir / "c4-early-prover-stream",
-    )
-    if len(result.legs) != 1:
-        raise legible_evidence.LegibleProcessBootstrapError(
-            "LEGIBLE C4 early prover returned an invalid seat count"
-        )
-    outcome = result.legs[0]
-    lines = [line.strip() for line in outcome.text.splitlines() if line.strip()]
-    verdict = lines[-1] if lines and lines[-1] in {"AGREE", "PARTIALLY AGREE", "DISAGREE"} else "EMPTY"
     payload = {
         "schema": "legible_c4_early_prover.v1",
         "head": expected_head,
         "bundle_path": bundle_path.relative_to(repo).as_posix(),
         "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
-        "capability": "read_only_live_probe",
-        "degraded_evidence_reason": (
-            "write-capable worktree and DB isolation remain deferred to Consiliency/agent-harness#405"
-        ),
-        "status": outcome.status,
-        "usable": outcome.usable,
-        "verdict": verdict,
-        "text": outcome.text,
+        "role": "early_prover",
+        "capability": "can_probe",
+        "binding_prover": False,
+        "outcome": "DEGRADED_NO_LAUNCH",
+        "degraded_evidence_reason": degraded_reason,
+        "status": "DEGRADED",
+        "usable": False,
+        "codex_process_count": 0,
+        "grok_process_count": 0,
+        "codex_preflight": {
+            "verdict": "FAIL",
+            "failure_reasons": ["external_tool_preflight_unavailable"],
+            "agent_launch_count": 0,
+        },
+        "codex_launch": {
+            "launched": False,
+            "codex_process_count": 0,
+        },
+        "grok_fallback": {
+            "os_confinement_available": False,
+            "launched": False,
+            "grok_process_count": 0,
+            "reason": "os_confinement_unavailable",
+        },
+        "text": f"{degraded_reason}; no early prover process was launched",
     }
     path = run_dir / "c4-early-prover.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if outcome.status != "OK" or outcome.usable is not True or verdict != "AGREE":
-        raise legible_evidence.LegibleProcessBootstrapError(
-            "LEGIBLE C4 early prover did not produce usable AGREE evidence"
-        )
     return path
 
 
