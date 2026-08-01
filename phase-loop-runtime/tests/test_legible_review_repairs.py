@@ -108,7 +108,7 @@ LEGIBLE_LOADED_RUNTIME_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
     "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
 )
-LEGIBLE_ROADMAP_SHA256 = "040fe81fd36fd484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f"
+LEGIBLE_ROADMAP_SHA256 = "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
 
 
 def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:

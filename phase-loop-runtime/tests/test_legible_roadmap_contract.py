@@ -1802,30 +1802,12 @@ def _sidecar_probe(row: dict[str, object]) -> dict[str, object]:
 
 
 def _synthetic_assumption_roadmap_text() -> str:
-    """A synthetic roadmap carrying the same five numbered "Assumptions
-    (fail-loud if wrong)" blocks, each containing every source anchor its
-    probes cite — so the clean-room branch exercises the real declaration
-    parser (anchor-must-occur-in-its-own-block included) with no dependency on
-    the canonical ``specs/`` tree."""
-    lines = [
-        "# Fixture specs/phase-plans-v10.md",
-        "",
-        BANNER_LINE3["specs/phase-plans-v10.md"],
-        "",
-        "## Assumptions (fail-loud if wrong)",
-        "",
-    ]
-    for number in (1, 2, 3, 4, 5):
-        lines.append(f"{number}. Assumption {number} — synthetic LEGIBLE-A0 fixture block.")
-        for row in ASSUMPTION_PROBES:
-            if row["assumption"] == number:
-                lines.append(f"   {row['anchor']}")
-    lines += ["", "## Body", "", "content", ""]
-    return "\n".join(lines)
+    """Return the canonical roadmap bytes for a repo with synthetic observations."""
+    return ROADMAP_PATH.read_text(encoding="utf-8")
 
 
 def _synthetic_probe_repo(tmp_path: Path) -> Path:
-    """A committed, self-contained repo carrying the synthetic roadmap, the
+    """A committed, self-contained repo carrying the canonical roadmap, the
     matching ``roadmap_assumption_probe.v1`` sidecar (all 23 probes, stable
     path-sorted by id), a coherent status registry, and a plan whose
     frontmatter digest matches the roadmap bytes."""
