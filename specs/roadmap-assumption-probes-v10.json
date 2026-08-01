@@ -238,34 +238,20 @@
     {
       "assumption": 3,
       "expected": {
-        "required_edges": [
-          [
-            "native_fill_request",
-            "bind_native_verdict"
-          ],
-          [
-            "bind_native_verdict",
-            "count_seat"
-          ]
+        "required_atoms": [
+          "NativeAgentLegRequest",
+          "no TUI adapter",
+          "VERDICT is BOUND"
         ]
       },
       "id": "LEGIBLE-A3-EC14",
-      "kind": "ast_call_predicate",
+      "kind": "roadmap_predicate",
       "mutation_id": "remove-the-verdict-binding-edge",
       "positive_control_id": "current-criterion",
       "source_anchor": "EC-REVIEWTRUTH-14 FILLS it natively under Claude Code with no TUI adapter",
       "subject": {
-        "edges": [
-          [
-            "native_fill_request",
-            "bind_native_verdict"
-          ],
-          [
-            "bind_native_verdict",
-            "count_seat"
-          ]
-        ],
-        "module": "phase_loop_runtime.review_board"
+        "criterion": "EC-REVIEWTRUTH-14",
+        "roadmap": "specs/phase-plans-v10.md"
       }
     },
     {

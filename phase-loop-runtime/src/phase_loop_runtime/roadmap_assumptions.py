@@ -686,6 +686,14 @@ def _observe_roadmap_predicate(repo: Path, subject: Mapping[str, Any]) -> dict:
             if candidate_atom in line:
                 atoms.append(candidate_atom)
 
+    elif criterion == "EC-REVIEWTRUTH-14":
+        line = _ec_criterion_text(text, "EC-REVIEWTRUTH-14")
+        for candidate_atom in ("NativeAgentLegRequest", "VERDICT is BOUND"):
+            if candidate_atom in line:
+                atoms.append(candidate_atom)
+        if "rather than through a CLI/adapter" in line:
+            atoms.append("no TUI adapter")
+
     elif predicate == "epoch-allocation":
         assumption_block = _numbered_assumption_block(text, 5)
         fabpub_block = _phase_block(text, "FABPUB")
