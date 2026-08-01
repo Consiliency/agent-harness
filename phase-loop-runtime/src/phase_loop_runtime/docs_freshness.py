@@ -533,12 +533,12 @@ def _catalog_entry_path(item: Any) -> str | None:
 def check_catalog(repo: Path) -> DocsCatalogCheckResult:
     """Explicit fail-closed check: nonzero when the TRACKED catalog is empty,
     stale (names a path that no longer exists), duplicated, or malformed.
-    Absence is still permissive (mirrors the existing `_catalog_surfaces`
-    read path) -- this is an opt-in check command, not a new hard default."""
+    Absence is a failure because this explicit check is the authority-file gate;
+    permissive readers remain unchanged."""
     repo = Path(repo)
     path = repo / CATALOG_PATH_REL
     if not path.exists():
-        return DocsCatalogCheckResult(0)
+        return DocsCatalogCheckResult(1, ("catalog is absent",))
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

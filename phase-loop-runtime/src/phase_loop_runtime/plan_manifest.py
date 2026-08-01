@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -820,16 +821,13 @@ def canonical_plan_files(repo: Path, tree_oid: str) -> CanonicalPlanFiles:
     """The stable union of canonical phase-plan paths across the runner-captured
     ``tree_oid`` (typically ``HEAD``), the stage-0 Git index, and a bounded
     direct physical scan of ``plans/`` -- retaining each path's source-origin
-    flags. Also consults the LEGIBLE roadmap-status accessor (best-effort,
-    non-fatal) so manifest reporting shares that coherence-checked read path."""
+    flags. Also consults the LEGIBLE roadmap-status accessor so a defective
+    authority registry cannot be hidden by otherwise valid manifest paths."""
     repo = Path(repo).resolve()
 
-    try:
-        from . import roadmap_lint
+    from . import roadmap_lint
 
-        roadmap_lint.read_roadmap_status(repo, repo / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL)
-    except Exception:
-        pass  # best-effort: manifest scanning never depends on status coherence
+    roadmap_lint.validate_roadmap_status_coherence(repo, required=False)
 
     origins: dict[str, set[str]] = {}
     malformed: list[MalformedPlanFinding] = []
@@ -915,6 +913,29 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 )
             else:
                 registered.add(rel)
+            lifecycle = entry.get("lifecycle")
+            if isinstance(lifecycle, list) and lifecycle:
+                latest = lifecycle[-1]
+                metadata = latest.get("metadata") if isinstance(latest, dict) else None
+                digests: list[Any] = []
+                if isinstance(metadata, dict):
+                    contract = metadata.get("legible_plan_contract")
+                    rebind = metadata.get("digest_rebind")
+                    if isinstance(contract, dict) and "plan_sha256" in contract:
+                        digests.append(contract["plan_sha256"])
+                    if isinstance(rebind, dict) and "plan_sha256" in rebind:
+                        digests.append(rebind["plan_sha256"])
+                if digests:
+                    plan_path = repo / rel
+                    actual = hashlib.sha256(plan_path.read_bytes()).hexdigest() if plan_path.is_file() else None
+                    if any(not isinstance(digest, str) or digest != actual for digest in digests):
+                        malformed.append(
+                            MalformedPlanFinding(
+                                path=rel,
+                                kind="plan-digest",
+                                origin=frozenset({"manifest"}),
+                            )
+                        )
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"manifest"})))
     return registered, malformed
@@ -976,7 +997,7 @@ def _git_first_add_commit_iso(repo: Path, rel_path: str) -> str:
         return "1970-01-01T00:00:00Z"
     # `%cI` carries the committer's ORIGINAL offset; normalize to UTC (frozen
     # Git evidence, never filesystem mtime or wall clock).
-    parsed = datetime.fromisoformat(text)
+    parsed = datetime.fromisoformat(text.removesuffix("Z") + ("+00:00" if text.endswith("Z") else ""))
     return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 

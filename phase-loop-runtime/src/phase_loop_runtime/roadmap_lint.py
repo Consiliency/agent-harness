@@ -698,13 +698,17 @@ def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
 def validate_roadmap_status_coherence(repo: Path, required: bool = False) -> Optional[dict]:
     """Full coherence validation over ``specs/roadmap-status.json``.
 
-    A wholly absent registry is a no-op (legacy/synthetic repositories are
-    compatible regardless of ``required``); a present-but-defective registry
-    always raises typed. Canonical-repository callers pass ``required=True``.
+    A wholly absent registry is a no-op for legacy/synthetic repositories.
+    When the canonical LEGIBLE phase marker is present, ``required=True`` also
+    makes absence a typed failure. Present-but-defective registries always fail.
     """
     repo = Path(repo)
     registry_path = repo / ROADMAP_STATUS_REGISTRY_REL
-    return read_roadmap_status(repo, registry_path)
+    status = read_roadmap_status(repo, registry_path)
+    canonical_marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
+    if status is None and required and canonical_marker.is_file():
+        raise MalformedRegistryError(f"required roadmap-status registry is absent: {registry_path}")
+    return status
 
 
 def declared_active_roadmap(repo: Path) -> Path:

@@ -93,7 +93,21 @@ _OPERATIONAL_SECTION_FIELDS = {
     ),
     "process_attestations": frozenset({"builder", "attester"}),
     "test_execution": frozenset({"nodeid_count", "nodeid_digest", "default", "forced_red", "final"}),
-    "pull_request": frozenset({"repository", "number", "state", "base", "head", "merge_commit", "parents"}),
+    "pull_request": frozenset(
+        {
+            "repository",
+            "number",
+            "state",
+            "base",
+            "head",
+            "merge_commit",
+            "parents",
+            "snapshot_path",
+            "snapshot_sha256",
+            "body_sha256",
+            "changed_paths",
+        }
+    ),
     "target_integration": frozenset({"candidate", "server_merge", "integration", "parents"}),
     "assumption_probes": frozenset({"execution_head", "records"}),
     "artifacts": frozenset({"records"}),
@@ -793,6 +807,28 @@ def _validate_operational_sections(
             present_fields = set(section) if isinstance(section, Mapping) else set()
             return f"{name}: missing required fields {sorted(required_fields - present_fields)}"
 
+    artifact_records = sections["artifacts"]["records"]
+    if not isinstance(artifact_records, list) or not artifact_records:
+        return "artifacts: records are absent"
+    artifact_data: dict[str, bytes] = {}
+    for record in artifact_records:
+        if not isinstance(record, Mapping) or not {"path", "byte_length", "sha256"}.issubset(record):
+            return "artifacts: malformed record"
+        rel = record["path"]
+        if not isinstance(rel, str) or not rel or rel in artifact_data:
+            return "artifacts: malformed or duplicate path"
+        artifact_path = repo / rel
+        try:
+            artifact_path.resolve(strict=True).relative_to(repo)
+        except (OSError, ValueError):
+            return f"artifacts: path escapes or is missing: {rel}"
+        if artifact_path.is_symlink() or not artifact_path.is_file():
+            return f"artifacts: path is not a regular file: {rel}"
+        data = artifact_path.read_bytes()
+        if record["byte_length"] != len(data) or record["sha256"] != hashlib.sha256(data).hexdigest():
+            return f"artifacts: digest drift: {rel}"
+        artifact_data[rel] = data
+
     roadmap_status = sections["roadmap_status"]
     roadmap_records = roadmap_status["roadmaps"]
     if (
@@ -922,8 +958,43 @@ def _validate_operational_sections(
         != {"passed": 84, "skipped": 0, "failed": 0, "errors": 0}
     ):
         return "test_execution: frozen default/RED/final inventory is invalid"
+    try:
+        expected_nodeids = _load_frozen_nodeids(repo)
+    except (OSError, AttributeError, ImportError, LegibleTestExecutionError) as exc:
+        return f"test_execution: cannot load frozen inventory: {exc}"
+    expected_digest = hashlib.sha256("\n".join(expected_nodeids).encode()).hexdigest()
+    if len(expected_nodeids) != 84 or test_execution["nodeid_digest"] != expected_digest:
+        return "test_execution: nodeid digest is not bound to the frozen inventory"
+    for mode, record in (("default", default), ("forced_red", forced_red), ("final", final)):
+        junit_rel = record.get("junit_path")
+        if not isinstance(junit_rel, str) or junit_rel not in artifact_data:
+            return f"test_execution: {mode} JUnit is not in the artifact inventory"
+        try:
+            observed = collect_test_execution_evidence(
+                repo,
+                junit_path=repo / junit_rel,
+                expected_total=84,
+                mode=mode,
+            )
+        except (ET.ParseError, LegibleTestExecutionError, OSError) as exc:
+            return f"test_execution: {mode} JUnit failed semantic validation: {exc}"
+        if {
+            "passed": observed.passed,
+            "skipped": observed.skipped,
+            "failed": observed.failed,
+            "errors": observed.errors,
+        } != {key: record.get(key) for key in ("passed", "skipped", "failed", "errors")}:
+            return f"test_execution: {mode} counts disagree with JUnit"
 
     pull_request = sections["pull_request"]
+    snapshot_rel = pull_request["snapshot_path"]
+    snapshot_bytes = artifact_data.get(snapshot_rel) if isinstance(snapshot_rel, str) else None
+    try:
+        snapshot = json.loads(snapshot_bytes) if snapshot_bytes is not None else None
+    except json.JSONDecodeError:
+        snapshot = None
+    changed_proc = _git_ok(repo, "diff", "--name-only", pull_request["base"], pull_request["head"])
+    actual_changed_paths = sorted(changed_proc.stdout.splitlines()) if changed_proc.returncode == 0 else None
     if (
         pull_request["repository"] != "Consiliency/agent-harness"
         or pull_request["number"] != 347
@@ -936,6 +1007,22 @@ def _validate_operational_sections(
         or pull_request["base"] != chronology["implementation_base"]
         or pull_request["head"] != chronology["pr_head"]
         or pull_request["merge_commit"] != chronology["server_merge"]
+        or snapshot_bytes is None
+        or hashlib.sha256(snapshot_bytes).hexdigest() != pull_request["snapshot_sha256"]
+        or not isinstance(snapshot, Mapping)
+        or snapshot.get("base") != pull_request["base"]
+        or snapshot.get("head") != pull_request["head"]
+        or snapshot.get("merge_commit") != pull_request["merge_commit"]
+        or snapshot.get("head_tree") != _rev_parse(repo, f"{pull_request['head']}^{{tree}}")
+        or snapshot.get("merge_tree") != _rev_parse(repo, f"{pull_request['merge_commit']}^{{tree}}")
+        or snapshot.get("changed_paths") != pull_request["changed_paths"]
+        or pull_request["changed_paths"] != actual_changed_paths
+        or pull_request["changed_paths"] != [_FROZEN_AGENT_HARNESS_347_PATH]
+        or not isinstance(snapshot.get("body"), str)
+        or hashlib.sha256(snapshot["body"].encode()).hexdigest() != pull_request["body_sha256"]
+        or not isinstance(snapshot.get("checks"), list)
+        or not snapshot["checks"]
+        or any(check != "SUCCESS" for check in snapshot["checks"])
     ):
         return "pull_request: exact merged agent-harness#347 identity is absent"
 
@@ -964,6 +1051,7 @@ def _validate_operational_sections(
             or record.get("schema") != "roadmap_assumption_probe.v1"
             or not record.get("probe_id")
             or record.get("state") not in {"pending", "resolved"}
+            or not isinstance(record.get("response_path"), str)
             or not _is_sha256(record.get("response_sha256"))
             or not isinstance(record.get("response_byte_length"), int)
             or record["response_byte_length"] < 0
@@ -973,25 +1061,22 @@ def _validate_operational_sections(
         or "LEGIBLE-A3-REVIEWTRUTH-TRANSITION" not in {record["probe_id"] for record in probe_records}
     ):
         return "assumption_probes: execution-head-bound records are absent"
-
-    artifact_records = sections["artifacts"]["records"]
-    if not isinstance(artifact_records, list) or not artifact_records:
-        return "artifacts: records are absent"
-    artifact_paths: set[str] = set()
-    for record in artifact_records:
-        if not isinstance(record, Mapping) or not {"path", "byte_length", "sha256"}.issubset(record):
-            return "artifacts: malformed record"
-        artifact_path = repo / str(record["path"])
+    for record in probe_records:
+        response_bytes = artifact_data.get(record["response_path"])
+        if (
+            response_bytes is None
+            or len(response_bytes) != record["response_byte_length"]
+            or hashlib.sha256(response_bytes).hexdigest() != record["response_sha256"]
+        ):
+            return f"assumption_probes: response payload drift: {record['probe_id']}"
         try:
-            artifact_path.resolve(strict=True).relative_to(repo)
-        except (OSError, ValueError):
-            return f"artifacts: path escapes or is missing: {record['path']}"
-        if artifact_path.is_symlink() or not artifact_path.is_file():
-            return f"artifacts: path is not a regular file: {record['path']}"
-        data = artifact_path.read_bytes()
-        if record["byte_length"] != len(data) or record["sha256"] != hashlib.sha256(data).hexdigest():
-            return f"artifacts: digest drift: {record['path']}"
-        artifact_paths.add(str(record["path"]))
+            response = json.loads(response_bytes)
+        except json.JSONDecodeError:
+            return f"assumption_probes: malformed response payload: {record['probe_id']}"
+        if not isinstance(response, Mapping) or response.get("state") != record["state"]:
+            return f"assumption_probes: response state drift: {record['probe_id']}"
+
+    artifact_paths = set(artifact_data)
     cli_rel = Path(str(attester["cli_path"])).resolve().relative_to(repo).as_posix()
     required_artifacts = {
         roadmap_status["registry_path"],
@@ -1005,6 +1090,22 @@ def _validate_operational_sections(
         or not any("panel" in Path(path).name and path.endswith(".json") for path in artifact_paths)
     ):
         return "artifacts: required registry/source/JUnit/panel inventory is incomplete"
+    panel_paths = [path for path in artifact_paths if "panel" in Path(path).name and path.endswith(".json")]
+    if len(panel_paths) != 1:
+        return "artifacts: implementation panel inventory is ambiguous"
+    try:
+        panel = json.loads(artifact_data[panel_paths[0]])
+    except json.JSONDecodeError:
+        return "artifacts: implementation panel is malformed"
+    required_models = {"claude-fable-5", "gemini-3.6-flash", "gpt-5.6-sol", "grok-4.5"}
+    if (
+        not isinstance(panel, Mapping)
+        or panel.get("head") != expected_head
+        or not isinstance(panel.get("verdicts"), Mapping)
+        or set(panel["verdicts"]) != required_models
+        or any(verdict != "AGREE" for verdict in panel["verdicts"].values())
+    ):
+        return "artifacts: implementation panel is not exact-head unanimous"
     return None
 
 
@@ -1199,6 +1300,7 @@ def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, c
     return {
         "repo": str(repo),
         "stage": stage,
+        "status": "awaiting_phase_closeout",
         "head": actual_head,
         "builder_run_id": builder_run_id,
         "candidate_head": candidate_head,
@@ -1345,7 +1447,37 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     except LegibleStatusEvidenceError as exc:
         print(f"legible_evidence verify: FAIL [{exc.code}] {exc}", file=sys.stderr)
         return 1
-    print(f"legible_evidence verify: roadmap_status OK (stage={args.stage}, head={expected_head})")
+    evidence_arg = getattr(args, "evidence", None)
+    candidates = (
+        [Path(evidence_arg)]
+        if evidence_arg
+        else sorted((repo / ".phase-loop" / "runs").glob(f"*/{_OPERATIONAL_EVIDENCE_FILE_NAME}"))
+    )
+    valid_paths: list[Path] = []
+    findings: list[str] = []
+    for candidate in candidates:
+        validation = validate_operational_evidence(
+            repo=repo,
+            path=candidate,
+            stage=args.stage,
+            expected_head=expected_head,
+        )
+        if validation.ok:
+            valid_paths.append(candidate)
+        else:
+            findings.append(f"{candidate}: [{validation.code}] {validation.finding}")
+    if len(valid_paths) != 1:
+        detail = "; ".join(findings) if findings else "no sealed operational aggregate found"
+        print(
+            f"legible_evidence verify: FAIL [operational_evidence] expected one valid aggregate, "
+            f"found {len(valid_paths)}: {detail}",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"legible_evidence verify: OK (stage={args.stage}, head={expected_head}, "
+        f"evidence={valid_paths[0]})"
+    )
     return 0
 
 
@@ -1356,6 +1488,7 @@ def main(argv: list[str]) -> int:
     verify.add_argument("--repo", default=".")
     verify.add_argument("--stage", default="candidate")
     verify.add_argument("--head", default="HEAD")
+    verify.add_argument("--evidence")
     args = parser.parse_args(argv)
     if args.command == "verify":
         return _cmd_verify(args)
