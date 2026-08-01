@@ -273,7 +273,12 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
 
     git("switch", "-c", "target", refresh_base)
     for rel, nodeids in frozen_by_path:
-        (repo / rel).write_text(f"LEGIBLE_EXPECTED_NODEIDS_V1 = {nodeids!r}\n", encoding="utf-8")
+        (repo / rel).write_text(
+            "import pytest\n"
+            f"pytestmark = pytest.mark.skipif(True, reason={LEGIBLE_SKIP_REASON!r})\n"
+            f"LEGIBLE_EXPECTED_NODEIDS_V1 = {nodeids!r}\n",
+            encoding="utf-8",
+        )
     git("add", *(rel for rel, _ in frozen_by_path))
     git("commit", "-m", "tests-only landing")
     implementation_base = git("rev-parse", "HEAD")
