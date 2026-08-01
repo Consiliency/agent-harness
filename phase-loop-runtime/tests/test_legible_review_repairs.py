@@ -1961,10 +1961,14 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
                     "head": expected_head,
                     "bundle_path": bundle_path.relative_to(repo).as_posix(),
                     "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
-                    "status": "OK",
-                    "usable": True,
-                    "verdict": "AGREE",
-                    "text": "verified transition evidence\nAGREE",
+                    "capability": "can_probe",
+                    "binding_prover": False,
+                    "outcome": "DEGRADED_NO_LAUNCH",
+                    "status": "DEGRADED",
+                    "usable": False,
+                    "codex_process_count": 0,
+                    "grok_process_count": 0,
+                    "text": "write-capable preflight unavailable; no prover launched",
                 },
                 sort_keys=True,
             )
@@ -1977,7 +1981,10 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
 
     def fake_panel(_repo, run_dir, _expected_head, bundle_path):
         events.append("panel")
-        assert "verified transition evidence" in bundle_path.read_text(encoding="utf-8")
+        staged = bundle_path.read_text(encoding="utf-8")
+        assert "DEGRADED_NO_LAUNCH" in staged
+        assert "codex_process_count: 0" in staged
+        assert "grok_process_count: 0" in staged
         panel = run_dir / "implementation-panel.json"
         panel.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
         return panel
@@ -2047,7 +2054,7 @@ def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
     assert "context_refs" not in observed
 
 
-def test_legible_c4_early_prover_uses_canonical_read_only_sol_once(tmp_path, monkeypatch):
+def test_legible_c4_early_prover_stages_degraded_zero_launch_audit(tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker, runner
 
     repo = make_repo(tmp_path)
@@ -2055,88 +2062,27 @@ def test_legible_c4_early_prover_uses_canonical_read_only_sol_once(tmp_path, mon
     run_dir.mkdir(parents=True)
     bundle = run_dir / "bundle.md"
     bundle.write_text("verified transition evidence\n", encoding="utf-8")
-    calls = []
-
-    def fake_invoke(board, artifact, **kwargs):
-        calls.append((board, artifact, kwargs))
-        seat = board.seats[0]
-        return SimpleNamespace(
-            legs=(
-                SimpleNamespace(
-                    leg="codex",
-                    seat_key=seat.seat_key,
-                    status="OK",
-                    usable=True,
-                    text="independently verified transition evidence\nAGREE",
-                ),
-            )
-        )
-
-    monkeypatch.setattr(panel_invoker, "invoke_board", fake_invoke)
+    monkeypatch.setattr(
+        panel_invoker,
+        "invoke_board",
+        lambda *_args, **_kwargs: pytest.fail("degraded preflight must launch no reviewer process"),
+    )
 
     artifact = runner._run_legible_c4_early_prover(repo, run_dir, "1" * 40, bundle)
 
-    assert len(calls) == 1
-    board, inline_artifact, kwargs = calls[0]
-    assert board.name == "legible-c4-early-prover"
-    assert board.purpose == "premerge-review"
-    assert len(board.seats) == 1
-    seat = board.seats[0]
-    assert (seat.harness, seat.model, seat.effort) == ("codex", "gpt-5.6-sol", "max")
-    assert inline_artifact == ""
-    assert kwargs["repo_dir"] == repo
-    assert kwargs["artifact_ref"] == str(bundle)
-    assert kwargs["stream_dir"] == run_dir / "c4-early-prover-stream"
-    assert "context_refs" not in kwargs
     payload = json.loads(artifact.read_text(encoding="utf-8"))
-    assert payload["capability"] == "read_only_live_probe"
-    assert payload["status"] == "OK"
-    assert payload["usable"] is True
-    assert payload["verdict"] == "AGREE"
-
-
-@pytest.mark.parametrize(
-    ("legs", "expected_message"),
-    (
-        ((), "invalid seat count"),
-        ((("DEGRADED", True, "AGREE"),), "usable AGREE evidence"),
-        ((("OK", False, "AGREE"),), "usable AGREE evidence"),
-        ((("OK", True, "DISAGREE"),), "usable AGREE evidence"),
-        ((("OK", True, "AGREE"), ("OK", True, "AGREE")), "invalid seat count"),
-    ),
-)
-def test_legible_c4_early_prover_fails_closed(tmp_path, monkeypatch, legs, expected_message):
-    from phase_loop_runtime import panel_invoker, runner
-
-    repo = make_repo(tmp_path)
-    run_dir = repo / ".phase-loop" / "runs" / "early-prover-failure"
-    run_dir.mkdir(parents=True)
-    bundle = run_dir / "bundle.md"
-    bundle.write_text("verified transition evidence\n", encoding="utf-8")
-    calls = []
-
-    def fake_invoke(board, artifact, **kwargs):
-        calls.append((board, artifact, kwargs))
-        seat = board.seats[0]
-        return SimpleNamespace(
-            legs=tuple(
-                SimpleNamespace(
-                    leg="codex",
-                    seat_key=seat.seat_key,
-                    status=status,
-                    usable=usable,
-                    text=f"reviewed transition evidence\n{verdict}",
-                )
-                for status, usable, verdict in legs
-            )
-        )
-
-    monkeypatch.setattr(panel_invoker, "invoke_board", fake_invoke)
-
-    with pytest.raises(legible_evidence.LegibleProcessBootstrapError, match=expected_message):
-        runner._run_legible_c4_early_prover(repo, run_dir, "1" * 40, bundle)
-
-    assert len(calls) == 1
+    assert payload["capability"] == "can_probe"
+    assert payload["binding_prover"] is False
+    assert payload["outcome"] == "DEGRADED_NO_LAUNCH"
+    assert payload["status"] == "DEGRADED"
+    assert payload["usable"] is False
+    assert payload["codex_preflight"]["verdict"] == "FAIL"
+    assert payload["codex_preflight"]["agent_launch_count"] == 0
+    assert payload["codex_launch"]["launched"] is False
+    assert payload["codex_launch"]["codex_process_count"] == 0
+    assert payload["grok_fallback"]["os_confinement_available"] is False
+    assert payload["grok_fallback"]["launched"] is False
+    assert payload["grok_fallback"]["grok_process_count"] == 0
 
 
 def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
