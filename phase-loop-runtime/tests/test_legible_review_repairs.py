@@ -14,8 +14,11 @@ from phase_loop_runtime.plan_manifest import check
 from phase_loop_runtime.roadmap_assumptions import _classify_reviewtruth_transition
 from phase_loop_runtime.verification_evidence import (
     ARTIFACT_NAME,
+    LOG_NAME,
+    VerificationArtifactContractError,
     _bind_sidecar_extension,
     run_verification,
+    validate_verification_artifact,
     validate_verification_artifact_for_plan,
 )
 from phase_loop_test_utils import make_repo
@@ -184,3 +187,78 @@ def test_catalog_check_rejects_missing_current_rescan_entry(tmp_path):
 
     assert result.exit_code == 1
     assert "README.md" in "\n".join(result.findings)
+
+
+def test_sidecar_binder_rejects_invalid_v2_artifact_before_resealing(tmp_path):
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "probe"
+    run_verification(repo, run_dir, [], None, None, 10, phase_alias="LEGIBLE")
+    artifact_path = run_dir / ARTIFACT_NAME
+    log_path = run_dir / LOG_NAME
+    log_path.write_bytes(b"tampered-before-bind\n" + log_path.read_bytes())
+    assert validate_verification_artifact(artifact_path).code == "log_sha256_mismatch"
+    sidecar_path = run_dir / "legible-verification-sidecar.json"
+    sidecar_path.write_text("{}", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    record = legible_evidence.bind_verification_sidecar(
+        repo,
+        run_dir=run_dir,
+        stage="candidate",
+        expected_head=head,
+        bootstrap_head=head,
+        process_start_token="fresh-process-token",
+    )
+
+    with pytest.raises(VerificationArtifactContractError) as excinfo:
+        _bind_sidecar_extension(
+            artifact_path,
+            namespace=legible_evidence.EXTENSION_NAMESPACE,
+            record=record.__dict__,
+        )
+
+    assert excinfo.value.code == "log_sha256_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value", "expected_code"),
+    [
+        ("stage", "not-a-real-stage", "sidecar_stage_mismatch"),
+        ("expected_head", "0" * 40, "sidecar_head_mismatch"),
+        ("bootstrap_head", "f" * 40, "sidecar_bootstrap_mismatch"),
+        ("process_start_token", "", "sidecar_process_token_missing"),
+    ],
+)
+def test_plan_aware_validation_rejects_invalid_sidecar_identity_binding(
+    tmp_path, field, invalid_value, expected_code
+):
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "probe"
+    run_verification(repo, run_dir, [], None, None, 10, phase_alias="LEGIBLE")
+    sidecar_path = run_dir / "legible-verification-sidecar.json"
+    sidecar_path.write_text("{}", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    values = {
+        "stage": "candidate",
+        "expected_head": head,
+        "bootstrap_head": head,
+        "process_start_token": "fresh-process-token",
+    }
+    values[field] = invalid_value
+    record = legible_evidence.bind_verification_sidecar(repo, run_dir=run_dir, **values)
+    artifact_path = run_dir / ARTIFACT_NAME
+    _bind_sidecar_extension(
+        artifact_path,
+        namespace=legible_evidence.EXTENSION_NAMESPACE,
+        record=record.__dict__,
+    )
+
+    result = validate_verification_artifact_for_plan(
+        artifact_path, (legible_evidence.EXTENSION_NAMESPACE,)
+    )
+
+    assert not result.ok
+    assert result.code == expected_code
