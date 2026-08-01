@@ -35,6 +35,70 @@ def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
     return rel
 
 
+def _operational_sections(repo: Path, head: str) -> dict[str, dict]:
+    artifact_path = "README.md"
+    artifact_bytes = (repo / artifact_path).read_bytes()
+    return {
+        "roadmap_status": {
+            "registry_path": "specs/roadmap-status.json",
+            "registry_sha256": "1" * 64,
+            "registry_byte_length": 1,
+            "selected_roadmap": "specs/phase-plans-v10.md",
+            "tracked_path_set_sha256": "2" * 64,
+            "roadmaps": [{"path": "specs/phase-plans-v10.md"}],
+        },
+        "chronology": {
+            "tests_landing": head,
+            "implementation_base": head,
+            "candidate_head": head,
+            "plan_sha256": "3" * 64,
+            "roadmap_sha256": "4" * 64,
+        },
+        "process_attestations": {
+            "builder": {"run_id": "builder-1", "process_start_token": "builder-token"},
+            "attester": {
+                "head": head,
+                "bootstrap_head": head,
+                "repo_realpath": str(repo.resolve()),
+                "cli_path": str(
+                    repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
+                ),
+                "cli_sha256": "5" * 64,
+                "python_executable": sys.executable,
+                "process_start_token": "attester-token",
+            },
+        },
+        "test_execution": {
+            "nodeid_count": 84,
+            "nodeid_digest": "8b6d153cd009bdc68ebf0f3eca2f60c505386f9d164afca3aafead981a84be22",
+            "final": {"passed": 84, "skipped": 0, "failed": 0, "errors": 0},
+        },
+        "pull_request": {
+            "repository": "Consiliency/agent-harness",
+            "number": 347,
+            "state": "MERGED",
+            "head": head,
+            "merge_commit": head,
+        },
+        "target_integration": {
+            "candidate": head,
+            "server_merge": head,
+            "integration": head,
+            "parents": [head, head],
+        },
+        "assumption_probes": {"execution_head": head, "records": [{"probe_id": "fixture"}]},
+        "artifacts": {
+            "records": [
+                {
+                    "path": artifact_path,
+                    "byte_length": len(artifact_bytes),
+                    "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+                }
+            ]
+        },
+    }
+
+
 def test_legacy_fable_observation_without_external_status_remains_pending(tmp_path, monkeypatch):
     raw = {
         "issue": {"number": 396, "state": "OPEN", "stateReason": None},
@@ -447,19 +511,7 @@ def test_operational_evidence_round_trip_is_sealed_and_closed(tmp_path):
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
     run_dir = repo / ".phase-loop" / "runs" / "attest-1"
-    sections = {
-        name: {"head": head}
-        for name in (
-            "roadmap_status",
-            "chronology",
-            "process_attestations",
-            "test_execution",
-            "pull_request",
-            "target_integration",
-            "assumption_probes",
-            "artifacts",
-        )
-    }
+    sections = _operational_sections(repo, head)
 
     path = legible_evidence._assemble_operational_evidence(
         repo=repo,
@@ -488,19 +540,7 @@ def test_operational_evidence_rejects_section_drift(tmp_path):
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
     run_dir = repo / ".phase-loop" / "runs" / "attest-1"
-    sections = {
-        name: {"head": head}
-        for name in (
-            "roadmap_status",
-            "chronology",
-            "process_attestations",
-            "test_execution",
-            "pull_request",
-            "target_integration",
-            "assumption_probes",
-            "artifacts",
-        )
-    }
+    sections = _operational_sections(repo, head)
     path = legible_evidence._assemble_operational_evidence(
         repo=repo,
         run_dir=run_dir,
@@ -521,6 +561,58 @@ def test_operational_evidence_rejects_section_drift(tmp_path):
 
     assert not validation.ok
     assert validation.code == "operational_evidence_seal_mismatch"
+
+
+def test_operational_evidence_rejects_placeholder_sections(tmp_path):
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    sections = {name: {"head": head} for name in legible_evidence._OPERATIONAL_EVIDENCE_SECTIONS}
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / "attest-placeholder",
+        stage="candidate",
+        expected_head=head,
+        sections=sections,
+    )
+
+    validation = legible_evidence.validate_operational_evidence(
+        repo=repo, path=path, stage="candidate", expected_head=head
+    )
+
+    assert not validation.ok
+    assert validation.code == "operational_evidence_sections"
+
+
+def test_finalize_operational_attestation_binds_aggregate_to_verification(tmp_path):
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "attest-final"
+    run_verification(repo, run_dir, [], None, None, 10, phase_alias="LEGIBLE")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    evidence_path = legible_evidence.finalize_operational_attestation(
+        repo=repo,
+        run_dir=run_dir,
+        artifact_path=run_dir / ARTIFACT_NAME,
+        stage="candidate",
+        expected_head=head,
+        bootstrap_head=head,
+        process_start_token="attester-token",
+        sections=_operational_sections(repo, head),
+    )
+
+    assert evidence_path.name == "legible-operational-evidence.json"
+    result = validate_verification_artifact_for_plan(
+        run_dir / ARTIFACT_NAME, (legible_evidence.EXTENSION_NAMESPACE,)
+    )
+    assert result.ok
+    payload = json.loads((run_dir / ARTIFACT_NAME).read_text(encoding="utf-8"))
+    assert payload["extensions"][legible_evidence.EXTENSION_NAMESPACE]["path"].endswith(
+        "/legible-operational-evidence.json"
+    )
 
 
 @pytest.mark.parametrize(
