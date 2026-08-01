@@ -623,11 +623,41 @@ def phase_status_disagreements(
 # follows").
 
 MANIFEST_MALFORMED_KINDS = frozenset(
-    {"noncanonical", "path-escape", "conflicted-index", "symlink", "non-regular", "undecodable-name"}
+    {
+        "noncanonical", "path-escape", "conflicted-index", "symlink", "non-regular",
+        "undecodable-name", "plan-contract", "plan-digest",
+    }
 )
 MANIFEST_ORIGIN_FLAGS = frozenset({"head", "index", "filesystem", "manifest"})
 
 _CANONICAL_LOOKALIKE_RE = re.compile(r"^phase-plan-.*\.md$")
+_LEGIBLE_PLAN_REL = "plans/phase-plan-v10-LEGIBLE.md"
+_LEGIBLE_OWNED_PATHS = (
+    ".claude/docs-catalog.json",
+    "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
+    "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+    "phase-loop-runtime/src/phase_loop_runtime/discovery.py",
+    "phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py",
+    "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+    "phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py",
+    "phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py",
+    "phase-loop-runtime/src/phase_loop_runtime/roadmap_lint.py",
+    "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+    "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+    "phase-loop-runtime/tests/test_legible_evidence.py",
+    "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
+    "plans/manifest.json",
+    "specs/roadmap-assumption-probes-v10.json",
+    "specs/roadmap-status.json",
+)
+_LEGIBLE_TEST_PATHS = (
+    "phase-loop-runtime/tests/test_legible_evidence.py",
+    "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
+)
+
+
+class ManifestSourceError(RuntimeError):
+    """A required HEAD, index, or physical-plan source could not be read."""
 
 
 @dataclass(frozen=True)
@@ -730,7 +760,7 @@ def _git_ls_tree_plans(repo: Path, tree_oid: str) -> list[str]:
         capture_output=True, check=False,
     )
     if proc.returncode != 0:
-        return []
+        raise ManifestSourceError(f"git ls-tree failed for {tree_oid}: {proc.stderr.decode(errors='replace').strip()}")
     return [chunk.decode("utf-8", "surrogateescape") for chunk in proc.stdout.split(b"\0") if chunk]
 
 
@@ -741,7 +771,7 @@ def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str]]:
         capture_output=True, check=False,
     )
     if proc.returncode != 0:
-        return []
+        raise ManifestSourceError(f"git ls-files failed: {proc.stderr.decode(errors='replace').strip()}")
     out: list[tuple[str, str]] = []
     for chunk in proc.stdout.split(b"\0"):
         if not chunk:
@@ -760,7 +790,7 @@ def _git_conflicted_index_plans(repo: Path) -> list[str]:
         capture_output=True, check=False,
     )
     if proc.returncode != 0:
-        return []
+        raise ManifestSourceError(f"git conflicted-index scan failed: {proc.stderr.decode(errors='replace').strip()}")
     conflicted: set[str] = set()
     for chunk in proc.stdout.split(b"\0"):
         if not chunk:
@@ -776,14 +806,16 @@ def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanF
     """Direct-child physical scan of ``plans/`` -- filesystem-safe byte decoding,
     never following a directory-entry symlink, never reading plan content."""
     plans_dir = repo / "plans"
-    if not plans_dir.is_dir() or plans_dir.is_symlink():
-        return [], []
+    if plans_dir.is_symlink():
+        raise ManifestSourceError(f"physical plans source is symlinked: {plans_dir}")
+    if not plans_dir.is_dir():
+        raise ManifestSourceError(f"physical plans source is missing or not a directory: {plans_dir}")
     canonical: list[str] = []
     malformed: list[MalformedPlanFinding] = []
     try:
         raw_entries = os.listdir(os.fsencode(plans_dir))
-    except OSError:
-        return [], []
+    except OSError as exc:
+        raise ManifestSourceError(f"cannot scan physical plans source {plans_dir}: {exc}") from exc
     for raw_name in raw_entries:
         try:
             name = raw_name.decode("utf-8")
@@ -914,28 +946,44 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             else:
                 registered.add(rel)
             lifecycle = entry.get("lifecycle")
-            if isinstance(lifecycle, list) and lifecycle:
-                latest = lifecycle[-1]
-                metadata = latest.get("metadata") if isinstance(latest, dict) else None
-                digests: list[Any] = []
-                if isinstance(metadata, dict):
-                    contract = metadata.get("legible_plan_contract")
-                    rebind = metadata.get("digest_rebind")
-                    if isinstance(contract, dict) and "plan_sha256" in contract:
-                        digests.append(contract["plan_sha256"])
-                    if isinstance(rebind, dict) and "plan_sha256" in rebind:
-                        digests.append(rebind["plan_sha256"])
-                if digests:
-                    plan_path = repo / rel
-                    actual = hashlib.sha256(plan_path.read_bytes()).hexdigest() if plan_path.is_file() else None
-                    if any(not isinstance(digest, str) or digest != actual for digest in digests):
-                        malformed.append(
-                            MalformedPlanFinding(
-                                path=rel,
-                                kind="plan-digest",
-                                origin=frozenset({"manifest"}),
-                            )
-                        )
+            contracts: list[dict[str, Any]] = []
+            rebinds: list[dict[str, Any]] = []
+            if isinstance(lifecycle, list):
+                for event in lifecycle:
+                    metadata = event.get("metadata") if isinstance(event, dict) else None
+                    if not isinstance(metadata, dict):
+                        continue
+                    if isinstance(metadata.get("legible_plan_contract"), dict):
+                        contracts.append(metadata["legible_plan_contract"])
+                    if isinstance(metadata.get("digest_rebind"), dict):
+                        rebinds.append(metadata["digest_rebind"])
+            contract = contracts[-1] if contracts else None
+            if rel == _LEGIBLE_PLAN_REL:
+                owned_digest = hashlib.sha256(
+                    "".join(f"{path}\n" for path in _LEGIBLE_OWNED_PATHS).encode("utf-8")
+                ).hexdigest()
+                required_contract = (
+                    isinstance(contract, dict)
+                    and contract.get("owned_paths") == list(_LEGIBLE_OWNED_PATHS)
+                    and contract.get("owned_paths_count") == len(_LEGIBLE_OWNED_PATHS)
+                    and contract.get("owned_paths_sha256") == owned_digest
+                    and isinstance(contract.get("test_paths"), list)
+                    and len(contract["test_paths"]) == len(_LEGIBLE_TEST_PATHS)
+                    and set(contract["test_paths"]) == set(_LEGIBLE_TEST_PATHS)
+                    and isinstance(contract.get("plan_sha256"), str)
+                )
+                if not required_contract:
+                    malformed.append(
+                        MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
+                    )
+            digests = [item.get("plan_sha256") for item in (*contracts, *rebinds)]
+            if digests:
+                plan_path = repo / rel
+                actual = hashlib.sha256(plan_path.read_bytes()).hexdigest() if plan_path.is_file() else None
+                if any(not isinstance(digest, str) or digest != actual for digest in digests):
+                    malformed.append(
+                        MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
+                    )
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"manifest"})))
     return registered, malformed

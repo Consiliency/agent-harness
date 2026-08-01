@@ -465,9 +465,9 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
 
 
 _BANNER_DECLARATION_ATTEMPT_PREFIXES = (
-    re.compile(r"^> \*\*Status \("),
-    re.compile(r"^> # DELIVERED\b"),
-    re.compile(r"^> # SUPERSEDED\b"),
+    re.compile(r"^>\s*(?:\*\*)?STATUS\b", re.IGNORECASE),
+    re.compile(r"^>\s*#\s*DELIVERED\b", re.IGNORECASE),
+    re.compile(r"^>\s*#\s*SUPERSEDED\b", re.IGNORECASE),
 )
 
 
@@ -510,8 +510,8 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
 
     try:
         text = candidate.read_text(encoding="utf-8")
-    except OSError:
-        return candidate
+    except OSError as exc:
+        raise roadmap_lint.MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner: {exc}") from exc
 
     banner_status: str | None
     try:

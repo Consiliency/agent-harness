@@ -27,6 +27,18 @@ from typing import Any, Mapping, Sequence
 
 PROBE_SIDECAR_REL = "specs/roadmap-assumption-probes-v10.json"
 PROBE_SCHEMA = "roadmap_assumption_probe.v1"
+CANONICAL_ROADMAP_REL = "specs/phase-plans-v10.md"
+CANONICAL_PROBES_SHA256 = "bfb08073a28fcd9233b41fd681a879e3a8677435c7bf3c9dc6de6c00360ecc85"
+CANONICAL_PROBE_IDS = (
+    "LEGIBLE-A1-CONFORM-UNGATED", "LEGIBLE-A1-I118", "LEGIBLE-A1-PIN-SHA",
+    "LEGIBLE-A1-PIN-TAG", "LEGIBLE-A1-PR102", "LEGIBLE-A1-PR377",
+    "LEGIBLE-A1-SUBMISSION-DIGEST", "LEGIBLE-A1-TAG-DEREF", "LEGIBLE-A1-VERDICT-DIGEST",
+    "LEGIBLE-A2-GP-PIN", "LEGIBLE-A2-I128", "LEGIBLE-A2-LOCAL-VERSION",
+    "LEGIBLE-A2-NO-DEPENDENCY", "LEGIBLE-A3-EC14", "LEGIBLE-A3-EC4",
+    "LEGIBLE-A3-NO-DEGRADED-GATE", "LEGIBLE-A3-REVIEWTRUTH-TRANSITION",
+    "LEGIBLE-A4-DISCOVERY", "LEGIBLE-A4-PER-ENTRY", "LEGIBLE-A4-PR170",
+    "LEGIBLE-A5-RATIFICATION", "LEGIBLE-A5-RETRACTION", "LEGIBLE-A5-SHARED-EPOCH",
+)
 
 _SIDECAR_TOP_KEYS = frozenset({"schema", "roadmap", "roadmap_sha256", "probes"})
 _PROBE_KEYS = frozenset(
@@ -119,8 +131,10 @@ def load_probe_sidecar(repo: Path) -> dict:
         raise RoadmapAssumptionError("unsupported_schema", f"unsupported sidecar schema: {data['schema']!r}")
 
     roadmap_rel = data["roadmap"]
-    if not isinstance(roadmap_rel, str) or not roadmap_rel:
-        raise RoadmapAssumptionError("malformed_sidecar", "roadmap must be a nonempty string")
+    if roadmap_rel != CANONICAL_ROADMAP_REL:
+        raise RoadmapAssumptionError(
+            "sidecar_contract_drift", f"roadmap must be exactly {CANONICAL_ROADMAP_REL!r}"
+        )
     roadmap_path = repo / roadmap_rel
     try:
         roadmap_bytes = roadmap_path.read_bytes()
@@ -140,6 +154,14 @@ def load_probe_sidecar(repo: Path) -> dict:
     ids = [probe.get("id") if isinstance(probe, dict) else None for probe in probes]
     if any(pid is None for pid in ids) or ids != sorted(ids):
         raise RoadmapAssumptionError("malformed_sidecar", "probes must be stable-sorted by id")
+    probes_digest = hashlib.sha256(
+        json.dumps(probes, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if tuple(ids) != CANONICAL_PROBE_IDS or probes_digest != CANONICAL_PROBES_SHA256:
+        raise RoadmapAssumptionError(
+            "probe_contract_drift",
+            "probe declarations must equal the frozen 23-row v10 contract",
+        )
     seen: set[str] = set()
     for probe in probes:
         if not isinstance(probe, dict) or set(probe) != _PROBE_KEYS:
@@ -752,6 +774,7 @@ def _observe_reviewtruth_fable_transition(repo: Path, subject: Mapping[str, Any]
 
 __all__ = [
     "ALLOWED_PROBE_KINDS",
+    "CANONICAL_PROBE_IDS",
     "PROBE_SCHEMA",
     "PROBE_SIDECAR_REL",
     "ProbeFinding",

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import secrets
 import subprocess
 import sys
+import time
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 from typing import Mapping, NamedTuple
@@ -6681,6 +6683,646 @@ def _finalize_legible_operational_evidence(
         bootstrap_head=bootstrap_head,
         process_start_token=process_start_token,
         sections=sections,
+    )
+
+
+_LEGIBLE_REFRESH_BASE = "648be2f68d6804ecdc4046bb7d4f5ee81a90c356"
+_LEGIBLE_REFRESH_HEAD = "0f12c4614e859fd1082525be852fca4e52624890"
+_LEGIBLE_TESTS_LANDING = "bc732fe41e04934af5d7335091aa9acc9acf6622"
+_LEGIBLE_PR_BODY_SHA256 = "1b8410a0c2eab1c20f9d6e469336d933654003907425daded453b37faa7df0db"
+
+
+def _legible_git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=False
+    )
+    if proc.returncode != 0:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"git {' '.join(args)} failed: {proc.stderr.strip()}"
+        )
+    return proc.stdout.strip()
+
+
+def _legible_file_record(repo: Path, path: Path) -> dict[str, object]:
+    path = path.resolve(strict=True)
+    rel = path.relative_to(repo.resolve()).as_posix()
+    data = path.read_bytes()
+    return {"path": rel, "byte_length": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def _legible_pr_view(repo: Path) -> dict[str, object]:
+    proc = subprocess.run(
+        [
+            "gh", "pr", "view", "347", "--repo", "Consiliency/agent-harness", "--json",
+            "state,isDraft,headRefOid,baseRefOid,mergeCommit,body,statusCheckRollup",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"cannot read Consiliency/agent-harness#347: {proc.stderr.strip()}"
+        )
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 returned malformed JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 snapshot is not an object"
+        )
+    return payload
+
+
+def _legible_body_ancestors(repo: Path, body: str) -> list[str]:
+    short_ids = re.findall(r"\|\s*`([0-9a-f]{7,40})`\s*\|", body)
+    commits: list[str] = []
+    for short_id in short_ids:
+        commit = _legible_git(repo, "rev-parse", f"{short_id}^{{commit}}")
+        if commit not in commits:
+            commits.append(commit)
+    if len(commits) != 6:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"Consiliency/agent-harness#347 body must bind exactly six commit rows, found {len(commits)}"
+        )
+    return commits
+
+
+def _legible_successful_checks(snapshot: Mapping[str, object]) -> list[str]:
+    checks = snapshot.get("statusCheckRollup")
+    if not isinstance(checks, list) or not checks:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 has no required check evidence"
+        )
+    conclusions = [item.get("conclusion") for item in checks if isinstance(item, Mapping)]
+    if not conclusions or any(value not in {"SUCCESS", "SKIPPED"} for value in conclusions):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 checks are not all successful"
+        )
+    return ["SUCCESS" for value in conclusions if value == "SUCCESS"]
+
+
+def _run_legible_pr_transition(
+    *, repo: Path, expected_head: str, builder_run_id: str, process_start_token: str
+) -> dict[str, object]:
+    subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "fetch", "origin", "refs/pull/347/head"], check=True
+    )
+    snapshot = _legible_pr_view(repo)
+    body = snapshot.get("body")
+    base = _legible_git(repo, "rev-parse", "origin/main")
+    if (
+        snapshot.get("state") != "OPEN"
+        or snapshot.get("headRefOid") != _LEGIBLE_REFRESH_HEAD
+        or snapshot.get("baseRefOid") != _LEGIBLE_REFRESH_BASE
+        or not isinstance(body, str)
+        or hashlib.sha256(body.encode("utf-8")).hexdigest() != _LEGIBLE_PR_BODY_SHA256
+        or legible_evidence._changed_paths(repo, _LEGIBLE_REFRESH_BASE, _LEGIBLE_REFRESH_HEAD)
+        != [legible_evidence._FROZEN_AGENT_HARNESS_347_PATH]
+        or legible_evidence._python_semantic_tokens(
+            repo, _LEGIBLE_REFRESH_BASE, legible_evidence._FROZEN_AGENT_HARNESS_347_PATH
+        )
+        != legible_evidence._python_semantic_tokens(
+            repo, _LEGIBLE_REFRESH_HEAD, legible_evidence._FROZEN_AGENT_HARNESS_347_PATH
+        )
+        or not legible_evidence._is_ancestor(repo, base, expected_head)
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 pre-merge identity or candidate-base binding drifted"
+        )
+    body_ancestors = _legible_body_ancestors(repo, body)
+    if any(not legible_evidence._is_ancestor(repo, commit, _LEGIBLE_REFRESH_HEAD) for commit in body_ancestors):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 body commit is not an ancestor of its head"
+        )
+    _legible_successful_checks(snapshot)
+    expected_tree = legible_evidence._recomputed_merge_tree(
+        repo, _LEGIBLE_REFRESH_BASE, base, _LEGIBLE_REFRESH_HEAD
+    )
+    if expected_tree is None or legible_evidence._changed_paths(repo, base, expected_tree) != [
+        legible_evidence._FROZEN_AGENT_HARNESS_347_PATH
+    ]:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 does not produce the frozen clean merge result"
+        )
+    if snapshot.get("isDraft") is True:
+        subprocess.run(
+            ["gh", "pr", "ready", "347", "--repo", "Consiliency/agent-harness"],
+            cwd=repo,
+            check=True,
+        )
+    subprocess.run(
+        [
+            "gh", "pr", "merge", "347", "--repo", "Consiliency/agent-harness", "--merge",
+            "--match-head-commit", _LEGIBLE_REFRESH_HEAD,
+        ],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], check=True)
+    server_merge = _legible_git(repo, "rev-parse", "origin/main")
+    if (
+        legible_evidence._commit_parents(repo, server_merge) != [base, _LEGIBLE_REFRESH_HEAD]
+        or _legible_git(repo, "rev-parse", f"{server_merge}^{{tree}}") != expected_tree
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 server merge does not match the recomputed tree"
+        )
+    return {
+        "status": "transition_sealed",
+        "head": expected_head,
+        "builder_run_id": builder_run_id,
+        "process_start_token": process_start_token,
+        "server_base": base,
+        "server_merge": server_merge,
+        "candidate_requires_integration": True,
+    }
+
+
+def _legible_junit_record(repo: Path, path: Path, mode: str) -> dict[str, object]:
+    evidence = legible_evidence.collect_test_execution_evidence(
+        repo, junit_path=path, expected_total=84, mode=mode
+    )
+    return {
+        "junit_path": path.resolve().relative_to(repo.resolve()).as_posix(),
+        "passed": evidence.passed,
+        "skipped": evidence.skipped,
+        "failed": evidence.failed,
+        "errors": evidence.errors,
+    }
+
+
+def _run_legible_panel(repo: Path, run_dir: Path, expected_head: str, bundle_path: Path) -> Path:
+    from .advisor_board.presets import CODE_REVIEW_BOARD
+    from .panel_invoker import invoke_board
+
+    result = invoke_board(
+        CODE_REVIEW_BOARD,
+        "",
+        repo_dir=repo,
+        context_refs=(str(bundle_path),),
+        stream_dir=run_dir / "implementation-panel-stream",
+    )
+    legs: list[dict[str, object]] = []
+    verdicts: dict[str, str] = {}
+    for seat, outcome in zip(CODE_REVIEW_BOARD.seats, result.legs, strict=True):
+        lines = [line.strip() for line in outcome.text.splitlines() if line.strip()]
+        verdict = lines[-1] if lines and lines[-1] in {"AGREE", "PARTIALLY AGREE", "DISAGREE"} else "EMPTY"
+        leg_path = run_dir / f"implementation-panel-{outcome.leg}.json"
+        leg_payload = {
+            "leg": outcome.leg,
+            "model": seat.model,
+            "seat_key": outcome.seat_key,
+            "status": outcome.status,
+            "usable": outcome.usable,
+            "verdict": verdict,
+            "text": outcome.text,
+        }
+        leg_path.write_text(json.dumps(leg_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        legs.append(
+            {
+                key: leg_payload[key]
+                for key in ("leg", "model", "seat_key", "status", "usable", "verdict")
+            }
+            | {
+                "artifact_path": leg_path.relative_to(repo).as_posix(),
+                "artifact_sha256": hashlib.sha256(leg_path.read_bytes()).hexdigest(),
+            }
+        )
+        verdicts[seat.model] = verdict
+    if len(legs) != 4 or any(
+        leg["status"] != "OK" or leg["usable"] is not True or leg["verdict"] != "AGREE"
+        for leg in legs
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "mandatory exact-head LEGIBLE implementation board did not unanimously AGREE"
+        )
+    panel_path = run_dir / "implementation-panel.json"
+    panel_path.write_text(
+        json.dumps(
+            {
+                "schema": "advisor_board.v1",
+                "head": expected_head,
+                "bundle_path": bundle_path.relative_to(repo).as_posix(),
+                "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                "legs": legs,
+                "verdicts": verdicts,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return panel_path
+
+
+def _run_legible_operational_attestation(
+    *,
+    repo: Path,
+    plan: Path,
+    stage: str,
+    expected_head: str,
+    builder_run_id: str,
+    candidate_head: str | None,
+    process_start_token: str,
+) -> dict[str, object]:
+    repo = repo.resolve()
+    snapshot = _legible_pr_view(repo)
+    if snapshot.get("state") == "OPEN":
+        if stage != "candidate" or candidate_head is not None:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "the Consiliency/agent-harness#347 transition is candidate-stage only"
+            )
+        return _run_legible_pr_transition(
+            repo=repo,
+            expected_head=expected_head,
+            builder_run_id=builder_run_id,
+            process_start_token=process_start_token,
+        )
+    if snapshot.get("state") != "MERGED":
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"Consiliency/agent-harness#347 has unsupported state {snapshot.get('state')!r}"
+        )
+
+    integration = expected_head if stage == "candidate" else candidate_head
+    if not integration or not legible_evidence._is_ancestor(repo, integration, expected_head):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "canonical-main attestation is not descended from the supplied candidate head"
+        )
+    integration_parents = legible_evidence._commit_parents(repo, integration)
+    if not integration_parents or len(integration_parents) != 2:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "candidate head is not the required two-parent target integration"
+        )
+    phase_candidate, server_merge = integration_parents
+    server_parents = legible_evidence._commit_parents(repo, server_merge)
+    if not server_parents or len(server_parents) != 2:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 server merge is not a two-parent merge"
+        )
+    implementation_base, pr_head = server_parents
+    merge_oid = snapshot.get("mergeCommit")
+    if isinstance(merge_oid, Mapping):
+        merge_oid = merge_oid.get("oid")
+    body = snapshot.get("body")
+    if (
+        merge_oid != server_merge
+        or snapshot.get("headRefOid") != pr_head
+        or pr_head != _LEGIBLE_REFRESH_HEAD
+        or not isinstance(body, str)
+        or hashlib.sha256(body.encode("utf-8")).hexdigest() != _LEGIBLE_PR_BODY_SHA256
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "merged Consiliency/agent-harness#347 identity drifted"
+        )
+    body_ancestors = _legible_body_ancestors(repo, body)
+    checks = _legible_successful_checks(snapshot)
+
+    builder_dir = (repo / ".phase-loop" / "runs" / builder_run_id).resolve()
+    try:
+        builder_dir.relative_to((repo / ".phase-loop" / "runs").resolve())
+    except ValueError as exc:
+        raise legible_evidence.LegibleProcessBootstrapError("builder run identity escapes runner root") from exc
+    default_junit = builder_dir / "legible-tests-only-default.junit.xml"
+    red_junit = builder_dir / "legible-tests-only-red.junit.xml"
+    if not default_junit.is_file() or not red_junit.is_file():
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"builder run {builder_run_id!r} lacks the frozen default/RED JUnit pair"
+        )
+    builder_material = default_junit.read_bytes() + red_junit.read_bytes()
+    builder_token = hashlib.sha256(builder_run_id.encode("utf-8") + builder_material).hexdigest()
+    if builder_token == process_start_token:
+        raise legible_evidence.LegibleProcessBootstrapError("builder and attester process identities collide")
+
+    run_id = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-legible-attest-{secrets.token_hex(4)}"
+    run_dir = repo / ".phase-loop" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=False)
+    roadmap = repo / "specs" / "phase-plans-v10.md"
+    commands, operational_exemptions = verification_commands_from_plan(plan)
+    commands = [
+        command
+        for command in commands
+        if not (
+            "phase_loop_runtime.legible_evidence" in command
+            and "canonical-main" in command
+        )
+    ]
+    suite_command, suite_findings = resolve_suite_command_doc(repo, roadmap, plan)
+    if suite_findings:
+        raise legible_evidence.LegibleProcessBootstrapError(suite_findings[0].message)
+    verification_result = run_verification(
+        repo,
+        run_dir,
+        commands,
+        suite_command,
+        None,
+        float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
+        operational_exemptions=operational_exemptions,
+        python_pin=resolve_python_pin(roadmap, plan),
+        phase_alias="LEGIBLE",
+    )
+    artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
+    verification_validation = validate_verification_artifact(artifact_path)
+    if not verification_validation.ok:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"broad attestation verification failed: {verification_validation.code}"
+        )
+
+    final_junit = run_dir / "legible-final.junit.xml"
+    final_env = {**os.environ, "PHASE_LOOP_TDD_EXPECT_LEGIBLE": "1", "PYTHONPATH": "src"}
+    final_run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_legible_roadmap_contract.py",
+            "tests/test_legible_evidence.py",
+            f"--junitxml={final_junit}",
+            "-q",
+        ],
+        cwd=repo / "phase-loop-runtime",
+        env=final_env,
+        check=False,
+        timeout=float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
+    )
+    if final_run.returncode != 0:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"marker-active LEGIBLE JUnit failed with exit {final_run.returncode}"
+        )
+
+    probe_records: list[dict[str, object]] = []
+    probe_paths: list[Path] = []
+    probe_data = legible_evidence.roadmap_assumptions.load_probe_sidecar(repo)
+    for probe in probe_data["probes"]:
+        observation = legible_evidence.roadmap_assumptions.observe_assumption_probe(repo, probe)
+        finding = legible_evidence.roadmap_assumptions._evaluate(probe["expected"], observation)
+        if finding is not None:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                f"roadmap assumption probe {probe['id']} failed: {finding}"
+            )
+        state = "resolved"
+        if probe["kind"] == "reviewtruth_fable_transition":
+            state = legible_evidence.roadmap_assumptions._classify_reviewtruth_transition(observation) or ""
+        if state not in {"pending", "resolved"}:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                f"roadmap assumption probe {probe['id']} has no closed transition state"
+            )
+        response_path = run_dir / f"{probe['id'].lower()}.json"
+        response_path.write_text(
+            json.dumps(
+                {"probe_id": probe["id"], "state": state, "observation": observation},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        response_bytes = response_path.read_bytes()
+        probe_paths.append(response_path)
+        probe_records.append(
+            {
+                "schema": "roadmap_assumption_probe.v1",
+                "probe_id": probe["id"],
+                "state": state,
+                "response_path": response_path.relative_to(repo).as_posix(),
+                "response_sha256": hashlib.sha256(response_bytes).hexdigest(),
+                "response_byte_length": len(response_bytes),
+            }
+        )
+
+    bundle_path = run_dir / "implementation-review-bundle.md"
+    bundle_path.write_text(
+        "# LEGIBLE exact-head implementation review\n\n"
+        f"- head: `{expected_head}`\n"
+        f"- candidate: `{integration}`\n"
+        f"- plan: `{plan}`\n"
+        f"- roadmap: `{roadmap}`\n"
+        "- inspect the referenced checkout and finish with exactly AGREE or DISAGREE\n",
+        encoding="utf-8",
+    )
+    panel_path = _run_legible_panel(repo, run_dir, expected_head, bundle_path)
+
+    pr_snapshot_path = run_dir / "agent-harness-347-snapshot.json"
+    refresh_parents = legible_evidence._commit_parents(repo, pr_head)
+    pr_snapshot = {
+        "base": implementation_base,
+        "refresh_base": _LEGIBLE_REFRESH_BASE,
+        "body": body,
+        "body_ancestor_commits": body_ancestors,
+        "changed_paths": [legible_evidence._FROZEN_AGENT_HARNESS_347_PATH],
+        "checks": checks,
+        "head": pr_head,
+        "head_tree": _legible_git(repo, "rev-parse", f"{pr_head}^{{tree}}"),
+        "merge_commit": server_merge,
+        "merge_tree": _legible_git(repo, "rev-parse", f"{server_merge}^{{tree}}"),
+        "refresh_parents": refresh_parents,
+        "remote_head_oid": pr_head,
+    }
+    pr_snapshot_path.write_text(
+        json.dumps(pr_snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    frozen_nodeids = legible_evidence._load_frozen_nodeids(repo)
+    owned_digest = hashlib.sha256(
+        "".join(f"{path}\n" for path in legible_evidence._LEGIBLE_OWNED_PATHS).encode("utf-8")
+    ).hexdigest()
+    frozen_refs = {
+        "tests_landing": _LEGIBLE_TESTS_LANDING,
+        "implementation_base": implementation_base,
+        "phase_candidate": phase_candidate,
+        "candidate_head": integration,
+    }
+    cli_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
+    roadmap_status = legible_evidence.collect_roadmap_status(repo, required=True)
+    refresh_tree = legible_evidence._recomputed_merge_tree(
+        repo, _LEGIBLE_REFRESH_BASE, _LEGIBLE_REFRESH_BASE, pr_head
+    )
+    server_tree = legible_evidence._recomputed_merge_tree(
+        repo, _LEGIBLE_REFRESH_BASE, implementation_base, pr_head
+    )
+    integration_tree = legible_evidence._recomputed_merge_tree(
+        repo, implementation_base, phase_candidate, server_merge
+    )
+    external_path = legible_evidence._FROZEN_AGENT_HARNESS_347_PATH
+    sections: dict[str, Mapping[str, object]] = {
+        "roadmap_status": roadmap_status,
+        "chronology": {
+            "refresh_base": _LEGIBLE_REFRESH_BASE,
+            "tests_landing": _LEGIBLE_TESTS_LANDING,
+            "implementation_base": implementation_base,
+            "phase_candidate": phase_candidate,
+            "pr_head": pr_head,
+            "server_merge": server_merge,
+            "candidate_head": integration,
+            "plan_path": plan.relative_to(repo).as_posix(),
+            "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
+            "roadmap_path": roadmap.relative_to(repo).as_posix(),
+            "roadmap_sha256": hashlib.sha256(roadmap.read_bytes()).hexdigest(),
+            "owned_paths": list(legible_evidence._LEGIBLE_OWNED_PATHS),
+            "owned_paths_count": len(legible_evidence._LEGIBLE_OWNED_PATHS),
+            "owned_paths_sha256": owned_digest,
+            "frozen_test_blobs": {
+                rel: {
+                    name: legible_evidence._blob_oid(repo, ref, rel)
+                    for name, ref in frozen_refs.items()
+                }
+                for rel in legible_evidence.FROZEN_TEST_PATHS
+            },
+        },
+        "process_attestations": {
+            "builder": {"run_id": builder_run_id, "process_start_token": builder_token},
+            "attester": {
+                "head": expected_head,
+                "bootstrap_head": expected_head,
+                "repo_realpath": str(repo),
+                "cli_path": str(cli_path),
+                "cli_sha256": hashlib.sha256(cli_path.read_bytes()).hexdigest(),
+                "python_executable": sys.executable,
+                "process_start_token": process_start_token,
+                "loaded_runtime_blobs": {
+                    rel: legible_evidence._blob_oid(repo, expected_head, rel)
+                    for rel in legible_evidence._LOADED_ATTESTATION_RUNTIME_PATHS
+                },
+            },
+        },
+        "test_execution": {
+            "nodeid_count": len(frozen_nodeids),
+            "nodeid_digest": hashlib.sha256("\n".join(frozen_nodeids).encode("utf-8")).hexdigest(),
+            "default": _legible_junit_record(repo, default_junit, "default"),
+            "forced_red": _legible_junit_record(repo, red_junit, "forced_red"),
+            "final": _legible_junit_record(repo, final_junit, "final"),
+        },
+        "pull_request": {
+            "repository": "Consiliency/agent-harness",
+            "number": 347,
+            "state": "MERGED",
+            "base": implementation_base,
+            "refresh_base": _LEGIBLE_REFRESH_BASE,
+            "head": pr_head,
+            "remote_head_oid": pr_head,
+            "merge_commit": server_merge,
+            "parents": [implementation_base, pr_head],
+            "refresh_parents": refresh_parents,
+            "body_ancestor_commits": body_ancestors,
+            "snapshot_path": pr_snapshot_path.relative_to(repo).as_posix(),
+            "snapshot_sha256": hashlib.sha256(pr_snapshot_path.read_bytes()).hexdigest(),
+            "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "changed_paths": [external_path],
+            "comment_tokens_equal": True,
+            "external_blobs": {
+                "refresh_base": legible_evidence._blob_oid(repo, _LEGIBLE_REFRESH_BASE, external_path),
+                "implementation_base": legible_evidence._blob_oid(repo, implementation_base, external_path),
+                "phase_candidate": legible_evidence._blob_oid(repo, phase_candidate, external_path),
+                "head": legible_evidence._blob_oid(repo, pr_head, external_path),
+                "server_merge": legible_evidence._blob_oid(repo, server_merge, external_path),
+                "integration": legible_evidence._blob_oid(repo, integration, external_path),
+            },
+            "recomputed_trees": {
+                "refresh": refresh_tree,
+                "server": server_tree,
+                "integration": integration_tree,
+            },
+        },
+        "target_integration": {
+            "candidate": phase_candidate,
+            "server_merge": server_merge,
+            "integration": integration,
+            "parents": [phase_candidate, server_merge],
+            "recomputed_tree": integration_tree,
+        },
+        "assumption_probes": {"execution_head": expected_head, "records": probe_records},
+        "artifacts": {"records": []},
+    }
+    artifact_sources = [
+        repo / roadmap_status["registry_path"],
+        roadmap,
+        plan,
+        repo / "plans" / "manifest.json",
+        cli_path,
+        *(repo / rel for rel in legible_evidence.FROZEN_TEST_PATHS),
+        default_junit,
+        red_junit,
+        final_junit,
+        artifact_path,
+        run_dir / VERIFICATION_LOG_NAME,
+        bundle_path,
+        panel_path,
+        *sorted(run_dir.glob("implementation-panel-*.json")),
+        *probe_paths,
+        pr_snapshot_path,
+    ]
+    unique_sources = {path.resolve(): path for path in artifact_sources}
+    sections["artifacts"] = {
+        "records": [_legible_file_record(repo, unique_sources[path]) for path in sorted(unique_sources)]
+    }
+    evidence_path = _finalize_legible_operational_evidence(
+        repo=repo,
+        run_dir=run_dir,
+        artifact_path=artifact_path,
+        stage=stage,
+        expected_head=expected_head,
+        bootstrap_head=expected_head,
+        process_start_token=process_start_token,
+        sections=sections,
+    )
+    if stage == "canonical-main":
+        verification = legible_evidence.validate_operational_evidence(
+            repo=repo, path=evidence_path, stage=stage, expected_head=expected_head
+        )
+        if not verification.ok:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                f"canonical-main LEGIBLE wrapper failed: {verification.finding}"
+            )
+    return {
+        "status": "sealed",
+        "head": expected_head,
+        "candidate_head": integration,
+        "builder_run_id": builder_run_id,
+        "run_id": run_id,
+        "verification_artifact": str(artifact_path.relative_to(repo)),
+        "evidence_path": str(evidence_path.relative_to(repo)),
+        "verification_run_id": verification_result.run_id,
+    }
+
+
+def run_legible_operational_attestation(
+    *,
+    repo: Path,
+    stage: str,
+    expected_head: str,
+    builder_run_id: str,
+    candidate_head: str | None,
+    process_start_token: str,
+) -> dict[str, object]:
+    """Fresh-process LEGIBLE attestation entrypoint.
+
+    Registry-free fixture repositories do not carry the LEGIBLE plan and retain
+    the public bootstrap behavior. The canonical plan is handled by the closed
+    runner-owned collector below.
+    """
+    plan = Path(repo) / "plans" / "phase-plan-v10-LEGIBLE.md"
+    if not plan.is_file() or not _legible_verification_sidecar_declared(plan):
+        return {
+            "status": "not_applicable",
+            "head": expected_head,
+            "builder_run_id": builder_run_id,
+            "candidate_head": candidate_head,
+            "process_start_token": process_start_token,
+        }
+    return _run_legible_operational_attestation(
+        repo=Path(repo),
+        plan=plan,
+        stage=stage,
+        expected_head=expected_head,
+        builder_run_id=builder_run_id,
+        candidate_head=candidate_head,
+        process_start_token=process_start_token,
     )
 
 

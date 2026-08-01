@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -26,13 +27,14 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import tokenize
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from . import panel_invoker, roadmap_lint
+from . import panel_invoker, roadmap_assumptions, roadmap_lint
 
 LEGIBLE_CAPABILITY_VERSION = "legible.v1"
 
@@ -43,6 +45,29 @@ FROZEN_TEST_PATHS: tuple[str, ...] = (
     "phase-loop-runtime/tests/test_legible_evidence.py",
 )
 _FROZEN_AGENT_HARNESS_347_PATH = "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py"
+_LEGIBLE_OWNED_PATHS: tuple[str, ...] = (
+    ".claude/docs-catalog.json",
+    "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
+    "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+    "phase-loop-runtime/src/phase_loop_runtime/discovery.py",
+    "phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py",
+    "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+    "phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py",
+    "phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py",
+    "phase-loop-runtime/src/phase_loop_runtime/roadmap_lint.py",
+    "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+    "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+    "phase-loop-runtime/tests/test_legible_evidence.py",
+    "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
+    "plans/manifest.json",
+    "specs/roadmap-assumption-probes-v10.json",
+    "specs/roadmap-status.json",
+)
+_LOADED_ATTESTATION_RUNTIME_PATHS = (
+    "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+    "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+    "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+)
 
 _SIDECAR_RECORD_SCHEMA = "verification_evidence_sidecar.v1"
 _SIDECAR_RECORD_FIELDS = (
@@ -89,6 +114,11 @@ _OPERATIONAL_SECTION_FIELDS = {
             "plan_sha256",
             "roadmap_path",
             "roadmap_sha256",
+            "refresh_base",
+            "owned_paths",
+            "owned_paths_count",
+            "owned_paths_sha256",
+            "frozen_test_blobs",
         }
     ),
     "process_attestations": frozenset({"builder", "attester"}),
@@ -106,9 +136,18 @@ _OPERATIONAL_SECTION_FIELDS = {
             "snapshot_sha256",
             "body_sha256",
             "changed_paths",
+            "refresh_base",
+            "remote_head_oid",
+            "refresh_parents",
+            "body_ancestor_commits",
+            "comment_tokens_equal",
+            "external_blobs",
+            "recomputed_trees",
         }
     ),
-    "target_integration": frozenset({"candidate", "server_merge", "integration", "parents"}),
+    "target_integration": frozenset(
+        {"candidate", "server_merge", "integration", "parents", "recomputed_tree"}
+    ),
     "assumption_probes": frozenset({"execution_head", "records"}),
     "artifacts": frozenset({"records"}),
 }
@@ -796,6 +835,71 @@ def _bound_repo_file(repo: Path, path_value: Any, sha256_value: Any, expected_he
     return committed.returncode == 0 and committed.stdout == data
 
 
+def _changed_paths(repo: Path, older: str, newer: str) -> list[str] | None:
+    proc = _git_ok(repo, "diff", "--name-only", older, newer)
+    return sorted(proc.stdout.splitlines()) if proc.returncode == 0 else None
+
+
+def _blob_oid(repo: Path, ref: str, rel: str) -> str | None:
+    value = _rev_parse(repo, f"{ref}:{rel}")
+    return value if value and re.fullmatch(r"[0-9a-f]{40}", value) else None
+
+
+def _blob_mode(repo: Path, ref: str, rel: str) -> str | None:
+    proc = _git_ok(repo, "ls-tree", ref, "--", rel)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return proc.stdout.split(maxsplit=1)[0]
+
+
+def _python_semantic_tokens(repo: Path, ref: str, rel: str) -> tuple[tuple[int, str], ...] | None:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{ref}:{rel}"],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        tokens = tokenize.tokenize(io.BytesIO(proc.stdout).readline)
+        ignored = {tokenize.ENCODING, tokenize.COMMENT, tokenize.NL}
+        return tuple((token.type, token.string) for token in tokens if token.type not in ignored)
+    except (SyntaxError, tokenize.TokenError, UnicodeError):
+        return None
+
+
+def _recomputed_merge_tree(repo: Path, merge_base: str, ours: str, theirs: str) -> str | None:
+    with tempfile.TemporaryDirectory(prefix="legible-merge-index-") as temp_dir:
+        index_path = Path(temp_dir) / "index"
+        env = {**os.environ, "GIT_INDEX_FILE": str(index_path)}
+        read_tree = subprocess.run(
+            ["git", "-C", str(repo), "read-tree", "-i", "-m", merge_base, ours, theirs],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        if read_tree.returncode != 0:
+            return None
+        unmerged = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-u"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        if unmerged.returncode != 0 or unmerged.stdout:
+            return None
+        written = subprocess.run(
+            ["git", "-C", str(repo), "write-tree"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        return written.stdout.strip() if written.returncode == 0 else None
+
+
 def _validate_operational_sections(
     repo: Path, sections: Mapping[str, Any], *, stage: str, expected_head: str
 ) -> str | None:
@@ -883,6 +987,7 @@ def _validate_operational_sections(
 
     chronology = sections["chronology"]
     chronology_commits = (
+        "refresh_base",
         "tests_landing",
         "implementation_base",
         "phase_candidate",
@@ -898,7 +1003,8 @@ def _validate_operational_sections(
     ):
         return "chronology: plan or roadmap bytes are not bound to expected HEAD"
     if (
-        not _is_ancestor(repo, chronology["tests_landing"], chronology["implementation_base"])
+        not _is_ancestor(repo, chronology["refresh_base"], chronology["tests_landing"])
+        or not _is_ancestor(repo, chronology["tests_landing"], chronology["implementation_base"])
         or not _is_ancestor(repo, chronology["implementation_base"], chronology["phase_candidate"])
         or not _is_ancestor(repo, chronology["phase_candidate"], chronology["candidate_head"])
         or not _is_ancestor(repo, chronology["pr_head"], chronology["server_merge"])
@@ -907,6 +1013,45 @@ def _validate_operational_sections(
         or (stage == "canonical-main" and not _is_ancestor(repo, chronology["candidate_head"], expected_head))
     ):
         return "chronology: required ancestry is absent"
+    owned_paths = chronology["owned_paths"]
+    owned_digest = hashlib.sha256(
+        "".join(f"{path}\n" for path in _LEGIBLE_OWNED_PATHS).encode("utf-8")
+    ).hexdigest()
+    phase_changed = _changed_paths(
+        repo, chronology["implementation_base"], chronology["phase_candidate"]
+    )
+    if (
+        owned_paths != list(_LEGIBLE_OWNED_PATHS)
+        or chronology["owned_paths_count"] != len(_LEGIBLE_OWNED_PATHS)
+        or chronology["owned_paths_sha256"] != owned_digest
+        or phase_changed is None
+        or not set(phase_changed).issubset(_LEGIBLE_OWNED_PATHS)
+        or set(phase_changed) & {*FROZEN_TEST_PATHS, _FROZEN_AGENT_HARNESS_347_PATH}
+    ):
+        return "chronology: exact phase-owned path partition is invalid"
+    frozen_test_blobs = chronology["frozen_test_blobs"]
+    if not isinstance(frozen_test_blobs, Mapping) or set(frozen_test_blobs) != set(FROZEN_TEST_PATHS):
+        return "chronology: frozen test blob inventory is invalid"
+    frozen_refs = {
+        "tests_landing": chronology["tests_landing"],
+        "implementation_base": chronology["implementation_base"],
+        "phase_candidate": chronology["phase_candidate"],
+        "candidate_head": chronology["candidate_head"],
+    }
+    for rel, recorded in frozen_test_blobs.items():
+        if not isinstance(recorded, Mapping):
+            return "chronology: frozen test blob record is malformed"
+        actual = {name: _blob_oid(repo, ref, rel) for name, ref in frozen_refs.items()}
+        if recorded != actual or len(set(actual.values())) != 1 or None in actual.values():
+            return f"chronology: frozen test blob drift: {rel}"
+    from . import plan_manifest
+
+    try:
+        manifest_result = plan_manifest.check(repo)
+    except (OSError, ValueError, plan_manifest.ManifestSourceError) as exc:
+        return f"chronology: plan contract authority unavailable: {exc}"
+    if manifest_result.exit_code != 0:
+        return "chronology: plan contract authority is invalid"
 
     attestations = sections["process_attestations"]
     builder = attestations["builder"]
@@ -941,6 +1086,14 @@ def _validate_operational_sections(
         or not attester.get("python_executable")
     ):
         return "process_attestations: malformed or unbound process identity"
+    loaded_runtime_blobs = attester.get("loaded_runtime_blobs")
+    if not isinstance(loaded_runtime_blobs, Mapping) or set(loaded_runtime_blobs) != set(
+        _LOADED_ATTESTATION_RUNTIME_PATHS
+    ):
+        return "process_attestations: loaded runtime blob inventory is invalid"
+    for rel, recorded_blob in loaded_runtime_blobs.items():
+        if recorded_blob != _blob_oid(repo, expected_head, rel):
+            return f"process_attestations: loaded runtime blob drift: {rel}"
 
     test_execution = sections["test_execution"]
     default = test_execution["default"]
@@ -993,36 +1146,91 @@ def _validate_operational_sections(
         snapshot = json.loads(snapshot_bytes) if snapshot_bytes is not None else None
     except json.JSONDecodeError:
         snapshot = None
-    changed_proc = _git_ok(repo, "diff", "--name-only", pull_request["base"], pull_request["head"])
-    actual_changed_paths = sorted(changed_proc.stdout.splitlines()) if changed_proc.returncode == 0 else None
+    refresh_base = pull_request["refresh_base"]
+    implementation_base = pull_request["base"]
+    pr_head = pull_request["head"]
+    server_merge = pull_request["merge_commit"]
+    refresh_changed_paths = _changed_paths(repo, refresh_base, pr_head)
+    refresh_tree = _recomputed_merge_tree(repo, refresh_base, refresh_base, pr_head)
+    server_tree = _recomputed_merge_tree(repo, refresh_base, implementation_base, pr_head)
+    phase_candidate = chronology["phase_candidate"]
+    candidate_head = chronology["candidate_head"]
+    integration_tree = _recomputed_merge_tree(repo, implementation_base, phase_candidate, server_merge)
+    external_blobs = pull_request["external_blobs"]
+    actual_external_blobs = {
+        "refresh_base": _blob_oid(repo, refresh_base, _FROZEN_AGENT_HARNESS_347_PATH),
+        "implementation_base": _blob_oid(repo, implementation_base, _FROZEN_AGENT_HARNESS_347_PATH),
+        "phase_candidate": _blob_oid(repo, phase_candidate, _FROZEN_AGENT_HARNESS_347_PATH),
+        "head": _blob_oid(repo, pr_head, _FROZEN_AGENT_HARNESS_347_PATH),
+        "server_merge": _blob_oid(repo, server_merge, _FROZEN_AGENT_HARNESS_347_PATH),
+        "integration": _blob_oid(repo, candidate_head, _FROZEN_AGENT_HARNESS_347_PATH),
+    }
+    body_ancestors = pull_request["body_ancestor_commits"]
+    refresh_parents = pull_request["refresh_parents"]
+    phase_delta = _changed_paths(repo, implementation_base, phase_candidate)
+    server_delta = _changed_paths(repo, implementation_base, server_tree or "")
+    integration_delta = _changed_paths(repo, phase_candidate, candidate_head)
+    combined_delta = _changed_paths(repo, implementation_base, candidate_head)
     if (
         pull_request["repository"] != "Consiliency/agent-harness"
         or pull_request["number"] != 347
         or pull_request["state"] != "MERGED"
-        or not _is_commit(repo, pull_request["base"])
-        or not _is_commit(repo, pull_request["head"])
-        or not _is_commit(repo, pull_request["merge_commit"])
-        or pull_request["parents"] != [pull_request["base"], pull_request["head"]]
-        or _commit_parents(repo, pull_request["merge_commit"]) != pull_request["parents"]
-        or pull_request["base"] != chronology["implementation_base"]
-        or pull_request["head"] != chronology["pr_head"]
-        or pull_request["merge_commit"] != chronology["server_merge"]
+        or any(not _is_commit(repo, value) for value in (refresh_base, implementation_base, pr_head, server_merge))
+        or implementation_base != chronology["implementation_base"]
+        or refresh_base != chronology["refresh_base"]
+        or pr_head != chronology["pr_head"]
+        or server_merge != chronology["server_merge"]
+        or not _is_ancestor(repo, refresh_base, implementation_base)
+        or pull_request["remote_head_oid"] != pr_head
+        or not isinstance(refresh_parents, list)
+        or len(refresh_parents) != 2
+        or refresh_parents[1] != refresh_base
+        or _commit_parents(repo, pr_head) != refresh_parents
+        or pull_request["parents"] != [implementation_base, pr_head]
+        or _commit_parents(repo, server_merge) != pull_request["parents"]
+        or not isinstance(body_ancestors, list)
+        or len(body_ancestors) != 6
+        or any(not _is_commit(repo, commit) or not _is_ancestor(repo, commit, pr_head) for commit in body_ancestors)
         or snapshot_bytes is None
         or hashlib.sha256(snapshot_bytes).hexdigest() != pull_request["snapshot_sha256"]
         or not isinstance(snapshot, Mapping)
-        or snapshot.get("base") != pull_request["base"]
-        or snapshot.get("head") != pull_request["head"]
-        or snapshot.get("merge_commit") != pull_request["merge_commit"]
-        or snapshot.get("head_tree") != _rev_parse(repo, f"{pull_request['head']}^{{tree}}")
-        or snapshot.get("merge_tree") != _rev_parse(repo, f"{pull_request['merge_commit']}^{{tree}}")
+        or snapshot.get("base") != implementation_base
+        or snapshot.get("refresh_base") != refresh_base
+        or snapshot.get("head") != pr_head
+        or snapshot.get("remote_head_oid") != pr_head
+        or snapshot.get("merge_commit") != server_merge
+        or snapshot.get("refresh_parents") != refresh_parents
+        or snapshot.get("body_ancestor_commits") != body_ancestors
+        or snapshot.get("head_tree") != _rev_parse(repo, f"{pr_head}^{{tree}}")
+        or snapshot.get("merge_tree") != _rev_parse(repo, f"{server_merge}^{{tree}}")
         or snapshot.get("changed_paths") != pull_request["changed_paths"]
-        or pull_request["changed_paths"] != actual_changed_paths
+        or pull_request["changed_paths"] != refresh_changed_paths
         or pull_request["changed_paths"] != [_FROZEN_AGENT_HARNESS_347_PATH]
         or not isinstance(snapshot.get("body"), str)
         or hashlib.sha256(snapshot["body"].encode()).hexdigest() != pull_request["body_sha256"]
         or not isinstance(snapshot.get("checks"), list)
         or not snapshot["checks"]
         or any(check != "SUCCESS" for check in snapshot["checks"])
+        or pull_request["comment_tokens_equal"] is not True
+        or _python_semantic_tokens(repo, refresh_base, _FROZEN_AGENT_HARNESS_347_PATH)
+        != _python_semantic_tokens(repo, pr_head, _FROZEN_AGENT_HARNESS_347_PATH)
+        or any(_blob_mode(repo, ref, _FROZEN_AGENT_HARNESS_347_PATH) != "100644" for ref in (
+            refresh_base, implementation_base, phase_candidate, pr_head, server_merge, candidate_head
+        ))
+        or not isinstance(external_blobs, Mapping)
+        or external_blobs != actual_external_blobs
+        or len({external_blobs[key] for key in ("refresh_base", "implementation_base", "phase_candidate")}) != 1
+        or len({external_blobs[key] for key in ("head", "server_merge", "integration")}) != 1
+        or external_blobs["refresh_base"] == external_blobs["head"]
+        or refresh_tree != _rev_parse(repo, f"{pr_head}^{{tree}}")
+        or server_tree != _rev_parse(repo, f"{server_merge}^{{tree}}")
+        or integration_tree != _rev_parse(repo, f"{candidate_head}^{{tree}}")
+        or pull_request["recomputed_trees"]
+        != {"refresh": refresh_tree, "server": server_tree, "integration": integration_tree}
+        or server_delta != [_FROZEN_AGENT_HARNESS_347_PATH]
+        or integration_delta != [_FROZEN_AGENT_HARNESS_347_PATH]
+        or phase_delta is None
+        or combined_delta != sorted({*phase_delta, _FROZEN_AGENT_HARNESS_347_PATH})
     ):
         return "pull_request: exact merged agent-harness#347 identity is absent"
 
@@ -1035,6 +1243,7 @@ def _validate_operational_sections(
         or integration["candidate"] != chronology["phase_candidate"]
         or integration["server_merge"] != chronology["server_merge"]
         or integration["integration"] != chronology["candidate_head"]
+        or integration["recomputed_tree"] != _rev_parse(repo, f"{integration['integration']}^{{tree}}")
         or (stage == "candidate" and integration["integration"] != expected_head)
         or (stage == "canonical-main" and not _is_ancestor(repo, integration["integration"], expected_head))
     ):
@@ -1057,8 +1266,8 @@ def _validate_operational_sections(
             or record["response_byte_length"] < 0
             for record in probe_records
         )
-        or len({record["probe_id"] for record in probe_records}) != len(probe_records)
-        or "LEGIBLE-A3-REVIEWTRUTH-TRANSITION" not in {record["probe_id"] for record in probe_records}
+        or tuple(record["probe_id"] for record in probe_records)
+        != roadmap_assumptions.CANONICAL_PROBE_IDS
     ):
         return "assumption_probes: execution-head-bound records are absent"
     for record in probe_records:
@@ -1090,7 +1299,7 @@ def _validate_operational_sections(
         or not any("panel" in Path(path).name and path.endswith(".json") for path in artifact_paths)
     ):
         return "artifacts: required registry/source/JUnit/panel inventory is incomplete"
-    panel_paths = [path for path in artifact_paths if "panel" in Path(path).name and path.endswith(".json")]
+    panel_paths = [path for path in artifact_paths if Path(path).name == "implementation-panel.json"]
     if len(panel_paths) != 1:
         return "artifacts: implementation panel inventory is ambiguous"
     try:
@@ -1104,15 +1313,60 @@ def _validate_operational_sections(
         for leg in ("claude", "codex", "grok")
     }
     panel_models = set(panel["verdicts"]) if isinstance(panel, Mapping) and isinstance(panel.get("verdicts"), Mapping) else set()
+    panel_legs = panel.get("legs") if isinstance(panel, Mapping) else None
+    bundle_rel = panel.get("bundle_path") if isinstance(panel, Mapping) else None
+    bundle_bytes = artifact_data.get(bundle_rel) if isinstance(bundle_rel, str) else None
     if (
         not isinstance(panel, Mapping)
+        or panel.get("schema") != "advisor_board.v1"
         or panel.get("head") != expected_head
+        or bundle_bytes is None
+        or panel.get("bundle_sha256") != hashlib.sha256(bundle_bytes).hexdigest()
         or not isinstance(panel.get("verdicts"), Mapping)
         or panel_models - gemini_aliases != required_models
         or len(panel_models & gemini_aliases) != 1
         or any(verdict != "AGREE" for verdict in panel["verdicts"].values())
+        or not isinstance(panel_legs, list)
+        or len(panel_legs) != 4
     ):
         return "artifacts: implementation panel is not exact-head unanimous"
+    expected_leg_models = {
+        "claude": {panel_invoker.DEFAULT_LEG_MODELS["claude"]},
+        "codex": {panel_invoker.DEFAULT_LEG_MODELS["codex"]},
+        "gemini": gemini_aliases,
+        "grok": {panel_invoker.DEFAULT_LEG_MODELS["grok"]},
+    }
+    if {leg.get("leg") for leg in panel_legs if isinstance(leg, Mapping)} != set(expected_leg_models):
+        return "artifacts: implementation panel seat inventory is invalid"
+    for leg in panel_legs:
+        if not isinstance(leg, Mapping):
+            return "artifacts: implementation panel leg is malformed"
+        artifact_rel = leg.get("artifact_path")
+        leg_bytes = artifact_data.get(artifact_rel) if isinstance(artifact_rel, str) else None
+        if (
+            leg.get("model") not in expected_leg_models[leg["leg"]]
+            or leg.get("status") != "OK"
+            or leg.get("usable") is not True
+            or leg.get("verdict") != "AGREE"
+            or not isinstance(leg.get("seat_key"), str)
+            or leg["model"] not in leg["seat_key"]
+            or leg_bytes is None
+            or leg.get("artifact_sha256") != hashlib.sha256(leg_bytes).hexdigest()
+        ):
+            return f"artifacts: implementation panel leg is not usable: {leg.get('leg')}"
+        try:
+            leg_payload = json.loads(leg_bytes)
+        except json.JSONDecodeError:
+            return f"artifacts: implementation panel leg is malformed: {leg.get('leg')}"
+        if (
+            not isinstance(leg_payload, Mapping)
+            or any(leg_payload.get(key) != leg.get(key) for key in (
+                "leg", "model", "seat_key", "status", "usable", "verdict"
+            ))
+            or not isinstance(leg_payload.get("text"), str)
+            or leg_payload["text"].rstrip().splitlines()[-1] != "AGREE"
+        ):
+            return f"artifacts: implementation panel leg payload drift: {leg.get('leg')}"
     return None
 
 
@@ -1304,16 +1558,27 @@ def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, c
         raise LegibleProcessBootstrapError(
             f"candidate head {candidate_head!r} is not an ancestor of {actual_head!r}"
         )
-    return {
+    process_start_token = secrets.token_hex(32)
+    bootstrap = {
         "repo": str(repo),
         "stage": stage,
-        "status": "awaiting_phase_closeout",
         "head": actual_head,
         "builder_run_id": builder_run_id,
         "candidate_head": candidate_head,
         "process_id": os.getpid(),
-        "process_start_token": secrets.token_hex(32),
+        "process_start_token": process_start_token,
     }
+    from . import runner
+
+    result = runner.run_legible_operational_attestation(
+        repo=repo,
+        stage=stage,
+        expected_head=expected_head,
+        builder_run_id=builder_run_id,
+        candidate_head=candidate_head,
+        process_start_token=process_start_token,
+    )
+    return {**bootstrap, **result}
 
 
 # ---------------------------------------------------------------------------
