@@ -2132,7 +2132,9 @@ def test_roadmap_registry_rejects_two_coherent_active_roadmaps(tmp_path):
     repo = make_repo(tmp_path)
     first = repo / "specs" / "phase-plans-v1.md"
     second = repo / "specs" / "phase-plans-v2.md"
-    active_banner = "# Roadmap\n\n> **Status (2026-08-01): ACTIVE — fixture.**\n"
+    active_banner = (
+        "# Roadmap\n\n> **Status (2026-08-01): ACTIVE — created this date, nothing executed yet.**\n"
+    )
     first.write_text(active_banner, encoding="utf-8")
     second.write_text(active_banner, encoding="utf-8")
     registry = repo / "specs" / "roadmap-status.json"
