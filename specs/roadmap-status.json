@@ -1,0 +1,58 @@
+{
+  "roadmaps": [
+    {
+      "path": "specs/phase-plans-convergence-v1.md",
+      "status": "superseded"
+    },
+    {
+      "path": "specs/phase-plans-cross-repo-v1.md",
+      "status": "delivered"
+    },
+    {
+      "path": "specs/phase-plans-v1-task-message-sourcebroker.md",
+      "status": "delivered"
+    },
+    {
+      "path": "specs/phase-plans-v1.md",
+      "status": "delivered"
+    },
+    {
+      "path": "specs/phase-plans-v10.md",
+      "status": "active"
+    },
+    {
+      "path": "specs/phase-plans-v2.md",
+      "status": "superseded"
+    },
+    {
+      "path": "specs/phase-plans-v3.md",
+      "status": "superseded"
+    },
+    {
+      "path": "specs/phase-plans-v4.md",
+      "status": "superseded"
+    },
+    {
+      "path": "specs/phase-plans-v5.md",
+      "status": "superseded"
+    },
+    {
+      "path": "specs/phase-plans-v6.md",
+      "status": "delivered"
+    },
+    {
+      "path": "specs/phase-plans-v7.md",
+      "status": "superseded"
+    },
+    {
+      "path": "specs/phase-plans-v8.md",
+      "status": "delivered"
+    },
+    {
+      "path": "specs/phase-plans-v9.md",
+      "status": "superseded"
+    }
+  ],
+  "schema": "roadmap_status_manifest.v1",
+  "selected_roadmap": "specs/phase-plans-v10.md"
+}

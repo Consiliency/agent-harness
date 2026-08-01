@@ -466,3 +466,154 @@ def scan_docs_freshness(
     # whether a `passed` is backed by enumerated-surface evidence.
     result["evidence_backed"] = docs_freshness_evidence_backed(result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# LEGIBLE (v10 SL-2) — populated, countable repo-owned docs catalog
+#
+# `.claude/docs-catalog.json` is a stable-sorted, deterministic, repo-owned
+# rescan target: top-level release docs plus every `_contract_docs/**` public
+# contract document (which includes the owned verification-evidence contract
+# document). Deliberately does NOT infer or catalog client-owned documents
+# while `Consiliency/agent-harness#367` is unresolved (plans/phase-plan-v10-LEGIBLE.md).
+
+CATALOG_PATH_REL = ".claude/docs-catalog.json"
+CATALOG_ROOT_DOCS: tuple[str, ...] = ("README.md", "CHANGELOG.md")
+CATALOG_CONTRACT_DOCS_DIR = "phase-loop-runtime/src/phase_loop_runtime/_contract_docs"
+CATALOG_EXTRA_DOCS: tuple[str, ...] = ("phase-loop-runtime/README.md",)
+
+
+@dataclass(frozen=True)
+class DocsCatalogCheckResult:
+    exit_code: int
+    findings: tuple[str, ...] = ()
+
+
+def rescan_catalog(repo: Path) -> list[str]:
+    """Deterministic, stable-sorted, idempotent rescan of the repo-owned
+    document surfaces this catalog tracks. Never turns an empty catalog into
+    a positive count on its own -- this only computes what WOULD be tracked;
+    writing it to disk is a separate, explicit operation."""
+    repo = Path(repo)
+    found: set[str] = set()
+    for rel in (*CATALOG_ROOT_DOCS, *CATALOG_EXTRA_DOCS):
+        if (repo / rel).is_file():
+            found.add(rel)
+    contract_docs_dir = repo / CATALOG_CONTRACT_DOCS_DIR
+    if contract_docs_dir.is_dir():
+        for path in contract_docs_dir.rglob("*.md"):
+            if path.is_file():
+                found.add(path.relative_to(repo).as_posix())
+    return sorted(found)
+
+
+def docs_catalog_entry_count(repo: Path) -> int:
+    """The TRACKED catalog's entry count. An absent, malformed, or empty
+    catalog reports zero -- it never invents a positive count."""
+    repo = Path(repo)
+    path = repo / CATALOG_PATH_REL
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(data, list):
+        return 0
+    return len(data)
+
+
+def _catalog_entry_path(item: Any) -> str | None:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, Mapping):
+        path = item.get("path") or item.get("file")
+        return path if isinstance(path, str) else None
+    return None
+
+
+def check_catalog(repo: Path) -> DocsCatalogCheckResult:
+    """Explicit fail-closed check: nonzero when the TRACKED catalog is empty,
+    stale (names a path that no longer exists), duplicated, or malformed.
+    Absence is still permissive (mirrors the existing `_catalog_surfaces`
+    read path) -- this is an opt-in check command, not a new hard default."""
+    repo = Path(repo)
+    path = repo / CATALOG_PATH_REL
+    if not path.exists():
+        return DocsCatalogCheckResult(0)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return DocsCatalogCheckResult(1, (f"malformed catalog JSON: {exc}",))
+    if not isinstance(data, list):
+        return DocsCatalogCheckResult(1, ("catalog must be a JSON array",))
+
+    findings: list[str] = []
+    paths: list[str] = []
+    for item in data:
+        entry_path = _catalog_entry_path(item)
+        if entry_path is None:
+            findings.append(f"malformed catalog entry: {item!r}")
+            continue
+        paths.append(entry_path)
+
+    if not paths:
+        findings.append("tracked catalog is empty")
+
+    seen: set[str] = set()
+    for entry_path in paths:
+        if entry_path in seen:
+            findings.append(f"duplicate catalog entry: {entry_path}")
+        seen.add(entry_path)
+        if not (repo / entry_path).is_file():
+            findings.append(f"stale catalog entry (file does not exist): {entry_path}")
+
+    current = set(rescan_catalog(repo))
+    tracked = set(paths)
+    for entry_path in sorted(current - tracked):
+        findings.append(f"catalog disagrees with current rescan (missing): {entry_path}")
+    for entry_path in sorted(tracked - current):
+        findings.append(f"catalog disagrees with current rescan (extra): {entry_path}")
+
+    exit_code = 1 if findings else 0
+    return DocsCatalogCheckResult(exit_code, tuple(findings))
+
+
+def main_catalog(argv: list[str]) -> int:  # pragma: no cover - thin CLI shim
+    import argparse
+    import sys as _sys
+
+    parser = argparse.ArgumentParser(prog="phase_loop_runtime.docs_freshness")
+    sub = parser.add_subparsers(dest="command", required=True)
+    check_parser = sub.add_parser("check-catalog")
+    check_parser.add_argument("--repo", default=".")
+    rescan_parser = sub.add_parser("rescan-catalog")
+    rescan_parser.add_argument("--repo", default=".")
+    rescan_parser.add_argument("--write", action="store_true", help="Write the rescanned catalog to .claude/docs-catalog.json.")
+    args = parser.parse_args(argv)
+
+    repo = Path(args.repo)
+    if args.command == "check-catalog":
+        result = check_catalog(repo)
+        for finding in result.findings:
+            print(f"  - {finding}", file=_sys.stderr)
+        if result.exit_code == 0:
+            print(f"docs-catalog: OK ({docs_catalog_entry_count(repo)} entries)")
+        return result.exit_code
+    if args.command == "rescan-catalog":
+        paths = rescan_catalog(repo)
+        if args.write:
+            catalog_path = repo / CATALOG_PATH_REL
+            catalog_path.parent.mkdir(parents=True, exist_ok=True)
+            catalog_path.write_text(
+                json.dumps([{"path": p} for p in paths], indent=2) + "\n", encoding="utf-8"
+            )
+        for p in paths:
+            print(p)
+        return 0
+    parser.error(f"unsupported command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import sys as _sys
+
+    _sys.exit(main_catalog(_sys.argv[1:]))

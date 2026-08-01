@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -607,3 +610,502 @@ def phase_status_disagreements(
         if contradiction:
             out.append((alias, snap, man))
     return out
+
+
+# ---------------------------------------------------------------------------
+# LEGIBLE (v10 SL-1) — exact HEAD/index/filesystem plan-manifest scope audit
+#
+# `canonical_plan_files` is the stable UNION of canonical phase-plan paths in
+# the runner-captured HEAD tree, the stage-0 Git index, and a bounded direct
+# physical scan of `plans/` -- never a read of plan CONTENT. See
+# plans/phase-plan-v10-LEGIBLE.md ("The authoritative plan scope is frozen as
+# follows").
+
+MANIFEST_MALFORMED_KINDS = frozenset(
+    {"noncanonical", "path-escape", "conflicted-index", "symlink", "non-regular", "undecodable-name"}
+)
+MANIFEST_ORIGIN_FLAGS = frozenset({"head", "index", "filesystem", "manifest"})
+
+_CANONICAL_LOOKALIKE_RE = re.compile(r"^phase-plan-.*\.md$")
+
+
+@dataclass(frozen=True)
+class CanonicalPlanEntry:
+    path: str
+    origin: frozenset[str]
+
+
+@dataclass(frozen=True)
+class MalformedPlanFinding:
+    path: str
+    kind: str
+    origin: frozenset[str]
+
+
+@dataclass(frozen=True)
+class MissingPlanFinding:
+    path: str
+    origin: str
+
+
+@dataclass(frozen=True)
+class CanonicalPlanFiles:
+    entries: tuple[CanonicalPlanEntry, ...]
+    malformed: tuple[MalformedPlanFinding, ...]
+
+    def paths(self) -> tuple[str, ...]:
+        return tuple(entry.path for entry in self.entries)
+
+    def origins_of(self, path: str) -> frozenset[str]:
+        for entry in self.entries:
+            if entry.path == path:
+                return entry.origin
+        return frozenset()
+
+
+@dataclass(frozen=True)
+class ManifestPresenceReport:
+    canonical_count: int
+    registered_count: int
+    unregistered_count: int
+    unregistered: tuple[str, ...]
+
+    @classmethod
+    def build(
+        cls, repo: Path, canonical: CanonicalPlanFiles, registered_paths: Sequence[str] | set
+    ) -> "ManifestPresenceReport":
+        canonical_set = set(canonical.paths())
+        registered_set = set(registered_paths)
+        unregistered = tuple(sorted(canonical_set - registered_set))
+        return cls(
+            canonical_count=len(canonical_set),
+            registered_count=len(canonical_set & registered_set),
+            unregistered_count=len(unregistered),
+            unregistered=unregistered,
+        )
+
+
+@dataclass(frozen=True)
+class ManifestCheckResult:
+    exit_code: int
+    missing: tuple[MissingPlanFinding, ...]
+    malformed: tuple[MalformedPlanFinding, ...]
+    canonical_count: int
+    registered_count: int
+
+
+def _repo_relative_posix(repo: Path, raw_path: bytes | str) -> str | None:
+    """Decode+normalize a Git/OS path to a repo-relative POSIX string, or
+    ``None`` when it is undecodable, absolute, or contains ``.``/``..``."""
+    if isinstance(raw_path, bytes):
+        try:
+            text = raw_path.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    else:
+        text = raw_path
+    if text.startswith("/") or text.startswith("\\"):
+        return None
+    parts = PurePosixPath(text).parts
+    if any(part in (".", "..") for part in parts):
+        return None
+    return text
+
+
+def _classify_basename(basename: str) -> str:
+    """``"canonical"`` (full-matches ``PLAN_RE``), ``"lookalike"`` (has the
+    ``phase-plan-*.md`` shape but does not full-match), or ``"irrelevant"``
+    (not plan-shaped at all -- silently excluded, never malformed)."""
+    if PLAN_RE.fullmatch(basename):
+        return "canonical"
+    if _CANONICAL_LOOKALIKE_RE.match(basename):
+        return "lookalike"
+    return "irrelevant"
+
+
+def _git_ls_tree_plans(repo: Path, tree_oid: str) -> list[str]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-z", "--name-only", tree_oid, "--", "plans/"],
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    return [chunk.decode("utf-8", "surrogateescape") for chunk in proc.stdout.split(b"\0") if chunk]
+
+
+def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str]]:
+    """Stage-0 index entries under ``plans/`` as ``(rel_path, blob_oid)``."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "-z", "--stage", "--", "plans/"],
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    out: list[tuple[str, str]] = []
+    for chunk in proc.stdout.split(b"\0"):
+        if not chunk:
+            continue
+        meta, _, path_bytes = chunk.partition(b"\t")
+        fields = meta.split()
+        if len(fields) != 3 or fields[2] != b"0":
+            continue  # not stage-0 (conflicted); handled separately
+        out.append((path_bytes.decode("utf-8", "surrogateescape"), fields[1].decode("ascii")))
+    return out
+
+
+def _git_conflicted_index_plans(repo: Path) -> list[str]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "-z", "--stage", "--", "plans/"],
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    conflicted: set[str] = set()
+    for chunk in proc.stdout.split(b"\0"):
+        if not chunk:
+            continue
+        meta, _, path_bytes = chunk.partition(b"\t")
+        fields = meta.split()
+        if len(fields) == 3 and fields[2] != b"0":
+            conflicted.add(path_bytes.decode("utf-8", "surrogateescape"))
+    return sorted(conflicted)
+
+
+def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanFinding]]:
+    """Direct-child physical scan of ``plans/`` -- filesystem-safe byte decoding,
+    never following a directory-entry symlink, never reading plan content."""
+    plans_dir = repo / "plans"
+    if not plans_dir.is_dir() or plans_dir.is_symlink():
+        return [], []
+    canonical: list[str] = []
+    malformed: list[MalformedPlanFinding] = []
+    try:
+        raw_entries = os.listdir(os.fsencode(plans_dir))
+    except OSError:
+        return [], []
+    for raw_name in raw_entries:
+        try:
+            name = raw_name.decode("utf-8")
+        except UnicodeDecodeError:
+            rel_bytes = b"plans/" + raw_name
+            malformed.append(
+                MalformedPlanFinding(
+                    path=os.fsdecode(rel_bytes), kind="undecodable-name", origin=frozenset({"filesystem"})
+                )
+            )
+            continue
+        classification = _classify_basename(name)
+        if classification == "irrelevant":
+            continue
+        rel = f"plans/{name}"
+        full_path = plans_dir / name
+        try:
+            entry_stat = full_path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(entry_stat.st_mode):
+            malformed.append(MalformedPlanFinding(path=rel, kind="symlink", origin=frozenset({"filesystem"})))
+            continue
+        if classification == "lookalike":
+            malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"filesystem"})))
+            continue
+        if not stat.S_ISREG(entry_stat.st_mode):
+            malformed.append(MalformedPlanFinding(path=rel, kind="non-regular", origin=frozenset({"filesystem"})))
+            continue
+        canonical.append(rel)
+    return canonical, malformed
+
+
+def canonical_plan_files(repo: Path, tree_oid: str) -> CanonicalPlanFiles:
+    """The stable union of canonical phase-plan paths across the runner-captured
+    ``tree_oid`` (typically ``HEAD``), the stage-0 Git index, and a bounded
+    direct physical scan of ``plans/`` -- retaining each path's source-origin
+    flags. Also consults the LEGIBLE roadmap-status accessor (best-effort,
+    non-fatal) so manifest reporting shares that coherence-checked read path."""
+    repo = Path(repo).resolve()
+
+    try:
+        from . import roadmap_lint
+
+        roadmap_lint.read_roadmap_status(repo, repo / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL)
+    except Exception:
+        pass  # best-effort: manifest scanning never depends on status coherence
+
+    origins: dict[str, set[str]] = {}
+    malformed: list[MalformedPlanFinding] = []
+
+    for raw in _git_ls_tree_plans(repo, tree_oid):
+        rel = _repo_relative_posix(repo, raw)
+        if rel is None or "/" in rel[len("plans/"):]:
+            continue
+        basename = rel.rsplit("/", 1)[-1]
+        classification = _classify_basename(basename)
+        if classification == "canonical":
+            origins.setdefault(rel, set()).add("head")
+        elif classification == "lookalike":
+            malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"head"})))
+
+    for raw, _blob in _git_ls_files_stage_plans(repo):
+        rel = _repo_relative_posix(repo, raw)
+        if rel is None or "/" in rel[len("plans/"):]:
+            continue
+        basename = rel.rsplit("/", 1)[-1]
+        classification = _classify_basename(basename)
+        if classification == "canonical":
+            origins.setdefault(rel, set()).add("index")
+        elif classification == "lookalike":
+            malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"index"})))
+
+    for rel in _git_conflicted_index_plans(repo):
+        clean_rel = _repo_relative_posix(repo, rel)
+        if clean_rel is None:
+            continue
+        malformed.append(MalformedPlanFinding(path=clean_rel, kind="conflicted-index", origin=frozenset({"index"})))
+
+    physical_canonical, physical_malformed = _scan_plans_dir_physical(repo)
+    for rel in physical_canonical:
+        origins.setdefault(rel, set()).add("filesystem")
+    malformed.extend(physical_malformed)
+
+    entries = tuple(
+        CanonicalPlanEntry(path=path, origin=frozenset(flags)) for path, flags in sorted(origins.items())
+    )
+    return CanonicalPlanFiles(entries=entries, malformed=tuple(malformed))
+
+
+def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFinding]]:
+    """Registered ``plans/`` entries from ``plans/manifest.json``, subjected to
+    the same repo-relative/direct-child/full-match checks as canonical
+    scanning, plus any malformed entry path (origin ``"manifest"``)."""
+    manifest_path = repo / "plans" / "manifest.json"
+    if not manifest_path.exists():
+        return set(), []
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set(), []
+    if not isinstance(data, dict):
+        return set(), []
+    registered: set[str] = set()
+    malformed: list[MalformedPlanFinding] = []
+    for entry in data.get("plans", []):
+        if not isinstance(entry, dict):
+            continue
+        file_value = entry.get("file")
+        if not isinstance(file_value, str) or not file_value:
+            continue
+        normalized = file_value.replace("\\", "/")
+        basename = normalized.rstrip("/").rsplit("/", 1)[-1]
+        classification = _classify_basename(basename)
+        if classification == "irrelevant":
+            continue
+        rel = _repo_relative_posix(repo, file_value)
+        if rel is None:
+            malformed.append(MalformedPlanFinding(path=file_value, kind="path-escape", origin=frozenset({"manifest"})))
+            continue
+        if not rel.startswith("plans/") or "\\" in rel or "/" in rel[len("plans/"):]:
+            malformed.append(
+                MalformedPlanFinding(path=file_value, kind="noncanonical", origin=frozenset({"manifest"}))
+            )
+            continue
+        if classification == "canonical":
+            if rel in registered:
+                malformed.append(
+                    MalformedPlanFinding(path=rel, kind="duplicate", origin=frozenset({"manifest"}))
+                )
+            else:
+                registered.add(rel)
+        elif classification == "lookalike":
+            malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"manifest"})))
+    return registered, malformed
+
+
+def check(repo: Path) -> ManifestCheckResult:
+    """Read-only audit: names every missing, extra, duplicate, malformed,
+    conflicted-index, symlink, non-regular, or escaping path. Never
+    auto-registers, deletes, or silently ignores a plan."""
+    repo = Path(repo).resolve(strict=True)
+    canonical = canonical_plan_files(repo, "HEAD")
+    registered, manifest_malformed = _manifest_entry_scope(repo)
+    canonical_set = set(canonical.paths())
+
+    missing = tuple(
+        MissingPlanFinding(path=path, origin=sorted(canonical.origins_of(path))[0])
+        for path in sorted(canonical_set - registered)
+    )
+    extra = tuple(
+        MalformedPlanFinding(path=path, kind="extra", origin=frozenset({"manifest"}))
+        for path in sorted(registered - canonical_set)
+    )
+    malformed = tuple(canonical.malformed) + tuple(manifest_malformed) + extra
+    exit_code = 0 if not missing and not malformed else 1
+    return ManifestCheckResult(
+        exit_code=exit_code,
+        missing=missing,
+        malformed=malformed,
+        canonical_count=len(canonical_set),
+        registered_count=len(canonical_set & registered),
+    )
+
+
+def unregistered_plan_files(repo: Path) -> tuple[str, ...]:
+    """Canonical plan paths that are NOT currently registered in
+    ``plans/manifest.json``, stable path-sorted."""
+    repo = Path(repo).resolve()
+    canonical = canonical_plan_files(repo, "HEAD")
+    registered, _malformed = _manifest_entry_scope(repo)
+    return tuple(sorted(set(canonical.paths()) - registered))
+
+
+def _git_first_add_commit_iso(repo: Path, rel_path: str) -> str:
+    """The committer timestamp of the FIRST commit that added ``rel_path``
+    (frozen Git evidence, never filesystem mtime or wall clock)."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "log", "--diff-filter=A", "--format=%cI", "--follow", "--", rel_path],
+        capture_output=True, text=True, check=False,
+    )
+    lines = [line for line in proc.stdout.strip().splitlines() if line]
+    text = lines[-1] if lines else ""
+    if not text:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "log", "-1", "--format=%cI", "--", rel_path],
+            capture_output=True, text=True, check=False,
+        )
+        text = proc.stdout.strip()
+    if not text:
+        return "1970-01-01T00:00:00Z"
+    # `%cI` carries the committer's ORIGINAL offset; normalize to UTC (frozen
+    # Git evidence, never filesystem mtime or wall clock).
+    parsed = datetime.fromisoformat(text)
+    return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def register_historical_plans(repo: Path, *, dry_run: bool = False) -> tuple[dict[str, Any], ...]:
+    """Register the closed eleven-path historical plan set (LEGIBLE-B2) using
+    the frozen seven-completed/four-orphaned lifecycle matrix. Idempotent:
+    rerunning against an already-identical entry leaves it untouched, and
+    ``dry_run=True`` computes byte-identical projected entries without writing.
+    Never auto-registers arbitrary discoveries -- the registration set is the
+    closed list below, not a scan result."""
+    repo = Path(repo).resolve()
+    projected: list[dict[str, Any]] = []
+    for rel_path, status in sorted(HISTORICAL_PLAN_LIFECYCLE_MATRIX.items()):
+        plan_path = repo / rel_path
+        match = PLAN_RE.search(Path(rel_path).name)
+        alias = match.group(2) if match else Path(rel_path).stem
+        roadmap_file = _frontmatter_value(plan_path, "roadmap") if plan_path.exists() else None
+        created_at = _git_first_add_commit_iso(repo, rel_path)
+        entry_payload = {
+            "acceptance_criteria_count": None,
+            "created_at": created_at,
+            "file": rel_path,
+            "handoff_ref": None,
+            "if_gates_produced": [],
+            "lanes": [],
+            "lifecycle": [],
+            "owner_skill": "codex-plan-phase",
+            "phase_alias": alias,
+            "reflection_ref": None,
+            "roadmap_ref": (
+                {"file": roadmap_file, "slug": Path(roadmap_file).stem, "status": status, "type": "phase"}
+                if roadmap_file
+                else None
+            ),
+            "slug": Path(rel_path).stem.removeprefix("phase-plan-"),
+            "status": status,
+            "task_summary": None,
+            "type": "phase",
+            "updated_at": created_at,
+        }
+        projected.append(entry_payload)
+
+    if dry_run:
+        return tuple(projected)
+
+    manifest = read_manifest(repo)
+    existing = {entry.slug: entry for entry in manifest.plans}
+    for payload in projected:
+        slug = payload["slug"]
+        roadmap_ref = (
+            DotfilesPlanRef(**payload["roadmap_ref"]) if payload["roadmap_ref"] is not None else None
+        )
+        existing[slug] = DotfilesPlanEntry(
+            slug=slug,
+            file=payload["file"],
+            type=payload["type"],
+            status=payload["status"],
+            created_at=payload["created_at"],
+            updated_at=payload["updated_at"],
+            owner_skill=payload["owner_skill"],
+            roadmap_ref=roadmap_ref,
+            phase_alias=payload["phase_alias"],
+        )
+    _write_manifest(repo, DotfilesPlanManifest(plans=tuple(existing[slug] for slug in sorted(existing))))
+    return tuple(projected)
+
+
+# The frozen seven-completed/four-orphaned historical lifecycle matrix
+# (plans/phase-plan-v10-LEGIBLE.md, "The historical lifecycle/evidence matrix
+# is frozen as follows").
+HISTORICAL_PLAN_LIFECYCLE_MATRIX: dict[str, str] = {
+    "plans/phase-plan-v1-task-message-sourcebroker-SOURCEBROKER.md": "completed",
+    "plans/phase-plan-v6-CTXFREEZE.md": "completed",
+    "plans/phase-plan-v6-CTXIMPL.md": "completed",
+    "plans/phase-plan-v6-CTXRELY.md": "completed",
+    "plans/phase-plan-v6-CTXDOCS.md": "completed",
+    "plans/phase-plan-v6-CTXVERIFY.md": "completed",
+    "plans/phase-plan-v7-OAMOCK.md": "completed",
+    "plans/phase-plan-v7-OACONTRACT.md": "orphaned",
+    "plans/phase-plan-v7-OACORE.md": "orphaned",
+    "plans/phase-plan-v7-OAREAL.md": "orphaned",
+    "plans/phase-plan-v7-OARELEASE.md": "orphaned",
+}
+
+
+def historical_plan_lifecycle_matrix(repo: Path) -> dict[str, str]:
+    """The truthful terminal status (``completed``/``orphaned``) of each of the
+    eleven closed historical plans, read from ``plans/manifest.json`` when
+    registered there and falling back to the frozen matrix otherwise (a
+    synthetic fixture repo that only committed the plan files, with no
+    registration yet, still reports the intended terminal disposition)."""
+    repo = Path(repo).resolve()
+    manifest = read_manifest(repo)
+    by_file = {entry.file: entry.status for entry in manifest.plans}
+    result: dict[str, str] = {}
+    for rel_path, frozen_status in HISTORICAL_PLAN_LIFECYCLE_MATRIX.items():
+        result[rel_path] = by_file.get(rel_path, frozen_status)
+    return result
+
+
+def _cli_main(argv: list[str]) -> int:  # pragma: no cover - thin CLI shim
+    import argparse
+    import sys as _sys
+
+    parser = argparse.ArgumentParser(prog="phase_loop_runtime.plan_manifest")
+    sub = parser.add_subparsers(dest="command", required=True)
+    check_parser = sub.add_parser("check")
+    check_parser.add_argument("--repo", default=".")
+    args = parser.parse_args(argv)
+    if args.command != "check":
+        parser.error(f"unsupported command: {args.command}")
+        return 2
+    result = check(Path(args.repo))
+    for item in result.missing:
+        print(f"  missing: {item.path} (origin={item.origin})", file=_sys.stderr)
+    for item in result.malformed:
+        print(f"  malformed [{item.kind}]: {item.path} (origin={sorted(item.origin)})", file=_sys.stderr)
+    if result.exit_code == 0:
+        print(f"plan-manifest check: OK canonical={result.canonical_count} registered={result.registered_count} unregistered=0")
+    else:
+        print(
+            f"plan-manifest check: FAIL canonical={result.canonical_count} registered={result.registered_count} "
+            f"unregistered={len(result.missing)}",
+            file=_sys.stderr,
+        )
+    return result.exit_code
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import sys as _sys
+
+    _sys.exit(_cli_main(_sys.argv[1:]))

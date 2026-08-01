@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
+import secrets
 import shlex
 import subprocess
 import sys
@@ -11,6 +13,56 @@ import time
 from pathlib import Path
 
 _LOGGER = logging.getLogger("phase_loop_runtime.cli")
+
+
+def _preimport_attest_bootstrap(argv: list[str]) -> dict[str, object] | None:
+    """Fail closed before importing phase-owned runtime helpers for attest."""
+    if "attest" not in argv:
+        return None
+
+    def _value(flag: str) -> str | None:
+        for index, item in enumerate(argv):
+            if item == flag and index + 1 < len(argv):
+                return argv[index + 1]
+            if item.startswith(f"{flag}="):
+                return item.partition("=")[2]
+        return None
+
+    repo_value = _value("--repo") or "."
+    expected_head = _value("--expected-head")
+    if not expected_head:
+        return None
+    repo = Path(repo_value).resolve()
+    source_path = Path(__file__).resolve()
+    expected_source = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
+    if source_path != expected_source:
+        raise RuntimeError(
+            f"phase-loop attest requires the named worktree's repo-local runtime: {source_path} != {expected_source}"
+        )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+    )
+    if head.returncode != 0 or head.stdout.strip() != expected_head:
+        raise RuntimeError(
+            f"phase-loop attest expected HEAD {expected_head!r}, found {head.stdout.strip()!r}"
+        )
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=False
+    )
+    if status.returncode != 0 or status.stdout:
+        raise RuntimeError(f"phase-loop attest requires a clean worktree: {repo}")
+    source_bytes = source_path.read_bytes()
+    return {
+        "process_start_token": secrets.token_hex(32),
+        "bootstrap_head": expected_head,
+        "repo_realpath": str(repo),
+        "cli_path": str(source_path),
+        "cli_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "python_executable": sys.executable,
+    }
+
+
+_ATTEST_PREIMPORT_BOOTSTRAP = _preimport_attest_bootstrap(sys.argv[1:])
 
 from .closeout import build_phase_loop_closeout
 from .consiliency_ingest import ingest
@@ -296,7 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
     # generic CLI exposes none of them at import.
-    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "goal-coverage-audit", "validate-roadmap", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
+    for name in ("run", "resume", "status", "dry-run", "maintain-skills", "install", "state", "handoff", "archive-state", "monitor", "version", "execute", "reconcile", "reopen", "migrate-handoffs", "migrate-events", "init", "evidence-audit", "closeout-drift-audit", "goal-coverage-audit", "validate-roadmap", "attest", "docs-audit", "export-schema", "fleet-map", "worktree-index", "consiliency-scaffold", "consiliency-ingest", "consiliency-lease"):
         # #83: run/resume/dry-run inherit --allow-branchgov via the shared parent so
         # the flag works after the subcommand too (the top-level parser owns the
         # before-subcommand position); SUPPRESS keeps neither default clobbering.
@@ -308,6 +360,11 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--output", help="Path where exactly one closeout JSON file must be written.")
             sub.add_argument("--mode", help="The execution mode: execute, repair, or review.")
         _add_common_subparser_args(sub, name=name)
+        if name == "attest":
+            sub.add_argument("--stage", choices=("candidate", "canonical-main"), required=True)
+            sub.add_argument("--expected-head", required=True)
+            sub.add_argument("--builder-run-id", required=True)
+            sub.add_argument("--candidate-head")
         if name in {"run", "resume", "dry-run"}:
             # PUSHFLOW: closeout pushes by DEFAULT for run/resume/dry-run (the outer
             # orchestration loop). An explicit --closeout-mode always wins; when none
@@ -389,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Mechanically lint a phase-plan roadmap spec (headings, aliases, IF-gates, DAG, lane hints).  Pass --train for cross-repo release-train roadmaps."
             sub.add_argument("roadmap_path", nargs="?", help="Path to the roadmap spec. Falls back to --roadmap / auto-detection.")
             sub.add_argument("--train", action="store_true", default=False, help="Validate as a cross-repo release-train roadmap (P2 train mode).")
+            sub.add_argument("--check-assumptions", action="store_true", default=False, help="LEGIBLE: also audit the roadmap's assumption-probe sidecar and print a per-probe verdict.")
         if name == "docs-audit":
             sub.description = "Pipeline-independent docs-freshness backstop over a git diff (no .phase-loop state); fails loud on a release surface changed without its required doc."
             sub.add_argument("--base", help="Diff base ref (auto-resolved from CI env if omitted: PR base / prior tag / push before-SHA).")
@@ -1041,8 +1099,53 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             candidate = select_roadmap(repo, None)
         if not candidate:
             parser.error("validate-roadmap requires a roadmap path (positional, --roadmap, or auto-detectable)")
+        if not getattr(args, "train", False):
+            # LEGIBLE IF-0-LEGIBLE-1: canonical repository validation always
+            # calls the coherence validator with required=True. A candidate
+            # whose repo cannot be inferred (or that carries no
+            # specs/roadmap-status.json at all) is a silent no-op.
+            candidate_path = Path(candidate)
+            status_repo = candidate_path.resolve().parent.parent
+            try:
+                roadmap_lint.validate_roadmap_status_coherence(status_repo, required=True)
+            except roadmap_lint.RoadmapStatusError as exc:
+                print(f"validate-roadmap: roadmap-status coherence error: {exc}", file=sys.stderr)
+                return 1
+        if getattr(args, "check_assumptions", False):
+            from . import roadmap_assumptions
+
+            status_repo = Path(candidate).resolve().parent.parent
+            verdicts = roadmap_assumptions.audit_roadmap_assumptions(status_repo)
+            failed = 0
+            for probe_id in sorted(verdicts):
+                verdict = verdicts[probe_id]
+                marker = "OK" if verdict.ok else "FAIL"
+                print(f"validate-roadmap --check-assumptions: {marker} {probe_id}")
+                if not verdict.ok:
+                    failed += 1
+                    print(f"    {verdict.finding}")
+            if failed:
+                return 1
         argv_extra = ["--train"] if getattr(args, "train", False) else []
         return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
+    if command == "attest":
+        from . import legible_evidence
+
+        try:
+            record = legible_evidence.attest(
+                repo=Path(args.repo or "."),
+                stage=args.stage,
+                expected_head=args.expected_head,
+                builder_run_id=args.builder_run_id,
+                candidate_head=args.candidate_head,
+            )
+        except legible_evidence.LegibleProcessBootstrapError as exc:
+            print(f"phase-loop attest: {exc}", file=sys.stderr)
+            return 1
+        if _ATTEST_PREIMPORT_BOOTSTRAP is not None:
+            record.update(_ATTEST_PREIMPORT_BOOTSTRAP)
+        print(json.dumps(record, indent=2, sort_keys=True) if args.json else json.dumps(record, sort_keys=True))
+        return 0
     if command == "run-train":
         return _run_train_command(parser=parser, args=args)
     if command == "train-status":

@@ -18,9 +18,51 @@ from typing import Any, Mapping, Sequence
 SCHEMA_VERSION = 2
 # agent-harness#209: v1 artifacts (no per-stage log_end_offset/failure_kind) still
 # load — the v2 fields are additive and default to None on a v1 payload.
-_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2})
+# LEGIBLE (v10 SL-2): v3 is the generic sidecar-extension envelope, added by the
+# internal post-run binder only -- the public writer never emits it directly.
+_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2, 3})
 ARTIFACT_NAME = "verification.json"
 LOG_NAME = "verification.log"
+
+_BASE_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version", "run_id", "phase_alias", "commands", "env_refresh",
+        "suite", "started_at", "finished_at", "log_sha256",
+    }
+)
+_OPERATIONAL_EXEMPTIONS_FIELD = "operational_exemptions"
+_EXTENSIONS_FIELD = "extensions"
+
+# LEGIBLE (v10 SL-2, IF-0-LEGIBLE-2): the closed, versioned v3 extension-namespace
+# registry. At the LEGIBLE landing the sole registered key is LEGIBLE's own
+# namespace; PROOFGATE's namespace is RESERVED for downstream registration and
+# must never be redefined here. Registering a later namespace never invalidates
+# an existing LEGIBLE-only artifact or its plan-aware validation.
+EXTENSION_NAMESPACE_REGISTRY: dict[str, str] = {
+    "phase_loop_runtime.legible_evidence": "verification_evidence_sidecar.v1",
+}
+_RESERVED_EXTENSION_NAMESPACES = frozenset({"phase_loop_runtime.proofgate_evidence"})
+
+_SIDECAR_RECORD_V1_FIELDS = frozenset(
+    {"schema", "path", "byte_length", "sha256", "stage", "expected_head", "bootstrap_head", "process_start_token"}
+)
+# Per-registered-schema closed field inventory (defense-in-depth beyond the
+# namespace/version check): only the shapes this landing actually knows about.
+_KNOWN_EXTENSION_RECORD_SCHEMAS: dict[str, frozenset[str]] = {
+    "verification_evidence_sidecar.v1": _SIDECAR_RECORD_V1_FIELDS,
+}
+
+
+class VerificationArtifactContractError(ValueError):
+    """Typed failure for the new/unsupported v1/v2/v3 contract cases (unknown
+    top-level schema version, unregistered/incompatible v3 extension namespace,
+    or a field outside the selected version's allowed inventory). Structurally
+    malformed KNOWN versions remain the pre-existing bare ``ValueError`` ->
+    ``malformed_artifact`` path; this subclass is additive, not a replacement."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 # agent-harness#209: per-stage raw-diagnostic tail cap. Bounds record/memory size;
 # it is NOT a secret-leak mitigation (a secret is tiny) — closeout-diagnostic
@@ -702,7 +744,12 @@ def load_verification_artifact(path: Path) -> VerificationResult:
     # ValueError), crashing closeout instead of returning a ``malformed_artifact`` verdict.
     schema_version = _require_int(data["schema_version"], "schema_version")
     if schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
-        raise ValueError(f"unsupported verification evidence schema_version: {schema_version}")
+        raise VerificationArtifactContractError(
+            "unsupported_schema_version", f"unsupported verification evidence schema_version: {schema_version}"
+        )
+    _validate_top_level_field_inventory(schema_version, data)
+    if schema_version == 3:
+        _validate_v3_extensions(data.get(_EXTENSIONS_FIELD, {}))
     commands = [_command_from_payload(item) for item in _require_list(data["commands"], "commands")]
     env_refresh = None
     if data["env_refresh"] is not None:
@@ -721,6 +768,11 @@ def load_verification_artifact(path: Path) -> VerificationResult:
         started_at=_require_str(data["started_at"], "started_at"),
         finished_at=_require_str(data["finished_at"], "finished_at"),
         log_sha256=_require_str(data["log_sha256"], "log_sha256"),
+        # LEGIBLE (IF-0-LEGIBLE-2): new v2/v3 readers preserve the optional
+        # exemption list on the public result; absence retains the empty default.
+        operational_exemptions=(
+            list(data[_OPERATIONAL_EXEMPTIONS_FIELD]) if data.get(_OPERATIONAL_EXEMPTIONS_FIELD) else None
+        ),
     )
 
 
@@ -767,6 +819,164 @@ def _validate_v2_failure_kinds(
             raise ValueError(f"{label} failure_kind=error inconsistent with exit_code={stage.exit_code}")
 
 
+def _validate_top_level_field_inventory(schema_version: int, data: Mapping[str, Any]) -> None:
+    """LEGIBLE (IF-0-LEGIBLE-2): each schema version's top-level field set is
+    closed. v1 is exactly the base 9; v2 additionally allows the optional
+    ``operational_exemptions``; v3 additionally REQUIRES ``extensions`` and
+    still allows the optional ``operational_exemptions``. A field outside the
+    selected version's inventory -- including a v1 ``operational_exemptions``,
+    a v2 ``extensions``, or any other per-version addition -- is rejected."""
+    allowed = set(_BASE_TOP_LEVEL_FIELDS)
+    if schema_version >= 2:
+        allowed.add(_OPERATIONAL_EXEMPTIONS_FIELD)
+    if schema_version == 3:
+        allowed.add(_EXTENSIONS_FIELD)
+        if _EXTENSIONS_FIELD not in data:
+            raise VerificationArtifactContractError(
+                "malformed_artifact", "schema v3 artifact is missing the required extensions field"
+            )
+    present = set(data)
+    extra = present - allowed
+    if extra:
+        raise VerificationArtifactContractError(
+            "malformed_artifact",
+            f"fields outside schema v{schema_version}'s allowed inventory: {sorted(extra)}",
+        )
+
+
+def _validate_v3_extensions(extensions: Any) -> None:
+    if not isinstance(extensions, dict):
+        raise VerificationArtifactContractError("malformed_artifact", "extensions must be an object")
+    for namespace, record in extensions.items():
+        if namespace not in EXTENSION_NAMESPACE_REGISTRY:
+            raise VerificationArtifactContractError(
+                "unsupported_extension_namespace", f"unregistered v3 extension namespace: {namespace}"
+            )
+        expected_schema = EXTENSION_NAMESPACE_REGISTRY[namespace]
+        if not isinstance(record, dict) or record.get("schema") != expected_schema:
+            raise VerificationArtifactContractError(
+                "unsupported_extension_version",
+                f"{namespace}: expected extension record schema {expected_schema!r}, "
+                f"found {record.get('schema') if isinstance(record, dict) else record!r}",
+            )
+        known_fields = _KNOWN_EXTENSION_RECORD_SCHEMAS.get(expected_schema)
+        if known_fields is not None and set(record) != known_fields:
+            raise VerificationArtifactContractError(
+                "malformed_artifact", f"{namespace}: extension record fields do not match {expected_schema}"
+            )
+
+
+def register_extension_namespace(namespace: str, schema: str) -> None:
+    """Register a downstream (e.g. PROOFGATE-owned) v3 extension namespace.
+
+    Generic and additive: registering a later namespace never redefines the
+    envelope/seal/reader contract and never invalidates an existing
+    LEGIBLE-only artifact or its plan-aware validation."""
+    EXTENSION_NAMESPACE_REGISTRY[namespace] = schema
+
+
+def _bind_sidecar_extension(artifact_path: Path, *, namespace: str, record: Mapping[str, Any]) -> None:
+    """Internal post-run v3 binder (LEGIBLE, IF-0-LEGIBLE-2). Accepts only a
+    just-written, successfully validated v2 artifact and a registered
+    namespace/record; atomically upgrades it to schema v3, preserving every
+    v2 JSON value except the derived ``log_sha256``, then removes the prior
+    seal trailer and appends exactly one final v3 seal so the replacement
+    ``log_sha256`` authenticates the FINAL re-sealed log. Not reachable from
+    the public ``run_verification`` signature or any CLI flag -- callers pass
+    ``namespace``/``record`` keyword-only."""
+    artifact_path = Path(artifact_path)
+    run_dir = artifact_path.parent
+    log_path = run_dir / LOG_NAME
+
+    validation = validate_verification_artifact(artifact_path)
+    if not validation.ok and validation.code != "nonzero_exit":
+        raise VerificationArtifactContractError(
+            validation.code,
+            "; ".join(validation.findings) or f"schema-v2 artifact failed validation: {validation.code}",
+        )
+    raw_log = log_path.read_bytes()
+    if _artifact_seal_region_start(raw_log) is None:
+        raise VerificationArtifactContractError(
+            "artifact_seal_missing",
+            "sidecar binding requires the whole-artifact seal emitted by the current schema-v2 writer",
+        )
+    result = load_verification_artifact(artifact_path)
+    if result.schema_version != 2:
+        raise VerificationArtifactContractError(
+            "malformed_artifact",
+            f"sidecar binding requires a validated schema-v2 artifact, found v{result.schema_version}",
+        )
+    if namespace not in EXTENSION_NAMESPACE_REGISTRY:
+        raise VerificationArtifactContractError(
+            "unsupported_extension_namespace", f"unregistered v3 extension namespace: {namespace}"
+        )
+    expected_schema = EXTENSION_NAMESPACE_REGISTRY[namespace]
+    if not isinstance(record, Mapping) or record.get("schema") != expected_schema:
+        raise VerificationArtifactContractError(
+            "unsupported_extension_version", f"record schema must be {expected_schema!r}"
+        )
+    known_fields = _KNOWN_EXTENSION_RECORD_SCHEMAS.get(expected_schema)
+    if known_fields is not None and set(record) != known_fields:
+        raise VerificationArtifactContractError(
+            "malformed_artifact", f"extension record fields do not match {expected_schema}"
+        )
+
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 3
+    payload[_EXTENSIONS_FIELD] = {namespace: dict(record)}
+
+    seal_start = _artifact_seal_region_start(raw_log)
+    body = raw_log if seal_start is None else raw_log[:seal_start]
+    new_seal = _canonical_artifact_digest(payload)
+    new_log_bytes = body + f"\n{_ARTIFACT_SEAL_PREFIX}{new_seal}\n".encode("utf-8")
+
+    with tempfile.NamedTemporaryFile("wb", dir=log_path.parent, delete=False) as tmp_log:
+        tmp_log.write(new_log_bytes)
+        tmp_log_path = Path(tmp_log.name)
+    tmp_log_path.replace(log_path)
+
+    payload["log_sha256"] = hashlib.sha256(new_log_bytes).hexdigest()
+    _write_artifact_atomic(artifact_path, payload)
+
+
+def validate_verification_artifact_for_plan(
+    path: Path, required_namespaces: Sequence[str]
+) -> VerificationArtifactValidation:
+    """Plan-aware reader: the generic :func:`validate_verification_artifact`
+    result, additionally requiring every namespace in ``required_namespaces``
+    to be present in the artifact's ``extensions``. A LEGIBLE-only artifact
+    validated with ``required_namespaces=(LEGIBLE_NAMESPACE,)`` stays
+    compatible even after PROOFGATE's reserved namespace is later registered
+    -- this never requires the PROOFGATE namespace."""
+    base = validate_verification_artifact(path)
+    if not base.ok and base.code != "nonzero_exit":
+        return base
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return replace(base, ok=False, code="malformed_artifact", findings=(str(exc),))
+    extensions = payload.get(_EXTENSIONS_FIELD) or {}
+    missing = [namespace for namespace in required_namespaces if namespace not in extensions]
+    if missing:
+        return replace(
+            base, ok=False, code="missing_required_extension_namespace",
+            findings=(f"missing required extension namespace(s): {missing}",),
+        )
+    artifact_path = Path(path).resolve()
+    phase_loop_dir = next((parent for parent in artifact_path.parents if parent.name == ".phase-loop"), None)
+    if phase_loop_dir is not None and "phase_loop_runtime.legible_evidence" in required_namespaces:
+        from .legible_evidence import LegibleSidecarError, validate_verification_sidecar
+
+        try:
+            validate_verification_sidecar(
+                phase_loop_dir.parent,
+                sidecar=extensions["phase_loop_runtime.legible_evidence"],
+            )
+        except LegibleSidecarError as exc:
+            return replace(base, ok=False, code=exc.code, findings=(str(exc),))
+    return base
+
+
 def validate_verification_artifact(path: Path) -> VerificationArtifactValidation:
     artifact_path = Path(path)
     log_path = artifact_path.parent / LOG_NAME
@@ -792,6 +1002,16 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
         )
     try:
         result = load_verification_artifact(artifact_path)
+    except VerificationArtifactContractError as exc:
+        # LEGIBLE (IF-0-LEGIBLE-2): preserve the typed contract-error code
+        # rather than collapsing every new/unsupported case to malformed_artifact.
+        return VerificationArtifactValidation(
+            ok=False,
+            code=exc.code,
+            artifact_path=str(artifact_path),
+            log_path=str(log_path),
+            findings=(str(exc),),
+        )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         return VerificationArtifactValidation(
             ok=False,

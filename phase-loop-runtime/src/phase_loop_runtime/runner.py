@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 from typing import Mapping, NamedTuple
 
@@ -215,9 +216,11 @@ from .release_guard import (
     release_dispatch_blocker,
 )
 from .runtime_paths import phase_loop_dir
-from .discovery import roadmap_repo_relative_path
+from .discovery import parse_frontmatter, roadmap_repo_relative_path
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
+from . import legible_evidence
+from . import verification_evidence as legible_verification_evidence
 from .verification_evidence import (
     ARTIFACT_NAME as VERIFICATION_ARTIFACT_NAME,
     LOG_NAME as VERIFICATION_LOG_NAME,
@@ -225,6 +228,7 @@ from .verification_evidence import (
     resolve_install_command,
     run_verification,
     validate_verification_artifact,
+    validate_verification_artifact_for_plan,
 )
 from .worker_pool import (
     PhaseWorkerJob,
@@ -6610,6 +6614,76 @@ def _run_execute_verification(
     )
 
 
+# LEGIBLE (v10 SL-2, IF-0-LEGIBLE-2): the exact frozen frontmatter value that
+# identifies the LEGIBLE plan itself. Only a plan carrying this literal
+# declares the ``verification_evidence_sidecar.v1`` contract; every other
+# phase's ordinary verification run is completely unaffected by the block
+# below.
+_LEGIBLE_CAPABILITY_MARKER = "phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1"
+
+
+def _legible_verification_sidecar_declared(plan: Path) -> bool:
+    """True only for the plan whose frontmatter declares LEGIBLE's frozen
+    ``legible_capability_marker`` -- i.e. this run IS the LEGIBLE phase
+    itself, never a downstream/unrelated phase."""
+    try:
+        text = Path(plan).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return parse_frontmatter(text).get("legible_capability_marker") == _LEGIBLE_CAPABILITY_MARKER
+
+
+def _capture_and_bind_legible_sidecar(*, repo: Path, run_dir: Path, artifact_path: Path) -> None:
+    """LEGIBLE (SL-2): runner-owned (never executor-owned) capture. After
+    ``run_verification`` returns a validated schema-v2 artifact and before
+    the runner treats verification as complete, this runs the fixed
+    ``reviewtruth_fable_transition`` probe adapter (never a caller-supplied
+    command/route/env/timeout, never self-reported/handwritten evidence) and
+    binds its bounded/redacted record into the artifact's v3 sidecar
+    extension through :func:`verification_evidence._bind_sidecar_extension`
+    -- the internal post-run binder, never the public ``run_verification``
+    signature. Raises on any failure; the caller treats that as a required
+    contract failure, not a crash to swallow."""
+    expected_head = _current_head(repo) or "unknown"
+    process_start_token = f"runner-{os.getpid()}-{secrets.token_hex(8)}"
+    sidecar_record = legible_evidence.capture_fresh_process_verification_sidecar(
+        repo,
+        run_dir=run_dir,
+        stage="phase_execute",
+        expected_head=expected_head,
+        process_start_token=process_start_token,
+    )
+    legible_verification_evidence._bind_sidecar_extension(
+        artifact_path,
+        namespace=legible_evidence.EXTENSION_NAMESPACE,
+        record=asdict(sidecar_record),
+    )
+
+
+def _finalize_legible_operational_evidence(
+    *,
+    repo: Path,
+    run_dir: Path,
+    artifact_path: Path,
+    stage: str,
+    expected_head: str,
+    bootstrap_head: str,
+    process_start_token: str,
+    sections: Mapping[str, Mapping[str, object]],
+) -> Path:
+    """Runner-owned C5/C7 entrypoint for the complete operational aggregate."""
+    return legible_evidence.finalize_operational_attestation(
+        repo=repo,
+        run_dir=run_dir,
+        artifact_path=artifact_path,
+        stage=stage,
+        expected_head=expected_head,
+        bootstrap_head=bootstrap_head,
+        process_start_token=process_start_token,
+        sections=sections,
+    )
+
+
 def _run_execute_verification_impl(
     *,
     repo: Path,
@@ -6654,11 +6728,29 @@ def _run_execute_verification_impl(
         phase_alias=phase_alias,  # ah#85: record the LIVE run alias, not re-derived current_phase
     )
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
-    validation = validate_verification_artifact(artifact_path)
+
+    # LEGIBLE (v10 SL-2, IF-0-LEGIBLE-2): narrowly scoped to the LEGIBLE plan's
+    # own execution only (see ``_legible_verification_sidecar_declared``).
+    # Every other phase's ``run_verification``/validation call is byte-for-byte
+    # unchanged.
+    sidecar_declared = _legible_verification_sidecar_declared(plan)
+    sidecar_error: str | None = None
+    if sidecar_declared:
+        try:
+            _capture_and_bind_legible_sidecar(repo=repo, run_dir=run_dir, artifact_path=artifact_path)
+        except Exception as exc:  # noqa: BLE001 - a required-sidecar failure blocks, it never crashes the runner
+            sidecar_error = str(exc)
+
+    if sidecar_declared and sidecar_error is None:
+        validation = validate_verification_artifact_for_plan(
+            artifact_path, required_namespaces=(legible_evidence.EXTENSION_NAMESPACE,)
+        )
+    else:
+        validation = validate_verification_artifact(artifact_path)
     validation_json = validation.to_json()
     summary = {
-        "ok": validation.ok,
-        "code": validation.code,
+        "ok": validation.ok and sidecar_error is None,
+        "code": validation.code if sidecar_error is None else "legible_sidecar_binding_failed",
         "verification_artifact_path": str(artifact_path),
         "verification_log_path": str(run_dir / VERIFICATION_LOG_NAME),
         "suite_command": suite_command,
@@ -6668,6 +6760,8 @@ def _run_execute_verification_impl(
         "validation": validation_json,
         "run_id": result.run_id,
     }
+    if sidecar_error is not None:
+        summary["legible_sidecar_error"] = sidecar_error
     # agent-harness#266 (source redaction) / agent-harness#243 CR recheck (whole-summary
     # redaction): this ``summary`` becomes ``runner_verification`` below, which is then merged
     # verbatim into ``launch.json`` (``merge_launch_metadata`` at the launch-action call site)
@@ -6683,7 +6777,9 @@ def _run_execute_verification_impl(
     # diagnostic even though, for a failing suite, it carries the IDENTICAL secret argv. The
     # on-disk ``verification.log`` is untouched -- only this egress copy is narrowed.
     summary = apply_diagnostics_redaction(summary)
-    if not validation.ok:
+    if sidecar_error is not None:
+        summary["blocker_summary"] = f"Runner-owned verification failed: {summary['code']}"
+    elif not validation.ok:
         summary["blocker_summary"] = f"Runner-owned verification failed: {validation.code}"
     return summary
 
