@@ -20,9 +20,12 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
+import secrets
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -48,6 +51,20 @@ _SIDECAR_RECORD_FIELDS = (
 _SIDECAR_FILE_NAME = "legible-verification-sidecar.json"
 _SIDECAR_PROBE_RECORD_MAX_BYTES = 16 * 1024
 _FABLE_PROBE_RESPONSE_MAX_BYTES = 64 * 1024
+_OPERATIONAL_EVIDENCE_SCHEMA = "legible_evidence.v1"
+_OPERATIONAL_EVIDENCE_FILE_NAME = "legible-operational-evidence.json"
+_OPERATIONAL_EVIDENCE_SECTIONS = frozenset(
+    {
+        "roadmap_status",
+        "chronology",
+        "process_attestations",
+        "test_execution",
+        "pull_request",
+        "target_integration",
+        "assumption_probes",
+        "artifacts",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +97,13 @@ class LegibleTestExecutionError(RuntimeError):
 
 class LegibleProcessBootstrapError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class OperationalEvidenceValidation:
+    ok: bool
+    code: str = "ok"
+    finding: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -665,7 +689,96 @@ def capture_fresh_process_verification_sidecar(
 
 
 # ---------------------------------------------------------------------------
-# Process bootstrap (attest) — activation/JUnit/digest group
+# Process bootstrap and final operational evidence
+
+
+def _operational_evidence_digest(payload: Mapping[str, Any]) -> str:
+    unsigned = {key: value for key, value in payload.items() if key != "seal_sha256"}
+    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _assemble_operational_evidence(
+    *,
+    repo: Path,
+    run_dir: Path,
+    stage: str,
+    expected_head: str,
+    sections: Mapping[str, Mapping[str, Any]],
+) -> Path:
+    """Assemble the closed final envelope from runner-collected section records.
+
+    This internal codec does not collect or authorize evidence. C4/C5/C7 supply
+    records produced by the fixed collectors, then validate the sealed result
+    before it can satisfy an execution criterion.
+    """
+    repo = Path(repo).resolve()
+    run_dir = Path(run_dir).resolve()
+    try:
+        run_dir.relative_to(repo / ".phase-loop" / "runs")
+    except ValueError as exc:
+        raise LegibleProcessBootstrapError(f"operational evidence run directory escapes runner root: {run_dir}") from exc
+    if stage not in {"candidate", "canonical-main"}:
+        raise LegibleProcessBootstrapError(f"unsupported attestation stage: {stage!r}")
+    if set(sections) != _OPERATIONAL_EVIDENCE_SECTIONS:
+        raise LegibleProcessBootstrapError(
+            f"operational evidence sections {sorted(sections)} != {sorted(_OPERATIONAL_EVIDENCE_SECTIONS)}"
+        )
+    if any(not isinstance(value, Mapping) or not value for value in sections.values()):
+        raise LegibleProcessBootstrapError("every operational evidence section must be a nonempty mapping")
+    payload: dict[str, Any] = {
+        "schema": _OPERATIONAL_EVIDENCE_SCHEMA,
+        "stage": stage,
+        "expected_head": expected_head,
+        "sections": {key: dict(sections[key]) for key in sorted(sections)},
+    }
+    payload["seal_sha256"] = _operational_evidence_digest(payload)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output_path = run_dir / _OPERATIONAL_EVIDENCE_FILE_NAME
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=run_dir, delete=False) as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        temporary_path = Path(handle.name)
+    temporary_path.replace(output_path)
+    return output_path
+
+
+def validate_operational_evidence(
+    *, repo: Path, path: Path, stage: str, expected_head: str
+) -> OperationalEvidenceValidation:
+    repo = Path(repo).resolve()
+    path = Path(path)
+    if path.is_symlink():
+        return OperationalEvidenceValidation(False, "operational_evidence_symlink", str(path))
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(repo / ".phase-loop" / "runs")
+    except (OSError, ValueError) as exc:
+        return OperationalEvidenceValidation(False, "operational_evidence_path", str(exc))
+    if resolved.name != _OPERATIONAL_EVIDENCE_FILE_NAME:
+        return OperationalEvidenceValidation(False, "operational_evidence_path", str(resolved))
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return OperationalEvidenceValidation(False, "operational_evidence_malformed", str(exc))
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema", "stage", "expected_head", "sections", "seal_sha256"
+    }:
+        return OperationalEvidenceValidation(False, "operational_evidence_malformed", "closed field inventory mismatch")
+    if payload.get("schema") != _OPERATIONAL_EVIDENCE_SCHEMA:
+        return OperationalEvidenceValidation(False, "operational_evidence_schema", str(payload.get("schema")))
+    if payload.get("stage") != stage or payload.get("expected_head") != expected_head:
+        return OperationalEvidenceValidation(False, "operational_evidence_identity", "stage/head mismatch")
+    sections = payload.get("sections")
+    if not isinstance(sections, dict) or set(sections) != _OPERATIONAL_EVIDENCE_SECTIONS:
+        return OperationalEvidenceValidation(False, "operational_evidence_sections", "section inventory mismatch")
+    if any(not isinstance(value, dict) or not value for value in sections.values()):
+        return OperationalEvidenceValidation(False, "operational_evidence_sections", "empty or malformed section")
+    if payload.get("seal_sha256") != _operational_evidence_digest(payload):
+        return OperationalEvidenceValidation(False, "operational_evidence_seal_mismatch", "payload digest drift")
+    if _rev_parse(repo, "HEAD") != expected_head:
+        return OperationalEvidenceValidation(False, "operational_evidence_head_mismatch", "repository HEAD drift")
+    return OperationalEvidenceValidation(True)
 
 
 def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, candidate_head: str | None = None) -> dict[str, Any]:
@@ -684,6 +797,14 @@ def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, c
         raise LegibleProcessBootstrapError("builder run identity is empty")
     if stage == "canonical-main" and not candidate_head:
         raise LegibleProcessBootstrapError("canonical-main attestation requires candidate_head")
+    if candidate_head is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", candidate_head):
+            raise LegibleProcessBootstrapError(
+                f"candidate head is not a lowercase 40-hex commit: {candidate_head!r}"
+            )
+        resolved_candidate = _rev_parse(repo, f"{candidate_head}^{{commit}}")
+        if resolved_candidate != candidate_head:
+            raise LegibleProcessBootstrapError(f"candidate head does not resolve to a commit: {candidate_head!r}")
     status = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=repo,
@@ -699,7 +820,19 @@ def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, c
             f"expected HEAD {expected_head!r}, found {actual_head!r} in {repo} (stage={stage!r}, "
             f"builder_run_id={builder_run_id!r})"
         )
-    return {"repo": str(repo), "stage": stage, "head": actual_head, "builder_run_id": builder_run_id}
+    if candidate_head is not None and not _is_ancestor(repo, candidate_head, actual_head):
+        raise LegibleProcessBootstrapError(
+            f"candidate head {candidate_head!r} is not an ancestor of {actual_head!r}"
+        )
+    return {
+        "repo": str(repo),
+        "stage": stage,
+        "head": actual_head,
+        "builder_run_id": builder_run_id,
+        "candidate_head": candidate_head,
+        "process_id": os.getpid(),
+        "process_start_token": secrets.token_hex(32),
+    }
 
 
 # ---------------------------------------------------------------------------

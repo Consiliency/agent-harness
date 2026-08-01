@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
+import secrets
 import shlex
 import subprocess
 import sys
@@ -11,6 +13,56 @@ import time
 from pathlib import Path
 
 _LOGGER = logging.getLogger("phase_loop_runtime.cli")
+
+
+def _preimport_attest_bootstrap(argv: list[str]) -> dict[str, object] | None:
+    """Fail closed before importing phase-owned runtime helpers for attest."""
+    if "attest" not in argv:
+        return None
+
+    def _value(flag: str) -> str | None:
+        for index, item in enumerate(argv):
+            if item == flag and index + 1 < len(argv):
+                return argv[index + 1]
+            if item.startswith(f"{flag}="):
+                return item.partition("=")[2]
+        return None
+
+    repo_value = _value("--repo")
+    expected_head = _value("--expected-head")
+    if not repo_value or not expected_head:
+        return None
+    repo = Path(repo_value).resolve()
+    source_path = Path(__file__).resolve()
+    expected_source = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
+    if source_path != expected_source:
+        raise RuntimeError(
+            f"phase-loop attest requires the named worktree's repo-local runtime: {source_path} != {expected_source}"
+        )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+    )
+    if head.returncode != 0 or head.stdout.strip() != expected_head:
+        raise RuntimeError(
+            f"phase-loop attest expected HEAD {expected_head!r}, found {head.stdout.strip()!r}"
+        )
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=False
+    )
+    if status.returncode != 0 or status.stdout:
+        raise RuntimeError(f"phase-loop attest requires a clean worktree: {repo}")
+    source_bytes = source_path.read_bytes()
+    return {
+        "process_start_token": secrets.token_hex(32),
+        "bootstrap_head": expected_head,
+        "repo_realpath": str(repo),
+        "cli_path": str(source_path),
+        "cli_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "python_executable": sys.executable,
+    }
+
+
+_ATTEST_PREIMPORT_BOOTSTRAP = _preimport_attest_bootstrap(sys.argv[1:])
 
 from .closeout import build_phase_loop_closeout
 from .consiliency_ingest import ingest
@@ -1090,6 +1142,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         except legible_evidence.LegibleProcessBootstrapError as exc:
             print(f"phase-loop attest: {exc}", file=sys.stderr)
             return 1
+        if _ATTEST_PREIMPORT_BOOTSTRAP is not None:
+            record.update(_ATTEST_PREIMPORT_BOOTSTRAP)
         print(json.dumps(record, indent=2, sort_keys=True) if args.json else json.dumps(record, sort_keys=True))
         return 0
     if command == "run-train":
