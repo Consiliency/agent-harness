@@ -2328,6 +2328,26 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         + "\n",
         encoding="utf-8",
     )
+    intent_path = run_dir / "legible-pr-transition-intent.json"
+    intent_payload = {
+        "schema": "legible_pr_transition_intent.v1",
+        "run_id": run_id,
+        "status": "transition_intent",
+        "head": "1" * 40,
+        "builder_run_id": "builder-1",
+        "process_start_token": "transition-token",
+        "server_base": "2" * 40,
+        "server_merge": "3" * 40,
+        "pr_head": "4" * 40,
+        "expected_tree": "5" * 40,
+        "ready_snapshot": {"state": "OPEN"},
+        "review_decision": "",
+        "github_review_count": 0,
+        "review_panel_path": panel_path.relative_to(repo).as_posix(),
+        "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+    }
+    intent_payload["seal_sha256"] = runner._legible_transition_digest(intent_payload)
+    intent_path.write_text(json.dumps(intent_payload, sort_keys=True) + "\n", encoding="utf-8")
     payload = {
         "schema": "legible_pr_transition.v1",
         "run_id": run_id,
@@ -2345,6 +2365,8 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "transition_intent_path": intent_path.relative_to(repo).as_posix(),
+        "transition_intent_sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
         "candidate_requires_integration": True,
     }
     payload["seal_sha256"] = runner._legible_transition_digest(payload)
