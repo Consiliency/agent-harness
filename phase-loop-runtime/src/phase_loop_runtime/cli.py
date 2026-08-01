@@ -389,6 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "Mechanically lint a phase-plan roadmap spec (headings, aliases, IF-gates, DAG, lane hints).  Pass --train for cross-repo release-train roadmaps."
             sub.add_argument("roadmap_path", nargs="?", help="Path to the roadmap spec. Falls back to --roadmap / auto-detection.")
             sub.add_argument("--train", action="store_true", default=False, help="Validate as a cross-repo release-train roadmap (P2 train mode).")
+            sub.add_argument("--check-assumptions", action="store_true", default=False, help="LEGIBLE: also audit the roadmap's assumption-probe sidecar and print a per-probe verdict.")
         if name == "docs-audit":
             sub.description = "Pipeline-independent docs-freshness backstop over a git diff (no .phase-loop state); fails loud on a release surface changed without its required doc."
             sub.add_argument("--base", help="Diff base ref (auto-resolved from CI env if omitted: PR base / prior tag / push before-SHA).")
@@ -1041,6 +1042,33 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             candidate = select_roadmap(repo, None)
         if not candidate:
             parser.error("validate-roadmap requires a roadmap path (positional, --roadmap, or auto-detectable)")
+        if not getattr(args, "train", False):
+            # LEGIBLE IF-0-LEGIBLE-1: canonical repository validation always
+            # calls the coherence validator with required=True. A candidate
+            # whose repo cannot be inferred (or that carries no
+            # specs/roadmap-status.json at all) is a silent no-op.
+            candidate_path = Path(candidate)
+            status_repo = candidate_path.resolve().parent.parent
+            try:
+                roadmap_lint.validate_roadmap_status_coherence(status_repo, required=True)
+            except roadmap_lint.RoadmapStatusError as exc:
+                print(f"validate-roadmap: roadmap-status coherence error: {exc}", file=sys.stderr)
+                return 1
+        if getattr(args, "check_assumptions", False):
+            from . import roadmap_assumptions
+
+            status_repo = Path(candidate).resolve().parent.parent
+            verdicts = roadmap_assumptions.audit_roadmap_assumptions(status_repo)
+            failed = 0
+            for probe_id in sorted(verdicts):
+                verdict = verdicts[probe_id]
+                marker = "OK" if verdict.ok else "FAIL"
+                print(f"validate-roadmap --check-assumptions: {marker} {probe_id}")
+                if not verdict.ok:
+                    failed += 1
+                    print(f"    {verdict.finding}")
+            if failed:
+                return 1
         argv_extra = ["--train"] if getattr(args, "train", False) else []
         return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
     if command == "run-train":

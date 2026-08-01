@@ -40,6 +40,7 @@ from .pipeline_adapter.flag import reconcile_git_reality_enabled
 from .provenance import phase_sha256, roadmap_sha256
 from .roadmap_authority import active_authorized_roadmap, assert_roadmap_authorized
 from .runtime_paths import phase_loop_state_read_file
+from . import roadmap_lint
 
 
 PHASE_RE = re.compile(
@@ -435,32 +436,111 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
         authorized = assert_roadmap_authorized(repo, path)
         if not path.exists():
             raise FileNotFoundError(f"roadmap not found: {path}")
-        return authorized
+        return _return_selectable_roadmap(repo, authorized, "explicit")
 
     authority_roadmap = active_authorized_roadmap(repo)
     if authority_roadmap is not None:
-        return authority_roadmap
+        return _return_selectable_roadmap(repo, authority_roadmap, "authority")
 
     state_roadmap = active_state_roadmap(repo)
     if state_roadmap is not None:
         if _state_roadmap_is_superseded(repo, state_roadmap):
             raise SupersededRoadmapStateError(state_roadmap)
-        return assert_roadmap_authorized(repo, state_roadmap)
+        return _return_selectable_roadmap(repo, assert_roadmap_authorized(repo, state_roadmap), "state")
 
     manifest_roadmap = manifest_backed_roadmap(repo)
     if manifest_roadmap is not None:
-        return assert_roadmap_authorized(repo, manifest_roadmap)
+        return _return_selectable_roadmap(repo, assert_roadmap_authorized(repo, manifest_roadmap), "manifest")
 
     handoff = latest_handoff_roadmap(repo_identity(repo), "codex-phase-roadmap-builder")
     if handoff is not None:
-        return assert_roadmap_authorized(repo, handoff)
+        return _return_selectable_roadmap(repo, assert_roadmap_authorized(repo, handoff), "handoff")
 
     candidates = sorted((repo / "specs").glob("phase-plans-v*.md"))
     if not candidates:
         raise FileNotFoundError("no specs/phase-plans-v*.md roadmap found")
     if len(candidates) != 1:
         raise AmbiguousRoadmapError([c.resolve() for c in candidates])
-    return assert_roadmap_authorized(repo, candidates[0])
+    return _return_selectable_roadmap(repo, assert_roadmap_authorized(repo, candidates[0]), "singleton-glob")
+
+
+_BANNER_DECLARATION_ATTEMPT_PREFIXES = (
+    re.compile(r"^> \*\*Status \("),
+    re.compile(r"^> # DELIVERED\b"),
+    re.compile(r"^> # SUPERSEDED\b"),
+)
+
+
+def _banner_has_no_declaration(text: str) -> bool:
+    """True only for a roadmap that carries NO lifecycle declaration ATTEMPT at
+    all anywhere in its banner (the sole shape LEGIBLE's legacy-compatibility
+    branch may still select) — an arbitrary pre-LEGIBLE roadmap's ordinary
+    prose/headings never happen to start with a recognized-status prefix. A
+    status-LIKE but malformed/ambiguous/misplaced declaration (a line that DOES
+    start with one of those prefixes) is NOT this — it must fail typed via
+    :func:`roadmap_lint.parse_roadmap_banner_status` instead."""
+    try:
+        lines = text.splitlines()
+        banner_end = len(lines)
+        for index, line in enumerate(lines):
+            if line.startswith("## "):
+                banner_end = index
+                break
+        return not any(
+            prefix.match(line) for line in lines[:banner_end] for prefix in _BANNER_DECLARATION_ATTEMPT_PREFIXES
+        )
+    except Exception:
+        return False
+
+
+def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path:
+    """The one common gate every :func:`select_roadmap` return routes through
+    (plans/phase-plan-v10-LEGIBLE.md, IF-0-LEGIBLE-1). Always parses the
+    candidate's own lifecycle declaration and rejects every recognized
+    non-active one; when ``specs/roadmap-status.json`` is present, additionally
+    requires the candidate to be the registered and banner-declared ``active``
+    roadmap. Legacy compatibility applies only when the candidate carries no
+    lifecycle declaration at all."""
+    repo_root = Path(repo).resolve()
+    candidate = Path(candidate).resolve()
+    try:
+        rel = candidate.relative_to(repo_root).as_posix()
+    except ValueError:
+        rel = candidate.as_posix()
+
+    try:
+        text = candidate.read_text(encoding="utf-8")
+    except OSError:
+        return candidate
+
+    banner_status: str | None
+    try:
+        banner_status = roadmap_lint.parse_roadmap_banner_status(text, rel)
+    except roadmap_lint.MalformedBannerError:
+        if _banner_has_no_declaration(text):
+            banner_status = None
+        else:
+            raise
+
+    if banner_status is not None and banner_status != "active":
+        raise roadmap_lint.NonActiveSelectionError(
+            f"{rel}: recognized non-active roadmap ({banner_status}) cannot be selected"
+        )
+
+    status = roadmap_lint.validate_roadmap_status_coherence(repo_root, required=True)
+    if status is not None:
+        registered_paths = {entry["path"] for entry in status["roadmaps"]}
+        if banner_status is None:
+            if rel in registered_paths:
+                raise roadmap_lint.StatusCoherenceError(
+                    f"{rel}: tracked roadmap carries no lifecycle declaration"
+                )
+        elif rel != status["selected_roadmap"]:
+            raise roadmap_lint.NonActiveSelectionError(
+                f"{rel} is not the registered active roadmap ({status['selected_roadmap']})"
+            )
+
+    return candidate
 
 
 def active_state_roadmap(repo: Path) -> Path | None:

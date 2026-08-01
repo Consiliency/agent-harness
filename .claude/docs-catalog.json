@@ -1,1 +1,53 @@
-[]
+[
+  {
+    "path": "CHANGELOG.md"
+  },
+  {
+    "path": "README.md"
+  },
+  {
+    "path": "phase-loop-runtime/README.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/extraction-readiness.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/granular-execution-policy.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/harness-capability-matrix.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/harness-skill-matrix.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/harness-substrate-manifest.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/pi-loop-control.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/runtime-boundary.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/spec-discovery-roots.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/substrate-soak-governed-pipeline.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/substrate-soak-portal-projection.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/substrate-soak-regenesis.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/substrate-soak-report.md"
+  },
+  {
+    "path": "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md"
+  }
+]
