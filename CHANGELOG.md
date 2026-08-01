@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: run the frozen LEGIBLE files from a standalone copied tests tree
+
+- The two frozen LEGIBLE files (`test_legible_roadmap_contract.py`, `test_legible_evidence.py`)
+  distinguish a full-history canonical repo from an installed consumer. GitHub's shallow
+  `actions/checkout` is neither, so `.github/workflows/test.yml` now runs those two files
+  from a copied tests tree while every other test keeps its existing source-checkout mode.
+  This is a CI-execution change only; no shipped runtime behaviour changes.
+
 ### Advisor-board Fable liveness: tool activity counts as progress
 
 - The Claude/Fable self-PTY leg now treats fresh transcript JSONL growth as reviewer
