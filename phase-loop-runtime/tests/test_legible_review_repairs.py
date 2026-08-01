@@ -2230,6 +2230,37 @@ def test_default_execution_rejects_non_guard_skip_semantics(tmp_path, mutation):
         )
 
 
+def test_forced_red_accepts_real_pytest_junit_failure_prefix(tmp_path):
+    source_repo = Path(__file__).resolve().parents[2]
+    nodeids = legible_evidence._load_frozen_nodeids(source_repo)
+    suite = ET.Element("testsuite", tests=str(len(nodeids)), failures=str(len(nodeids)))
+    for index, nodeid in enumerate(nodeids):
+        file_part, test_name = nodeid.split("::", 1)
+        case = ET.SubElement(
+            suite,
+            "testcase",
+            classname=file_part.removesuffix(".py"),
+            name=test_name,
+        )
+        ET.SubElement(
+            case,
+            "failure",
+            message=f"Failed: LEGIBLE_RED::real-pytest-{index:03d}: expected",
+        )
+    junit = tmp_path / "real-pytest-red.xml"
+    ET.ElementTree(suite).write(junit, encoding="utf-8", xml_declaration=True)
+
+    evidence = legible_evidence.collect_test_execution_evidence(
+        source_repo,
+        junit_path=junit,
+        expected_total=84,
+        mode="forced_red",
+    )
+
+    assert evidence.failed == 84
+    assert len(set(evidence.asserted_mutation_ids)) == 84
+
+
 def _install_two_panel_artifact_inventory(repo: Path, sections: dict) -> Path:
     records = sections["artifacts"]["records"]
     old_record = next(record for record in records if record["path"] == "evidence/implementation-panel.json")
