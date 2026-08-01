@@ -654,6 +654,42 @@ _LEGIBLE_TEST_PATHS = (
     "phase-loop-runtime/tests/test_legible_evidence.py",
     "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
 )
+_LEGIBLE_ROADMAP_SHA256 = "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+_LEGIBLE_PLAN_CONTRACT_FIXED = {
+    "absent_registry_selector_falsifier_nodeid": (
+        "phase-loop-runtime/tests/test_legible_roadmap_contract.py::"
+        "test_absent_registry_selector_rejects_recognized_non_active_banner_and_preserves_no_declaration_legacy"
+    ),
+    "absent_registry_selector_falsifier_nodeid_sha256": (
+        "e65af55d0f3df427f8b1c1b001fbb69b92585f6790f2daa97f47a2f6adbab93a"
+    ),
+    "activation_env": "PHASE_LOOP_TDD_EXPECT_LEGIBLE",
+    "capability_marker": "phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1",
+    "expected_nodeids": 84,
+    "legacy_selector_compatibility": "candidate_has_no_lifecycle_declaration",
+    "lifecycle": "legible_tdd_candidate_main.v1",
+    "log_sha256_scope": "complete_final_v3_sealed_log_bytes",
+    "phase_dependencies": [],
+    "selector_common_return_contract": (
+        "parse_candidate_lifecycle_then_reject_recognized_non_active_with_or_without_registry"
+    ),
+    "v2_to_v3_preservation": "all_v2_json_values_except_schema_version_and_derived_log_sha256",
+    "verification_evidence_contract": "verification_evidence.v3",
+    "verification_extension_namespaces": {"phase_loop_runtime.legible_evidence": "LEGIBLE"},
+    "verification_extension_registry_owner": "LEGIBLE",
+    "verification_extension_reserved_downstream_namespace": "phase_loop_runtime.proofgate_evidence",
+}
+_LEGIBLE_PLAN_CONTRACT_KEYS = frozenset(
+    {
+        *_LEGIBLE_PLAN_CONTRACT_FIXED,
+        "plan_sha256",
+        "roadmap_sha256",
+        "owned_paths",
+        "owned_paths_count",
+        "owned_paths_sha256",
+        "test_paths",
+    }
+)
 
 
 class ManifestSourceError(RuntimeError):
@@ -834,8 +870,8 @@ def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanF
         full_path = plans_dir / name
         try:
             entry_stat = full_path.lstat()
-        except OSError:
-            continue
+        except OSError as exc:
+            raise ManifestSourceError(f"cannot inspect physical plan entry {full_path}: {exc}") from exc
         if stat.S_ISLNK(entry_stat.st_mode):
             malformed.append(MalformedPlanFinding(path=rel, kind="symlink", origin=frozenset({"filesystem"})))
             continue
@@ -964,12 +1000,15 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 ).hexdigest()
                 required_contract = (
                     isinstance(contract, dict)
+                    and set(contract) == _LEGIBLE_PLAN_CONTRACT_KEYS
+                    and all(contract.get(key) == value for key, value in _LEGIBLE_PLAN_CONTRACT_FIXED.items())
                     and contract.get("owned_paths") == list(_LEGIBLE_OWNED_PATHS)
                     and contract.get("owned_paths_count") == len(_LEGIBLE_OWNED_PATHS)
                     and contract.get("owned_paths_sha256") == owned_digest
                     and isinstance(contract.get("test_paths"), list)
                     and len(contract["test_paths"]) == len(_LEGIBLE_TEST_PATHS)
                     and set(contract["test_paths"]) == set(_LEGIBLE_TEST_PATHS)
+                    and contract.get("roadmap_sha256") == _LEGIBLE_ROADMAP_SHA256
                     and isinstance(contract.get("plan_sha256"), str)
                 )
                 if not required_contract:

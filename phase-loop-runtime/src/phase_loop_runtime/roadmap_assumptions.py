@@ -28,6 +28,7 @@ from typing import Any, Mapping, Sequence
 PROBE_SIDECAR_REL = "specs/roadmap-assumption-probes-v10.json"
 PROBE_SCHEMA = "roadmap_assumption_probe.v1"
 CANONICAL_ROADMAP_REL = "specs/phase-plans-v10.md"
+CANONICAL_ROADMAP_SHA256 = "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
 CANONICAL_PROBES_SHA256 = "bfb08073a28fcd9233b41fd681a879e3a8677435c7bf3c9dc6de6c00360ecc85"
 CANONICAL_PROBE_IDS = (
     "LEGIBLE-A1-CONFORM-UNGATED", "LEGIBLE-A1-I118", "LEGIBLE-A1-PIN-SHA",
@@ -141,6 +142,11 @@ def load_probe_sidecar(repo: Path) -> dict:
     except OSError as exc:
         raise RoadmapAssumptionError("missing_roadmap", f"cannot read {roadmap_path}: {exc}") from exc
     digest = hashlib.sha256(roadmap_bytes).hexdigest()
+    if digest != CANONICAL_ROADMAP_SHA256:
+        raise RoadmapAssumptionError(
+            "sidecar_contract_drift",
+            f"roadmap bytes must match frozen v10 digest {CANONICAL_ROADMAP_SHA256!r}",
+        )
     if digest != data["roadmap_sha256"]:
         raise RoadmapAssumptionError(
             "roadmap_digest_mismatch",

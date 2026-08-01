@@ -1138,6 +1138,11 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
                 expected_head=args.expected_head,
                 builder_run_id=args.builder_run_id,
                 candidate_head=args.candidate_head,
+                process_start_token=(
+                    str(_ATTEST_PREIMPORT_BOOTSTRAP["process_start_token"])
+                    if _ATTEST_PREIMPORT_BOOTSTRAP is not None
+                    else None
+                ),
             )
         except legible_evidence.LegibleProcessBootstrapError as exc:
             print(f"phase-loop attest: {exc}", file=sys.stderr)

@@ -67,7 +67,9 @@ _LOADED_ATTESTATION_RUNTIME_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/cli.py",
     "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+    "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
 )
+_CAPABILITY_MARKER_BYTES = b'LEGIBLE_CAPABILITY_VERSION = "legible.v1"'
 
 _SIDECAR_RECORD_SCHEMA = "verification_evidence_sidecar.v1"
 _SIDECAR_RECORD_FIELDS = (
@@ -121,7 +123,7 @@ _OPERATIONAL_SECTION_FIELDS = {
             "frozen_test_blobs",
         }
     ),
-    "process_attestations": frozenset({"builder", "attester"}),
+    "process_attestations": frozenset({"builder"}),
     "test_execution": frozenset({"nodeid_count", "nodeid_digest", "default", "forced_red", "final"}),
     "pull_request": frozenset(
         {
@@ -845,6 +847,41 @@ def _blob_oid(repo: Path, ref: str, rel: str) -> str | None:
     return value if value and re.fullmatch(r"[0-9a-f]{40}", value) else None
 
 
+def _blob_bytes(repo: Path, ref: str, rel: str) -> bytes | None:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{ref}:{rel}"],
+        capture_output=True,
+        check=False,
+    )
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _probe_response_finding(
+    probe: Mapping[str, Any], response: Mapping[str, Any]
+) -> roadmap_assumptions.ProbeFinding | None:
+    if set(response) != {"probe_id", "state", "observation"}:
+        return roadmap_assumptions.ProbeFinding(
+            "malformed_response", "response must contain exactly probe_id/state/observation"
+        )
+    if response.get("probe_id") != probe.get("id"):
+        return roadmap_assumptions.ProbeFinding("probe_id_mismatch", "response probe id drifted")
+    observation = response.get("observation")
+    if not isinstance(observation, Mapping):
+        return roadmap_assumptions.ProbeFinding("malformed_observation", "observation is not an object")
+    finding = roadmap_assumptions._evaluate(probe["expected"], observation)
+    if finding is not None:
+        return finding
+    expected_state = "resolved"
+    if probe.get("kind") == "reviewtruth_fable_transition":
+        expected_state = roadmap_assumptions._classify_reviewtruth_transition(observation) or ""
+    if response.get("state") != expected_state:
+        return roadmap_assumptions.ProbeFinding(
+            "transition_state_mismatch",
+            f"recorded state {response.get('state')!r} != evaluated state {expected_state!r}",
+        )
+    return None
+
+
 def _blob_mode(repo: Path, ref: str, rel: str) -> str | None:
     proc = _git_ok(repo, "ls-tree", ref, "--", rel)
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -1013,6 +1050,15 @@ def _validate_operational_sections(
         or (stage == "canonical-main" and not _is_ancestor(repo, chronology["candidate_head"], expected_head))
     ):
         return "chronology: required ancestry is absent"
+    candidate_remote_ref = chronology.get("candidate_remote_ref")
+    candidate_remote_oid = chronology.get("candidate_remote_oid")
+    if (
+        not isinstance(candidate_remote_ref, str)
+        or not candidate_remote_ref.startswith("refs/remotes/")
+        or candidate_remote_oid != chronology["candidate_head"]
+        or _rev_parse(repo, candidate_remote_ref) != candidate_remote_oid
+    ):
+        return "chronology: candidate remote ref is not bound to the final candidate"
     owned_paths = chronology["owned_paths"]
     owned_digest = hashlib.sha256(
         "".join(f"{path}\n" for path in _LEGIBLE_OWNED_PATHS).encode("utf-8")
@@ -1054,12 +1100,27 @@ def _validate_operational_sections(
         return "chronology: plan contract authority is invalid"
 
     attestations = sections["process_attestations"]
+    required_roles = ("builder", "transition", "candidate")
+    if stage == "canonical-main":
+        required_roles += ("canonical_main",)
+    if not isinstance(attestations, Mapping) or set(attestations) != set(required_roles):
+        return f"process_attestations: exact {stage} process chain is absent"
+    if any(not isinstance(attestations[role], Mapping) for role in required_roles):
+        return "process_attestations: process identity is not a record"
     builder = attestations["builder"]
-    attester = attestations["attester"]
-    if not isinstance(builder, Mapping) or not isinstance(attester, Mapping):
-        return "process_attestations: builder and attester must be records"
-    builder_token = builder.get("process_start_token")
-    attester_token = attester.get("process_start_token")
+    transition = attestations["transition"]
+    candidate = attestations["candidate"]
+    attester = candidate if stage == "candidate" else attestations["canonical_main"]
+    tokens = [attestations[role].get("process_start_token") for role in required_roles]
+    if (
+        any(not isinstance(token, str) or not token for token in tokens)
+        or len(set(tokens)) != len(tokens)
+        or not builder.get("run_id")
+        or transition.get("parent_run_id") != builder.get("run_id")
+        or candidate.get("parent_run_id") != transition.get("run_id")
+        or (stage == "canonical-main" and attester.get("parent_run_id") != candidate.get("run_id"))
+    ):
+        return "process_attestations: process lineage or token separation is invalid"
     cli_path = Path(str(attester.get("cli_path", "")))
     expected_cli_path = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "cli.py"
     try:
@@ -1072,13 +1133,7 @@ def _validate_operational_sections(
     except OSError:
         cli_is_bound = False
     if (
-        not builder.get("run_id")
-        or not isinstance(builder_token, str)
-        or not builder_token
-        or not isinstance(attester_token, str)
-        or not attester_token
-        or builder_token == attester_token
-        or attester.get("head") != expected_head
+        attester.get("head") != expected_head
         or attester.get("bootstrap_head") != expected_head
         or Path(str(attester.get("repo_realpath", ""))).resolve() != repo
         or not _is_sha256(attester.get("cli_sha256"))
@@ -1086,14 +1141,26 @@ def _validate_operational_sections(
         or not attester.get("python_executable")
     ):
         return "process_attestations: malformed or unbound process identity"
-    loaded_runtime_blobs = attester.get("loaded_runtime_blobs")
-    if not isinstance(loaded_runtime_blobs, Mapping) or set(loaded_runtime_blobs) != set(
-        _LOADED_ATTESTATION_RUNTIME_PATHS
-    ):
-        return "process_attestations: loaded runtime blob inventory is invalid"
-    for rel, recorded_blob in loaded_runtime_blobs.items():
-        if recorded_blob != _blob_oid(repo, expected_head, rel):
-            return f"process_attestations: loaded runtime blob drift: {rel}"
+    for role in ("candidate",) if stage == "candidate" else ("candidate", "canonical_main"):
+        process = attestations[role]
+        process_head = chronology["candidate_head"] if role == "candidate" else expected_head
+        loaded_runtime_blobs = process.get("loaded_runtime_blobs")
+        if not isinstance(loaded_runtime_blobs, Mapping) or set(loaded_runtime_blobs) != set(
+            _LOADED_ATTESTATION_RUNTIME_PATHS
+        ):
+            return f"process_attestations: {role} loaded runtime inventory is invalid"
+        for rel, record in loaded_runtime_blobs.items():
+            blob_bytes = _blob_bytes(repo, process_head, rel)
+            if (
+                not isinstance(record, Mapping)
+                or set(record) != {"path", "blob_oid", "byte_length", "sha256"}
+                or record.get("path") != rel
+                or record.get("blob_oid") != _blob_oid(repo, process_head, rel)
+                or blob_bytes is None
+                or record.get("byte_length") != len(blob_bytes)
+                or record.get("sha256") != hashlib.sha256(blob_bytes).hexdigest()
+            ):
+                return f"process_attestations: {role} loaded runtime drift: {rel}"
 
     test_execution = sections["test_execution"]
     default = test_execution["default"]
@@ -1120,8 +1187,71 @@ def _validate_operational_sections(
         return "test_execution: nodeid digest is not bound to the frozen inventory"
     for mode, record in (("default", default), ("forced_red", forced_red), ("final", final)):
         junit_rel = record.get("junit_path")
-        if not isinstance(junit_rel, str) or junit_rel not in artifact_data:
-            return f"test_execution: {mode} JUnit is not in the artifact inventory"
+        log_rel = record.get("log_path")
+        common_fields = {
+            "argv",
+            "execution_head",
+            "exit_code",
+            "capability_marker_present",
+            "log_path",
+            "log_byte_length",
+            "log_sha256",
+            "junit_path",
+            "passed",
+            "skipped",
+            "failed",
+            "errors",
+        }
+        required_fields = common_fields | (
+            {"failure_markers", "anchor_nodeids"} if mode == "forced_red" else set()
+        )
+        if not isinstance(record, Mapping) or set(record) != required_fields:
+            return f"test_execution: {mode} record inventory is invalid"
+        if (
+            not isinstance(junit_rel, str)
+            or junit_rel not in artifact_data
+            or not isinstance(log_rel, str)
+            or log_rel not in artifact_data
+        ):
+            return f"test_execution: {mode} JUnit or raw log is not in the artifact inventory"
+        log_bytes = artifact_data[log_rel]
+        if (
+            record["log_byte_length"] != len(log_bytes)
+            or record["log_sha256"] != hashlib.sha256(log_bytes).hexdigest()
+        ):
+            return f"test_execution: {mode} raw log digest drift"
+        expected_execution_head = (
+            chronology["implementation_base"] if mode in {"default", "forced_red"} else expected_head
+        )
+        expected_exit_code = 1 if mode == "forced_red" else 0
+        expected_marker = mode == "final"
+        capability_bytes = _blob_bytes(
+            repo,
+            expected_execution_head,
+            "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+        )
+        marker_present = capability_bytes is not None and _CAPABILITY_MARKER_BYTES in capability_bytes
+        expected_argv_tail = [
+            "-m",
+            "pytest",
+            "tests/test_legible_roadmap_contract.py",
+            "tests/test_legible_evidence.py",
+            f"--junitxml={(repo / junit_rel).resolve()}",
+            "-q",
+        ]
+        argv = record["argv"]
+        if (
+            not isinstance(argv, list)
+            or len(argv) != 7
+            or not isinstance(argv[0], str)
+            or not argv[0]
+            or argv[1:] != expected_argv_tail
+            or record["execution_head"] != expected_execution_head
+            or record["exit_code"] != expected_exit_code
+            or record["capability_marker_present"] is not expected_marker
+            or marker_present is not expected_marker
+        ):
+            return f"test_execution: {mode} command, head, exit, or marker state is invalid"
         try:
             observed = collect_test_execution_evidence(
                 repo,
@@ -1138,6 +1268,29 @@ def _validate_operational_sections(
             "errors": observed.errors,
         } != {key: record.get(key) for key in ("passed", "skipped", "failed", "errors")}:
             return f"test_execution: {mode} counts disagree with JUnit"
+        try:
+            log_text = log_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return f"test_execution: {mode} raw log is not UTF-8"
+        if mode == "forced_red":
+            junit_rows = _parse_junit(repo / junit_rel)
+            failure_markers = {
+                nodeid: message.split("LEGIBLE_RED::", 1)[1].split(":", 1)[0]
+                for nodeid, (status, message) in junit_rows.items()
+                if status == "failure" and message.startswith("LEGIBLE_RED::")
+            }
+            if (
+                record["failure_markers"] != failure_markers
+                or not isinstance(record["anchor_nodeids"], list)
+                or len(record["anchor_nodeids"]) != len(expected_nodeids)
+                or set(record["anchor_nodeids"]) != set(expected_nodeids)
+                or set(failure_markers) != set(expected_nodeids)
+                or any(
+                    nodeid not in log_text or f"LEGIBLE_RED::{mutation_id}" not in log_text
+                    for nodeid, mutation_id in failure_markers.items()
+                )
+            ):
+                return "test_execution: forced-RED raw mutation or anchor evidence is invalid"
 
     pull_request = sections["pull_request"]
     snapshot_rel = pull_request["snapshot_path"]
@@ -1270,6 +1423,11 @@ def _validate_operational_sections(
         != roadmap_assumptions.CANONICAL_PROBE_IDS
     ):
         return "assumption_probes: execution-head-bound records are absent"
+    try:
+        probe_contract = roadmap_assumptions.load_probe_sidecar(repo)
+    except roadmap_assumptions.RoadmapAssumptionError as exc:
+        return f"assumption_probes: frozen sidecar authority failed: {exc}"
+    probes_by_id = {probe["id"]: probe for probe in probe_contract["probes"]}
     for record in probe_records:
         response_bytes = artifact_data.get(record["response_path"])
         if (
@@ -1282,8 +1440,14 @@ def _validate_operational_sections(
             response = json.loads(response_bytes)
         except json.JSONDecodeError:
             return f"assumption_probes: malformed response payload: {record['probe_id']}"
-        if not isinstance(response, Mapping) or response.get("state") != record["state"]:
-            return f"assumption_probes: response state drift: {record['probe_id']}"
+        probe = probes_by_id.get(record["probe_id"])
+        if (
+            not isinstance(response, Mapping)
+            or response.get("state") != record["state"]
+            or probe is None
+            or _probe_response_finding(probe, response) is not None
+        ):
+            return f"assumption_probes: response semantic drift: {record['probe_id']}"
 
     artifact_paths = set(artifact_data)
     cli_rel = Path(str(attester["cli_path"])).resolve().relative_to(repo).as_posix()
@@ -1291,7 +1455,9 @@ def _validate_operational_sections(
         roadmap_status["registry_path"],
         chronology["plan_path"],
         chronology["roadmap_path"],
+        roadmap_assumptions.PROBE_SIDECAR_REL,
         cli_rel,
+        *_LOADED_ATTESTATION_RUNTIME_PATHS,
     }
     if (
         not required_artifacts.issubset(artifact_paths)
@@ -1515,7 +1681,15 @@ def finalize_operational_attestation(
     return output_path
 
 
-def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, candidate_head: str | None = None) -> dict[str, Any]:
+def attest(
+    *,
+    repo: Path,
+    stage: str,
+    expected_head: str,
+    builder_run_id: str,
+    candidate_head: str | None = None,
+    process_start_token: str | None = None,
+) -> dict[str, Any]:
     """Runner-owned attestation bootstrap: resolves the clean repo/worktree
     and exact HEAD, and requires it to equal ``expected_head`` before
     importing any phase-owned attestation helper. This is only the LOCAL
@@ -1558,7 +1732,7 @@ def attest(*, repo: Path, stage: str, expected_head: str, builder_run_id: str, c
         raise LegibleProcessBootstrapError(
             f"candidate head {candidate_head!r} is not an ancestor of {actual_head!r}"
         )
-    process_start_token = secrets.token_hex(32)
+    process_start_token = process_start_token or secrets.token_hex(32)
     bootstrap = {
         "repo": str(repo),
         "stage": stage,
