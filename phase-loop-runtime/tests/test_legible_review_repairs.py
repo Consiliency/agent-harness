@@ -1697,6 +1697,18 @@ def test_registry_free_selector_rejects_case_variant_status_like_banner(tmp_path
         discovery._return_selectable_roadmap(repo, candidate, "test")
 
 
+def test_registry_free_selector_rejects_indented_status_like_banner(tmp_path):
+    repo = make_repo(tmp_path)
+    candidate = repo / "specs" / "phase-plans-v1.md"
+    candidate.write_text(
+        "# Roadmap\n\n > # SUPERSEDED - malformed declaration.\n\n## Body\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(roadmap_lint.MalformedBannerError):
+        discovery._return_selectable_roadmap(repo, candidate, "test")
+
+
 def test_selector_read_failure_is_typed_not_selectable(tmp_path):
     repo = make_repo(tmp_path)
     candidate = repo / "specs" / "phase-plans-v1.md"
@@ -1905,7 +1917,10 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
     assert "reviews" in requested
 
 
-def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("merge_snapshot_drift", (False, True))
+def test_pr_transition_persists_identity_and_reviews_before_mutation(
+    tmp_path, monkeypatch, merge_snapshot_drift
+):
     from phase_loop_runtime import runner
 
     repo = make_repo(tmp_path)
@@ -1920,10 +1935,9 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
     monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_BASE", base)
     monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_HEAD", head)
     monkeypatch.setattr(runner, "_LEGIBLE_PR_BODY_SHA256", hashlib.sha256(body.encode()).hexdigest())
-    monkeypatch.setattr(
-        runner,
-        "_legible_pr_view",
-        lambda _repo: {
+    def fake_pr_view(_repo):
+        events.append("snapshot")
+        snapshot = {
             "state": "OPEN",
             "isDraft": True,
             "headRefOid": head,
@@ -1932,7 +1946,19 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
             "statusCheckRollup": [{"conclusion": "SUCCESS"}],
             "reviewDecision": "",
             "reviews": [],
-        },
+        }
+        if merge_snapshot_drift and events.count("snapshot") == 2:
+            snapshot["body"] = "changed after review"
+        return snapshot
+
+    monkeypatch.setattr(runner, "_legible_pr_view", fake_pr_view)
+    monkeypatch.setattr(
+        runner,
+        "_legible_candidate_remote",
+        lambda _repo, candidate_head: (
+            events.append("candidate-remote") or "refs/remotes/origin/candidate",
+            candidate_head,
+        ),
     )
 
     def fake_git(_repo, *args):
@@ -2002,6 +2028,17 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
 
+    if merge_snapshot_drift:
+        with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+            runner._run_legible_pr_transition(
+                repo=repo,
+                expected_head=base,
+                builder_run_id="builder-1",
+                process_start_token="transition-token",
+            )
+        assert events == ["candidate-remote", "snapshot", "early-prover", "panel", "snapshot"]
+        return
+
     result = runner._run_legible_pr_transition(
         repo=repo,
         expected_head=base,
@@ -2009,7 +2046,15 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(tmp_path, m
         process_start_token="transition-token",
     )
 
-    assert events == ["early-prover", "panel", "ready", "merge"]
+    assert events == [
+        "candidate-remote",
+        "snapshot",
+        "early-prover",
+        "panel",
+        "snapshot",
+        "ready",
+        "merge",
+    ]
     assert result["run_id"].startswith("legible-transition-")
     transition_path = repo / result["transition_artifact"]
     assert transition_path.is_file()
