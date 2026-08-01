@@ -6987,6 +6987,7 @@ def _run_legible_pr_transition(
     subprocess.run(
         ["git", "-C", str(repo), "fetch", "origin", "refs/pull/347/head"], check=True
     )
+    _legible_candidate_remote(repo, expected_head)
     snapshot = _legible_pr_view(repo)
     body = snapshot.get("body")
     base = _legible_git(repo, "rev-parse", "origin/main")
@@ -7067,6 +7068,11 @@ def _run_legible_pr_transition(
         encoding="utf-8",
     )
     panel_path = _run_legible_panel(repo, run_dir, expected_head, bundle_path)
+    _legible_candidate_remote(repo, expected_head)
+    if _legible_pr_view(repo) != snapshot:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "Consiliency/agent-harness#347 changed after review and before mutation"
+        )
     if snapshot.get("isDraft") is True:
         subprocess.run(
             ["gh", "pr", "ready", "347", "--repo", "Consiliency/agent-harness"],

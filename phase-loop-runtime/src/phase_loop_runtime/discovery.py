@@ -465,9 +465,9 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
 
 
 _BANNER_DECLARATION_ATTEMPT_PREFIXES = (
-    re.compile(r"^>\s*(?:\*\*)?STATUS\b", re.IGNORECASE),
-    re.compile(r"^>\s*#\s*DELIVERED\b", re.IGNORECASE),
-    re.compile(r"^>\s*#\s*SUPERSEDED\b", re.IGNORECASE),
+    re.compile(r"^\s*>\s*(?:\*\*)?STATUS\b", re.IGNORECASE),
+    re.compile(r"^\s*>\s*#\s*DELIVERED\b", re.IGNORECASE),
+    re.compile(r"^\s*>\s*#\s*SUPERSEDED\b", re.IGNORECASE),
 )
 
 
