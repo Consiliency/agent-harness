@@ -7366,8 +7366,20 @@ def _run_legible_post_merge_transition(
         + "\n## Early prover evidence\n\n"
         + f"- artifact: `{early_prover_path.relative_to(repo).as_posix()}`\n"
         + f"- artifact SHA-256: `{hashlib.sha256(early_prover_path.read_bytes()).hexdigest()}`\n"
+        + f"- capability: `{early_prover.get('capability')}`\n"
+        + f"- binding prover: `{early_prover.get('binding_prover')}`\n"
+        + f"- outcome: `{early_prover.get('outcome')}`\n"
+        + f"- degraded evidence audit: `{early_prover.get('degraded_evidence_reason')}`\n"
         + f"- status: `{early_prover.get('status')}`\n"
-        + f"- usable: `{early_prover.get('usable')}`\n\n"
+        + f"- usable: `{early_prover.get('usable')}`\n"
+        + f"- codex_process_count: {early_prover.get('codex_process_count')}\n"
+        + f"- grok_process_count: {early_prover.get('grok_process_count')}\n\n"
+        + "## Ratified degraded-evidence interpretation\n\n"
+        + "- `EC-REVIEWTRUTH-17` defines this zero-launch receipt as the ratified "
+        + "degraded-evidence path when Codex preflight fails and Grok confinement is unavailable; "
+        + "review continues over the disclosed receipt.\n"
+        + "- Codex and Grok attest only `can_probe`; only Fable can satisfy binding_prover, "
+        + "and no vendor-leg verdict substitutes for that required Fable review.\n\n"
         + str(early_prover.get("text", ""))
         + "\n",
         encoding="utf-8",

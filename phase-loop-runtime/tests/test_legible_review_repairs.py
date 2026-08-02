@@ -1956,6 +1956,7 @@ def test_attester_distinguishes_original_landing_from_corrective_anchor():
     assert runner._LEGIBLE_TESTS_LANDING == "a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea"
 
 
+@pytest.mark.dotfiles_integration
 def test_repaired_plan_has_no_stale_owned_set_contract():
     plan = (Path(__file__).parents[2] / "plans" / "phase-plan-v10-LEGIBLE.md").read_text(
         encoding="utf-8"
@@ -2378,12 +2379,18 @@ def test_merged_pr_transition_rebinds_fresh_candidate_without_mutation(tmp_path,
         path = run_dir / "c4-early-prover.json"
         path.write_text(
             json.dumps(
-                {
-                    "head": expected_head,
-                    "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
-                    "status": "DEGRADED",
-                    "usable": False,
-                },
+                    {
+                        "head": expected_head,
+                        "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                        "capability": "can_probe",
+                        "binding_prover": False,
+                        "outcome": "DEGRADED_NO_LAUNCH",
+                        "degraded_evidence_reason": "isolated executor unavailable",
+                        "status": "DEGRADED",
+                        "usable": False,
+                        "codex_process_count": 0,
+                        "grok_process_count": 0,
+                    },
                 sort_keys=True,
             )
             + "\n",
@@ -2393,8 +2400,13 @@ def test_merged_pr_transition_rebinds_fresh_candidate_without_mutation(tmp_path,
 
     monkeypatch.setattr(runner, "_run_legible_c4_early_prover", fake_early_prover)
 
-    def fake_panel(_repo, run_dir, expected_head, _bundle_path):
+    def fake_panel(_repo, run_dir, expected_head, bundle_path):
         events.append(("panel", expected_head))
+        staged = bundle_path.read_text(encoding="utf-8")
+        assert "ratified degraded-evidence path" in staged
+        assert "only Fable can satisfy binding_prover" in staged
+        assert "codex_process_count: 0" in staged
+        assert "grok_process_count: 0" in staged
         path = run_dir / "implementation-panel.json"
         path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
         return path
