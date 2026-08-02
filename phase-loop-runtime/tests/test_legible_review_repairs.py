@@ -2262,6 +2262,148 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     assert payload["pr_merge_commit"] == server_merge
 
 
+def test_merged_pr_transition_rebinds_fresh_candidate_without_mutation(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    refresh_base = "1" * 40
+    raw_head = "2" * 40
+    refresh_head = "3" * 40
+    implementation_base = "4" * 40
+    server_merge = "5" * 40
+    candidate = "6" * 40
+    expected_tree = "7" * 40
+    external_path = legible_evidence._FROZEN_AGENT_HARNESS_347_PATH
+    body = "reviewed merged transition"
+    events = []
+    snapshot = {
+        "state": "MERGED",
+        "isDraft": False,
+        "headRefOid": refresh_head,
+        "baseRefName": "main",
+        "baseRefOid": refresh_base,
+        "mergeCommit": {"oid": server_merge},
+        "mergedAt": "2026-08-01T16:00:00Z",
+        "body": body,
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "reviewDecision": "APPROVED",
+        "reviews": [{"state": "APPROVED"}],
+    }
+    monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_BASE", refresh_base)
+    monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_HEAD", refresh_head)
+    monkeypatch.setattr(
+        runner, "_LEGIBLE_PR_BODY_SHA256", hashlib.sha256(body.encode()).hexdigest()
+    )
+    monkeypatch.setattr(
+        runner,
+        "_legible_candidate_remote",
+        lambda _repo, head: events.append(("candidate-remote", head)),
+    )
+    monkeypatch.setattr(runner, "_legible_body_ancestors", lambda *_args: [refresh_base] * 6)
+    monkeypatch.setattr(runner, "_legible_successful_checks", lambda *_args: ["SUCCESS"])
+    monkeypatch.setattr(legible_evidence, "_is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(
+        legible_evidence,
+        "_commit_parents",
+        lambda _repo, commit: {
+            server_merge: [implementation_base, refresh_head],
+            refresh_head: [raw_head, refresh_base],
+        }[commit],
+    )
+    monkeypatch.setattr(
+        legible_evidence, "_changed_paths", lambda *_args: [external_path]
+    )
+    monkeypatch.setattr(
+        legible_evidence, "_python_semantic_tokens", lambda *_args: ("same",)
+    )
+    monkeypatch.setattr(
+        legible_evidence, "_recomputed_merge_tree", lambda *_args: expected_tree
+    )
+    monkeypatch.setattr(
+        legible_evidence,
+        "_blob_oid",
+        lambda _repo, commit, _path: {
+            raw_head: "8" * 40,
+            refresh_head: "9" * 40,
+            server_merge: "9" * 40,
+        }.get(commit, "a" * 40),
+    )
+
+    def fake_git(_repo, *args):
+        if args == ("rev-parse", "origin/main"):
+            return server_merge
+        if args == ("rev-parse", f"{server_merge}^{{tree}}"):
+            return expected_tree
+        raise AssertionError(args)
+
+    monkeypatch.setattr(runner, "_legible_git", fake_git)
+
+    def fake_early_prover(_repo, run_dir, expected_head, bundle_path):
+        events.append(("early-prover", expected_head))
+        path = run_dir / "c4-early-prover.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "head": expected_head,
+                    "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                    "status": "DEGRADED",
+                    "usable": False,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    monkeypatch.setattr(runner, "_run_legible_c4_early_prover", fake_early_prover)
+
+    def fake_panel(_repo, run_dir, expected_head, _bundle_path):
+        events.append(("panel", expected_head))
+        path = run_dir / "implementation-panel.json"
+        path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(runner, "_run_legible_panel", fake_panel)
+    monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "fsync_run_store_durable",
+        lambda _repo, run_id: events.append(("durable", run_id)),
+    )
+
+    def fake_run(argv, **_kwargs):
+        assert "push" not in argv
+        assert "commit-tree" not in argv
+        assert argv[:3] not in (["gh", "pr", "ready"], ["gh", "pr", "merge"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner._run_legible_post_merge_transition(
+        repo=repo,
+        expected_head=candidate,
+        builder_run_id="builder-2",
+        process_start_token="rebind-token",
+        snapshot=snapshot,
+    )
+
+    payload = json.loads((repo / result["transition_artifact"]).read_text(encoding="utf-8"))
+    assert payload["status"] == "transition_rebound"
+    assert payload["producer"] == "post_merge_rebind"
+    assert payload["head"] == candidate
+    assert payload["server_base"] == implementation_base
+    assert payload["server_merge"] == server_merge
+    assert payload["pr_head"] == refresh_head
+    assert payload["merge_published_by"] == "Consiliency/agent-harness#347"
+    assert events == [
+        ("candidate-remote", candidate),
+        ("early-prover", candidate),
+        ("panel", candidate),
+        ("durable", "builder-2"),
+    ]
+
+
 def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker, runner
     from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
