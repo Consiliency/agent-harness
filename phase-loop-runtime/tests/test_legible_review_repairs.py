@@ -1870,6 +1870,9 @@ def test_registry_free_selector_rejects_case_variant_status_like_banner(tmp_path
         " > # SUPERSEDED - malformed declaration.",
         "> ** Status (2026-08-01): SUPERSEDED - malformed declaration.**",
         "> *Status (2026-08-01): SUPERSEDED - malformed declaration.*",
+        "> # ACTIVE - malformed declaration.",
+        "> ACTIVE - malformed declaration.",
+        "> DELIVERED - malformed declaration.",
     ),
 )
 def test_registry_free_selector_rejects_indented_status_like_banner(tmp_path, declaration):
