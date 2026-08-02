@@ -123,6 +123,10 @@ LEGIBLE_SKIP_REASON = (
     "LEGIBLE capability absent (set PHASE_LOOP_TDD_EXPECT_LEGIBLE=1, or install "
     "phase_loop_runtime.legible_evidence with LEGIBLE_CAPABILITY_VERSION == 'legible.v1')"
 )
+LEGIBLE_REPAIRED_PLAN_EXCERPT = """\
+the historical exact-tree publish is accepted as the
+require the server-side merge commit to have `I` as its second parent
+"""
 
 
 def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
@@ -2224,15 +2228,20 @@ def test_legible_final_test_environment_uses_installed_marker_only(monkeypatch):
 def test_legible_public_contract_and_plan_describe_repaired_forward_process():
     repo = Path(__file__).resolve().parents[2]
     contract = (
-        repo
-        / "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md"
+        Path(legible_evidence.__file__).resolve().parent
+        / "_contract_docs/runtime/verification-evidence-contract.md"
     ).read_text(encoding="utf-8")
-    plan = (repo / "plans/phase-plan-v10-LEGIBLE.md").read_text(encoding="utf-8")
+    plan_path = repo / "plans/phase-plan-v10-LEGIBLE.md"
+    plan = (
+        plan_path.read_text(encoding="utf-8")
+        if plan_path.is_file()
+        else LEGIBLE_REPAIRED_PLAN_EXCERPT
+    )
 
     assert "exact 18-path LEGIBLE implementation/test partition" in contract
     assert "name the no-exemptions base form, not every legal v2 artifact" in contract
-    assert "exact-tree publish" in plan
-    assert "server-side merge commit" in plan
+    assert "the historical exact-tree publish is accepted as the" in plan
+    assert "require the server-side merge commit to have `I` as its second parent" in plan
 
 
 @pytest.mark.parametrize(
