@@ -1985,6 +1985,41 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
     assert "reviews" in requested
 
 
+def test_candidate_remote_binds_current_delivery_pr(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    expected_head = "1" * 40
+    observed = []
+
+    def fake_run(argv, **_kwargs):
+        observed.append(argv)
+        if argv[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "headRefName": "codex/v10-legible-chronology-repair",
+                        "headRefOid": expected_head,
+                        "state": "OPEN",
+                    }
+                ),
+                "",
+            )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner, "_legible_git", lambda *_args: expected_head)
+
+    remote_ref, remote_head = runner._legible_candidate_remote(tmp_path, expected_head)
+
+    assert observed[0][:6] == [
+        "gh", "pr", "view", "429", "--repo", "Consiliency/agent-harness"
+    ]
+    assert remote_ref == "refs/remotes/origin/codex/v10-legible-chronology-repair"
+    assert remote_head == expected_head
+
+
 @pytest.mark.parametrize(
     ("decision", "expected"),
     (
