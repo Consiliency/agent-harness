@@ -1831,7 +1831,7 @@ def attest(
     chain (broad suite, implementation panel, PR/merge evidence) is a
     coordinator-run operational process outside this function's scope."""
     repo = Path(repo).resolve()
-    if stage not in {"candidate", "canonical-main"}:
+    if stage not in {"builder", "candidate", "canonical-main"}:
         raise LegibleProcessBootstrapError(f"unsupported attestation stage: {stage!r}")
     if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
         raise LegibleProcessBootstrapError(f"expected head is not a lowercase 40-hex commit: {expected_head!r}")
@@ -1909,6 +1909,41 @@ def attest(
         "process_id": os.getpid(),
         "process_start_token": process_start_token,
     }
+    if stage == "builder":
+        run_dir = repo / ".phase-loop" / "runs" / builder_run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        output_path = run_dir / "legible-builder-process.json"
+        if output_path.exists():
+            raise LegibleProcessBootstrapError("builder process identity already exists")
+        cli_path = repo / _LOADED_ATTESTATION_RUNTIME_PATHS[0]
+        if not cli_path.is_file():
+            cli_path = Path(__file__).with_name("cli.py")
+        payload = {
+            "schema": "legible_builder_process.v1",
+            "run_id": builder_run_id,
+            "stage": stage,
+            "head": actual_head,
+            "bootstrap_head": expected_head,
+            "repo_realpath": str(repo),
+            "cli_path": str(cli_path.resolve()),
+            "cli_sha256": hashlib.sha256(cli_path.read_bytes()).hexdigest(),
+            "python_executable": sys.executable,
+            "process_id": os.getpid(),
+            "process_start_token": process_start_token,
+            "loaded_runtime_blobs": dict(loaded_runtime_blobs or {}),
+        }
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=run_dir, delete=False
+        ) as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            temporary_path = Path(handle.name)
+        temporary_path.replace(output_path)
+        return {
+            **bootstrap,
+            "status": "builder_recorded",
+            "builder_process_artifact": output_path.relative_to(repo).as_posix(),
+        }
     from . import runner
 
     result = runner.run_legible_operational_attestation(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -1266,6 +1267,70 @@ def test_canonical_main_attest_rejects_nonexistent_candidate(tmp_path):
             builder_run_id="candidate-run",
             candidate_head="0" * 40,
         )
+
+
+def test_builder_attest_persists_captured_process_identity(tmp_path):
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    result = legible_evidence.attest(
+        repo=repo,
+        stage="builder",
+        expected_head=head,
+        builder_run_id="builder-captured",
+        process_start_token="a" * 64,
+    )
+
+    artifact = repo / result["builder_process_artifact"]
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert result["status"] == "builder_recorded"
+    assert payload["schema"] == "legible_builder_process.v1"
+    assert payload["run_id"] == "builder-captured"
+    assert payload["head"] == head
+    assert payload["process_start_token"] == "a" * 64
+    assert payload["process_id"] == os.getpid()
+
+
+def test_builder_process_loader_requires_captured_exact_head_record(tmp_path):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    run_dir = repo / ".phase-loop" / "runs" / "builder-captured"
+    run_dir.mkdir(parents=True)
+    record = {
+        "schema": "legible_builder_process.v1",
+        "run_id": "builder-captured",
+        "stage": "builder",
+        "head": head,
+        "bootstrap_head": head,
+        "repo_realpath": str(repo.resolve()),
+        "cli_path": str(repo / "phase-loop-runtime/src/phase_loop_runtime/cli.py"),
+        "cli_sha256": "1" * 64,
+        "python_executable": sys.executable,
+        "process_id": 123,
+        "process_start_token": "a" * 64,
+        "loaded_runtime_blobs": {},
+    }
+    path = run_dir / "legible-builder-process.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    loaded = runner._load_legible_builder_process(
+        repo, run_dir, "builder-captured", head
+    )
+    assert loaded["process_start_token"] == "a" * 64
+
+    record["head"] = "0" * 40
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(
+        legible_evidence.LegibleProcessBootstrapError,
+        match="builder process identity",
+    ):
+        runner._load_legible_builder_process(repo, run_dir, "builder-captured", head)
 
 
 def test_operational_evidence_round_trip_is_sealed_and_closed(tmp_path):

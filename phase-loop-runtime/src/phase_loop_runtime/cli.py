@@ -398,7 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--mode", help="The execution mode: execute, repair, or review.")
         _add_common_subparser_args(sub, name=name)
         if name == "attest":
-            sub.add_argument("--stage", choices=("candidate", "canonical-main"), required=True)
+            sub.add_argument("--stage", choices=("builder", "candidate", "canonical-main"), required=True)
             sub.add_argument("--expected-head", required=True)
             sub.add_argument("--builder-run-id", required=True)
             sub.add_argument("--candidate-head")

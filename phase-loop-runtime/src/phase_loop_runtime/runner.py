@@ -8049,6 +8049,90 @@ def _run_legible_panel(
     return panel_path
 
 
+def _load_legible_builder_process(
+    repo: Path,
+    builder_dir: Path,
+    builder_run_id: str,
+    phase_candidate: str,
+) -> dict[str, object]:
+    path = builder_dir / "legible-builder-process.json"
+    expected_fields = {
+        "schema",
+        "run_id",
+        "stage",
+        "head",
+        "bootstrap_head",
+        "repo_realpath",
+        "cli_path",
+        "cli_sha256",
+        "python_executable",
+        "process_id",
+        "process_start_token",
+        "loaded_runtime_blobs",
+    }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "builder process identity is missing or malformed"
+        ) from exc
+    if (
+        path.is_symlink()
+        or not isinstance(payload, dict)
+        or set(payload) != expected_fields
+        or payload.get("schema") != "legible_builder_process.v1"
+        or payload.get("run_id") != builder_run_id
+        or payload.get("stage") != "builder"
+        or payload.get("head") != phase_candidate
+        or payload.get("bootstrap_head") != phase_candidate
+        or not isinstance(payload.get("process_id"), int)
+        or payload.get("process_id", 0) <= 0
+        or not isinstance(payload.get("python_executable"), str)
+        or not payload.get("python_executable")
+        or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("process_start_token", "")))
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "builder process identity is not bound to the phase candidate"
+        )
+    loaded = payload.get("loaded_runtime_blobs")
+    if (repo / "plans" / "phase-plan-v10-LEGIBLE.md").is_file():
+        if not isinstance(loaded, Mapping) or set(loaded) != set(
+            legible_evidence._LOADED_ATTESTATION_RUNTIME_PATHS
+        ):
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "builder process identity lacks the exact runtime inventory"
+            )
+        cli_path = Path(str(payload.get("cli_path", "")))
+        try:
+            cli_bytes = cli_path.read_bytes()
+        except OSError as exc:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "builder process identity CLI path is unreadable"
+            ) from exc
+        if (
+            cli_path.is_symlink()
+            or hashlib.sha256(cli_bytes).hexdigest() != payload.get("cli_sha256")
+        ):
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "builder process identity CLI bytes drifted"
+            )
+        for rel, record in loaded.items():
+            blob_bytes = legible_evidence._blob_bytes(repo, phase_candidate, rel)
+            if (
+                not isinstance(record, Mapping)
+                or set(record) != {"path", "blob_oid", "byte_length", "sha256"}
+                or record.get("path") != rel
+                or record.get("blob_oid") != legible_evidence._blob_oid(repo, phase_candidate, rel)
+                or blob_bytes is None
+                or record.get("byte_length") != len(blob_bytes)
+                or record.get("sha256") != hashlib.sha256(blob_bytes).hexdigest()
+            ):
+                raise legible_evidence.LegibleProcessBootstrapError(
+                    f"builder process identity runtime drift: {rel}"
+                )
+    return payload
+
+
 def _run_legible_operational_attestation(
     *,
     repo: Path,
@@ -8189,13 +8273,10 @@ def _run_legible_operational_attestation(
         raise legible_evidence.LegibleProcessBootstrapError(
             f"builder run {source_builder_run_id!r} lacks the frozen default/RED JUnit and raw-log pairs"
         )
-    builder_material = (
-        default_junit.read_bytes()
-        + red_junit.read_bytes()
-        + default_log.read_bytes()
-        + red_log.read_bytes()
+    builder_process = _load_legible_builder_process(
+        repo, builder_dir, source_builder_run_id, phase_candidate
     )
-    builder_token = hashlib.sha256(source_builder_run_id.encode("utf-8") + builder_material).hexdigest()
+    builder_token = str(builder_process["process_start_token"])
     if builder_token == process_start_token:
         raise legible_evidence.LegibleProcessBootstrapError("builder and attester process identities collide")
 
@@ -8385,7 +8466,7 @@ def _run_legible_operational_attestation(
         "loaded_runtime_blobs": dict(loaded_runtime_blobs),
     }
     process_attestations: dict[str, Mapping[str, object]] = {
-        "builder": {"run_id": source_builder_run_id, "process_start_token": builder_token},
+        "builder": builder_process,
         "transition": {
             "run_id": builder_run_id,
             "parent_run_id": source_builder_run_id,
@@ -8547,6 +8628,7 @@ def _run_legible_operational_attestation(
         final_junit,
         default_log,
         red_log,
+        builder_dir / "legible-builder-process.json",
         final_log,
         artifact_path,
         run_dir / VERIFICATION_LOG_NAME,
