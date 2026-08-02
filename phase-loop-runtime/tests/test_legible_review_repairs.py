@@ -2465,6 +2465,64 @@ def test_post_merge_transition_rejects_open_pr_before_staging(tmp_path, monkeypa
     assert not (repo / ".phase-loop" / "runs" / "builder-2").exists()
 
 
+def test_rebind_recovery_preserves_type_and_rejects_crossed_pairing(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    run_id = "builder-2"
+    run_dir = repo / ".phase-loop" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    panel_path = run_dir / "implementation-panel.json"
+    panel_path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+    snapshot = {
+        "state": "MERGED",
+        "mergeCommit": {"oid": "3" * 40},
+        "mergedAt": "2026-08-01T16:00:00Z",
+    }
+    intent_path = run_dir / "legible-pr-transition-intent.json"
+    intent = {
+        "schema": "legible_pr_transition_intent.v1",
+        "run_id": run_id,
+        "status": "transition_rebind_intent",
+        "producer": "post_merge_rebind",
+        "head": "1" * 40,
+        "builder_run_id": run_id,
+        "process_start_token": "rebind-token",
+        "server_base": "2" * 40,
+        "server_merge": "3" * 40,
+        "pr_head": "4" * 40,
+        "expected_tree": "5" * 40,
+        "ready_snapshot": snapshot,
+        "review_decision": "APPROVED",
+        "github_review_count": 1,
+        "review_panel_path": panel_path.relative_to(repo).as_posix(),
+        "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "merge_published_by": "Consiliency/agent-harness#347",
+    }
+    intent["seal_sha256"] = runner._legible_transition_digest(intent)
+    intent_path.write_text(json.dumps(intent, sort_keys=True) + "\n", encoding="utf-8")
+
+    recovered = runner._seal_legible_transition(repo, intent_path, intent, snapshot)
+
+    assert recovered["status"] == "transition_rebound"
+    assert recovered["producer"] == "post_merge_rebind"
+    assert recovered["expected_tree"] == "5" * 40
+    assert recovered["merge_published_by"] == "Consiliency/agent-harness#347"
+
+    transition_path = repo / recovered["transition_artifact"]
+    crossed = json.loads(transition_path.read_text(encoding="utf-8"))
+    crossed["status"] = "transition_sealed"
+    crossed["seal_sha256"] = runner._legible_transition_digest(crossed)
+    transition_path.write_text(json.dumps(crossed, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
+
+    with pytest.raises(
+        legible_evidence.LegibleProcessBootstrapError,
+        match="intent/transition type pairing",
+    ):
+        runner._load_legible_transition(repo, run_id)
+
+
 def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker, runner
     from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
