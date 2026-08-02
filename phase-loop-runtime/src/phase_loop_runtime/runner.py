@@ -6807,6 +6807,23 @@ def _legible_transition_intent_path(repo: Path, run_id: str) -> Path:
     return Path(repo) / ".phase-loop" / "runs" / run_id / "legible-pr-transition-intent.json"
 
 
+_LEGIBLE_EARLY_PROVER_MARKER = b"\n## Early prover evidence\n\n"
+
+
+def _write_legible_transition_review_brief(run_dir: Path, expected_head: str) -> Path:
+    path = run_dir / "transition-review-brief.md"
+    path.write_text(
+        "# LEGIBLE C4 transition review instructions\n\n"
+        "Review only the Consiliency/agent-harness#347 transition slice for exact candidate "
+        f"`{expected_head}`. Whole-candidate implementation review and verification belong to "
+        "LEGIBLE C5 and C6 and are not authorized by this board. Flag blocking correctness, "
+        "safety, or unmet transition-acceptance defects. End with exactly one of AGREE, "
+        "PARTIALLY AGREE, or DISAGREE.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def _validate_legible_transition_panel(repo: Path, panel_path: Path, expected_head: str) -> None:
     from .advisor_board.presets import CODE_REVIEW_BOARD
 
@@ -6817,7 +6834,8 @@ def _validate_legible_transition_panel(repo: Path, panel_path: Path, expected_he
             f"transition review panel is unreadable: {exc}"
         ) from exc
     if not isinstance(panel, dict) or set(panel) != {
-        "schema", "head", "bundle_path", "bundle_sha256", "legs", "verdicts"
+        "schema", "head", "bundle_path", "bundle_sha256", "brief_path", "brief_sha256",
+        "legs", "verdicts"
     }:
         raise legible_evidence.LegibleProcessBootstrapError("transition review panel schema is invalid")
     bundle_rel = panel.get("bundle_path")
@@ -6829,6 +6847,17 @@ def _validate_legible_transition_panel(repo: Path, panel_path: Path, expected_he
         raise legible_evidence.LegibleProcessBootstrapError(
             f"transition review bundle is unavailable: {exc}"
         ) from exc
+    brief_rel = panel.get("brief_path")
+    raw_brief_path = repo / str(brief_rel)
+    brief_path = raw_brief_path.resolve()
+    try:
+        brief_path.relative_to(panel_path.parent)
+        brief_bytes = brief_path.read_bytes()
+    except (OSError, ValueError) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition review brief is unavailable: {exc}"
+        ) from exc
+    brief_text = brief_bytes.decode("utf-8", errors="replace")
     legs = panel.get("legs")
     verdicts = panel.get("verdicts")
     if (
@@ -6837,6 +6866,12 @@ def _validate_legible_transition_panel(repo: Path, panel_path: Path, expected_he
         or not isinstance(bundle_rel, str)
         or bundle_path.is_symlink()
         or hashlib.sha256(bundle_bytes).hexdigest() != panel.get("bundle_sha256")
+        or not isinstance(brief_rel, str)
+        or raw_brief_path.is_symlink()
+        or hashlib.sha256(brief_bytes).hexdigest() != panel.get("brief_sha256")
+        or "Consiliency/agent-harness#347 transition slice" not in brief_text
+        or "LEGIBLE C5 and C6" not in brief_text
+        or "Whole-candidate implementation review" not in brief_text
         or not isinstance(legs, list)
         or len(legs) != len(CODE_REVIEW_BOARD.seats)
         or verdicts != {seat.model: "AGREE" for seat in CODE_REVIEW_BOARD.seats}
@@ -6876,6 +6911,49 @@ def _validate_legible_transition_panel(repo: Path, panel_path: Path, expected_he
             != ["AGREE"]
         ):
             raise legible_evidence.LegibleProcessBootstrapError("transition review panel leg failed validation")
+
+
+def _validate_legible_early_prover(
+    repo: Path,
+    payload: Mapping[str, object],
+    panel_path: Path,
+) -> None:
+    prover_rel = payload.get("early_prover_path")
+    raw_prover_path = repo / str(prover_rel)
+    prover_path = raw_prover_path.resolve()
+    try:
+        prover_path.relative_to(panel_path.parent)
+        prover_bytes = prover_path.read_bytes()
+        prover = json.loads(prover_bytes)
+        panel = json.loads(panel_path.read_text(encoding="utf-8"))
+        raw_bundle_path = repo / str(panel.get("bundle_path"))
+        bundle_path = raw_bundle_path.resolve()
+        bundle_path.relative_to(panel_path.parent)
+        bundle_bytes = bundle_path.read_bytes()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition early-prover evidence is unavailable: {exc}"
+        ) from exc
+    prefix, marker, _suffix = bundle_bytes.partition(_LEGIBLE_EARLY_PROVER_MARKER)
+    if (
+        not isinstance(prover_rel, str)
+        or raw_prover_path.is_symlink()
+        or not prover_path.is_file()
+        or hashlib.sha256(prover_bytes).hexdigest() != payload.get("early_prover_sha256")
+        or not isinstance(prover, dict)
+        or prover.get("schema") != "legible_c4_early_prover.v1"
+        or prover.get("head") != payload.get("head")
+        or prover.get("role") != "early_prover"
+        or prover.get("binding_prover") is not False
+        or prover.get("usable") is not False
+        or not marker
+        or _LEGIBLE_EARLY_PROVER_MARKER in _suffix
+        or prover.get("bundle_path") != panel.get("bundle_path")
+        or prover.get("bundle_sha256") != hashlib.sha256(prefix).hexdigest()
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            "transition early-prover evidence failed identity validation"
+        )
 
 
 def _load_legible_transition_intent(repo: Path, path: Path) -> dict[str, object]:
@@ -6930,6 +7008,7 @@ def _load_legible_transition_intent(repo: Path, path: Path) -> dict[str, object]
             f"transition intent {run_id!r} review panel failed digest validation"
         )
     _validate_legible_transition_panel(repo, panel_path, str(payload.get("head", "")))
+    _validate_legible_early_prover(repo, payload, panel_path)
     return payload
 
 
@@ -6979,6 +7058,8 @@ def _seal_legible_transition(
         "github_review_count": intent["github_review_count"],
         "review_panel_path": intent["review_panel_path"],
         "review_panel_sha256": intent["review_panel_sha256"],
+        "early_prover_path": intent["early_prover_path"],
+        "early_prover_sha256": intent["early_prover_sha256"],
         "transition_intent_path": intent_path.relative_to(repo).as_posix(),
         "transition_intent_sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
         "candidate_requires_integration": True,
@@ -7105,6 +7186,7 @@ def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
             f"transition run {run_id!r} review panel failed digest validation"
         )
     _validate_legible_transition_panel(repo, panel_path, str(payload.get("head", "")))
+    _validate_legible_early_prover(repo, payload, panel_path)
     intent_rel = payload.get("transition_intent_path")
     raw_intent_path = repo / str(intent_rel)
     intent_path = raw_intent_path.resolve()
@@ -7138,6 +7220,8 @@ def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
             "github_review_count",
             "review_panel_path",
             "review_panel_sha256",
+            "early_prover_path",
+            "early_prover_sha256",
         )
     ):
         raise legible_evidence.LegibleProcessBootstrapError(
@@ -7384,7 +7468,10 @@ def _run_legible_post_merge_transition(
         + "\n",
         encoding="utf-8",
     )
-    panel_path = _run_legible_panel(repo, run_dir, expected_head, bundle_path)
+    brief_path = _write_legible_transition_review_brief(run_dir, expected_head)
+    panel_path = _run_legible_panel(
+        repo, run_dir, expected_head, bundle_path, brief_path=brief_path
+    )
     _validate_legible_transition_panel(repo, panel_path, expected_head)
 
     intent_payload: dict[str, object] = {
@@ -7406,6 +7493,8 @@ def _run_legible_post_merge_transition(
         else 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "early_prover_path": early_prover_path.relative_to(repo).as_posix(),
+        "early_prover_sha256": hashlib.sha256(early_prover_path.read_bytes()).hexdigest(),
         "merge_published_by": "Consiliency/agent-harness#347",
     }
     intent_payload["seal_sha256"] = _legible_transition_digest(intent_payload)
@@ -7432,6 +7521,8 @@ def _run_legible_post_merge_transition(
         "github_review_count": intent_payload["github_review_count"],
         "review_panel_path": intent_payload["review_panel_path"],
         "review_panel_sha256": intent_payload["review_panel_sha256"],
+        "early_prover_path": intent_payload["early_prover_path"],
+        "early_prover_sha256": intent_payload["early_prover_sha256"],
         "transition_intent_path": intent_path.relative_to(repo).as_posix(),
         "transition_intent_sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
         "merge_published_by": "Consiliency/agent-harness#347",
@@ -7547,7 +7638,10 @@ def _run_legible_pr_transition(
         + "\n",
         encoding="utf-8",
     )
-    panel_path = _run_legible_panel(repo, run_dir, expected_head, bundle_path)
+    brief_path = _write_legible_transition_review_brief(run_dir, expected_head)
+    panel_path = _run_legible_panel(
+        repo, run_dir, expected_head, bundle_path, brief_path=brief_path
+    )
     _legible_candidate_remote(repo, expected_head)
     if _legible_pr_view(repo) != snapshot:
         raise legible_evidence.LegibleProcessBootstrapError(
@@ -7614,6 +7708,8 @@ def _run_legible_pr_transition(
         else 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "early_prover_path": early_prover_path.relative_to(repo).as_posix(),
+        "early_prover_sha256": hashlib.sha256(early_prover_path.read_bytes()).hexdigest(),
     }
     intent_payload["seal_sha256"] = _legible_transition_digest(intent_payload)
     atomic_write_text_durable(
@@ -7763,17 +7859,25 @@ def _run_legible_c4_early_prover(
     return path
 
 
-def _run_legible_panel(repo: Path, run_dir: Path, expected_head: str, bundle_path: Path) -> Path:
+def _run_legible_panel(
+    repo: Path,
+    run_dir: Path,
+    expected_head: str,
+    bundle_path: Path,
+    *,
+    brief_path: Path | None = None,
+) -> Path:
     from .advisor_board.presets import CODE_REVIEW_BOARD
     from .panel_invoker import invoke_board
 
-    result = invoke_board(
-        CODE_REVIEW_BOARD,
-        "",
-        repo_dir=repo,
-        artifact_ref=str(bundle_path),
-        stream_dir=run_dir / "implementation-panel-stream",
-    )
+    invoke_kwargs: dict[str, object] = {
+        "repo_dir": repo,
+        "artifact_ref": str(bundle_path),
+        "stream_dir": run_dir / "implementation-panel-stream",
+    }
+    if brief_path is not None:
+        invoke_kwargs["brief_ref"] = str(brief_path)
+    result = invoke_board(CODE_REVIEW_BOARD, "", **invoke_kwargs)
     legs: list[dict[str, object]] = []
     verdicts: dict[str, str] = {}
     for seat, outcome in zip(CODE_REVIEW_BOARD.seats, result.legs, strict=True):
@@ -7809,16 +7913,24 @@ def _run_legible_panel(repo: Path, run_dir: Path, expected_head: str, bundle_pat
             "mandatory exact-head LEGIBLE implementation board did not unanimously AGREE"
         )
     panel_path = run_dir / "implementation-panel.json"
+    panel_payload: dict[str, object] = {
+        "schema": "advisor_board.v1",
+        "head": expected_head,
+        "bundle_path": bundle_path.relative_to(repo).as_posix(),
+        "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+        "legs": legs,
+        "verdicts": verdicts,
+    }
+    if brief_path is not None:
+        panel_payload.update(
+            {
+                "brief_path": brief_path.relative_to(repo).as_posix(),
+                "brief_sha256": hashlib.sha256(brief_path.read_bytes()).hexdigest(),
+            }
+        )
     panel_path.write_text(
         json.dumps(
-            {
-                "schema": "advisor_board.v1",
-                "head": expected_head,
-                "bundle_path": bundle_path.relative_to(repo).as_posix(),
-                "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
-                "legs": legs,
-                "verdicts": verdicts,
-            },
+            panel_payload,
             indent=2,
             sort_keys=True,
         )
@@ -7896,6 +8008,13 @@ def _run_legible_operational_attestation(
 
     transition = _load_legible_transition(repo, builder_run_id)
     source_builder_run_id = str(transition["builder_run_id"])
+    transition_panel_path = repo / str(transition["review_panel_path"])
+    transition_panel = json.loads(transition_panel_path.read_text(encoding="utf-8"))
+    transition_evidence_paths = (
+        repo / str(transition["early_prover_path"]),
+        repo / str(transition_panel["bundle_path"]),
+        repo / str(transition_panel["brief_path"]),
+    )
 
     integration = expected_head if stage == "candidate" else candidate_head
     if not integration or not legible_evidence._is_ancestor(repo, integration, expected_head):
@@ -8289,6 +8408,7 @@ def _run_legible_operational_attestation(
         *(repo / rel for rel in legible_evidence._LOADED_ATTESTATION_RUNTIME_PATHS),
         *_legible_transition_artifact_paths(repo, builder_run_id),
         _legible_transition_intent_path(repo, builder_run_id),
+        *transition_evidence_paths,
         *(repo / rel for rel in legible_evidence.FROZEN_TEST_PATHS),
         default_junit,
         red_junit,

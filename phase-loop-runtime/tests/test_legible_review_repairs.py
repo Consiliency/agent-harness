@@ -2167,7 +2167,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
 
     monkeypatch.setattr(runner, "_run_legible_c4_early_prover", fake_early_prover, raising=False)
 
-    def fake_panel(_repo, run_dir, _expected_head, bundle_path):
+    def fake_panel(_repo, run_dir, _expected_head, bundle_path, *, brief_path):
         events.append("panel")
         staged = bundle_path.read_text(encoding="utf-8")
         assert "DEGRADED_NO_LAUNCH" in staged
@@ -2175,6 +2175,9 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         assert "grok_process_count: 0" in staged
         assert "ratified degraded-evidence path" in staged
         assert "only Fable can satisfy binding_prover" in staged
+        assert "Consiliency/agent-harness#347 transition slice" in brief_path.read_text(
+            encoding="utf-8"
+        )
         panel = run_dir / "implementation-panel.json"
         panel.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
         return panel
@@ -2182,6 +2185,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     monkeypatch.setattr(runner, "_run_legible_panel", fake_panel)
     monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
+    monkeypatch.setattr(runner, "_validate_legible_early_prover", lambda *_args: None)
 
     def fake_durability_sync(_repo, _run_id):
         events.append("durable")
@@ -2400,13 +2404,16 @@ def test_merged_pr_transition_rebinds_fresh_candidate_without_mutation(tmp_path,
 
     monkeypatch.setattr(runner, "_run_legible_c4_early_prover", fake_early_prover)
 
-    def fake_panel(_repo, run_dir, expected_head, bundle_path):
+    def fake_panel(_repo, run_dir, expected_head, bundle_path, *, brief_path):
         events.append(("panel", expected_head))
         staged = bundle_path.read_text(encoding="utf-8")
         assert "ratified degraded-evidence path" in staged
         assert "only Fable can satisfy binding_prover" in staged
         assert "codex_process_count: 0" in staged
         assert "grok_process_count: 0" in staged
+        assert "Consiliency/agent-harness#347 transition slice" in brief_path.read_text(
+            encoding="utf-8"
+        )
         path = run_dir / "implementation-panel.json"
         path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
         return path
@@ -2544,6 +2551,8 @@ def test_rebind_recovery_preserves_type_and_rejects_crossed_pairing(tmp_path, mo
         "github_review_count": 1,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "early_prover_path": (run_dir / "c4-early-prover.json").relative_to(repo).as_posix(),
+        "early_prover_sha256": "6" * 64,
         "merge_published_by": "Consiliency/agent-harness#347",
     }
     intent["seal_sha256"] = runner._legible_transition_digest(intent)
@@ -2562,6 +2571,7 @@ def test_rebind_recovery_preserves_type_and_rejects_crossed_pairing(tmp_path, mo
     crossed["seal_sha256"] = runner._legible_transition_digest(crossed)
     transition_path.write_text(json.dumps(crossed, sort_keys=True) + "\n", encoding="utf-8")
     monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
+    monkeypatch.setattr(runner, "_validate_legible_early_prover", lambda *_args: None)
 
     with pytest.raises(
         legible_evidence.LegibleProcessBootstrapError,
@@ -2579,6 +2589,7 @@ def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
     run_dir.mkdir(parents=True)
     bundle = run_dir / "bundle.md"
     bundle.write_text("staged transition evidence\n", encoding="utf-8")
+    brief = runner._write_legible_transition_review_brief(run_dir, "1" * 40)
     observed = {}
 
     def fake_invoke(_board, artifact, **kwargs):
@@ -2599,11 +2610,21 @@ def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
 
     monkeypatch.setattr(panel_invoker, "invoke_board", fake_invoke)
 
-    runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    panel_path = runner._run_legible_panel(
+        repo, run_dir, "1" * 40, bundle, brief_path=brief
+    )
 
     assert observed["artifact"] == ""
     assert observed["artifact_ref"] == str(bundle)
+    assert observed["brief_ref"] == str(brief)
     assert "context_refs" not in observed
+    panel = json.loads(panel_path.read_text(encoding="utf-8"))
+    assert panel["brief_path"] == brief.relative_to(repo).as_posix()
+    assert panel["brief_sha256"] == hashlib.sha256(brief.read_bytes()).hexdigest()
+    runner._validate_legible_transition_panel(repo, panel_path, "1" * 40)
+    brief.write_text("drifted scope\n", encoding="utf-8")
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+        runner._validate_legible_transition_panel(repo, panel_path, "1" * 40)
 
 
 def test_legible_c4_early_prover_stages_degraded_zero_launch_audit(tmp_path, monkeypatch):
@@ -2647,7 +2668,22 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
     from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
 
     bundle_path = run_dir / "implementation-review-bundle.md"
-    bundle_path.write_text("exact-head review bundle\n", encoding="utf-8")
+    bundle_prefix = b"exact-head review bundle\n"
+    bundle_path.write_bytes(bundle_prefix + b"\n## Early prover evidence\n\nreceipt staged\n")
+    brief_path = runner._write_legible_transition_review_brief(run_dir, "1" * 40)
+    early_prover_path = run_dir / "c4-early-prover.json"
+    early_prover_payload = {
+        "schema": "legible_c4_early_prover.v1",
+        "head": "1" * 40,
+        "bundle_path": bundle_path.relative_to(repo).as_posix(),
+        "bundle_sha256": hashlib.sha256(bundle_prefix).hexdigest(),
+        "role": "early_prover",
+        "binding_prover": False,
+        "usable": False,
+    }
+    early_prover_path.write_text(
+        json.dumps(early_prover_payload, sort_keys=True) + "\n", encoding="utf-8"
+    )
     legs = []
     verdicts = {}
     for seat in CODE_REVIEW_BOARD.seats:
@@ -2681,6 +2717,8 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
                 "head": "1" * 40,
                 "bundle_path": bundle_path.relative_to(repo).as_posix(),
                 "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                "brief_path": brief_path.relative_to(repo).as_posix(),
+                "brief_sha256": hashlib.sha256(brief_path.read_bytes()).hexdigest(),
                 "legs": legs,
                 "verdicts": verdicts,
             },
@@ -2706,6 +2744,8 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "early_prover_path": early_prover_path.relative_to(repo).as_posix(),
+        "early_prover_sha256": hashlib.sha256(early_prover_path.read_bytes()).hexdigest(),
     }
     intent_payload["seal_sha256"] = runner._legible_transition_digest(intent_payload)
     intent_path.write_text(json.dumps(intent_payload, sort_keys=True) + "\n", encoding="utf-8")
@@ -2726,6 +2766,8 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "early_prover_path": early_prover_path.relative_to(repo).as_posix(),
+        "early_prover_sha256": hashlib.sha256(early_prover_path.read_bytes()).hexdigest(),
         "transition_intent_path": intent_path.relative_to(repo).as_posix(),
         "transition_intent_sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
         "candidate_requires_integration": True,
@@ -2735,6 +2777,12 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
     transition_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
     assert runner._load_legible_transition(repo, run_id)["run_id"] == run_id
+    early_prover_path.write_text('{"usable":true}\n', encoding="utf-8")
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+        runner._load_legible_transition(repo, run_id)
+    early_prover_path.write_text(
+        json.dumps(early_prover_payload, sort_keys=True) + "\n", encoding="utf-8"
+    )
     panel_path.write_text('{"verdict":"DISAGREE"}\n', encoding="utf-8")
 
     with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
