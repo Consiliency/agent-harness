@@ -2404,6 +2404,67 @@ def test_merged_pr_transition_rebinds_fresh_candidate_without_mutation(tmp_path,
     ]
 
 
+def test_merged_candidate_dispatches_to_rebind_without_builder_intent(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    observed = {}
+    monkeypatch.setattr(runner, "_legible_pr_view", lambda _repo: {"state": "MERGED"})
+
+    def fake_rebind(**kwargs):
+        observed.update(kwargs)
+        return {"status": "transition_rebound"}
+
+    monkeypatch.setattr(runner, "_run_legible_post_merge_transition", fake_rebind)
+    monkeypatch.setattr(
+        runner,
+        "_recover_legible_pr_transition",
+        lambda *_args, **_kwargs: pytest.fail("no current-builder intent is recoverable"),
+    )
+
+    result = runner._run_legible_operational_attestation(
+        repo=repo,
+        plan=repo / "plans" / "phase-plan-v10-LEGIBLE.md",
+        stage="candidate",
+        expected_head="1" * 40,
+        builder_run_id="builder-2",
+        candidate_head=None,
+        process_start_token="rebind-token",
+        loaded_runtime_blobs={},
+    )
+
+    assert result == {"status": "transition_rebound"}
+    assert observed["expected_head"] == "1" * 40
+    assert observed["builder_run_id"] == "builder-2"
+    assert observed["snapshot"] == {"state": "MERGED"}
+
+
+def test_post_merge_transition_rejects_open_pr_before_staging(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(runner, "_legible_candidate_remote", lambda *_args: None)
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+
+    with pytest.raises(
+        legible_evidence.LegibleProcessBootstrapError,
+        match="cannot authorize a candidate rebind",
+    ):
+        runner._run_legible_post_merge_transition(
+            repo=repo,
+            expected_head="1" * 40,
+            builder_run_id="builder-2",
+            process_start_token="rebind-token",
+            snapshot={"state": "OPEN"},
+        )
+
+    assert not (repo / ".phase-loop" / "runs" / "builder-2").exists()
+
+
 def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker, runner
     from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
