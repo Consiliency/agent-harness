@@ -7564,11 +7564,13 @@ def _run_legible_post_merge_transition(
         + f"- codex_process_count: {early_prover.get('codex_process_count')}\n"
         + f"- grok_process_count: {early_prover.get('grok_process_count')}\n\n"
         + "## Ratified degraded-evidence interpretation\n\n"
-        + "- `EC-REVIEWTRUTH-17` defines this zero-launch receipt as the ratified "
+        + "- `EC-REVIEWTRUTH-17` at `specs/phase-plans-v10.md:702` defines this "
+        + "zero-launch receipt as the ratified "
         + "degraded-evidence path when Codex preflight fails and Grok confinement is unavailable; "
         + "review continues over the disclosed receipt.\n"
-        + "- Codex and Grok attest only `can_probe`; only Fable can satisfy binding_prover, "
-        + "and no vendor-leg verdict substitutes for that required Fable review.\n\n"
+        + "- This transition board does not rewrite `binding_prover=false` in the receipt or "
+        + "convert any reviewer verdict into early-prover evidence; EC-REVIEWTRUTH-17's distinct "
+        + "Fable binding-prover reduction remains REVIEWTRUTH-owned.\n\n"
         + str(early_prover.get("text", ""))
         + "\n",
         encoding="utf-8",
@@ -7734,11 +7736,13 @@ def _run_legible_pr_transition(
         + f"- codex_process_count: {early_prover.get('codex_process_count')}\n"
         + f"- grok_process_count: {early_prover.get('grok_process_count')}\n\n"
         + "## Ratified degraded-evidence interpretation\n\n"
-        + "- `EC-REVIEWTRUTH-17` defines this zero-launch receipt as the ratified "
+        + "- `EC-REVIEWTRUTH-17` at `specs/phase-plans-v10.md:702` defines this "
+        + "zero-launch receipt as the ratified "
         + "degraded-evidence path when Codex preflight fails and Grok confinement is unavailable; "
         + "review continues over the disclosed receipt.\n"
-        + "- Codex and Grok attest only `can_probe`; only Fable can satisfy binding_prover, "
-        + "and no vendor-leg verdict substitutes for that required Fable review.\n\n"
+        + "- This transition board does not rewrite `binding_prover=false` in the receipt or "
+        + "convert any reviewer verdict into early-prover evidence; EC-REVIEWTRUTH-17's distinct "
+        + "Fable binding-prover reduction remains REVIEWTRUTH-owned.\n\n"
         + str(early_prover.get("text", ""))
         + "\n",
         encoding="utf-8",

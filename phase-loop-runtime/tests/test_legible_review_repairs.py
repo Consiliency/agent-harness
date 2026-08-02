@@ -2388,7 +2388,9 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
         assert "codex_process_count: 0" in staged
         assert "grok_process_count: 0" in staged
         assert "ratified degraded-evidence path" in staged
-        assert "only Fable can satisfy binding_prover" in staged
+        assert "specs/phase-plans-v10.md:702" in staged
+        assert "does not rewrite `binding_prover=false`" in staged
+        assert "only Fable can satisfy binding_prover" not in staged
         assert "Consiliency/agent-harness#347 transition slice" in brief_path.read_text(
             encoding="utf-8"
         )
@@ -2622,7 +2624,9 @@ def test_merged_pr_transition_rebinds_fresh_candidate_without_mutation(tmp_path,
         events.append(("panel", expected_head))
         staged = bundle_path.read_text(encoding="utf-8")
         assert "ratified degraded-evidence path" in staged
-        assert "only Fable can satisfy binding_prover" in staged
+        assert "specs/phase-plans-v10.md:702" in staged
+        assert "does not rewrite `binding_prover=false`" in staged
+        assert "only Fable can satisfy binding_prover" not in staged
         assert "codex_process_count: 0" in staged
         assert "grok_process_count: 0" in staged
         assert "Consiliency/agent-harness#347 transition slice" in brief_path.read_text(
