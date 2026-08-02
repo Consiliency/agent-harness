@@ -283,6 +283,14 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         )
     git("add", *(rel for rel, _ in frozen_by_path))
     git("commit", "-m", "tests-only landing")
+    original_tests_landing = git("rev-parse", "HEAD")
+    corrective_path = repo / frozen_by_path[0][0]
+    corrective_path.write_text(
+        corrective_path.read_text(encoding="utf-8") + "# canonical roadmap fixture binding\n",
+        encoding="utf-8",
+    )
+    git("add", corrective_path.relative_to(repo).as_posix())
+    git("commit", "-m", "test-only corrective anchor")
     implementation_base = git("rev-parse", "HEAD")
 
     git("switch", "-c", "candidate", implementation_base)
@@ -537,6 +545,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         "roadmap_status": legible_evidence.collect_roadmap_status(repo, required=True),
         "chronology": {
             "refresh_base": refresh_base,
+            "original_tests_landing": original_tests_landing,
             "tests_landing": implementation_base,
             "implementation_base": implementation_base,
             "phase_candidate": candidate,
@@ -552,6 +561,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "owned_paths": list(LEGIBLE_OWNED_PATHS),
             "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
             "owned_paths_sha256": owned_digest,
+            "original_frozen_test_blobs": {
+                rel: blob(original_tests_landing, rel) for rel, _ in frozen_by_path
+            },
             "frozen_test_blobs": {
                 rel: {
                     ref: blob(commit, rel)
@@ -1494,6 +1506,7 @@ def test_attest_delegates_to_runner_owned_operational_workflow(tmp_path, monkeyp
     "mutation",
     (
         "owned_partition",
+        "original_tests_landing",
         "frozen_test_blob",
         "remote_oid",
         "loaded_runtime_blob",
@@ -1530,6 +1543,8 @@ def test_operational_evidence_rejects_unproven_frozen_semantics(tmp_path, mutati
 
     if mutation == "owned_partition":
         sections["chronology"]["owned_paths"].pop()
+    elif mutation == "original_tests_landing":
+        sections["chronology"]["original_tests_landing"] = sections["chronology"]["pr_head"]
     elif mutation == "frozen_test_blob":
         first = next(iter(sections["chronology"]["frozen_test_blobs"].values()))
         first["candidate_head"] = "0" * 40
@@ -1934,10 +1949,20 @@ def test_manifest_plan_entry_lstat_failure_is_typed(tmp_path, monkeypatch):
         plan_manifest.canonical_plan_files(repo, head)
 
 
-def test_attester_uses_latest_pre_base_frozen_test_anchor():
+def test_attester_distinguishes_original_landing_from_corrective_anchor():
     from phase_loop_runtime import runner
 
+    assert runner._LEGIBLE_ORIGINAL_TESTS_LANDING == "1c57cc43134506bfeb8f9c21220f8aeef32af384"
     assert runner._LEGIBLE_TESTS_LANDING == "a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea"
+
+
+def test_repaired_plan_has_no_stale_owned_set_contract():
+    plan = (Path(__file__).parents[2] / "plans" / "phase-plan-v10-LEGIBLE.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "exact 16-item" not in plan
+    assert "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b" not in plan
 
 
 def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
