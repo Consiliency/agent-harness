@@ -6692,6 +6692,7 @@ _LEGIBLE_REFRESH_HEAD = "0f12c4614e859fd1082525be852fca4e52624890"
 _LEGIBLE_ORIGINAL_TESTS_LANDING = "1c57cc43134506bfeb8f9c21220f8aeef32af384"
 _LEGIBLE_TESTS_LANDING = "a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea"
 _LEGIBLE_PR_BODY_SHA256 = "1b8410a0c2eab1c20f9d6e469336d933654003907425daded453b37faa7df0db"
+_LEGIBLE_CANDIDATE_PR_NUMBER = 429
 
 
 def _legible_git(repo: Path, *args: str) -> str:
@@ -7189,7 +7190,8 @@ def _load_legible_candidate_process(repo: Path, candidate_head: str) -> dict[str
 def _legible_candidate_remote(repo: Path, candidate_head: str) -> tuple[str, str]:
     proc = subprocess.run(
         [
-            "gh", "pr", "view", "414", "--repo", "Consiliency/agent-harness", "--json",
+            "gh", "pr", "view", str(_LEGIBLE_CANDIDATE_PR_NUMBER),
+            "--repo", "Consiliency/agent-harness", "--json",
             "headRefName,headRefOid,state",
         ],
         cwd=repo,
@@ -7207,7 +7209,8 @@ def _legible_candidate_remote(repo: Path, candidate_head: str) -> tuple[str, str
         or not isinstance(payload.get("headRefName"), str)
     ):
         raise legible_evidence.LegibleProcessBootstrapError(
-            "Consiliency/agent-harness#414 remote head is not the expected final candidate"
+            f"Consiliency/agent-harness#{_LEGIBLE_CANDIDATE_PR_NUMBER} remote head "
+            "is not the expected final candidate"
         )
     branch = payload["headRefName"]
     remote_ref = f"refs/remotes/origin/{branch}"
@@ -7222,7 +7225,8 @@ def _legible_candidate_remote(repo: Path, candidate_head: str) -> tuple[str, str
     )
     if fetch.returncode != 0 or _legible_git(repo, "rev-parse", remote_ref) != candidate_head:
         raise legible_evidence.LegibleProcessBootstrapError(
-            "cannot bind Consiliency/agent-harness#414 to a fetched remote ref"
+            f"cannot bind Consiliency/agent-harness#{_LEGIBLE_CANDIDATE_PR_NUMBER} "
+            "to a fetched remote ref"
         )
     return remote_ref, candidate_head
 
