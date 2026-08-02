@@ -10,7 +10,7 @@ import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
-from typing import Mapping, NamedTuple
+from typing import Mapping, NamedTuple, Sequence
 
 
 class _DispatchOutcome(NamedTuple):
@@ -6673,6 +6673,8 @@ def _finalize_legible_operational_evidence(
     bootstrap_head: str,
     process_start_token: str,
     sections: Mapping[str, Mapping[str, object]],
+    post_aggregate_command: Sequence[str] | None = None,
+    post_aggregate_timeout_s: float | None = None,
 ) -> Path:
     """Runner-owned C5/C7 entrypoint for the complete operational aggregate."""
     return legible_evidence.finalize_operational_attestation(
@@ -6684,6 +6686,8 @@ def _finalize_legible_operational_evidence(
         bootstrap_head=bootstrap_head,
         process_start_token=process_start_token,
         sections=sections,
+        post_aggregate_command=post_aggregate_command,
+        post_aggregate_timeout_s=post_aggregate_timeout_s,
     )
 
 
@@ -6692,7 +6696,7 @@ _LEGIBLE_REFRESH_HEAD = "0f12c4614e859fd1082525be852fca4e52624890"
 _LEGIBLE_ORIGINAL_TESTS_LANDING = "1c57cc43134506bfeb8f9c21220f8aeef32af384"
 _LEGIBLE_TESTS_LANDING = "a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea"
 _LEGIBLE_PR_BODY_SHA256 = "1b8410a0c2eab1c20f9d6e469336d933654003907425daded453b37faa7df0db"
-_LEGIBLE_CANDIDATE_PR_NUMBER = 429
+_LEGIBLE_CANDIDATE_PR_NUMBER = 430
 
 
 def _legible_git(repo: Path, *args: str) -> str:
@@ -7245,7 +7249,7 @@ def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
     return payload
 
 
-def _load_legible_candidate_process(repo: Path, candidate_head: str) -> dict[str, object]:
+def _load_legible_candidate_evidence(repo: Path, candidate_head: str) -> dict[str, object]:
     matches: list[dict[str, object]] = []
     runs_root = repo / ".phase-loop" / "runs"
     for path in runs_root.glob("*/legible-operational-evidence.json"):
@@ -7259,16 +7263,88 @@ def _load_legible_candidate_process(repo: Path, candidate_head: str) -> dict[str
             or payload.get("stage") != "candidate"
             or payload.get("expected_head") != candidate_head
             or payload.get("seal_sha256") != legible_evidence._operational_evidence_digest(payload)
+            or not isinstance(payload.get("sections"), dict)
         ):
             continue
-        process = payload.get("sections", {}).get("process_attestations", {}).get("candidate")
-        if isinstance(process, dict):
-            matches.append(process)
+        matches.append(payload)
     if len(matches) != 1:
         raise legible_evidence.LegibleProcessBootstrapError(
-            f"expected exactly one sealed candidate process for {candidate_head}, found {len(matches)}"
+            f"expected exactly one sealed candidate evidence for {candidate_head}, found {len(matches)}"
         )
     return matches[0]
+
+
+def _load_legible_candidate_process(repo: Path, candidate_head: str) -> dict[str, object]:
+    payload = _load_legible_candidate_evidence(repo, candidate_head)
+    process = payload.get("sections", {}).get("process_attestations", {}).get("candidate")
+    if not isinstance(process, dict):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"sealed candidate evidence for {candidate_head} lacks its process identity"
+        )
+    return process
+
+
+def _legible_candidate_pr_snapshot(
+    repo: Path,
+    candidate_head: str,
+    *,
+    require_merged: bool,
+) -> dict[str, object]:
+    proc = subprocess.run(
+        [
+            "gh", "pr", "view", str(_LEGIBLE_CANDIDATE_PR_NUMBER),
+            "--repo", "Consiliency/agent-harness", "--json",
+            "headRefName,headRefOid,state,baseRefName,mergeCommit,mergedAt,body",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        payload = json.loads(proc.stdout) if proc.returncode == 0 else None
+    except json.JSONDecodeError:
+        payload = None
+    merge_commit = payload.get("mergeCommit") if isinstance(payload, dict) else None
+    merge_oid = merge_commit.get("oid") if isinstance(merge_commit, Mapping) else None
+    body = payload.get("body") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("headRefOid") != candidate_head
+        or not isinstance(payload.get("headRefName"), str)
+        or payload.get("baseRefName") != "main"
+        or not isinstance(body, str)
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"Consiliency/agent-harness#{_LEGIBLE_CANDIDATE_PR_NUMBER} delivery identity drifted"
+        )
+    if require_merged and (
+        payload.get("state") != "MERGED"
+        or not isinstance(payload.get("mergedAt"), str)
+        or not payload.get("mergedAt")
+        or not isinstance(merge_oid, str)
+    ):
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"Consiliency/agent-harness#{_LEGIBLE_CANDIDATE_PR_NUMBER} must be MERGED "
+            "before canonical-main attestation"
+        )
+    if not require_merged and payload.get("state") != "OPEN":
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"Consiliency/agent-harness#{_LEGIBLE_CANDIDATE_PR_NUMBER} must remain OPEN "
+            "during candidate attestation"
+        )
+    parents = legible_evidence._commit_parents(repo, merge_oid) if merge_oid else []
+    return {
+        "repository": "Consiliency/agent-harness",
+        "number": _LEGIBLE_CANDIDATE_PR_NUMBER,
+        "state": payload["state"],
+        "base_ref": payload["baseRefName"],
+        "head": candidate_head,
+        "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "merged_at": payload.get("mergedAt"),
+        "merge_commit": merge_oid,
+        "parents": parents,
+    }
 
 
 def _legible_candidate_remote(repo: Path, candidate_head: str) -> tuple[str, str]:
@@ -7313,6 +7389,35 @@ def _legible_candidate_remote(repo: Path, candidate_head: str) -> tuple[str, str
             "to a fetched remote ref"
         )
     return remote_ref, candidate_head
+
+
+def _partition_legible_verification_commands(
+    commands: Sequence[Sequence[str]], stage: str
+) -> tuple[list[list[str]], list[str] | None]:
+    wrappers = [
+        [str(part) for part in command]
+        for command in commands
+        if "phase_loop_runtime.legible_evidence" in " ".join(str(part) for part in command)
+        and "canonical-main" in " ".join(str(part) for part in command)
+    ]
+    if len(wrappers) != 1:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"expected exactly one canonical-main LEGIBLE evidence wrapper, found {len(wrappers)}"
+        )
+    wrapper = wrappers[0]
+    ordinary = [
+        [str(part) for part in command]
+        for command in commands
+        if [str(part) for part in command] != wrapper
+    ]
+    return ordinary, wrapper if stage == "canonical-main" else None
+
+
+def _legible_final_test_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("PHASE_LOOP_TDD_EXPECT_LEGIBLE", None)
+    env["PYTHONPATH"] = "src"
+    return env
 
 
 def _run_legible_post_merge_transition(
@@ -8094,16 +8199,29 @@ def _run_legible_operational_attestation(
     run_dir = repo / ".phase-loop" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     candidate_remote_ref, candidate_remote_oid = _legible_candidate_remote(repo, integration)
+    implementation_pr_snapshot = _legible_candidate_pr_snapshot(
+        repo,
+        integration,
+        require_merged=stage == "canonical-main",
+    )
+    prior_candidate_evidence: dict[str, object] | None = None
+    if stage == "canonical-main":
+        prior_candidate_evidence = _load_legible_candidate_evidence(repo, integration)
+        prior_implementation_pr = (
+            prior_candidate_evidence.get("sections", {})
+            .get("chronology", {})
+            .get("implementation_pull_request")
+        )
+        if not isinstance(prior_implementation_pr, Mapping) or any(
+            prior_implementation_pr.get(field) != implementation_pr_snapshot.get(field)
+            for field in ("repository", "number", "base_ref", "head", "body_sha256")
+        ):
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "merged implementation pull request drifted from candidate evidence"
+            )
     roadmap = repo / "specs" / "phase-plans-v10.md"
     commands, operational_exemptions = verification_commands_from_plan(plan)
-    commands = [
-        command
-        for command in commands
-        if not (
-            "phase_loop_runtime.legible_evidence" in command
-            and "canonical-main" in command
-        )
-    ]
+    commands, post_aggregate_command = _partition_legible_verification_commands(commands, stage)
     suite_command, suite_findings = resolve_suite_command_doc(repo, roadmap, plan)
     if suite_findings:
         raise legible_evidence.LegibleProcessBootstrapError(suite_findings[0].message)
@@ -8127,7 +8245,7 @@ def _run_legible_operational_attestation(
 
     final_junit = run_dir / "legible-final.junit.xml"
     final_log = run_dir / "legible-final.log"
-    final_env = {**os.environ, "PHASE_LOOP_TDD_EXPECT_LEGIBLE": "1", "PYTHONPATH": "src"}
+    final_env = _legible_final_test_environment()
     final_argv = [
         sys.executable,
         "-m",
@@ -8149,7 +8267,7 @@ def _run_legible_operational_attestation(
     final_log.write_bytes(final_run.stdout)
     if final_run.returncode != 0:
         raise legible_evidence.LegibleProcessBootstrapError(
-            f"marker-active LEGIBLE JUnit failed with exit {final_run.returncode}"
+            f"installed-marker LEGIBLE JUnit failed with exit {final_run.returncode}"
         )
 
     probe_records: list[dict[str, object]] = []
@@ -8273,7 +8391,16 @@ def _run_legible_operational_attestation(
     if stage == "candidate":
         process_attestations["candidate"] = current_process
     else:
-        prior_candidate = _load_legible_candidate_process(repo, integration)
+        assert prior_candidate_evidence is not None
+        prior_candidate = (
+            prior_candidate_evidence.get("sections", {})
+            .get("process_attestations", {})
+            .get("candidate")
+        )
+        if not isinstance(prior_candidate, dict):
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "sealed candidate evidence lacks its process identity"
+            )
         process_attestations["candidate"] = prior_candidate
         current_process["parent_run_id"] = prior_candidate["run_id"]
         process_attestations["canonical_main"] = current_process
@@ -8304,6 +8431,7 @@ def _run_legible_operational_attestation(
             "candidate_head": integration,
             "candidate_remote_ref": candidate_remote_ref,
             "candidate_remote_oid": candidate_remote_oid,
+            "implementation_pull_request": implementation_pr_snapshot,
             "plan_path": plan.relative_to(repo).as_posix(),
             "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
             "roadmap_path": roadmap.relative_to(repo).as_posix(),
@@ -8424,6 +8552,24 @@ def _run_legible_operational_attestation(
         *probe_paths,
         pr_snapshot_path,
     ]
+    if prior_candidate_evidence is not None:
+        candidate_run_id = (
+            prior_candidate_evidence.get("sections", {})
+            .get("process_attestations", {})
+            .get("candidate", {})
+            .get("run_id")
+        )
+        if not isinstance(candidate_run_id, str) or not candidate_run_id:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "sealed candidate evidence lacks its run identity"
+            )
+        artifact_sources.append(
+            repo
+            / ".phase-loop"
+            / "runs"
+            / candidate_run_id
+            / "legible-operational-evidence.json"
+        )
     unique_sources = {path.resolve(): path for path in artifact_sources}
     sections["artifacts"] = {
         "records": [_legible_file_record(repo, unique_sources[path]) for path in sorted(unique_sources)]
@@ -8437,6 +8583,10 @@ def _run_legible_operational_attestation(
         bootstrap_head=expected_head,
         process_start_token=process_start_token,
         sections=sections,
+        post_aggregate_command=post_aggregate_command,
+        post_aggregate_timeout_s=float(
+            os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")
+        ),
     )
     if stage == "canonical-main":
         verification = legible_evidence.validate_operational_evidence(

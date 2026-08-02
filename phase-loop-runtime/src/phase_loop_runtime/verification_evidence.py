@@ -683,6 +683,64 @@ def run_verification(
     return result
 
 
+def _append_verification_command(
+    repo: Path,
+    artifact_path: Path,
+    argv: Sequence[str],
+    timeout_s: float | None,
+) -> VerificationCommandEvidence:
+    """Run one post-aggregate command and reseal the existing v2 artifact."""
+    repo_path = _resolve_repo(repo)
+    artifact_path = Path(artifact_path).resolve()
+    if artifact_path.name != ARTIFACT_NAME or not _is_relative_to(artifact_path, repo_path):
+        raise ValueError("verification artifact must be inside the repository")
+    validation = validate_verification_artifact(artifact_path)
+    if not validation.ok:
+        raise ValueError(f"cannot append to invalid verification artifact: {validation.code}")
+    result = load_verification_artifact(artifact_path)
+    if result.schema_version != SCHEMA_VERSION:
+        raise ValueError("post-aggregate commands require a schema-v2 verification artifact")
+
+    log_path = artifact_path.with_name(LOG_NAME)
+    log_bytes = log_path.read_bytes()
+    seal_start = _artifact_seal_region_start(log_bytes)
+    if seal_start is None:
+        raise ValueError("post-aggregate commands require a sealed verification log")
+    shim_dir = artifact_path.parent / "_interp_shim"
+    path_prepend = shim_dir if shim_dir.is_dir() else None
+
+    with tempfile.NamedTemporaryFile("w+b", dir=log_path.parent, delete=False) as log_file:
+        log_file.write(log_bytes[:seal_start])
+        command = _run_process(
+            repo_path,
+            log_file,
+            argv,
+            timeout_s,
+            path_prepend=path_prepend,
+        )
+        unsealed = replace(
+            result,
+            commands=[*result.commands, command],
+            finished_at=_utc_now(),
+            log_sha256="",
+        )
+        seal = _canonical_artifact_digest(_result_to_payload(unsealed))
+        log_file.write(f"\n{_ARTIFACT_SEAL_PREFIX}{seal}\n".encode("utf-8"))
+        log_file.flush()
+        temporary_log_path = Path(log_file.name)
+
+    final_log_bytes = temporary_log_path.read_bytes()
+    updated = replace(unsealed, log_sha256=hashlib.sha256(final_log_bytes).hexdigest())
+    temporary_log_path.replace(log_path)
+    _write_artifact_atomic(artifact_path, _result_to_payload(updated))
+    final_validation = validate_verification_artifact(artifact_path)
+    if not final_validation.ok and not (
+        command.exit_code != 0 and final_validation.code == "nonzero_exit"
+    ):
+        raise ValueError(f"appended verification artifact is invalid: {final_validation.code}")
+    return command
+
+
 def validate_verification_commands(repo: Path, commands: list[list[str]]) -> list[ValidationFinding]:
     repo_path = _resolve_repo(repo)
     findings: list[ValidationFinding] = []

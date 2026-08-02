@@ -325,8 +325,10 @@ The chronology is exact and reducer-enforced:
    body-table SHA to be an ancestor of `H`, and `B0..H` to be the frozen singleton comment-only
    path/blob transition. In private temporary indexes it revalidates `T_B0H`/`R`, then recomputes
    clean server result tree `T_BH` from merge base `B0` and tips `[B, H]`, requires no unmerged
-   index stages, `changed(B, T_BH) == E`, and result blob `R`. Only then may it merge that exact
-   PR head with merge-commit method. Finalize server merge `M` only when its ordered parents are
+   index stages, `changed(B, T_BH) == E`, and result blob `R`. For the already-published immutable
+   `Consiliency/agent-harness#347` transition, the historical exact-tree publish is accepted as the
+   merge publisher only after re-proving those same inputs and result; it is not retroactively
+   described as a GitHub merge action. Finalize server merge `M` only when its ordered parents are
    exactly `[B, H]`, `M^{tree} == T_BH`, and its first-parent delta is the same frozen one-file
    transition ending at `R`.
 9. From the unchanged phase-authored candidate `P`, create target-integration merge `I` with
@@ -338,7 +340,9 @@ The chronology is exact and reducer-enforced:
    head and remote OID both equal `I`. That process alone runs the broad compatible suite, final
    84-nodeid JUnit, exact-head implementation panel, and candidate evidence.
 10. After candidate evidence and merge gates pass, merge the implementation PR without changing
-    candidate `I`. Fetch canonical main, resolve one exact canonical main OID containing `I`,
+    candidate `I`, and require the server-side merge commit to have `I` as its second parent and
+    retain the candidate-stage PR head/body identity. Fetch canonical main, resolve one exact
+    canonical main OID containing both that server merge commit and `I`,
     create another clean worktree at that OID, and launch a third new repo-local
     `phase-loop attest --stage canonical-main` process. Only its exact-main-bound artifact can
     close LEGIBLE.
@@ -1050,10 +1054,10 @@ SHA, the exact six-row set frozen above, and all results zero. In private tempor
 recompute exact `T_B0H`/`R` from merge base `B0` and tips `[B0, H]`, then recompute `T_BH` from
 merge base `B0` and tips `[B, H]`; require no unmerged stages, `T_B0H == H^{tree}`,
 `changed(B, T_BH)` to be the singleton external path, and the exact refreshed result identity
-above. Require the PR to be non-draft with required checks/reviews satisfied; merge with
-merge-commit method; then require
-`state == MERGED`, non-null `mergedAt`, and a
-non-null server merge commit `M` from
+above. Require the PR to be non-draft with required checks/reviews satisfied. For the immutable
+already-published `Consiliency/agent-harness#347` history, accept its exact-tree publish only after
+the rebound producer re-proves the same review and tree facts; then require
+`state == MERGED`, non-null `mergedAt`, and the recorded merge commit `M` from
 `gh pr view 347 --repo Consiliency/agent-harness --json state,mergedAt,mergeCommit,headRefOid,body`.
 The runner requires `parents(M) == [B, H]`, `M^{tree} == T_BH`, and `changed(B, M)` to be exactly
 the frozen transition ending at `R`; it creates integration commit `I` with

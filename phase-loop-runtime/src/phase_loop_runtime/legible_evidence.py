@@ -126,6 +126,7 @@ _OPERATIONAL_SECTION_FIELDS = {
             "owned_paths_sha256",
             "original_frozen_test_blobs",
             "frozen_test_blobs",
+            "implementation_pull_request",
         }
     ),
     "process_attestations": frozenset({"builder"}),
@@ -1078,6 +1079,52 @@ def _validate_operational_sections(
         or _rev_parse(repo, candidate_remote_ref) != candidate_remote_oid
     ):
         return "chronology: candidate remote ref is not bound to the final candidate"
+    implementation_pr = chronology["implementation_pull_request"]
+    implementation_pr_fields = {
+        "repository",
+        "number",
+        "state",
+        "base_ref",
+        "head",
+        "body_sha256",
+        "merged_at",
+        "merge_commit",
+        "parents",
+    }
+    if (
+        not isinstance(implementation_pr, Mapping)
+        or set(implementation_pr) != implementation_pr_fields
+        or implementation_pr.get("repository") != "Consiliency/agent-harness"
+        or type(implementation_pr.get("number")) is not int
+        or implementation_pr["number"] <= 0
+        or implementation_pr.get("base_ref") != "main"
+        or implementation_pr.get("head") != chronology["candidate_head"]
+        or not _is_sha256(implementation_pr.get("body_sha256"))
+    ):
+        return "chronology: implementation pull request identity is invalid"
+    if stage == "candidate" and (
+        implementation_pr.get("state") != "OPEN"
+        or implementation_pr.get("merged_at") is not None
+        or implementation_pr.get("merge_commit") is not None
+        or implementation_pr.get("parents") != []
+    ):
+        return "chronology: candidate implementation pull request is not open and unmerged"
+    if stage == "canonical-main":
+        merge_commit = implementation_pr.get("merge_commit")
+        merge_parents = implementation_pr.get("parents")
+        if (
+            implementation_pr.get("state") != "MERGED"
+            or not isinstance(implementation_pr.get("merged_at"), str)
+            or not implementation_pr["merged_at"]
+            or not isinstance(merge_commit, str)
+            or not _is_commit(repo, merge_commit)
+            or not isinstance(merge_parents, list)
+            or len(merge_parents) != 2
+            or merge_parents[1] != chronology["candidate_head"]
+            or _commit_parents(repo, merge_commit) != merge_parents
+            or not _is_ancestor(repo, merge_commit, expected_head)
+        ):
+            return "chronology: canonical implementation pull request merge is invalid"
     owned_paths = chronology["owned_paths"]
     owned_digest = hashlib.sha256(
         "".join(f"{path}\n" for path in _LEGIBLE_OWNED_PATHS).encode("utf-8")
@@ -1681,6 +1728,8 @@ def finalize_operational_attestation(
     bootstrap_head: str,
     process_start_token: str,
     sections: Mapping[str, Mapping[str, Any]],
+    post_aggregate_command: Sequence[str] | None = None,
+    post_aggregate_timeout_s: float | None = None,
 ) -> Path:
     """Seal, validate, and bind the C5/C7 aggregate to verification.json."""
     repo = Path(repo).resolve()
@@ -1721,6 +1770,29 @@ def finalize_operational_attestation(
         raise LegibleProcessBootstrapError(
             f"operational evidence validation failed [{validation.code}]: {validation.finding}"
         )
+    if post_aggregate_command is not None:
+        from .verification_evidence import (
+            _append_verification_command,
+            validate_verification_artifact,
+        )
+
+        try:
+            command = _append_verification_command(
+                repo,
+                artifact_path,
+                post_aggregate_command,
+                post_aggregate_timeout_s,
+            )
+        except ValueError as exc:
+            raise LegibleProcessBootstrapError(
+                f"canonical-main LEGIBLE evidence wrapper could not be recorded: {exc}"
+            ) from exc
+        artifact_validation = validate_verification_artifact(artifact_path)
+        if command.exit_code != 0 or not artifact_validation.ok:
+            raise LegibleProcessBootstrapError(
+                "canonical-main LEGIBLE evidence wrapper failed "
+                f"with exit {command.exit_code}: {artifact_validation.code}"
+            )
     evidence_bytes = output_path.read_bytes()
     sidecar = SidecarRecord(
         schema=_SIDECAR_RECORD_SCHEMA,
