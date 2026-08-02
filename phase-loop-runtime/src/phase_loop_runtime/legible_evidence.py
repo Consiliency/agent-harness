@@ -109,6 +109,7 @@ _OPERATIONAL_SECTION_FIELDS = {
     ),
     "chronology": frozenset(
         {
+            "original_tests_landing",
             "tests_landing",
             "implementation_base",
             "phase_candidate",
@@ -123,6 +124,7 @@ _OPERATIONAL_SECTION_FIELDS = {
             "owned_paths",
             "owned_paths_count",
             "owned_paths_sha256",
+            "original_frozen_test_blobs",
             "frozen_test_blobs",
         }
     ),
@@ -1031,6 +1033,7 @@ def _validate_operational_sections(
     chronology = sections["chronology"]
     chronology_commits = (
         "refresh_base",
+        "original_tests_landing",
         "tests_landing",
         "implementation_base",
         "phase_candidate",
@@ -1046,7 +1049,8 @@ def _validate_operational_sections(
     ):
         return "chronology: plan or roadmap bytes are not bound to expected HEAD"
     if (
-        not _is_ancestor(repo, chronology["refresh_base"], chronology["tests_landing"])
+        not _is_ancestor(repo, chronology["refresh_base"], chronology["original_tests_landing"])
+        or not _is_ancestor(repo, chronology["original_tests_landing"], chronology["tests_landing"])
         or not _is_ancestor(repo, chronology["tests_landing"], chronology["implementation_base"])
         or not _is_ancestor(repo, chronology["implementation_base"], chronology["phase_candidate"])
         or not _is_ancestor(repo, chronology["phase_candidate"], chronology["candidate_head"])
@@ -1056,6 +1060,15 @@ def _validate_operational_sections(
         or (stage == "canonical-main" and not _is_ancestor(repo, chronology["candidate_head"], expected_head))
     ):
         return "chronology: required ancestry is absent"
+    try:
+        original_changed = _first_parent_changed_paths(repo, chronology["original_tests_landing"])
+        corrective_changed = _first_parent_changed_paths(repo, chronology["tests_landing"])
+    except LegibleChronologyError:
+        return "chronology: frozen test landing diff is unresolved"
+    if original_changed != tuple(sorted(FROZEN_TEST_PATHS)):
+        return "chronology: original test landing is not the exact two-file change"
+    if corrective_changed != ("phase-loop-runtime/tests/test_legible_roadmap_contract.py",):
+        return "chronology: corrective test anchor is not the exact one-file change"
     candidate_remote_ref = chronology.get("candidate_remote_ref")
     candidate_remote_oid = chronology.get("candidate_remote_oid")
     if (
@@ -1081,6 +1094,18 @@ def _validate_operational_sections(
         or set(phase_changed) & {*FROZEN_TEST_PATHS, _FROZEN_AGENT_HARNESS_347_PATH}
     ):
         return "chronology: exact phase-owned path partition is invalid"
+    original_frozen_test_blobs = chronology["original_frozen_test_blobs"]
+    if (
+        not isinstance(original_frozen_test_blobs, Mapping)
+        or set(original_frozen_test_blobs) != set(FROZEN_TEST_PATHS)
+        or original_frozen_test_blobs
+        != {
+            rel: _blob_oid(repo, chronology["original_tests_landing"], rel)
+            for rel in FROZEN_TEST_PATHS
+        }
+        or None in original_frozen_test_blobs.values()
+    ):
+        return "chronology: original frozen test blob inventory is invalid"
     frozen_test_blobs = chronology["frozen_test_blobs"]
     if not isinstance(frozen_test_blobs, Mapping) or set(frozen_test_blobs) != set(FROZEN_TEST_PATHS):
         return "chronology: frozen test blob inventory is invalid"

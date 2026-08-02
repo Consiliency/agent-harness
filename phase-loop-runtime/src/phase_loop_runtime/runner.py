@@ -6689,6 +6689,7 @@ def _finalize_legible_operational_evidence(
 
 _LEGIBLE_REFRESH_BASE = "648be2f68d6804ecdc4046bb7d4f5ee81a90c356"
 _LEGIBLE_REFRESH_HEAD = "0f12c4614e859fd1082525be852fca4e52624890"
+_LEGIBLE_ORIGINAL_TESTS_LANDING = "1c57cc43134506bfeb8f9c21220f8aeef32af384"
 _LEGIBLE_TESTS_LANDING = "a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea"
 _LEGIBLE_PR_BODY_SHA256 = "1b8410a0c2eab1c20f9d6e469336d933654003907425daded453b37faa7df0db"
 
@@ -7901,6 +7902,7 @@ def _run_legible_operational_attestation(
         "roadmap_status": roadmap_status,
         "chronology": {
             "refresh_base": _LEGIBLE_REFRESH_BASE,
+            "original_tests_landing": _LEGIBLE_ORIGINAL_TESTS_LANDING,
             "tests_landing": _LEGIBLE_TESTS_LANDING,
             "implementation_base": implementation_base,
             "phase_candidate": phase_candidate,
@@ -7916,6 +7918,10 @@ def _run_legible_operational_attestation(
             "owned_paths": list(legible_evidence._LEGIBLE_OWNED_PATHS),
             "owned_paths_count": len(legible_evidence._LEGIBLE_OWNED_PATHS),
             "owned_paths_sha256": owned_digest,
+            "original_frozen_test_blobs": {
+                rel: legible_evidence._blob_oid(repo, _LEGIBLE_ORIGINAL_TESTS_LANDING, rel)
+                for rel in legible_evidence.FROZEN_TEST_PATHS
+            },
             "frozen_test_blobs": {
                 rel: {
                     name: legible_evidence._blob_oid(repo, ref, rel)

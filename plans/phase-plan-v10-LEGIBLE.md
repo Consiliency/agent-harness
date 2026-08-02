@@ -302,7 +302,8 @@ The chronology is exact and reducer-enforced:
    and `xfail`/`xpass` are forbidden substitutes.
 5. Land the tests-only change on the target/default branch through ordinary green merge gates.
    Record the canonical landing commit whose first-parent diff changes exactly the two test
-   paths. This is the original two-file RED landing. A later pre-base test-only correction at
+   paths. The original two-file RED landing is
+   `1c57cc43134506bfeb8f9c21220f8aeef32af384`. A later pre-base test-only correction at
    `a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea` changed only
    `phase-loop-runtime/tests/test_legible_roadmap_contract.py` to bind its fixture to the canonical
    roadmap digest. The reducer's `tests_landing` field names that latest corrective anchor; both
@@ -346,8 +347,9 @@ The implementation range must contain no diff at either frozen test path. The im
 base/head and final canonical main must descend from the original landing and the corrective test
 anchor, and both test blobs
 must remain identical at the test landing, implementation base, candidate head, and canonical
-main. For reducer purposes, that `tests_landing` is the latest corrective anchor. The plan/roadmap
-blobs must match their recorded exact digests at each ref. A
+main. The reducer records the original landing and its two blobs separately; its `tests_landing`
+blob-equality anchor is the latest corrective commit. Plan and roadmap bytes at each attesting ref
+must match the plan contract recorded for that ref. A
 same-branch `base -> tests -> implementation` sequence, a candidate not first pushed, reuse of
 the builder process, or evidence from an earlier candidate/main OID fails. No existing test is
 migrated by this plan. If integration makes migration unavoidable, planning must be repaired
@@ -755,9 +757,9 @@ execution-time `B` snapshot and server merge: server PR base, implementation bas
 target head must all be the same exact recorded `B`.
 
 The reducer partitions chronology instead of treating every `B..I` path as phase-owned. Let
-`O` be the exact 16-item manifest/lane-owned set and let `E` be the singleton frozen
+`O` be the exact 18-item manifest/lane-owned set and let `E` be the singleton frozen
 `Consiliency/agent-harness#347` path above. The canonical `O` digest is SHA-256
-`01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b` over the
+`ad11f462c732dabae8a7f51e61a3b229dbb1a8f45954c266d14cb9547cfdd240` over the
 UTF-8, bytewise path-sorted list with one repo-relative path plus `\n` per record. The plan
 frontmatter count/digest, parsed lane union, and manifest list/count/digest must all equal that
 same material. The reducer requires `O ∩ E = ∅` and
@@ -796,10 +798,12 @@ or result drift; or any external delta other than this exact refreshed
 `Consiliency/agent-harness#347` contribution fails closed and requires plan repair. `E` is never
 added to lane ownership or generalized into an unowned-path allowlist.
 
-Both test blobs and the literal nodeid inventory remain byte-identical at the tests-only landing,
-`B`, `P`, `I`, and canonical main, and the plan/roadmap blobs match the
-manifest/frontmatter digests at each ref. The collector parses the LEGIBLE manifest entry's
-`lifecycle[0].metadata.legible_plan_contract`, requires its `plan_sha256`, exact 16-item
+The original two-file landing and its blob inventory are recorded independently. Both test blobs
+and the literal nodeid inventory remain byte-identical at the corrective `tests_landing`, `B`,
+`P`, `I`, and canonical main. The plan and roadmap at each attesting ref match that ref's
+manifest/frontmatter digests; base `B` retains its predecessor contract while repaired `P`, `I`,
+and canonical main carry the repaired contract. The collector parses the LEGIBLE manifest entry's
+`lifecycle[0].metadata.legible_plan_contract`, requires its `plan_sha256`, exact 18-item
 `owned_paths`, `owned_paths_count`, `owned_paths_sha256`, two `test_paths`, activation env,
 capability marker, expected-nodeid count, and lifecycle literal to agree with the live plan
 frontmatter/lane IR, then requires the
@@ -928,7 +932,7 @@ evidence and cannot satisfy either criterion.
   and mandatory review gates pass. Its allowance is the refreshed singleton comment-only
   `B0..H` transition tied to exact refresh base `B0`, exact execution-time server base `B`,
   refreshed head `H`, refresh parents `[H0, B0]`, recomputed result `R`, server two-parent merge
-  `M`, and deterministic two-parent integration `I`; it does not alter the exact 16-item
+  `M`, and deterministic two-parent integration `I`; it does not alter the exact 18-item
   phase-owned set. Missing merge authority, target-base drift, or any
   head/body/parent/path/comment-only/blob/result mismatch blocks accurately rather than rewriting
   the criterion, accepting a different PR contribution, laundering it through a phase-authored
@@ -954,15 +958,15 @@ evidence and cannot satisfy either criterion.
   declares both the pending and resolved REVIEWTRUTH states, so the fixed sidecar adapter
   classifies that transition without mutating or rebinding roadmap bytes.
 - The existing LEGIBLE manifest entry is the non-self-referential plan-digest authority. Its
-  `lifecycle[0].metadata.legible_plan_contract` records the final plan SHA-256, exact 16-item
+  `lifecycle[0].metadata.legible_plan_contract` records the final plan SHA-256, exact 18-item
   lane-owned path list/count/digest, two frozen test paths, lifecycle literal, activation env,
   capability marker, and expected-nodeid count. Every planning, tests-only, candidate, panel, and
   canonical-main artifact must recompute the plan digest and compare that metadata with the
   plan frontmatter and parsed lane IR; the frozen `agent-harness#347` path must remain absent from
   that owned set and is accepted only through the exact target-integration contract in this plan.
   The plan cannot carry its own SHA-256 in frontmatter; omitting this manifest comparison,
-  accepting a stale panel digest, or allowing any lifecycle ref to contain different
-  plan/roadmap bytes is a hard chronology failure.
+  accepting a stale panel digest, or allowing an attesting ref's plan/roadmap bytes to differ from
+  the contract bound at that ref is a hard chronology failure.
 - IF-0-VC-2 command preflight is satisfied only when the plan validator resolves the roadmap
   digest, `verification_commands_from_plan` extracts every command bullet, and
   `resolve_suite_command_doc` resolves the exact frontmatter `automation.suite_command` retained
