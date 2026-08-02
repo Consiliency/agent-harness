@@ -6960,10 +6960,11 @@ def _seal_legible_transition(
     transition_path, _panel_path = _legible_transition_artifact_paths(
         repo, str(intent["run_id"])
     )
+    is_rebind = intent.get("status") == "transition_rebind_intent"
     transition_payload: dict[str, object] = {
         "schema": "legible_pr_transition.v1",
         "run_id": intent["run_id"],
-        "status": "transition_sealed",
+        "status": "transition_rebound" if is_rebind else "transition_sealed",
         "head": intent["head"],
         "builder_run_id": intent["builder_run_id"],
         "process_start_token": intent["process_start_token"],
@@ -6981,6 +6982,14 @@ def _seal_legible_transition(
         "transition_intent_sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
         "candidate_requires_integration": True,
     }
+    if is_rebind:
+        transition_payload.update(
+            {
+                "producer": intent["producer"],
+                "expected_tree": intent["expected_tree"],
+                "merge_published_by": intent["merge_published_by"],
+            }
+        )
     transition_payload["seal_sha256"] = _legible_transition_digest(transition_payload)
     atomic_write_text_durable(
         transition_path,
@@ -7133,9 +7142,15 @@ def _load_legible_transition(repo: Path, run_id: str) -> dict[str, object]:
         raise legible_evidence.LegibleProcessBootstrapError(
             f"transition run {run_id!r} drifted from its publish intent"
         )
+    if (intent.get("status"), payload.get("status")) not in {
+        ("transition_intent", "transition_sealed"),
+        ("transition_rebind_intent", "transition_rebound"),
+    }:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"transition run {run_id!r} has an invalid intent/transition type pairing"
+        )
     if payload.get("status") == "transition_rebound" and (
-        intent.get("status") != "transition_rebind_intent"
-        or payload.get("producer") != intent.get("producer")
+        payload.get("producer") != intent.get("producer")
         or payload.get("merge_published_by") != intent.get("merge_published_by")
         or payload.get("expected_tree") != intent.get("expected_tree")
     ):
