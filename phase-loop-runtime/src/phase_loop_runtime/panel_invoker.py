@@ -114,9 +114,21 @@ _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES
 # Which CLI binary backs each leg (used for metadata-only liveness preflight).
 # grok is NOT in ``PANEL_LEGS`` (the default 3-leg panel is byte-frozen) but IS a
 # registered homebrew lane a board seat can run on (the 4-vendor code-review board).
+# ah#335 — READ THIS BEFORE DEBUGGING THE "gemini" LEG. The leg is NAMED `gemini` but
+# EXECUTES `agy` (Antigravity). Nothing on the panel path invokes a `gemini` binary. That
+# mismatch has produced two wrong root causes: both times the leg was diagnosed by running
+# `gemini` and reasoning from its output, when `gemini`'s health is irrelevant here. The
+# panel is unaffected by ANY state of the `gemini` binary — healthy, broken, or absent —
+# because it never calls it. Deliberately records no claim about that CLI's auth tiers or
+# availability: those are volatile vendor facts, and asserting them here is how this comment
+# has drifted before. Probe `agy`, not `gemini`.
+#
+# The name is retained deliberately: `PANEL_LEGS` is byte-frozen, and `"gemini"` also spans
+# `_HOMEBREW_LANES`, `DEFAULT_LEG_MODELS` and many tests, so a rename is a change to the
+# review gate rather than a cosmetic edit.
 _LEG_CLI: dict[str, str] = {
     "codex": "codex",
-    "gemini": "agy",
+    "gemini": "agy",  # ah#335: NOT the gemini CLI — see the note above
     "claude": "claude",
     "grok": "grok",
 }
@@ -2946,6 +2958,26 @@ def _exec_leg(
                 break  # slow empty turn (not transient) → don't re-run + double wall-clock
         return rc, review_text, log_text
     if leg == "gemini":
+        # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). The health
+        # of any `gemini` binary is irrelevant here — diagnosing this leg by running
+        # `gemini` produced two wrong root causes in one session.
+        #
+        # A 0-byte result here has at least TWO KNOWN causes, not interchangeable. This
+        # comment deliberately does NOT describe retry behaviour — read the retry code.
+        # Prose here has drifted from that code twice already.
+        #   * headless TOOL-DENIAL — agy needs a permission it cannot prompt for and
+        #     auto-denies, exiting rc==0 with no output. This is DETERMINISTIC for the
+        #     denied tool: it destroys the ENTIRE response, not merely that one read.
+        #     ah#345/#350 ships INSTRUCTION, NOT ENFORCEMENT — `_NO_COMMAND_PREAMBLE`
+        #     tells the leg to read only inside the staged review dir. A scoped
+        #     `read_file` grant was tried and REVERTED as inert: agy's config home is
+        #     `~/.gemini/antigravity-cli/` (not `~/.gemini/`) and it rejects bare tool
+        #     names in `permissions.allow` (`invalid grant string` — only `tool(target)`
+        #     parses), so the written grant was never read. Do not re-add one without
+        #     first proving agy loads it.
+        #   * a TRANSIENT backend stall, matched by `_GEMINI_TRANSIENT_RE` below.
+        # An earlier version of this comment attributed the observed EMPTY to the transient
+        # stall. That was wrong: reproduction showed the `read_file` denial.
         out_file = out_dir / "panel-gemini.txt"
         # ABDHOME: the agy leg bakes effort INTO the model name. effort-absent keeps
         # the shared default model verbatim; a seat renders
