@@ -91,8 +91,12 @@ PR_T_18_PATTERNS: tuple[str, ...] = (
     "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py",
     "phase-loop-runtime/tests/test_verification_evidence.py",
 )
-PR_T_18_PATHS: tuple[str, ...] = PR_T_18_PATTERNS
 PR_T_18_PATTERNS_SHA256 = "3b0c0914871e17d56c24fa34e4578c498110425bcc79c4cd3dc10277a1d50deb"
+PR_T_18_PATHS: tuple[str, ...] = (
+    "phase-loop-runtime/tests/fixtures/proofgate/v10-proofgate-mutations.json",
+    *PR_T_18_PATTERNS[1:],
+)
+PR_T_18_PATHS_SHA256 = "53f80012139690b0e653f197bccc178050a22496a039bdbe36e579a24441a2bd"
 PR_B_5_PATHS: tuple[str, ...] = (
     ".github/workflows/proofgate-receipt-attestation.yml",
     "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
@@ -519,6 +523,9 @@ def verify_premerge_bootstrap_review_gate(
         inv_digest = hashlib.sha256((json.dumps(list(PR_T_18_PATTERNS), sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")).hexdigest()
         if inv_digest != PR_T_18_PATTERNS_SHA256:
             raise ProofgateBootstrapVerifierError(f"PR-T pattern inventory SHA-256 mismatch (expected {PR_T_18_PATTERNS_SHA256}, got {inv_digest})")
+        paths_digest = hashlib.sha256((json.dumps(list(PR_T_18_PATHS), sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")).hexdigest()
+        if paths_digest != PR_T_18_PATHS_SHA256:
+            raise ProofgateBootstrapVerifierError(f"PR-T exact path inventory SHA-256 mismatch (expected {PR_T_18_PATHS_SHA256}, got {paths_digest})")
 
         for p in modified_paths:
             if not any(_matches_pattern(p, pat) for pat in PR_T_18_PATTERNS):
@@ -526,26 +533,7 @@ def verify_premerge_bootstrap_review_gate(
             if p.startswith("phase-loop-runtime/src/") or p.startswith(".github/workflows/"):
                 raise ProofgateBootstrapVerifierError(f"PR-T candidate contains production path: {p}")
 
-        pr_t_exact = sorted([
-            "phase-loop-runtime/tests/fixtures/proofgate/v10-proofgate-mutations.json",
-            "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
-            "phase-loop-runtime/tests/proofgate_tdd_guard.py",
-            "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py",
-            "phase-loop-runtime/tests/test_closeout_verification_gate.py",
-            "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
-            "phase-loop-runtime/tests/test_goal_coverage.py",
-            "phase-loop-runtime/tests/test_preflight_verification.py",
-            "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py",
-            "phase-loop-runtime/tests/test_proofgate_isolation.py",
-            "phase-loop-runtime/tests/test_proofgate_receipts.py",
-            "phase-loop-runtime/tests/test_review_leg_sandbox.py",
-            "phase-loop-runtime/tests/test_skills_bundle_drift.py",
-            "phase-loop-runtime/tests/test_skills_canon_parity.py",
-            "phase-loop-runtime/tests/test_tdd_chronology.py",
-            "phase-loop-runtime/tests/test_train_invariants.py",
-            "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py",
-            "phase-loop-runtime/tests/test_verification_evidence.py",
-        ])
+        pr_t_exact = sorted(PR_T_18_PATHS)
         if len(modified_paths) != 18 or modified_paths != pr_t_exact:
             raise ProofgateBootstrapVerifierError(f"PR-T candidate modified paths must match exact 18-path inventory. Got: {modified_paths}")
     elif landing_kind == "PR-B":

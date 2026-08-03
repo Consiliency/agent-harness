@@ -115,6 +115,9 @@ def test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landi
         tmp, repo, base_oid = _setup_git_repo()
 
         # Build real PR-T branch with exact 18 files
+        assert len(PR_T_18_PATHS) == 18
+        assert all("*" not in path for path in PR_T_18_PATHS)
+        assert "phase-loop-runtime/tests/fixtures/proofgate/v10-proofgate-mutations.json" in PR_T_18_PATHS
         subprocess.run(["git", "checkout", "-b", "pr-t-branch"], cwd=repo, capture_output=True, check=True)
         for rel_path in PR_T_18_PATHS:
             full_p = repo / rel_path
@@ -190,7 +193,7 @@ def test_chronology_rejects_tests_only_range_with_non_test_bytes():
         pr_meta = _valid_pr_metadata(cand_bad_oid, base_oid)
         seats, chron = _valid_seats(target_digest)
 
-        with pytest.raises(ProofgateBootstrapVerifierError, match="PR-T modified paths do not match exact 18 PR-T path set"):
+        with pytest.raises(ProofgateBootstrapVerifierError, match="PR-T candidate contains unauthorized non-test path"):
             verify_premerge_bootstrap_review_gate(repo, base_oid, cand_bad_oid, pr_meta, seats, chron, landing_kind="PR-T")
 
         tdd_chronology.verify_test_lane_chronology(repo_path=repo, base_oid=base_oid, candidate_oid=cand_bad_oid, github_pr=pr_meta, seat_records=seats, seat_chronology=chron, landing_kind="PR-T")
@@ -605,42 +608,44 @@ def test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_fi
             raise ProofgateMissingCapabilityError("phase_loop_runtime.tdd_chronology missing verify_test_lane_chronology capability")
 
         # Probe 1: Empty JUnit XML must fail
-        from .proofgate_tdd_guard import record_mutation_observable
+        from .proofgate_tdd_guard import emit_mutation_observable
         try:
             verify_junit_accounting("<testsuite></testsuite>", mode="default")
-            record_mutation_observable("ec-proofgate-0.chronology-guard", record_property=record_property)
+            emit_mutation_observable("ec-proofgate-0.chronology-guard", record_property)
             raise AssertionError("EC-PROOFGATE-0 chronology guard unwired")
         except ProofgateBootstrapVerifierError:
             pass
 
         # Probe 2: Phase reports controls (no-report, all-setup, duplicate, mismatch must fail)
+        import xml.etree.ElementTree as ET
+        root_elem = ET.Element("testsuites")
+        ts = ET.SubElement(root_elem, "testsuite", name="pytest", tests="39", failures="0", errors="0", skipped="36")
+        for nid in EXPECTED_PHASE_NODEIDS:
+            parts = nid.replace("phase-loop-runtime/", "").split("::")
+            file_mod = parts[0].replace("/", ".").replace(".py", "")
+            classname = f"{file_mod}.{parts[1]}" if len(parts) == 3 else file_mod
+            tc = ET.SubElement(ts, "testcase", classname=classname, name=parts[-1])
+            if nid in DEFAULT_SKIP_NODEIDS:
+                ET.SubElement(tc, "skipped", message="default_skip")
+        xml_str = ET.tostring(root_elem, encoding="utf-8").decode("utf-8")
+
         # 2a: No phase reports supplied must fail
         with pytest.raises(ProofgateBootstrapVerifierError, match="mandatory"):
-            verify_junit_accounting("<testsuite></testsuite>", mode="default")
+            verify_junit_accounting(xml_str, mode="default")
 
         # 2b: All-setup phase reports (phase="setup") must fail
         all_setup_reports = [{"nodeid": nid, "phase": "setup", "outcome": "passed", "properties": {}} for nid in EXPECTED_PHASE_NODEIDS]
         with pytest.raises(ProofgateBootstrapVerifierError, match="phase must be 'call'"):
-            verify_junit_accounting("<testsuite></testsuite>", mode="default", phase_reports=all_setup_reports)
+            verify_junit_accounting(xml_str, mode="default", phase_reports=all_setup_reports)
 
         # 2c: Duplicate phase report nodeid must fail
-        dup_reports = [{"nodeid": EXPECTED_PHASE_NODEIDS[0], "phase": "call", "outcome": "passed", "properties": {}}] * 2
+        duplicate_nodeid = EXPECTED_PHASE_NODEIDS[0]
+        duplicate_outcome = "skipped" if duplicate_nodeid in DEFAULT_SKIP_NODEIDS else "passed"
+        dup_reports = [{"nodeid": duplicate_nodeid, "phase": "call", "outcome": duplicate_outcome, "properties": {}}] * 2
         with pytest.raises(ProofgateBootstrapVerifierError, match="Duplicate phase report"):
-            verify_junit_accounting("<testsuite></testsuite>", mode="default", phase_reports=dup_reports)
+            verify_junit_accounting(xml_str, mode="default", phase_reports=dup_reports)
 
         # 2d: Mismatched reports outcome or exception type must fail (repair-24 counterexample 1)
-        import xml.etree.ElementTree as ET
-        root_elem = ET.Element("testsuites")
-        ts = ET.SubElement(root_elem, "testsuite", name="pytest", tests="39", failures="0", errors="0", skipped="36")
-        for i, nid in enumerate(EXPECTED_PHASE_NODEIDS):
-            parts = nid.replace("phase-loop-runtime/", "").split("::")
-            file_mod = parts[0].replace("/", ".").replace(".py", "")
-            tc = ET.SubElement(ts, "testcase", classname=file_mod, name=parts[-1])
-            if i >= 3:
-                ET.SubElement(tc, "skipped", message="default_skip")
-
-        xml_str = ET.tostring(root_elem, encoding="utf-8").decode("utf-8")
-
         bad_reports = [
             {"nodeid": nid, "phase": "call", "outcome": "failed", "exception_type": "ValueError", "properties": {}}
             for nid in EXPECTED_PHASE_NODEIDS
