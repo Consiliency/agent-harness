@@ -632,6 +632,7 @@ def _assert_captured_observable(
     )
     assert rerun.returncode == expected_exit, f"Rerun exit code mismatch: got {rerun.returncode}, expected {expected_exit}"
     assert hashlib.sha256(rerun.stdout.encode("utf-8")).hexdigest() == record["output_sha256"], "Rerun stdout digest mismatch"
+    assert rerun.stderr == captured["stderr"], "Rerun stderr mismatch"
     rerun_rendered = json.loads(rerun.stdout)
     assert rerun_rendered["status"] == expected_status
     assert rerun_rendered.get("anchor") == expected_anchor
