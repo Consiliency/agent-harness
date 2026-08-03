@@ -346,6 +346,52 @@ class SkillsCanonParityTest(unittest.TestCase):
                 "test bug: the injected literal must not match a variant stem",
             )
 
+    def test_plan_phase_skills_publish_falsifier_grammar(self):
+        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        nodeid = "phase-loop-runtime/tests/test_skills_canon_parity.py::SkillsCanonParityTest::test_plan_phase_skills_publish_falsifier_grammar"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            from phase_loop_runtime import build_bundle as build_bundle_mod
+            if not hasattr(build_bundle_mod, "verify_proofgate_skills_falsifier_grammar"):
+                raise ProofgateMissingCapabilityError("phase_loop_runtime.build_bundle missing verify_proofgate_skills_falsifier_grammar capability")
+
+            committed_plan_skill = COMMITTED_BUNDLE / "plan-phase" / "SKILL.md"
+            if not committed_plan_skill.exists():
+                raise FileNotFoundError("plan-phase SKILL.md missing from committed phase-loop-skills/")
+
+            if not all(root.is_dir() for root in SKILLS_SRC.values()):
+                raise FileNotFoundError("Missing canonical skills source directory root")
+
+            with tempfile.TemporaryDirectory() as td:
+                fresh_root = Path(td) / "phase-loop-skills"
+                build_bundle(SKILLS_SRC, fresh_root, dry_run=False, apply=True, force=True)
+                for gen_file in fresh_root.rglob("*"):
+                    if gen_file.is_file() and "__pycache__" not in gen_file.parts and not gen_file.name.endswith(".pyc"):
+                        rel = gen_file.relative_to(fresh_root)
+                        com_file = COMMITTED_BUNDLE / rel
+                        self.assertTrue(com_file.is_file(), f"Committed file missing for generated {rel}")
+                        self.assertEqual(
+                            gen_file.read_bytes(),
+                            com_file.read_bytes(),
+                            f"Generated and committed {rel} must have byte parity",
+                        )
+
+            txt = committed_plan_skill.read_text(encoding="utf-8")
+            required_literals = [
+                "Acceptance Criteria",
+                "production construction site",
+                "path-entered control",
+            ]
+            for lit in required_literals:
+                self.assertIn(lit, txt, f"plan-phase SKILL.md missing required literal: {lit!r}")
+
+            self.assertTrue("Falsifier:" in txt or "falsified by" in txt, "plan-phase SKILL.md missing item-leading falsifier grammar")
+
+        run_proofgate_contract(nodeid, _contract)
+
+
 
 if __name__ == "__main__":
     unittest.main()

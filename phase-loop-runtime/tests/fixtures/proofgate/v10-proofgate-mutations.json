@@ -1,0 +1,216 @@
+{
+  "schema": "mutation_manifest.v1",
+  "phase": "PROOFGATE",
+  "declarations": [
+    {
+      "criterion_id": "EC-PROOFGATE-0",
+      "mutation_id": "mut-ec-proofgate-0",
+      "target_kind": "test_file",
+      "parameters": [
+        {
+          "parameter_id": "ec-proofgate-0.chronology-guard",
+          "target_path": "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+          "injection_anchor": "def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, strict_nodeids: bool = True) -> dict[str, Any]:",
+          "replacement_bytes": "def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, strict_nodeids: bool = True) -> dict[str, Any]:\n    return {\"mode\": mode, \"collected\": 39, \"passed\": 39, \"skipped\": 0, \"failed\": 0}\ndef _disabled_verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, strict_nodeids: bool = True) -> dict[str, Any]:",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_tdd_chronology.py::test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_final_zero_skips", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-0.chronology-guard.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_tdd_chronology.py::test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_final_zero_skips",
+          "expected_failure_class": "tdd_chronology_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-0",
+            "roadmap_criterion_sha256": "1c6230d9b116fc9fb758df530f4319d2570c4500fc0f793e960bfffea0beb4b1",
+            "rule_id": "ec-proofgate-0.chronology-guard",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_tdd_chronology.py::test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_final_zero_skips",
+            "result_code": "chronology_guard_unwired"
+          }
+        }
+      ]
+    },
+    {
+      "criterion_id": "EC-PROOFGATE-1",
+      "mutation_id": "mut-ec-proofgate-1",
+      "target_kind": "production_file",
+      "parameters": [
+        {
+          "parameter_id": "ec-proofgate-1.missing-falsifier",
+          "target_path": "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
+          "injection_anchor": "_ACCEPTANCE_SECTION_RE = re.compile(\n    r\"^##\\s+Acceptance\\s+Criteria\\s*$\\n(?P<body>.*?)(?=^##\\s+\\S|\\Z)\",\n    re.MULTILINE | re.DOTALL | re.IGNORECASE,\n)",
+          "replacement_bytes": "_ACCEPTANCE_SECTION_RE = re.compile(\n    r\"^##\\s+DISABLE_SECTION_RE_FOR_MUTATION$\\n(?P<body>.*?)(?=^##\\s+\\S|\\Z)\",\n    re.MULTILINE | re.DOTALL | re.IGNORECASE,\n)",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_missing_falsifier_is_invalid", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-1.missing-falsifier.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_missing_falsifier_is_invalid",
+          "expected_failure_class": "missing_falsifier_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-1",
+            "roadmap_criterion_sha256": "2eb6215c889f5db9d6c5559819a4374be8a89e2a426833c565636c967634b62f",
+            "rule_id": "ec-proofgate-1.missing-falsifier",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_missing_falsifier_is_invalid",
+            "result_code": "missing_falsifier_unwired"
+          }
+        }
+      ]
+    },
+    {
+      "criterion_id": "EC-PROOFGATE-2",
+      "mutation_id": "mut-ec-proofgate-2",
+      "target_kind": "production_file",
+      "parameters": [
+        {
+          "parameter_id": "ec-proofgate-2.mutation-application",
+          "target_path": "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+          "injection_anchor": "EXTENSION_NAMESPACE_REGISTRY: dict[str, str] = {\n    \"phase_loop_runtime.legible_evidence\": \"verification_evidence_sidecar.v1\",\n}",
+          "replacement_bytes": "EXTENSION_NAMESPACE_REGISTRY: dict[str, str] = {\n    \"phase_loop_runtime.legible_evidence\": \"mutated_disabled_schema.v1\",\n}",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-2.mutation-application.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline",
+          "expected_failure_class": "mutation_application_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-2",
+            "roadmap_criterion_sha256": "f379956954c1096e75b3b81635e171827be747eef7c565a8e6f68e6db4039e7d",
+            "rule_id": "ec-proofgate-2.mutation-application",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline",
+            "result_code": "declared_contract_rejection_is_killed"
+          }
+        }
+      ]
+    },
+    {
+      "criterion_id": "EC-PROOFGATE-3",
+      "mutation_id": "mut-ec-proofgate-3",
+      "target_kind": "production_file",
+      "parameters": [
+        {
+          "parameter_id": "ec-proofgate-3.vacuous-falsifier",
+          "target_path": "skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py",
+          "injection_anchor": "def _check_p_goal_id_coverage(src: str, path: Optional[Path], repo_root: Optional[Path]) -> Findings:",
+          "replacement_bytes": "def _check_p_goal_id_coverage(src: str, path: Optional[Path], repo_root: Optional[Path]) -> Findings:\n    return []\ndef _disabled_check_p_goal_id_coverage(src: str, path: Optional[Path], repo_root: Optional[Path]) -> Findings:",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_agent_harness_358_original_is_rejected", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-3.vacuous-falsifier.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_agent_harness_358_original_is_rejected",
+          "expected_failure_class": "vacuous_falsifier_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-3",
+            "roadmap_criterion_sha256": "c33f5018894552d5af14a0ed4097838d61936f46b4a486186c1a8dd8e0cd03c9",
+            "rule_id": "ec-proofgate-3.vacuous-falsifier",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_agent_harness_358_original_is_rejected",
+            "result_code": "vacuous_falsifier_unwired"
+          }
+        }
+      ]
+    },
+    {
+      "criterion_id": "EC-PROOFGATE-4",
+      "mutation_id": "mut-ec-proofgate-4",
+      "target_kind": "production_file",
+      "parameters": [
+        {
+          "parameter_id": "ec-proofgate-4.github-builder-epoch-blocked",
+          "target_path": "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py",
+          "injection_anchor": "    admission_store = LinearizableAdmissionStore(\n        Path(broker_root),\n        admission_policy or _default_admission_policy,\n        epoch_blocked=lambda: evidence_store.epoch_blocked,\n    )",
+          "replacement_bytes": "    admission_store = LinearizableAdmissionStore(\n        Path(broker_root),\n        admission_policy or _default_admission_policy,\n        epoch_blocked=lambda: False,\n    )",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_github_broker_admission_store_is_wired_to_evidence_revocation", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-4.github-builder-epoch-blocked.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_github_broker_admission_store_is_wired_to_evidence_revocation",
+          "expected_failure_class": "production_construction_site_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-4",
+            "roadmap_criterion_sha256": "2b1d58a75fabc43e45c908b4e44d616778a29cf5011612e09d9bffa0689d4e7b",
+            "rule_id": "ec-proofgate-4.github-builder-epoch-blocked",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_github_broker_admission_store_is_wired_to_evidence_revocation",
+            "result_code": "github_builder_epoch_blocked_unwired"
+          }
+        },
+        {
+          "parameter_id": "ec-proofgate-4.routing-builder-epoch-blocked",
+          "target_path": "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py",
+          "injection_anchor": "                LinearizableAdmissionStore(\n                    root, self._admission_policy, epoch_blocked=lambda: evidence_store.epoch_blocked\n                ),",
+          "replacement_bytes": "                LinearizableAdmissionStore(\n                    root, self._admission_policy, epoch_blocked=lambda: False\n                ),",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_routing_broker_admission_store_is_wired_to_evidence_revocation", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-4.routing-builder-epoch-blocked.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_routing_broker_admission_store_is_wired_to_evidence_revocation",
+          "expected_failure_class": "production_construction_site_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-4",
+            "roadmap_criterion_sha256": "2b1d58a75fabc43e45c908b4e44d616778a29cf5011612e09d9bffa0689d4e7b",
+            "rule_id": "ec-proofgate-4.routing-builder-epoch-blocked",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_routing_broker_admission_store_is_wired_to_evidence_revocation",
+            "result_code": "routing_builder_epoch_blocked_unwired"
+          }
+        }
+      ]
+    },
+    {
+      "criterion_id": "EC-PROOFGATE-5",
+      "mutation_id": "mut-ec-proofgate-5",
+      "target_kind": "production_file",
+      "parameters": [
+        {
+          "parameter_id": "ec-proofgate-5.parameter-coverage",
+          "target_kind": "production_file",
+          "target_path": "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+          "injection_anchor": "def _validate_v3_extensions(extensions: Any) -> None:",
+          "replacement_bytes": "def _validate_v3_extensions(extensions: Any) -> None:\n    raise ValueError(\"mutated\")\ndef _disabled_validate_v3_extensions(extensions: Any) -> None:",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_missing_duplicate_extra_substituted_or_surviving_parameter", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-5.parameter-coverage.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_missing_duplicate_extra_substituted_or_surviving_parameter",
+          "expected_failure_class": "parameter_coverage_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-5",
+            "roadmap_criterion_sha256": "cdd99cae0696b659640cc3481195e93e54af35198f76fd1ae727f9720b4de4c0",
+            "rule_id": "ec-proofgate-5.parameter-coverage",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_missing_duplicate_extra_substituted_or_surviving_parameter",
+            "result_code": "parameter_coverage_unwired"
+          }
+        }
+      ]
+    },
+    {
+      "criterion_id": "EC-PROOFGATE-6",
+      "mutation_id": "mut-ec-proofgate-6",
+      "target_kind": "production_file",
+      "parameters": [
+        {
+          "parameter_id": "ec-proofgate-6.missing-path-entered",
+          "target_path": "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
+          "injection_anchor": "_CHECKBOX_PREFIX_RE = re.compile(r\"^- \\[[ xX]\\]\\s*\")",
+          "replacement_bytes": "_CHECKBOX_PREFIX_RE = re.compile(r\"^- \\[DISABLED_MUTATION\\]\\s*\")",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_negative_assertion_requires_path_entered_control", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-6.missing-path-entered.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_negative_assertion_requires_path_entered_control",
+          "expected_failure_class": "missing_path_entered_control_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-6",
+            "roadmap_criterion_sha256": "397cd8f421b1149d64b9039eb87e6da17114cdb7842f64e28937548dd0169526",
+            "rule_id": "ec-proofgate-6.missing-path-entered",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_negative_assertion_requires_path_entered_control",
+            "result_code": "missing_path_entered_control_unwired"
+          }
+        }
+      ]
+    },
+    {
+      "criterion_id": "EC-PROOFGATE-7",
+      "mutation_id": "mut-ec-proofgate-7",
+      "target_kind": "production_file",
+      "parameters": [
+        {
+          "parameter_id": "ec-proofgate-7.grandfathering",
+          "target_path": "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
+          "injection_anchor": "def extract_plan_goal_refs(plan: Path) -> set[str]:",
+          "replacement_bytes": "def extract_plan_goal_refs(plan: Path) -> set[str]:\n    return set()\ndef _disabled_extract_plan_goal_refs(plan: Path) -> set[str]:",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_grandfathering_uses_exact_cutoff_criterion_bytes_and_warns", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-7.grandfathering.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_grandfathering_uses_exact_cutoff_criterion_bytes_and_warns",
+          "expected_failure_class": "grandfathering_rejection",
+          "expected_observable": {
+            "roadmap_criterion_id": "EC-PROOFGATE-7",
+            "roadmap_criterion_sha256": "84456823b1ff6fac271929a429b5b0acaf6af47884ef59a5dda011f65f6f3f0a",
+            "rule_id": "ec-proofgate-7.grandfathering",
+            "channel": "pytest_junit_call_property",
+            "target_nodeid": "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_grandfathering_uses_exact_cutoff_criterion_bytes_and_warns",
+            "result_code": "grandfathering_unwired"
+          }
+        }
+      ]
+    }
+  ]
+}

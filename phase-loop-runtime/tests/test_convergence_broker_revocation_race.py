@@ -102,26 +102,46 @@ def _pcb_request(admission_key="adm-1", *, repo="repo", branch="feat/x", head="a
 # admission layer. Mutation to kill: drop `epoch_blocked=evidence_store.epoch_blocked`
 # at either `build_*` site -> these fail.
 
-def _assert_wired(service):
+from .proofgate_tdd_guard import emit_mutation_observable
+
+
+def _assert_wired(service, record_property, *, param_id=None):
     ev = service.evidence_store
     assert service.admission_store.epoch_blocked() is False
     ev.record_intent("k")
     ev.record_terminal(EvidenceRecord("k", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revoked"))
     assert ev.epoch_blocked is True
-    assert service.admission_store.epoch_blocked() is True, (
+    cond = (service.admission_store.epoch_blocked() is True)
+    if not cond and record_property is not None and param_id is not None:
+        emit_mutation_observable(param_id, record_property)
+    assert cond, (
         "the admission store must read the evidence store's revocation flag under its lock; "
         "an unwired store (lambda: False) admits into a revoked epoch"
     )
 
 
-def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path):
+def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path, record_property):
+    from .proofgate_tdd_guard import guard_proofgate_nodeid
+    nodeid = "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_github_broker_admission_store_is_wired_to_evidence_revocation"
+    guard_proofgate_nodeid(nodeid)
     service = build_github_broker_client(tmp_path / "repo", broker_root=tmp_path / "broker")
-    _assert_wired(service)
+    _assert_wired(
+        service,
+        record_property,
+        param_id="ec-proofgate-4.github-builder-epoch-blocked",
+    )
 
 
-def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path):
+def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path, record_property):
+    from .proofgate_tdd_guard import guard_proofgate_nodeid
+    nodeid = "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_routing_broker_admission_store_is_wired_to_evidence_revocation"
+    guard_proofgate_nodeid(nodeid)
     client = build_routing_broker_client(broker_root=tmp_path / "broker")
-    _assert_wired(client._service_for(str(tmp_path / "repo")))
+    _assert_wired(
+        client._service_for(str(tmp_path / "repo")),
+        record_property,
+        param_id="ec-proofgate-4.routing-builder-epoch-blocked",
+    )
 
 
 # --- (B) end-to-end: execute refuses a publish when a revocation precedes admit -------
