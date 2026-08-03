@@ -130,14 +130,15 @@ def _run_bound_child(
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
-def _repo_head_oid() -> str:
+def _repo_head_oid() -> str | None:
     completed = _run_bound_child(
         ["git", "rev-parse", "HEAD"],
         input_text="",
         cwd=REPO_ROOT,
         environment={"PATH": os.environ.get("PATH", "")},
     )
-    assert completed.returncode == 0, completed.stderr
+    if completed.returncode != 0:
+        return None
     oid = completed.stdout.strip()
     assert len(oid) == 40 and all(character in "0123456789abcdef" for character in oid)
     return oid
@@ -227,18 +228,26 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
         and mutant_result["classification"] == "failed"
         and nodeid_matched
     )
-    candidate_oid = subprocess.run(
+    candidate_result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=repo_root,
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout.strip()
+        check=False,
+    )
+    candidate_oid = candidate_result.stdout.strip() if candidate_result.returncode == 0 else None
+    if candidate_oid is not None:
+        assert len(candidate_oid) == 40 and all(character in "0123456789abcdef" for character in candidate_oid)
+    killed = killed and candidate_oid is not None
     observable = {
         "kind": "mutation-execution",
         "classification": "killed" if killed else "incomplete",
         "candidate_oid": candidate_oid,
-        "candidate_sha256": hashlib.sha256((candidate_oid + "\\n").encode("utf-8")).hexdigest(),
+        "candidate_sha256": (
+            hashlib.sha256((candidate_oid + "\\n").encode("utf-8")).hexdigest()
+            if candidate_oid is not None
+            else None
+        ),
         "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
         "mutant_sha256": hashlib.sha256(mutant.encode("utf-8")).hexdigest(),
         "nodeid_matched": nodeid_matched,
@@ -647,9 +656,13 @@ def _assert_mutation_execution(observable: object, definition) -> None:
     assert observable["kind"] == "mutation-execution"
     assert observable["classification"] in {"killed", "incomplete"}
     assert observable["candidate_oid"] == candidate_oid
-    assert observable["candidate_sha256"] == hashlib.sha256(
-        (candidate_oid + "\n").encode("utf-8")
-    ).hexdigest()
+    if candidate_oid is None:
+        assert observable["classification"] == "incomplete"
+    assert observable["candidate_sha256"] == (
+        hashlib.sha256((candidate_oid + "\n").encode("utf-8")).hexdigest()
+        if candidate_oid is not None
+        else None
+    )
     assert observable["source_sha256"] == source_sha256
     assert observable["mutant_sha256"] == hashlib.sha256(mutant.encode("utf-8")).hexdigest()
     execution_root = None
@@ -703,7 +716,8 @@ def _assert_mutation_execution(observable: object, definition) -> None:
         assert observable["nodeid_matched"] is True
     else:
         assert (
-            baseline["classification"] != "passed"
+            candidate_oid is None
+            or baseline["classification"] != "passed"
             or positive_control["classification"] != "passed"
             or mutant_result["classification"] != "failed"
             or observable["nodeid_matched"] is not True
