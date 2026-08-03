@@ -1934,6 +1934,7 @@ def test_registry_free_selector_rejects_case_variant_status_like_banner(tmp_path
     (
         " > # SUPERSEDED - malformed declaration.",
         "> ## SUPERSEDED - malformed declaration.",
+        "> # **SUPERSEDED** - malformed declaration.",
         "> ** Status (2026-08-01): SUPERSEDED - malformed declaration.**",
         "> *Status (2026-08-01): SUPERSEDED - malformed declaration.*",
         "> # ACTIVE - malformed declaration.",
@@ -1968,6 +1969,24 @@ def test_registry_free_selector_preserves_declaration_free_legacy_prose(tmp_path
     candidate.write_text(f"# Roadmap\n\n{prose}\n\n## Body\n", encoding="utf-8")
 
     assert discovery._return_selectable_roadmap(repo, candidate, "test") == candidate.resolve()
+
+
+def test_registry_selector_rejects_unregistered_declaration_free_candidate(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    candidate = repo / "specs" / "phase-plans-unregistered.md"
+    candidate.write_text("# Unregistered roadmap\n\n## Body\n", encoding="utf-8")
+    monkeypatch.setattr(
+        roadmap_lint,
+        "validate_roadmap_status_coherence",
+        lambda *_args, **_kwargs: {
+            "schema": "roadmap_status_manifest.v1",
+            "selected_roadmap": "specs/phase-plans-v10.md",
+            "roadmaps": [{"path": "specs/phase-plans-v10.md", "status": "active"}],
+        },
+    )
+
+    with pytest.raises(roadmap_lint.StatusCoherenceError, match="not registered"):
+        discovery._return_selectable_roadmap(repo, candidate, "explicit")
 
 
 def test_selector_read_failure_is_typed_not_selectable(tmp_path):

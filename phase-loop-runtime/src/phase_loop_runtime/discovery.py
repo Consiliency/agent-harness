@@ -465,7 +465,7 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
 
 
 _BANNER_DECLARATION_ATTEMPT = re.compile(
-    r"^\s*>\s*(?:[*_~`]+\s*)*#*\s*(?:STATUS|ACTIVE|DELIVERED|SUPERSEDED)\b",
+    r"^\s*>\s*[#*_~`\s]*(?:STATUS|ACTIVE|DELIVERED|SUPERSEDED)\b",
     re.IGNORECASE,
 )
 
@@ -527,11 +527,12 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
     status = roadmap_lint.validate_roadmap_status_coherence(repo_root, required=True)
     if status is not None:
         registered_paths = {entry["path"] for entry in status["roadmaps"]}
+        if rel not in registered_paths:
+            raise roadmap_lint.StatusCoherenceError(f"{rel}: roadmap is not registered")
         if banner_status is None:
-            if rel in registered_paths:
-                raise roadmap_lint.StatusCoherenceError(
-                    f"{rel}: tracked roadmap carries no lifecycle declaration"
-                )
+            raise roadmap_lint.StatusCoherenceError(
+                f"{rel}: tracked roadmap carries no lifecycle declaration"
+            )
         elif rel != status["selected_roadmap"]:
             raise roadmap_lint.NonActiveSelectionError(
                 f"{rel} is not the registered active roadmap ({status['selected_roadmap']})"
