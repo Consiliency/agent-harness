@@ -465,7 +465,7 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
 
 
 _BANNER_DECLARATION_ATTEMPT = re.compile(
-    r"^\s*>\s*(?:[*_~`]+\s*)*#?\s*(?:STATUS|ACTIVE|DELIVERED|SUPERSEDED)\b",
+    r"^\s*>\s*(?:[*_~`]+\s*)*#*\s*(?:STATUS|ACTIVE|DELIVERED|SUPERSEDED)\b",
     re.IGNORECASE,
 )
 
