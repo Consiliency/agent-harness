@@ -2,10 +2,23 @@
 from __future__ import annotations
 
 import os
+import json
+from pathlib import Path
 
 import pytest
 
+from _outside_agent_canonical import (
+    ALL_OUTSIDE_AGENT_NODE_IDS,
+    CONFORM_MIGRATED_EXISTING_NODE_IDS,
+    CONFORM_NEW_PRODUCTION_NODE_IDS,
+    assert_named_canonical_capability,
+    canonical_mode_enabled,
+    normalized_nodeid,
+)
 from _dotfiles_tree import dotfiles_tree_present
+
+
+_CONFORM_BODY_COUNTER_ENV = "PHASE_LOOP_CONFORM_BODY_COUNTER"
 
 # DECOUPLE SL-1: the dotfiles-domain CLI commands (adoption-bundle, sync-skills,
 # build-bundle, hotfix) now load only via the dotfiles-profile plugin. The bulk of
@@ -81,12 +94,61 @@ def pytest_collection_modifyitems(config, items):
     additional module-level ``pytest.skip(..., allow_module_level=True)`` guard
     (SL-1), because markers are only consulted after a module is imported.
     """
-    if dotfiles_tree_present():
-        return
-    skip_marker = pytest.mark.skip(reason="requires dotfiles tree (dotfiles_integration)")
+    if not dotfiles_tree_present():
+        skip_marker = pytest.mark.skip(reason="requires dotfiles tree (dotfiles_integration)")
+        for item in items:
+            if item.get_closest_marker("dotfiles_integration") is not None:
+                item.add_marker(skip_marker)
+
+    canonical_mode = canonical_mode_enabled()
     for item in items:
-        if item.get_closest_marker("dotfiles_integration") is not None:
-            item.add_marker(skip_marker)
+        raw_nodeid = getattr(item, "nodeid", None)
+        # Unit tests of this hook use deliberately minimal synthetic items.  They
+        # exercise dotfiles selection only, so CONFORM classification must remain
+        # a no-op until pytest has supplied a real string node id.
+        if not isinstance(raw_nodeid, str):
+            continue
+        nodeid = normalized_nodeid(raw_nodeid)
+        if nodeid not in ALL_OUTSIDE_AGENT_NODE_IDS:
+            continue
+        item.user_properties.append(("conform_expected_node_id", nodeid))
+        if not canonical_mode and nodeid in CONFORM_NEW_PRODUCTION_NODE_IDS:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="CONFORM SL-0 awaits the exact production capability marker"
+                )
+            )
+
+
+def _record_migrated_body_invocation(nodeid: str) -> None:
+    """Record the actual pyfunc call only when the focused falsifier opts in."""
+    counter_path = os.environ.get(_CONFORM_BODY_COUNTER_ENV)
+    if not counter_path:
+        return
+    path = Path(counter_path)
+    counts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    counts[nodeid] = counts.get(nodeid, 0) + 1
+    path.write_text(json.dumps(counts, sort_keys=True), encoding="utf-8")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem):
+    """Dispatch activated migrated tests to their literal canonical seam once.
+
+    Historical bodies intentionally keep their legacy assertions for default
+    compatibility mode.  In strict mode, their matching canonical cases are
+    the semantically switched bodies, so pytest must not execute both against
+    one unchanged payload.
+    """
+    nodeid = normalized_nodeid(pyfuncitem.nodeid)
+    if not (
+        canonical_mode_enabled()
+        and nodeid in CONFORM_MIGRATED_EXISTING_NODE_IDS
+    ):
+        return None
+    _record_migrated_body_invocation(nodeid)
+    assert_named_canonical_capability(nodeid)
+    return True
 
 
 @pytest.fixture(autouse=True)
