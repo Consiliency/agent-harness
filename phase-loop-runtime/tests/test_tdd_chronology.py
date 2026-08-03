@@ -29,12 +29,35 @@ from .proofgate_tdd_guard import (
 )
 
 
+_BOOTSTRAP_ARTIFACTS = (
+    "verification.log",
+    "junit_default.xml",
+    "junit_forced_red.xml",
+    "junit_ordinary.xml",
+    "junit_attended.xml",
+    "ctrl_isolation.log",
+    "ctrl_taint.log",
+    "ctrl_misuse.log",
+    "ctrl_control.log",
+    "ctrl_positive_canary.log",
+)
+
+
+def _write_bootstrap_artifacts(repo: Path) -> None:
+    exclude = repo / ".git" / "info" / "exclude"
+    with exclude.open("a", encoding="utf-8") as handle:
+        handle.writelines(f"/{name}\n" for name in _BOOTSTRAP_ARTIFACTS)
+    for name in _BOOTSTRAP_ARTIFACTS:
+        (repo / name).write_text(f"unit-double:{name}\n", encoding="utf-8")
+
+
 def _setup_git_repo():
     tmp = tempfile.TemporaryDirectory()
     repo = Path(tmp.name)
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, capture_output=True, check=True)
+    _write_bootstrap_artifacts(repo)
 
     readme = repo / "README.md"
     readme.write_text("# Test Repo\n", encoding="utf-8")
