@@ -381,6 +381,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    agy_clean_sub = subparsers.add_parser("agy-canary-clean-settings")
+    agy_clean_sub.add_argument("--evidence-root", required=True)
+    agy_clean_sub.add_argument("--settings-path", required=True)
+    agy_clean_sub.add_argument("--maintenance-lock", required=True)
     # DECOUPLE SL-1: the dotfiles-domain commands (adoption-bundle, sync-skills,
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
@@ -1012,6 +1016,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    if command == "agy-canary-clean-settings":
+        from .agy_canary_evidence import AgyCanaryEvidenceError, clean_settings
+
+        try:
+            result = clean_settings(
+                evidence_root=Path(args.evidence_root),
+                settings_path=Path(args.settings_path),
+                maintenance_lock=Path(args.maintenance_lock),
+            )
+        except AgyCanaryEvidenceError as exc:
+            print(f"phase-loop agy-canary-clean-settings: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, sort_keys=True))
+        return 0
     try:
         # Issue #83: --allow-branchgov opts into the convention-branch switch even when
         # it would orphan a locally-committed roadmap, by exporting the explicit
