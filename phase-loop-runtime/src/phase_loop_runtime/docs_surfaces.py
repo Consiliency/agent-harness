@@ -65,6 +65,11 @@ GENERAL_PUBLIC_GLOBS = (
     "**/_contract_docs/**",
 )
 
+NON_PUBLIC_TEST_GLOBS = (
+    "tests/**",
+    "**/tests/**",
+)
+
 # Durable doc surfaces — what a "doc change" can be.
 DOC_SURFACE_GLOBS = (
     "README.md",
@@ -112,7 +117,7 @@ def is_release_surface(path: str) -> bool:
 
 
 def is_general_public_surface(path: str) -> bool:
-    return _any(path, GENERAL_PUBLIC_GLOBS)
+    return not _any(path, NON_PUBLIC_TEST_GLOBS) and _any(path, GENERAL_PUBLIC_GLOBS)
 
 
 def is_doc_surface(path: str) -> bool:
