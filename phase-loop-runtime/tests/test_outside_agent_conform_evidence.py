@@ -130,18 +130,62 @@ def _run_bound_child(
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
-def _repo_head_oid() -> str | None:
-    completed = _run_bound_child(
+def _run_bound_child_bytes(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[bytes]:
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env={"PATH": os.environ.get("PATH", "")},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stdout, stderr = process.communicate()
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _repo_candidate_identity() -> dict[str, object]:
+    head = _run_bound_child(
         ["git", "rev-parse", "HEAD"],
         input_text="",
         cwd=REPO_ROOT,
         environment={"PATH": os.environ.get("PATH", "")},
     )
-    if completed.returncode != 0:
-        return None
-    oid = completed.stdout.strip()
+    if head.returncode != 0:
+        return {
+            "candidate_oid": None,
+            "candidate_tree": None,
+            "candidate_archive_sha256": None,
+            "candidate_clean": False,
+        }
+    oid = head.stdout.strip()
     assert len(oid) == 40 and all(character in "0123456789abcdef" for character in oid)
-    return oid
+    tree = _run_bound_child(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        input_text="",
+        cwd=REPO_ROOT,
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    status = _run_bound_child(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        input_text="",
+        cwd=REPO_ROOT,
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    archive = _run_bound_child_bytes(
+        ["git", "archive", "--format=tar", oid, "phase-loop-runtime"],
+        cwd=REPO_ROOT,
+    )
+    assert tree.returncode == status.returncode == archive.returncode == 0
+    tree_oid = tree.stdout.strip()
+    assert len(tree_oid) == 40 and all(
+        character in "0123456789abcdef" for character in tree_oid
+    )
+    return {
+        "candidate_oid": oid,
+        "candidate_tree": tree_oid,
+        "candidate_archive_sha256": hashlib.sha256(archive.stdout).hexdigest(),
+        "candidate_clean": status.stdout == "",
+    }
 
 
 _CAPTURED_OBSERVABLE_RUNNER = (
@@ -151,19 +195,49 @@ _CAPTURED_OBSERVABLE_RUNNER = (
     "raise SystemExit(result['exit_code'])\n"
 )
 _EC_PROBE_NODEIDS = {
-    "EC-CONFORM-0": "test_outside_agent_canonical_corpus.py::test_canonical_submission_api_accepts_three_valid_rows",
-    "EC-CONFORM-1": "test_outside_agent_canonical_corpus.py::test_canonical_submission_cli_accepts_three_valid_rows",
-    "EC-CONFORM-2": "test_outside_agent_redaction_separation.py::test_closed_redaction_projection_inventory_is_exhaustive",
-    "EC-CONFORM-3": "test_outside_agent_redaction_separation.py::test_submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest",
-    "EC-CONFORM-4": "test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance",
-    "EC-CONFORM-5": "test_outside_agent_contract_imports.py::test_submission_schema_byte_change_with_manifest_hash_held_fails_closed",
-    "EC-CONFORM-6": "test_outside_agent_release_surface.py::test_real_validator_and_advisory_outputs_share_pinned_metadata_only_contract_evidence",
-    "EC-CONFORM-7": "test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
-    "EC-CONFORM-8": "test_outside_agent_canonical_corpus.py::test_route_verdict_requires_selected_schema_not_submission_cli",
+    "EC-CONFORM-0": (
+        "test_outside_agent_conform_evidence.py::test_frozen_inventory_counts_and_set_equations",
+        "test_outside_agent_conform_evidence.py::test_frozen_command_literals_and_selector_partition",
+    ),
+    "EC-CONFORM-1": (
+        "test_outside_agent_canonical_corpus.py::test_canonical_manifest_partition_and_oracle_rows",
+        "test_outside_agent_canonical_corpus.py::test_canonical_submission_api_accepts_three_valid_rows",
+        "test_outside_agent_canonical_corpus.py::test_canonical_submission_cli_accepts_three_valid_rows",
+    ),
+    "EC-CONFORM-2": (
+        "test_outside_agent_redaction_separation.py::test_closed_redaction_projection_inventory_is_exhaustive",
+    ),
+    "EC-CONFORM-3": (
+        "test_outside_agent_redaction_separation.py::test_redaction_mutation_definitions_are_independent",
+        "test_outside_agent_redaction_separation.py::test_submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes",
+        "test_outside_agent_redaction_separation.py::test_submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest",
+    ),
+    "EC-CONFORM-4": (
+        "test_outside_agent_canonical_corpus.py::test_canonical_fixture_provenance_and_digest_inventory",
+        "test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance",
+        "test_outside_agent_conform_evidence.py::test_planted_non_enumerated_copy_reports_its_exact_path",
+    ),
+    "EC-CONFORM-5": (
+        "test_outside_agent_contract_imports.py::test_submission_schema_byte_change_with_manifest_hash_held_fails_closed",
+        "test_outside_agent_contract_imports.py::test_verdict_schema_byte_change_with_manifest_hash_held_fails_closed",
+    ),
+    "EC-CONFORM-6": (
+        "test_outside_agent_release_surface.py::test_v7_disposition_records_merged_contract_and_final_installed_behavior",
+    ),
+    "EC-CONFORM-7": (
+        "test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
+        "test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
+        "test_outside_agent_release_surface.py::test_release_handoff_records_metadata_only_package_contract_and_dispatch_boundary",
+    ),
+    "EC-CONFORM-8": (
+        "test_outside_agent_vectors.py::test_vector_runner_matches_positive_and_negative_expected_outcomes",
+        "test_outside_agent_canonical_corpus.py::test_canonical_vector_runner_consumes_schema_target_partition",
+        "test_outside_agent_canonical_corpus.py::test_route_verdict_requires_selected_schema_not_submission_cli",
+    ),
 }
 _MUTATION_PROBE_RUNNER = textwrap.dedent(
     """
-    import hashlib, json, os, re, shutil, subprocess, sys
+    import hashlib, io, json, os, re, shutil, subprocess, sys, tarfile
     from pathlib import Path
 
     payload = json.load(sys.stdin)
@@ -179,10 +253,43 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
     if execution_root.exists():
         shutil.rmtree(execution_root)
     runtime = execution_root / "phase-loop-runtime"
-    shutil.copytree(repo_root / "phase-loop-runtime", runtime, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "*.pyc"))
+    candidate_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, check=False
+    )
+    candidate_oid = candidate_result.stdout.strip() if candidate_result.returncode == 0 else None
+    candidate_tree = None
+    candidate_archive_sha256 = None
+    candidate_clean = False
+    if candidate_oid is not None:
+        assert len(candidate_oid) == 40 and all(character in "0123456789abcdef" for character in candidate_oid)
+        tree_result = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=repo_root, capture_output=True, text=True, check=False
+        )
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repo_root, capture_output=True, text=True, check=False,
+        )
+        archive_result = subprocess.run(
+            ["git", "archive", "--format=tar", candidate_oid, "phase-loop-runtime"],
+            cwd=repo_root, capture_output=True, check=False,
+        )
+        assert tree_result.returncode == status_result.returncode == archive_result.returncode == 0
+        candidate_tree = tree_result.stdout.strip()
+        assert len(candidate_tree) == 40 and all(character in "0123456789abcdef" for character in candidate_tree)
+        candidate_archive_sha256 = hashlib.sha256(archive_result.stdout).hexdigest()
+        candidate_clean = status_result.stdout == ""
+        if candidate_clean:
+            with tarfile.open(fileobj=io.BytesIO(archive_result.stdout), mode="r:") as archive:
+                for member in archive.getmembers():
+                    parts = Path(member.name).parts
+                    assert parts and parts[0] == "phase-loop-runtime" and ".." not in parts
+                    assert member.isfile() or member.isdir()
+                archive.extractall(execution_root)
+    if not candidate_clean:
+        shutil.copytree(repo_root / "phase-loop-runtime", runtime, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "*.pyc"))
     source_path = execution_root / mutation.source_path
     source_path.parent.mkdir(parents=True, exist_ok=True)
-    source = mutation.complete_source()
+    source = source_path.read_text(encoding="utf-8") if source_path.is_file() else mutation.complete_source()
     source_path.write_text(source, encoding="utf-8")
     mutant = mutation.apply(source)
     environment = {
@@ -228,21 +335,14 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
         and mutant_result["classification"] == "failed"
         and nodeid_matched
     )
-    candidate_result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    candidate_oid = candidate_result.stdout.strip() if candidate_result.returncode == 0 else None
-    if candidate_oid is not None:
-        assert len(candidate_oid) == 40 and all(character in "0123456789abcdef" for character in candidate_oid)
-    killed = killed and candidate_oid is not None
+    killed = killed and candidate_clean
     observable = {
         "kind": "mutation-execution",
         "classification": "killed" if killed else "incomplete",
         "candidate_oid": candidate_oid,
+        "candidate_tree": candidate_tree,
+        "candidate_archive_sha256": candidate_archive_sha256,
+        "candidate_clean": candidate_clean,
         "candidate_sha256": (
             hashlib.sha256((candidate_oid + "\\n").encode("utf-8")).hexdigest()
             if candidate_oid is not None
@@ -269,7 +369,8 @@ _EC_PROBE_RUNNER = textwrap.dedent(
     probes = json.loads(payload["probe_nodes"])
     ec_id = payload["id"]
     assert ec_id == f"EC-CONFORM-{payload['ordinal']}" and 0 <= payload["ordinal"] <= 8
-    nodeid = probes[ec_id]
+    nodeids = probes[ec_id]
+    assert isinstance(nodeids, list) and nodeids
     repo_root = Path(payload["repo_root"]).resolve()
     execution_root = Path(payload["execution_root"]).resolve()
     assert execution_root == repo_root
@@ -279,7 +380,7 @@ _EC_PROBE_RUNNER = textwrap.dedent(
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": str(runtime / "src") + os.pathsep + str(runtime / "tests"),
     }
-    argv = [sys.executable, "-m", "pytest", "-q", "tests/" + nodeid]
+    argv = [sys.executable, "-m", "pytest", "-q", *("tests/" + nodeid for nodeid in nodeids)]
     completed = subprocess.run(argv, cwd=runtime, capture_output=True, text=True, check=False, env=environment)
     if completed.returncode != 0:
         classification = "failed"
@@ -292,7 +393,7 @@ _EC_PROBE_RUNNER = textwrap.dedent(
     observable = {
         "kind": "criterion-execution",
         "criterion": payload["criterion"],
-        "nodeid": nodeid,
+        "nodeids": nodeids,
         "classification": classification,
         "execution": {
             "argv": argv,
@@ -641,6 +742,9 @@ def _assert_mutation_execution(observable: object, definition) -> None:
         "kind",
         "classification",
         "candidate_oid",
+        "candidate_tree",
+        "candidate_archive_sha256",
+        "candidate_clean",
         "candidate_sha256",
         "source_sha256",
         "mutant_sha256",
@@ -652,11 +756,17 @@ def _assert_mutation_execution(observable: object, definition) -> None:
     source = definition.complete_source()
     mutant = definition.apply(source)
     source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
-    candidate_oid = _repo_head_oid()
+    candidate = _repo_candidate_identity()
+    candidate_oid = candidate["candidate_oid"]
     assert observable["kind"] == "mutation-execution"
     assert observable["classification"] in {"killed", "incomplete"}
     assert observable["candidate_oid"] == candidate_oid
-    if candidate_oid is None:
+    assert observable["candidate_tree"] == candidate["candidate_tree"]
+    assert observable["candidate_archive_sha256"] == candidate[
+        "candidate_archive_sha256"
+    ]
+    assert observable["candidate_clean"] is candidate["candidate_clean"]
+    if not candidate["candidate_clean"]:
         assert observable["classification"] == "incomplete"
     assert observable["candidate_sha256"] == (
         hashlib.sha256((candidate_oid + "\n").encode("utf-8")).hexdigest()
@@ -716,7 +826,7 @@ def _assert_mutation_execution(observable: object, definition) -> None:
         assert observable["nodeid_matched"] is True
     else:
         assert (
-            candidate_oid is None
+            not candidate["candidate_clean"]
             or baseline["classification"] != "passed"
             or positive_control["classification"] != "passed"
             or mutant_result["classification"] != "failed"
@@ -729,13 +839,13 @@ def _assert_ec_criterion_execution(ec_id: str, criterion: str, observable: objec
     assert set(observable) == {
         "kind",
         "criterion",
-        "nodeid",
+        "nodeids",
         "classification",
         "execution",
     }
     assert observable["kind"] == "criterion-execution"
     assert observable["criterion"] == criterion
-    assert observable["nodeid"] == _EC_PROBE_NODEIDS[ec_id]
+    assert observable["nodeids"] == list(_EC_PROBE_NODEIDS[ec_id])
     execution = observable["execution"]
     assert isinstance(execution, dict)
     assert set(execution) == {
@@ -753,7 +863,7 @@ def _assert_ec_criterion_execution(ec_id: str, criterion: str, observable: objec
         "-m",
         "pytest",
         "-q",
-        "tests/" + _EC_PROBE_NODEIDS[ec_id],
+        *("tests/" + nodeid for nodeid in _EC_PROBE_NODEIDS[ec_id]),
     ]
     assert execution["environment"] == {
         "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
@@ -2626,35 +2736,31 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     for observable in observables:
         result_path = Path(observable["result_path"])
         forged = json.loads(result_path.read_text(encoding="utf-8"))
-        forged["forged"] = True
+        forged["stderr"] = "fully-resealed-forged-child-result\n"
         result_path.write_text(json.dumps(forged, sort_keys=True), encoding="utf-8")
         observable["result_sha256"] = hashlib.sha256(result_path.read_bytes()).hexdigest()
         observable["output_sha256"] = hashlib.sha256(
             forged["stdout"].encode("utf-8")
         ).hexdigest()
-        responses[tuple(observable["command"])] = forged
+        responses[
+            (
+                tuple(observable["command"]),
+                observable["cwd"],
+                observable["input_sha256"],
+            )
+        ] = forged
 
-    mutation_responses = {
-        mutation["id"]: json.loads(
-            Path(mutation["observable"]["result_path"]).read_text(encoding="utf-8")
-        )
-        for mutation in mutations
-    }
-    ec_responses = {
-        entry["id"]: json.loads(
-            Path(entry["observable"]["result_path"]).read_text(encoding="utf-8")
-        )
-        for entry in entries
-    }
-
+    real_run = subprocess.run
     def mocked_run(command, **kwargs):
-        payload = json.loads(kwargs["input"])
-        if command == [sys.executable, "-c", _MUTATION_PROBE_RUNNER]:
-            forged = mutation_responses[payload["mutation_id"]]
-        elif command == [sys.executable, "-c", _EC_PROBE_RUNNER]:
-            forged = ec_responses[payload["id"]]
-        else:
-            forged = responses[tuple(command)]
+        input_text = kwargs.get("input")
+        if input_text is None:
+            return real_run(command, **kwargs)
+        key = (
+            tuple(command),
+            str(kwargs["cwd"]),
+            hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
+        )
+        forged = responses[key]
         return subprocess.CompletedProcess(
             command, forged["exit_code"], forged["stdout"], forged["stderr"]
         )
