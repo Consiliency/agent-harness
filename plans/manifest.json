@@ -669,27 +669,38 @@
           "at": "2026-07-30T14:16:54Z",
           "by": "codex-plan-phase",
           "metadata": {
-            "completion_record_contract": {
+            "completion_review_contract": {
               "canonical_origin": "Consiliency/agent-harness",
-              "event_metadata_key": "phase_completion_landing",
-              "event_self_reference": "forbidden",
+              "completion_identity": "exact_two_parent_implementation_landing_and_exact_main_audit",
               "phase_alias": "CONFORM",
-              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
+              "plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
               "repaired_digest_review_status": "unreviewed_not_approved",
               "required_agree_seats": [
+                "grok-4.5",
                 "gpt-5.6-sol",
-                "fable"
+                "gemini-3.6-flash",
+                "claude-fable-5"
               ],
+              "ratification_policy": {
+                "current_v10_unbound_completion_requires_all_agree": true,
+                "on_shortfall": "escalate",
+                "required_consensus": "majority",
+                "required_lens_coverage": 3,
+                "required_prover": true,
+                "required_prover_source": "procedural_until_REVIEWTRUTH",
+                "required_vendors": 3
+              },
+              "review_evidence": "runner_owned_by_reference_artifacts",
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-              "role": "producer",
-              "schema": "v10.phase-completion-landing.v1",
-              "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
+              "runtime_support": "procedural_until_REVIEWTRUTH"
             },
-            "conform_plan_contract": {
-              "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
-              "archive_inclusion_nodeid_sha256": "ccb295db192a045c224dc7f74819f8b83adb6db348d8d8b2d155a5c4f73005c0",
-              "migrated_existing_no_copy_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
-              "migrated_existing_no_copy_nodeid_sha256": "7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe",
+          "conform_plan_contract": {
+            "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
+            "archive_inclusion_nodeid_sha256": "ccb295db192a045c224dc7f74819f8b83adb6db348d8d8b2d155a5c4f73005c0",
+            "dialect_migrated_existing_nodeids_count": 42,
+            "migrated_existing_no_copy_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
+            "migrated_existing_no_copy_nodeid_sha256": "7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe",
+            "migrated_existing_nodeids_count": 45,
               "owned_path_patterns_count": 22,
               "owned_path_patterns_sha256": "285e9ddb9d6f1996e3746f809cbe240053b6efe81504fc8e8c2913fd2660e427",
               "package_inclusion_owned_paths": [
@@ -699,43 +710,39 @@
               "phase_dependencies": [
                 "LEGIBLE"
               ],
-              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
+              "plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
               "test_path_patterns_count": 6,
               "test_path_patterns_sha256": "d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145"
             },
-            "current_review": {
-              "artifact_path": ".phase-loop/reviews/v10-conform-plan-panel.json",
-              "artifact_semantics": "historical_predecessor_content_at_repair_time_overwriteable_run_local_path",
-              "artifact_sha256": "f6a5695f8de3f32aa05f8d037304892c18cd287234d1a966c485be3e427f08f5",
-              "bundle_bytes": 130557,
-              "bundle_sha256": "9e8f9663b0679132aeabb63f99822b3a52e33356241144b7f2a7f6723c3945b3",
-              "fable_outcome": "deferred",
-              "finding": "canonical_oracle_vocabulary_mismatch_and_omitted_submission_file_input_channel",
-              "finding_detail": "roadmap_EC_CONFORM_8_named_nonexistent_expected_status_and_expected_blocker_codes_instead_of_expected_valid_and_expected_blocker_class_and_EC_CONFORM_2_omitted_the_positional_submission_file_scalar_used_by_both_outside_agent_commands",
-              "gemini_verdict": "AGREE",
-              "grok_verdict": "AGREE",
-              "instructions_sha256": "f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356",
-              "repaired_plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
-              "repaired_review_status": "unreviewed_not_approved",
-              "reviewed_plan_sha256": "2060a7694dd95a441826a0cf77d0a273a6b840a2fc038251c18379117c505f57",
-              "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
-              "sol_verdict": "DISAGREE",
-              "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
-            },
-            "digest_rebind": {
-              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
-              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
-              "predecessor_plan_sha256": "33c8b1e89ed25b45e50467dda827fa991af269daf08e3c5ce9ff14875ecccf97",
-              "reason": "semantic_repair_for_strict_phase_completion_producer_record",
-              "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 130557,
-              "reviewed_bundle_sha256": "9e8f9663b0679132aeabb63f99822b3a52e33356241144b7f2a7f6723c3945b3",
-              "reviewed_instructions_sha256": "f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356",
-              "reviewed_panel_sha256": "f6a5695f8de3f32aa05f8d037304892c18cd287234d1a966c485be3e427f08f5",
-              "reviewed_plan_sha256": "2060a7694dd95a441826a0cf77d0a273a6b840a2fc038251c18379117c505f57",
-              "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+          "current_review": {
+            "artifact_path": ".phase-loop/reviews/v10-conform-current-20260803T113812Z/panel.json",
+            "artifact_semantics": "historical_predecessor_exact_digest_panel_retained_by_reference",
+            "artifact_sha256": "4478b17bcfa04c578c5374f8af501597d9a1d148051bcd18cbd5cf631ec0437a",
+            "brief_sha256": "13e4748749bafb91395e19dfe1bf0f43d04705d323bb2eb36e061cde063c1503",
+            "fable_outcome": "PARTIALLY_AGREE",
+            "finding": "early_prover_ordering_and_vacuous_no_copy_scan",
+            "finding_detail": "restore_current_v10_early_codex_can_probe_evidence_before_fable_and_correct_the_no_copy_scan_to_the_literal_nonempty_package_root_with_a_planted_copy_control",
+            "gemini_verdict": "AGREE",
+            "grok_verdict": "AGREE",
+            "repaired_plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
+            "repaired_review_status": "unreviewed_not_approved",
+            "reviewed_plan_sha256": "9d7f2a7250def6814ec351ae7ffe5810109c18494fee8d221bb6636640de9254",
+            "reviewed_roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+            "sol_verdict": "DISAGREE",
+            "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_PARTIALLY_AGREE"
+          },
+          "digest_rebind": {
+            "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_PARTIALLY_AGREE",
+            "plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
+            "predecessor_plan_sha256": "9d7f2a7250def6814ec351ae7ffe5810109c18494fee8d221bb6636640de9254",
+            "reason": "procedural_early_prover_ordering_and_nonvacuous_no_copy_falsifier_repair",
+            "repaired_digest_review_status": "unreviewed_not_approved",
+            "reviewed_brief_sha256": "13e4748749bafb91395e19dfe1bf0f43d04705d323bb2eb36e061cde063c1503",
+            "reviewed_panel_sha256": "4478b17bcfa04c578c5374f8af501597d9a1d148051bcd18cbd5cf631ec0437a",
+            "reviewed_plan_sha256": "9d7f2a7250def6814ec351ae7ffe5810109c18494fee8d221bb6636640de9254",
+            "reviewed_roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+            "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
             }
           },
           "transition": "committed"
