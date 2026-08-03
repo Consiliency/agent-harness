@@ -1,5 +1,7 @@
 import os
 
+from _outside_agent_canonical import clean_submission
+
 from phase_loop_runtime.conformance import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     OutsideAgentBlocker,
@@ -14,25 +16,8 @@ from phase_loop_runtime.conformance import (
 )
 
 
-def _submission(kind="work_request"):
-    return {
-        "submission_schema_version": "outside_agent_submission.v0.1",
-        "submission_kind": kind,
-        "metadata": {
-            "submission_id": "oa-1",
-            "content_digest": "a" * 64,
-        },
-        "provenance_refs": [
-            {"ref": "requests/oa-1.json", "digest": "b" * 64},
-        ],
-        "evidence_refs": [
-            {"ref": "evidence/oa-1.json", "digest": "c" * 64},
-        ],
-    }
-
-
 def test_public_core_api_returns_typed_metadata_only_verdict():
-    verdict = validate_outside_agent_submission(_submission())
+    verdict = validate_outside_agent_submission(clean_submission())
 
     assert isinstance(verdict, OutsideAgentConformanceVerdict)
     assert verdict.verdict_schema_version == "outside_agent_route_verdict.v0.1"
@@ -41,10 +26,15 @@ def test_public_core_api_returns_typed_metadata_only_verdict():
     assert verdict.blockers == ()
     assert verdict.contract_pin == EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN
     assert len(verdict.input_digest) == 64
-    assert verdict.provenance_refs == ("requests/oa-1.json",)
+    # Verdict evidence refs are surfaced from the canonical evidence_refs
+    # (repo_relative_path + sha256 + source_role), metadata-only.
+    assert verdict.provenance_refs == ("plans/oaspec/FIELD-NAME-FREEZE.md",)
     assert verdict.evidence_refs == (
-        OutsideAgentEvidenceRef(ref="requests/oa-1.json", digest="b" * 64),
-        OutsideAgentEvidenceRef(ref="evidence/oa-1.json", digest="c" * 64),
+        OutsideAgentEvidenceRef(
+            ref="plans/oaspec/FIELD-NAME-FREEZE.md",
+            digest="a" * 64,
+            kind="documentation",
+        ),
     )
     assert verdict.redaction_posture == "metadata_only"
 
@@ -53,8 +43,8 @@ def test_core_api_is_deterministic_and_does_not_require_secrets(monkeypatch):
     monkeypatch.setenv("API_KEY", "sk-test-value")
     monkeypatch.setenv("OUTSIDE_AGENT_SPEC_ROOT", "/not/read/by/core")
 
-    first = validate_outside_agent_submission(_submission())
-    second = validate_outside_agent_submission(_submission())
+    first = validate_outside_agent_submission(clean_submission())
+    second = validate_outside_agent_submission(clean_submission())
 
     assert first == second
 
@@ -75,7 +65,7 @@ def test_validation_does_not_use_network_or_provider_credentials(monkeypatch):
 
     monkeypatch.setattr(os, "system", fake_system)
 
-    verdict = validate_outside_agent_submission(_submission("ambiguity_report"))
+    verdict = validate_outside_agent_submission(clean_submission("ambiguity_report"))
 
     assert verdict.status == OutsideAgentVerdictStatus.PASS
     assert calls == []

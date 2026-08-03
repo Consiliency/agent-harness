@@ -1807,7 +1807,14 @@ def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     print(text, end="")
-    return int(evidence.exit_code)
+    # Return the emitted document's exit code, matching the real path (line ~1707).
+    # The advisory sink redacts in place and never re-adjudicates the verdict, so its
+    # boundary sweep cannot change ``exit_code`` — the walk only rewrites secret-shaped
+    # string scalars and ``exit_code`` is an int — hence this equals int(evidence.exit_code)
+    # by construction today. Reading the emitted document (not the pre-sink object) keeps
+    # the return path structurally sealed against the seventh channel should the advisory
+    # sink ever gain a verdict-downgrading backstop (agent-harness#371 round 5).
+    return int(payload["exit_code"])
 
 
 def _outside_agent_validate_command(args: argparse.Namespace) -> int:
@@ -1845,7 +1852,12 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     Path(args.output).write_text(text, encoding="utf-8")
     print(text, end="")
-    return int(validation.exit_code)
+    # Return the exit code of the document we actually EMITTED, not the pre-sink
+    # verdict. The serialization sink can downgrade a PASS verdict to a fail-closed
+    # REDACTION_VIOLATION when a construction scan was bypassed; the process exit code
+    # is a channel CI branches on, so it must match the emitted document rather than
+    # `validation.exit_code` (agent-harness#371 round 4, blocker 1 — seventh channel).
+    return int(payload["exit_code"])
 
 
 def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
