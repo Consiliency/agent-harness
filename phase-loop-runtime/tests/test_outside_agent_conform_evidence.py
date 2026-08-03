@@ -48,6 +48,7 @@ from _outside_agent_canonical import (
     CONFORM_SL2_STALE_DOC_NODE_IDS,
     CONFORM_TEST_ONLY_INTEGRITY_NODE_COUNT,
     CONFORM_TEST_ONLY_INTEGRITY_NODE_IDS,
+    EC_CONFORM_PROBES,
     EVIDENCE_VERIFIER_INTERFACE,
     EVIDENCE_VERIFIER_RECORD_IDS,
     FIXTURE_ROOT,
@@ -59,6 +60,8 @@ from _outside_agent_canonical import (
     SEALED_RELEASE_CANDIDATE_PATHS,
     SEALED_RELEASE_FINAL_PARENT_BLOBS,
     SEALED_RELEASE_FINAL_PATHS,
+    assert_named_safety_mutations_rejected,
+    assert_status_code_only_replacement_is_rejected,
     evidence_verifier_argv,
     find_non_enumerated_canonical_copies,
     fixture_paths,
@@ -80,6 +83,642 @@ EVIDENCE_MODE_EXCLUSIVE_INPUTS = {
     "package": ("direct_wheel", "direct_sdist", "sdist_derived_wheel"),
     "compatibility": ("ec_matrix", "installed_package"),
 }
+EC_CONFORM_IDS = tuple(f"EC-CONFORM-{index}" for index in range(9))
+EVIDENCE_SEMANTIC_OUTPUT_KEYS = {
+    "bindings",
+    "vendor",
+    "chronology",
+    "corpus",
+    "package",
+    "ec_matrix",
+    "installed_package",
+    "mode_specific",
+}
+PACKAGE_EXECUTION_VARIANTS = (
+    "direct-wheel",
+    "direct-sdist",
+    "sdist-derived-wheel",
+)
+PACKAGE_EXECUTION_CASES = ("api", "cli", "vector")
+_CAPTURED_OBSERVABLE_RUNNER = (
+    "import json, sys\n"
+    "result = json.load(sys.stdin)\n"
+    "print(json.dumps(result, sort_keys=True))\n"
+    "raise SystemExit(result['exit_code'])\n"
+)
+_MUTATION_PROBE_RUNNER = (
+    "import json, os, shutil, subprocess, sys, tempfile\n"
+    "from pathlib import Path\n"
+    "payload = json.load(sys.stdin)\n"
+    "mutation_id = payload['mutation_id']\n"
+    "nodeid = payload['expected_nodeid']\n"
+    "anchor = payload['expected_anchor']\n"
+    "source_rel = payload['source_path']\n"
+    "repo_root = Path(payload.get('repo_root', os.getcwd())).resolve()\n"
+    "while not (repo_root / 'phase-loop-runtime').is_dir() and repo_root.parent != repo_root:\n"
+    "    repo_root = repo_root.parent\n"
+    "assert (repo_root / 'phase-loop-runtime').is_dir(), f'Repo root invalid: {repo_root}'\n"
+    "sys.path.insert(0, str(repo_root / 'phase-loop-runtime' / 'tests'))\n"
+    "from _outside_agent_canonical import CONFORM_MUTATION_DEFINITIONS\n"
+    "mutation = CONFORM_MUTATION_DEFINITIONS[mutation_id]\n"
+    "assert mutation.source_path == source_rel\n"
+    "assert mutation.expected_nodeid == nodeid\n"
+    "assert mutation.expected_anchor == anchor\n"
+    "source_content = mutation.complete_source()\n"
+    "assert source_content.count(mutation.anchor) == 1, 'Anchor missing or duplicate in source'\n"
+    "mutated_content = mutation.apply(source_content)\n"
+    "assert mutated_content != source_content, 'Mutation failed to apply'\n"
+    "with tempfile.TemporaryDirectory() as tmp_dir:\n"
+    "    tmp_root = Path(tmp_dir)\n"
+    "    tmp_runtime = tmp_root / 'phase-loop-runtime'\n"
+    "    shutil.copytree(repo_root / 'phase-loop-runtime', tmp_runtime, ignore=shutil.ignore_patterns('__pycache__', '.pytest_cache', '*.pyc'))\n"
+    "    mutated_file = tmp_root / source_rel\n"
+    "    mutated_file.parent.mkdir(parents=True, exist_ok=True)\n"
+    "    mutated_file.write_text(mutated_content, encoding='utf-8')\n"
+    "    src_dir = str(tmp_runtime / 'src')\n"
+    "    tests_dir = str(tmp_runtime / 'tests')\n"
+    "    env = {**os.environ, 'PHASE_LOOP_TDD_EXPECT_CONFORM': '1', 'PYTHONPATH': f'{src_dir}:{tests_dir}'}\n"
+    "    completed = subprocess.run([sys.executable, *mutation.argv[1:]], cwd=tmp_root, capture_output=True, text=True, env=env, check=False)\n"
+    "    assert completed.returncode != 0, f'Mutant exit code was 0 for {mutation_id}!'\n"
+    "    combined = completed.stdout + completed.stderr\n"
+    "    nodeid_short = nodeid.rsplit('::', 1)[-1]\n"
+    "    assert nodeid_short in combined or nodeid in combined, f'Nodeid missing for {mutation_id}'\n"
+    "    assert (anchor in combined or mutation.expected_observable in combined or 'FAILED' in combined), f'Anchor/observable missing for {mutation_id}'\n"
+    "result = {'status': 'blocked', 'anchor': anchor, 'observable': {'kind': 'rejection', 'nodeid': nodeid}}\n"
+    "print(json.dumps(result, sort_keys=True))\n"
+    "raise SystemExit(1)\n"
+)
+_EC_PROBE_RUNNER = (
+    "import json, os, sys\n"
+    "from pathlib import Path\n"
+    "payload = json.load(sys.stdin)\n"
+    "ec_id = payload['id']\n"
+    "ordinal = payload['ordinal']\n"
+    "criterion = payload['criterion']\n"
+    "assert ec_id == f'EC-CONFORM-{ordinal}' and 0 <= ordinal <= 8\n"
+    "repo_root = Path(payload.get('repo_root', os.getcwd())).resolve()\n"
+    "while not (repo_root / 'phase-loop-runtime').is_dir() and repo_root.parent != repo_root:\n"
+    "    repo_root = repo_root.parent\n"
+    "assert (repo_root / 'phase-loop-runtime').is_dir(), 'Repo root invalid'\n"
+    "sys.path.insert(0, str(repo_root / 'phase-loop-runtime' / 'tests'))\n"
+    "from _outside_agent_canonical import EC_CONFORM_PROBES\n"
+    "probe_spec = EC_CONFORM_PROBES[ec_id]\n"
+    "assert probe_spec['ordinal'] == ordinal\n"
+    "assert probe_spec['criterion'] == criterion\n"
+    "result = {'status': 'accepted', 'observable': {'kind': 'ec-conform', 'id': ec_id, 'criterion': criterion}}\n"
+    "print(json.dumps(result, sort_keys=True))\n"
+    "raise SystemExit(0)\n"
+)
+_RUNNABLE_PACKAGE_MEMBERS = {
+    "phase_loop_runtime/__init__.py": b"",
+    "phase_loop_runtime/conformance/__init__.py": b"",
+    "phase_loop_runtime/conformance/outside_agent_schema.py": (
+        b"import json\n\n"
+        b"def validate(payload):\n"
+        b"    if not isinstance(payload, dict):\n"
+        b"        return {'status': 'blocked', 'observable': {'surface': 'api', 'accepted': False}}\n"
+        b"    return {'status': 'accepted', 'observable': {'surface': 'api', 'accepted': True}}\n"
+    ),
+    "phase_loop_runtime/conformance/outside_agent_vectors.py": (
+        b"import json\n"
+        b"import sys\n\n"
+        b"from .outside_agent_schema import validate\n\n"
+        b"def run_vectors(payload):\n"
+        b"    result = validate(payload)\n"
+        b"    result['observable'] = {'surface': 'vector', 'accepted': result['status'] == 'accepted'}\n"
+        b"    return result\n\n"
+        b"def main():\n"
+        b"    print(json.dumps(run_vectors(json.load(sys.stdin)), sort_keys=True))\n"
+        b"    return 0\n\n"
+        b"if __name__ == '__main__':\n"
+        b"    raise SystemExit(main())\n"
+    ),
+    "phase_loop_runtime/cli.py": (
+        b"import json\n"
+        b"import sys\n\n"
+        b"from phase_loop_runtime.conformance.outside_agent_schema import validate\n\n"
+        b"def main(argv=None):\n"
+        b"    argv = sys.argv[1:] if argv is None else argv\n"
+        b"    assert argv == ['outside-agent-validate']\n"
+        b"    result = validate(json.load(sys.stdin))\n"
+        b"    result['observable'] = {'surface': 'cli', 'accepted': result['status'] == 'accepted'}\n"
+        b"    print(json.dumps(result, sort_keys=True))\n"
+        b"    return 0 if result['status'] == 'accepted' else 1\n\n"
+        b"if __name__ == '__main__':\n"
+        b"    raise SystemExit(main())\n"
+    ),
+}
+
+
+def _write_tar_member(archive: tarfile.TarFile, name: str, contents: bytes) -> None:
+    member = tarfile.TarInfo(name)
+    member.size = len(contents)
+    archive.addfile(member, io.BytesIO(contents))
+
+
+def _write_runnable_wheel(path: Path, members: dict[str, bytes]) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        for member_name, contents in members.items():
+            archive.writestr(member_name, contents)
+        archive.writestr(
+            "phase_loop_runtime-0.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: phase-loop-runtime\n",
+        )
+        archive.writestr(
+            "phase_loop_runtime-0.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nTag: py3-none-any\n",
+        )
+        archive.writestr("phase_loop_runtime-0.0.dist-info/RECORD", "")
+
+
+def _write_runnable_sdist(path: Path, members: dict[str, bytes]) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        for member_name, contents in members.items():
+            _write_tar_member(archive, "phase-loop-runtime/src/" + member_name, contents)
+        _write_tar_member(
+            archive,
+            "phase-loop-runtime/PKG-INFO",
+            b"Metadata-Version: 2.1\nName: phase-loop-runtime\n",
+        )
+        _write_tar_member(
+            archive,
+            "phase-loop-runtime/pyproject.toml",
+            b"[build-system]\nrequires = []\nbuild-backend = 'setuptools.build_meta'\n",
+        )
+
+
+def _write_runnable_package_archives(
+    root: Path, contract_members: dict[str, bytes]
+) -> dict[str, Path]:
+    """Create three extractable package variants with executable surfaces."""
+    package_members = {**_RUNNABLE_PACKAGE_MEMBERS, **contract_members}
+    archives = {
+        "direct-wheel": root / "direct-wheel.whl",
+        "direct-sdist": root / "direct-sdist.tar.gz",
+        "sdist-derived-wheel": root / "sdist-derived-wheel.whl",
+    }
+    _write_runnable_wheel(archives["direct-wheel"], package_members)
+    _write_runnable_sdist(archives["direct-sdist"], package_members)
+    with tarfile.open(archives["direct-sdist"]) as archive:
+        derived_members = {
+            member.name.split("/src/", 1)[1]: archive.extractfile(member).read()
+            for member in archive.getmembers()
+            if member.isfile() and "/src/phase_loop_runtime/" in member.name
+        }
+    assert derived_members == package_members
+    _write_runnable_wheel(archives["sdist-derived-wheel"], derived_members)
+    return archives
+
+
+def _capture_subprocess_observable(
+    root: Path,
+    *,
+    prefix: str,
+    command: list[str],
+    payload: dict[str, object],
+    environment: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Capture raw command result bytes before deriving any semantic fields."""
+    completed = subprocess.run(
+        command,
+        input=json.dumps(payload, sort_keys=True),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    result_path = root / f"{prefix}.result.json"
+    captured = {
+        "command": command,
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+    result_path.write_text(json.dumps(captured, sort_keys=True), encoding="utf-8")
+    parsed = json.loads(completed.stdout)
+    assert isinstance(parsed, dict)
+    observable = parsed.get("observable")
+    assert isinstance(observable, dict)
+    return {
+        "command": command,
+        "input_sha256": hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+        "exit_code": completed.returncode,
+        "status": parsed.get("status"),
+        "anchor": parsed.get("anchor"),
+        "output_sha256": hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest(),
+        "result_path": str(result_path),
+        "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+        "observable": observable,
+    }
+
+
+def _assert_captured_observable(
+    record: dict[str, object],
+    *,
+    expected_command: list[str],
+    expected_payload: dict[str, object],
+    expected_exit: int,
+    expected_status: str,
+    expected_observable: dict[str, object],
+    expected_anchor: str | None = None,
+    environment: dict[str, str] | None = None,
+    cwd: Path | str | None = None,
+) -> None:
+    """Recompute a result artifact; manifest labels never prove behavior."""
+    assert set(record) == {
+        "command",
+        "input_sha256",
+        "exit_code",
+        "status",
+        "anchor",
+        "output_sha256",
+        "result_path",
+        "result_sha256",
+        "observable",
+    }
+    assert record["command"] == expected_command
+
+    expected_input_bytes = json.dumps(expected_payload, sort_keys=True).encode("utf-8")
+    expected_input_sha256 = hashlib.sha256(expected_input_bytes).hexdigest()
+    assert record["input_sha256"] == expected_input_sha256
+    assert record["input_sha256"] != "0" * 64
+
+    result_path = Path(record["result_path"])
+    assert result_path.is_file()
+    raw_result = result_path.read_bytes()
+    assert record["result_sha256"] == hashlib.sha256(raw_result).hexdigest()
+    captured = json.loads(raw_result)
+    assert captured["command"] == expected_command
+    assert captured["exit_code"] == record["exit_code"] == expected_exit
+    assert isinstance(captured["stdout"], str)
+    assert record["output_sha256"] == hashlib.sha256(
+        captured["stdout"].encode("utf-8")
+    ).hexdigest()
+    rendered = json.loads(captured["stdout"])
+    assert rendered["status"] == record["status"] == expected_status
+    assert rendered.get("anchor") == record["anchor"] == expected_anchor
+    assert rendered["observable"] == record["observable"] == expected_observable
+
+    rerun = subprocess.run(
+        expected_command,
+        input=expected_input_bytes.decode("utf-8"),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+        cwd=cwd,
+    )
+    assert rerun.returncode == expected_exit, f"Rerun exit code mismatch: got {rerun.returncode}, expected {expected_exit}"
+    assert hashlib.sha256(rerun.stdout.encode("utf-8")).hexdigest() == record["output_sha256"], "Rerun stdout digest mismatch"
+    rerun_rendered = json.loads(rerun.stdout)
+    assert rerun_rendered["status"] == expected_status
+    assert rerun_rendered.get("anchor") == expected_anchor
+    assert rerun_rendered["observable"] == expected_observable
+
+
+def _capture_package_executions(
+    root: Path,
+    archives: dict[str, Path],
+) -> list[dict[str, object]]:
+    """Extract each archive and capture API, CLI, and vector behavior in isolation."""
+    executions = []
+    payload = {"submission_schema_version": "outside_agent_submission.v0.1"}
+    commands = {
+        "api": [
+            sys.executable,
+            "-c",
+            "import json, sys; from phase_loop_runtime.conformance.outside_agent_schema import validate; print(json.dumps(validate(json.load(sys.stdin)), sort_keys=True))",
+        ],
+        "cli": [sys.executable, "-m", "phase_loop_runtime.cli", "outside-agent-validate"],
+        "vector": [
+            sys.executable,
+            "-m",
+            "phase_loop_runtime.conformance.outside_agent_vectors",
+        ],
+    }
+    for variant in PACKAGE_EXECUTION_VARIANTS:
+        archive_path = archives[variant]
+        extraction_root = root / f"{variant}-isolated"
+        extraction_root.mkdir()
+        if variant == "direct-sdist":
+            with tarfile.open(archive_path) as archive:
+                archive.extractall(extraction_root, filter="data")
+            import_root = extraction_root / "phase-loop-runtime" / "src"
+        else:
+            with zipfile.ZipFile(archive_path) as archive:
+                archive.extractall(extraction_root)
+            import_root = extraction_root
+        assert (import_root / "phase_loop_runtime/conformance/outside_agent_schema.py").is_file()
+        environment = {**os.environ, "PYTHONPATH": str(import_root)}
+        cases = []
+        for case_id in PACKAGE_EXECUTION_CASES:
+            observable = _capture_subprocess_observable(
+                root,
+                prefix=f"{variant}-{case_id}",
+                command=commands[case_id],
+                payload=payload,
+                environment=environment,
+            )
+            _assert_captured_observable(
+                observable,
+                expected_command=commands[case_id],
+                expected_payload=payload,
+                expected_exit=0,
+                expected_status="accepted",
+                expected_observable={"surface": case_id, "accepted": True},
+                environment=environment,
+            )
+            cases.append({"case_id": case_id, "result": observable})
+        executions.append(
+            {
+                "variant": variant,
+                "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "extraction_posture": "isolated-subprocess",
+                "cases": cases,
+            }
+        )
+    return executions
+
+
+def _capture_rejected_observable(
+    root: Path,
+    *,
+    case_id: str,
+    mutation_id: str,
+    source_path: str,
+    nodeid: str,
+    anchor: str,
+) -> dict[str, object]:
+    payload = {
+        "mutation_id": mutation_id,
+        "source_path": source_path,
+        "expected_nodeid": nodeid,
+        "expected_anchor": anchor,
+    }
+    command = [sys.executable, "-c", _MUTATION_PROBE_RUNNER]
+    return _capture_subprocess_observable(
+        root,
+        prefix=case_id,
+        command=command,
+        payload=payload,
+    )
+
+
+def _assert_complete_mutation_observables(mutations: list[dict[str, object]]) -> None:
+    assert tuple(mutation["id"] for mutation in mutations) == tuple(
+        CONFORM_MUTATION_DEFINITIONS
+    )
+    for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items():
+        mutation = next(item for item in mutations if item["id"] == mutation_id)
+        assert set(mutation) == {
+            "id",
+            "source_path",
+            "expected_nodeid",
+            "expected_anchor",
+            "observable",
+        }
+        assert mutation["source_path"] == definition.source_path
+        assert mutation["expected_nodeid"] == definition.expected_nodeid
+        assert mutation["expected_anchor"] == definition.expected_anchor
+        expected_payload = {
+            "mutation_id": mutation_id,
+            "source_path": definition.source_path,
+            "expected_nodeid": definition.expected_nodeid,
+            "expected_anchor": definition.expected_anchor,
+        }
+        expected_command = [sys.executable, "-c", _MUTATION_PROBE_RUNNER]
+        _assert_captured_observable(
+            mutation["observable"],
+            expected_command=expected_command,
+            expected_payload=expected_payload,
+            expected_exit=1,
+            expected_status="blocked",
+            expected_anchor=definition.expected_anchor,
+            expected_observable={
+                "kind": "rejection",
+                "nodeid": definition.expected_nodeid,
+            },
+        )
+
+
+def _capture_ec_matrix_entries(root: Path) -> list[dict[str, object]]:
+    entries = []
+    command = [sys.executable, "-c", _EC_PROBE_RUNNER]
+    for index, ec_id in enumerate(EC_CONFORM_IDS):
+        probe_spec = EC_CONFORM_PROBES[ec_id]
+        payload = {
+            "id": ec_id,
+            "ordinal": index,
+            "criterion": probe_spec["criterion"],
+        }
+        observable = _capture_subprocess_observable(
+            root,
+            prefix=ec_id,
+            command=command,
+            payload=payload,
+        )
+        entries.append({"id": ec_id, "ordinal": index, "observable": observable})
+    return entries
+
+
+def _assert_complete_ec_observables(entries: list[dict[str, object]]) -> None:
+    assert tuple(entry["id"] for entry in entries) == EC_CONFORM_IDS
+    assert [entry["ordinal"] for entry in entries] == list(range(len(entries)))
+    command = [sys.executable, "-c", _EC_PROBE_RUNNER]
+    for entry in entries:
+        assert set(entry) == {"id", "ordinal", "observable"}
+        ec_id = entry["id"]
+        probe_spec = EC_CONFORM_PROBES[ec_id]
+        expected_payload = {
+            "id": ec_id,
+            "ordinal": entry["ordinal"],
+            "criterion": probe_spec["criterion"],
+        }
+        _assert_captured_observable(
+            entry["observable"],
+            expected_command=command,
+            expected_payload=expected_payload,
+            expected_exit=0,
+            expected_status="accepted",
+            expected_observable={
+                "kind": "ec-conform",
+                "id": ec_id,
+                "criterion": probe_spec["criterion"],
+            },
+        )
+
+
+def _assert_complete_package_executions(
+    executions: list[dict[str, object]], archives: dict[str, object]
+) -> None:
+    assert tuple(execution["variant"] for execution in executions) == PACKAGE_EXECUTION_VARIANTS
+    payload = {"submission_schema_version": "outside_agent_submission.v0.1"}
+    commands = {
+        "api": [
+            sys.executable,
+            "-c",
+            "import json, sys; from phase_loop_runtime.conformance.outside_agent_schema import validate; print(json.dumps(validate(json.load(sys.stdin)), sort_keys=True))",
+        ],
+        "cli": [sys.executable, "-m", "phase_loop_runtime.cli", "outside-agent-validate"],
+        "vector": [
+            sys.executable,
+            "-m",
+            "phase_loop_runtime.conformance.outside_agent_vectors",
+        ],
+    }
+    for execution in executions:
+        variant = execution["variant"]
+        assert set(execution) == {
+            "variant",
+            "archive_sha256",
+            "extraction_posture",
+            "cases",
+        }
+        assert execution["extraction_posture"] == "isolated-subprocess"
+        assert execution["archive_sha256"] == archives[variant]["sha256"]
+        archive_path = Path(archives[variant]["path"])
+        members = _normalized_archive_member_digests(archive_path)
+        for member_name, contents in _RUNNABLE_PACKAGE_MEMBERS.items():
+            assert members.get(member_name) == hashlib.sha256(contents).hexdigest()
+        assert tuple(case["case_id"] for case in execution["cases"]) == PACKAGE_EXECUTION_CASES
+        for case in execution["cases"]:
+            case_id = case["case_id"]
+            root = Path(case["result"]["result_path"]).parent
+            if variant == "direct-sdist":
+                import_root = root / f"{variant}-isolated" / "phase-loop-runtime" / "src"
+            else:
+                import_root = root / f"{variant}-isolated"
+            environment = {**os.environ, "PYTHONPATH": str(import_root)}
+            _assert_captured_observable(
+                case["result"],
+                expected_command=commands[case_id],
+                expected_payload=payload,
+                expected_exit=0,
+                expected_status="accepted",
+                expected_observable={"surface": case_id, "accepted": True},
+                environment=environment,
+            )
+
+
+def _write_exact_frozen_activated_junit(path: Path) -> None:
+    """Write the one accepted 93-node/54-RED activated lifecycle artifact."""
+    suite = element_tree.Element(
+        "testsuite",
+        {
+            "name": "outside-agent-activated-lifecycle",
+            "tests": str(ALL_OUTSIDE_AGENT_NODE_COUNT),
+            "failures": str(CONFORM_ACTIVATED_RED_NODE_COUNT),
+            "skipped": "0",
+        },
+    )
+    for nodeid in ALL_OUTSIDE_AGENT_NODE_IDS:
+        case = element_tree.SubElement(suite, "testcase", {"name": nodeid})
+        if nodeid in CONFORM_ACTIVATED_RED_NODE_IDS:
+            failure = element_tree.SubElement(case, "failure")
+            failure.text = CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
+    element_tree.ElementTree(suite).write(path, encoding="utf-8", xml_declaration=True)
+
+
+def _assert_exact_frozen_activated_junit(path: Path) -> None:
+    """Reject lifecycle summaries that omit nodes, REDs, or named anchors."""
+    suite = element_tree.parse(path).getroot()
+    assert suite.attrib == {
+        "name": "outside-agent-activated-lifecycle",
+        "tests": "93",
+        "failures": "54",
+        "skipped": "0",
+    }
+    cases = suite.findall("testcase")
+    assert len(cases) == ALL_OUTSIDE_AGENT_NODE_COUNT
+    assert tuple(case.attrib["name"] for case in cases) == ALL_OUTSIDE_AGENT_NODE_IDS
+    failures = {
+        case.attrib["name"]: (case.find("failure").text or "")
+        for case in cases
+        if case.find("failure") is not None
+    }
+    assert failures == {
+        nodeid: CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
+        for nodeid in CONFORM_ACTIVATED_RED_NODE_IDS
+    }
+
+
+def _assert_full_frozen_evidence_input(
+    mode: str, records: list[dict[str, object]]
+) -> None:
+    """Validate full runner-owned inputs before any verifier positive can run."""
+    assert tuple(record["record_id"] for record in records) == EVIDENCE_VERIFIER_RECORD_IDS[mode]
+    assert [record["ordinal"] for record in records] == list(range(len(records)))
+    artifact_paths = {record["artifact_path"] for record in records}
+    assert len(artifact_paths) == 1
+    facts = json.loads(Path(next(iter(artifact_paths))).read_text(encoding="utf-8"))
+    bindings = {
+        name: facts[name]
+        for name in (
+            "candidate_commit",
+            "candidate_tree",
+            "head_commit",
+            "head_tree",
+            "module_path",
+        )
+    }
+    runner_manifest = json.loads(
+        Path(facts["runner_manifest"]["path"]).read_text(encoding="utf-8")
+    )
+    assert runner_manifest["candidate_head_module"] == bindings
+    assert runner_manifest["provenance"] == facts["vendor"]
+    assert runner_manifest["activated_lifecycle"] == {
+        "tests": 93,
+        "failures": 54,
+        "skipped": 0,
+        "node_ids": list(ALL_OUTSIDE_AGENT_NODE_IDS),
+        "red_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
+        "red_anchors": CONFORM_ACTIVATED_RED_ANCHORS,
+    }
+    _assert_exact_frozen_activated_junit(Path(facts["junit_path"]))
+    mutations = facts["mutation_records"]
+    _assert_complete_mutation_observables(mutations)
+    chronology = facts["chronology"]["stages"]
+    assert chronology[0]["failing_node_ids"] == list(CONFORM_ACTIVATED_RED_NODE_IDS)
+    assert chronology[0]["failing_anchors"] == CONFORM_ACTIVATED_RED_ANCHORS
+    assert chronology[1]["mutation_outcomes"] == {
+        mutation["id"]: "killed" for mutation in mutations
+    }
+    assert tuple(
+        len(facts["corpus"]["partitions"][partition])
+        for partition in (
+            "valid_submissions",
+            "invalid_submissions",
+            "invalid_route_verdicts",
+        )
+    ) == (3, 7, 1)
+    assert facts["package"]["contract_members"] == SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS
+    assert facts["package"]["artifact_provenance"] == bindings
+    installed_package = json.loads(
+        Path(facts["installed_package"]["path"]).read_text(encoding="utf-8")
+    )
+    assert set(installed_package) == {
+        "package",
+        "module_path",
+        "variants",
+        "contract_members",
+        "corpus_partitions",
+        "executions",
+    }
+    assert installed_package["package"] == "phase-loop-runtime"
+    assert installed_package["module_path"] == bindings["module_path"]
+    assert tuple(installed_package["variants"]) == PACKAGE_EXECUTION_VARIANTS
+    assert installed_package["contract_members"] == SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS
+    assert installed_package["corpus_partitions"] == facts["corpus"]["partitions"]
+    _assert_complete_package_executions(installed_package["executions"], facts["archives"])
+    ec_matrix = json.loads(
+        Path(facts["ec_matrix"]["path"]).read_text(encoding="utf-8")
+    )
+    assert set(ec_matrix) == {"candidate_commit", "candidate_tree", "entries"}
+    assert ec_matrix["candidate_commit"] == bindings["candidate_commit"]
+    assert ec_matrix["candidate_tree"] == bindings["candidate_tree"]
+    _assert_complete_ec_observables(ec_matrix["entries"])
 
 
 def test_frozen_inventory_counts_and_set_equations() -> None:
@@ -129,7 +768,7 @@ def test_frozen_inventory_counts_and_set_equations() -> None:
     )
 
 
-def test_frozen_command_literals_and_selector_partition() -> None:
+def test_frozen_command_literals_and_selector_partition(tmp_path: Path) -> None:
     assert BROAD_COLLECT_COMMAND == (
         "PYTHONPATH=phase-loop-runtime/src python3 -m pytest "
         "phase-loop-runtime/tests -q --collect-only -k outside_agent"
@@ -225,6 +864,23 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
         and isinstance(call.func, ast.Attribute)
         and call.func.attr == "runtest"
         for call in ast.walk(conftest_tree)
+    )
+    activated_hook = next(
+        node
+        for node in conftest_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "pytest_pyfunc_call"
+    )
+    strict_dispatches = [
+        call
+        for call in ast.walk(activated_hook)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "assert_named_canonical_capability"
+    ]
+    assert len(strict_dispatches) == 1
+    assert not any(
+        isinstance(attribute, ast.Attribute) and attribute.attr == "obj"
+        for attribute in ast.walk(activated_hook)
     )
     if completed.returncode:
         assert CONFORM_ACTIVATED_RED_ANCHORS[nodeid] in completed.stdout + completed.stderr
@@ -575,12 +1231,228 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         assert mutation.expected_observable in target_source
     assert set(CONFORM_CANONICAL_CASES) == set(CONFORM_MIGRATED_EXISTING_NODE_IDS)
     assert len({case.role for case in CONFORM_CANONICAL_CASES.values()}) == 45
+    assert_status_code_only_replacement_is_rejected()
+    assert_named_safety_mutations_rejected()
     for nodeid, case in CONFORM_CANONICAL_CASES.items():
         assert (nodeid in CONFORM_ACTIVATED_RED_ANCHORS) == (nodeid in CONFORM_ACTIVATED_RED_NODE_IDS)
         assert case.seam
         assert (case.mutation is None) == (case.expected_code is None)
         assert node_source_path(nodeid).exists()
     assert tuple(EVIDENCE_VERIFIER_INTERFACE) == ("chronology", "corpus", "package", "compatibility")
+    assert EC_CONFORM_IDS == (
+        "EC-CONFORM-0",
+        "EC-CONFORM-1",
+        "EC-CONFORM-2",
+        "EC-CONFORM-3",
+        "EC-CONFORM-4",
+        "EC-CONFORM-5",
+        "EC-CONFORM-6",
+        "EC-CONFORM-7",
+        "EC-CONFORM-8",
+    )
+    frozen_junit = tmp_path / "frozen-activated.junit.xml"
+    _write_exact_frozen_activated_junit(frozen_junit)
+    _assert_exact_frozen_activated_junit(frozen_junit)
+    # This is the exact Sol reproducer shape.  It cannot become a positive by
+    # refreshing its own digest fields because it omits 91 nodes and 53 REDs.
+    undersized_junit = tmp_path / "undersized-activated.junit.xml"
+    element_tree.ElementTree(
+        element_tree.fromstring(
+            '<testsuite name="outside-agent-activated-lifecycle" tests="2" '
+            'failures="1" skipped="0"><testcase name="positive"/>'
+            '<testcase name="mutation:M-CONFORM-8-SWAP-SCHEMA"><failure/>'
+            "</testcase></testsuite>"
+        )
+    ).write(undersized_junit, encoding="utf-8", xml_declaration=True)
+    with pytest.raises(AssertionError):
+        _assert_exact_frozen_activated_junit(undersized_junit)
+    # The SL-0 test contract executes its package/observable evidence directly,
+    # before the future production verifier exists.  This makes skeletal
+    # metadata-only packages and caller-authored outcome labels locally
+    # reproducible rejections instead of deferred verifier wishes.
+    direct_root = tmp_path / "direct-observable-controls"
+    direct_root.mkdir()
+    direct_archives = _write_runnable_package_archives(
+        direct_root,
+        {"phase_loop_runtime/conformance/_contract/VENDOR.json": b"{}"},
+    )
+    direct_archive_facts = {
+        label: {
+            "path": str(path),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for label, path in direct_archives.items()
+    }
+    direct_executions = _capture_package_executions(direct_root, direct_archives)
+    _assert_complete_package_executions(direct_executions, direct_archive_facts)
+    with zipfile.ZipFile(direct_archives["direct-wheel"], "w") as archive:
+        archive.writestr("phase_loop_runtime/conformance/_contract/VENDOR.json", "{}")
+        archive.writestr(
+            "phase_loop_runtime-0.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: phase-loop-runtime\n",
+        )
+        archive.writestr(
+            "phase_loop_runtime-0.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nTag: py3-none-any\n",
+        )
+        archive.writestr("phase_loop_runtime-0.0.dist-info/RECORD", "")
+    direct_archive_facts["direct-wheel"]["sha256"] = hashlib.sha256(
+        direct_archives["direct-wheel"].read_bytes()
+    ).hexdigest()
+    with pytest.raises(AssertionError):
+        _assert_complete_package_executions(direct_executions, direct_archive_facts)
+
+    direct_mutations = [
+        {
+            "id": mutation_id,
+            "source_path": definition.source_path,
+            "expected_nodeid": definition.expected_nodeid,
+            "expected_anchor": definition.expected_anchor,
+            "observable": _capture_rejected_observable(
+                direct_root,
+                case_id="direct-" + mutation_id,
+                mutation_id=mutation_id,
+                source_path=definition.source_path,
+                nodeid=definition.expected_nodeid,
+                anchor=definition.expected_anchor,
+            ),
+        }
+        for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items()
+    ]
+    _assert_complete_mutation_observables(direct_mutations)
+    for invalid_mutations in (
+        direct_mutations[:-1],
+        [*direct_mutations[1:], direct_mutations[0]],
+        [*direct_mutations[:-1], direct_mutations[0]],
+        [
+            {**direct_mutations[0], "observable": {"outcome": "killed"}},
+            *direct_mutations[1:],
+        ],
+    ):
+        with pytest.raises(AssertionError):
+            _assert_complete_mutation_observables(invalid_mutations)
+    tampered_mutations = copy.deepcopy(direct_mutations)
+    Path(tampered_mutations[0]["observable"]["result_path"]).write_text(
+        "{}", encoding="utf-8"
+    )
+    with pytest.raises(AssertionError):
+        _assert_complete_mutation_observables(tampered_mutations)
+    zeroed_mutations = copy.deepcopy(direct_mutations)
+    zeroed_mutations[0]["observable"]["input_sha256"] = "0" * 64
+    with pytest.raises(AssertionError):
+        _assert_complete_mutation_observables(zeroed_mutations)
+    command_tampered_mutations = copy.deepcopy(direct_mutations)
+    command_tampered_mutations[0]["observable"]["command"] = [sys.executable, "-c", "print('tampered')"]
+    with pytest.raises(AssertionError):
+        _assert_complete_mutation_observables(command_tampered_mutations)
+
+    direct_ec_entries = _capture_ec_matrix_entries(direct_root)
+    _assert_complete_ec_observables(direct_ec_entries)
+    for invalid_entries in (
+        direct_ec_entries[:-1],
+        [*direct_ec_entries[1:], direct_ec_entries[0]],
+        [*direct_ec_entries[:-1], direct_ec_entries[0]],
+        [
+            {"id": direct_ec_entries[0]["id"], "ordinal": 0, "outcome": "passed"},
+            *direct_ec_entries[1:],
+        ],
+    ):
+        with pytest.raises(AssertionError):
+            _assert_complete_ec_observables(invalid_entries)
+    tampered_ec_entries = copy.deepcopy(direct_ec_entries)
+    Path(tampered_ec_entries[0]["observable"]["result_path"]).write_text(
+        "{}", encoding="utf-8"
+    )
+    with pytest.raises(AssertionError):
+        _assert_complete_ec_observables(tampered_ec_entries)
+    zeroed_ec_entries = copy.deepcopy(direct_ec_entries)
+    zeroed_ec_entries[0]["observable"]["input_sha256"] = "0" * 64
+    with pytest.raises(AssertionError):
+        _assert_complete_ec_observables(zeroed_ec_entries)
+    command_tampered_ec_entries = copy.deepcopy(direct_ec_entries)
+    command_tampered_ec_entries[0]["observable"]["command"] = [sys.executable, "-c", "print('tampered')"]
+    with pytest.raises(AssertionError):
+        _assert_complete_ec_observables(command_tampered_ec_entries)
+    zeroed_executions = copy.deepcopy(direct_executions)
+    zeroed_executions[0]["cases"][0]["result"]["input_sha256"] = "0" * 64
+    with pytest.raises(AssertionError):
+        _assert_complete_package_executions(zeroed_executions, direct_archive_facts)
+    command_tampered_executions = copy.deepcopy(direct_executions)
+    command_tampered_executions[0]["cases"][0]["result"]["command"] = [sys.executable, "-c", "print('tampered')"]
+    with pytest.raises(AssertionError):
+        _assert_complete_package_executions(command_tampered_executions, direct_archive_facts)
+
+    forged_pkg_executions = copy.deepcopy(direct_executions)
+    forged_pkg_res = forged_pkg_executions[0]["cases"][0]["result"]
+    forged_pkg_res["output_sha256"] = hashlib.sha256(b"forged_pkg").hexdigest()
+    Path(forged_pkg_res["result_path"]).write_text(
+        json.dumps(
+            {
+                "command": forged_pkg_res["command"],
+                "exit_code": 0,
+                "stdout": json.dumps({"status": "accepted", "observable": {"surface": "api", "accepted": True}}),
+                "stderr": "",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    forged_pkg_res["result_sha256"] = hashlib.sha256(Path(forged_pkg_res["result_path"]).read_bytes()).hexdigest()
+    with pytest.raises(AssertionError):
+        _assert_complete_package_executions(forged_pkg_executions, direct_archive_facts)
+
+    forged_mut_set = copy.deepcopy(direct_mutations)
+    forged_mut_res = forged_mut_set[0]["observable"]
+    forged_mut_res["output_sha256"] = hashlib.sha256(b"forged_mut").hexdigest()
+    Path(forged_mut_res["result_path"]).write_text(
+        json.dumps(
+            {
+                "command": forged_mut_res["command"],
+                "exit_code": 1,
+                "stdout": json.dumps(
+                    {
+                        "status": "blocked",
+                        "anchor": direct_mutations[0]["expected_anchor"],
+                        "observable": {"kind": "rejection", "nodeid": direct_mutations[0]["expected_nodeid"]},
+                    }
+                ),
+                "stderr": "",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    forged_mut_res["result_sha256"] = hashlib.sha256(Path(forged_mut_res["result_path"]).read_bytes()).hexdigest()
+    with pytest.raises(AssertionError):
+        _assert_complete_mutation_observables(forged_mut_set)
+
+    forged_ec_set = copy.deepcopy(direct_ec_entries)
+    forged_ec_res = forged_ec_set[0]["observable"]
+    forged_ec_res["output_sha256"] = hashlib.sha256(b"forged_ec").hexdigest()
+    Path(forged_ec_res["result_path"]).write_text(
+        json.dumps(
+            {
+                "command": forged_ec_res["command"],
+                "exit_code": 0,
+                "stdout": json.dumps(
+                    {
+                        "status": "accepted",
+                        "observable": {
+                            "kind": "ec-conform",
+                            "id": direct_ec_entries[0]["id"],
+                            "criterion": EC_CONFORM_PROBES[direct_ec_entries[0]["id"]]["criterion"],
+                        },
+                    }
+                ),
+                "stderr": "",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    forged_ec_res["result_sha256"] = hashlib.sha256(Path(forged_ec_res["result_path"]).read_bytes()).hexdigest()
+    with pytest.raises(AssertionError):
+        _assert_complete_ec_observables(forged_ec_set)
     assert set(EVIDENCE_VERIFIER_RECORD_IDS) == set(EVIDENCE_VERIFIER_INTERFACE)
     for mode, contract in EVIDENCE_VERIFIER_INTERFACE.items():
         assert contract["timing"] == ("B2-only" if mode == "compatibility" else "A2")
@@ -647,13 +1519,157 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
             git("commit", "-m", "full candidate")
             candidate = git("rev-parse", "HEAD")
             candidate_tree = git("rev-parse", "HEAD^{tree}")
+            fixture_manifest = json.loads(
+                (FIXTURE_ROOT / "test-vectors/outside-agent/manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            corpus_rows = [
+                {
+                    key: row[key]
+                    for key in (
+                        "case_id",
+                        "schema_target",
+                        "submission_kind",
+                        "expected_valid",
+                        "expected_blocker_class",
+                    )
+                }
+                for row in fixture_manifest["vectors"]
+            ]
+            corpus_partitions = {
+                "valid_submissions": sorted(
+                    row["case_id"]
+                    for row in corpus_rows
+                    if row["expected_valid"]
+                    and row["schema_target"] == "outside_agent_submission.v0.1"
+                ),
+                "invalid_submissions": sorted(
+                    row["case_id"]
+                    for row in corpus_rows
+                    if not row["expected_valid"]
+                    and row["schema_target"] == "outside_agent_submission.v0.1"
+                ),
+                "invalid_route_verdicts": sorted(
+                    row["case_id"]
+                    for row in corpus_rows
+                    if not row["expected_valid"]
+                    and row["schema_target"] == "outside_agent_route_verdict.v0.1"
+                ),
+            }
+            assert tuple(len(ids) for ids in corpus_partitions.values()) == (3, 7, 1)
+            contract_members = {
+                "phase_loop_runtime/conformance/_contract/VENDOR.json": json.dumps(
+                    {
+                        "source_repo": "Consiliency/spec",
+                        "source_ref": "v0.2.1",
+                        "source_commit": "b862f977897a7b87c4419680a3e83735d4ff07b0",
+                        "files": [
+                            {
+                                "source_path": source_path,
+                                "mirror_path": mirror_path,
+                                "raw_byte_sha256": digest,
+                            }
+                            for source_path, mirror_path, digest in IMMUTABLE_SPEC_V0_2_1_FILES
+                        ],
+                    },
+                    sort_keys=True,
+                ).encode("utf-8"),
+                **{
+                    "phase_loop_runtime/conformance/_contract/" + relative: (
+                        FIXTURE_ROOT / relative
+                    ).read_bytes()
+                    for relative in fixture_paths()
+                },
+            }
+            contract_member_digests = _member_digests(contract_members)
+            assert len(contract_member_digests) == 16
+            vendor = json.loads(
+                contract_members[
+                    "phase_loop_runtime/conformance/_contract/VENDOR.json"
+                ].decode("utf-8")
+            )
+            bindings = {
+                "candidate_commit": candidate,
+                "candidate_tree": candidate_tree,
+                "head_commit": candidate,
+                "head_tree": candidate_tree,
+                "module_path": (
+                    "phase-loop-runtime/src/phase_loop_runtime/conformance/"
+                    "outside_agent_schema.py"
+                ),
+            }
+            observable_root = root / "captured-observables"
+            observable_root.mkdir()
+            mutation_records = [
+                {
+                    "id": mutation_id,
+                    "source_path": definition.source_path,
+                    "expected_nodeid": definition.expected_nodeid,
+                    "expected_anchor": definition.expected_anchor,
+                    "observable": _capture_rejected_observable(
+                        observable_root,
+                        case_id=mutation_id,
+                        mutation_id=mutation_id,
+                        source_path=definition.source_path,
+                        nodeid=definition.expected_nodeid,
+                        anchor=definition.expected_anchor,
+                    ),
+                }
+                for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items()
+            ]
+            activated_lifecycle = {
+                "tests": 93,
+                "failures": 54,
+                "skipped": 0,
+                "node_ids": list(ALL_OUTSIDE_AGENT_NODE_IDS),
+                "red_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
+                "red_anchors": CONFORM_ACTIVATED_RED_ANCHORS,
+            }
+            chronology = {
+                "stages": [
+                    {
+                        "stage": "preimplementation_red",
+                        "commit": parent,
+                        "tree": parent_tree,
+                        "exit_code": 1,
+                        "failing_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
+                        "failing_anchors": CONFORM_ACTIVATED_RED_ANCHORS,
+                    },
+                    {
+                        "stage": "postimplementation_pre_doc",
+                        "commit": candidate,
+                        "tree": candidate_tree,
+                        "exit_code": 0,
+                        "mutation_outcomes": {
+                            mutation["id"]: "killed" for mutation in mutation_records
+                        },
+                    },
+                ],
+                "candidate_head_module": bindings,
+            }
+            package_facts = {
+                "contract_members": contract_member_digests,
+                "artifact_provenance": bindings,
+                "artifact_labels": [
+                    "direct-wheel",
+                    "direct-sdist",
+                    "sdist-derived-wheel",
+                ],
+            }
             facts = {
-                "owner": "phase-loop-runner", "candidate_commit": candidate, "candidate_tree": candidate_tree,
-                "head_commit": candidate, "head_tree": candidate_tree, "parent_commit": parent, "parent_tree": parent_tree,
-                "module_path": "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_schema.py",
+                "owner": "phase-loop-runner",
+                **bindings,
+                "parent_commit": parent,
+                "parent_tree": parent_tree,
                 "changed_paths": list(SEALED_RELEASE_CANDIDATE_PATHS),
                 "argv": ["python3", "-m", "pytest", "-q", "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_canonical_vector_runner_consumes_schema_target_partition"],
-                "mutations": [{"id": "M-CONFORM-8-SWAP-SCHEMA"}],
+                "vendor": vendor,
+                "chronology": chronology,
+                "corpus": {"rows": corpus_rows, "partitions": corpus_partitions},
+                "package": package_facts,
+                "mutation_records": mutation_records,
+                "mutations": mutation_records,
             }
 
             def records_for(mode: str) -> tuple[list[dict[str, object]], dict[str, Path]]:
@@ -662,43 +1678,19 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 mode_log = mode_root / "runner.log"
                 mode_log.write_text(f"runner-owned:{mode}\n", encoding="utf-8")
                 mode_junit = mode_root / "controls.junit.xml"
-                element_tree.ElementTree(
-                    element_tree.fromstring(
-                        f'<testsuite name="{mode}" tests="2" failures="1">'
-                        f'<testcase name="positive:{mode}"/>'
-                        '<testcase name="mutation:M-CONFORM-8-SWAP-SCHEMA"><failure/>'
-                        "</testcase></testsuite>"
-                    )
-                ).write(mode_junit, encoding="utf-8", xml_declaration=True)
-                mode_archives: dict[str, Path] = {}
-                for archive_name, suffix in (
-                    ("direct-wheel", ".whl"),
-                    ("direct-sdist", ".tar.gz"),
-                    ("sdist-derived-wheel", ".whl"),
-                ):
-                    archive_path = mode_root / f"{archive_name}{suffix}"
-                    if suffix == ".whl":
-                        with zipfile.ZipFile(archive_path, "w") as archive:
-                            archive.writestr(
-                                "phase_loop_runtime/conformance/_contract/VENDOR.json", "{}"
-                            )
-                            archive.writestr("mode-control.txt", mode)
-                    else:
-                        import io
-
-                        with tarfile.open(archive_path, "w:gz") as archive:
-                            for member_name, contents in (
-                                (
-                                    "phase-loop-runtime/src/phase_loop_runtime/"
-                                    "conformance/_contract/VENDOR.json",
-                                    b"{}",
-                                ),
-                                ("phase-loop-runtime/src/mode-control.txt", mode.encode()),
-                            ):
-                                member = tarfile.TarInfo(member_name)
-                                member.size = len(contents)
-                                archive.addfile(member, io.BytesIO(contents))
-                    mode_archives[archive_name] = archive_path
+                _write_exact_frozen_activated_junit(mode_junit)
+                mode_archives = _write_runnable_package_archives(
+                    mode_root, contract_members
+                )
+                installed_package_facts = {
+                    "package": "phase-loop-runtime",
+                    "module_path": bindings["module_path"],
+                    "variants": list(PACKAGE_EXECUTION_VARIANTS),
+                    "contract_members": contract_member_digests,
+                    "corpus_partitions": corpus_partitions,
+                    "executions": _capture_package_executions(mode_root, mode_archives),
+                }
+                ec_matrix_entries = _capture_ec_matrix_entries(mode_root)
                 def write_mode_fact(name: str, payload: dict[str, object]) -> dict[str, str]:
                     fact_path = mode_root / f"{name}.json"
                     fact_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
@@ -707,23 +1699,31 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                         "sha256": hashlib.sha256(fact_path.read_bytes()).hexdigest(),
                     }
 
+                ec_matrix_fact = write_mode_fact(
+                    "ec-matrix",
+                    {**bindings, "entries": ec_matrix_entries},
+                )
+                installed_package_fact = write_mode_fact(
+                    "installed-package", installed_package_facts
+                )
+
                 mode_exclusive_facts: dict[str, dict[str, object]] = {
                     "chronology": {
-                        "chronology": {
-                            "parent_commit": parent,
-                            "parent_tree": parent_tree,
-                            "candidate_commit": candidate,
-                            "candidate_tree": candidate_tree,
-                        }
+                        "chronology": chronology
                     },
                     "corpus": {
                         "fixture_manifest": write_mode_fact(
                             "fixture-manifest",
                             {
                                 "fixture_root": "outside_agent_contract_v0_2_1",
+                                "source_repo": "Consiliency/spec",
+                                "source_ref": "v0.2.1",
+                                "source_commit": "b862f977897a7b87c4419680a3e83735d4ff07b0",
                                 "manifest_sha256": hashlib.sha256(
                                     (FIXTURE_ROOT / "test-vectors/outside-agent/manifest.json").read_bytes()
                                 ).hexdigest(),
+                                "rows": corpus_rows,
+                                "partitions": corpus_partitions,
                             },
                         )
                     },
@@ -733,30 +1733,45 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                             "sha256": hashlib.sha256(
                                 mode_archives["direct-wheel"].read_bytes()
                             ).hexdigest(),
+                            "contract_members": contract_member_digests,
+                            "provenance": {
+                                "candidate_commit": candidate,
+                                "candidate_tree": candidate_tree,
+                                "source_repo": "Consiliency/spec",
+                                "source_ref": "v0.2.1",
+                                "source_commit": "b862f977897a7b87c4419680a3e83735d4ff07b0",
+                            },
                         },
                         "direct_sdist": {
                             "path": str(mode_archives["direct-sdist"]),
                             "sha256": hashlib.sha256(
                                 mode_archives["direct-sdist"].read_bytes()
                             ).hexdigest(),
+                            "contract_members": contract_member_digests,
+                            "provenance": {
+                                "candidate_commit": candidate,
+                                "candidate_tree": candidate_tree,
+                                "source_repo": "Consiliency/spec",
+                                "source_ref": "v0.2.1",
+                                "source_commit": "b862f977897a7b87c4419680a3e83735d4ff07b0",
+                            },
                         },
                         "sdist_derived_wheel": {
                             "path": str(mode_archives["sdist-derived-wheel"]),
                             "sha256": hashlib.sha256(
                                 mode_archives["sdist-derived-wheel"].read_bytes()
                             ).hexdigest(),
+                            "contract_members": contract_member_digests,
+                            "provenance": {
+                                "candidate_commit": candidate,
+                                "candidate_tree": candidate_tree,
+                                "source_repo": "Consiliency/spec",
+                                "source_ref": "v0.2.1",
+                                "source_commit": "b862f977897a7b87c4419680a3e83735d4ff07b0",
+                            },
                         },
                     },
-                    "compatibility": {
-                        "ec_matrix": write_mode_fact(
-                            "ec-matrix",
-                            {"candidate_tree": candidate_tree, "matrix": "ec-v0.2.1"},
-                        ),
-                        "installed_package": write_mode_fact(
-                            "installed-package",
-                            {"candidate_commit": candidate, "package": "phase-loop-runtime"},
-                        ),
-                    },
+                    "compatibility": {},
                 }
                 mode_facts = copy.deepcopy(facts)
                 mode_facts.update(
@@ -768,6 +1783,23 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                                 "evidence_mode": mode,
                                 "candidate_commit": candidate,
                                 "candidate_tree": candidate_tree,
+                                "head_commit": candidate,
+                                "head_tree": candidate_tree,
+                                "module_path": facts["module_path"],
+                                "corpus_partitions": corpus_partitions,
+                                "contract_member_digests": contract_member_digests,
+                                "candidate_head_module": bindings,
+                                "provenance": vendor,
+                                "activated_lifecycle": activated_lifecycle,
+                                "mutation_records": mutation_records,
+                                "chronology": chronology,
+                                "package": package_facts,
+                                "installed_package": installed_package_facts,
+                                "corpus": {
+                                    "rows": corpus_rows,
+                                    "partitions": corpus_partitions,
+                                },
+                                "ec_matrix": {"entries": ec_matrix_entries},
                             },
                         ),
                         "runner_log": {
@@ -790,6 +1822,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                             for name, path in mode_archives.items()
                         },
                         "evidence_mode": mode,
+                        "ec_matrix": ec_matrix_fact,
+                        "installed_package": installed_package_fact,
                         **mode_exclusive_facts[mode],
                     }
                 )
@@ -845,14 +1879,17 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                         name: _normalized_archive_member_digests(Path(details["path"]))
                         for name, details in mode_facts["archives"].items()
                     },
-                    "mutations": [
-                        {
-                            "id": case.attrib["name"].removeprefix("mutation:"),
-                            "outcome": "killed" if case.find("failure") is not None else "survived",
-                        }
-                        for case in junit_root.findall("testcase")
-                        if case.attrib["name"].startswith("mutation:")
-                    ],
+                    "mutations": mode_facts["mutation_records"],
+                    "package_executions": json.loads(
+                        Path(mode_facts["installed_package"]["path"]).read_text(
+                            encoding="utf-8"
+                        )
+                    )["executions"],
+                    "ec_matrix": json.loads(
+                        Path(mode_facts["ec_matrix"]["path"]).read_text(
+                            encoding="utf-8"
+                        )
+                    )["entries"],
                 }
                 encode = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 return hashlib.sha256(encode(input_facts)).hexdigest(), hashlib.sha256(encode(outcome_facts)).hexdigest()
@@ -891,6 +1928,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
 
             for mode in EVIDENCE_VERIFIER_INTERFACE:
                 mode_records, artifacts = records_for(mode)
+                _assert_full_frozen_evidence_input(mode, mode_records)
                 expected_input, expected_evidence = expected_digests(mode_records)
                 verified = verifier(mode, mode_records)
                 assert set(verified) == set(EVIDENCE_VERIFIER_INTERFACE[mode]["outputs"])
@@ -902,6 +1940,44 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 assert verified["recomputed_evidence_digest"] == expected_evidence
                 assert isinstance(verified["evidence"], dict)
                 assert "raw_log" not in json.dumps(verified["evidence"], sort_keys=True)
+                evidence = verified["evidence"]
+                assert EVIDENCE_SEMANTIC_OUTPUT_KEYS <= set(evidence)
+                assert evidence["vendor"] == vendor
+                assert evidence["bindings"] == {
+                    "candidate_commit": candidate,
+                    "candidate_tree": candidate_tree,
+                    "head_commit": candidate,
+                    "head_tree": candidate_tree,
+                    "module_path": facts["module_path"],
+                }
+                assert [stage["stage"] for stage in evidence["chronology"]["stages"]] == [
+                    "preimplementation_red",
+                    "postimplementation_pre_doc",
+                ]
+                assert evidence["corpus"]["rows"] == corpus_rows
+                assert evidence["corpus"]["partitions"] == corpus_partitions
+                assert evidence["package"]["contract_members"] == contract_member_digests
+                assert evidence["package"]["artifact_provenance"] == bindings
+                assert set(evidence["installed_package"]) == {
+                    "package",
+                    "module_path",
+                    "variants",
+                    "contract_members",
+                    "corpus_partitions",
+                    "executions",
+                }
+                verified_facts = json.loads(
+                    Path(mode_records[0]["artifact_path"]).read_text(encoding="utf-8")
+                )
+                _assert_complete_package_executions(
+                    evidence["installed_package"]["executions"],
+                    verified_facts["archives"],
+                )
+                _assert_complete_ec_observables(evidence["ec_matrix"]["entries"])
+                assert evidence["mode_specific"] == {
+                    "mode": mode,
+                    "required_inputs": list(EVIDENCE_MODE_EXCLUSIVE_INPUTS[mode]),
+                }
                 records_path = root / f"{mode}-records.json"
                 records_path.write_text(json.dumps(mode_records, sort_keys=True), encoding="utf-8")
                 completed = subprocess.run(evidence_verifier_argv(mode, records_path), capture_output=True, text=True, check=False)
@@ -923,6 +1999,103 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 )
                 assert mode_facts["evidence_mode"] == mode
                 assert set(EVIDENCE_MODE_EXCLUSIVE_INPUTS[mode]) <= set(mode_facts)
+                original_junit = artifacts["junit"].read_bytes()
+                element_tree.ElementTree(
+                    element_tree.fromstring(
+                        '<testsuite name="outside-agent-activated-lifecycle" tests="2" '
+                        'failures="1" skipped="0"><testcase name="positive"/>'
+                        '<testcase name="mutation:M-CONFORM-8-SWAP-SCHEMA"><failure/>'
+                        "</testcase></testsuite>"
+                    )
+                ).write(artifacts["junit"], encoding="utf-8", xml_declaration=True)
+                # Recompute every caller-controlled digest around the exact old
+                # 2-test/1-failure fixture.  The verifier must parse the bytes
+                # and reject it, rather than trusting the refreshed manifest.
+                refresh_mode_records(mode_records, artifacts)
+                with pytest.raises(AssertionError):
+                    _assert_full_frozen_evidence_input(mode, mode_records)
+                with pytest.raises((ValueError, AssertionError)):
+                    verifier(mode, mode_records)
+                assert_production_cli_rejects(mode_records)
+                artifacts["junit"].write_bytes(original_junit)
+                refresh_mode_records(mode_records, artifacts)
+                mode_facts = json.loads(
+                    Path(mode_records[0]["artifact_path"]).read_text(encoding="utf-8")
+                )
+                if mode == "package":
+                    original_archives = {
+                        name: path.read_bytes()
+                        for name, path in artifacts.items()
+                        if name in {"direct-wheel", "direct-sdist", "sdist-derived-wheel"}
+                    }
+                    for archive_name, archive_path in (
+                        ("direct-wheel", artifacts["direct-wheel"]),
+                        ("sdist-derived-wheel", artifacts["sdist-derived-wheel"]),
+                    ):
+                        with zipfile.ZipFile(archive_path, "w") as archive:
+                            archive.writestr(
+                                "phase_loop_runtime/conformance/_contract/VENDOR.json", "{}"
+                            )
+                    with tarfile.open(artifacts["direct-sdist"], "w:gz") as archive:
+                        contents = b"{}"
+                        member = tarfile.TarInfo(
+                            "phase-loop-runtime/src/phase_loop_runtime/conformance/"
+                            "_contract/VENDOR.json"
+                        )
+                        member.size = len(contents)
+                        archive.addfile(member, io.BytesIO(contents))
+                    refresh_mode_records(mode_records, artifacts)
+                    refreshed_facts = json.loads(
+                        Path(mode_records[0]["artifact_path"]).read_text(encoding="utf-8")
+                    )
+                    assert all(
+                        refreshed_facts["archives"][name]["sha256"]
+                        == hashlib.sha256(path.read_bytes()).hexdigest()
+                        for name, path in artifacts.items()
+                        if name in {"direct-wheel", "direct-sdist", "sdist-derived-wheel"}
+                    )
+                    # The old {} VENDOR archives now have caller-refreshed hashes.
+                    # A digest-integrity-only verifier would accept them; semantic
+                    # contract/provenance validation must still fail closed.
+                    with pytest.raises((ValueError, AssertionError)):
+                        verifier(mode, mode_records)
+                    assert_production_cli_rejects(mode_records)
+                    for archive_name, contents in original_archives.items():
+                        artifacts[archive_name].write_bytes(contents)
+                    refresh_mode_records(mode_records, artifacts)
+                if mode == "compatibility":
+                    matrix_fact = Path(mode_facts["ec_matrix"]["path"])
+                    original_matrix = matrix_fact.read_bytes()
+                    matrix_fact.write_text(
+                        json.dumps(
+                            {"candidate_tree": candidate_tree, "matrix": "ec-v0.2.1"},
+                            sort_keys=True,
+                        ),
+                        encoding="utf-8",
+                    )
+                    mode_facts["ec_matrix"]["sha256"] = hashlib.sha256(
+                        matrix_fact.read_bytes()
+                    ).hexdigest()
+                    Path(mode_records[0]["artifact_path"]).write_text(
+                        json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
+                    )
+                    refresh_mode_records(mode_records, artifacts)
+                    refreshed_facts = json.loads(
+                        Path(mode_records[0]["artifact_path"]).read_text(encoding="utf-8")
+                    )
+                    assert refreshed_facts["ec_matrix"]["sha256"] == hashlib.sha256(
+                        matrix_fact.read_bytes()
+                    ).hexdigest()
+                    # A caller can refresh every hash around the former single
+                    # string matrix.  That cannot substitute for EC-CONFORM-0..8.
+                    with pytest.raises((ValueError, AssertionError)):
+                        verifier(mode, mode_records)
+                    assert_production_cli_rejects(mode_records)
+                    matrix_fact.write_bytes(original_matrix)
+                    Path(mode_records[0]["artifact_path"]).write_text(
+                        json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
+                    )
+                    refresh_mode_records(mode_records, artifacts)
                 for input_name in EVIDENCE_MODE_EXCLUSIVE_INPUTS[mode]:
                     missing_facts = copy.deepcopy(mode_facts)
                     missing_facts.pop(input_name)

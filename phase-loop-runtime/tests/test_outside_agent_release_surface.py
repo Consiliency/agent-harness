@@ -212,6 +212,8 @@ def test_public_docs_point_to_handoff_without_claiming_release_dispatch():
 
 
 def test_v7_disposition_records_merged_contract_and_final_installed_behavior(tmp_path):
+    if not (RUNTIME_ROOT / "pyproject.toml").is_file():
+        pytest.skip("repository-mode v7 disposition is absent in standalone clean-room")
     disposition_path = REPO_ROOT / "specs" / "phase-plans-v7.md"
     _require_repo_files(disposition_path)
     disposition = disposition_path.read_text(encoding="utf-8")

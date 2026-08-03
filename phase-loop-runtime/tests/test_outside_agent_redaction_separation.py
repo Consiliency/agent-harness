@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from _outside_agent_canonical import (
+    CAPABILITY_MARKER,
     CANONICAL_DYNAMIC_INPUTS,
     FIXTURE_ROOT,
     REPO_ROOT,
@@ -42,6 +43,130 @@ _LEGACY_DYNAMIC_INPUTS = {
     "legacy_submission.raw_log",
     "legacy_submission.environment",
 }
+
+EC_CONFORM_2_FAIL_CLOSED_BLOCKER_CODE = "schema_validation_failed"
+_STRUCTURAL_REQUIRED_DIAGNOSTIC = {
+    "code": EC_CONFORM_2_FAIL_CLOSED_BLOCKER_CODE,
+    "ref": "/summary",
+    "message": "required field is missing",
+}
+_STRUCTURAL_UNKNOWN_DIAGNOSTIC = {
+    "code": EC_CONFORM_2_FAIL_CLOSED_BLOCKER_CODE,
+    "ref": "/<unknown>",
+    "message": "unknown field is not permitted",
+}
+_STRUCTURAL_REJECTED_PROJECTION_DIAGNOSTIC = {
+    "code": EC_CONFORM_2_FAIL_CLOSED_BLOCKER_CODE,
+    "ref": "/",
+    "message": "submitted value is not permitted",
+}
+_STRUCTURAL_INVALID_REFERENCE_DIAGNOSTIC = {
+    "code": EC_CONFORM_2_FAIL_CLOSED_BLOCKER_CODE,
+    "ref": "/evidence_refs/0/repo_relative_path",
+    "message": "repository-relative path is invalid",
+}
+
+# Rejected EC-CONFORM-2 inputs have no submitter-controlled diagnostic surface.
+# The map is deliberately closed: each channel reaches one producer template and
+# each template is an exact code/ref/message triple.
+EC_CONFORM_2_DIAGNOSTIC_TEMPLATES = {
+    "required": _STRUCTURAL_REQUIRED_DIAGNOSTIC,
+    "unknown": _STRUCTURAL_UNKNOWN_DIAGNOSTIC,
+    "rejected_projection": _STRUCTURAL_REJECTED_PROJECTION_DIAGNOSTIC,
+    "invalid_reference": _STRUCTURAL_INVALID_REFERENCE_DIAGNOSTIC,
+}
+EC_CONFORM_2_CHANNEL_TO_TEMPLATE = {
+    "negative-evidence-digest": "unknown",
+    "raw-validator-diagnostic": "required",
+    "submission.evidence_refs[].repo_relative_path": "invalid_reference",
+    "submission.evidence_refs[].immutable_git_ref": "rejected_projection",
+    "submission.evidence_refs[].sha256": "rejected_projection",
+    "submission.evidence_refs[].source_bundle_refs[].bundle_manifest_sha256": "rejected_projection",
+    "submission.evidence_refs[].bundle_manifest_sha256": "rejected_projection",
+    "submission.implementation_submission.head_commit_sha": "rejected_projection",
+    "submission.submission_schema_version": "rejected_projection",
+    "submission.submission_kind": "rejected_projection",
+    "submission.claim_posture": "rejected_projection",
+    "submission.acceptance_truth_owner": "rejected_projection",
+    "submission.evidence_refs[].evidence_ref_schema_version": "rejected_projection",
+    "submission.evidence_refs[].digest_algorithm": "rejected_projection",
+    "submission.evidence_refs[].source_role": "rejected_projection",
+    "submission.evidence_refs[].claimed_path_membership.proof_type": "rejected_projection",
+    "submission.evidence_refs[].claimed_path_membership.included": "rejected_projection",
+    "submission.evidence_refs[].redaction_posture": "rejected_projection",
+    "submission.unknown_keys[]": "unknown",
+    "submission.unknown_values[]": "unknown",
+    "submission.raw_payload": "unknown",
+    "submission.provider_response": "unknown",
+    "submission.raw_log": "unknown",
+    "submission.environment": "unknown",
+    "submission.evidence_refs[].raw_body": "unknown",
+    "submission.producer.identity_posture": "unknown",
+    "route_verdict.unknown_keys[]": "unknown",
+    "route_verdict.unknown_values[]": "unknown",
+    "route_verdict.raw_payload": "unknown",
+    "route_verdict.provider_response": "unknown",
+    "route_verdict.raw_log": "unknown",
+    "route_verdict.environment": "unknown",
+    "route_verdict.blocker.raw_body": "unknown",
+    "route_verdict.verdict_schema_version": "rejected_projection",
+    "route_verdict.route": "rejected_projection",
+    "route_verdict.claim_posture": "rejected_projection",
+    "route_verdict.acceptance_truth_owner": "rejected_projection",
+    "route_verdict.blocker.class": "rejected_projection",
+    "route_verdict.blocker.human_required": "rejected_projection",
+    "route_verdict.blocker.summary": "unknown",
+    "route_verdict.notes": "unknown",
+    "legacy_submission.metadata.submission_id": "required",
+    "legacy_submission.metadata.content_digest": "required",
+    "legacy_submission.unknown_keys[]": "required",
+    "legacy_submission.unknown_values[]": "required",
+    "legacy_submission.raw_payload": "required",
+    "legacy_submission.provider_response": "required",
+    "legacy_submission.raw_log": "required",
+    "legacy_submission.environment": "required",
+    "legacy_submission.provenance_refs[].ref": "required",
+    "legacy_submission.evidence_refs[].ref": "required",
+    "legacy_submission.provenance_refs[].digest": "required",
+    "legacy_submission.evidence_refs[].digest": "required",
+    "legacy_submission.submission_schema_version": "required",
+    "legacy_submission.submission_kind": "required",
+}
+
+
+def _production_capability_marker_present() -> bool:
+    """Keep SL-0's marker-absent lifecycle separate from installed behavior."""
+    try:
+        from phase_loop_runtime.conformance import outside_agent_schema
+    except ImportError:
+        return False
+    return (
+        getattr(outside_agent_schema, "CONFORM_V10_CAPABILITY_MARKER", None)
+        == CAPABILITY_MARKER
+    )
+
+
+def _assert_bounded_producer_diagnostic(
+    blockers: list[dict], *, sentinel: str, channel: str
+) -> None:
+    """Only closed producer templates may survive a rejected channel."""
+    template_name = EC_CONFORM_2_CHANNEL_TO_TEMPLATE[channel]
+    expected = EC_CONFORM_2_DIAGNOSTIC_TEMPLATES[template_name]
+    assert blockers == [expected], channel
+    assert sentinel not in expected["ref"] + expected["message"], channel
+    assert "jsonschema" not in expected["message"].lower(), channel
+    assert "is not valid under" not in expected["message"].lower(), channel
+
+
+def _assert_fail_closed_channel_result(
+    returncode: int, payload: dict, *, sentinel: str, channel: str
+) -> None:
+    """A rejected EC-CONFORM-2 channel has one closed, producer-owned result."""
+    assert returncode != 0, channel
+    assert payload["status"] == "blocked", channel
+    _assert_bounded_producer_diagnostic(
+        payload["blockers"], sentinel=sentinel, channel=channel
+    )
 
 
 def _recursive_value_channels(value, prefix: str) -> set[str]:
@@ -103,10 +228,86 @@ def test_closed_redaction_projection_inventory_is_exhaustive() -> None:
         if channel.startswith("submission.") or channel.startswith("route_verdict.")
     }
     assert asserted_inputs == derived_inputs
+    rejected_channels = {
+        *CANONICAL_DYNAMIC_INPUTS,
+        *(
+            channel
+            for channel, classification in assignment.items()
+            if channel.startswith("route_verdict.")
+            or (
+                channel.startswith("submission.")
+                and channel not in CANONICAL_DYNAMIC_INPUTS
+                and classification != "forbidden_free_text"
+            )
+        ),
+        *(channel for channel in assignment if channel.startswith("legacy_submission.")),
+    }
+    assert set(EC_CONFORM_2_CHANNEL_TO_TEMPLATE) == rejected_channels | {
+        "negative-evidence-digest",
+        "raw-validator-diagnostic",
+    }
     assert {
         "submission.work_request.constraints[]",
         "submission.ambiguity_report.questions[]",
     } <= asserted_inputs
+    # A generic status/code-only substitute and raw validator text must not
+    # satisfy the EC-CONFORM-2 channel contract.
+    status_only = {
+        "status": "blocked",
+        "blockers": [_STRUCTURAL_REQUIRED_DIAGNOSTIC],
+    }
+    try:
+        _assert_fail_closed_channel_result(
+            0,
+            status_only,
+            sentinel="CONFORM-SL0-STATUS-ONLY",
+            channel="status-code-only-replacement",
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("CONFORM_RED::status_code_only_channel_control_survived")
+    raw_validator_diagnostic = {
+        "status": "blocked",
+        "blockers": [
+            {
+                **_STRUCTURAL_REQUIRED_DIAGNOSTIC,
+                "message": "jsonschema says this instance is not valid under any schema",
+            }
+        ],
+    }
+    try:
+        _assert_fail_closed_channel_result(
+            1,
+            raw_validator_diagnostic,
+            sentinel="CONFORM-SL0-RAW-VALIDATOR",
+            channel="raw-validator-diagnostic",
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("CONFORM_RED::raw_validator_diagnostic_survived")
+    sol_reproducer = {
+        "status": "blocked",
+        "blockers": [
+            {
+                "code": "schema_validation_failed",
+                "ref": "/unrelated",
+                "message": "submitter supplied but non-sentinel bytes",
+            }
+        ],
+    }
+    try:
+        _assert_fail_closed_channel_result(
+            1,
+            sol_reproducer,
+            sentinel="CONFORM-SL0-CHANNEL-SENTINEL",
+            channel="negative-evidence-digest",
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("CONFORM_RED::sol_unbound_diagnostic_survived")
     assert "submission.work_request.constraints" not in asserted_inputs
     assert "submission.ambiguity_report.questions" not in asserted_inputs
     corpus_inputs = {
@@ -223,6 +424,7 @@ def _run(command: str, submission_path, output_path):
         capture_output=True,
         text=True,
         check=False,
+        cwd=REPO_ROOT,
     )
 
 
@@ -280,6 +482,14 @@ def _assert_cli_channel_control(
         if expected_success:
             assert rejected.returncode == 0, channel
             assert json.loads(rejected.stdout)["status"] == "pass", channel
+        elif _production_capability_marker_present():
+            payload = json.loads(rejected.stdout)
+            _assert_fail_closed_channel_result(
+                rejected.returncode,
+                payload,
+                sentinel=sentinel,
+                channel=channel,
+            )
 
 
 def _assert_raw_construction_guard(monkeypatch) -> None:
@@ -436,13 +646,16 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             sort_keys=True,
         )
         assert sentinel not in rendered, channel
-        if channel.startswith("submission."):
+        if channel.startswith(("submission.", "route_verdict.")):
             _assert_cli_channel_control(
                 payload,
                 sentinel=sentinel,
                 channel=channel,
                 tmp_path=tmp_path,
-                expected_success=classification == "forbidden_free_text",
+                expected_success=(
+                    channel.startswith("submission.")
+                    and classification == "forbidden_free_text"
+                ),
             )
 
     for channel in sorted(CANONICAL_DYNAMIC_INPUTS):
@@ -464,7 +677,7 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             sort_keys=True,
         )
         assert sentinel not in rendered, channel
-        if channel.startswith("submission."):
+        if channel.startswith(("submission.", "route_verdict.")):
             _assert_cli_channel_control(
                 payload,
                 sentinel=sentinel,
@@ -557,6 +770,40 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
         validation["status"],
         validation["redaction_posture"],
     } == {"governed_pipeline_validator", "pass", "metadata_only"}
+
+    if _production_capability_marker_present():
+        _assert_structural_diagnostic_positive_control(tmp_path)
+
+
+def _assert_structural_diagnostic_positive_control(tmp_path: Path) -> None:
+    """Freeze stable, producer-derived diagnostics without raw schema echoes."""
+    sentinel = "CONFORM-SL0-STRUCTURAL-DIAGNOSTIC-SENTINEL"
+    for command in ("outside-agent-preflight", "outside-agent-validate"):
+        missing_summary = clean_canonical_submission()
+        missing_summary.pop("summary")
+        missing_path = tmp_path / f"{command}-missing-summary.json"
+        missing_output = tmp_path / f"{command}-missing-summary-output.json"
+        missing_path.write_text(json.dumps(missing_summary), encoding="utf-8")
+        missing = _run(command, missing_path, missing_output)
+        missing_payload = json.loads(missing.stdout)
+        assert missing.returncode != 0
+        assert missing_output.read_text(encoding="utf-8") == missing.stdout
+        assert missing_payload["status"] == "blocked"
+        assert missing_payload["blockers"] == [_STRUCTURAL_REQUIRED_DIAGNOSTIC]
+
+        unknown = clean_canonical_submission()
+        unknown[sentinel] = {"submitter": sentinel}
+        unknown_path = tmp_path / f"{command}-unknown-property.json"
+        unknown_output = tmp_path / f"{command}-unknown-property-output.json"
+        unknown_path.write_text(json.dumps(unknown), encoding="utf-8")
+        unknown_result = _run(command, unknown_path, unknown_output)
+        unknown_payload = json.loads(unknown_result.stdout)
+        rendered = unknown_result.stdout + unknown_output.read_text(encoding="utf-8")
+        assert unknown_result.returncode != 0
+        assert unknown_output.read_text(encoding="utf-8") == unknown_result.stdout
+        assert unknown_payload["status"] == "blocked"
+        assert unknown_payload["blockers"] == [_STRUCTURAL_UNKNOWN_DIAGNOSTIC]
+        assert sentinel not in rendered
 
 
 def test_submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes(tmp_path, monkeypatch) -> None:

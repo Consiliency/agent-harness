@@ -133,12 +133,12 @@ def _record_migrated_body_invocation(nodeid: str) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_pyfunc_call(pyfuncitem):
-    """Dispatch activated migrated tests to their literal canonical seam once.
+    """Run each activated migrated test's one strict dialect-adapted body.
 
     Historical bodies intentionally keep their legacy assertions for default
-    compatibility mode.  In strict mode, their matching canonical cases are
-    the semantically switched bodies, so pytest must not execute both against
-    one unchanged payload.
+    compatibility mode.  Activation selects the strict adapter for the same
+    named guarantee; it must not first run incompatible legacy assertions or
+    issue a second validator call.
     """
     nodeid = normalized_nodeid(pyfuncitem.nodeid)
     if not (

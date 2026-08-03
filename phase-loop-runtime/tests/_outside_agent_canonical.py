@@ -11,10 +11,13 @@ import io
 import importlib.util
 import json
 import os
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+from unittest import mock
+from urllib import request as urllib_request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -877,6 +880,25 @@ CONFORM_MUTATION_DEFINITIONS = {
     ),
 }
 
+EC_CONFORM_PROBES = {
+    f"EC-CONFORM-{index}": {
+        "id": f"EC-CONFORM-{index}",
+        "ordinal": index,
+        "criterion": criterion,
+    }
+    for index, criterion in enumerate((
+        "chronology_identity_equations",
+        "corpus_valid_submissions_allowlist_falsifier",
+        "redaction_seven_class_inventory",
+        "redaction_posture_enforcement_guards",
+        "contract_mirror_provenance_and_mutations",
+        "per_schema_digest_mismatch_falsifiers",
+        "v7_disposition_merged_spec_provenance",
+        "package_release_handoff_and_no_copy",
+        "adversarial_vectors_fail_closed_dispatch",
+    ))
+}
+
 EVIDENCE_VERIFIER_INTERFACE = {
     "chronology": {
         "timing": "A2",
@@ -1210,6 +1232,8 @@ def normalized_nodeid(nodeid: str) -> str:
         normalized_path = Path(*parts[parts.index("tests") :]).as_posix()
         if normalized_path.startswith("tests/"):
             return "phase-loop-runtime/" + normalized_path + separator + test_name
+    if path.startswith("test_") and path.endswith(".py"):
+        return "phase-loop-runtime/tests/" + path + separator + test_name
     return nodeid
 
 
@@ -1367,14 +1391,39 @@ def production_mirror_paths() -> tuple[str, ...]:
     )
 
 
+def source_runtime_available() -> bool:
+    return (RUNTIME_ROOT / "src" / "phase_loop_runtime").is_dir()
+
+
+def packaged_contract_mirror_root() -> Path:
+    if source_runtime_available():
+        return RUNTIME_ROOT / "src" / "phase_loop_runtime" / "conformance" / "_contract"
+    import phase_loop_runtime
+
+    return (
+        Path(phase_loop_runtime.__file__).resolve().parent
+        / "conformance"
+        / "_contract"
+    )
+
+
 def find_non_enumerated_canonical_copies(repo_root: Path) -> tuple[tuple[str, ...], int]:
     root = repo_root / PRODUCTION_SCAN_ROOT_LITERAL
-    scanned = [path for path in root.rglob("*") if path.is_file()]
+    relative_to = repo_root
     allowed = set(production_mirror_paths())
+    if repo_root == REPO_ROOT and not root.is_dir():
+        import phase_loop_runtime
+
+        root = Path(phase_loop_runtime.__file__).resolve().parent
+        relative_to = root
+        allowed = {
+            "conformance/_contract/" + relative for relative in fixture_paths()
+        }
+    scanned = [path for path in root.rglob("*") if path.is_file()]
     copied = tuple(
         relative
         for path in scanned
-        if (relative := path.relative_to(repo_root).as_posix()) not in allowed
+        if (relative := path.relative_to(relative_to).as_posix()) not in allowed
         and _looks_like_canonical_contract_copy(path)
     )
     return copied, len(scanned)
@@ -2027,13 +2076,7 @@ def _matches_canonical_manifest_shape(value: Mapping[str, Any]) -> bool:
 
 
 def assert_packaged_contract_mirror() -> None:
-    mirror_root = (
-        RUNTIME_ROOT
-        / "src"
-        / "phase_loop_runtime"
-        / "conformance"
-        / "_contract"
-    )
+    mirror_root = packaged_contract_mirror_root()
     vendor_path = mirror_root / "VENDOR.json"
     assert vendor_path.exists(), (
         "CONFORM_RED::digest_enumerated_contract_mirror_missing: "
@@ -2172,6 +2215,229 @@ def _assert_status_and_codes(nodeid: str, status: str, codes: set[str], case: Ca
     else:
         assert status == "blocked", anchor
         assert codes == {case.expected_code}, anchor
+
+
+NAMED_SAFETY_NODE_IDS = {
+    "phase-loop-runtime/tests/test_outside_agent_core_api.py::"
+    "test_validation_does_not_use_network_or_provider_credentials": "network",
+    "phase-loop-runtime/tests/test_outside_agent_real_ci.py::"
+    "test_fixture_invocations_do_not_run_vectors_for_live_validation": "vectors",
+    "phase-loop-runtime/tests/test_outside_agent_real_runtime.py::"
+    "test_real_validator_wraps_core_once_with_metadata_only_evidence": "core_once",
+}
+
+
+def _assert_named_safety_observables(
+    nodeid: str,
+    *,
+    network_calls: list[str] | None = None,
+    credential_reads: list[str] | None = None,
+    vectors_executed: bool | None = None,
+    vector_calls: int | None = None,
+    core_calls: int | None = None,
+) -> None:
+    """Reject status/code-only substitutes for the named migrated guarantees."""
+    guarantee = NAMED_SAFETY_NODE_IDS[nodeid]
+    if guarantee == "network":
+        assert network_calls == [], _red_anchor(nodeid)
+        assert credential_reads == [], _red_anchor(nodeid)
+    elif guarantee == "vectors":
+        assert vectors_executed is False, _red_anchor(nodeid)
+        assert vector_calls == 0, _red_anchor(nodeid)
+    elif guarantee == "core_once":
+        assert core_calls == 1, _red_anchor(nodeid)
+    else:
+        raise AssertionError(f"unknown named safety guarantee: {guarantee}")
+
+
+def assert_status_code_only_replacement_is_rejected() -> None:
+    """Directly mutate each named node to status/code-only and require rejection."""
+    for nodeid in NAMED_SAFETY_NODE_IDS:
+        try:
+            _assert_named_safety_observables(nodeid)
+        except AssertionError:
+            continue
+        raise AssertionError(f"CONFORM_RED::status_code_only_replacement_survived:{nodeid}")
+
+
+def _assert_core_uses_no_network_or_provider_credentials(
+    nodeid: str,
+    *,
+    core_validator: Any | None = None,
+) -> None:
+    from phase_loop_runtime.conformance.outside_agent_core import (
+        validate_outside_agent_submission,
+    )
+
+    network_calls: list[str] = []
+    credential_reads: list[str] = []
+    validator = core_validator or validate_outside_agent_submission
+    original_environ_get = os.environ.get
+    original_environ_getitem = type(os.environ).__getitem__
+
+    def rejected_network(*_args: object, **_kwargs: object) -> None:
+        network_calls.append("network")
+        raise AssertionError(_red_anchor(nodeid))
+
+    def guarded_credential_read(route: str, key: object, read: Any) -> Any:
+        if isinstance(key, str) and any(
+            token in key.upper() for token in ("KEY", "TOKEN", "SECRET", "CREDENTIAL")
+        ):
+            credential_reads.append(route)
+            raise AssertionError(_red_anchor(nodeid))
+        return read()
+
+    def guarded_getenv(key: str, default: str | None = None) -> str | None:
+        return guarded_credential_read(
+            "os.getenv", key, lambda: original_environ_get(key, default)
+        )
+
+    def guarded_environ_get(key: str, default: str | None = None) -> str | None:
+        return guarded_credential_read(
+            "os.environ.get", key, lambda: original_environ_get(key, default)
+        )
+
+    def guarded_environ_getitem(key: object) -> str:
+        return guarded_credential_read(
+            "os.environ[]",
+            key,
+            lambda: original_environ_getitem(os.environ, key),
+        )
+
+    with (
+        mock.patch.object(os, "system", side_effect=rejected_network),
+        mock.patch.object(subprocess, "run", side_effect=rejected_network),
+        mock.patch.object(socket, "create_connection", side_effect=rejected_network),
+        mock.patch.object(socket, "getaddrinfo", side_effect=rejected_network),
+        mock.patch.object(urllib_request, "urlopen", side_effect=rejected_network),
+        mock.patch.object(os, "getenv", side_effect=guarded_getenv),
+        mock.patch.object(os.environ, "get", side_effect=guarded_environ_get),
+        mock.patch.object(
+            type(os.environ), "__getitem__", side_effect=guarded_environ_getitem
+        ),
+    ):
+        verdict = validator(clean_canonical_submission())
+    _assert_status_and_codes(nodeid, verdict.status.value, {b.code for b in verdict.blockers}, CONFORM_CANONICAL_CASES[nodeid])
+    _assert_named_safety_observables(
+        nodeid, network_calls=network_calls, credential_reads=credential_reads
+    )
+
+
+def assert_named_safety_mutations_rejected() -> None:
+    """Kill double-call and all provider-credential-read safety mutations."""
+    core_once_nodeid = next(
+        nodeid
+        for nodeid, guarantee in NAMED_SAFETY_NODE_IDS.items()
+        if guarantee == "core_once"
+    )
+    try:
+        _assert_named_safety_observables(core_once_nodeid, core_calls=2)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("CONFORM_RED::double_core_validator_call_survived")
+
+    credential_nodeid = next(
+        nodeid
+        for nodeid, guarantee in NAMED_SAFETY_NODE_IDS.items()
+        if guarantee == "network"
+    )
+    from phase_loop_runtime.conformance.outside_agent_core import (
+        validate_outside_agent_submission,
+    )
+
+    credential_routes = {
+        "os.getenv": lambda: os.getenv("PROVIDER_TOKEN"),
+        "os.environ.get": lambda: os.environ.get("PROVIDER_TOKEN"),
+        "os.environ[]": lambda: os.environ["PROVIDER_TOKEN"],
+    }
+    for route, read_credential in credential_routes.items():
+        def mutated_validator(submission: object, *, read_credential: Any = read_credential) -> Any:
+            read_credential()
+            return validate_outside_agent_submission(submission)
+
+        try:
+            _assert_core_uses_no_network_or_provider_credentials(
+                credential_nodeid, core_validator=mutated_validator
+            )
+        except AssertionError:
+            continue
+        raise AssertionError(f"CONFORM_RED::credential_read_mutation_survived:{route}")
+
+
+def _assert_live_validation_runs_zero_vectors(nodeid: str) -> None:
+    from phase_loop_runtime.conformance import outside_agent_real, outside_agent_vectors
+    from phase_loop_runtime.conformance.outside_agent_real_output import (
+        serialize_outside_agent_validation_verdict,
+    )
+
+    vector_calls: list[object] = []
+
+    def rejected_vector_execution(*args: object, **kwargs: object) -> None:
+        vector_calls.append((args, kwargs))
+        raise AssertionError(_red_anchor(nodeid))
+
+    patches = [
+        mock.patch.object(
+            outside_agent_vectors,
+            "run_outside_agent_vectors",
+            side_effect=rejected_vector_execution,
+        )
+    ]
+    if hasattr(outside_agent_real, "run_outside_agent_vectors"):
+        patches.append(
+            mock.patch.object(
+                outside_agent_real,
+                "run_outside_agent_vectors",
+                side_effect=rejected_vector_execution,
+            )
+        )
+    with patches[0]:
+        if len(patches) == 2:
+            with patches[1]:
+                verdict = outside_agent_real.build_outside_agent_validation_verdict(
+                    clean_canonical_submission()
+                )
+        else:
+            verdict = outside_agent_real.build_outside_agent_validation_verdict(
+                clean_canonical_submission()
+            )
+    rendered = serialize_outside_agent_validation_verdict(verdict)
+    _assert_status_and_codes(
+        nodeid, rendered["status"], {b["code"] for b in rendered["blockers"]}, CONFORM_CANONICAL_CASES[nodeid]
+    )
+    _assert_named_safety_observables(
+        nodeid,
+        vectors_executed=rendered.get("vectors_executed"),
+        vector_calls=len(vector_calls),
+    )
+
+
+def _assert_real_validator_wraps_core_once(nodeid: str) -> None:
+    from phase_loop_runtime.conformance.outside_agent_core import (
+        validate_outside_agent_submission,
+    )
+    from phase_loop_runtime.conformance.outside_agent_real import (
+        build_outside_agent_validation_verdict,
+    )
+    from phase_loop_runtime.conformance.outside_agent_real_output import (
+        serialize_outside_agent_validation_verdict,
+    )
+
+    payload = clean_canonical_submission()
+    calls: list[object] = []
+
+    def core(submission: object, *, contract_pin: object):
+        calls.append((submission, contract_pin))
+        return validate_outside_agent_submission(submission, contract_pin=contract_pin)
+
+    verdict = build_outside_agent_validation_verdict(payload, core_validator=core)
+    rendered = serialize_outside_agent_validation_verdict(verdict)
+    _assert_status_and_codes(
+        nodeid, rendered["status"], {b["code"] for b in rendered["blockers"]}, CONFORM_CANONICAL_CASES[nodeid]
+    )
+    assert calls and calls[0][0] == payload, _red_anchor(nodeid)
+    _assert_named_safety_observables(nodeid, core_calls=len(calls))
 
 
 def _run_cli_case(nodeid: str, case: CanonicalMigrationCase, command: str) -> None:
@@ -2352,9 +2618,17 @@ def _assert_public_docs_surface(nodeid: str) -> None:
 
 
 def assert_named_canonical_capability(nodeid: str) -> None:
-    """Exercise the strict counterpart after the named body has run once."""
+    """Run the strict, dialect-adapted body for one migrated test name."""
     assert set(CONFORM_CANONICAL_CASES) == set(CONFORM_MIGRATED_EXISTING_NODE_IDS)
     case = CONFORM_CANONICAL_CASES[nodeid]
+    if nodeid in NAMED_SAFETY_NODE_IDS:
+        if NAMED_SAFETY_NODE_IDS[nodeid] == "network":
+            _assert_core_uses_no_network_or_provider_credentials(nodeid)
+        elif NAMED_SAFETY_NODE_IDS[nodeid] == "vectors":
+            _assert_live_validation_runs_zero_vectors(nodeid)
+        else:
+            _assert_real_validator_wraps_core_once(nodeid)
+        return
     if case.seam == "mirror":
         assert_packaged_contract_mirror()
         return

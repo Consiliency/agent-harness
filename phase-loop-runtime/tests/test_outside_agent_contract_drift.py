@@ -7,6 +7,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from _outside_agent_canonical import (
     IMMUTABLE_SPEC_V0_2_1_DIGESTS,
     IMMUTABLE_SPEC_V0_2_1_FILES,
@@ -16,6 +18,7 @@ from _outside_agent_canonical import (
     find_non_enumerated_canonical_copies,
     production_mirror_paths,
     route_verdict_entry,
+    source_runtime_available,
     submission_entries,
 )
 
@@ -207,6 +210,8 @@ def test_no_copied_canonical_outside_agent_schema_or_vectors():
 
 def test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes():
     repo = Path(__file__).resolve().parents[2]
+    if not source_runtime_available():
+        pytest.skip("repository-owned conformance documentation is absent in standalone clean-room")
     documentation = (repo / "docs" / "outside-agent-conformance.md").read_text(encoding="utf-8")
 
     assert "Consiliency/spec@v0.2.1" in documentation, (
@@ -230,6 +235,39 @@ def test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes():
 def test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     runtime_root = repo / "phase-loop-runtime"
+    expected = {
+        "phase_loop_runtime/conformance/_contract/VENDOR.json",
+        *{
+            path.removeprefix("phase-loop-runtime/src/")
+            for path in production_mirror_paths()
+        },
+    }
+    if not source_runtime_available():
+        wheel_path = next((repo.parent / "dist").glob("*.whl"), None)
+        assert wheel_path is not None, (
+            "CONFORM_RED::sdist_contract_mirror_missing: package build did not produce archives"
+        )
+        with zipfile.ZipFile(wheel_path) as archive:
+            wheel_members = {member for member in archive.namelist() if "/conformance/_contract/" in member}
+            wheel_bytes = {member: archive.read(member) for member in wheel_members}
+        assert wheel_members == expected, (
+            "CONFORM_RED::sdist_contract_mirror_missing: "
+            "phase_loop_runtime/conformance/_contract/VENDOR.json"
+        )
+        vendor = json.loads(wheel_bytes["phase_loop_runtime/conformance/_contract/VENDOR.json"])
+        vendor_records = {
+            (row["source_path"], row["mirror_path"], row["raw_byte_sha256"])
+            for row in vendor["files"]
+        }
+        assert vendor_records == set(IMMUTABLE_SPEC_V0_2_1_FILES)
+        assert len(vendor_records) == len(vendor["files"]) == 15
+        for relative, digest in IMMUTABLE_SPEC_V0_2_1_DIGESTS.items():
+            archive_path = "phase_loop_runtime/conformance/_contract/" + relative
+            assert hashlib.sha256(wheel_bytes[archive_path]).hexdigest() == digest
+            assert wheel_bytes[archive_path] == (FIXTURE_ROOT / relative).read_bytes()
+        _assert_installed_wheel_invocations(wheel_path, tmp_path / "direct-wheel", "direct")
+        return
+
     dist_root = tmp_path / "dist"
     completed = subprocess.run(
         [
@@ -248,13 +286,6 @@ def test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror(tmp_path
     assert completed.returncode == 0, (
         "CONFORM_RED::sdist_contract_mirror_missing: package build did not produce archives"
     )
-    expected = {
-        "phase_loop_runtime/conformance/_contract/VENDOR.json",
-        *{
-            path.removeprefix("phase-loop-runtime/src/")
-            for path in production_mirror_paths()
-        },
-    }
     wheel_path = next(dist_root.glob("*.whl"))
     with zipfile.ZipFile(wheel_path) as archive:
         wheel_members = {member for member in archive.namelist() if "/conformance/_contract/" in member}
