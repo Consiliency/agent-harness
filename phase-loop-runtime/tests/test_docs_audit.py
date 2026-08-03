@@ -70,6 +70,19 @@ class TaxonomyTest(unittest.TestCase):
         self.assertNotIn("**/package.json", ds.RELEASE_AFFECTING_PATTERNS)
         self.assertIsNone(ds.classify_surface("frontend/package.json"))
 
+    def test_test_fixture_schema_is_not_a_public_surface(self):
+        self.assertIsNone(
+            ds.classify_surface(
+                "phase-loop-runtime/tests/fixtures/example/schemas/submission-schema.json"
+            )
+        )
+        self.assertEqual(
+            ds.classify_surface(
+                "phase-loop-runtime/src/phase_loop_runtime/schemas/submission-schema.json"
+            ),
+            "general",
+        )
+
     def test_shipped_release_guard_unchanged(self):
         # The audit's taxonomy is standalone — it must NOT re-export through / mutate the
         # shipped release_guard control (which gates release dispatch with human_required).
