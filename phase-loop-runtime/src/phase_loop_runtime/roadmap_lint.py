@@ -24,9 +24,12 @@ full Markdown parser.
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -437,6 +440,309 @@ def lint_train_roadmap_text(text: str) -> List[str]:
 def lint_train_roadmap(path: Path | str) -> List[str]:
     """Return validation issues for the train roadmap at ``path``."""
     return lint_train_roadmap_text(Path(path).read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# LEGIBLE (v10 SL-0) — roadmap-status registry + primary-banner lifecycle grammar
+#
+# `specs/roadmap-status.json` (`roadmap_status_manifest.v1`) is a repo-owned
+# registry naming every tracked `specs/phase-plans-*.md` roadmap's lifecycle
+# status (`active`/`delivered`/`superseded`), never the sole unchecked
+# authority: every registry value must agree with that same roadmap's own
+# committed primary-banner declaration (closed grammar below) before any
+# status read returns a value. See plans/phase-plan-v10-LEGIBLE.md.
+
+ROADMAP_STATUS_SCHEMA = "roadmap_status_manifest.v1"
+ROADMAP_STATUS_REGISTRY_REL = "specs/roadmap-status.json"
+ROADMAP_STATUSES = ("active", "delivered", "superseded")
+
+
+class RoadmapStatusError(RuntimeError):
+    """Base of the LEGIBLE roadmap-status/banner/coherence/selection error hierarchy."""
+
+
+class MalformedRegistryError(RoadmapStatusError):
+    """`specs/roadmap-status.json` is present but malformed (bad JSON, wrong
+    schema, missing/extra/duplicate/noncanonical/escaping path, unknown status)."""
+
+
+class MalformedBannerError(RoadmapStatusError):
+    """A roadmap's primary-banner lifecycle declaration is missing, malformed,
+    ambiguous (multiple recognized declarations), or misplaced (not at line 3)."""
+
+
+class StatusCoherenceError(RoadmapStatusError):
+    """The registry and a roadmap's own banner declaration disagree, or the
+    registry's tracked path set does not exactly equal the Git-tracked set."""
+
+
+class NonActiveSelectionError(RoadmapStatusError):
+    """A selector attempted to return a roadmap that is not the registered and
+    banner-declared ``active`` roadmap."""
+
+
+@dataclass(frozen=True)
+class RoadmapStatus:
+    """One tracked roadmap's reconciled lifecycle record."""
+
+    path: str
+    registry_status: str
+    banner_status: str
+    declaration_line: int
+    declaration_sha256: str
+
+
+# The closed primary-banner grammar. Every pattern is anchored (full-line
+# match) and captures an ISO date validated with ``date.fromisoformat`` —
+# a status-LIKE line with an invalid date does not count as a recognized
+# match (it falls through to "missing"/"malformed" rather than silently
+# succeeding on a corrupted date).
+_BANNER_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    (
+        "active",
+        re.compile(
+            r"^> \*\*Status \((?P<date>\d{4}-\d{2}-\d{2})\): ACTIVE — created this date, "
+            r"nothing executed yet\.\*\*$"
+        ),
+    ),
+    (
+        "delivered",
+        re.compile(r"^> # DELIVERED — CLOSED \(assessed (?P<date>\d{4}-\d{2}-\d{2})\)$"),
+    ),
+    (
+        "superseded",
+        re.compile(
+            r"^> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v10\.md` "
+            r"\((?P<date>\d{4}-\d{2}-\d{2})\)$"
+        ),
+    ),
+    (
+        "superseded",
+        re.compile(
+            r"^> # SUPERSEDED — ABSORBED into `specs/phase-plans-v10\.md` "
+            r"\(assessed (?P<date>\d{4}-\d{2}-\d{2}); corrected after CR\)$"
+        ),
+    ),
+)
+
+
+def parse_roadmap_banner_status(text: str, path: str) -> str:
+    """Parse the closed primary-banner lifecycle declaration of roadmap ``text``.
+
+    Requires a nonempty Markdown H1 on line 1 and an empty line 2, then scans
+    only the leading banner (everything before the first ``## `` body heading)
+    for exactly one recognized full-line declaration at line 3. Returns
+    ``"active"``, ``"delivered"``, or ``"superseded"``; raises
+    :class:`MalformedBannerError` on a missing, malformed, ambiguous, or
+    misplaced declaration.
+    """
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith("# ") or not lines[0][2:].strip():
+        raise MalformedBannerError(f"{path}: missing or empty Markdown H1 on line 1")
+    if len(lines) < 2 or lines[1] != "":
+        raise MalformedBannerError(f"{path}: line 2 must be blank")
+
+    banner_end = len(lines)
+    for index, line in enumerate(lines):
+        if line.startswith("## "):
+            banner_end = index
+            break
+
+    matches: List[tuple[int, str]] = []
+    for index in range(banner_end):
+        line = lines[index]
+        for status, pattern in _BANNER_PATTERNS:
+            match = pattern.match(line)
+            if not match:
+                continue
+            try:
+                date.fromisoformat(match.group("date"))
+            except ValueError:
+                continue
+            matches.append((index, status))
+
+    if not matches:
+        raise MalformedBannerError(f"{path}: no recognized lifecycle declaration found")
+    if len(matches) > 1:
+        raise MalformedBannerError(f"{path}: ambiguous lifecycle declaration ({len(matches)} matches)")
+    line_index, status = matches[0]
+    if line_index != 2:
+        raise MalformedBannerError(
+            f"{path}: recognized lifecycle declaration at line {line_index + 1}, expected line 3"
+        )
+    return status
+
+
+def _declaration_line3(text: str) -> str:
+    lines = text.splitlines()
+    return lines[2] if len(lines) > 2 else ""
+
+
+def parse_roadmap_status_manifest(text: str) -> dict:
+    """Parse ``specs/roadmap-status.json`` bytes into a plain dict.
+
+    Requires exactly ``schema``, ``selected_roadmap``, and ``roadmaps``;
+    ``roadmaps`` must be a stable path-sorted array of ``{"path", "status"}``
+    records with a recognized status. Raises :class:`MalformedRegistryError`
+    on any structural defect. Does NOT check tracked-path coverage or
+    banner coherence — that is :func:`read_roadmap_status`'s job.
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise MalformedRegistryError(f"roadmap-status.json is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict) or set(data) != {"schema", "selected_roadmap", "roadmaps"}:
+        raise MalformedRegistryError("roadmap-status.json must contain exactly schema/selected_roadmap/roadmaps")
+    if data.get("schema") != ROADMAP_STATUS_SCHEMA:
+        raise MalformedRegistryError(f"unsupported roadmap-status schema: {data.get('schema')!r}")
+    selected = data.get("selected_roadmap")
+    if not isinstance(selected, str) or not selected:
+        raise MalformedRegistryError("selected_roadmap must be a nonempty string")
+    roadmaps = data.get("roadmaps")
+    if not isinstance(roadmaps, list) or not roadmaps:
+        raise MalformedRegistryError("roadmaps must be a nonempty array")
+    seen: Set[str] = set()
+    paths: List[str] = []
+    for entry in roadmaps:
+        if not isinstance(entry, dict) or set(entry) != {"path", "status"}:
+            raise MalformedRegistryError("each roadmaps[] record must contain exactly path and status")
+        path = entry["path"]
+        status = entry["status"]
+        if not isinstance(path, str) or not path:
+            raise MalformedRegistryError("roadmaps[].path must be a nonempty string")
+        if _escapes_repo(path) or not path.startswith("specs/") or not path.endswith(".md"):
+            raise MalformedRegistryError(f"roadmaps[].path is noncanonical or escaping: {path!r}")
+        if status not in ROADMAP_STATUSES:
+            raise MalformedRegistryError(f"roadmaps[].status is unrecognized: {status!r}")
+        if path in seen:
+            raise MalformedRegistryError(f"duplicate roadmaps[] path: {path}")
+        seen.add(path)
+        paths.append(path)
+    if paths != sorted(paths):
+        raise MalformedRegistryError("roadmaps[] must be stable path-sorted")
+    if selected not in seen:
+        raise MalformedRegistryError(f"selected_roadmap {selected!r} is not one of roadmaps[]")
+    selected_entry = next(entry for entry in roadmaps if entry["path"] == selected)
+    if selected_entry["status"] != "active":
+        raise MalformedRegistryError(f"selected_roadmap {selected!r} is not registered active")
+    return data
+
+
+def _escapes_repo(path: str) -> bool:
+    if path.startswith("/") or path.startswith("\\"):
+        return True
+    return any(part in ("..", ".") for part in Path(path).parts)
+
+
+def _tracked_roadmap_paths(repo: Path) -> List[str]:
+    """The exact Git-tracked ``specs/phase-plans-*.md`` path set, stable-sorted."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-z", "--", "specs/phase-plans-*.md"],
+            capture_output=True, check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise MalformedRegistryError(f"unable to list tracked roadmaps: {exc}") from exc
+    names = [chunk.decode("utf-8") for chunk in proc.stdout.split(b"\0") if chunk]
+    return sorted(names)
+
+
+def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
+    """Read and fully coherence-validate ``specs/roadmap-status.json``.
+
+    Returns ``None`` when ``path`` is wholly absent (the only "legacy"
+    compatibility shape). When present, requires the registry to parse, its
+    tracked-path set to equal the Git-tracked ``specs/phase-plans-*.md`` set
+    exactly, and every path's registry status to equal its own parsed
+    primary-banner status — all BEFORE returning any value. Raises a typed
+    :class:`RoadmapStatusError` subclass on any defect.
+    """
+    repo = Path(repo)
+    path = Path(path)
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise MalformedRegistryError(f"roadmap-status.json is empty: {path}")
+    data = parse_roadmap_status_manifest(text)
+
+    registered_paths = sorted(entry["path"] for entry in data["roadmaps"])
+    active_paths = [entry["path"] for entry in data["roadmaps"] if entry["status"] == "active"]
+    if active_paths != [data["selected_roadmap"]]:
+        raise StatusCoherenceError(
+            f"roadmap-status.json must declare exactly the selected roadmap active: active={active_paths}"
+        )
+    tracked_paths = _tracked_roadmap_paths(repo)
+    if registered_paths != tracked_paths:
+        missing = sorted(set(tracked_paths) - set(registered_paths))
+        extra = sorted(set(registered_paths) - set(tracked_paths))
+        raise StatusCoherenceError(
+            f"roadmap-status.json path coverage drift: missing={missing} extra={extra}"
+        )
+
+    for entry in data["roadmaps"]:
+        rel_path = entry["path"]
+        roadmap_file = repo / rel_path
+        try:
+            banner_text = roadmap_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise StatusCoherenceError(f"cannot read tracked roadmap {rel_path}: {exc}") from exc
+        banner_status = parse_roadmap_banner_status(banner_text, rel_path)
+        if banner_status != entry["status"]:
+            raise StatusCoherenceError(
+                f"{rel_path}: registry status {entry['status']!r} disagrees with "
+                f"banner status {banner_status!r}"
+            )
+
+    if data["selected_roadmap"] not in registered_paths:
+        raise StatusCoherenceError(f"selected_roadmap {data['selected_roadmap']!r} is not tracked")
+
+    return data
+
+
+def validate_roadmap_status_coherence(repo: Path, required: bool = False) -> Optional[dict]:
+    """Full coherence validation over ``specs/roadmap-status.json``.
+
+    A wholly absent registry is a no-op for legacy/synthetic repositories.
+    When the canonical LEGIBLE phase marker is present, ``required=True`` also
+    makes absence a typed failure. Present-but-defective registries always fail.
+    """
+    repo = Path(repo)
+    registry_path = repo / ROADMAP_STATUS_REGISTRY_REL
+    status = read_roadmap_status(repo, registry_path)
+    canonical_marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
+    if status is None and required and canonical_marker.is_file():
+        raise MalformedRegistryError(f"required roadmap-status registry is absent: {registry_path}")
+    return status
+
+
+def declared_active_roadmap(repo: Path) -> Path:
+    """The sole on-disk roadmap that is both registered and banner-declared
+    ``active``. With the registry present this is exactly its
+    ``selected_roadmap``. With the registry wholly absent (legacy/synthetic
+    repositories), falls back to the historical singleton-glob behavior:
+    the sole ``specs/phase-plans-v*.md`` candidate, or the sole one whose own
+    banner declares it ``active``."""
+    repo = Path(repo)
+    registry_path = repo / ROADMAP_STATUS_REGISTRY_REL
+    status = read_roadmap_status(repo, registry_path)
+    if status is not None:
+        return (repo / status["selected_roadmap"]).resolve()
+
+    candidates = sorted((repo / "specs").glob("phase-plans-v*.md"))
+    if len(candidates) == 1:
+        return candidates[0].resolve()
+    active_candidates: List[Path] = []
+    for candidate in candidates:
+        try:
+            rel = candidate.relative_to(repo).as_posix()
+            if parse_roadmap_banner_status(candidate.read_text(encoding="utf-8"), rel) == "active":
+                active_candidates.append(candidate)
+        except RoadmapStatusError:
+            continue
+    if len(active_candidates) == 1:
+        return active_candidates[0].resolve()
+    raise NonActiveSelectionError(f"cannot determine the sole active roadmap in {repo}")
 
 
 def main(argv: List[str]) -> int:

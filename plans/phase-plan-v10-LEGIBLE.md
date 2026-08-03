@@ -7,8 +7,8 @@ legible_lifecycle_contract: legible_tdd_candidate_main.v1
 legible_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_LEGIBLE
 legible_capability_marker: phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1
 legible_expected_nodeids: 84
-legible_owned_paths_count: 16
-legible_owned_paths_sha256: 01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b
+legible_owned_paths_count: 18
+legible_owned_paths_sha256: ad11f462c732dabae8a7f51e61a3b229dbb1a8f45954c266d14cb9547cfdd240
 automation:
   suite_command: [bash, -lc, 'cd phase-loop-runtime && PYTHONPATH=src python -m pytest -m "not dotfiles_integration" -q && bash scripts/gate_a_cleanroom.sh']
 ---
@@ -35,7 +35,9 @@ freezes v2's exact top-level fields and the public function signature. The same 
 that public contract document from its fifteen-path ownership set and incorrectly claimed no
 public-document change even though `cli.py` and `_contract_docs` are public surfaces. This repair
 therefore owns the exact contract document, defines the versioned compatibility boundary below,
-and expands the closed owned set to sixteen paths. The next exact-digest panel then blocked plan
+and initially expanded the closed owned set to sixteen paths. The C5 chronology repair below adds
+only its regression-test file and this exact phase plan, producing the final eighteen-path set. The
+next exact-digest panel then blocked plan
 digest `45a321c4fb38708d217b47021462311b06441fbafc5763bf12ac3f4a987014eb`:
 GPT-5.6 Sol found that current `run_verification` serializes a nonempty
 `operational_exemptions` value as a tenth schema-v2 top-level field and the pre-existing
@@ -300,7 +302,13 @@ The chronology is exact and reducer-enforced:
    and `xfail`/`xpass` are forbidden substitutes.
 5. Land the tests-only change on the target/default branch through ordinary green merge gates.
    Record the canonical landing commit whose first-parent diff changes exactly the two test
-   paths, and cut the implementation branch from a fetched target head containing that commit.
+   paths. The original two-file RED landing is
+   `1c57cc43134506bfeb8f9c21220f8aeef32af384`. A later pre-base test-only correction at
+   `a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea` changed only
+   `phase-loop-runtime/tests/test_legible_roadmap_contract.py` to bind its fixture to the canonical
+   roadmap digest. The reducer's `tests_landing` field names that latest corrective anchor; both
+   frozen blobs at that anchor must be byte-identical at `B`, `P`, `I`, and canonical main. Cut the
+   implementation branch from a fetched target head containing both test-only commits.
 6. Implement without editing either test path or activation logic. Before the capability marker
    exists, implementation iterations force these tests with the env; SL-2 installs
    `legible_evidence.LEGIBLE_CAPABILITY_VERSION = "legible.v1"` only after every lane's
@@ -317,8 +325,10 @@ The chronology is exact and reducer-enforced:
    body-table SHA to be an ancestor of `H`, and `B0..H` to be the frozen singleton comment-only
    path/blob transition. In private temporary indexes it revalidates `T_B0H`/`R`, then recomputes
    clean server result tree `T_BH` from merge base `B0` and tips `[B, H]`, requires no unmerged
-   index stages, `changed(B, T_BH) == E`, and result blob `R`. Only then may it merge that exact
-   PR head with merge-commit method. Finalize server merge `M` only when its ordered parents are
+   index stages, `changed(B, T_BH) == E`, and result blob `R`. For the already-published immutable
+   `Consiliency/agent-harness#347` transition, the historical exact-tree publish is accepted as the
+   merge publisher only after re-proving those same inputs and result; it is not retroactively
+   described as a GitHub merge action. Finalize server merge `M` only when its ordered parents are
    exactly `[B, H]`, `M^{tree} == T_BH`, and its first-parent delta is the same frozen one-file
    transition ending at `R`.
 9. From the unchanged phase-authored candidate `P`, create target-integration merge `I` with
@@ -330,15 +340,20 @@ The chronology is exact and reducer-enforced:
    head and remote OID both equal `I`. That process alone runs the broad compatible suite, final
    84-nodeid JUnit, exact-head implementation panel, and candidate evidence.
 10. After candidate evidence and merge gates pass, merge the implementation PR without changing
-    candidate `I`. Fetch canonical main, resolve one exact canonical main OID containing `I`,
+    candidate `I`, and require the server-side merge commit to have `I` as its second parent and
+    retain the candidate-stage PR head/body identity. Fetch canonical main, resolve one exact
+    canonical main OID containing both that server merge commit and `I`,
     create another clean worktree at that OID, and launch a third new repo-local
     `phase-loop attest --stage canonical-main` process. Only its exact-main-bound artifact can
     close LEGIBLE.
 
 The implementation range must contain no diff at either frozen test path. The implementation
-base/head and final canonical main must descend from the landed test commit, both test blobs
+base/head and final canonical main must descend from the original landing and the corrective test
+anchor, and both test blobs
 must remain identical at the test landing, implementation base, candidate head, and canonical
-main, and the plan/roadmap blobs must match their recorded exact digests at each ref. A
+main. The reducer records the original landing and its two blobs separately; its `tests_landing`
+blob-equality anchor is the latest corrective commit. Plan and roadmap bytes at each attesting ref
+must match the plan contract recorded for that ref. A
 same-branch `base -> tests -> implementation` sequence, a candidate not first pushed, reuse of
 the builder process, or evidence from an earlier candidate/main OID fails. No existing test is
 migrated by this plan. If integration makes migration unavoidable, planning must be repaired
@@ -536,14 +551,14 @@ manifest is reported, never filtered out. `validate_manifest(...).valid` must al
 ### SL-2 — agent-harness#347 evidence, verification contract, and docs-catalog rescan
 
 - **Scope**: Populate the inert docs catalog, evolve and document the verification-evidence contract without changing the existing schema-v2 writer or frozen public function/CLI behavior, implement the executable LEGIBLE evidence reducer plus fresh-process runner-owned verification-sidecar stamping/validation, and promote and merge `Consiliency/agent-harness#347` only after exact-head body-ancestry and governance checks pass.
-- **Owned files**: `.claude/docs-catalog.json`, `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`, `phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
+- **Owned files**: `.claude/docs-catalog.json`, `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`, `phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`, `phase-loop-runtime/tests/test_legible_review_repairs.py`, `plans/phase-plan-v10-LEGIBLE.md`
 - **Interfaces provided**: `IF-0-LEGIBLE-2`, `docs_catalog_entry_count`, `docs-catalog rescan`, `legible_evidence.v1`, `verification_evidence.v3`, its final-log seal protocol and closed extension registry, `verification_evidence_sidecar.v1`, `agent-harness#347 exact-head merge evidence`
 - **Interfaces consumed**: `LEGIBLE frozen falsifier suite`, `ManifestPresenceReport`, `reviewtruth_fable_transition`, `phase-loop attest`, `verification_evidence.v2` (pre-existing), frozen `run_verification` signature (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
 
 - test: LEGIBLE-C0 consumes the SL-0/SL-1 frozen catalog, status-evidence, PR-evidence, chronology, activation/JUnit, fresh-process, runner-sidecar, artifact-digest, contract-document, version-relative v1/v2/v3 inventories, both v2 `operational_exemptions` forms, both corresponding v3-sidecar forms, unknown-version/unknown-field, and public CLI/function compatibility tests first and forces them with `PHASE_LOOP_TDD_EXPECT_LEGIBLE=1` before LEGIBLE-C1 or LEGIBLE-C2 starts; the pre-existing operational-evidence sentinel also runs green unchanged.
-- prerequisite test correction: prover-discovered regression tests in `phase-loop-runtime/tests/test_legible_review_repairs.py` land on the target branch before implementation base `B`, skip as one file while the capability module is absent, and execute after the marker is installed. They are not part of the frozen 84-nodeid inventory, do not change either frozen test blob, and are absent from `changed(B, P)` rather than being added to the exact phase-owned set `O`.
+- prerequisite test correction: prover-discovered regression tests in `phase-loop-runtime/tests/test_legible_review_repairs.py` originally landed on the target branch before implementation base `B`, skip as one file while the capability module is absent, and execute after the marker is installed. They are not part of the frozen 84-nodeid inventory and do not change either frozen test blob. The C5-discovered `test_attester_distinguishes_original_landing_from_corrective_anchor`, `test_repaired_plan_has_no_stale_owned_set_contract`, `test_merged_pr_transition_rebinds_fresh_candidate_without_mutation`, `test_merged_candidate_dispatches_to_rebind_without_builder_intent`, `test_post_merge_transition_rejects_open_pr_before_staging`, `test_rebind_recovery_preserves_type_and_rejects_crossed_pairing`, `test_candidate_remote_binds_current_delivery_pr`, `test_legible_panel_stages_small_bundle_contents`, and `test_pr_transition_loader_rejects_review_panel_drift` are the later additions to that file; this plan repair adds the file and plan to the exact phase-owned set `O` and binds their resulting `B..P` delta instead of misreporting them as pre-base bytes.
 - impl: LEGIBLE-C1 and LEGIBLE-C2 depend on LEGIBLE-C0 and implement catalog rescan, the public contract-document evolution, the C2-available reducer primitives, staged verifier, dormant `phase-loop attest` command/aggregate-assembly framework and final validators, and runner/verification-evidence probe-sidecar binding without changing the public `run_verification` signature or either existing v2 serialization form; the candidate-building process may exercise these changes only as a subprocess test target and may not attest itself. C4/C5/C7 execute that already-frozen command after their merge-dependent inputs exist; C2 does not claim that the complete candidate/canonical-main `legible_evidence.v1` aggregate already exists.
 - verify: LEGIBLE-C3 through LEGIBLE-C7 freeze/push the implementation candidate, use fresh exact-head processes for the `Consiliency/agent-harness#347` transition and implementation panel/evidence, merge only after the broad compatible gate, and finally use another fresh process bound to exact canonical main; only C7 may produce the phase-closing verification artifact.
 
@@ -551,9 +566,9 @@ manifest is reported, never filtered out. `validate_manifest(...).valid` must al
 |---|---|---|---|---|---|
 | LEGIBLE-C0 | test | SL-0, SL-1 | `phase-loop-runtime/tests/test_legible_roadmap_contract.py`, `phase-loop-runtime/tests/test_legible_evidence.py` | frozen catalog tests plus `test_status_evidence_rejects_registry_banner_drift_or_path_set_change`, `test_pr_evidence_rejects_non_ancestor_body_sha`, `test_pr_evidence_rejects_head_or_body_change_before_merge`, `test_pr_evidence_requires_merged_result_for_snapshotted_head`, `test_pr_evidence_rejects_unbound_target_integration_delta`, `test_chronology_rejects_non_test_only_commit`, `test_chronology_rejects_same_branch_sequence`, `test_chronology_requires_test_landing_on_target_before_implementation_base`, `test_chronology_rejects_test_path_diff_in_implementation_pr_range`, `test_chronology_rejects_changed_frozen_test_blob`, candidate/main bootstrap-head and process-separation controls, exact manifest/frontmatter plan-digest ancestry, default/RED/final JUnit count/set/status controls, `test_verification_sidecar_runner_captures_bounded_redacted_fable_probe_evidence`, `test_verification_sidecar_runner_rejects_self_reported_fable_probe_evidence`, `test_runner_stamps_legible_sidecar_path_and_digest`, missing/drift/path-escape/oversize sidecar controls, and the contract-document/v1-v2-v3 field-inventory/operational-exemptions/no-sidecar/v3-sidecar/unknown-version/unknown-field/public-compatibility controls frozen by LEGIBLE-A0; the pre-existing operational-evidence nodeid remains outside ownership and must stay green | `cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_LEGIBLE=1 PYTHONPATH=src python -m pytest tests/test_legible_roadmap_contract.py tests/test_legible_evidence.py -k "catalog or status_evidence or pr_evidence or chronology or activation or junit or fresh_process or artifact_digest or verification_sidecar or verification_contract or public_compatibility" -q && PYTHONPATH=src python -m pytest tests/test_preflight_verification.py -k operational_evidence_is_recorded_but_not_executed -q` |
 | LEGIBLE-C1 | impl | LEGIBLE-C0 | `.claude/docs-catalog.json`, `phase-loop-runtime/src/phase_loop_runtime/docs_freshness.py` | none; tests remain owned and frozen by SL-0 | add deterministic `rescan-catalog` and `check-catalog` module commands, populate repo-owned document entries including the owned verification-evidence contract document, and make empty mean count zero; do not infer or catalog client-owned documents while `Consiliency/agent-harness#367` is unresolved |
-| LEGIBLE-C2 | impl | LEGIBLE-C0 | `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` | none; tests remain owned and frozen by SL-0 | update the public contract document and implement strict version-relative schema parsing, the closed registered-extension namespace interface, coherent roadmap-status collection/revalidation, TDD activation/JUnit and exact-digest chronology collection/validation helpers, phase-authored versus exact target-integration partition validators, implementation-PR test-path range rejection, bootstrap identity helpers, PR snapshot/finalization validators, artifact SHA-256 helpers, the dormant repo-local `phase-loop attest` command/aggregate-assembly framework and final validators, and staged `python -m phase_loop_runtime.legible_evidence verify`; preserve the exact public `run_verification(repo, run_dir, commands, suite_command, env_refresh, timeout_s, operational_exemptions=None, python_pin=None, phase_alias=None) -> VerificationResult` signature, exact nine-field v2 output when exemptions are absent/empty, exact ten-field v2 output when they are nonempty, and the value/return behavior required by the existing preflight test; have the runner invoke/capture the fixed `reviewtruth_fable_transition` adapter rather than accepting executor-authored JSON; bind that bounded probe/pointer record through the LEGIBLE-owned namespace, re-resolve/re-hash it on validation, and reject unsupported top-level/extension versions, unregistered namespaces, fields outside the selected version's allowed inventory, missing/path-escaping/symlinked/oversized, digest-drift, invalid stage/head/bootstrap/token binding, and self-reported/raw-probe evidence. C2 implements and freezes the command and assembly/validation machinery but does not claim the merge-dependent aggregate, implementation panel, candidate/main provenance, or phase-closing evidence: C4/C5/C7 execute that machinery and own those records after `M`, `I`, and canonical main exist. Install `LEGIBLE_CAPABILITY_VERSION = "legible.v1"` only after SL-0, SL-1, C1, and C2 are complete |
-| LEGIBLE-C3 | operational | LEGIBLE-C1, LEGIBLE-C2 | committed phase-authored candidate `P` and its remote branch | frozen chronology, activation, scope, and fresh-process falsifiers | require the capability marker and every production surface to be present; run the broad candidate-compatible gate as subprocesses; commit all phase-owned production/manifest/catalog changes without either test path or the frozen `agent-harness#347` integration path; push `P`, require remote branch OID equals local `HEAD`, record builder run/process identity, and return `awaiting_phase_closeout` without treating same-process verification as evidence |
-| LEGIBLE-C4 | operational | LEGIBLE-C3 | external `Consiliency/agent-harness#347` state and runner-owned candidate-transition evidence | all four frozen PR-evidence falsifiers, including exact refresh-base/merge-base/refreshed-head/body/refresh-parent/net-path/comment-only/blob/result binding, are consumed without modification | from a new clean worktree at pushed phase-authored candidate `P`, launch fresh repo-local `phase-loop attest --stage candidate`; snapshot exact server merge-time base `B`, exact `H`, body, commit table, checks/reviews, paths/blobs, and `parents(H) == [H0, B0]`; require `B` equals the implementation base and fetched target head, descends from exact refresh base `B0`, contains the tests-only landing, and retains `B0`'s external preimage; revalidate singleton comment-only `B0..H` plus exact `T_B0H`/`R`, then require a private-index merge from merge base `B0` and tips `[B, H]` to be clean and yield `T_BH` with `changed(B, T_BH) == E` and result blob `R`; merge with merge-commit method and finalize server merge `M` only when the PR remains bound to the snapshot, `parents(M) == [B, H]`, `M^{tree} == T_BH`, and `B..M` is exactly the frozen path transition ending at `R`; no handwritten JSON, builder-process substitute, post-snapshot base advancement, squash/rebase merge, body/head/parent/path/blob drift, or phase-author refresh is allowed |
+| LEGIBLE-C2 | impl | LEGIBLE-C0 | `phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`, `phase-loop-runtime/tests/test_legible_review_repairs.py`, `plans/phase-plan-v10-LEGIBLE.md` | the nine C5 chronology/rebind/delivery tests named above; the two SL-0 test files remain frozen | update the public contract document and implement strict version-relative schema parsing, the closed registered-extension namespace interface, coherent roadmap-status collection/revalidation, TDD activation/JUnit and exact-digest chronology collection/validation helpers, phase-authored versus exact target-integration partition validators, implementation-PR test-path range rejection, bootstrap identity helpers, PR snapshot/finalization validators, artifact SHA-256 helpers, the dormant repo-local `phase-loop attest` command/aggregate-assembly framework and final validators, and staged `python -m phase_loop_runtime.legible_evidence verify`; preserve the exact public `run_verification(repo, run_dir, commands, suite_command, env_refresh, timeout_s, operational_exemptions=None, python_pin=None, phase_alias=None) -> VerificationResult` signature, exact nine-field v2 output when exemptions are absent/empty, exact ten-field v2 output when they are nonempty, and the value/return behavior required by the existing preflight test; have the runner invoke/capture the fixed `reviewtruth_fable_transition` adapter rather than accepting executor-authored JSON; bind that bounded probe/pointer record through the LEGIBLE-owned namespace, re-resolve/re-hash it on validation, and reject unsupported top-level/extension versions, unregistered namespaces, fields outside the selected version's allowed inventory, missing/path-escaping/symlinked/oversized, digest-drift, invalid stage/head/bootstrap/token binding, and self-reported/raw-probe evidence. C2 implements and freezes the command and assembly/validation machinery but does not claim the merge-dependent aggregate, implementation panel, candidate/main provenance, or phase-closing evidence: C4/C5/C7 execute that machinery and own those records after `M`, `I`, and canonical main exist. Install `LEGIBLE_CAPABILITY_VERSION = "legible.v1"` only after SL-0, SL-1, C1, and C2 are complete |
+| LEGIBLE-C3 | operational | LEGIBLE-C1, LEGIBLE-C2 | committed phase-authored candidate `P` and its remote branch | frozen chronology, activation, scope, and fresh-process falsifiers | require the capability marker and every production surface to be present; run the broad candidate-compatible gate as subprocesses; commit all exact phase-owned changes without either frozen test path or the frozen `agent-harness#347` integration path; push `P`, require remote branch OID equals local `HEAD`, record builder run/process identity, and return `awaiting_phase_closeout` without treating same-process verification as evidence |
+| LEGIBLE-C4 | operational | LEGIBLE-C3 | external `Consiliency/agent-harness#347` state and runner-owned candidate-transition evidence | all four frozen PR-evidence falsifiers, including exact refresh-base/merge-base/refreshed-head/body/refresh-parent/net-path/comment-only/blob/result binding, are consumed without modification | from a new clean worktree at pushed phase-authored candidate `P`, launch fresh repo-local `phase-loop attest --stage candidate`; snapshot exact server merge-time base `B`, exact `H`, body, commit table, checks/reviews, paths/blobs, and `parents(H) == [H0, B0]`; require `B` equals the implementation base and fetched target head, descends from exact refresh base `B0`, contains the tests-only landing, and retains `B0`'s external preimage; revalidate singleton comment-only `B0..H` plus exact `T_B0H`/`R`, then require a private-index merge from merge base `B0` and tips `[B, H]` to be clean and yield `T_BH` with `changed(B, T_BH) == E` and result blob `R`; merge with merge-commit method and finalize server merge `M` only when the PR remains bound to the snapshot, `parents(M) == [B, H]`, `M^{tree} == T_BH`, and `B..M` is exactly the frozen path transition ending at `R`; no handwritten JSON, builder-process substitute, post-snapshot base advancement, squash/rebase merge, body/head/parent/path/blob drift, or phase-author refresh is allowed. If the exact PR is already `MERGED` before this candidate exists, a separate `transition_rebound` producer may bind immutable `M` to current `P` only after independently re-proving the same frozen snapshot, ancestry, body/check/review, singleton-path, semantic-token, private-index tree, and refreshed-result-blob facts and obtaining a fresh unanimous four-seat exact-`P` transition panel; that producer performs no push or PR mutation, records `Consiliency/agent-harness#347` as the merge publisher, refuses any existing mismatched builder transition or intent, and leaves every downstream `head == P` equality check unchanged |
 | LEGIBLE-C5 | operational | LEGIBLE-C4 | exact phase-authored candidate `P`, server merge `M`, two-parent target-integration merge `I`, and `.phase-loop/runs/<run-id>/legible-operational-evidence.json` | frozen exact-head, external-delta partition, process-boundary, broad-suite, panel, JUnit, and sidecar falsifiers | fetch target `M`; from unchanged `P`, create runner-controlled no-conflict target-integration merge `I` with ordered parents `[P, M]` and tree equal to the private-index recomputation from merge base `B` and tips `[P, M]`; require `P..I` to be exactly the frozen `agent-harness#347` path transition with result blob `R`, not the raw `H0` blob, and set final candidate equal to `I`; push `I`, rerun the broad compatible gate, then launch a different fresh clean-worktree `phase-loop attest --stage candidate` process whose startup head/imported runtime blobs/remote OID equal `I`; after that process runs the implementation panel and writes the fresh v2 verification artifact, its runner coordinator calls `_finalize_legible_operational_evidence` with only fixed-collector records to seal, validate, and bind the candidate aggregate |
 | LEGIBLE-C6 | operational | LEGIBLE-C5, mandatory exact-head implementation panel | implementation PR state | frozen merge-gate and exact-candidate evidence | require the full candidate gate and panel to bind still-current pushed integration candidate `I`, confirm required checks/reviews, and merge the implementation PR without head/body drift or any commit after `I`; no suite subset beyond the explicitly deferred canonical-main evidence wrapper is permitted |
 | LEGIBLE-C7 | verify | LEGIBLE-C6 | canonical main plus runner-owned metadata evidence | all 84 frozen nodeids and all pre-existing compatible tests | fetch canonical main, require one exact OID containing final candidate `I`, launch another fresh repo-local `phase-loop attest --stage canonical-main` process from a clean worktree at that OID, run every Verification command and the broad suite, re-prove the phase/external delta partition, require final JUnit `84 passed / 0 failed / 0 errors / 0 skipped`, then call `_finalize_legible_operational_evidence` to seal, validate, and bind the exact-main aggregate into `verification.json` |
@@ -674,6 +689,30 @@ verification artifact as the LEGIBLE v3 extension. C7 uses the same entrypoint f
 corresponding canonical-main aggregate. No C2 command may claim EC-LEGIBLE-0 or EC-LEGIBLE-4 from the staged
 roadmap-status verifier or probe sidecar alone. The final C5/C7 aggregate produces and validates:
 
+When `Consiliency/agent-harness#347` is already merged, C4 does not replay or claim its publish.
+The runner creates a separately typed `transition_rebound` record under the current builder run
+only after it re-derives immutable `M` and its exact `[B, H]` parents/tree/path/result blob from
+Git and the live merged snapshot, proves current `P` descends from `B`, and runs a new unanimous
+four-seat transition panel bound to `P`. Existing transition or intent evidence for that builder
+is never rewritten or silently rebound, and C5's existing candidate-head equality remains the
+acceptance boundary. If the process restarts after persisting the rebind intent, recovery must
+preserve the `transition_rebound` type, producer, publisher, and expected-tree provenance; the
+loader rejects either lawful intent type paired with the other transition type.
+
+Both C4 transition producers use a runner-authored review brief scoped only to the exact
+`Consiliency/agent-harness#347` transition slice and explicitly reserve whole-candidate
+implementation review and verification for C5/C6. The transition panel binds that brief by
+repo-relative path and SHA-256 and revalidates its scope and bytes on every load; the C5
+implementation panel retains the ordinary whole-feature review brief. The transition intent and
+sealed/rebound transition also bind the non-usable `legible_c4_early_prover.v1` receipt by path and
+SHA-256. Loaders require its exact head, `role=early_prover`, `binding_prover=false`, and
+`usable=false`, and require its recorded bundle digest to equal the SHA-256 of the panel-reviewed
+bundle prefix before the unique `Early prover evidence` section. This preserves the truthful
+pre-append prover input while the final panel digest binds the appended receipt disclosure. C5 and
+C7 include the receipt, final transition bundle, and scoped brief in their artifact inventory; a
+missing, symlinked, altered, schema/head/role-drifted, usable/binding, prefix-mismatched, or unbound
+attachment fails closed.
+
 - `roadmap_status`: registry path/length/SHA-256, selected path, Git-tracked path-set digest, and
   one stable path-sorted record for every tracked roadmap containing the registry status, parsed
   banner status, exact primary-declaration line number, and declaration SHA-256. Collection and
@@ -746,9 +785,9 @@ execution-time `B` snapshot and server merge: server PR base, implementation bas
 target head must all be the same exact recorded `B`.
 
 The reducer partitions chronology instead of treating every `B..I` path as phase-owned. Let
-`O` be the exact 16-item manifest/lane-owned set and let `E` be the singleton frozen
+`O` be the exact 18-item manifest/lane-owned set and let `E` be the singleton frozen
 `Consiliency/agent-harness#347` path above. The canonical `O` digest is SHA-256
-`01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b` over the
+`ad11f462c732dabae8a7f51e61a3b229dbb1a8f45954c266d14cb9547cfdd240` over the
 UTF-8, bytewise path-sorted list with one repo-relative path plus `\n` per record. The plan
 frontmatter count/digest, parsed lane union, and manifest list/count/digest must all equal that
 same material. The reducer requires `O ∩ E = ∅` and
@@ -787,10 +826,12 @@ or result drift; or any external delta other than this exact refreshed
 `Consiliency/agent-harness#347` contribution fails closed and requires plan repair. `E` is never
 added to lane ownership or generalized into an unowned-path allowlist.
 
-Both test blobs and the literal nodeid inventory remain byte-identical at the tests-only landing,
-`B`, `P`, `I`, and canonical main, and the plan/roadmap blobs match the
-manifest/frontmatter digests at each ref. The collector parses the LEGIBLE manifest entry's
-`lifecycle[0].metadata.legible_plan_contract`, requires its `plan_sha256`, exact 16-item
+The original two-file landing and its blob inventory are recorded independently. Both test blobs
+and the literal nodeid inventory remain byte-identical at the corrective `tests_landing`, `B`,
+`P`, `I`, and canonical main. The plan and roadmap at each attesting ref match that ref's
+manifest/frontmatter digests; base `B` retains its predecessor contract while repaired `P`, `I`,
+and canonical main carry the repaired contract. The collector parses the LEGIBLE manifest entry's
+`lifecycle[0].metadata.legible_plan_contract`, requires its `plan_sha256`, exact 18-item
 `owned_paths`, `owned_paths_count`, `owned_paths_sha256`, two `test_paths`, activation env,
 capability marker, expected-nodeid count, and lifecycle literal to agree with the live plan
 frontmatter/lane IR, then requires the
@@ -919,7 +960,7 @@ evidence and cannot satisfy either criterion.
   and mandatory review gates pass. Its allowance is the refreshed singleton comment-only
   `B0..H` transition tied to exact refresh base `B0`, exact execution-time server base `B`,
   refreshed head `H`, refresh parents `[H0, B0]`, recomputed result `R`, server two-parent merge
-  `M`, and deterministic two-parent integration `I`; it does not alter the exact 16-item
+  `M`, and deterministic two-parent integration `I`; it does not alter the exact 18-item
   phase-owned set. Missing merge authority, target-base drift, or any
   head/body/parent/path/comment-only/blob/result mismatch blocks accurately rather than rewriting
   the criterion, accepting a different PR contribution, laundering it through a phase-authored
@@ -945,15 +986,15 @@ evidence and cannot satisfy either criterion.
   declares both the pending and resolved REVIEWTRUTH states, so the fixed sidecar adapter
   classifies that transition without mutating or rebinding roadmap bytes.
 - The existing LEGIBLE manifest entry is the non-self-referential plan-digest authority. Its
-  `lifecycle[0].metadata.legible_plan_contract` records the final plan SHA-256, exact 16-item
+  `lifecycle[0].metadata.legible_plan_contract` records the final plan SHA-256, exact 18-item
   lane-owned path list/count/digest, two frozen test paths, lifecycle literal, activation env,
   capability marker, and expected-nodeid count. Every planning, tests-only, candidate, panel, and
   canonical-main artifact must recompute the plan digest and compare that metadata with the
   plan frontmatter and parsed lane IR; the frozen `agent-harness#347` path must remain absent from
   that owned set and is accepted only through the exact target-integration contract in this plan.
   The plan cannot carry its own SHA-256 in frontmatter; omitting this manifest comparison,
-  accepting a stale panel digest, or allowing any lifecycle ref to contain different
-  plan/roadmap bytes is a hard chronology failure.
+  accepting a stale panel digest, or allowing an attesting ref's plan/roadmap bytes to differ from
+  the contract bound at that ref is a hard chronology failure.
 - IF-0-VC-2 command preflight is satisfied only when the plan validator resolves the roadmap
   digest, `verification_commands_from_plan` extracts every command bullet, and
   `resolve_suite_command_doc` resolves the exact frontmatter `automation.suite_command` retained
@@ -971,7 +1012,7 @@ evidence and cannot satisfy either criterion.
 - downstream handling: `roadmap amendment`
 
 This closeout decision is metadata-only downstream routing, not implementation write
-authorization. LEGIBLE remains limited to the exact 16 lane-owned paths and does not mutate any
+authorization. LEGIBLE remains limited to the exact 18 lane-owned paths and does not mutate any
 `specs/phase-plans-*.md` bytes. The owned verification-evidence contract document is an in-phase
 implementation/public-contract surface, not a `spec_delta_closeout` target; its edit and docs
 audit are governed by SL-2. The preserved `roadmap_amendment` decision and target surfaces
@@ -1013,10 +1054,10 @@ SHA, the exact six-row set frozen above, and all results zero. In private tempor
 recompute exact `T_B0H`/`R` from merge base `B0` and tips `[B0, H]`, then recompute `T_BH` from
 merge base `B0` and tips `[B, H]`; require no unmerged stages, `T_B0H == H^{tree}`,
 `changed(B, T_BH)` to be the singleton external path, and the exact refreshed result identity
-above. Require the PR to be non-draft with required checks/reviews satisfied; merge with
-merge-commit method; then require
-`state == MERGED`, non-null `mergedAt`, and a
-non-null server merge commit `M` from
+above. Require the PR to be non-draft with required checks/reviews satisfied. For the immutable
+already-published `Consiliency/agent-harness#347` history, accept its exact-tree publish only after
+the rebound producer re-proves the same review and tree facts; then require
+`state == MERGED`, non-null `mergedAt`, and the recorded merge commit `M` from
 `gh pr view 347 --repo Consiliency/agent-harness --json state,mergedAt,mergeCommit,headRefOid,body`.
 The runner requires `parents(M) == [B, H]`, `M^{tree} == T_BH`, and `changed(B, M)` to be exactly
 the frozen transition ending at `R`; it creates integration commit `I` with

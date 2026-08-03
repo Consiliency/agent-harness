@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -15,7 +16,14 @@ legible_evidence = pytest.importorskip(
     "phase_loop_runtime.legible_evidence",
     reason="LEGIBLE implementation capability is not installed",
 )
-from phase_loop_runtime import discovery, docs_freshness, plan_manifest, roadmap_assumptions, roadmap_lint
+from phase_loop_runtime import (
+    discovery,
+    docs_freshness,
+    plan_manifest,
+    roadmap_assumptions,
+    roadmap_lint,
+    verification_evidence,
+)
 from phase_loop_runtime.docs_freshness import check_catalog
 from phase_loop_runtime.plan_manifest import check
 from phase_loop_runtime.roadmap_assumptions import _classify_reviewtruth_transition
@@ -71,8 +79,10 @@ LEGIBLE_OWNED_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
     "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
     "phase-loop-runtime/tests/test_legible_evidence.py",
+    "phase-loop-runtime/tests/test_legible_review_repairs.py",
     "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
     "plans/manifest.json",
+    "plans/phase-plan-v10-LEGIBLE.md",
     "specs/roadmap-assumption-probes-v10.json",
     "specs/roadmap-status.json",
 )
@@ -114,6 +124,10 @@ LEGIBLE_SKIP_REASON = (
     "LEGIBLE capability absent (set PHASE_LOOP_TDD_EXPECT_LEGIBLE=1, or install "
     "phase_loop_runtime.legible_evidence with LEGIBLE_CAPABILITY_VERSION == 'legible.v1')"
 )
+LEGIBLE_REPAIRED_PLAN_EXCERPT = """\
+the historical exact-tree publish is accepted as the
+require the server-side merge commit to have `I` as its second parent
+"""
 
 
 def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
@@ -124,7 +138,9 @@ def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
     return rel
 
 
-def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
+def _operational_fixture(
+    repo: Path, *, stage: str = "candidate"
+) -> tuple[str, dict[str, dict]]:
     source_repo = Path(__file__).resolve().parents[2]
 
     def git(*args: str, input_text: str | None = None) -> str:
@@ -167,7 +183,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     plan_path = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
     owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
     plan_path.write_text(
-        "---\nphase: LEGIBLE\nlegible_owned_paths_count: 16\n"
+        "---\nphase: LEGIBLE\nlegible_owned_paths_count: 18\n"
         f"legible_owned_paths_sha256: {owned_digest}\n---\n# LEGIBLE fixture\n",
         encoding="utf-8",
     )
@@ -281,6 +297,14 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         )
     git("add", *(rel for rel, _ in frozen_by_path))
     git("commit", "-m", "tests-only landing")
+    original_tests_landing = git("rev-parse", "HEAD")
+    corrective_path = repo / frozen_by_path[0][0]
+    corrective_path.write_text(
+        corrective_path.read_text(encoding="utf-8") + "# canonical roadmap fixture binding\n",
+        encoding="utf-8",
+    )
+    git("add", corrective_path.relative_to(repo).as_posix())
+    git("commit", "-m", "test-only corrective anchor")
     implementation_base = git("rev-parse", "HEAD")
 
     git("switch", "-c", "candidate", implementation_base)
@@ -314,6 +338,21 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
     )
     integration = git("rev-parse", "HEAD")
     git("update-ref", "refs/remotes/origin/codex/fixture", integration)
+    implementation_merge = git(
+        "commit-tree",
+        tree(integration),
+        "-p",
+        server_merge,
+        "-p",
+        integration,
+        input_text="implementation PR merge\n",
+    )
+    git("branch", "canonical-main", implementation_merge)
+    expected_head = integration if stage == "candidate" else implementation_merge
+    if stage == "canonical-main":
+        subprocess.run(
+            ["git", "switch", "canonical-main"], cwd=repo, check=True, capture_output=True
+        )
 
     evidence_dir = repo / "evidence"
     evidence_dir.mkdir()
@@ -360,7 +399,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         encoding="utf-8",
     )
     bundle_path = evidence_dir / "implementation-review-bundle.md"
-    bundle_path.write_text(f"exact head: {integration}\n", encoding="utf-8")
+    bundle_path.write_text(f"exact head: {expected_head}\n", encoding="utf-8")
     panel_models = {
         "claude": "claude-fable-5",
         "codex": "gpt-5.6-sol",
@@ -394,7 +433,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         json.dumps(
             {
                 "schema": "advisor_board.v1",
-                "head": integration,
+                "head": expected_head,
                 "bundle_path": bundle_path.relative_to(repo).as_posix(),
                 "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
                 "legs": leg_records,
@@ -535,6 +574,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
         "roadmap_status": legible_evidence.collect_roadmap_status(repo, required=True),
         "chronology": {
             "refresh_base": refresh_base,
+            "original_tests_landing": original_tests_landing,
             "tests_landing": implementation_base,
             "implementation_base": implementation_base,
             "phase_candidate": candidate,
@@ -543,6 +583,17 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "candidate_head": integration,
             "candidate_remote_ref": "refs/remotes/origin/codex/fixture",
             "candidate_remote_oid": integration,
+            "implementation_pull_request": {
+                "repository": "Consiliency/agent-harness",
+                "number": 430,
+                "state": "OPEN" if stage == "candidate" else "MERGED",
+                "base_ref": "main",
+                "head": integration,
+                "body_sha256": hashlib.sha256(b"LEGIBLE implementation delivery").hexdigest(),
+                "merged_at": None if stage == "candidate" else "2026-08-02T05:00:00Z",
+                "merge_commit": None if stage == "candidate" else implementation_merge,
+                "parents": [] if stage == "candidate" else [server_merge, integration],
+            },
             "plan_path": "plans/phase-plan-v10-LEGIBLE.md",
             "plan_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
             "roadmap_path": "specs/phase-plans-v10.md",
@@ -550,6 +601,9 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "owned_paths": list(LEGIBLE_OWNED_PATHS),
             "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
             "owned_paths_sha256": owned_digest,
+            "original_frozen_test_blobs": {
+                rel: blob(original_tests_landing, rel) for rel, _ in frozen_by_path
+            },
             "frozen_test_blobs": {
                 rel: {
                     ref: blob(commit, rel)
@@ -623,7 +677,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "final": execution_record(
                 junit_path=final_junit,
                 log_path=final_log,
-                execution_head=integration,
+                execution_head=expected_head,
                 exit_code=0,
                 marker_present=True,
                 passed=84,
@@ -673,7 +727,7 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             "recomputed_tree": tree(integration),
         },
         "assumption_probes": {
-            "execution_head": integration,
+            "execution_head": expected_head,
             "records": probe_records,
         },
         "artifacts": {
@@ -699,7 +753,26 @@ def _operational_fixture(repo: Path) -> tuple[str, dict[str, dict]]:
             ]
         },
     }
-    return integration, sections
+    if stage == "canonical-main":
+        candidate_process = sections["process_attestations"]["candidate"]
+        sections["process_attestations"]["canonical_main"] = {
+            **candidate_process,
+            "run_id": "canonical-1",
+            "parent_run_id": candidate_process["run_id"],
+            "head": expected_head,
+            "bootstrap_head": expected_head,
+            "process_start_token": "canonical-token",
+            "loaded_runtime_blobs": {
+                rel: {
+                    "path": rel,
+                    "blob_oid": blob(expected_head, rel),
+                    "byte_length": len((repo / rel).read_bytes()),
+                    "sha256": hashlib.sha256((repo / rel).read_bytes()).hexdigest(),
+                }
+                for rel in LEGIBLE_LOADED_RUNTIME_PATHS
+            },
+        }
+    return expected_head, sections
 
 
 def test_legacy_fable_observation_without_external_status_remains_pending(tmp_path, monkeypatch):
@@ -1196,6 +1269,70 @@ def test_canonical_main_attest_rejects_nonexistent_candidate(tmp_path):
         )
 
 
+def test_builder_attest_persists_captured_process_identity(tmp_path):
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    result = legible_evidence.attest(
+        repo=repo,
+        stage="builder",
+        expected_head=head,
+        builder_run_id="builder-captured",
+        process_start_token="a" * 64,
+    )
+
+    artifact = repo / result["builder_process_artifact"]
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert result["status"] == "builder_recorded"
+    assert payload["schema"] == "legible_builder_process.v1"
+    assert payload["run_id"] == "builder-captured"
+    assert payload["head"] == head
+    assert payload["process_start_token"] == "a" * 64
+    assert payload["process_id"] == os.getpid()
+
+
+def test_builder_process_loader_requires_captured_exact_head_record(tmp_path):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    run_dir = repo / ".phase-loop" / "runs" / "builder-captured"
+    run_dir.mkdir(parents=True)
+    record = {
+        "schema": "legible_builder_process.v1",
+        "run_id": "builder-captured",
+        "stage": "builder",
+        "head": head,
+        "bootstrap_head": head,
+        "repo_realpath": str(repo.resolve()),
+        "cli_path": str(repo / "phase-loop-runtime/src/phase_loop_runtime/cli.py"),
+        "cli_sha256": "1" * 64,
+        "python_executable": sys.executable,
+        "process_id": 123,
+        "process_start_token": "a" * 64,
+        "loaded_runtime_blobs": {},
+    }
+    path = run_dir / "legible-builder-process.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    loaded = runner._load_legible_builder_process(
+        repo, run_dir, "builder-captured", head
+    )
+    assert loaded["process_start_token"] == "a" * 64
+
+    record["head"] = "0" * 40
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(
+        legible_evidence.LegibleProcessBootstrapError,
+        match="builder process identity",
+    ):
+        runner._load_legible_builder_process(repo, run_dir, "builder-captured", head)
+
+
 def test_operational_evidence_round_trip_is_sealed_and_closed(tmp_path):
     repo = make_repo(tmp_path)
     head, sections = _operational_fixture(repo)
@@ -1412,6 +1549,88 @@ def test_finalize_operational_attestation_binds_aggregate_to_verification(tmp_pa
     ).ok
 
 
+def test_append_verification_command_reseals_and_records_result(tmp_path):
+    repo = make_repo(tmp_path)
+    run_dir = repo / ".phase-loop" / "runs" / "append-command"
+    run_verification(repo, run_dir, [], None, None, 10, phase_alias="LEGIBLE")
+    argv = [sys.executable, "-c", "print('post-aggregate-wrapper')"]
+
+    command = verification_evidence._append_verification_command(
+        repo,
+        run_dir / ARTIFACT_NAME,
+        argv,
+        10,
+    )
+
+    assert command.exit_code == 0
+    assert list(command.argv) == argv
+    assert validate_verification_artifact(run_dir / ARTIFACT_NAME).ok
+    payload = json.loads((run_dir / ARTIFACT_NAME).read_text(encoding="utf-8"))
+    assert payload["commands"][-1]["argv"] == argv
+
+
+def test_canonical_operational_evidence_requires_implementation_pr_merge(tmp_path):
+    repo = make_repo(tmp_path)
+    head, sections = _operational_fixture(repo, stage="canonical-main")
+    baseline = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / "canonical-implementation-baseline",
+        stage="canonical-main",
+        expected_head=head,
+        sections=sections,
+    )
+    assert legible_evidence.validate_operational_evidence(
+        repo=repo, path=baseline, stage="canonical-main", expected_head=head
+    ).ok
+
+    sections["chronology"].pop("implementation_pull_request")
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / "canonical-implementation-missing",
+        stage="canonical-main",
+        expected_head=head,
+        sections=sections,
+    )
+
+    validation = legible_evidence.validate_operational_evidence(
+        repo=repo, path=path, stage="canonical-main", expected_head=head
+    )
+    assert not validation.ok
+    assert validation.code == "operational_evidence_sections"
+
+
+@pytest.mark.parametrize("mutation", ("state", "base_ref", "head", "parents", "merge_commit"))
+def test_canonical_operational_evidence_rejects_invalid_implementation_pr_merge(
+    tmp_path, mutation
+):
+    repo = make_repo(tmp_path)
+    head, sections = _operational_fixture(repo, stage="canonical-main")
+    implementation_pr = sections["chronology"]["implementation_pull_request"]
+    if mutation == "state":
+        implementation_pr["state"] = "OPEN"
+    elif mutation == "base_ref":
+        implementation_pr["base_ref"] = "release"
+    elif mutation == "head":
+        implementation_pr["head"] = sections["chronology"]["phase_candidate"]
+    elif mutation == "parents":
+        implementation_pr["parents"].reverse()
+    else:
+        implementation_pr["merge_commit"] = sections["chronology"]["server_merge"]
+    path = legible_evidence._assemble_operational_evidence(
+        repo=repo,
+        run_dir=repo / ".phase-loop" / "runs" / f"canonical-implementation-{mutation}",
+        stage="canonical-main",
+        expected_head=head,
+        sections=sections,
+    )
+
+    validation = legible_evidence.validate_operational_evidence(
+        repo=repo, path=path, stage="canonical-main", expected_head=head
+    )
+    assert not validation.ok
+    assert validation.code == "operational_evidence_sections"
+
+
 @pytest.mark.parametrize(
     ("field", "invalid_value", "expected_code"),
     [
@@ -1492,6 +1711,7 @@ def test_attest_delegates_to_runner_owned_operational_workflow(tmp_path, monkeyp
     "mutation",
     (
         "owned_partition",
+        "original_tests_landing",
         "frozen_test_blob",
         "remote_oid",
         "loaded_runtime_blob",
@@ -1528,6 +1748,8 @@ def test_operational_evidence_rejects_unproven_frozen_semantics(tmp_path, mutati
 
     if mutation == "owned_partition":
         sections["chronology"]["owned_paths"].pop()
+    elif mutation == "original_tests_landing":
+        sections["chronology"]["original_tests_landing"] = sections["chronology"]["pr_head"]
     elif mutation == "frozen_test_blob":
         first = next(iter(sections["chronology"]["frozen_test_blobs"].values()))
         first["candidate_head"] = "0" * 40
@@ -1711,8 +1933,15 @@ def test_registry_free_selector_rejects_case_variant_status_like_banner(tmp_path
     "declaration",
     (
         " > # SUPERSEDED - malformed declaration.",
+        "> ## SUPERSEDED - malformed declaration.",
+        "> # **SUPERSEDED** - malformed declaration.",
         "> ** Status (2026-08-01): SUPERSEDED - malformed declaration.**",
         "> *Status (2026-08-01): SUPERSEDED - malformed declaration.*",
+        "> # ACTIVE - malformed declaration.",
+        "> ACTIVE - malformed declaration.",
+        "> DELIVERED - malformed declaration.",
+        "> # STATUS (2026-08-02): ACTIVE - malformed declaration.",
+        "> # STATUS (2026-08-01): SUPERSEDED - malformed declaration.",
     ),
 )
 def test_registry_free_selector_rejects_indented_status_like_banner(tmp_path, declaration):
@@ -1740,6 +1969,24 @@ def test_registry_free_selector_preserves_declaration_free_legacy_prose(tmp_path
     candidate.write_text(f"# Roadmap\n\n{prose}\n\n## Body\n", encoding="utf-8")
 
     assert discovery._return_selectable_roadmap(repo, candidate, "test") == candidate.resolve()
+
+
+def test_registry_selector_rejects_unregistered_declaration_free_candidate(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    candidate = repo / "specs" / "phase-plans-unregistered.md"
+    candidate.write_text("# Unregistered roadmap\n\n## Body\n", encoding="utf-8")
+    monkeypatch.setattr(
+        roadmap_lint,
+        "validate_roadmap_status_coherence",
+        lambda *_args, **_kwargs: {
+            "schema": "roadmap_status_manifest.v1",
+            "selected_roadmap": "specs/phase-plans-v10.md",
+            "roadmaps": [{"path": "specs/phase-plans-v10.md", "status": "active"}],
+        },
+    )
+
+    with pytest.raises(roadmap_lint.StatusCoherenceError, match="not registered"):
+        discovery._return_selectable_roadmap(repo, candidate, "explicit")
 
 
 def test_selector_read_failure_is_typed_not_selectable(tmp_path):
@@ -1932,6 +2179,23 @@ def test_manifest_plan_entry_lstat_failure_is_typed(tmp_path, monkeypatch):
         plan_manifest.canonical_plan_files(repo, head)
 
 
+def test_attester_distinguishes_original_landing_from_corrective_anchor():
+    from phase_loop_runtime import runner
+
+    assert runner._LEGIBLE_ORIGINAL_TESTS_LANDING == "1c57cc43134506bfeb8f9c21220f8aeef32af384"
+    assert runner._LEGIBLE_TESTS_LANDING == "a76b9f8bc305b9dd7f663c4a071c9ec4c154b5ea"
+
+
+@pytest.mark.dotfiles_integration
+def test_repaired_plan_has_no_stale_owned_set_contract():
+    plan = (Path(__file__).parents[2] / "plans" / "phase-plan-v10-LEGIBLE.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "exact 16-item" not in plan
+    assert "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b" not in plan
+
+
 def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
     from phase_loop_runtime import runner
 
@@ -1950,6 +2214,124 @@ def test_pr_snapshot_collects_review_readiness(tmp_path, monkeypatch):
     assert "mergedAt" in requested
     assert "reviewDecision" in requested
     assert "reviews" in requested
+
+
+def test_candidate_remote_binds_current_delivery_pr(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    expected_head = "1" * 40
+    observed = []
+
+    def fake_run(argv, **_kwargs):
+        observed.append(argv)
+        if argv[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "headRefName": "codex/v10-legible-chronology-repair",
+                        "headRefOid": expected_head,
+                        "state": "OPEN",
+                    }
+                ),
+                "",
+            )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner, "_legible_git", lambda *_args: expected_head)
+
+    remote_ref, remote_head = runner._legible_candidate_remote(tmp_path, expected_head)
+
+    assert observed[0][:6] == [
+        "gh", "pr", "view", "430", "--repo", "Consiliency/agent-harness"
+    ]
+    assert remote_ref == "refs/remotes/origin/codex/v10-legible-chronology-repair"
+    assert remote_head == expected_head
+
+
+def test_candidate_pr_snapshot_rejects_open_pr_at_canonical_stage(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    expected_head = "1" * 40
+    payload = {
+        "headRefName": "codex/v10-legible-c5-president-repair",
+        "headRefOid": expected_head,
+        "state": "OPEN",
+        "baseRefName": "main",
+        "mergeCommit": None,
+        "mergedAt": None,
+        "body": "LEGIBLE implementation delivery",
+    }
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, json.dumps(payload), ""),
+    )
+
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError, match="must be MERGED"):
+        runner._legible_candidate_pr_snapshot(tmp_path, expected_head, require_merged=True)
+
+
+def test_legible_verification_command_partition_defers_wrapper_only_for_candidate():
+    from phase_loop_runtime import runner
+
+    ordinary = ["python", "-m", "pytest", "-q"]
+    wrapper = [
+        "python",
+        "-m",
+        "phase_loop_runtime.legible_evidence",
+        "verify",
+        "--repo",
+        ".",
+        "--stage",
+        "canonical-main",
+        "--head",
+        "HEAD",
+    ]
+
+    candidate_commands, candidate_post = runner._partition_legible_verification_commands(
+        [ordinary, wrapper], "candidate"
+    )
+    canonical_commands, canonical_post = runner._partition_legible_verification_commands(
+        [ordinary, wrapper], "canonical-main"
+    )
+
+    assert candidate_commands == [ordinary]
+    assert candidate_post is None
+    assert canonical_commands == [ordinary]
+    assert canonical_post == wrapper
+
+
+def test_legible_final_test_environment_uses_installed_marker_only(monkeypatch):
+    from phase_loop_runtime import runner
+
+    monkeypatch.setenv("PHASE_LOOP_TDD_EXPECT_LEGIBLE", "1")
+
+    env = runner._legible_final_test_environment()
+
+    assert "PHASE_LOOP_TDD_EXPECT_LEGIBLE" not in env
+    assert env["PYTHONPATH"] == "src"
+
+
+def test_legible_public_contract_and_plan_describe_repaired_forward_process():
+    repo = Path(__file__).resolve().parents[2]
+    contract = (
+        Path(legible_evidence.__file__).resolve().parent
+        / "_contract_docs/runtime/verification-evidence-contract.md"
+    ).read_text(encoding="utf-8")
+    plan_path = repo / "plans/phase-plan-v10-LEGIBLE.md"
+    plan = (
+        plan_path.read_text(encoding="utf-8")
+        if plan_path.is_file()
+        else LEGIBLE_REPAIRED_PLAN_EXCERPT
+    )
+
+    assert "exact 18-path LEGIBLE implementation/test partition" in contract
+    assert "name the no-exemptions base form, not every legal v2 artifact" in contract
+    assert "the historical exact-tree publish is accepted as the" in plan
+    assert "require the server-side merge commit to have `I` as its second parent" in plan
 
 
 @pytest.mark.parametrize(
@@ -2098,14 +2480,19 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
 
     monkeypatch.setattr(runner, "_run_legible_c4_early_prover", fake_early_prover, raising=False)
 
-    def fake_panel(_repo, run_dir, _expected_head, bundle_path):
+    def fake_panel(_repo, run_dir, _expected_head, bundle_path, *, brief_path):
         events.append("panel")
         staged = bundle_path.read_text(encoding="utf-8")
         assert "DEGRADED_NO_LAUNCH" in staged
         assert "codex_process_count: 0" in staged
         assert "grok_process_count: 0" in staged
         assert "ratified degraded-evidence path" in staged
-        assert "only Fable can satisfy binding_prover" in staged
+        assert "specs/phase-plans-v10.md:702" in staged
+        assert "does not rewrite `binding_prover=false`" in staged
+        assert "only Fable can satisfy binding_prover" not in staged
+        assert "Consiliency/agent-harness#347 transition slice" in brief_path.read_text(
+            encoding="utf-8"
+        )
         panel = run_dir / "implementation-panel.json"
         panel.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
         return panel
@@ -2113,6 +2500,7 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     monkeypatch.setattr(runner, "_run_legible_panel", fake_panel)
     monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
+    monkeypatch.setattr(runner, "_validate_legible_early_prover", lambda *_args: None)
 
     def fake_durability_sync(_repo, _run_id):
         events.append("durable")
@@ -2229,6 +2617,286 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
     assert payload["pr_merge_commit"] == server_merge
 
 
+def test_merged_pr_transition_rebinds_fresh_candidate_without_mutation(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    refresh_base = "1" * 40
+    raw_head = "2" * 40
+    refresh_head = "3" * 40
+    implementation_base = "4" * 40
+    server_merge = "5" * 40
+    candidate = "6" * 40
+    expected_tree = "7" * 40
+    external_path = legible_evidence._FROZEN_AGENT_HARNESS_347_PATH
+    body = "reviewed merged transition"
+    events = []
+    snapshot = {
+        "state": "MERGED",
+        "isDraft": False,
+        "headRefOid": refresh_head,
+        "baseRefName": "main",
+        "baseRefOid": refresh_base,
+        "mergeCommit": {"oid": server_merge},
+        "mergedAt": "2026-08-01T16:00:00Z",
+        "body": body,
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "reviewDecision": "APPROVED",
+        "reviews": [{"state": "APPROVED"}],
+    }
+    monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_BASE", refresh_base)
+    monkeypatch.setattr(runner, "_LEGIBLE_REFRESH_HEAD", refresh_head)
+    monkeypatch.setattr(
+        runner, "_LEGIBLE_PR_BODY_SHA256", hashlib.sha256(body.encode()).hexdigest()
+    )
+    monkeypatch.setattr(
+        runner,
+        "_legible_candidate_remote",
+        lambda _repo, head: events.append(("candidate-remote", head)),
+    )
+    monkeypatch.setattr(runner, "_legible_body_ancestors", lambda *_args: [refresh_base] * 6)
+    monkeypatch.setattr(runner, "_legible_successful_checks", lambda *_args: ["SUCCESS"])
+    monkeypatch.setattr(legible_evidence, "_is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(
+        legible_evidence,
+        "_commit_parents",
+        lambda _repo, commit: {
+            server_merge: [implementation_base, refresh_head],
+            refresh_head: [raw_head, refresh_base],
+        }[commit],
+    )
+    monkeypatch.setattr(
+        legible_evidence, "_changed_paths", lambda *_args: [external_path]
+    )
+    monkeypatch.setattr(
+        legible_evidence, "_python_semantic_tokens", lambda *_args: ("same",)
+    )
+    monkeypatch.setattr(
+        legible_evidence, "_recomputed_merge_tree", lambda *_args: expected_tree
+    )
+    monkeypatch.setattr(
+        legible_evidence,
+        "_blob_oid",
+        lambda _repo, commit, _path: {
+            raw_head: "8" * 40,
+            refresh_head: "9" * 40,
+            server_merge: "9" * 40,
+        }.get(commit, "a" * 40),
+    )
+
+    def fake_git(_repo, *args):
+        if args == ("rev-parse", "origin/main"):
+            return server_merge
+        if args == ("rev-parse", f"{server_merge}^{{tree}}"):
+            return expected_tree
+        raise AssertionError(args)
+
+    monkeypatch.setattr(runner, "_legible_git", fake_git)
+
+    def fake_early_prover(_repo, run_dir, expected_head, bundle_path):
+        events.append(("early-prover", expected_head))
+        path = run_dir / "c4-early-prover.json"
+        path.write_text(
+            json.dumps(
+                    {
+                        "head": expected_head,
+                        "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                        "capability": "can_probe",
+                        "binding_prover": False,
+                        "outcome": "DEGRADED_NO_LAUNCH",
+                        "degraded_evidence_reason": "isolated executor unavailable",
+                        "status": "DEGRADED",
+                        "usable": False,
+                        "codex_process_count": 0,
+                        "grok_process_count": 0,
+                    },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    monkeypatch.setattr(runner, "_run_legible_c4_early_prover", fake_early_prover)
+
+    def fake_panel(_repo, run_dir, expected_head, bundle_path, *, brief_path):
+        events.append(("panel", expected_head))
+        staged = bundle_path.read_text(encoding="utf-8")
+        assert "ratified degraded-evidence path" in staged
+        assert "specs/phase-plans-v10.md:702" in staged
+        assert "does not rewrite `binding_prover=false`" in staged
+        assert "only Fable can satisfy binding_prover" not in staged
+        assert "codex_process_count: 0" in staged
+        assert "grok_process_count: 0" in staged
+        assert "Consiliency/agent-harness#347 transition slice" in brief_path.read_text(
+            encoding="utf-8"
+        )
+        path = run_dir / "implementation-panel.json"
+        path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(runner, "_run_legible_panel", fake_panel)
+    monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "fsync_run_store_durable",
+        lambda _repo, run_id: events.append(("durable", run_id)),
+    )
+
+    def fake_run(argv, **_kwargs):
+        assert "push" not in argv
+        assert "commit-tree" not in argv
+        assert argv[:3] not in (["gh", "pr", "ready"], ["gh", "pr", "merge"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner._run_legible_post_merge_transition(
+        repo=repo,
+        expected_head=candidate,
+        builder_run_id="builder-2",
+        process_start_token="rebind-token",
+        snapshot=snapshot,
+    )
+
+    payload = json.loads((repo / result["transition_artifact"]).read_text(encoding="utf-8"))
+    assert payload["status"] == "transition_rebound"
+    assert payload["producer"] == "post_merge_rebind"
+    assert payload["head"] == candidate
+    assert payload["server_base"] == implementation_base
+    assert payload["server_merge"] == server_merge
+    assert payload["pr_head"] == refresh_head
+    assert payload["merge_published_by"] == "Consiliency/agent-harness#347"
+    assert events == [
+        ("candidate-remote", candidate),
+        ("early-prover", candidate),
+        ("panel", candidate),
+        ("durable", "builder-2"),
+    ]
+
+
+def test_merged_candidate_dispatches_to_rebind_without_builder_intent(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    observed = {}
+    monkeypatch.setattr(runner, "_legible_pr_view", lambda _repo: {"state": "MERGED"})
+
+    def fake_rebind(**kwargs):
+        observed.update(kwargs)
+        return {"status": "transition_rebound"}
+
+    monkeypatch.setattr(runner, "_run_legible_post_merge_transition", fake_rebind)
+    monkeypatch.setattr(
+        runner,
+        "_recover_legible_pr_transition",
+        lambda *_args, **_kwargs: pytest.fail("no current-builder intent is recoverable"),
+    )
+
+    result = runner._run_legible_operational_attestation(
+        repo=repo,
+        plan=repo / "plans" / "phase-plan-v10-LEGIBLE.md",
+        stage="candidate",
+        expected_head="1" * 40,
+        builder_run_id="builder-2",
+        candidate_head=None,
+        process_start_token="rebind-token",
+        loaded_runtime_blobs={},
+    )
+
+    assert result == {"status": "transition_rebound"}
+    assert observed["expected_head"] == "1" * 40
+    assert observed["builder_run_id"] == "builder-2"
+    assert observed["snapshot"] == {"state": "MERGED"}
+
+
+def test_post_merge_transition_rejects_open_pr_before_staging(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(runner, "_legible_candidate_remote", lambda *_args: None)
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+
+    with pytest.raises(
+        legible_evidence.LegibleProcessBootstrapError,
+        match="cannot authorize a candidate rebind",
+    ):
+        runner._run_legible_post_merge_transition(
+            repo=repo,
+            expected_head="1" * 40,
+            builder_run_id="builder-2",
+            process_start_token="rebind-token",
+            snapshot={"state": "OPEN"},
+        )
+
+    assert not (repo / ".phase-loop" / "runs" / "builder-2").exists()
+
+
+def test_rebind_recovery_preserves_type_and_rejects_crossed_pairing(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    run_id = "builder-2"
+    run_dir = repo / ".phase-loop" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    panel_path = run_dir / "implementation-panel.json"
+    panel_path.write_text('{"verdict":"AGREE"}\n', encoding="utf-8")
+    snapshot = {
+        "state": "MERGED",
+        "mergeCommit": {"oid": "3" * 40},
+        "mergedAt": "2026-08-01T16:00:00Z",
+    }
+    intent_path = run_dir / "legible-pr-transition-intent.json"
+    intent = {
+        "schema": "legible_pr_transition_intent.v1",
+        "run_id": run_id,
+        "status": "transition_rebind_intent",
+        "producer": "post_merge_rebind",
+        "head": "1" * 40,
+        "builder_run_id": run_id,
+        "process_start_token": "rebind-token",
+        "server_base": "2" * 40,
+        "server_merge": "3" * 40,
+        "pr_head": "4" * 40,
+        "expected_tree": "5" * 40,
+        "ready_snapshot": snapshot,
+        "review_decision": "APPROVED",
+        "github_review_count": 1,
+        "review_panel_path": panel_path.relative_to(repo).as_posix(),
+        "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "early_prover_path": (run_dir / "c4-early-prover.json").relative_to(repo).as_posix(),
+        "early_prover_sha256": "6" * 64,
+        "merge_published_by": "Consiliency/agent-harness#347",
+    }
+    intent["seal_sha256"] = runner._legible_transition_digest(intent)
+    intent_path.write_text(json.dumps(intent, sort_keys=True) + "\n", encoding="utf-8")
+
+    recovered = runner._seal_legible_transition(repo, intent_path, intent, snapshot)
+
+    assert recovered["status"] == "transition_rebound"
+    assert recovered["producer"] == "post_merge_rebind"
+    assert recovered["expected_tree"] == "5" * 40
+    assert recovered["merge_published_by"] == "Consiliency/agent-harness#347"
+
+    transition_path = repo / recovered["transition_artifact"]
+    crossed = json.loads(transition_path.read_text(encoding="utf-8"))
+    crossed["status"] = "transition_sealed"
+    crossed["seal_sha256"] = runner._legible_transition_digest(crossed)
+    transition_path.write_text(json.dumps(crossed, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setattr(runner, "_validate_legible_transition_panel", lambda *_args: None)
+    monkeypatch.setattr(runner, "_validate_legible_early_prover", lambda *_args: None)
+
+    with pytest.raises(
+        legible_evidence.LegibleProcessBootstrapError,
+        match="intent/transition type pairing",
+    ):
+        runner._load_legible_transition(repo, run_id)
+
+
 def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker, runner
     from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
@@ -2238,6 +2906,7 @@ def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
     run_dir.mkdir(parents=True)
     bundle = run_dir / "bundle.md"
     bundle.write_text("staged transition evidence\n", encoding="utf-8")
+    brief = runner._write_legible_transition_review_brief(run_dir, "1" * 40)
     observed = {}
 
     def fake_invoke(_board, artifact, **kwargs):
@@ -2258,11 +2927,21 @@ def test_legible_panel_stages_small_bundle_contents(tmp_path, monkeypatch):
 
     monkeypatch.setattr(panel_invoker, "invoke_board", fake_invoke)
 
-    runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    panel_path = runner._run_legible_panel(
+        repo, run_dir, "1" * 40, bundle, brief_path=brief
+    )
 
     assert observed["artifact"] == ""
     assert observed["artifact_ref"] == str(bundle)
+    assert observed["brief_ref"] == str(brief)
     assert "context_refs" not in observed
+    panel = json.loads(panel_path.read_text(encoding="utf-8"))
+    assert panel["brief_path"] == brief.relative_to(repo).as_posix()
+    assert panel["brief_sha256"] == hashlib.sha256(brief.read_bytes()).hexdigest()
+    runner._validate_legible_transition_panel(repo, panel_path, "1" * 40)
+    brief.write_text("drifted scope\n", encoding="utf-8")
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+        runner._validate_legible_transition_panel(repo, panel_path, "1" * 40)
 
 
 def test_legible_c4_early_prover_stages_degraded_zero_launch_audit(tmp_path, monkeypatch):
@@ -2306,7 +2985,22 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
     from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
 
     bundle_path = run_dir / "implementation-review-bundle.md"
-    bundle_path.write_text("exact-head review bundle\n", encoding="utf-8")
+    bundle_prefix = b"exact-head review bundle\n"
+    bundle_path.write_bytes(bundle_prefix + b"\n## Early prover evidence\n\nreceipt staged\n")
+    brief_path = runner._write_legible_transition_review_brief(run_dir, "1" * 40)
+    early_prover_path = run_dir / "c4-early-prover.json"
+    early_prover_payload = {
+        "schema": "legible_c4_early_prover.v1",
+        "head": "1" * 40,
+        "bundle_path": bundle_path.relative_to(repo).as_posix(),
+        "bundle_sha256": hashlib.sha256(bundle_prefix).hexdigest(),
+        "role": "early_prover",
+        "binding_prover": False,
+        "usable": False,
+    }
+    early_prover_path.write_text(
+        json.dumps(early_prover_payload, sort_keys=True) + "\n", encoding="utf-8"
+    )
     legs = []
     verdicts = {}
     for seat in CODE_REVIEW_BOARD.seats:
@@ -2340,6 +3034,8 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
                 "head": "1" * 40,
                 "bundle_path": bundle_path.relative_to(repo).as_posix(),
                 "bundle_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                "brief_path": brief_path.relative_to(repo).as_posix(),
+                "brief_sha256": hashlib.sha256(brief_path.read_bytes()).hexdigest(),
                 "legs": legs,
                 "verdicts": verdicts,
             },
@@ -2365,6 +3061,8 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "early_prover_path": early_prover_path.relative_to(repo).as_posix(),
+        "early_prover_sha256": hashlib.sha256(early_prover_path.read_bytes()).hexdigest(),
     }
     intent_payload["seal_sha256"] = runner._legible_transition_digest(intent_payload)
     intent_path.write_text(json.dumps(intent_payload, sort_keys=True) + "\n", encoding="utf-8")
@@ -2385,6 +3083,8 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
         "github_review_count": 0,
         "review_panel_path": panel_path.relative_to(repo).as_posix(),
         "review_panel_sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+        "early_prover_path": early_prover_path.relative_to(repo).as_posix(),
+        "early_prover_sha256": hashlib.sha256(early_prover_path.read_bytes()).hexdigest(),
         "transition_intent_path": intent_path.relative_to(repo).as_posix(),
         "transition_intent_sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
         "candidate_requires_integration": True,
@@ -2394,6 +3094,12 @@ def test_pr_transition_loader_rejects_review_panel_drift(tmp_path):
     transition_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
     assert runner._load_legible_transition(repo, run_id)["run_id"] == run_id
+    early_prover_path.write_text('{"usable":true}\n', encoding="utf-8")
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError):
+        runner._load_legible_transition(repo, run_id)
+    early_prover_path.write_text(
+        json.dumps(early_prover_payload, sort_keys=True) + "\n", encoding="utf-8"
+    )
     panel_path.write_text('{"verdict":"DISAGREE"}\n', encoding="utf-8")
 
     with pytest.raises(legible_evidence.LegibleProcessBootstrapError):

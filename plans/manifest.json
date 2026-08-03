@@ -607,6 +607,596 @@
     },
     {
       "acceptance_criteria_count": null,
+      "created_at": "2026-07-29T00:00:00Z",
+      "file": "specs/phase-plans-v10.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-phase-roadmap-builder",
+      "phase_alias": "ROADMAP",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "phase-plans-v10",
+      "status": "imported",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-29T00:00:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-11T22:48:16Z",
+      "file": "plans/phase-plan-v1-task-message-sourcebroker-SOURCEBROKER.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "SOURCEBROKER",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v1-task-message-sourcebroker.md",
+        "slug": "phase-plans-v1-task-message-sourcebroker",
+        "status": "completed",
+        "type": "phase"
+      },
+      "slug": "v1-task-message-sourcebroker-SOURCEBROKER",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-11T22:48:16Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:11:08Z",
+      "file": "plans/phase-plan-v10-CONFORM.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T041108Z-65fd85.md",
+      "if_gates_produced": [
+        "IF-0-CONFORM-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T14:16:54Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "completion_record_contract": {
+              "canonical_origin": "Consiliency/agent-harness",
+              "event_metadata_key": "phase_completion_landing",
+              "event_self_reference": "forbidden",
+              "phase_alias": "CONFORM",
+              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "required_agree_seats": [
+                "gpt-5.6-sol",
+                "fable"
+              ],
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "role": "producer",
+              "schema": "v10.phase-completion-landing.v1",
+              "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
+            },
+            "conform_plan_contract": {
+              "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
+              "archive_inclusion_nodeid_sha256": "ccb295db192a045c224dc7f74819f8b83adb6db348d8d8b2d155a5c4f73005c0",
+              "migrated_existing_no_copy_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
+              "migrated_existing_no_copy_nodeid_sha256": "7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe",
+              "owned_path_patterns_count": 22,
+              "owned_path_patterns_sha256": "285e9ddb9d6f1996e3746f809cbe240053b6efe81504fc8e8c2913fd2660e427",
+              "package_inclusion_owned_paths": [
+                "phase-loop-runtime/MANIFEST.in",
+                "phase-loop-runtime/pyproject.toml"
+              ],
+              "phase_dependencies": [
+                "LEGIBLE"
+              ],
+              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "test_path_patterns_count": 6,
+              "test_path_patterns_sha256": "d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145"
+            },
+            "current_review": {
+              "artifact_path": ".phase-loop/reviews/v10-conform-plan-panel.json",
+              "artifact_semantics": "historical_predecessor_content_at_repair_time_overwriteable_run_local_path",
+              "artifact_sha256": "f6a5695f8de3f32aa05f8d037304892c18cd287234d1a966c485be3e427f08f5",
+              "bundle_bytes": 130557,
+              "bundle_sha256": "9e8f9663b0679132aeabb63f99822b3a52e33356241144b7f2a7f6723c3945b3",
+              "fable_outcome": "deferred",
+              "finding": "canonical_oracle_vocabulary_mismatch_and_omitted_submission_file_input_channel",
+              "finding_detail": "roadmap_EC_CONFORM_8_named_nonexistent_expected_status_and_expected_blocker_codes_instead_of_expected_valid_and_expected_blocker_class_and_EC_CONFORM_2_omitted_the_positional_submission_file_scalar_used_by_both_outside_agent_commands",
+              "gemini_verdict": "AGREE",
+              "grok_verdict": "AGREE",
+              "instructions_sha256": "f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356",
+              "repaired_plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
+              "repaired_review_status": "unreviewed_not_approved",
+              "reviewed_plan_sha256": "2060a7694dd95a441826a0cf77d0a273a6b840a2fc038251c18379117c505f57",
+              "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
+              "sol_verdict": "DISAGREE",
+              "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
+            },
+            "digest_rebind": {
+              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
+              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
+              "predecessor_plan_sha256": "33c8b1e89ed25b45e50467dda827fa991af269daf08e3c5ce9ff14875ecccf97",
+              "reason": "semantic_repair_for_strict_phase_completion_producer_record",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "reviewed_bundle_bytes": 130557,
+              "reviewed_bundle_sha256": "9e8f9663b0679132aeabb63f99822b3a52e33356241144b7f2a7f6723c3945b3",
+              "reviewed_instructions_sha256": "f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356",
+              "reviewed_panel_sha256": "f6a5695f8de3f32aa05f8d037304892c18cd287234d1a966c485be3e427f08f5",
+              "reviewed_plan_sha256": "2060a7694dd95a441826a0cf77d0a273a6b840a2fc038251c18379117c505f57",
+              "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "CONFORM",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-CONFORM",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T14:16:54Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:08:05Z",
+      "file": "plans/phase-plan-v10-FABPUB.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-fabpub-plan.md",
+      "if_gates_produced": [
+        "IF-0-FABPUB-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T19:20:13Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "digest_rebind": {
+              "historical_dissent_verdict": "DISAGREE",
+              "plan_sha256": "b593ebe1e600a59e226526ce65f85b472826e4c938b9348d409c915a9ba82720",
+              "predecessor_plan_sha256": "c83e5a1528bc2ea834124a64304ded475f463614c71fec89c165d343cea9a6b8",
+              "reason": "mechanical_roadmap_digest_rollover_for_REVIEWTRUTH_stage_a_candidate_evidence_seal_repair",
+              "reviewed_bundle_bytes": 156648,
+              "reviewed_bundle_sha256": "47a449cd6302037dec60910067265757b9b08c419b4964c3a2c7389ab7682237",
+              "reviewed_instructions_sha256": "d90bdadb68b9c9d2b37ffbc0e9c7e82cca5bcdc1745f3e5b3200b6cbe71c4b85",
+              "reviewed_panel_sha256": "46a3543d4a50f46dc78ef9cbe24158c3bbb33c1b658239bf991c332aa671025f",
+              "reviewed_plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
+              "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "supplied_latest_review_artifact_sha256": null,
+              "supplied_latest_review_artifact_status": "not_supplied_do_not_infer_from_stale_run_local_path",
+              "supplied_latest_review_findings": [
+                "normal_default_train_file_parents_split_allocator_state_under_ledger_dir_broker",
+                "exclusive_activation_lease_does_not_fence_post_activation_pre_fabpub_or_direct_run_train_writers"
+              ],
+              "supplied_latest_reviewed_mechanical_plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
+              "supplied_latest_reviewed_semantic_plan_sha256": "784a2ece2c65f3ea6bcc83adbe558ddbb48346f4311c5a6121bea4374020344a"
+            },
+            "fabpub_plan_contract": {
+              "acceptance_criteria_count": 11,
+              "activation_env": "PHASE_LOOP_TDD_EXPECT_FABPUB",
+              "adapter_start_fence_nodeids": [
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_after_possible_provider_effect"
+              ],
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "adapter_start_ownership_contract": "AdapterStartOwnership.v1_repository_visible_locked_fsynced_before_provider_effect",
+              "adapter_worktree_role": "validated_provider_execution_location_only",
+              "allocator_next_epoch_formula": "max(canonical_admission_high_water(R),receipt.legacy_epoch_high_water(R))+1",
+              "authority_handoff_order": "PublishAuthorityPreimages_checkpoint_root_then_COMMITTED_HEAD_RESOLVED_then_PreAdmissionEnvelope_then_BrokerService.execute",
+              "authority_preimage_builder": "_default_build_publish_authority_returns_PublishAuthorityPreimages",
+              "canonical_repository_identity_role": "storage_and_keying",
+              "capability_marker": "phase_loop_runtime.fabpub_capability:FABPUB_CAPABILITY_VERSION=1",
+              "expected_commit_state_machine": "PREPARED_COMMIT_OBJECT_DURABLE_COMMITTED_HEAD_RESOLVED",
+              "expected_nodeid_delta_from_current_plan": 2,
+              "expected_nodeid_delta_from_v10_fabpub_baseline": 12,
+              "expected_oid_recovery": "ref_expected_finalize_ref_parent_retry_same_cas_every_other_oid_block",
+              "fresh_exact_digest_panel_required": [
+                "fable",
+                "gpt-5.6-sol",
+                "gemini",
+                "grok"
+              ],
+              "historical_panel_plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
+              "historical_panel_record_sha256": "46a3543d4a50f46dc78ef9cbe24158c3bbb33c1b658239bf991c332aa671025f",
+              "latest_review_artifact_sha256": null,
+              "latest_review_artifact_status": "not_supplied_do_not_infer_from_stale_run_local_path",
+              "latest_reviewed_plan_sha256": "784a2ece2c65f3ea6bcc83adbe558ddbb48346f4311c5a6121bea4374020344a",
+              "legacy_cutover_global_contract": "LegacyBrokerCutoverManifest.v2_to_LegacyBrokerCutoverTransaction.v2_to_repository_partition_receipts_to_global_ARMED_then_WriterGenerationLatch_ACTIVE",
+              "legacy_cutover_nodeids": [
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_global_legacy_cutover_partitions_multiple_repositories_crash_idempotently_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_conflict_collision_and_idempotent_resume_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_exact_serialized_repo_preimages_and_resolution_context_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_high_water_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_outcome_ambiguous_block_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_replays_terminal_completed_effect_before_activation",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_writer_quiescence_blocks_armed_activation_and_fences_supported_restarts",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_fail_closed"
+              ],
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "legacy_exclusive_activation_contract": "quiescence_then_WriterGenerationLatch_LEGACY_OPEN_DRAINING_ACTIVE_with_per_write_effect_revalidation_and_irreversible_ACTIVE",
+              "legacy_post_armed_onboarding_contract": "after_ARMED_and_ACTIVE_serialized_authenticated_zero_legacy_partition_receipt_before_first_admission",
+              "legacy_store_cutover_contract": "complete_legacy_root_set_quiescence_generation_drain_exact_serialized_repo_preimage_resolution_context_git_common_target_global_inventory_partition_snapshot_archive_root_leaf_tombstones_receipts_ARMED_ACTIVE_before_route",
+              "lifecycle": "fabpub_tdd_candidate_main.v1",
+              "owned_paths": [
+                "CHANGELOG.md",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/contracts.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/fencing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/fabpub_capability.py",
+                "phase-loop-runtime/src/phase_loop_runtime/fabpub_tdd_chronology.py",
+                "phase-loop-runtime/src/phase_loop_runtime/publishing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/train_runner.py",
+                "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
+                "phase-loop-runtime/tests/test_convergence_broker_admission.py",
+                "phase-loop-runtime/tests/test_convergence_broker_credsep.py",
+                "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
+                "phase-loop-runtime/tests/test_convergence_broker_verbs.py",
+                "phase-loop-runtime/tests/test_convergence_fencing.py",
+                "phase-loop-runtime/tests/test_convergence_live_enable.py",
+                "phase-loop-runtime/tests/test_convergence_train_integration.py",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py",
+                "phase-loop-runtime/tests/test_publishing.py",
+                "phase-loop-runtime/tests/test_train_prebuilt.py",
+                "phase-loop-runtime/tests/test_train_runner.py"
+              ],
+              "owned_paths_count": 24,
+              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
+              "phase_dependencies": [
+                "PROOFGATE",
+                "CONFORM"
+              ],
+              "plan_sha256": "b593ebe1e600a59e226526ce65f85b472826e4c938b9348d409c915a9ba82720",
+              "prior_manifest_plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
+              "repository_allocator_namespace_contract": "resolved_git_common_dir/phase-loop-fabpub-broker-v1/repositories/canonical_repository_identity",
+              "repository_identity_contract": "canonical_git_common_dir_and_object_format_full_sha256",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "routing_store_selection_contract": "BrokerRequest.adapter_worktree_derives_git_common_namespace_and_must_match_BrokerRequest.repo_before_store_construction",
+              "shared_allocator_nodeids": [
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_allocator_shared_repository_epoch_across_linked_worktrees_and_train_roots",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_default_cli_train_roots_share_git_common_repository_allocator_without_root_injection"
+              ],
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "shared_allocator_store_contract": "one_repository_store_under_git_common_dir_with_no_production_allocator_root_injection_after_ARMED_ACTIVE_cutover",
+              "shared_start_recovery": "unsealed_owner_promotes_to_permanent_OUTCOME_AMBIGUOUS_BLOCKED",
+              "test_paths": [
+                "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
+                "phase-loop-runtime/tests/test_convergence_broker_admission.py",
+                "phase-loop-runtime/tests/test_convergence_broker_credsep.py",
+                "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
+                "phase-loop-runtime/tests/test_convergence_broker_verbs.py",
+                "phase-loop-runtime/tests/test_convergence_fencing.py",
+                "phase-loop-runtime/tests/test_convergence_live_enable.py",
+                "phase-loop-runtime/tests/test_convergence_train_integration.py",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py",
+                "phase-loop-runtime/tests/test_publishing.py",
+                "phase-loop-runtime/tests/test_train_prebuilt.py",
+                "phase-loop-runtime/tests/test_train_runner.py"
+              ],
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "train_local_adapter_started_authority": false,
+              "train_local_coordinator_contract": "ledger_dir_broker_train_key_is_transaction_checkpoint_only_never_allocator_authority",
+              "writer_generation_failure_code": "legacy_writer_after_fabpub_activation",
+              "writer_generation_fence_nodeids": [
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_post_activation_writer_generation_fence_blocks_direct_and_old_cli_restarts"
+              ],
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5",
+              "writer_generation_rollback_contract": "rollback_only_from_pre_mutation_DRAINING_ACTIVE_irreversible"
+            },
+            "fabpub_plan_contract_payload_sha256": "37e37066d34dfc6ec32a20ac07fc6fe37f1e6bf07ff073531c896f55afcf6b1b",
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v2"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "FABPUB",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-FABPUB",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T19:20:13Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-30T04:16:33Z",
+      "file": "plans/phase-plan-v10-HARDEN.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035939Z-01-harden-plan.md",
+      "if_gates_produced": [],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-07-30T16:19:25Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "completion_record_contract": {
+              "canonical_origin": "Consiliency/agent-harness",
+              "event_metadata_key": "phase_completion_landing",
+              "event_self_reference": "forbidden",
+              "phase_alias": "HARDEN",
+              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "required_agree_seats": [
+                "gpt-5.6-sol",
+                "fable"
+              ],
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "role": "producer",
+              "schema": "v10.phase-completion-landing.v1",
+              "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
+            },
+            "digest_rebind": {
+              "historical_dissent_verdict": "GROK_DISAGREE_SOL_AGREE_GEMINI_UNUSABLE_DEGRADED",
+              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
+              "predecessor_plan_sha256": "3ffb5b466ab45943827c7beb12c49cbc32af20f94a2acf56f9e56048de8d6617",
+              "reason": "semantic_repair_for_strict_phase_completion_producer_record",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "reviewed_bundle_bytes": 172064,
+              "reviewed_bundle_sha256": "de0338490aeb6fbf82b72a28d8a6a3205b9a79d9348990548794b6580f03fb4d",
+              "reviewed_instructions_sha256": "41371fc43a293e7323265d3cd28422af266146f756b2d4c110d3f661ac034354",
+              "reviewed_panel_sha256": "6d18cbedf3e793c839dcd4a89883c2b5e82281e98e23fce7e0cfc68419cae7f5",
+              "reviewed_plan_sha256": "f60b9373066b9537f0ea5e78b78b2462dc535cbb04d86e1fa384a14f4bee48da",
+              "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            },
+            "harden_plan_contract": {
+              "acceptance_criteria_count": 6,
+              "activation_env": "PHASE_LOOP_TDD_EXPECT_HARDEN",
+              "api_key_fallback": false,
+              "capability_marker": "phase_loop_runtime.verification_evidence:HARDEN_CAPABILITY_VERSION=1",
+              "checkpoint_paths": [
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/__init__.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/resolver.py",
+                "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py",
+                "phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
+                "phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py",
+                "phase-loop-runtime/src/phase_loop_runtime/injection.py",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                "phase-loop-runtime/src/phase_loop_runtime/reconcile.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py",
+                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py"
+              ],
+              "checkpoint_paths_count": 18,
+              "checkpoint_paths_sha256": "b20d6f20a8a073d4c5401143bd72850b69bc1e1661668bd7f3d3e5c628d58d03",
+              "cross_phase_overlap_phases": [
+                "CONFORM",
+                "FABPUB",
+                "LEGIBLE",
+                "PROOFGATE",
+                "REVIEWTRUTH"
+              ],
+              "cross_phase_serialization_required": true,
+              "default_pass_nodeids": 105,
+              "default_skip_nodeids": 21,
+              "expected_nodeids": 126,
+              "fresh_exact_digest_panel_required": [
+                "fable",
+                "gpt-5.6-sol",
+                "gemini",
+                "grok"
+              ],
+              "implementation_author_scope": "whole_phase",
+              "implementation_effort": "high",
+              "implementation_executor": "codex",
+              "implementation_model": "gpt-5.6-terra",
+              "lane_scheduler_mode": "off",
+              "latest_panel_plan_sha256": "f60b9373066b9537f0ea5e78b78b2462dc535cbb04d86e1fa384a14f4bee48da",
+              "latest_panel_sha256": "6d18cbedf3e793c839dcd4a89883c2b5e82281e98e23fce7e0cfc68419cae7f5",
+              "latest_panel_verdict": "GROK_DISAGREE_SOL_AGREE_GEMINI_UNUSABLE_DEGRADED",
+              "lifecycle": "harden_tdd_candidate_main.v1",
+              "migrated_nodeids": 105,
+              "migrated_nodeids_sha256": "33b0fa58f85c5e3cfd199b2f6d94126458c82e3814671fdf0805a07e9d6702c4",
+              "new_nodeids": 21,
+              "nodeid_delta": 104,
+              "nodeid_inventory_sha256": "6b642b3a4a7f22b51c41c5a84383a09833b8af0c57e1a10e9c97cd2e3c623728",
+              "owned_paths": [
+                "CHANGELOG.md",
+                "phase-loop-runtime/scripts/verify_harden_evidence.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/__init__.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/resolver.py",
+                "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py",
+                "phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
+                "phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py",
+                "phase-loop-runtime/src/phase_loop_runtime/injection.py",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                "phase-loop-runtime/src/phase_loop_runtime/reconcile.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py",
+                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+                "phase-loop-runtime/tests/harden_tdd_guard.py",
+                "phase-loop-runtime/tests/test_advisor_board_advisory_mode.py",
+                "phase-loop-runtime/tests/test_advisor_board_backcompat.py",
+                "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py",
+                "phase-loop-runtime/tests/test_advisor_board_backing_omnigent.py",
+                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py",
+                "phase-loop-runtime/tests/test_advisor_board_composition.py",
+                "phase-loop-runtime/tests/test_advisor_board_config.py",
+                "phase-loop-runtime/tests/test_advisor_board_golden.py",
+                "phase-loop-runtime/tests/test_advisor_board_integration.py",
+                "phase-loop-runtime/tests/test_advisor_board_live_research.py",
+                "phase-loop-runtime/tests/test_advisor_board_observability.py",
+                "phase-loop-runtime/tests/test_advisor_board_presets.py",
+                "phase-loop-runtime/tests/test_advisor_board_research.py",
+                "phase-loop-runtime/tests/test_advisor_board_resolver.py",
+                "phase-loop-runtime/tests/test_goal_coverage.py",
+                "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
+                "phase-loop-runtime/tests/test_panel_invoker.py",
+                "phase-loop-runtime/tests/test_panel_leg_failure_diagnostic.py",
+                "phase-loop-runtime/tests/test_panel_native_fill_183.py",
+                "phase-loop-runtime/tests/test_panel_streaming_verdicts.py",
+                "phase-loop-runtime/tests/test_phase_loop_injection.py",
+                "phase-loop-runtime/tests/test_ratification_policy.py",
+                "phase-loop-runtime/tests/test_reconcile_portability_85c.py",
+                "phase-loop-runtime/tests/test_review_leg_sandbox.py",
+                "phase-loop-runtime/tests/test_verification_interpreter_guard_221.py"
+              ],
+              "owned_paths_count": 46,
+              "owned_paths_sha256": "453bbecfdbcc6570e8cd04d68b45097a1c05022691919b5296ae0c36d7f0eb47",
+              "phase_dependencies": [
+                "FABPUB"
+              ],
+              "phase_scheduler_mode": "off",
+              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
+              "pre_auth_ordering_nodeids": [
+                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
+                "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
+              ],
+              "precomposition_entrypoints": [
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/__init__.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/resolver.py",
+                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py"
+              ],
+              "predecessor_plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
+              "public_board_authorization_contract": "classified_operation_bound_live_composition_and_invoke_revalidation_pure_controls_effect_free",
+              "public_board_callers": 134,
+              "public_board_callers_sha256": "cecbef4c0f550f16a0e5e033be9d88216dcd7a8b9d127f6c91c920cd2359bb6e",
+              "public_board_corpus_modules": 19,
+              "public_board_corpus_modules_sha256": "262a2c0e653b9dc1e98f2c815918d2a35e8377377d344026affe7154d1b8ea34",
+              "public_board_corpus_nodeids": 306,
+              "public_board_corpus_nodeids_sha256": "4789528566ada4e92cdf0ba6324704a60697f4166c25985ddc78c2da6ccda656",
+              "public_board_execution_nodeids": 100,
+              "public_board_execution_nodeids_sha256": "90e36e87f2d93504c63bfefd850bdceb9c3cc869f62c7969b5815e2e49950ac7",
+              "public_board_execution_pure_overlap_nodeids": 20,
+              "public_board_execution_pure_overlap_nodeids_sha256": "3ce722d31e283cd455b3c7d23ed3d755e076e0fd09402518fbe9c10ba11488d6",
+              "public_board_migrated_nodeids": 100,
+              "public_board_migrated_nodeids_sha256": "90e36e87f2d93504c63bfefd850bdceb9c3cc869f62c7969b5815e2e49950ac7",
+              "public_board_pure_control_nodeids": 54,
+              "public_board_pure_control_nodeids_sha256": "7d4b4f994f04b0926d0318fd5d7d983c0a81488d171c0755e94d9b1c8b66eef4",
+              "public_board_pure_only_nodeids": 34,
+              "public_board_test_fixture_policy": "explicit_sanctioned_execution_fixture_pure_controls_auth_free_no_autouse",
+              "pure_control_junit_contract": "distinct_from_focused_and_broad",
+              "pure_control_proof_mode": "PHASE_LOOP_HARDEN_PROOF_MODE=pure_control",
+              "pure_control_proof_stages": [
+                "preimplementation_red",
+                "checkpoint_c",
+                "prepush_i",
+                "candidate_i",
+                "canonical_m"
+              ],
+              "release_tag_policy": "no_release_no_tag_no_publish",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "sl1_nodeids": 115,
+              "sl2_nodeids": 7,
+              "sl3_evidence_nodeids": 4,
+              "subscription_auth_only": true,
+              "test_paths": [
+                "phase-loop-runtime/tests/harden_tdd_guard.py",
+                "phase-loop-runtime/tests/test_advisor_board_advisory_mode.py",
+                "phase-loop-runtime/tests/test_advisor_board_backcompat.py",
+                "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py",
+                "phase-loop-runtime/tests/test_advisor_board_backing_omnigent.py",
+                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py",
+                "phase-loop-runtime/tests/test_advisor_board_composition.py",
+                "phase-loop-runtime/tests/test_advisor_board_config.py",
+                "phase-loop-runtime/tests/test_advisor_board_golden.py",
+                "phase-loop-runtime/tests/test_advisor_board_integration.py",
+                "phase-loop-runtime/tests/test_advisor_board_live_research.py",
+                "phase-loop-runtime/tests/test_advisor_board_observability.py",
+                "phase-loop-runtime/tests/test_advisor_board_presets.py",
+                "phase-loop-runtime/tests/test_advisor_board_research.py",
+                "phase-loop-runtime/tests/test_advisor_board_resolver.py",
+                "phase-loop-runtime/tests/test_goal_coverage.py",
+                "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
+                "phase-loop-runtime/tests/test_panel_invoker.py",
+                "phase-loop-runtime/tests/test_panel_leg_failure_diagnostic.py",
+                "phase-loop-runtime/tests/test_panel_native_fill_183.py",
+                "phase-loop-runtime/tests/test_panel_streaming_verdicts.py",
+                "phase-loop-runtime/tests/test_phase_loop_injection.py",
+                "phase-loop-runtime/tests/test_ratification_policy.py",
+                "phase-loop-runtime/tests/test_reconcile_portability_85c.py",
+                "phase-loop-runtime/tests/test_review_leg_sandbox.py",
+                "phase-loop-runtime/tests/test_verification_interpreter_guard_221.py"
+              ],
+              "test_paths_count": 26,
+              "test_paths_sha256": "1c89c155544538b7a79f6333c5e8ff7bc30ddca808e9b0d229b91ed54394f250",
+              "tests_only_landing": "literal_red_first_default_green"
+            },
+            "harden_plan_contract_record_id": "v10-HARDEN.harden-plan-contract.v1"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "HARDEN",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-HARDEN",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-30T16:19:25Z"
+    },
+    {
+      "acceptance_criteria_count": null,
       "created_at": "2026-07-30T04:07:17Z",
       "file": "plans/phase-plan-v10-LEGIBLE.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T040717Z-01-legible-plan.md",
@@ -624,19 +1214,6 @@
           "at": "2026-07-30T04:07:17Z",
           "by": "codex-plan-phase",
           "metadata": {
-            "digest_rebind": {
-              "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "7f2bb97ac54561f777b3b75890ded86f2e1dc12f056f379655ac0da1adb70a2e",
-              "predecessor_plan_sha256": "5b61b3cb8af1f53454bc5cea3b12663089ffec679c372ebd2fbc5419a364f585",
-              "reason": "mechanical_roadmap_digest_rollover_for_REVIEWTRUTH_stage_a_candidate_evidence_seal_repair",
-              "reviewed_bundle_bytes": 140117,
-              "reviewed_bundle_sha256": "0a2ecfbeb2fecc6afade833d9c24ab1f3d05caae66541e79a66283715dbb0f05",
-              "reviewed_instructions_sha256": "4b166729c4352ac8c086b19b5c68d279258ffd08068c176122dee2533a3c5160",
-              "reviewed_panel_sha256": "3d9712c05aa988746c14549d6bda550efa9ddef6eb82470ba5e096a62554c538",
-              "reviewed_plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
-              "reviewed_roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
-            },
             "current_review": {
               "artifact_sha256": "1ee400d1c4aa4f6892675969b3b5b831dff5bc9418c71e71dd989e101295b702",
               "bundle_bytes": 146984,
@@ -646,11 +1223,24 @@
               "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
               "verdict": "LOCAL_THREE_UNANIMOUS_AGREE_HISTORICAL_ONLY"
             },
+            "digest_rebind": {
+              "historical_dissent_verdict": "DISAGREE",
+          "plan_sha256": "27bd1b556d8d3110d33f11780b84fac4c09c95c3e8389ada4d62d084f5a4a3ae",
+          "predecessor_plan_sha256": "474ad4debaedd43c4b38ee864c719350808a6d54e3a96cca2826a56bf1e02746",
+          "reason": "fable_c4_scope_and_early_prover_binding_correction",
+              "reviewed_bundle_bytes": 140117,
+              "reviewed_bundle_sha256": "0a2ecfbeb2fecc6afade833d9c24ab1f3d05caae66541e79a66283715dbb0f05",
+              "reviewed_instructions_sha256": "4b166729c4352ac8c086b19b5c68d279258ffd08068c176122dee2533a3c5160",
+              "reviewed_panel_sha256": "3d9712c05aa988746c14549d6bda550efa9ddef6eb82470ba5e096a62554c538",
+              "reviewed_plan_sha256": "5e7e563bf96ada32ad054b4e7ac8f5117fffd9ba7742e551826d93c644cae7e0",
+              "reviewed_roadmap_sha256": "4d652aaff71b484806ea6d1770c9475e0c1e8de90c39e5447c6fadb8d0fa2c6f",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            },
             "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T040717Z-01-legible-plan.md",
             "legible_plan_contract": {
-              "activation_env": "PHASE_LOOP_TDD_EXPECT_LEGIBLE",
               "absent_registry_selector_falsifier_nodeid": "phase-loop-runtime/tests/test_legible_roadmap_contract.py::test_absent_registry_selector_rejects_recognized_non_active_banner_and_preserves_no_declaration_legacy",
               "absent_registry_selector_falsifier_nodeid_sha256": "e65af55d0f3df427f8b1c1b001fbb69b92585f6790f2daa97f47a2f6adbab93a",
+              "activation_env": "PHASE_LOOP_TDD_EXPECT_LEGIBLE",
               "capability_marker": "phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1",
               "expected_nodeids": 84,
               "legacy_selector_compatibility": "candidate_has_no_lifecycle_declaration",
@@ -669,15 +1259,17 @@
                 "phase-loop-runtime/src/phase_loop_runtime/runner.py",
                 "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
                 "phase-loop-runtime/tests/test_legible_evidence.py",
+                "phase-loop-runtime/tests/test_legible_review_repairs.py",
                 "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
                 "plans/manifest.json",
+                "plans/phase-plan-v10-LEGIBLE.md",
                 "specs/roadmap-assumption-probes-v10.json",
                 "specs/roadmap-status.json"
               ],
-              "owned_paths_count": 16,
-              "owned_paths_sha256": "01919736eb11d954a100d359b2cfdd31877de3459f486277983170ac96ff265b",
+              "owned_paths_count": 18,
+              "owned_paths_sha256": "ad11f462c732dabae8a7f51e61a3b229dbb1a8f45954c266d14cb9547cfdd240",
               "phase_dependencies": [],
-              "plan_sha256": "7f2bb97ac54561f777b3b75890ded86f2e1dc12f056f379655ac0da1adb70a2e",
+          "plan_sha256": "27bd1b556d8d3110d33f11780b84fac4c09c95c3e8389ada4d62d084f5a4a3ae",
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
               "selector_common_return_contract": "parse_candidate_lifecycle_then_reject_recognized_non_active_with_or_without_registry",
               "test_paths": [
@@ -689,8 +1281,14 @@
               "verification_extension_namespaces": {
                 "phase_loop_runtime.legible_evidence": "LEGIBLE"
               },
-              "verification_extension_reserved_downstream_namespace": "phase_loop_runtime.proofgate_evidence",
-              "verification_extension_registry_owner": "LEGIBLE"
+              "verification_extension_registry_owner": "LEGIBLE",
+              "verification_extension_reserved_downstream_namespace": "phase_loop_runtime.proofgate_evidence"
+            },
+            "president_amendment": {
+              "decision": "REVISE_PHASE_CONTRACT",
+              "evidence_sha256": "ea6ad231ac54ba4d2c778a472bbe6198a72f86098d3085475d291975c50340e5",
+          "predecessor_plan_sha256": "1f9bb643a9650b01c600c4862391a74df9af3d911ba7158c5570276fd8b0b2e0",
+          "reason": "implement_attestation_before_C3_then_execute_merge_bound_stages_in_C4_C5_C7"
             },
             "run_id": "20260730T040717Z-01-legible-plan"
           },
@@ -711,555 +1309,6 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-07-30T14:38:07Z"
-    },
-    {
-      "acceptance_criteria_count": null,
-      "created_at": "2026-07-30T04:13:47Z",
-      "file": "plans/phase-plan-v10-REVIEWTRUTH.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
-      "if_gates_produced": [
-        "IF-0-REVIEWTRUTH-1",
-        "IF-0-REVIEWTRUTH-2",
-        "IF-0-REVIEWTRUTH-3"
-      ],
-      "lanes": [
-        "SL-0",
-        "SL-1",
-        "SL-2",
-        "SL-3",
-        "SL-4",
-        "SL-5",
-        "SL-6"
-      ],
-      "lifecycle": [
-        {
-          "at": "2026-07-30T04:13:47Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "bootstrap_prerequisite": {
-              "archive_member": "phase-loop-runtime/uv.lock",
-              "lifecycle": "planning_candidate_committed_on_main_before_reviewtruth_lane_dispatch",
-              "lock_sha256": "b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce",
-              "ownership": "codex-plan-phase_not_reviewtruth_lane_implementation"
-            },
-            "digest_rebind": {
-              "coordinator_post_author_audit": {
-                "finding": "stage_b_plan_self_digest_placeholder_would_change_the_plan_being_hashed",
-                "resolution": "external_write_once_binding_record_over_computed_plan_sha_and_atomically_staged_review_artifacts"
-              },
-              "fresh_exact_digest_panel_required": true,
-              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
-              "plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
-              "predecessor_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
-              "reason": "semantic_repair_for_authenticated_dependency_completion_landings",
-              "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 557138,
-              "reviewed_bundle_sha256": "5a2c6c4d892aee180ce3b7ea05dd86d2b46228138e855db86959467d8aa991e8",
-              "reviewed_early_evidence_sha256": "35c4ec83250bb32fba8599530a11aebcf0088c98a41b87b07cd9df8ce47d8d8f",
-              "reviewed_instructions_sha256": "bd6550e88bd8944a8a384b50b55561cee88b8e683ab5095992da79855090e91a",
-              "reviewed_panel_sha256": "950a08facce1df02337d626301fc24af223812ef32c1cb99d18be6abc5ecd19b",
-              "reviewed_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
-              "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
-            },
-            "current_review": {
-              "artifact_path": ".phase-loop/reviews/v10-reviewtruth-plan-panel.json",
-              "artifact_sha256": "950a08facce1df02337d626301fc24af223812ef32c1cb99d18be6abc5ecd19b",
-              "artifact_semantics": "non_authorizing_dependency_landing_auth_predecessor_dissent_at_repair_time_overwriteable_run_local_path",
-              "authorizing": false,
-              "bundle_bytes": 557138,
-              "bundle_sha256": "5a2c6c4d892aee180ce3b7ea05dd86d2b46228138e855db86959467d8aa991e8",
-              "early_prover_artifact_sha256": "35c4ec83250bb32fba8599530a11aebcf0088c98a41b87b07cd9df8ce47d8d8f",
-              "early_prover_capability": "can_probe",
-              "early_prover_binding_prover": false,
-              "fable_outcome": "deferred",
-              "finding_details": {
-                "arbitrary_or_identical_ancestor_landings": "Stage_A_accepted_operator_supplied_CONFORM_and_HARDEN_values_as_any_ancestors_of_base_without_phase_qualified_completion_topology_or_event_proof",
-                "unauthenticated_hardcoded_origin": "Stage_A_hardcoded_Consiliency_agent_harness_in_the_sidecar_without_authenticating_fetch_and_push_origin_or_rewrite_configuration"
-              },
-              "findings": [
-                "arbitrary_or_identical_ancestor_landings",
-                "unauthenticated_hardcoded_origin"
-              ],
-              "gemini_verdict": "AGREE",
-              "grok_verdict": "AGREE",
-              "instructions_sha256": "bd6550e88bd8944a8a384b50b55561cee88b8e683ab5095992da79855090e91a",
-              "repaired_plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
-              "repaired_review_status": "unreviewed_not_approved",
-              "reviewed_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
-              "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
-              "sol_verdict": "DISAGREE",
-              "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
-            },
-            "completion_record_contract": {
-              "accepted_origin_urls": [
-                "git@github.com:Consiliency/agent-harness.git",
-                "ssh://git@github.com/Consiliency/agent-harness.git",
-                "https://github.com/Consiliency/agent-harness.git"
-              ],
-              "canonical_origin": "Consiliency/agent-harness",
-              "consumer_bindings": [
-                "F",
-                "M",
-                "FH",
-                "canonical_origin"
-              ],
-              "distinct_phase_completion_merges": true,
-              "plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
-              "reject_url_rewriting": true,
-              "repaired_digest_review_status": "unreviewed_not_approved",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-              "role": "consumer",
-              "schema": "v10.phase-completion-landing.v1",
-              "stage_b_reverification": true,
-              "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
-            },
-            "subsequent_independent_audit": {
-              "finding": "incomplete_source_observation_seal_and_incomplete_pre_edit_collection_identity_check",
-              "finding_detail": "Gate_A_did_not_validate_and_freeze_the_complete_source_observation_before_and_after_execution_and_the_fifth_command_checked_only_omitted_count_modules_and_skip_profile_instead_of_exact_source_Gate_full_selected_marker_and_omission_identities",
-              "historical_panel_artifact_sha256": "9760fc9f5d9df3e6392d76e08d1b9d1502f04bbd987c3ed9017ee6864b33962c",
-              "historical_panel_status": "predecessor_dissent_only_did_not_review_follow_up_repair",
-              "predecessor_plan_sha256": "d9bd1ddb7e23ad9af217604c764942349dbbc46992faacffa6a1dfe44436d559",
-              "repaired_plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
-              "repair_review_status": "unreviewed_not_approved",
-              "source_observer_preserved_byte_for_byte": true
-            },
-            "sl0_coordinator_proof": {
-              "authority": "existing_git_gh_jq_awk_sha256sum_only_before_sl1",
-              "branch_rules_canonicalization": "jq_compact_sorted_json_plus_terminal_lf_sha256",
-              "branch_rules_endpoint": "repos/Consiliency/agent-harness/rules/branches/main",
-              "comment_timestamp_contract": "all_three_directives_created_at_and_updated_at_less_than_or_equal_to_record_pr_merged_at",
-              "effective_pull_request_rule_required": true,
-              "landing_topology_contract": "separate_exact_two_parent_merge_with_pr_head_as_second_parent",
-              "planning_rules_observation_effective_pull_request_rule": false,
-              "planning_rules_observation_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
-              "planning_rules_observation_status": "unsatisfied_not_execution_proof",
-              "proof_schema": "reviewtruth.sl0-coordinator-proof.v1",
-              "retrospective_sl1_contract": "fresh_rules_digest_and_true_boolean_must_equal_retained_sl0_proof_before_sl2_through_sl5",
-              "sl0_unblocks_sl1_without_future_wrapper": true
-            },
-            "gate_a_skip_freeze": {
-              "authority_status": "historical_predecessor_non_authorizing_until_stage_b_recompute",
-              "boundary_collection_count": 4,
-              "boundary_collection_sha256": "09e45269b62ec9c4ac0584600d77e883b9c3fbd67a89415ba6650ee9f6efe3be",
-              "boundary_runtime_count": 59,
-              "boundary_runtime_sha256": "760925fe088328171cd7dc83172736a10904275d50b4da675e1f4a0a583d4b69",
-              "expected_gate_a_count": 102,
-              "expected_gate_a_sha256": "57746ee994520651677a0b0dcdd50334eb52ccdc109ef71d6dd352ce95a8bcce",
-              "restricted_source_count": 39,
-              "restricted_source_sha256": "59dfdd0c70679e8e2356b8dcffbb78faa795c5caa5025ce949e96522923023ea",
-              "tuple_shape": "nodeid_phase_reason"
-            },
-            "gate_a_preimplementation_observation": {
-              "authority_status": "historical_predecessor_non_authorizing_until_dependency_complete_stage_a_observation_and_stage_b_freeze",
-              "exact_base_preflight": "fetch_origin_main_require_full_clean_clone_and_both_full_dependency_landing_shas_then_write_once_stage_a_base_sidecar",
-              "collection_identity_derivation": {
-                "git_head": "cee6cdc25f753a0f096444ee6f86fe724ef607e8",
-                "nodeid_mapping": "embedded_observer_canonical_repo_relative_mapping",
-                "profile": "pytest_-q_-p_no_cacheprovider_-m_not_dotfiles_integration_--collect-only",
-                "provenance": "exact_git_archive_locked_local_wheel_source_layout_and_private_tests_only_installed_wheel_gate_a_collection",
-                "python": "uv_managed_3.12",
-                "uv_version": "0.10.9"
-              },
-              "complete_source_observation_contract": {
-                "artifact_names": [
-                  "broad.xml",
-                  "full-nodeids.txt",
-                  "legitimate-skips.json",
-                  "marker-deselected-nodeids.txt",
-                  "plugin-events.json",
-                  "selected-nodeids.txt",
-                  "stderr.txt",
-                  "stdout.txt"
-                ],
-                "attestation_file": "attestation.json",
-                "gate_a_artifact": "source-observation-manifest.json",
-                "manifest_rechecked_byte_identical_after_gate_a": true,
-                "required_upstream_bindings": [
-                  "source_observer",
-                  "plan",
-                  "roadmap",
-                  "provisioning"
-                ],
-                "validation": "exact_file_set_bytes_sha256_private_canonical_paths_and_modes"
-              },
-              "copied_tests_source": "git_archive_HEAD_phase-loop-runtime/tests",
-              "copied_tree_path": "$REVIEWTRUTH_RUNNER_ROOT/gate-a-preimplementation-input/standalone/phase-loop-runtime/tests",
-              "first_five_pre_mutation_operations": [
-                "provision",
-                "dual_observer_materialize",
-                "provision_freeze",
-                "source_observe",
-                "installed_wheel_gate_a_observe_and_candidate_profile_seal"
-              ],
-              "gate_a_observation_path": "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-preimplementation",
-              "gate_a_observer_bytes": 45116,
-              "gate_a_observer_path": "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-gate-a-baseline-observer.py",
-              "gate_a_observer_sha256": "d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9",
-              "gate_a_runtime_import": "exact_isolated_installed_wheel_not_source_PYTHONPATH",
-              "exact_collection_profile": {
-                "gate_a_full_count": 4203,
-                "gate_a_full_sha256": "d2047b8e53d19310a428b6728d46f47901b5a225d1ac6f4ff45abf566019b4a7",
-                "gate_a_marker_deselected_count": 601,
-                "gate_a_marker_deselected_sha256": "76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907",
-                "gate_a_selected_count": 3602,
-                "gate_a_selected_sha256": "d57ade2c1a0a0d5292191efaca00b0fa18ba2b7e7b27c352f94dc3d9416bb803",
-                "omitted_full_count": 48,
-                "omitted_full_equals_omitted_selected": true,
-                "omitted_full_sha256": "da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527",
-                "omitted_selected_count": 48,
-                "omitted_selected_sha256": "da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527",
-                "source_full_count": 4251,
-                "source_full_sha256": "e25173c29fb2fc1964bf052cfbf8613160a6cce87f153dd513d6244bdfd37d24",
-                "source_marker_deselected_count": 601,
-                "source_marker_deselected_sha256": "76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907",
-                "source_selected_count": 3650,
-                "source_selected_sha256": "f4139af6cc291ee5867cf04807cdca25f5c39f4dd7f212c83cff4bfe75316b87"
-              },
-              "intentional_omissions_proved_at": [
-                "standalone_root",
-                "tests_parents_3_detector_root"
-              ],
-              "later_parser_consumes_both_observation_directories": true,
-              "later_parser_operation": 6,
-              "no_future_sl5_code_or_post_edit_parser_dependency": true,
-              "pair_profile_constant_check_before_first_sl1_edit": false,
-              "planning_constants_are_independent_second_witness": false,
-              "stage_b_exact_profile_freeze_required_before_sl0_or_sl1": true,
-              "raw_collection_and_runtime_skip_reasons_separate": true,
-              "source_observation_path": "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-baseline-preimplementation",
-              "source_observer_bytes": 39420,
-              "source_observer_path": "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py",
-              "source_observer_sha256": "841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d",
-              "worktree_contract": "empty_all_untracked_status_and_identical_HEAD_HEAD_tree_index_before_and_after"
-            },
-            "gate_a_terminal_attestation_contract": {
-              "attester_consumer_lane": "SL-6",
-              "attester_owner_lane": "SL-5",
-              "attester_path": "phase-loop-runtime/scripts/verify_reviewtruth_evidence.py",
-              "attester_process": "fresh_after_child_stdout_stderr_artifact_manifest_and_copy_fds_close",
-              "canonical_artifact_root": "$REVIEWTRUTH_RUNNER_ROOT/evidence",
-              "canonical_artifacts": [
-                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.stdout",
-                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.stderr",
-                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.json",
-                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite-attestation.json"
-              ],
-              "external_copy_layout": "input-copy/tests/**_plus_input-copy/chronology-parser/verify_reviewtruth_chronology.py",
-              "forbidden_copy_roots": [
-                "temporary-runtime/phase-loop-runtime/scripts",
-                "input-copy/phase-loop-runtime/scripts"
-              ],
-              "forbidden_repo_local_gate_a_suite_root": ".phase-loop/evidence",
-              "owned_paths_count": null,
-              "owned_paths_sha256": null,
-              "owned_paths_authority": "stage_b_recompute_required",
-              "predecessor_owned_paths_count": 35,
-              "predecessor_owned_paths_sha256": "e1c925f2c22fd6186db28bdf9ea488de2b3ff9d0f835d1c96d279f8df37bc028",
-              "persistent_copy_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_persists_independently_attestable_tests_conftest_and_parser_copy",
-              "persistent_copy_nodeid_sha256": "c96415d6e2c94d3d2f4a42eeaf38a34572a2e88af2e743711f6b97751767071d",
-              "terminal_attestation_nodeids_count": 2,
-              "terminal_attestation_nodeids_sha256": "d17d8a218765ba3ce0ccea954a8a3cd082a828a7d9a4517810af0de53563a6dd",
-              "workflow_contract": "fresh_private_external_root_export_sl5_gate_a_reducer_script_internal_cleanup_terminal_attestation_then_external_cleanup",
-              "workflow_gate": "github_ci_green_at_exact_sl5_implementation_head_before_golden_panel_merge_and_sl6",
-              "workflow_path": ".github/workflows/test.yml",
-              "workflow_falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_workflow_exports_private_copy_attests_before_external_cleanup",
-              "persistent_copy_survives_temporary_tree_cleanup": true,
-              "persistent_inputs": [
-                "executed tests tree including conftest",
-                "verify_reviewtruth_chronology.py parser"
-              ],
-              "tests_only_paths_count": 11,
-              "tests_only_paths_sha256": "8680d32c4948c304468fb8796dd0b5a31fc94865eeee4a31d1aad2f894940db5"
-            },
-            "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
-            "phase_dependencies": [
-              "CONFORM",
-              "HARDEN",
-              "SCHED"
-            ],
-            "plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
-            "portable_skip_classification": {
-              "allowed_disposition": "environment_interpreter_pair_unavailable",
-              "allowed_reason": "need both python3.10 and python3.12 on host",
-              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_portable_interpreter_pair_disposition_normalizes_host_dependent_skip",
-              "falsifier_nodeid_sha256": "c36541be134c6256e39693869d2038efb47eb8efe2ab099dd701f24c7dfe70cd",
-              "gate_a_normalization": false,
-              "normalized_nodeid": "phase-loop-runtime/tests/test_cr_fixes_pr220.py::test_bare_python_below_floor_shims_even_when_python3_satisfies",
-              "normalized_nodeid_sha256": "866c44921f3cba820cd182671f5df21ed4f51191105effa047958924de916d8a",
-              "portable_python_matrix": [
-                "3.10",
-                "3.11",
-                "3.12"
-              ]
-            },
-            "pypi_availability_classification": {
-              "allowed_dispositions": [
-                "pypi_metadata_available_pass",
-                "pypi_transport_unavailable"
-              ],
-              "allowed_exception_types": [
-                "urllib.error.URLError",
-                "TimeoutError",
-                "OSError"
-              ],
-              "allowed_reason_prefix": "Skipped: PyPI unreachable (",
-              "allowed_reason_suffix": "); auto-track vs registry not checked offline",
-              "downstream_activated_red_member": false,
-              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip",
-              "falsifier_nodeid_sha256": "b8d7fedfe0b72b0f6e23d83a026c747a1a868630459bdb692b26b99b48b411a5",
-              "gate_a_normalization": false,
-              "gate_a_release_pin_skip_contract": "line_111_standalone_root_missing_remains_in_exact_39_plus_4_plus_59_equals_102_profile",
-              "green_requires_live_internet": false,
-              "normalized_nodeid": "phase-loop-runtime/tests/test_release_pin_autotrack.py::test_release_pin_is_not_behind_pypi_latest",
-              "normalized_nodeid_sha256": "7a54c34a8defee59045a9dfe403a5d89b2d87085ceb99358dde782184b87de6c",
-              "raw_exception_evidence_retained": true,
-              "required_python_matrix": [
-                "3.10",
-                "3.11",
-                "3.12"
-              ],
-              "skip_line": 116,
-              "source_path": "phase-loop-runtime/tests/test_release_pin_autotrack.py",
-              "source_sha256": "6b6c7f9f38bc815f37e2a3d86311867ea5a8ea907db2bad7d52fdeb0132b4d24",
-              "tdd_lifecycle": "sl1_literal_red_then_green_before_tests_only_landing"
-            },
-            "console_script_availability_classification": {
-              "allowed_dispositions": [
-                "console_script_available_pass",
-                "source_layout_console_script_unavailable"
-              ],
-              "allowed_reason": "Skipped: phase-loop console script not on this interpreter",
-              "downstream_activated_red_member": false,
-              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_console_script_availability_disposition_normalizes_only_source_layout_skip",
-              "falsifier_nodeid_sha256": "f548fec9689ec46975a085dd4dd1fee250ee6f199a0d6ae970b20beeb2a41640",
-              "gate_a_normalization": false,
-              "green_requires_external_command": false,
-              "normalized_nodeid": "phase-loop-runtime/tests/test_export_schema.py::test_console_script_check_smoke",
-              "normalized_nodeid_sha256": "582d2f4aa8395d9fa1205c9c7d52ea3b6a31b2f5750357c012a5c688b028def9",
-              "package_installed_bootstrap_ci_gate_a_disposition": "console_script_available_pass_only",
-              "raw_provenance_retained": [
-                "longrepr",
-                "reason",
-                "phase",
-                "line",
-                "source_sha256",
-                "sys_executable",
-                "derived_sibling_path",
-                "sibling_exists",
-                "module_origin",
-                "CI_observation"
-              ],
-              "source_layout_predicate": "repo_owned_source_module_and_CI_absent_and_Path_sys_executable_with_name_phase_loop_exists_false",
-              "skip_line": 189,
-              "source_path": "phase-loop-runtime/tests/test_export_schema.py",
-              "source_sha256": "355d74e6bbe823ecd0091e4cdb109b491e07ac5090d1a18a18e3e4a68bee4f06",
-              "tdd_lifecycle": "sl1_literal_red_then_green_before_broad_baseline_parse"
-            },
-            "sl1_infrastructure_tdd": {
-              "downstream_activated_red_members": 0,
-              "nodeids_count": 2,
-              "nodeids_sha256": "ad528b11ad08a3989aee135fcaf6fc5449d00da8188a074c5a126712924e2758",
-              "ordered_lifecycle": "exact_pypi_RED_then_exact_console_RED_then_exact_pypi_GREEN_then_exact_console_GREEN_before_operation_6_broad_baseline_parse"
-            },
-            "early_prover_tdd": {
-              "acceptance_criterion": "EC-REVIEWTRUTH-17",
-              "interface_gate": "IF-0-REVIEWTRUTH-3",
-              "nodeids_count": 16,
-              "nodeids_sha256": "c54d268bafd176e0d22c179eac2a175f208eb2c28f73027982d9c7780dc2219a",
-              "red_anchors_sha256": "8d175395fd67f2a9297a5b8fdb06f57bfa8595a268746a165ab9878d4d371e05",
-              "tests_only_paths_count": 11,
-              "tests_only_paths_sha256": "8680d32c4948c304468fb8796dd0b5a31fc94865eeee4a31d1aad2f894940db5",
-              "implementation_owned_paths": [
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py",
-                "phase-loop-runtime/src/phase_loop_runtime/fab_gate.py",
-                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
-                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-                "phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py"
-              ],
-              "implementation_owned_paths_count": 6,
-              "implementation_owned_paths_sha256": "9a8fa56b943ac82d030934322f3ab3187a739db66a62b29f1e56bead7d1f0b07",
-              "ordered_lifecycle": "stage_b_exact_base_freeze_then_literal_16_node_red_then_six_file_implementation_then_identical_16_node_green",
-              "external_tool_policy": {
-                "stage_a_disposition": "stage_b_freeze_required_before_implementation",
-                "effective_feature_denylist_count": 54,
-                "mcp_contract": "discovered_and_final_name_sets_identical_with_zero_enabled_servers",
-                "plugin_contract": "installed_and_available_sets_empty",
-                "shell_network_access": false,
-                "extra_writable_roots": [],
-                "unknown_enabled_locked_or_uninspectable": "degraded_no_launch_without_positive_os_confinement",
-                "digest_binding": "policy_preflight_and_receipt"
-              }
-            },
-            "reanchor_contract": "after_CONFORM_and_HARDEN_land_exact_base_preflight_then_stage_a_provision_dual_materialize_freeze_source_observe_gate_a_observe_complete_direct_file_candidate_manifest_and_domain_separated_candidate_digest_then_stage_b_exact_profile_manifest_digest_plan_revision_and_ordered_review_before_SL0_or_SL1",
-            "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-            "seat_outcome_degraded_roundtrip": {
-              "default_serialization": "omit_degraded_when_false_preserve_exact_legacy_bytes",
-              "field": "SeatOutcomeRecord.degraded",
-              "false_roundtrip": "present_false_reconstructs_false",
-              "implementation_owner_lane": "SL-2",
-              "legacy_absent_field_value": false,
-              "present_value_type": "actual_json_boolean_python_bool_only",
-              "reader_path": "phase-loop-runtime/src/phase_loop_runtime/fab_gate.py",
-              "red_anchor": "REVIEWTRUTH_RED::seat_outcome_degraded_strict_roundtrip",
-              "serializer_path": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-              "test_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_sl2_seat_outcome_degraded_true_survives_append_strict_read_rewrite_strict_reread",
-              "test_nodeid_sha256": "0c6a18f9cae6e9061943c5908c0a4ec127033fdbd757fd231e3d6947da6f278e",
-              "test_owner_lane": "SL-1",
-              "test_path": "phase-loop-runtime/tests/test_reviewtruth_phase.py",
-              "tests_only_paths_count": 11,
-              "tests_only_paths_sha256": "8680d32c4948c304468fb8796dd0b5a31fc94865eeee4a31d1aad2f894940db5",
-              "true_roundtrip": "append_strict_read_rewrite_strict_reread",
-              "true_serialization": "emit_degraded_only_when_true",
-              "unknown_field_posture": "strict_rejection_unchanged",
-              "wrong_typed_known_value_examples": [
-                "false",
-                1
-              ],
-              "wrong_typed_known_value_posture": "malformed_record_or_ProvenanceInvalid_before_construction_or_rewrite"
-            },
-            "run_id": "20260730T035938Z-01-reviewtruth-plan",
-            "acceptance_criteria_count": 18,
-            "prover_directive": {
-              "schema": "reviewtruth.prover-directive-planning.v1",
-              "issue": "Consiliency/agent-harness#398",
-              "comment_id": 5139609713,
-              "comment_node_id": "IC_kwDOTFEWvM8AAAABMlg4cQ",
-              "comment_url": "https://github.com/Consiliency/agent-harness/issues/398#issuecomment-5139609713",
-              "comment_body_bytes": 2697,
-              "comment_body_sha256": "284e37117787f653ae91cebc2c04454ddb54ef0cc6434e26dc08b0875cddccfc",
-              "created_at": "2026-07-31T05:29:20Z",
-              "updated_at": "2026-07-31T05:29:20Z",
-              "policy_contract": {
-                "parameterized": true,
-                "resolver": "gate_posture.resolve_ratification_policy",
-                "required_prover_override_type": "bool",
-                "required_prover_false_override_valid": true,
-                "hard_block_condition": "effective_required_prover_true_and_prover_usable_false"
-              },
-              "shipped_defaults": {
-                "plan-ratify": {
-                  "required_vendors": 3,
-                  "required_lens_coverage": 3,
-                  "required_prover": true,
-                  "required_consensus": "majority",
-                  "on_shortfall": "proceed_degraded"
-                },
-                "design-ratify": {
-                  "required_vendors": 3,
-                  "required_lens_coverage": 3,
-                  "required_prover": true,
-                  "required_consensus": "majority",
-                  "on_shortfall": "proceed_degraded"
-                },
-                "pre-merge-CR": {
-                  "required_vendors": 3,
-                  "required_lens_coverage": 3,
-                  "required_prover": true,
-                  "required_consensus": "majority",
-                  "on_shortfall": "escalate"
-                },
-                "release-dispatch": {
-                  "required_vendors": 3,
-                  "required_lens_coverage": 3,
-                  "required_prover": true,
-                  "required_consensus": "unanimous",
-                  "on_shortfall": "escalate"
-                }
-              },
-              "current_v10_self_application": {
-                "already_bound_verdicts": "stand",
-                "unbound_verdicts": "floor3_plus_usable_fable_after_digest_bound_early_prover_evidence",
-                "runtime_gap_enforcement": "procedural",
-                "binding_result": "unbound_requires_ordered_early_codex_critics_fable",
-                "direct_claude_p": false,
-                "vendor_leg_execution": true,
-                "vendor_leg_execution_scope": "serial_isolated_external_tool_closed_early_codex_can_probe_only"
-              }
-            },
-            "ordering_addendum": {
-              "schema": "reviewtruth.early-prover-ordering-planning.v1",
-              "issue": "Consiliency/agent-harness#398",
-              "comment_id": 5139955591,
-              "comment_node_id": "IC_kwDOTFEWvM8AAAABMl1_hw",
-              "comment_url": "https://github.com/Consiliency/agent-harness/issues/398#issuecomment-5139955591",
-              "comment_body_bytes": 3684,
-              "comment_body_sha256": "e0d61155a0d3ee9898d17ac89cdf029120109f198072f25c7517be20ddad5c4c",
-              "created_at": "2026-07-31T06:20:15Z",
-              "updated_at": "2026-07-31T06:20:15Z",
-              "plan_design_order": "critics_first_permitted_but_early_probe_evidence_required_before_fable",
-              "premerge_release_order": "early_prover_evidence_before_every_counted_critic",
-              "contradiction_contract": "prover_finding_invalidates_prior_agree_and_requires_updated_bundle_rereview",
-              "primary_early_prover": "codex_workspace_write_external_tool_closed_ephemeral_worktree_isolated_data_scope",
-              "grok_fallback": "only_after_codex_preflight_failure_and_only_under_os_confinement_else_degraded_no_launch",
-              "gemini_write_eligible": false,
-              "early_capability": "can_probe",
-              "binding_capability": "binding_prover_fable_only",
-              "implementation_tracker": "Consiliency/agent-harness#405",
-              "implementation_tracker_authorizing": false,
-              "panel_legs_unchanged": true,
-              "non_review_goldens_unchanged": true
-            },
-            "stage_a_candidate_seal": {
-              "schema": "reviewtruth_stage_a_candidate_artifacts.v1",
-              "source_observation_files": 9,
-              "gate_a_observation_files": 14,
-              "direct_file_inventory": true,
-              "entry_fields": [
-                "path",
-                "mode",
-                "bytes",
-                "sha256"
-              ],
-              "bound_namespaces": [
-                "observations/source",
-                "observations/gate-a",
-                "materialized",
-                "evidence",
-                "repository-stage-a",
-                "runtime-tree/phase-loop-runtime",
-                "copied-tests/phase-loop-runtime/tests",
-                "exact-base"
-              ],
-              "manifest_self_reference": false,
-              "candidate_digest_schema": "reviewtruth_stage_a_candidate_profile_input.v1",
-              "candidate_digest_inputs": [
-                "exact-base/reviewtruth-stage-a-base.json",
-                "evidence/reviewtruth-stage-a-candidate-artifacts.json"
-              ],
-              "immediate_filesystem_regeneration_required": true,
-              "mutable_live_stage_b_plan_in_candidate_manifest": false,
-              "stage_a_repository_snapshots": {
-                "creation_contract": "absent_non_symlink_destinations_and_temporaries_regular_canonical_sources_private_temporary_files_chmod_0600_atomic_rename_canonical_owner_mode_non_symlink_cmp_and_sha_against_live_stage_a_sources",
-                "plan_identity": "repository-stage-a/plans/phase-plan-v10-REVIEWTRUTH.md",
-                "plan_path": "$REVIEWTRUTH_RUNNER_ROOT/stage-a-snapshots/plans/phase-plan-v10-REVIEWTRUTH.md",
-                "roadmap_identity": "repository-stage-a/specs/phase-plans-v10.md",
-                "roadmap_path": "$REVIEWTRUTH_RUNNER_ROOT/stage-a-snapshots/specs/phase-plans-v10.md",
-                "write_once_mode": "0600"
-              },
-              "stage_b_fresh_process_reverification_required": true,
-              "stage_b_manifest_regeneration_source": "immutable_external_stage_a_plan_and_roadmap_snapshots",
-              "stage_b_plan_binding": "external_write_once_record_over_computed_live_plan_sha_and_atomically_staged_manifest_early_evidence_bundle_panel_and_four_seat_outcomes_no_self_digest_literal_never_equal_to_stage_a_plan_snapshot"
-            }
-          },
-          "transition": "committed"
-        }
-      ],
-      "owner_skill": "codex-plan-phase",
-      "phase_alias": "REVIEWTRUTH",
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/9256301e/codex-v10-plan-reviewtruth/20260730T035938Z-01-reviewtruth-plan.md",
-      "roadmap_ref": {
-        "file": "specs/phase-plans-v10.md",
-        "slug": "phase-plans-v10",
-        "status": "imported",
-        "type": "phase"
-      },
-      "slug": "v10-REVIEWTRUTH",
-      "status": "committed",
-      "task_summary": null,
-      "type": "phase",
-      "updated_at": "2026-07-31T04:09:16Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -1293,16 +1342,16 @@
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
             },
             "proofgate_plan_contract": {
+              "acceptance_invalid_enforcement": "validator_nonzero_intake_closeout_block",
               "activated_red_failures": 37,
               "activated_red_pass_nodeids": 2,
-              "activation_migrated_nodeids": 1,
               "activation_env": "PHASE_LOOP_TDD_EXPECT_PROOFGATE",
+              "activation_migrated_nodeids": 1,
               "attended_live_env": "PHASE_LOOP_PROOFGATE_ATTENDED_LIVE",
               "attended_phase_nodeids": 39,
               "attended_real_provider_rows": 4,
               "attested_core_contract": "proofgate_attested_core.v1",
               "attested_core_digest_placement": "external_filename_attestation_subject_append_only",
-              "acceptance_invalid_enforcement": "validator_nonzero_intake_closeout_block",
               "bootstrap_paths": [
                 ".github/workflows/proofgate-receipt-attestation.yml",
                 "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
@@ -1314,6 +1363,9 @@
               "credential_claim_scope": "active_transport_session_and_protocol_issued_credentials",
               "credential_egress_response_protocol": "credential_egress_response_protocol.v1",
               "credential_transform_contract": "credential_transform_closure.v1",
+              "current_review_artifact": null,
+              "current_review_input_status": "wrapper_terminated_before_writing_current_artifact",
+              "current_review_source_head": "c692cd38f00e390fe4de73d960fd91099d09fd53",
               "default_pass_nodeids": 3,
               "default_skip_nodeids": 36,
               "expected_nodeids": 39,
@@ -1403,16 +1455,14 @@
               "new_nodeids": 36,
               "nodeid_delta": 36,
               "nodeid_inventory_sha256": "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274",
+              "older_panel_must_not_be_relabelled_current": true,
               "ordinary_phase_nodeids": 39,
               "owned_path_patterns_count": 38,
               "owned_path_patterns_sha256": "a19e9ae2714f414d92b12314e8e9370aa1518a400d638c6eef211eb05e4b6c9b",
               "phase_dependency": "LEGIBLE",
               "phase_scheduler_mode": "off",
               "plan_sha256": "2121863f20a74899446efca005683b7305b2d48e87926dfc64ea77b2d04a3160",
-              "current_review_artifact": null,
-              "current_review_input_status": "wrapper_terminated_before_writing_current_artifact",
-              "current_review_source_head": "c692cd38f00e390fe4de73d960fd91099d09fd53",
-              "older_panel_must_not_be_relabelled_current": true,
+              "positive_control_nodeids": 2,
               "predecessor_interface_anchor": "LEGIBLE_PREDECESSOR_INTERFACE_ANCHOR_V1",
               "predecessor_interface_requirements": [
                 "verification_evidence.v3_supported",
@@ -1420,6 +1470,9 @@
                 "phase_loop_runtime.legible_evidence_registered",
                 "phase_loop_runtime.proofgate_evidence_absent"
               ],
+              "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
+              "predecessor_plan_sha256": "18422ee52d7a3a77adf6ecd75446abe7fea52da7ff4113f24209d0f292f3bff0",
+              "preexisting_owned_nodeids": 3,
               "proofgate_extension_record": {
                 "fields": [
                   "schema",
@@ -1430,10 +1483,6 @@
                 "namespace": "phase_loop_runtime.proofgate_evidence",
                 "schema": "proofgate_evidence.v1"
               },
-              "positive_control_nodeids": 2,
-              "preexisting_owned_nodeids": 3,
-              "predecessor_panel_sha256": "85c2f7a4cb5f2e15a4751a957472034104c24084c11f5c6291841d39c3ea6411",
-              "predecessor_plan_sha256": "18422ee52d7a3a77adf6ecd75446abe7fea52da7ff4113f24209d0f292f3bff0",
               "response_control_canaries": [
                 "set_cookie",
                 "rotated_token",
@@ -1474,570 +1523,552 @@
     },
     {
       "acceptance_criteria_count": null,
-      "created_at": "2026-07-30T04:11:08Z",
-      "file": "plans/phase-plan-v10-CONFORM.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T041108Z-65fd85.md",
+      "created_at": "2026-07-30T04:13:47Z",
+      "file": "plans/phase-plan-v10-REVIEWTRUTH.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
       "if_gates_produced": [
-        "IF-0-CONFORM-1"
-      ],
-      "lanes": [
-        "SL-0",
-        "SL-1",
-        "SL-2"
-      ],
-      "lifecycle": [
-        {
-          "at": "2026-07-30T14:16:54Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "digest_rebind": {
-              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
-              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
-              "predecessor_plan_sha256": "33c8b1e89ed25b45e50467dda827fa991af269daf08e3c5ce9ff14875ecccf97",
-              "reason": "semantic_repair_for_strict_phase_completion_producer_record",
-              "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 130557,
-              "reviewed_bundle_sha256": "9e8f9663b0679132aeabb63f99822b3a52e33356241144b7f2a7f6723c3945b3",
-              "reviewed_instructions_sha256": "f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356",
-              "reviewed_panel_sha256": "f6a5695f8de3f32aa05f8d037304892c18cd287234d1a966c485be3e427f08f5",
-              "reviewed_plan_sha256": "2060a7694dd95a441826a0cf77d0a273a6b840a2fc038251c18379117c505f57",
-              "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
-            },
-            "current_review": {
-              "artifact_path": ".phase-loop/reviews/v10-conform-plan-panel.json",
-              "artifact_sha256": "f6a5695f8de3f32aa05f8d037304892c18cd287234d1a966c485be3e427f08f5",
-              "artifact_semantics": "historical_predecessor_content_at_repair_time_overwriteable_run_local_path",
-              "bundle_bytes": 130557,
-              "bundle_sha256": "9e8f9663b0679132aeabb63f99822b3a52e33356241144b7f2a7f6723c3945b3",
-              "fable_outcome": "deferred",
-              "finding": "canonical_oracle_vocabulary_mismatch_and_omitted_submission_file_input_channel",
-              "finding_detail": "roadmap_EC_CONFORM_8_named_nonexistent_expected_status_and_expected_blocker_codes_instead_of_expected_valid_and_expected_blocker_class_and_EC_CONFORM_2_omitted_the_positional_submission_file_scalar_used_by_both_outside_agent_commands",
-              "gemini_verdict": "AGREE",
-              "grok_verdict": "AGREE",
-              "instructions_sha256": "f67adc74dee801094ad0e2dbe71d3a708a33f883780e6967e946862d10072356",
-              "repaired_plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
-              "repaired_review_status": "unreviewed_not_approved",
-              "reviewed_plan_sha256": "2060a7694dd95a441826a0cf77d0a273a6b840a2fc038251c18379117c505f57",
-              "reviewed_roadmap_sha256": "a289891a6f6bf27e07e3c1a5260d25f813f90931404c47dd2efc487e0aa268ba",
-              "sol_verdict": "DISAGREE",
-              "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
-            },
-            "completion_record_contract": {
-              "canonical_origin": "Consiliency/agent-harness",
-              "event_metadata_key": "phase_completion_landing",
-              "event_self_reference": "forbidden",
-              "phase_alias": "CONFORM",
-              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
-              "repaired_digest_review_status": "unreviewed_not_approved",
-              "required_agree_seats": [
-                "gpt-5.6-sol",
-                "fable"
-              ],
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-              "role": "producer",
-              "schema": "v10.phase-completion-landing.v1",
-              "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
-            },
-            "conform_plan_contract": {
-              "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
-              "archive_inclusion_nodeid_sha256": "ccb295db192a045c224dc7f74819f8b83adb6db348d8d8b2d155a5c4f73005c0",
-              "migrated_existing_no_copy_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
-              "migrated_existing_no_copy_nodeid_sha256": "7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe",
-              "owned_path_patterns_count": 22,
-              "owned_path_patterns_sha256": "285e9ddb9d6f1996e3746f809cbe240053b6efe81504fc8e8c2913fd2660e427",
-              "package_inclusion_owned_paths": [
-                "phase-loop-runtime/MANIFEST.in",
-                "phase-loop-runtime/pyproject.toml"
-              ],
-              "phase_dependencies": [
-                "LEGIBLE"
-              ],
-              "plan_sha256": "a35fbef82bca787322b1cda6686ebb05499d23372d2bd97117bbed2cce430e0a",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-              "test_path_patterns_count": 6,
-              "test_path_patterns_sha256": "d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145"
-            }
-          },
-          "transition": "committed"
-        }
-      ],
-      "owner_skill": "codex-plan-phase",
-      "phase_alias": "CONFORM",
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
-      "roadmap_ref": {
-        "file": "specs/phase-plans-v10.md",
-        "slug": "phase-plans-v10",
-        "status": "imported",
-        "type": "phase"
-      },
-      "slug": "v10-CONFORM",
-      "status": "committed",
-      "task_summary": null,
-      "type": "phase",
-      "updated_at": "2026-07-30T14:16:54Z"
-    },
-    {
-      "acceptance_criteria_count": null,
-      "created_at": "2026-07-30T04:08:05Z",
-      "file": "plans/phase-plan-v10-FABPUB.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-fabpub-plan.md",
-      "if_gates_produced": [
-        "IF-0-FABPUB-1"
+        "IF-0-REVIEWTRUTH-1",
+        "IF-0-REVIEWTRUTH-2",
+        "IF-0-REVIEWTRUTH-3"
       ],
       "lanes": [
         "SL-0",
         "SL-1",
         "SL-2",
         "SL-3",
-        "SL-4"
+        "SL-4",
+        "SL-5",
+        "SL-6"
       ],
       "lifecycle": [
         {
-          "at": "2026-07-30T19:20:13Z",
+          "at": "2026-07-30T04:13:47Z",
           "by": "codex-plan-phase",
           "metadata": {
-            "digest_rebind": {
-              "historical_dissent_verdict": "DISAGREE",
-              "plan_sha256": "b593ebe1e600a59e226526ce65f85b472826e4c938b9348d409c915a9ba82720",
-              "predecessor_plan_sha256": "c83e5a1528bc2ea834124a64304ded475f463614c71fec89c165d343cea9a6b8",
-              "reason": "mechanical_roadmap_digest_rollover_for_REVIEWTRUTH_stage_a_candidate_evidence_seal_repair",
-              "reviewed_bundle_bytes": 156648,
-              "reviewed_bundle_sha256": "47a449cd6302037dec60910067265757b9b08c419b4964c3a2c7389ab7682237",
-              "reviewed_instructions_sha256": "d90bdadb68b9c9d2b37ffbc0e9c7e82cca5bcdc1745f3e5b3200b6cbe71c4b85",
-              "reviewed_panel_sha256": "46a3543d4a50f46dc78ef9cbe24158c3bbb33c1b658239bf991c332aa671025f",
-              "reviewed_plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
-              "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-              "supplied_latest_review_artifact_sha256": null,
-              "supplied_latest_review_artifact_status": "not_supplied_do_not_infer_from_stale_run_local_path",
-              "supplied_latest_review_findings": [
-                "normal_default_train_file_parents_split_allocator_state_under_ledger_dir_broker",
-                "exclusive_activation_lease_does_not_fence_post_activation_pre_fabpub_or_direct_run_train_writers"
-              ],
-              "supplied_latest_reviewed_mechanical_plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
-              "supplied_latest_reviewed_semantic_plan_sha256": "784a2ece2c65f3ea6bcc83adbe558ddbb48346f4311c5a6121bea4374020344a"
-            },
-            "fabpub_plan_contract_payload_sha256": "37e37066d34dfc6ec32a20ac07fc6fe37f1e6bf07ff073531c896f55afcf6b1b",
-            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v2",
-            "fabpub_plan_contract": {
-              "acceptance_criteria_count": 11,
-              "activation_env": "PHASE_LOOP_TDD_EXPECT_FABPUB",
-              "adapter_start_fence_nodeids": [
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_after_possible_provider_effect"
-              ],
-              "adapter_start_fence_nodeids_count": 1,
-              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
-              "adapter_start_ownership_contract": "AdapterStartOwnership.v1_repository_visible_locked_fsynced_before_provider_effect",
-              "allocator_next_epoch_formula": "max(canonical_admission_high_water(R),receipt.legacy_epoch_high_water(R))+1",
-              "authority_handoff_order": "PublishAuthorityPreimages_checkpoint_root_then_COMMITTED_HEAD_RESOLVED_then_PreAdmissionEnvelope_then_BrokerService.execute",
-              "authority_preimage_builder": "_default_build_publish_authority_returns_PublishAuthorityPreimages",
-              "capability_marker": "phase_loop_runtime.fabpub_capability:FABPUB_CAPABILITY_VERSION=1",
-              "canonical_repository_identity_role": "storage_and_keying",
-              "expected_commit_state_machine": "PREPARED_COMMIT_OBJECT_DURABLE_COMMITTED_HEAD_RESOLVED",
-              "expected_nodeid_delta_from_current_plan": 2,
-              "expected_nodeid_delta_from_v10_fabpub_baseline": 12,
-              "expected_oid_recovery": "ref_expected_finalize_ref_parent_retry_same_cas_every_other_oid_block",
-              "fresh_exact_digest_panel_required": [
-                "fable",
-                "gpt-5.6-sol",
-                "gemini",
-                "grok"
-              ],
-              "historical_panel_plan_sha256": "171048b9121904a501c6e3ef53ea23c9bcb8e935b6fc5b5b79aa28941b74c86f",
-              "historical_panel_record_sha256": "46a3543d4a50f46dc78ef9cbe24158c3bbb33c1b658239bf991c332aa671025f",
-              "latest_review_artifact_sha256": null,
-              "latest_review_artifact_status": "not_supplied_do_not_infer_from_stale_run_local_path",
-              "latest_reviewed_plan_sha256": "784a2ece2c65f3ea6bcc83adbe558ddbb48346f4311c5a6121bea4374020344a",
-              "legacy_exclusive_activation_contract": "quiescence_then_WriterGenerationLatch_LEGACY_OPEN_DRAINING_ACTIVE_with_per_write_effect_revalidation_and_irreversible_ACTIVE",
-              "legacy_cutover_global_contract": "LegacyBrokerCutoverManifest.v2_to_LegacyBrokerCutoverTransaction.v2_to_repository_partition_receipts_to_global_ARMED_then_WriterGenerationLatch_ACTIVE",
-              "legacy_cutover_nodeids": [
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_global_legacy_cutover_partitions_multiple_repositories_crash_idempotently_before_activation",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_conflict_collision_and_idempotent_resume_before_activation",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_exact_serialized_repo_preimages_and_resolution_context_before_activation",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_high_water_before_activation",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_preserves_outcome_ambiguous_block_before_activation",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_cutover_replays_terminal_completed_effect_before_activation",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_legacy_writer_quiescence_blocks_armed_activation_and_fences_supported_restarts",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_fail_closed"
-              ],
-              "legacy_cutover_nodeids_count": 8,
-              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
-              "legacy_post_armed_onboarding_contract": "after_ARMED_and_ACTIVE_serialized_authenticated_zero_legacy_partition_receipt_before_first_admission",
-              "legacy_store_cutover_contract": "complete_legacy_root_set_quiescence_generation_drain_exact_serialized_repo_preimage_resolution_context_git_common_target_global_inventory_partition_snapshot_archive_root_leaf_tombstones_receipts_ARMED_ACTIVE_before_route",
-              "lifecycle": "fabpub_tdd_candidate_main.v1",
-              "owned_paths": [
-                "CHANGELOG.md",
-                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
-                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py",
-                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py",
-                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py",
-                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py",
-                "phase-loop-runtime/src/phase_loop_runtime/convergence/contracts.py",
-                "phase-loop-runtime/src/phase_loop_runtime/convergence/fencing.py",
-                "phase-loop-runtime/src/phase_loop_runtime/fabpub_capability.py",
-                "phase-loop-runtime/src/phase_loop_runtime/fabpub_tdd_chronology.py",
-                "phase-loop-runtime/src/phase_loop_runtime/publishing.py",
-                "phase-loop-runtime/src/phase_loop_runtime/train_runner.py",
-                "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
-                "phase-loop-runtime/tests/test_convergence_broker_admission.py",
-                "phase-loop-runtime/tests/test_convergence_broker_credsep.py",
-                "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
-                "phase-loop-runtime/tests/test_convergence_broker_verbs.py",
-                "phase-loop-runtime/tests/test_convergence_fencing.py",
-                "phase-loop-runtime/tests/test_convergence_live_enable.py",
-                "phase-loop-runtime/tests/test_convergence_train_integration.py",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py",
-                "phase-loop-runtime/tests/test_publishing.py",
-                "phase-loop-runtime/tests/test_train_prebuilt.py",
-                "phase-loop-runtime/tests/test_train_runner.py"
-              ],
-              "owned_paths_count": 24,
-              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
-              "phase_dependencies": [
-                "PROOFGATE",
-                "CONFORM"
-              ],
-              "plan_sha256": "b593ebe1e600a59e226526ce65f85b472826e4c938b9348d409c915a9ba82720",
-              "prior_manifest_plan_sha256": "dee0007dea9dd5dc8333e736804aadcaf6078187ece520ee45819961d5d0dd99",
-              "repository_allocator_namespace_contract": "resolved_git_common_dir/phase-loop-fabpub-broker-v1/repositories/canonical_repository_identity",
-              "repository_identity_contract": "canonical_git_common_dir_and_object_format_full_sha256",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-              "routing_store_selection_contract": "BrokerRequest.adapter_worktree_derives_git_common_namespace_and_must_match_BrokerRequest.repo_before_store_construction",
-              "shared_allocator_nodeids": [
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_allocator_shared_repository_epoch_across_linked_worktrees_and_train_roots",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_default_cli_train_roots_share_git_common_repository_allocator_without_root_injection"
-              ],
-              "shared_allocator_nodeids_count": 2,
-              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
-              "shared_allocator_store_contract": "one_repository_store_under_git_common_dir_with_no_production_allocator_root_injection_after_ARMED_ACTIVE_cutover",
-              "shared_start_recovery": "unsealed_owner_promotes_to_permanent_OUTCOME_AMBIGUOUS_BLOCKED",
-              "train_local_coordinator_contract": "ledger_dir_broker_train_key_is_transaction_checkpoint_only_never_allocator_authority",
-              "train_local_adapter_started_authority": false,
-              "writer_generation_fence_nodeids": [
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_post_activation_writer_generation_fence_blocks_direct_and_old_cli_restarts"
-              ],
-              "writer_generation_fence_nodeids_count": 1,
-              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5",
-              "writer_generation_failure_code": "legacy_writer_after_fabpub_activation",
-              "writer_generation_rollback_contract": "rollback_only_from_pre_mutation_DRAINING_ACTIVE_irreversible",
-              "adapter_worktree_role": "validated_provider_execution_location_only",
-              "test_paths": [
-                "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
-                "phase-loop-runtime/tests/test_convergence_broker_admission.py",
-                "phase-loop-runtime/tests/test_convergence_broker_credsep.py",
-                "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
-                "phase-loop-runtime/tests/test_convergence_broker_verbs.py",
-                "phase-loop-runtime/tests/test_convergence_fencing.py",
-                "phase-loop-runtime/tests/test_convergence_live_enable.py",
-                "phase-loop-runtime/tests/test_convergence_train_integration.py",
-                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py",
-                "phase-loop-runtime/tests/test_publishing.py",
-                "phase-loop-runtime/tests/test_train_prebuilt.py",
-                "phase-loop-runtime/tests/test_train_runner.py"
-              ],
-              "test_paths_count": 12,
-              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51"
-            }
-          },
-          "transition": "committed"
-        }
-      ],
-      "owner_skill": "codex-plan-phase",
-      "phase_alias": "FABPUB",
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
-      "roadmap_ref": {
-        "file": "specs/phase-plans-v10.md",
-        "slug": "phase-plans-v10",
-        "status": "imported",
-        "type": "phase"
-      },
-      "slug": "v10-FABPUB",
-      "status": "committed",
-      "task_summary": null,
-      "type": "phase",
-      "updated_at": "2026-07-30T19:20:13Z"
-    },
-    {
-      "acceptance_criteria_count": null,
-      "created_at": "2026-07-30T04:16:33Z",
-      "file": "plans/phase-plan-v10-HARDEN.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035939Z-01-harden-plan.md",
-      "if_gates_produced": [],
-      "lanes": [
-        "SL-0",
-        "SL-1",
-        "SL-2",
-        "SL-3"
-      ],
-      "lifecycle": [
-        {
-          "at": "2026-07-30T16:19:25Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "digest_rebind": {
-              "historical_dissent_verdict": "GROK_DISAGREE_SOL_AGREE_GEMINI_UNUSABLE_DEGRADED",
-              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
-              "predecessor_plan_sha256": "3ffb5b466ab45943827c7beb12c49cbc32af20f94a2acf56f9e56048de8d6617",
-              "reason": "semantic_repair_for_strict_phase_completion_producer_record",
-              "repaired_digest_review_status": "unreviewed_not_approved",
-              "reviewed_bundle_bytes": 172064,
-              "reviewed_bundle_sha256": "de0338490aeb6fbf82b72a28d8a6a3205b9a79d9348990548794b6580f03fb4d",
-              "reviewed_instructions_sha256": "41371fc43a293e7323265d3cd28422af266146f756b2d4c110d3f661ac034354",
-              "reviewed_panel_sha256": "6d18cbedf3e793c839dcd4a89883c2b5e82281e98e23fce7e0cfc68419cae7f5",
-              "reviewed_plan_sha256": "f60b9373066b9537f0ea5e78b78b2462dc535cbb04d86e1fa384a14f4bee48da",
-              "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            "acceptance_criteria_count": 18,
+            "bootstrap_prerequisite": {
+              "archive_member": "phase-loop-runtime/uv.lock",
+              "lifecycle": "planning_candidate_committed_on_main_before_reviewtruth_lane_dispatch",
+              "lock_sha256": "b89987030b895131c3de05a316783ac0bcb6423d5531d6e9a04ee4a8f1e9fcce",
+              "ownership": "codex-plan-phase_not_reviewtruth_lane_implementation"
             },
             "completion_record_contract": {
-              "canonical_origin": "Consiliency/agent-harness",
-              "event_metadata_key": "phase_completion_landing",
-              "event_self_reference": "forbidden",
-              "phase_alias": "HARDEN",
-              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
-              "repaired_digest_review_status": "unreviewed_not_approved",
-              "required_agree_seats": [
-                "gpt-5.6-sol",
-                "fable"
+              "accepted_origin_urls": [
+                "git@github.com:Consiliency/agent-harness.git",
+                "ssh://git@github.com/Consiliency/agent-harness.git",
+                "https://github.com/Consiliency/agent-harness.git"
               ],
+              "canonical_origin": "Consiliency/agent-harness",
+              "consumer_bindings": [
+                "F",
+                "M",
+                "FH",
+                "canonical_origin"
+              ],
+              "distinct_phase_completion_merges": true,
+              "plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
+              "reject_url_rewriting": true,
+              "repaired_digest_review_status": "unreviewed_not_approved",
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-              "role": "producer",
+              "role": "consumer",
               "schema": "v10.phase-completion-landing.v1",
+              "stage_b_reverification": true,
               "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
             },
-            "harden_plan_contract_record_id": "v10-HARDEN.harden-plan-contract.v1",
-            "harden_plan_contract": {
-              "acceptance_criteria_count": 6,
-              "activation_env": "PHASE_LOOP_TDD_EXPECT_HARDEN",
-              "api_key_fallback": false,
-              "capability_marker": "phase_loop_runtime.verification_evidence:HARDEN_CAPABILITY_VERSION=1",
-              "checkpoint_paths": [
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/__init__.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py",
+            "console_script_availability_classification": {
+              "allowed_dispositions": [
+                "console_script_available_pass",
+                "source_layout_console_script_unavailable"
+              ],
+              "allowed_reason": "Skipped: phase-loop console script not on this interpreter",
+              "downstream_activated_red_member": false,
+              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_console_script_availability_disposition_normalizes_only_source_layout_skip",
+              "falsifier_nodeid_sha256": "f548fec9689ec46975a085dd4dd1fee250ee6f199a0d6ae970b20beeb2a41640",
+              "gate_a_normalization": false,
+              "green_requires_external_command": false,
+              "normalized_nodeid": "phase-loop-runtime/tests/test_export_schema.py::test_console_script_check_smoke",
+              "normalized_nodeid_sha256": "582d2f4aa8395d9fa1205c9c7d52ea3b6a31b2f5750357c012a5c688b028def9",
+              "package_installed_bootstrap_ci_gate_a_disposition": "console_script_available_pass_only",
+              "raw_provenance_retained": [
+                "longrepr",
+                "reason",
+                "phase",
+                "line",
+                "source_sha256",
+                "sys_executable",
+                "derived_sibling_path",
+                "sibling_exists",
+                "module_origin",
+                "CI_observation"
+              ],
+              "skip_line": 189,
+              "source_layout_predicate": "repo_owned_source_module_and_CI_absent_and_Path_sys_executable_with_name_phase_loop_exists_false",
+              "source_path": "phase-loop-runtime/tests/test_export_schema.py",
+              "source_sha256": "355d74e6bbe823ecd0091e4cdb109b491e07ac5090d1a18a18e3e4a68bee4f06",
+              "tdd_lifecycle": "sl1_literal_red_then_green_before_broad_baseline_parse"
+            },
+            "current_review": {
+              "artifact_path": ".phase-loop/reviews/v10-reviewtruth-plan-panel.json",
+              "artifact_semantics": "non_authorizing_dependency_landing_auth_predecessor_dissent_at_repair_time_overwriteable_run_local_path",
+              "artifact_sha256": "950a08facce1df02337d626301fc24af223812ef32c1cb99d18be6abc5ecd19b",
+              "authorizing": false,
+              "bundle_bytes": 557138,
+              "bundle_sha256": "5a2c6c4d892aee180ce3b7ea05dd86d2b46228138e855db86959467d8aa991e8",
+              "early_prover_artifact_sha256": "35c4ec83250bb32fba8599530a11aebcf0088c98a41b87b07cd9df8ce47d8d8f",
+              "early_prover_binding_prover": false,
+              "early_prover_capability": "can_probe",
+              "fable_outcome": "deferred",
+              "finding_details": {
+                "arbitrary_or_identical_ancestor_landings": "Stage_A_accepted_operator_supplied_CONFORM_and_HARDEN_values_as_any_ancestors_of_base_without_phase_qualified_completion_topology_or_event_proof",
+                "unauthenticated_hardcoded_origin": "Stage_A_hardcoded_Consiliency_agent_harness_in_the_sidecar_without_authenticating_fetch_and_push_origin_or_rewrite_configuration"
+              },
+              "findings": [
+                "arbitrary_or_identical_ancestor_landings",
+                "unauthenticated_hardcoded_origin"
+              ],
+              "gemini_verdict": "AGREE",
+              "grok_verdict": "AGREE",
+              "instructions_sha256": "bd6550e88bd8944a8a384b50b55561cee88b8e683ab5095992da79855090e91a",
+              "repaired_plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
+              "repaired_review_status": "unreviewed_not_approved",
+              "reviewed_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
+              "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
+              "sol_verdict": "DISAGREE",
+              "verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED"
+            },
+            "digest_rebind": {
+              "coordinator_post_author_audit": {
+                "finding": "stage_b_plan_self_digest_placeholder_would_change_the_plan_being_hashed",
+                "resolution": "external_write_once_binding_record_over_computed_plan_sha_and_atomically_staged_review_artifacts"
+              },
+              "fresh_exact_digest_panel_required": true,
+              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_DEFERRED",
+              "plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
+              "predecessor_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
+              "reason": "semantic_repair_for_authenticated_dependency_completion_landings",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "reviewed_bundle_bytes": 557138,
+              "reviewed_bundle_sha256": "5a2c6c4d892aee180ce3b7ea05dd86d2b46228138e855db86959467d8aa991e8",
+              "reviewed_early_evidence_sha256": "35c4ec83250bb32fba8599530a11aebcf0088c98a41b87b07cd9df8ce47d8d8f",
+              "reviewed_instructions_sha256": "bd6550e88bd8944a8a384b50b55561cee88b8e683ab5095992da79855090e91a",
+              "reviewed_panel_sha256": "950a08facce1df02337d626301fc24af223812ef32c1cb99d18be6abc5ecd19b",
+              "reviewed_plan_sha256": "335e4dfa1af4ba14d97ce8102642234e58d8da0cbbd6a098298a1dc3c62f70e3",
+              "reviewed_roadmap_sha256": "70c2ca94cc1b43f92cbcc2cd8298c9e713cf742c3e06d51a343708760342740c",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            },
+            "early_prover_tdd": {
+              "acceptance_criterion": "EC-REVIEWTRUTH-17",
+              "external_tool_policy": {
+                "digest_binding": "policy_preflight_and_receipt",
+                "effective_feature_denylist_count": 54,
+                "extra_writable_roots": [],
+                "mcp_contract": "discovered_and_final_name_sets_identical_with_zero_enabled_servers",
+                "plugin_contract": "installed_and_available_sets_empty",
+                "shell_network_access": false,
+                "stage_a_disposition": "stage_b_freeze_required_before_implementation",
+                "unknown_enabled_locked_or_uninspectable": "degraded_no_launch_without_positive_os_confinement"
+              },
+              "implementation_owned_paths": [
                 "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/resolver.py",
-                "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py",
-                "phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py",
-                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
-                "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
-                "phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py",
-                "phase-loop-runtime/src/phase_loop_runtime/injection.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py",
+                "phase-loop-runtime/src/phase_loop_runtime/fab_gate.py",
                 "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
                 "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-                "phase-loop-runtime/src/phase_loop_runtime/reconcile.py",
-                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
-                "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py",
-                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py"
+                "phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py"
               ],
-              "checkpoint_paths_count": 18,
-              "checkpoint_paths_sha256": "b20d6f20a8a073d4c5401143bd72850b69bc1e1661668bd7f3d3e5c628d58d03",
-              "cross_phase_overlap_phases": [
-                "CONFORM",
-                "FABPUB",
-                "LEGIBLE",
-                "PROOFGATE",
-                "REVIEWTRUTH"
+              "implementation_owned_paths_count": 6,
+              "implementation_owned_paths_sha256": "9a8fa56b943ac82d030934322f3ab3187a739db66a62b29f1e56bead7d1f0b07",
+              "interface_gate": "IF-0-REVIEWTRUTH-3",
+              "nodeids_count": 16,
+              "nodeids_sha256": "c54d268bafd176e0d22c179eac2a175f208eb2c28f73027982d9c7780dc2219a",
+              "ordered_lifecycle": "stage_b_exact_base_freeze_then_literal_16_node_red_then_six_file_implementation_then_identical_16_node_green",
+              "red_anchors_sha256": "8d175395fd67f2a9297a5b8fdb06f57bfa8595a268746a165ab9878d4d371e05",
+              "tests_only_paths_count": 11,
+              "tests_only_paths_sha256": "8680d32c4948c304468fb8796dd0b5a31fc94865eeee4a31d1aad2f894940db5"
+            },
+            "gate_a_preimplementation_observation": {
+              "authority_status": "historical_predecessor_non_authorizing_until_dependency_complete_stage_a_observation_and_stage_b_freeze",
+              "collection_identity_derivation": {
+                "git_head": "cee6cdc25f753a0f096444ee6f86fe724ef607e8",
+                "nodeid_mapping": "embedded_observer_canonical_repo_relative_mapping",
+                "profile": "pytest_-q_-p_no_cacheprovider_-m_not_dotfiles_integration_--collect-only",
+                "provenance": "exact_git_archive_locked_local_wheel_source_layout_and_private_tests_only_installed_wheel_gate_a_collection",
+                "python": "uv_managed_3.12",
+                "uv_version": "0.10.9"
+              },
+              "complete_source_observation_contract": {
+                "artifact_names": [
+                  "broad.xml",
+                  "full-nodeids.txt",
+                  "legitimate-skips.json",
+                  "marker-deselected-nodeids.txt",
+                  "plugin-events.json",
+                  "selected-nodeids.txt",
+                  "stderr.txt",
+                  "stdout.txt"
+                ],
+                "attestation_file": "attestation.json",
+                "gate_a_artifact": "source-observation-manifest.json",
+                "manifest_rechecked_byte_identical_after_gate_a": true,
+                "required_upstream_bindings": [
+                  "source_observer",
+                  "plan",
+                  "roadmap",
+                  "provisioning"
+                ],
+                "validation": "exact_file_set_bytes_sha256_private_canonical_paths_and_modes"
+              },
+              "copied_tests_source": "git_archive_HEAD_phase-loop-runtime/tests",
+              "copied_tree_path": "$REVIEWTRUTH_RUNNER_ROOT/gate-a-preimplementation-input/standalone/phase-loop-runtime/tests",
+              "exact_base_preflight": "fetch_origin_main_require_full_clean_clone_and_both_full_dependency_landing_shas_then_write_once_stage_a_base_sidecar",
+              "exact_collection_profile": {
+                "gate_a_full_count": 4203,
+                "gate_a_full_sha256": "d2047b8e53d19310a428b6728d46f47901b5a225d1ac6f4ff45abf566019b4a7",
+                "gate_a_marker_deselected_count": 601,
+                "gate_a_marker_deselected_sha256": "76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907",
+                "gate_a_selected_count": 3602,
+                "gate_a_selected_sha256": "d57ade2c1a0a0d5292191efaca00b0fa18ba2b7e7b27c352f94dc3d9416bb803",
+                "omitted_full_count": 48,
+                "omitted_full_equals_omitted_selected": true,
+                "omitted_full_sha256": "da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527",
+                "omitted_selected_count": 48,
+                "omitted_selected_sha256": "da81279e6120f3f26db5590c66b17e32943ccee20993e82ca4b80002adbf4527",
+                "source_full_count": 4251,
+                "source_full_sha256": "e25173c29fb2fc1964bf052cfbf8613160a6cce87f153dd513d6244bdfd37d24",
+                "source_marker_deselected_count": 601,
+                "source_marker_deselected_sha256": "76c54e5747a26dd58da2d68ece04e72cf894f518c7dec042de927299b6c6d907",
+                "source_selected_count": 3650,
+                "source_selected_sha256": "f4139af6cc291ee5867cf04807cdca25f5c39f4dd7f212c83cff4bfe75316b87"
+              },
+              "first_five_pre_mutation_operations": [
+                "provision",
+                "dual_observer_materialize",
+                "provision_freeze",
+                "source_observe",
+                "installed_wheel_gate_a_observe_and_candidate_profile_seal"
               ],
-              "cross_phase_serialization_required": true,
-              "default_pass_nodeids": 105,
-              "default_skip_nodeids": 21,
-              "expected_nodeids": 126,
-              "fresh_exact_digest_panel_required": [
-                "fable",
-                "gpt-5.6-sol",
-                "gemini",
-                "grok"
+              "gate_a_observation_path": "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-preimplementation",
+              "gate_a_observer_bytes": 45116,
+              "gate_a_observer_path": "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-gate-a-baseline-observer.py",
+              "gate_a_observer_sha256": "d51199649bf0c4a2ed3c647e210128ecd07112c5229143b976de7600943af3c9",
+              "gate_a_runtime_import": "exact_isolated_installed_wheel_not_source_PYTHONPATH",
+              "intentional_omissions_proved_at": [
+                "standalone_root",
+                "tests_parents_3_detector_root"
               ],
-              "implementation_author_scope": "whole_phase",
-              "implementation_effort": "high",
-              "implementation_executor": "codex",
-              "implementation_model": "gpt-5.6-terra",
-              "lane_scheduler_mode": "off",
-              "latest_panel_plan_sha256": "f60b9373066b9537f0ea5e78b78b2462dc535cbb04d86e1fa384a14f4bee48da",
-              "latest_panel_sha256": "6d18cbedf3e793c839dcd4a89883c2b5e82281e98e23fce7e0cfc68419cae7f5",
-              "latest_panel_verdict": "GROK_DISAGREE_SOL_AGREE_GEMINI_UNUSABLE_DEGRADED",
-              "lifecycle": "harden_tdd_candidate_main.v1",
-              "new_nodeids": 21,
-              "migrated_nodeids": 105,
-              "migrated_nodeids_sha256": "33b0fa58f85c5e3cfd199b2f6d94126458c82e3814671fdf0805a07e9d6702c4",
-              "nodeid_delta": 104,
-              "nodeid_inventory_sha256": "6b642b3a4a7f22b51c41c5a84383a09833b8af0c57e1a10e9c97cd2e3c623728",
-              "owned_paths": [
-                "CHANGELOG.md",
-                "phase-loop-runtime/scripts/verify_harden_evidence.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/__init__.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/resolver.py",
-                "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py",
-                "phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py",
-                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
-                "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
-                "phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py",
-                "phase-loop-runtime/src/phase_loop_runtime/injection.py",
-                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
-                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-                "phase-loop-runtime/src/phase_loop_runtime/reconcile.py",
-                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
-                "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py",
-                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
-                "phase-loop-runtime/tests/harden_tdd_guard.py",
-                "phase-loop-runtime/tests/test_advisor_board_advisory_mode.py",
-                "phase-loop-runtime/tests/test_advisor_board_backcompat.py",
-                "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py",
-                "phase-loop-runtime/tests/test_advisor_board_backing_omnigent.py",
-                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py",
-                "phase-loop-runtime/tests/test_advisor_board_composition.py",
-                "phase-loop-runtime/tests/test_advisor_board_config.py",
-                "phase-loop-runtime/tests/test_advisor_board_golden.py",
-                "phase-loop-runtime/tests/test_advisor_board_integration.py",
-                "phase-loop-runtime/tests/test_advisor_board_live_research.py",
-                "phase-loop-runtime/tests/test_advisor_board_observability.py",
-                "phase-loop-runtime/tests/test_advisor_board_presets.py",
-                "phase-loop-runtime/tests/test_advisor_board_research.py",
-                "phase-loop-runtime/tests/test_advisor_board_resolver.py",
-                "phase-loop-runtime/tests/test_goal_coverage.py",
-                "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
-                "phase-loop-runtime/tests/test_panel_invoker.py",
-                "phase-loop-runtime/tests/test_panel_leg_failure_diagnostic.py",
-                "phase-loop-runtime/tests/test_panel_native_fill_183.py",
-                "phase-loop-runtime/tests/test_panel_streaming_verdicts.py",
-                "phase-loop-runtime/tests/test_phase_loop_injection.py",
-                "phase-loop-runtime/tests/test_ratification_policy.py",
-                "phase-loop-runtime/tests/test_reconcile_portability_85c.py",
-                "phase-loop-runtime/tests/test_review_leg_sandbox.py",
-                "phase-loop-runtime/tests/test_verification_interpreter_guard_221.py"
+              "later_parser_consumes_both_observation_directories": true,
+              "later_parser_operation": 6,
+              "no_future_sl5_code_or_post_edit_parser_dependency": true,
+              "pair_profile_constant_check_before_first_sl1_edit": false,
+              "planning_constants_are_independent_second_witness": false,
+              "raw_collection_and_runtime_skip_reasons_separate": true,
+              "source_observation_path": "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-baseline-preimplementation",
+              "source_observer_bytes": 39420,
+              "source_observer_path": "$REVIEWTRUTH_RUNNER_ROOT/materialized/reviewtruth-baseline-observer.py",
+              "source_observer_sha256": "841cfb8bbac1d9b4ea0bb14a1f3600165550227b680b2e5689c79c13c61b1f6d",
+              "stage_b_exact_profile_freeze_required_before_sl0_or_sl1": true,
+              "worktree_contract": "empty_all_untracked_status_and_identical_HEAD_HEAD_tree_index_before_and_after"
+            },
+            "gate_a_skip_freeze": {
+              "authority_status": "historical_predecessor_non_authorizing_until_stage_b_recompute",
+              "boundary_collection_count": 4,
+              "boundary_collection_sha256": "09e45269b62ec9c4ac0584600d77e883b9c3fbd67a89415ba6650ee9f6efe3be",
+              "boundary_runtime_count": 59,
+              "boundary_runtime_sha256": "760925fe088328171cd7dc83172736a10904275d50b4da675e1f4a0a583d4b69",
+              "expected_gate_a_count": 102,
+              "expected_gate_a_sha256": "57746ee994520651677a0b0dcdd50334eb52ccdc109ef71d6dd352ce95a8bcce",
+              "restricted_source_count": 39,
+              "restricted_source_sha256": "59dfdd0c70679e8e2356b8dcffbb78faa795c5caa5025ce949e96522923023ea",
+              "tuple_shape": "nodeid_phase_reason"
+            },
+            "gate_a_terminal_attestation_contract": {
+              "attester_consumer_lane": "SL-6",
+              "attester_owner_lane": "SL-5",
+              "attester_path": "phase-loop-runtime/scripts/verify_reviewtruth_evidence.py",
+              "attester_process": "fresh_after_child_stdout_stderr_artifact_manifest_and_copy_fds_close",
+              "canonical_artifact_root": "$REVIEWTRUTH_RUNNER_ROOT/evidence",
+              "canonical_artifacts": [
+                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.stdout",
+                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.stderr",
+                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite.json",
+                "$REVIEWTRUTH_RUNNER_ROOT/evidence/reviewtruth-gate-a-suite-attestation.json"
               ],
-              "owned_paths_count": 46,
-              "owned_paths_sha256": "453bbecfdbcc6570e8cd04d68b45097a1c05022691919b5296ae0c36d7f0eb47",
-              "phase_dependencies": [
-                "FABPUB"
+              "external_copy_layout": "input-copy/tests/**_plus_input-copy/chronology-parser/verify_reviewtruth_chronology.py",
+              "forbidden_copy_roots": [
+                "temporary-runtime/phase-loop-runtime/scripts",
+                "input-copy/phase-loop-runtime/scripts"
               ],
-              "phase_scheduler_mode": "off",
-              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
-              "pre_auth_ordering_nodeids": [
-                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
-                "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
+              "forbidden_repo_local_gate_a_suite_root": ".phase-loop/evidence",
+              "owned_paths_authority": "stage_b_recompute_required",
+              "owned_paths_count": null,
+              "owned_paths_sha256": null,
+              "persistent_copy_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_persists_independently_attestable_tests_conftest_and_parser_copy",
+              "persistent_copy_nodeid_sha256": "c96415d6e2c94d3d2f4a42eeaf38a34572a2e88af2e743711f6b97751767071d",
+              "persistent_copy_survives_temporary_tree_cleanup": true,
+              "persistent_inputs": [
+                "executed tests tree including conftest",
+                "verify_reviewtruth_chronology.py parser"
               ],
-              "precomposition_entrypoints": [
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/__init__.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py",
-                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/resolver.py",
-                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-                "phase-loop-runtime/src/phase_loop_runtime/cli.py"
-              ],
-              "public_board_authorization_contract": "classified_operation_bound_live_composition_and_invoke_revalidation_pure_controls_effect_free",
-              "public_board_callers": 134,
-              "public_board_callers_sha256": "cecbef4c0f550f16a0e5e033be9d88216dcd7a8b9d127f6c91c920cd2359bb6e",
-              "public_board_corpus_modules": 19,
-              "public_board_corpus_modules_sha256": "262a2c0e653b9dc1e98f2c815918d2a35e8377377d344026affe7154d1b8ea34",
-              "public_board_corpus_nodeids": 306,
-              "public_board_corpus_nodeids_sha256": "4789528566ada4e92cdf0ba6324704a60697f4166c25985ddc78c2da6ccda656",
-              "public_board_execution_nodeids": 100,
-              "public_board_execution_nodeids_sha256": "90e36e87f2d93504c63bfefd850bdceb9c3cc869f62c7969b5815e2e49950ac7",
-              "public_board_execution_pure_overlap_nodeids": 20,
-              "public_board_migrated_nodeids": 100,
-              "public_board_migrated_nodeids_sha256": "90e36e87f2d93504c63bfefd850bdceb9c3cc869f62c7969b5815e2e49950ac7",
-              "public_board_pure_control_nodeids": 54,
-              "public_board_pure_control_nodeids_sha256": "7d4b4f994f04b0926d0318fd5d7d983c0a81488d171c0755e94d9b1c8b66eef4",
-              "public_board_test_fixture_policy": "explicit_sanctioned_execution_fixture_pure_controls_auth_free_no_autouse",
-              "predecessor_plan_sha256": "a78344ee2b5a671868a1af6918bbaa1fec4e218d72533e3f02b2a8d0bc94afd4",
-              "release_tag_policy": "no_release_no_tag_no_publish",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-              "sl1_nodeids": 115,
-              "sl2_nodeids": 7,
-              "sl3_evidence_nodeids": 4,
-              "subscription_auth_only": true,
-              "test_paths": [
-                "phase-loop-runtime/tests/harden_tdd_guard.py",
-                "phase-loop-runtime/tests/test_advisor_board_advisory_mode.py",
-                "phase-loop-runtime/tests/test_advisor_board_backcompat.py",
-                "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py",
-                "phase-loop-runtime/tests/test_advisor_board_backing_omnigent.py",
-                "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py",
-                "phase-loop-runtime/tests/test_advisor_board_composition.py",
-                "phase-loop-runtime/tests/test_advisor_board_config.py",
-                "phase-loop-runtime/tests/test_advisor_board_golden.py",
-                "phase-loop-runtime/tests/test_advisor_board_integration.py",
-                "phase-loop-runtime/tests/test_advisor_board_live_research.py",
-                "phase-loop-runtime/tests/test_advisor_board_observability.py",
-                "phase-loop-runtime/tests/test_advisor_board_presets.py",
-                "phase-loop-runtime/tests/test_advisor_board_research.py",
-                "phase-loop-runtime/tests/test_advisor_board_resolver.py",
-                "phase-loop-runtime/tests/test_goal_coverage.py",
-                "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
-                "phase-loop-runtime/tests/test_panel_invoker.py",
-                "phase-loop-runtime/tests/test_panel_leg_failure_diagnostic.py",
-                "phase-loop-runtime/tests/test_panel_native_fill_183.py",
-                "phase-loop-runtime/tests/test_panel_streaming_verdicts.py",
-                "phase-loop-runtime/tests/test_phase_loop_injection.py",
-                "phase-loop-runtime/tests/test_ratification_policy.py",
-                "phase-loop-runtime/tests/test_reconcile_portability_85c.py",
-                "phase-loop-runtime/tests/test_review_leg_sandbox.py",
-                "phase-loop-runtime/tests/test_verification_interpreter_guard_221.py"
-              ],
-              "test_paths_count": 26,
-              "test_paths_sha256": "1c89c155544538b7a79f6333c5e8ff7bc30ddca808e9b0d229b91ed54394f250",
-              "tests_only_landing": "literal_red_first_default_green",
-              "public_board_execution_pure_overlap_nodeids_sha256": "3ce722d31e283cd455b3c7d23ed3d755e076e0fd09402518fbe9c10ba11488d6",
-              "public_board_pure_only_nodeids": 34,
-              "pure_control_proof_mode": "PHASE_LOOP_HARDEN_PROOF_MODE=pure_control",
-              "pure_control_junit_contract": "distinct_from_focused_and_broad",
-              "pure_control_proof_stages": [
-                "preimplementation_red",
-                "checkpoint_c",
-                "prepush_i",
-                "candidate_i",
-                "canonical_m"
+              "predecessor_owned_paths_count": 35,
+              "predecessor_owned_paths_sha256": "e1c925f2c22fd6186db28bdf9ea488de2b3ff9d0f835d1c96d279f8df37bc028",
+              "terminal_attestation_nodeids_count": 2,
+              "terminal_attestation_nodeids_sha256": "d17d8a218765ba3ce0ccea954a8a3cd082a828a7d9a4517810af0de53563a6dd",
+              "tests_only_paths_count": 11,
+              "tests_only_paths_sha256": "8680d32c4948c304468fb8796dd0b5a31fc94865eeee4a31d1aad2f894940db5",
+              "workflow_contract": "fresh_private_external_root_export_sl5_gate_a_reducer_script_internal_cleanup_terminal_attestation_then_external_cleanup",
+              "workflow_falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_gate_a_workflow_exports_private_copy_attests_before_external_cleanup",
+              "workflow_gate": "github_ci_green_at_exact_sl5_implementation_head_before_golden_panel_merge_and_sl6",
+              "workflow_path": ".github/workflows/test.yml"
+            },
+            "handoff_path": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
+            "ordering_addendum": {
+              "binding_capability": "binding_prover_fable_only",
+              "comment_body_bytes": 3684,
+              "comment_body_sha256": "e0d61155a0d3ee9898d17ac89cdf029120109f198072f25c7517be20ddad5c4c",
+              "comment_id": 5139955591,
+              "comment_node_id": "IC_kwDOTFEWvM8AAAABMl1_hw",
+              "comment_url": "https://github.com/Consiliency/agent-harness/issues/398#issuecomment-5139955591",
+              "contradiction_contract": "prover_finding_invalidates_prior_agree_and_requires_updated_bundle_rereview",
+              "created_at": "2026-07-31T06:20:15Z",
+              "early_capability": "can_probe",
+              "gemini_write_eligible": false,
+              "grok_fallback": "only_after_codex_preflight_failure_and_only_under_os_confinement_else_degraded_no_launch",
+              "implementation_tracker": "Consiliency/agent-harness#405",
+              "implementation_tracker_authorizing": false,
+              "issue": "Consiliency/agent-harness#398",
+              "non_review_goldens_unchanged": true,
+              "panel_legs_unchanged": true,
+              "plan_design_order": "critics_first_permitted_but_early_probe_evidence_required_before_fable",
+              "premerge_release_order": "early_prover_evidence_before_every_counted_critic",
+              "primary_early_prover": "codex_workspace_write_external_tool_closed_ephemeral_worktree_isolated_data_scope",
+              "schema": "reviewtruth.early-prover-ordering-planning.v1",
+              "updated_at": "2026-07-31T06:20:15Z"
+            },
+            "phase_dependencies": [
+              "CONFORM",
+              "HARDEN",
+              "SCHED"
+            ],
+            "plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
+            "portable_skip_classification": {
+              "allowed_disposition": "environment_interpreter_pair_unavailable",
+              "allowed_reason": "need both python3.10 and python3.12 on host",
+              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_portable_interpreter_pair_disposition_normalizes_host_dependent_skip",
+              "falsifier_nodeid_sha256": "c36541be134c6256e39693869d2038efb47eb8efe2ab099dd701f24c7dfe70cd",
+              "gate_a_normalization": false,
+              "normalized_nodeid": "phase-loop-runtime/tests/test_cr_fixes_pr220.py::test_bare_python_below_floor_shims_even_when_python3_satisfies",
+              "normalized_nodeid_sha256": "866c44921f3cba820cd182671f5df21ed4f51191105effa047958924de916d8a",
+              "portable_python_matrix": [
+                "3.10",
+                "3.11",
+                "3.12"
               ]
+            },
+            "prover_directive": {
+              "comment_body_bytes": 2697,
+              "comment_body_sha256": "284e37117787f653ae91cebc2c04454ddb54ef0cc6434e26dc08b0875cddccfc",
+              "comment_id": 5139609713,
+              "comment_node_id": "IC_kwDOTFEWvM8AAAABMlg4cQ",
+              "comment_url": "https://github.com/Consiliency/agent-harness/issues/398#issuecomment-5139609713",
+              "created_at": "2026-07-31T05:29:20Z",
+              "current_v10_self_application": {
+                "already_bound_verdicts": "stand",
+                "binding_result": "unbound_requires_ordered_early_codex_critics_fable",
+                "direct_claude_p": false,
+                "runtime_gap_enforcement": "procedural",
+                "unbound_verdicts": "floor3_plus_usable_fable_after_digest_bound_early_prover_evidence",
+                "vendor_leg_execution": true,
+                "vendor_leg_execution_scope": "serial_isolated_external_tool_closed_early_codex_can_probe_only"
+              },
+              "issue": "Consiliency/agent-harness#398",
+              "policy_contract": {
+                "hard_block_condition": "effective_required_prover_true_and_prover_usable_false",
+                "parameterized": true,
+                "required_prover_false_override_valid": true,
+                "required_prover_override_type": "bool",
+                "resolver": "gate_posture.resolve_ratification_policy"
+              },
+              "schema": "reviewtruth.prover-directive-planning.v1",
+              "shipped_defaults": {
+                "design-ratify": {
+                  "on_shortfall": "proceed_degraded",
+                  "required_consensus": "majority",
+                  "required_lens_coverage": 3,
+                  "required_prover": true,
+                  "required_vendors": 3
+                },
+                "plan-ratify": {
+                  "on_shortfall": "proceed_degraded",
+                  "required_consensus": "majority",
+                  "required_lens_coverage": 3,
+                  "required_prover": true,
+                  "required_vendors": 3
+                },
+                "pre-merge-CR": {
+                  "on_shortfall": "escalate",
+                  "required_consensus": "majority",
+                  "required_lens_coverage": 3,
+                  "required_prover": true,
+                  "required_vendors": 3
+                },
+                "release-dispatch": {
+                  "on_shortfall": "escalate",
+                  "required_consensus": "unanimous",
+                  "required_lens_coverage": 3,
+                  "required_prover": true,
+                  "required_vendors": 3
+                }
+              },
+              "updated_at": "2026-07-31T05:29:20Z"
+            },
+            "pypi_availability_classification": {
+              "allowed_dispositions": [
+                "pypi_metadata_available_pass",
+                "pypi_transport_unavailable"
+              ],
+              "allowed_exception_types": [
+                "urllib.error.URLError",
+                "TimeoutError",
+                "OSError"
+              ],
+              "allowed_reason_prefix": "Skipped: PyPI unreachable (",
+              "allowed_reason_suffix": "); auto-track vs registry not checked offline",
+              "downstream_activated_red_member": false,
+              "falsifier_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_exact_pypi_transport_disposition_normalizes_only_source_attributed_skip",
+              "falsifier_nodeid_sha256": "b8d7fedfe0b72b0f6e23d83a026c747a1a868630459bdb692b26b99b48b411a5",
+              "gate_a_normalization": false,
+              "gate_a_release_pin_skip_contract": "line_111_standalone_root_missing_remains_in_exact_39_plus_4_plus_59_equals_102_profile",
+              "green_requires_live_internet": false,
+              "normalized_nodeid": "phase-loop-runtime/tests/test_release_pin_autotrack.py::test_release_pin_is_not_behind_pypi_latest",
+              "normalized_nodeid_sha256": "7a54c34a8defee59045a9dfe403a5d89b2d87085ceb99358dde782184b87de6c",
+              "raw_exception_evidence_retained": true,
+              "required_python_matrix": [
+                "3.10",
+                "3.11",
+                "3.12"
+              ],
+              "skip_line": 116,
+              "source_path": "phase-loop-runtime/tests/test_release_pin_autotrack.py",
+              "source_sha256": "6b6c7f9f38bc815f37e2a3d86311867ea5a8ea907db2bad7d52fdeb0132b4d24",
+              "tdd_lifecycle": "sl1_literal_red_then_green_before_tests_only_landing"
+            },
+            "reanchor_contract": "after_CONFORM_and_HARDEN_land_exact_base_preflight_then_stage_a_provision_dual_materialize_freeze_source_observe_gate_a_observe_complete_direct_file_candidate_manifest_and_domain_separated_candidate_digest_then_stage_b_exact_profile_manifest_digest_plan_revision_and_ordered_review_before_SL0_or_SL1",
+            "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+            "run_id": "20260730T035938Z-01-reviewtruth-plan",
+            "seat_outcome_degraded_roundtrip": {
+              "default_serialization": "omit_degraded_when_false_preserve_exact_legacy_bytes",
+              "false_roundtrip": "present_false_reconstructs_false",
+              "field": "SeatOutcomeRecord.degraded",
+              "implementation_owner_lane": "SL-2",
+              "legacy_absent_field_value": false,
+              "present_value_type": "actual_json_boolean_python_bool_only",
+              "reader_path": "phase-loop-runtime/src/phase_loop_runtime/fab_gate.py",
+              "red_anchor": "REVIEWTRUTH_RED::seat_outcome_degraded_strict_roundtrip",
+              "serializer_path": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+              "test_nodeid": "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_sl2_seat_outcome_degraded_true_survives_append_strict_read_rewrite_strict_reread",
+              "test_nodeid_sha256": "0c6a18f9cae6e9061943c5908c0a4ec127033fdbd757fd231e3d6947da6f278e",
+              "test_owner_lane": "SL-1",
+              "test_path": "phase-loop-runtime/tests/test_reviewtruth_phase.py",
+              "tests_only_paths_count": 11,
+              "tests_only_paths_sha256": "8680d32c4948c304468fb8796dd0b5a31fc94865eeee4a31d1aad2f894940db5",
+              "true_roundtrip": "append_strict_read_rewrite_strict_reread",
+              "true_serialization": "emit_degraded_only_when_true",
+              "unknown_field_posture": "strict_rejection_unchanged",
+              "wrong_typed_known_value_examples": [
+                "false",
+                1
+              ],
+              "wrong_typed_known_value_posture": "malformed_record_or_ProvenanceInvalid_before_construction_or_rewrite"
+            },
+            "sl0_coordinator_proof": {
+              "authority": "existing_git_gh_jq_awk_sha256sum_only_before_sl1",
+              "branch_rules_canonicalization": "jq_compact_sorted_json_plus_terminal_lf_sha256",
+              "branch_rules_endpoint": "repos/Consiliency/agent-harness/rules/branches/main",
+              "comment_timestamp_contract": "all_three_directives_created_at_and_updated_at_less_than_or_equal_to_record_pr_merged_at",
+              "effective_pull_request_rule_required": true,
+              "landing_topology_contract": "separate_exact_two_parent_merge_with_pr_head_as_second_parent",
+              "planning_rules_observation_effective_pull_request_rule": false,
+              "planning_rules_observation_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+              "planning_rules_observation_status": "unsatisfied_not_execution_proof",
+              "proof_schema": "reviewtruth.sl0-coordinator-proof.v1",
+              "retrospective_sl1_contract": "fresh_rules_digest_and_true_boolean_must_equal_retained_sl0_proof_before_sl2_through_sl5",
+              "sl0_unblocks_sl1_without_future_wrapper": true
+            },
+            "sl1_infrastructure_tdd": {
+              "downstream_activated_red_members": 0,
+              "nodeids_count": 2,
+              "nodeids_sha256": "ad528b11ad08a3989aee135fcaf6fc5449d00da8188a074c5a126712924e2758",
+              "ordered_lifecycle": "exact_pypi_RED_then_exact_console_RED_then_exact_pypi_GREEN_then_exact_console_GREEN_before_operation_6_broad_baseline_parse"
+            },
+            "stage_a_candidate_seal": {
+              "bound_namespaces": [
+                "observations/source",
+                "observations/gate-a",
+                "materialized",
+                "evidence",
+                "repository-stage-a",
+                "runtime-tree/phase-loop-runtime",
+                "copied-tests/phase-loop-runtime/tests",
+                "exact-base"
+              ],
+              "candidate_digest_inputs": [
+                "exact-base/reviewtruth-stage-a-base.json",
+                "evidence/reviewtruth-stage-a-candidate-artifacts.json"
+              ],
+              "candidate_digest_schema": "reviewtruth_stage_a_candidate_profile_input.v1",
+              "direct_file_inventory": true,
+              "entry_fields": [
+                "path",
+                "mode",
+                "bytes",
+                "sha256"
+              ],
+              "gate_a_observation_files": 14,
+              "immediate_filesystem_regeneration_required": true,
+              "manifest_self_reference": false,
+              "mutable_live_stage_b_plan_in_candidate_manifest": false,
+              "schema": "reviewtruth_stage_a_candidate_artifacts.v1",
+              "source_observation_files": 9,
+              "stage_a_repository_snapshots": {
+                "creation_contract": "absent_non_symlink_destinations_and_temporaries_regular_canonical_sources_private_temporary_files_chmod_0600_atomic_rename_canonical_owner_mode_non_symlink_cmp_and_sha_against_live_stage_a_sources",
+                "plan_identity": "repository-stage-a/plans/phase-plan-v10-REVIEWTRUTH.md",
+                "plan_path": "$REVIEWTRUTH_RUNNER_ROOT/stage-a-snapshots/plans/phase-plan-v10-REVIEWTRUTH.md",
+                "roadmap_identity": "repository-stage-a/specs/phase-plans-v10.md",
+                "roadmap_path": "$REVIEWTRUTH_RUNNER_ROOT/stage-a-snapshots/specs/phase-plans-v10.md",
+                "write_once_mode": "0600"
+              },
+              "stage_b_fresh_process_reverification_required": true,
+              "stage_b_manifest_regeneration_source": "immutable_external_stage_a_plan_and_roadmap_snapshots",
+              "stage_b_plan_binding": "external_write_once_record_over_computed_live_plan_sha_and_atomically_staged_manifest_early_evidence_bundle_panel_and_four_seat_outcomes_no_self_digest_literal_never_equal_to_stage_a_plan_snapshot"
+            },
+            "subsequent_independent_audit": {
+              "finding": "incomplete_source_observation_seal_and_incomplete_pre_edit_collection_identity_check",
+              "finding_detail": "Gate_A_did_not_validate_and_freeze_the_complete_source_observation_before_and_after_execution_and_the_fifth_command_checked_only_omitted_count_modules_and_skip_profile_instead_of_exact_source_Gate_full_selected_marker_and_omission_identities",
+              "historical_panel_artifact_sha256": "9760fc9f5d9df3e6392d76e08d1b9d1502f04bbd987c3ed9017ee6864b33962c",
+              "historical_panel_status": "predecessor_dissent_only_did_not_review_follow_up_repair",
+              "predecessor_plan_sha256": "d9bd1ddb7e23ad9af217604c764942349dbbc46992faacffa6a1dfe44436d559",
+              "repair_review_status": "unreviewed_not_approved",
+              "repaired_plan_sha256": "7284e0e660851068f7599643286ff6387b2c118b8b0dbef48e0627b2a91a2b5f",
+              "source_observer_preserved_byte_for_byte": true
             }
           },
           "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
-      "phase_alias": "HARDEN",
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
+      "phase_alias": "REVIEWTRUTH",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/9256301e/codex-v10-plan-reviewtruth/20260730T035938Z-01-reviewtruth-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
         "slug": "phase-plans-v10",
         "status": "imported",
         "type": "phase"
       },
-      "slug": "v10-HARDEN",
+      "slug": "v10-REVIEWTRUTH",
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T16:19:25Z"
-    },
-    {
-      "acceptance_criteria_count": null,
-      "created_at": "2026-07-29T00:00:00Z",
-      "file": "specs/phase-plans-v10.md",
-      "handoff_ref": null,
-      "if_gates_produced": [],
-      "lanes": [],
-      "lifecycle": [],
-      "owner_skill": "claude-phase-roadmap-builder",
-      "phase_alias": "ROADMAP",
-      "reflection_ref": null,
-      "roadmap_ref": {
-        "file": "specs/phase-plans-v10.md",
-        "slug": "phase-plans-v10",
-        "status": "imported",
-        "type": "phase"
-      },
-      "slug": "phase-plans-v10",
-      "status": "imported",
-      "task_summary": null,
-      "type": "phase",
-      "updated_at": "2026-07-29T00:00:00Z"
+      "updated_at": "2026-07-31T04:09:16Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -2416,6 +2447,236 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-06-30T23:28:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-07T23:58:10Z",
+      "file": "plans/phase-plan-v6-CTXDOCS.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "CTXDOCS",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v6.md",
+        "slug": "phase-plans-v6",
+        "status": "completed",
+        "type": "phase"
+      },
+      "slug": "v6-CTXDOCS",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-07T23:58:10Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-07T23:58:10Z",
+      "file": "plans/phase-plan-v6-CTXFREEZE.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "CTXFREEZE",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v6.md",
+        "slug": "phase-plans-v6",
+        "status": "completed",
+        "type": "phase"
+      },
+      "slug": "v6-CTXFREEZE",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-07T23:58:10Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-07T23:58:10Z",
+      "file": "plans/phase-plan-v6-CTXIMPL.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "CTXIMPL",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v6.md",
+        "slug": "phase-plans-v6",
+        "status": "completed",
+        "type": "phase"
+      },
+      "slug": "v6-CTXIMPL",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-07T23:58:10Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-07T23:58:10Z",
+      "file": "plans/phase-plan-v6-CTXRELY.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "CTXRELY",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v6.md",
+        "slug": "phase-plans-v6",
+        "status": "completed",
+        "type": "phase"
+      },
+      "slug": "v6-CTXRELY",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-07T23:58:10Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-07T23:58:10Z",
+      "file": "plans/phase-plan-v6-CTXVERIFY.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "CTXVERIFY",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v6.md",
+        "slug": "phase-plans-v6",
+        "status": "completed",
+        "type": "phase"
+      },
+      "slug": "v6-CTXVERIFY",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-07T23:58:10Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-09T15:35:57Z",
+      "file": "plans/phase-plan-v7-OACONTRACT.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "OACONTRACT",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v7.md",
+        "slug": "phase-plans-v7",
+        "status": "orphaned",
+        "type": "phase"
+      },
+      "slug": "v7-OACONTRACT",
+      "status": "orphaned",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-09T15:35:57Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-09T15:35:57Z",
+      "file": "plans/phase-plan-v7-OACORE.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "OACORE",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v7.md",
+        "slug": "phase-plans-v7",
+        "status": "orphaned",
+        "type": "phase"
+      },
+      "slug": "v7-OACORE",
+      "status": "orphaned",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-09T15:35:57Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-09T15:35:57Z",
+      "file": "plans/phase-plan-v7-OAMOCK.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "OAMOCK",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v7.md",
+        "slug": "phase-plans-v7",
+        "status": "completed",
+        "type": "phase"
+      },
+      "slug": "v7-OAMOCK",
+      "status": "completed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-09T15:35:57Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-09T15:35:57Z",
+      "file": "plans/phase-plan-v7-OAREAL.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "OAREAL",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v7.md",
+        "slug": "phase-plans-v7",
+        "status": "orphaned",
+        "type": "phase"
+      },
+      "slug": "v7-OAREAL",
+      "status": "orphaned",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-09T15:35:57Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-07-09T15:35:57Z",
+      "file": "plans/phase-plan-v7-OARELEASE.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "OARELEASE",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v7.md",
+        "slug": "phase-plans-v7",
+        "status": "orphaned",
+        "type": "phase"
+      },
+      "slug": "v7-OARELEASE",
+      "status": "orphaned",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-07-09T15:35:57Z"
     },
     {
       "acceptance_criteria_count": null,
