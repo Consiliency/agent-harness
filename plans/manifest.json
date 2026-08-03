@@ -1300,6 +1300,38 @@
             "run_id": "20260730T040717Z-01-legible-plan"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-03T19:32:29Z",
+          "by": "codex-v10-coordinator-recovery",
+          "metadata": {
+            "candidate_head": "f208cf32ab8c467575bab16330780d10475cfa3d",
+            "candidate_run_id": "20260803T054803Z-legible-attest-4c4124c2",
+            "implementation_pr": "Consiliency/agent-harness#430",
+            "reason": "recover_manual_C5_C7_lifecycle_closeout"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-08-03T19:32:29Z",
+          "by": "codex-v10-coordinator-recovery",
+          "metadata": {
+            "acceptance_criteria_satisfied": 9,
+            "acceptance_criteria_total": 9,
+            "canonical_main_run_id": "20260803T091849Z-legible-attest-6649c7b5",
+            "frozen_legible_final_failed": 0,
+            "frozen_legible_final_passed": 84,
+            "frozen_legible_final_skipped": 0,
+            "implementation_pr": "Consiliency/agent-harness#430",
+            "merge_commit": "5be0ac70b194257c76c215478702a22858b72b2c",
+            "operational_evidence_artifact": ".phase-loop/runs/20260803T091849Z-legible-attest-6649c7b5/legible-operational-evidence.json",
+            "operational_evidence_seal_sha256": "cba4451f9a906e88877f3f4c669dde0232de70561c5d412dbd9eb923c38b7959",
+            "reason": "exact_canonical_main_attestation_passed",
+            "suite_exit_code": 0,
+            "verification_artifact": ".phase-loop/runs/20260803T091849Z-legible-attest-6649c7b5/verification.json",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1312,10 +1344,10 @@
         "type": "phase"
       },
       "slug": "v10-LEGIBLE",
-      "status": "committed",
+      "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T14:38:07Z"
+      "updated_at": "2026-08-03T19:32:29Z"
     },
     {
       "acceptance_criteria_count": null,
