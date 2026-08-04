@@ -193,6 +193,50 @@ def _recursive_value_channels(value, prefix: str) -> set[str]:
     return {prefix}
 
 
+def _outside_agent_cli_channels(parser=None) -> tuple[set[str], set[str]]:
+    import argparse
+
+    from phase_loop_runtime.cli import build_parser
+
+    if parser is None:
+        parser = build_parser()
+    subparser_actions = [
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    ]
+    assert len(subparser_actions) == 1
+    choices = subparser_actions[0].choices
+    commands = ("outside-agent-preflight", "outside-agent-validate")
+    assert all(command in choices for command in commands)
+
+    declared_sinks = set(REDACTION_PROJECTION_CLASSES["serialized_sink"])
+    cli_inputs: set[str] = set()
+    cli_sinks = {f"{command}:stdout" for command in commands}
+    for command in commands:
+        for action in choices[command]._actions:
+            if action.dest == "help":
+                continue
+            if action.option_strings:
+                long_options = [option for option in action.option_strings if option.startswith("--")]
+                assert len(long_options) == 1
+                option_channel = f"{command}:{long_options[0]}"
+                channel = (
+                    option_channel
+                    if option_channel in declared_sinks
+                    else f"{command}:{action.dest}"
+                )
+            else:
+                channel = f"{command}:{action.dest}"
+            if isinstance(action, argparse._AppendAction):
+                channel += "[]"
+            if channel in declared_sinks:
+                cli_sinks.add(channel)
+            else:
+                cli_inputs.add(channel)
+    return cli_inputs, cli_sinks
+
+
 def _legacy_builder_payloads() -> tuple[dict, ...]:
     payloads = []
     for module_name in _LEGACY_BUILDER_MODULES:
@@ -391,18 +435,49 @@ def test_closed_redaction_projection_inventory_is_exhaustive() -> None:
     }
     assert declared_outputs == serialized_channels
 
-    cli_inputs = {
+    cli_inputs, cli_sinks = _outside_agent_cli_channels()
+    assert cli_inputs == {
         "outside-agent-preflight:submission_file",
         "outside-agent-validate:submission_file",
         "outside-agent-validate:submitted_ref[]",
     }
-    sinks = {
+    assert cli_sinks == {
         "outside-agent-preflight:stdout",
         "outside-agent-preflight:--output",
         "outside-agent-validate:stdout",
         "outside-agent-validate:--output",
     }
-    assert set(assignment) == derived_inputs | derived_legacy_inputs | serialized_channels | cli_inputs | sinks
+    assert set(assignment) == (
+        derived_inputs
+        | derived_legacy_inputs
+        | serialized_channels
+        | cli_inputs
+        | cli_sinks
+    )
+
+    import argparse
+
+    from phase_loop_runtime.cli import build_parser
+
+    parser = build_parser()
+    subparser_action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    subparser_action.choices["outside-agent-validate"].add_argument(
+        "--unclassified-scalar"
+    )
+    mutated_cli_inputs, mutated_cli_sinks = _outside_agent_cli_channels(parser)
+    assert "outside-agent-validate:unclassified_scalar" in mutated_cli_inputs
+    assert mutated_cli_sinks == cli_sinks
+    assert set(assignment) != (
+        derived_inputs
+        | derived_legacy_inputs
+        | serialized_channels
+        | mutated_cli_inputs
+        | mutated_cli_sinks
+    )
 
 
 def test_redaction_mutation_definitions_are_independent() -> None:

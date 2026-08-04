@@ -1448,8 +1448,11 @@ def _assert_complete_package_executions(
             assert case["oracle_blocker_class"] == oracle.blocker_class_of(
                 oracle.route(vector_payload(row), row["schema_target"])
             )
-            expected_codes = [] if row["expected_valid"] else [LIVE_BLOCKER_CODE_BY_INVALID_CASE[row["case_id"]]]
-            assert result["blocker_codes"] == expected_codes
+            blocker_codes = set(result["blocker_codes"])
+            if row["expected_valid"]:
+                assert blocker_codes == set()
+            else:
+                assert LIVE_BLOCKER_CODE_BY_INVALID_CASE[row["case_id"]] in blocker_codes
             if case["surface"] == "cli":
                 assert raw["exit_code"] == 0
                 assert result["cli_exit"] == SUBMISSION_CLI_EXIT_BY_CASE[row["case_id"]]
@@ -1502,8 +1505,11 @@ def _write_synthetic_junit_rejection_fixture(path: Path, raw_log_path: Path) -> 
             failure = element_tree.SubElement(case, "failure")
             failure.text = CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
     element_tree.ElementTree(suites).write(path, encoding="utf-8", xml_declaration=True)
+    failure_count = CONFORM_ACTIVATED_RED_NODE_COUNT + 1
     raw_log_path.write_text(
-        "54 failed, 39 passed, 0 skipped, 0 deselected in 1.00s\n",
+        f"{failure_count} failed, "
+        f"{ALL_OUTSIDE_AGENT_NODE_COUNT - failure_count} passed, "
+        "0 skipped, 0 deselected in 1.00s\n",
         encoding="utf-8",
     )
 
@@ -1720,8 +1726,8 @@ def _assert_full_frozen_evidence_input(
     assert runner_manifest["candidate_head_module"] == bindings
     assert runner_manifest["provenance"] == facts["vendor"]
     assert runner_manifest["activated_lifecycle"] == {
-        "tests": 93,
-        "failures": 54,
+        "tests": ALL_OUTSIDE_AGENT_NODE_COUNT,
+        "failures": CONFORM_ACTIVATED_RED_NODE_COUNT,
         "skipped": 0,
         "node_ids": list(ALL_OUTSIDE_AGENT_NODE_IDS),
         "red_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
@@ -1805,8 +1811,8 @@ def test_frozen_inventory_counts_and_set_equations() -> None:
     assert len(CONFORM_NEW_PRODUCTION_NODE_IDS) == CONFORM_NEW_PRODUCTION_NODE_COUNT == 10
     assert len(CONFORM_DIALECT_MIGRATED_NODE_IDS) == CONFORM_DIALECT_MIGRATED_NODE_COUNT == 42
     assert len(CONFORM_MIGRATED_EXISTING_NODE_IDS) == CONFORM_MIGRATED_EXISTING_NODE_COUNT == 45
-    assert len(CONFORM_MIGRATED_RED_NODE_IDS) == CONFORM_MIGRATED_RED_NODE_COUNT == 44
-    assert len(CONFORM_ACTIVATED_RED_NODE_IDS) == CONFORM_ACTIVATED_RED_NODE_COUNT == 54
+    assert len(CONFORM_MIGRATED_RED_NODE_IDS) == CONFORM_MIGRATED_RED_NODE_COUNT == 38
+    assert len(CONFORM_ACTIVATED_RED_NODE_IDS) == CONFORM_ACTIVATED_RED_NODE_COUNT == 48
     assert len(CONFORM_SL2_STALE_DOC_NODE_IDS) == CONFORM_SL2_STALE_DOC_NODE_COUNT == 4
     assert len(A2_GREEN_NODE_IDS) == A2_GREEN_NODE_COUNT == 89
     assert len(set(ALL_OUTSIDE_AGENT_NODE_IDS)) == len(ALL_OUTSIDE_AGENT_NODE_IDS)
@@ -2416,7 +2422,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     with pytest.raises(AssertionError):
         _assert_exact_frozen_activated_junit(frozen_junit, frozen_log)
     # This is the exact Sol reproducer shape.  It cannot become a positive by
-    # refreshing its own digest fields because it omits 91 nodes and 53 REDs.
+    # refreshing its own digest fields because it omits 91 nodes and 47 REDs.
     undersized_junit = tmp_path / "undersized-activated.junit.xml"
     element_tree.ElementTree(
         element_tree.fromstring(

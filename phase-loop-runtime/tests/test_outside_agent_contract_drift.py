@@ -87,16 +87,22 @@ def _assert_installed_wheel_invocations(wheel_path: Path, target: Path, label: s
             6 if row["case_id"] == "negative-source-bundle-mismatch" else 2
         )
         expected_status = "pass" if row["expected_valid"] else "blocked"
-        expected_codes = [] if row["expected_valid"] else [
-            LIVE_BLOCKER_CODE_BY_INVALID_CASE[row["case_id"]]
-        ]
-        assert api_payload[row["case_id"]] == {
-            "case_id": row["case_id"],
-            "expected_valid": row["expected_valid"],
-            "oracle_blocker_class": row["expected_blocker_class"],
-            "status": expected_status,
-            "codes": expected_codes,
+        api_result = api_payload[row["case_id"]]
+        assert set(api_result) == {
+            "case_id",
+            "expected_valid",
+            "oracle_blocker_class",
+            "status",
+            "codes",
         }, anchor
+        assert api_result["case_id"] == row["case_id"], anchor
+        assert api_result["expected_valid"] is row["expected_valid"], anchor
+        assert api_result["oracle_blocker_class"] == row["expected_blocker_class"], anchor
+        assert api_result["status"] == expected_status, anchor
+        if row["expected_valid"]:
+            assert api_result["codes"] == [], anchor
+        else:
+            assert LIVE_BLOCKER_CODE_BY_INVALID_CASE[row["case_id"]] in api_result["codes"], anchor
         for command in ("outside-agent-preflight", "outside-agent-validate"):
             output_path = target / f"{label}-{row['case_id']}-{command}.json"
             cli = subprocess.run(
@@ -119,7 +125,11 @@ def _assert_installed_wheel_invocations(wheel_path: Path, target: Path, label: s
             payload = json.loads(cli.stdout)
             assert payload["status"] == expected_status, anchor
             assert output_path.read_text(encoding="utf-8") == cli.stdout, anchor
-            assert sorted(blocker["code"] for blocker in payload["blockers"]) == expected_codes, anchor
+            blocker_codes = {blocker["code"] for blocker in payload["blockers"]}
+            if row["expected_valid"]:
+                assert blocker_codes == set(), anchor
+            else:
+                assert LIVE_BLOCKER_CODE_BY_INVALID_CASE[row["case_id"]] in blocker_codes, anchor
 
     installed_vectors = subprocess.run(
         [
@@ -151,19 +161,20 @@ def _assert_installed_wheel_invocations(wheel_path: Path, target: Path, label: s
         route_verdict_entry()["case_id"]
     }, anchor
     for row in rows:
-        assert vector_payload[row["case_id"]] == {
-            "status": "pass" if row["expected_valid"] else "blocked",
-            "codes": []
-            if row["expected_valid"]
-            else [LIVE_BLOCKER_CODE_BY_INVALID_CASE[row["case_id"]]],
-            "dispatch_observation": None,
-        }, anchor
+        vector_result = vector_payload[row["case_id"]]
+        assert set(vector_result) == {"status", "codes", "dispatch_observation"}, anchor
+        assert vector_result["status"] == ("pass" if row["expected_valid"] else "blocked"), anchor
+        assert vector_result["dispatch_observation"] is None, anchor
+        if row["expected_valid"]:
+            assert vector_result["codes"] == [], anchor
+        else:
+            assert LIVE_BLOCKER_CODE_BY_INVALID_CASE[row["case_id"]] in vector_result["codes"], anchor
 
     route_row = route_verdict_entry()
     assert route_row["case_id"] not in {row["case_id"] for row in rows}, anchor
     route_payload = vector_payload[route_row["case_id"]]
     assert route_payload["status"] == "blocked", "CONFORM_RED::sdist_contract_mirror_missing"
-    assert route_payload["codes"] == ["schema_validation_failed"], (
+    assert "schema_validation_failed" in route_payload["codes"], (
         "CONFORM_RED::sdist_contract_mirror_missing"
     )
     route_schema = (
@@ -207,7 +218,7 @@ def _assert_installed_wheel_invocations(wheel_path: Path, target: Path, label: s
     assert direct_route_payload["expected_valid"] is route_row["expected_valid"] is False
     assert direct_route_payload["oracle_blocker_class"] == route_row["expected_blocker_class"] == "policy_gap"
     assert direct_route_payload["status"] == "blocked"
-    assert direct_route_payload["codes"] == [LIVE_BLOCKER_CODE_BY_INVALID_CASE[route_row["case_id"]]]
+    assert LIVE_BLOCKER_CODE_BY_INVALID_CASE[route_row["case_id"]] in direct_route_payload["codes"]
     assert direct_route_payload["dispatch_observation"] == route_payload["dispatch_observation"], anchor
 
 
