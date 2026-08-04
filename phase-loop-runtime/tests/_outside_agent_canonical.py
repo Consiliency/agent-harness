@@ -769,13 +769,7 @@ def _mutation_argv(nodeid: str) -> tuple[str, ...]:
     )
 
 
-_MUTATION_VENDOR_SOURCE = '''{
-  "source_repo": "Consiliency/spec",
-  "files": [
-    {"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"}
-  ]
-}
-'''
+_MUTATION_VENDOR_SOURCE = EXPECTED_VENDOR_BYTES.decode("utf-8")
 CONFORM_MUTATION_DEFINITIONS = {
     "M-CONFORM-1-RESTORE-ALLOWLIST": SourceMutation(
         "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_core.py",
@@ -838,7 +832,7 @@ CONFORM_MUTATION_DEFINITIONS = {
     ),
     "M-CONFORM-4-MISSING-MIRROR": SourceMutation(
         "phase-loop-runtime/src/phase_loop_runtime/conformance/_contract/VENDOR.json",
-        '{"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"}',
+        '{"mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a", "source_path": "schemas/outside-agent-submission.schema.json"}, ',
         "",
         _mutation_argv("phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance"),
         "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance",
@@ -849,8 +843,8 @@ CONFORM_MUTATION_DEFINITIONS = {
     ),
     "M-CONFORM-4-EXTRA-MIRROR": SourceMutation(
         "phase-loop-runtime/src/phase_loop_runtime/conformance/_contract/VENDOR.json",
-        '{"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"}',
-        '{"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"},\n    {"source_path": "extra.json", "mirror_path": "extra.json", "raw_byte_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}',
+        '{"mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a", "source_path": "schemas/outside-agent-submission.schema.json"}',
+        '{"mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a", "source_path": "schemas/outside-agent-submission.schema.json"}, {"mirror_path": "extra.json", "raw_byte_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "source_path": "extra.json"}',
         _mutation_argv("phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance"),
         "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance",
         "CONFORM_RED::digest_enumerated_contract_mirror_missing",
@@ -860,8 +854,8 @@ CONFORM_MUTATION_DEFINITIONS = {
     ),
     "M-CONFORM-4-DUPLICATE-MIRROR": SourceMutation(
         "phase-loop-runtime/src/phase_loop_runtime/conformance/_contract/VENDOR.json",
-        '{"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"}',
-        '{"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"},\n    {"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"}',
+        '{"mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a", "source_path": "schemas/outside-agent-submission.schema.json"}',
+        '{"mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a", "source_path": "schemas/outside-agent-submission.schema.json"}, {"mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a", "source_path": "schemas/outside-agent-submission.schema.json"}',
         _mutation_argv("phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance"),
         "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance",
         "CONFORM_RED::digest_enumerated_contract_mirror_missing",
@@ -871,8 +865,8 @@ CONFORM_MUTATION_DEFINITIONS = {
     ),
     "M-CONFORM-4-FIXED-VENDOR-BYTE": SourceMutation(
         "phase-loop-runtime/src/phase_loop_runtime/conformance/_contract/VENDOR.json",
-        '{"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a"}',
-        '{"source_path": "schemas/outside-agent-submission.schema.json", "mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}',
+        '{"mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a", "source_path": "schemas/outside-agent-submission.schema.json"}',
+        '{"mirror_path": "schemas/outside-agent-submission.schema.json", "raw_byte_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "source_path": "schemas/outside-agent-submission.schema.json"}',
         _mutation_argv("phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance"),
         "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_packaged_contract_mirror_matches_fixture_provenance",
         "CONFORM_RED::digest_enumerated_contract_mirror_missing",

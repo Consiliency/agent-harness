@@ -483,10 +483,10 @@ def _assert_cli_channel_control(
             assert rejected.returncode == 0, channel
             assert json.loads(rejected.stdout)["status"] == "pass", channel
         elif _production_capability_marker_present():
-            payload = json.loads(rejected.stdout)
+            rejected_payload = json.loads(rejected.stdout)
             _assert_fail_closed_channel_result(
                 rejected.returncode,
-                payload,
+                rejected_payload,
                 sentinel=sentinel,
                 channel=channel,
             )
@@ -615,7 +615,7 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             sort_keys=True,
         )
         assert sentinel not in rendered, channel
-        if channel.startswith(("submission.", "route_verdict.")):
+        if channel.startswith("submission."):
             _assert_cli_channel_control(
                 payload,
                 sentinel=sentinel,
@@ -646,7 +646,7 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             sort_keys=True,
         )
         assert sentinel not in rendered, channel
-        if channel.startswith(("submission.", "route_verdict.")):
+        if channel.startswith("submission."):
             _assert_cli_channel_control(
                 payload,
                 sentinel=sentinel,

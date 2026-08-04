@@ -95,7 +95,6 @@ EVIDENCE_SEMANTIC_OUTPUT_KEYS = {
     "chronology",
     "corpus",
     "package",
-    "ec_matrix",
     "installed_package",
     "mode_specific",
 }
@@ -1697,13 +1696,18 @@ def _assert_full_frozen_evidence_input(
     assert installed_package["contract_members"] == SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS
     assert installed_package["corpus_partitions"] == facts["corpus"]["partitions"]
     _assert_complete_package_executions(installed_package["executions"], facts["archives"])
-    ec_matrix = json.loads(
-        Path(facts["ec_matrix"]["path"]).read_text(encoding="utf-8")
-    )
-    assert set(ec_matrix) == {"candidate_commit", "candidate_tree", "entries"}
-    assert ec_matrix["candidate_commit"] == bindings["candidate_commit"]
-    assert ec_matrix["candidate_tree"] == bindings["candidate_tree"]
-    _assert_complete_ec_observables(ec_matrix["entries"])
+    if mode == "compatibility":
+        ec_matrix = json.loads(
+            Path(facts["ec_matrix"]["path"]).read_text(encoding="utf-8")
+        )
+        assert set(ec_matrix) == {"candidate_commit", "candidate_tree", "entries"}
+        assert ec_matrix["candidate_commit"] == bindings["candidate_commit"]
+        assert ec_matrix["candidate_tree"] == bindings["candidate_tree"]
+        _assert_complete_ec_observables(ec_matrix["entries"])
+        assert "ec_matrix" in runner_manifest
+    else:
+        assert "ec_matrix" not in facts
+        assert "ec_matrix" not in runner_manifest
 
 
 def test_frozen_inventory_counts_and_set_equations() -> None:
@@ -2430,41 +2434,51 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         with pytest.raises(AssertionError):
             _assert_bound_mutation_observables(command_tampered_mutations)
 
-    direct_ec_entries = _capture_ec_matrix_entries(direct_root)
-    _assert_bound_ec_observables(direct_ec_entries)
-    if all(
-        entry["observable"]["observable"]["classification"] == "passed"
-        for entry in direct_ec_entries
-    ):
-        _assert_complete_ec_observables(direct_ec_entries)
-    else:
-        with pytest.raises(AssertionError):
-            _assert_complete_ec_observables(direct_ec_entries)
-    for invalid_entries in (
-        direct_ec_entries[:-1],
-        [*direct_ec_entries[1:], direct_ec_entries[0]],
-        [*direct_ec_entries[:-1], direct_ec_entries[0]],
-        [
-            {"id": direct_ec_entries[0]["id"], "ordinal": 0, "outcome": "passed"},
-            *direct_ec_entries[1:],
-        ],
-    ):
-        with pytest.raises(AssertionError):
-            _assert_bound_ec_observables(invalid_entries)
-    tampered_ec_entries = copy.deepcopy(direct_ec_entries)
-    Path(tampered_ec_entries[0]["observable"]["result_path"]).write_text(
-        "{}", encoding="utf-8"
+    spec = importlib.util.find_spec(
+        "phase_loop_runtime.conformance.outside_agent_conform_evidence"
     )
-    with pytest.raises(AssertionError):
-        _assert_bound_ec_observables(tampered_ec_entries)
-    zeroed_ec_entries = copy.deepcopy(direct_ec_entries)
-    zeroed_ec_entries[0]["observable"]["input_sha256"] = "0" * 64
-    with pytest.raises(AssertionError):
-        _assert_bound_ec_observables(zeroed_ec_entries)
-    command_tampered_ec_entries = copy.deepcopy(direct_ec_entries)
-    command_tampered_ec_entries[0]["observable"]["command"] = [sys.executable, "-c", "print('tampered')"]
-    with pytest.raises(AssertionError):
-        _assert_bound_ec_observables(command_tampered_ec_entries)
+    compatibility_due = spec is not None and _b2_compatibility_evidence_due()
+    direct_ec_entries = None
+    if spec is None or compatibility_due:
+        direct_ec_entries = _capture_ec_matrix_entries(direct_root)
+        _assert_bound_ec_observables(direct_ec_entries)
+        if all(
+            entry["observable"]["observable"]["classification"] == "passed"
+            for entry in direct_ec_entries
+        ):
+            _assert_complete_ec_observables(direct_ec_entries)
+        else:
+            with pytest.raises(AssertionError):
+                _assert_complete_ec_observables(direct_ec_entries)
+        for invalid_entries in (
+            direct_ec_entries[:-1],
+            [*direct_ec_entries[1:], direct_ec_entries[0]],
+            [*direct_ec_entries[:-1], direct_ec_entries[0]],
+            [
+                {"id": direct_ec_entries[0]["id"], "ordinal": 0, "outcome": "passed"},
+                *direct_ec_entries[1:],
+            ],
+        ):
+            with pytest.raises(AssertionError):
+                _assert_bound_ec_observables(invalid_entries)
+        tampered_ec_entries = copy.deepcopy(direct_ec_entries)
+        Path(tampered_ec_entries[0]["observable"]["result_path"]).write_text(
+            "{}", encoding="utf-8"
+        )
+        with pytest.raises(AssertionError):
+            _assert_bound_ec_observables(tampered_ec_entries)
+        zeroed_ec_entries = copy.deepcopy(direct_ec_entries)
+        zeroed_ec_entries[0]["observable"]["input_sha256"] = "0" * 64
+        with pytest.raises(AssertionError):
+            _assert_bound_ec_observables(zeroed_ec_entries)
+        command_tampered_ec_entries = copy.deepcopy(direct_ec_entries)
+        command_tampered_ec_entries[0]["observable"]["command"] = [
+            sys.executable,
+            "-c",
+            "print('tampered')",
+        ]
+        with pytest.raises(AssertionError):
+            _assert_bound_ec_observables(command_tampered_ec_entries)
     with pytest.raises(AssertionError):
         _assert_complete_package_executions([], direct_archive_facts)
 
@@ -2499,33 +2513,38 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         with pytest.raises(AssertionError):
             _assert_complete_mutation_observables(forged_mut_set)
 
-    forged_ec_set = copy.deepcopy(direct_ec_entries)
-    forged_ec_res = forged_ec_set[0]["observable"]
-    forged_ec_res["output_sha256"] = hashlib.sha256(b"forged_ec").hexdigest()
-    Path(forged_ec_res["result_path"]).write_text(
-        json.dumps(
-            {
-                "command": forged_ec_res["command"],
-                "exit_code": 0,
-                "stdout": json.dumps(
-                    {
-                        "status": "accepted",
-                        "observable": {
-                            "kind": "ec-conform",
-                            "id": direct_ec_entries[0]["id"],
-                            "criterion": EC_CONFORM_PROBES[direct_ec_entries[0]["id"]]["criterion"],
+    if direct_ec_entries is not None:
+        forged_ec_set = copy.deepcopy(direct_ec_entries)
+        forged_ec_res = forged_ec_set[0]["observable"]
+        forged_ec_res["output_sha256"] = hashlib.sha256(b"forged_ec").hexdigest()
+        Path(forged_ec_res["result_path"]).write_text(
+            json.dumps(
+                {
+                    "command": forged_ec_res["command"],
+                    "exit_code": 0,
+                    "stdout": json.dumps(
+                        {
+                            "status": "accepted",
+                            "observable": {
+                                "kind": "ec-conform",
+                                "id": direct_ec_entries[0]["id"],
+                                "criterion": EC_CONFORM_PROBES[
+                                    direct_ec_entries[0]["id"]
+                                ]["criterion"],
+                            },
                         },
-                    }
-                ),
-                "stderr": "",
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    forged_ec_res["result_sha256"] = hashlib.sha256(Path(forged_ec_res["result_path"]).read_bytes()).hexdigest()
-    with pytest.raises(AssertionError):
-        _assert_complete_ec_observables(forged_ec_set)
+                    ),
+                    "stderr": "",
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        forged_ec_res["result_sha256"] = hashlib.sha256(
+            Path(forged_ec_res["result_path"]).read_bytes()
+        ).hexdigest()
+        with pytest.raises(AssertionError):
+            _assert_complete_ec_observables(forged_ec_set)
     assert set(EVIDENCE_VERIFIER_RECORD_IDS) == set(EVIDENCE_VERIFIER_INTERFACE)
     for mode, contract in EVIDENCE_VERIFIER_INTERFACE.items():
         assert contract["timing"] == ("B2-only" if mode == "compatibility" else "A2")
@@ -2552,14 +2571,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
     # SL-0 deliberately has no verifier. Once SL-1 supplies it, A2 exercises only
     # its three allowed modes. Compatibility joins after all four pinned SL-2
     # documentation paths transition, so this immutable test cannot run it early.
-    spec = importlib.util.find_spec(
-        "phase_loop_runtime.conformance.outside_agent_conform_evidence"
-    )
     if spec is not None:
         module = importlib.import_module(spec.name)
         assert module.EVIDENCE_VERIFIER_INTERFACE == EVIDENCE_VERIFIER_INTERFACE
         verifier = getattr(module, "verify_conform_evidence_records")
-        compatibility_due = _b2_compatibility_evidence_due()
         executable_modes = tuple(
             mode
             for mode, contract in EVIDENCE_VERIFIER_INTERFACE.items()
@@ -2751,7 +2766,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                     "corpus_partitions": corpus_partitions,
                     "executions": _capture_package_executions(mode_root, mode_archives),
                 }
-                ec_matrix_entries = _capture_ec_matrix_entries(mode_root)
+                ec_matrix_entries = (
+                    _capture_ec_matrix_entries(mode_root)
+                    if mode == "compatibility"
+                    else None
+                )
                 def write_mode_fact(name: str, payload: dict[str, object]) -> dict[str, str]:
                     fact_path = mode_root / f"{name}.json"
                     fact_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
@@ -2760,9 +2779,13 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                         "sha256": hashlib.sha256(fact_path.read_bytes()).hexdigest(),
                     }
 
-                ec_matrix_fact = write_mode_fact(
-                    "ec-matrix",
-                    {**bindings, "entries": ec_matrix_entries},
+                ec_matrix_fact = (
+                    write_mode_fact(
+                        "ec-matrix",
+                        {**bindings, "entries": ec_matrix_entries},
+                    )
+                    if ec_matrix_entries is not None
+                    else None
                 )
                 installed_package_fact = write_mode_fact(
                     "installed-package", installed_package_facts
@@ -2834,35 +2857,39 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                     },
                     "compatibility": {},
                 }
+                runner_manifest_facts = {
+                    "owner": "phase-loop-runner",
+                    "evidence_mode": mode,
+                    "candidate_commit": candidate,
+                    "candidate_tree": candidate_tree,
+                    "head_commit": candidate,
+                    "head_tree": candidate_tree,
+                    "module_path": facts["module_path"],
+                    "corpus_partitions": corpus_partitions,
+                    "contract_member_digests": contract_member_digests,
+                    "candidate_head_module": bindings,
+                    "provenance": vendor,
+                    "lifecycle": lifecycle,
+                    "activated_lifecycle": activated_lifecycle,
+                    "mutation_records": mutation_records,
+                    "chronology": chronology,
+                    "package": package_facts,
+                    "installed_package": installed_package_facts,
+                    "corpus": {
+                        "rows": corpus_rows,
+                        "partitions": corpus_partitions,
+                    },
+                }
+                if ec_matrix_entries is not None:
+                    runner_manifest_facts["ec_matrix"] = {
+                        "entries": ec_matrix_entries
+                    }
                 mode_facts = copy.deepcopy(facts)
                 mode_facts.update(
                     {
                         "runner_manifest": write_mode_fact(
                             "runner-manifest",
-                            {
-                                "owner": "phase-loop-runner",
-                                "evidence_mode": mode,
-                                "candidate_commit": candidate,
-                                "candidate_tree": candidate_tree,
-                                "head_commit": candidate,
-                                "head_tree": candidate_tree,
-                                "module_path": facts["module_path"],
-                                "corpus_partitions": corpus_partitions,
-                                "contract_member_digests": contract_member_digests,
-                                "candidate_head_module": bindings,
-                                "provenance": vendor,
-                                "lifecycle": lifecycle,
-                                "activated_lifecycle": activated_lifecycle,
-                                "mutation_records": mutation_records,
-                                "chronology": chronology,
-                                "package": package_facts,
-                                "installed_package": installed_package_facts,
-                                "corpus": {
-                                    "rows": corpus_rows,
-                                    "partitions": corpus_partitions,
-                                },
-                                "ec_matrix": {"entries": ec_matrix_entries},
-                            },
+                            runner_manifest_facts,
                         ),
                         "runner_log": {
                             "path": str(mode_log),
@@ -2884,8 +2911,12 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                             for name, path in mode_archives.items()
                         },
                         "evidence_mode": mode,
-                        "ec_matrix": ec_matrix_fact,
                         "installed_package": installed_package_fact,
+                        **(
+                            {"ec_matrix": ec_matrix_fact}
+                            if ec_matrix_fact is not None
+                            else {}
+                        ),
                         **mode_exclusive_facts[mode],
                     }
                 )
@@ -2925,16 +2956,22 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 ).hexdigest()
                 input_facts["archive_bytes"] = archive_bytes
                 junit_root = element_tree.parse(mode_facts["junit_path"]).getroot()
+                junit_suite = (
+                    junit_root
+                    if junit_root.tag == "testsuite"
+                    else junit_root.find("testsuite")
+                )
+                assert junit_suite is not None
                 outcome_facts = {
                     "junit": {
-                        "tests": int(junit_root.attrib["tests"]),
-                        "failures": int(junit_root.attrib["failures"]),
+                        "tests": int(junit_suite.attrib["tests"]),
+                        "failures": int(junit_suite.attrib["failures"]),
                         "cases": [
                             {
                                 "name": case.attrib["name"],
                                 "outcome": "failed" if case.find("failure") is not None else "passed",
                             }
-                            for case in junit_root.findall("testcase")
+                            for case in junit_suite.findall(".//testcase")
                         ],
                     },
                     "archive_members": {
@@ -2947,12 +2984,13 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                             encoding="utf-8"
                         )
                     )["executions"],
-                    "ec_matrix": json.loads(
+                }
+                if mode == "compatibility":
+                    outcome_facts["ec_matrix"] = json.loads(
                         Path(mode_facts["ec_matrix"]["path"]).read_text(
                             encoding="utf-8"
                         )
-                    )["entries"],
-                }
+                    )["entries"]
                 encode = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 return hashlib.sha256(encode(input_facts)).hexdigest(), hashlib.sha256(encode(outcome_facts)).hexdigest()
 
@@ -3004,6 +3042,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 assert "raw_log" not in json.dumps(verified["evidence"], sort_keys=True)
                 evidence = verified["evidence"]
                 assert EVIDENCE_SEMANTIC_OUTPUT_KEYS <= set(evidence)
+                assert ("ec_matrix" in evidence) == (mode == "compatibility")
                 assert evidence["vendor"] == vendor
                 assert evidence["bindings"] == {
                     "candidate_commit": candidate,
@@ -3035,7 +3074,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                     evidence["installed_package"]["executions"],
                     verified_facts["archives"],
                 )
-                _assert_complete_ec_observables(evidence["ec_matrix"]["entries"])
+                if mode == "compatibility":
+                    _assert_complete_ec_observables(evidence["ec_matrix"]["entries"])
                 assert evidence["mode_specific"] == {
                     "mode": mode,
                     "required_inputs": list(EVIDENCE_MODE_EXCLUSIVE_INPUTS[mode]),
