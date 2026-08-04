@@ -76,6 +76,18 @@ EXPECTED_VENDOR_RECORD = {
 }
 EXPECTED_VENDOR_BYTES = json.dumps(EXPECTED_VENDOR_RECORD, sort_keys=True).encode("utf-8")
 
+
+def _extract_tar_archive(archive: tarfile.TarFile, destination: Path) -> None:
+    """Apply the data-filter invariants on every supported Python version."""
+    members = archive.getmembers()
+    assert all(
+        not Path(member.name).is_absolute()
+        and ".." not in Path(member.name).parts
+        and (member.isfile() or member.isdir())
+        for member in members
+    )
+    archive.extractall(destination)
+
 # These are the Git blob identities of the exact test-owned candidate files.
 # They make the local fixture check hermetic: no sibling Consiliency/spec
 # checkout is consulted while an eventual committed candidate is still bound to
@@ -1753,7 +1765,7 @@ def _rebuilt_release_archive_digests(
         sdist_export = root / "recorded-sdist-export"
         sdist_export.mkdir()
         with tarfile.open(direct_sdist) as archive:
-            archive.extractall(sdist_export, filter="data")
+            _extract_tar_archive(archive, sdist_export)
         sdist_roots = [path for path in sdist_export.iterdir() if path.is_dir()]
         assert len(sdist_roots) == 1, "CONFORM_RED::sealed_release_evidence_derived_sdist"
         derived_wheel_dist = root / "sdist-derived-wheel-dist"

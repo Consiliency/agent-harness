@@ -240,6 +240,14 @@ def _repo_candidate_identity() -> dict[str, object]:
     }
 
 
+def _candidate_mutation_source(definition) -> str:
+    source_path = REPO_ROOT / definition.source_path
+    assert source_path.is_file(), definition.source_path
+    source = source_path.read_text(encoding="utf-8")
+    assert source.count(definition.anchor) == 1, definition.source_path
+    return source
+
+
 _CAPTURED_OBSERVABLE_RUNNER = (
     "import json, sys\n"
     "result = json.load(sys.stdin)\n"
@@ -292,6 +300,16 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
     import hashlib, io, json, os, re, shutil, subprocess, sys, tarfile
     from pathlib import Path
 
+    def extract_tar_archive(archive, destination):
+        members = archive.getmembers()
+        assert all(
+            not Path(member.name).is_absolute()
+            and ".." not in Path(member.name).parts
+            and (member.isfile() or member.isdir())
+            for member in members
+        )
+        archive.extractall(destination)
+
     payload = json.load(sys.stdin)
     repo_root = Path(payload["repo_root"]).resolve()
     execution_root = Path(payload["execution_root"]).resolve()
@@ -332,17 +350,13 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
         candidate_clean = status_result.stdout == ""
         if candidate_clean:
             with tarfile.open(fileobj=io.BytesIO(archive_result.stdout), mode="r:") as archive:
-                for member in archive.getmembers():
-                    parts = Path(member.name).parts
-                    assert parts and parts[0] == "phase-loop-runtime" and ".." not in parts
-                    assert member.isfile() or member.isdir()
-                archive.extractall(execution_root)
+                extract_tar_archive(archive, execution_root)
     if not candidate_clean:
         shutil.copytree(repo_root / "phase-loop-runtime", runtime, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "*.pyc"))
     source_path = execution_root / mutation.source_path
-    source_path.parent.mkdir(parents=True, exist_ok=True)
-    source = source_path.read_text(encoding="utf-8") if source_path.is_file() else mutation.complete_source()
-    source_path.write_text(source, encoding="utf-8")
+    assert source_path.is_file(), mutation.source_path
+    source = source_path.read_text(encoding="utf-8")
+    assert source.count(mutation.anchor) == 1, mutation.source_path
     mutant = mutation.apply(source)
     environment = {
         "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
@@ -901,15 +915,7 @@ def _assert_mutation_execution(observable: object, definition) -> None:
         "positive_control",
         "mutant",
     }
-    source_path = REPO_ROOT / definition.source_path
-    candidate_source = (
-        source_path.read_text(encoding="utf-8") if source_path.is_file() else ""
-    )
-    source = (
-        candidate_source
-        if candidate_source.count(definition.anchor) == 1
-        else definition.complete_source()
-    )
+    source = _candidate_mutation_source(definition)
     mutant = definition.apply(source)
     source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
     candidate = _repo_candidate_identity()
@@ -2103,6 +2109,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         # on an absent or duplicated anchor; it may never fall back to this
         # test-only fixture when changing production bytes.
         assert actual_source.count(mutation.anchor) == 0
+        with pytest.raises(AssertionError):
+            _candidate_mutation_source(mutation)
         with pytest.raises(AssertionError):
             mutation.apply(actual_source)
         with pytest.raises(AssertionError):
