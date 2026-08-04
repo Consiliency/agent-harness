@@ -116,6 +116,31 @@ SUBMISSION_CLI_EXIT_BY_CASE = {
     "negative-empty-evidence-refs": 2,
     "negative-git-object-id-length": 2,
 }
+CONFORM_IMMUTABLE_LIFECYCLE_PATHS = (
+    "phase-loop-runtime/tests/_outside_agent_canonical.py",
+    "phase-loop-runtime/tests/conftest.py",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/PROVENANCE.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/consiliency_spec/outside_agent_router.py",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/schemas/outside-agent-route-verdict.schema.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/schemas/outside-agent-submission.schema.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/invalid-empty-evidence-refs.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/invalid-git-object-id-length.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/invalid-missing-digest.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/invalid-path-traversal.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/invalid-raw-payload.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/invalid-source-bundle-mismatch.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/invalid-unknown-producer-identity-posture.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/invalid-unsupported-verdict.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/manifest.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/valid-ambiguity-report.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/valid-implementation-submission.json",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/valid-work-request.json",
+    "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py",
+    "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+    "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
+    "phase-loop-runtime/tests/test_outside_agent_redaction_separation.py",
+    "phase-loop-runtime/tests/test_outside_agent_release_surface.py",
+)
 
 
 def _source_execution_environment() -> dict[str, str]:
@@ -156,6 +181,18 @@ def _run_bound_child_bytes(command: list[str], *, cwd: Path) -> subprocess.Compl
     )
     stdout, stderr = process.communicate()
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _extract_tar_archive(archive: tarfile.TarFile, destination: Path) -> None:
+    """Apply the data-filter invariants on every supported Python version."""
+    members = archive.getmembers()
+    assert all(
+        not Path(member.name).is_absolute()
+        and ".." not in Path(member.name).parts
+        and (member.isfile() or member.isdir())
+        for member in members
+    )
+    archive.extractall(destination)
 
 
 def _repo_candidate_identity() -> dict[str, object]:
@@ -543,7 +580,7 @@ def _build_candidate_package_archives(
             parts = Path(member.name).parts
             assert parts and not member.name.startswith("/") and ".." not in parts
             assert member.isfile() or member.isdir()
-        archive.extractall(candidate_export, filter="data")
+        _extract_tar_archive(archive, candidate_export)
     candidate_runtime = candidate_export / "phase-loop-runtime"
     source_date_epoch = _run_bound_child(
         ["git", "show", "-s", "--format=%ct", candidate_commit],
@@ -584,7 +621,7 @@ def _build_candidate_package_archives(
     sdist_export = root / "sdist-export"
     sdist_export.mkdir()
     with tarfile.open(direct_sdist) as archive:
-        archive.extractall(sdist_export, filter="data")
+        _extract_tar_archive(archive, sdist_export)
     sdist_roots = [path for path in sdist_export.iterdir() if path.is_dir()]
     assert len(sdist_roots) == 1
     derived_wheel_dist = root / "sdist-derived-wheel-dist"
@@ -783,7 +820,7 @@ def _capture_package_executions(root: Path, archives: dict[str, Path]) -> list[d
         extraction_root.mkdir()
         if variant == "direct-sdist":
             with tarfile.open(archive_path) as archive:
-                archive.extractall(extraction_root, filter="data")
+                _extract_tar_archive(archive, extraction_root)
             import_root = next(extraction_root.iterdir()) / "src"
         else:
             with zipfile.ZipFile(archive_path) as archive:
@@ -1212,29 +1249,63 @@ def _assert_complete_package_executions(
                 assert observation["validation_error_keyword"] == "enum"
 
 
-def _write_synthetic_junit_rejection_fixture(path: Path) -> None:
-    """Write a synthetic shape used only to prove verifier rejection behavior."""
-    suite = element_tree.Element(
+def _write_synthetic_junit_rejection_fixture(path: Path, raw_log_path: Path) -> None:
+    """Write a fully shaped but runner-unbacked lifecycle forgery."""
+    suites = element_tree.Element("testsuites", {"name": "pytest tests"})
+    suite = element_tree.SubElement(
+        suites,
         "testsuite",
         {
-            "name": "outside-agent-activated-lifecycle",
+            "name": "pytest",
             "tests": str(ALL_OUTSIDE_AGENT_NODE_COUNT),
             "failures": str(CONFORM_ACTIVATED_RED_NODE_COUNT),
             "skipped": "0",
+            "errors": "0",
+            "time": "1.000",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "hostname": "synthetic.invalid",
         },
     )
     for nodeid in ALL_OUTSIDE_AGENT_NODE_IDS:
-        case = element_tree.SubElement(suite, "testcase", {"name": nodeid})
+        path_part, name = nodeid.split("::", 1)
+        classname = path_part.removeprefix("phase-loop-runtime/").removesuffix(
+            ".py"
+        ).replace("/", ".")
+        case = element_tree.SubElement(
+            suite,
+            "testcase",
+            {"classname": classname, "name": name, "time": "0.001"},
+        )
+        properties = element_tree.SubElement(case, "properties")
+        element_tree.SubElement(
+            properties,
+            "property",
+            {"name": "conform_expected_node_id", "value": nodeid},
+        )
         if nodeid in CONFORM_ACTIVATED_RED_NODE_IDS:
             failure = element_tree.SubElement(case, "failure")
             failure.text = CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
-    element_tree.ElementTree(suite).write(path, encoding="utf-8", xml_declaration=True)
+    element_tree.ElementTree(suites).write(path, encoding="utf-8", xml_declaration=True)
+    raw_log_path.write_text(
+        "54 failed, 39 passed, 0 skipped, 0 deselected in 1.00s\n",
+        encoding="utf-8",
+    )
 
 
-def _assert_exact_frozen_activated_junit(path: Path) -> None:
-    """Reject synthetic summaries and require raw pytest node/anchor evidence."""
+def _assert_exact_frozen_activated_junit(path: Path, raw_log_path: Path) -> None:
+    """Require correlated raw pytest node, property, summary, and anchor evidence."""
+    root = element_tree.parse(path).getroot()
+    assert root.tag == "testsuites" and root.attrib.get("name") == "pytest tests"
+    suites = root.findall("testsuite")
+    assert len(suites) == 1
+    suite = suites[0]
+    assert suite.attrib.get("name") == "pytest"
+    assert suite.attrib.get("hostname") and suite.attrib.get("timestamp")
+    all_cases = suite.findall("testcase")
+    assert int(suite.attrib["tests"]) == len(all_cases)
+    assert int(suite.attrib["errors"]) == 0
     cases: dict[str, element_tree.Element] = {}
-    for case in element_tree.parse(path).getroot().findall(".//testcase"):
+    for case in all_cases:
         classname = case.attrib.get("classname", "")
         if not classname:
             continue
@@ -1246,6 +1317,11 @@ def _assert_exact_frozen_activated_junit(path: Path) -> None:
         )
         if nodeid in ALL_OUTSIDE_AGENT_NODE_IDS:
             assert nodeid not in cases
+            properties = {
+                prop.attrib.get("name"): prop.attrib.get("value")
+                for prop in case.findall("./properties/property")
+            }
+            assert properties.get("conform_expected_node_id") == nodeid
             cases[nodeid] = case
     assert set(cases) == set(ALL_OUTSIDE_AGENT_NODE_IDS)
     failures = {
@@ -1264,15 +1340,22 @@ def _assert_exact_frozen_activated_junit(path: Path) -> None:
         case.find("skipped") is not None or case.find("error") is not None
         for case in cases.values()
     )
+    suite_failures = int(suite.attrib["failures"])
+    suite_skips = int(suite.attrib["skipped"])
+    suite_passes = len(all_cases) - suite_failures - suite_skips
+    raw_log = raw_log_path.read_text(encoding="utf-8")
+    assert (
+        f"{suite_failures} failed, {suite_passes} passed, "
+        f"{suite_skips} skipped," in raw_log
+    )
+    for nodeid, failure_text in failures.items():
+        assert f"FAILED {nodeid}" in raw_log
+        assert CONFORM_ACTIVATED_RED_ANCHORS[nodeid] in failure_text
 
 
 def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str, object]:
     """Run the committed frozen test blobs in clean, non-Git candidate exports."""
-    test_paths = (
-        "phase-loop-runtime/tests/_outside_agent_canonical.py",
-        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
-        "phase-loop-runtime/tests/test_outside_agent_redaction_separation.py",
-    )
+    test_paths = CONFORM_IMMUTABLE_LIFECYCLE_PATHS
     head_blobs = {
         path: _run_bound_child(["git", "rev-parse", f"HEAD:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")}).stdout.strip()
         for path in test_paths
@@ -1311,7 +1394,7 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
         execution_root = root / f"lifecycle-{label}"
         execution_root.mkdir()
         with tarfile.open(fileobj=io.BytesIO(test_archive.stdout), mode="r:") as archive:
-            archive.extractall(execution_root, filter="data")
+            _extract_tar_archive(archive, execution_root)
         junit_path = execution_root / f"{label}.junit.xml"
         environment = {
             "PATH": os.environ.get("PATH", ""),
@@ -1390,6 +1473,9 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
         in activated["failure_anchors"][nodeid]
         for nodeid in CONFORM_ACTIVATED_RED_NODE_IDS
     )
+    _assert_exact_frozen_activated_junit(
+        Path(activated["junit_path"]), Path(activated["raw_log_path"])
+    )
     return captures
 
 
@@ -1444,7 +1530,9 @@ def _assert_full_frozen_evidence_input(
         assert lifecycle[stage]["junit_sha256"] == hashlib.sha256(
             Path(lifecycle[stage]["junit_path"]).read_bytes()
         ).hexdigest()
-    _assert_exact_frozen_activated_junit(Path(facts["junit_path"]))
+    _assert_exact_frozen_activated_junit(
+        Path(facts["junit_path"]), Path(facts["runner_log_path"])
+    )
     mutations = facts["mutation_records"]
     _assert_complete_mutation_observables(mutations)
     chronology = facts["chronology"]["stages"]
@@ -1791,7 +1879,7 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
     sdist_export = tmp_path / "sdist-export"
     sdist_export.mkdir()
     with tarfile.open(direct_sdist) as archive:
-        archive.extractall(sdist_export, filter="data")
+        _extract_tar_archive(archive, sdist_export)
     sdist_root = next(path for path in sdist_export.iterdir() if path.is_dir())
     derived_wheel_dist = tmp_path / "sdist-derived-wheel-dist"
     completed = subprocess.run(
@@ -2041,9 +2129,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         "EC-CONFORM-8",
     )
     frozen_junit = tmp_path / "frozen-activated.junit.xml"
-    _write_synthetic_junit_rejection_fixture(frozen_junit)
+    frozen_log = tmp_path / "frozen-activated.raw.log"
+    _write_synthetic_junit_rejection_fixture(frozen_junit, frozen_log)
     with pytest.raises(AssertionError):
-        _assert_exact_frozen_activated_junit(frozen_junit)
+        _assert_exact_frozen_activated_junit(frozen_junit, frozen_log)
     # This is the exact Sol reproducer shape.  It cannot become a positive by
     # refreshing its own digest fields because it omits 91 nodes and 53 REDs.
     undersized_junit = tmp_path / "undersized-activated.junit.xml"
@@ -2056,7 +2145,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         )
     ).write(undersized_junit, encoding="utf-8", xml_declaration=True)
     with pytest.raises(AssertionError):
-        _assert_exact_frozen_activated_junit(undersized_junit)
+        _assert_exact_frozen_activated_junit(undersized_junit, frozen_log)
     # The SL-0 test contract executes its package/observable evidence directly,
     # before the future production verifier exists.  This makes skeletal
     # metadata-only packages and caller-authored outcome labels locally
