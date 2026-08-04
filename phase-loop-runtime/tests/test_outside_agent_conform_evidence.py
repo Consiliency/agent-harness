@@ -2437,9 +2437,12 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
     spec = importlib.util.find_spec(
         "phase_loop_runtime.conformance.outside_agent_conform_evidence"
     )
+    # The absent verifier identifies SL-0, where test-owned EC controls run
+    # directly. Once SL-1 installs the verifier, only B2 may recapture them.
+    sl0_direct_controls = spec is None
     compatibility_due = spec is not None and _b2_compatibility_evidence_due()
     direct_ec_entries = None
-    if spec is None or compatibility_due:
+    if sl0_direct_controls or compatibility_due:
         direct_ec_entries = _capture_ec_matrix_entries(direct_root)
         _assert_bound_ec_observables(direct_ec_entries)
         if all(
@@ -2966,10 +2969,17 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                     "junit": {
                         "tests": int(junit_suite.attrib["tests"]),
                         "failures": int(junit_suite.attrib["failures"]),
+                        "skipped": int(junit_suite.attrib["skipped"]),
                         "cases": [
                             {
                                 "name": case.attrib["name"],
-                                "outcome": "failed" if case.find("failure") is not None else "passed",
+                                "outcome": (
+                                    "failed"
+                                    if case.find("failure") is not None
+                                    else "skipped"
+                                    if case.find("skipped") is not None
+                                    else "passed"
+                                ),
                             }
                             for case in junit_suite.findall(".//testcase")
                         ],
