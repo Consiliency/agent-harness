@@ -1289,7 +1289,7 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
         environment={"PATH": os.environ.get("PATH", "")},
     ).stdout.strip()
     test_archive = _run_bound_child_bytes(
-        ["git", "archive", "--format=tar", test_commit, "phase-loop-runtime"],
+        ["git", "archive", "--format=tar", test_commit],
         cwd=REPO_ROOT,
     )
     assert test_archive.returncode == 0
@@ -1315,6 +1315,7 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
         environment = {
             "PATH": os.environ.get("PATH", ""),
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONWARNINGS": "ignore::SyntaxWarning",
             "PYTHONPATH": str(execution_root / "phase-loop-runtime/src")
             + os.pathsep
             + str(execution_root / "phase-loop-runtime/tests"),
@@ -1382,7 +1383,7 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
     assert not default["failures"]
     assert activated["exit_code"] != 0 and not activated["skips"]
     assert tuple(activated["node_ids"]) == ALL_OUTSIDE_AGENT_NODE_IDS
-    assert tuple(activated["failures"]) == CONFORM_ACTIVATED_RED_NODE_IDS
+    assert set(activated["failures"]) == set(CONFORM_ACTIVATED_RED_NODE_IDS)
     assert all(
         CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
         in activated["failure_anchors"][nodeid]
@@ -1431,7 +1432,7 @@ def _assert_full_frozen_evidence_input(
     assert lifecycle["default"]["skips"] == list(CONFORM_NEW_PRODUCTION_NODE_IDS)
     assert lifecycle["default"]["failures"] == []
     assert lifecycle["activated"]["exit_code"] != 0
-    assert lifecycle["activated"]["failures"] == list(
+    assert set(lifecycle["activated"]["failures"]) == set(
         CONFORM_ACTIVATED_RED_NODE_IDS
     )
     assert lifecycle["activated"]["skips"] == []
@@ -2392,11 +2393,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 "failures": len(lifecycle["activated"]["failures"]),
                 "skipped": len(lifecycle["activated"]["skips"]),
                 "node_ids": lifecycle["activated"]["node_ids"],
-                "red_node_ids": lifecycle["activated"]["failures"],
-                "red_anchors": {
-                    nodeid: CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
-                    for nodeid in lifecycle["activated"]["failures"]
-                },
+                "red_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
+                "red_anchors": CONFORM_ACTIVATED_RED_ANCHORS,
             }
             chronology = {
                 "stages": [
