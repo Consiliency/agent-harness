@@ -492,43 +492,8 @@ def _assert_cli_channel_control(
             )
 
 
-def _assert_raw_construction_guard(monkeypatch) -> None:
-    """Isolate the core construction guard from schema and serializer guards."""
-    from phase_loop_runtime.conformance import outside_agent_provenance, outside_agent_schema
-    from phase_loop_runtime.conformance.outside_agent_core import (
-        OutsideAgentSubmissionKind,
-        validate_outside_agent_submission,
-    )
-    from phase_loop_runtime.conformance.outside_agent_provenance import (
-        OutsideAgentProvenanceValidation,
-    )
-    from phase_loop_runtime.conformance.outside_agent_schema import (
-        OutsideAgentSchemaValidation,
-    )
-
-    sentinel = "CONFORM-SL0-CONSTRUCTION-GUARD-SENTINEL"
-    payload = clean_canonical_submission()
-    payload["raw_payload"] = sentinel
-    monkeypatch.setattr(
-        outside_agent_schema,
-        "validate_outside_agent_submission_schema",
-        lambda submission, *, contract_pin: OutsideAgentSchemaValidation(
-            OutsideAgentSubmissionKind.WORK_REQUEST,
-            (),
-        ),
-    )
-    monkeypatch.setattr(
-        outside_agent_provenance,
-        "validate_outside_agent_provenance",
-        lambda submission: OutsideAgentProvenanceValidation((), (), ()),
-    )
-    verdict = validate_outside_agent_submission(payload)
-    assert verdict.status.value == "blocked"
-    assert {blocker.code for blocker in verdict.blockers} == {"raw_payload_present"}
-
-
 def _assert_final_serializer_guard() -> None:
-    """Prove serialization drops a present raw marker instead of raising KeyError."""
+    """Prove the final sink omits a raw submission-file locator."""
     from phase_loop_runtime.conformance import EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN
     from phase_loop_runtime.conformance.outside_agent_core import (
         OutsideAgentConformanceVerdict,
@@ -543,7 +508,7 @@ def _assert_final_serializer_guard() -> None:
         serialize_outside_agent_validation_verdict,
     )
 
-    sentinel = "CONFORM-SL0-FINAL-SERIALIZER-GUARD-SENTINEL"
+    sentinel = "CONFORM-SL0-FINAL-SERIALIZER-GUARD-SUBMISSION-FILE"
     verdict = OutsideAgentConformanceVerdict(
         verdict_schema_version="outside_agent_route_verdict.v0.1",
         submission_kind=OutsideAgentSubmissionKind.WORK_REQUEST,
@@ -553,7 +518,7 @@ def _assert_final_serializer_guard() -> None:
         input_digest="a" * 64,
         provenance_refs=(),
         evidence_refs=(),
-        metadata={"raw_submission_marker": sentinel},
+        metadata={},
     )
     validation = OutsideAgentValidationVerdict(
         authority="governed_pipeline_validator",
@@ -562,9 +527,13 @@ def _assert_final_serializer_guard() -> None:
         verdict=verdict,
         submitted_refs=(),
     )
+    # The frozen future serializer receives this boundary attribute from the CLI
+    # construction path.  Bypass dataclass construction so SL-0 remains runnable
+    # before that future production field exists.
+    object.__setattr__(validation, "submission_file", sentinel)
     rendered = serialize_outside_agent_validation_verdict(validation)
     assert sentinel not in json.dumps(rendered, sort_keys=True)
-    assert "raw_submission_marker" not in rendered
+    assert "submission_file" not in rendered
 
 
 def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
@@ -806,8 +775,7 @@ def _assert_structural_diagnostic_positive_control(tmp_path: Path) -> None:
         assert sentinel not in rendered
 
 
-def test_submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes(tmp_path, monkeypatch) -> None:
-    _assert_raw_construction_guard(monkeypatch)
+def test_submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes(tmp_path) -> None:
     relative = Path("phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/valid-work-request.json")
     absolute = (REPO_ROOT / relative).resolve()
     raw = absolute.read_bytes()

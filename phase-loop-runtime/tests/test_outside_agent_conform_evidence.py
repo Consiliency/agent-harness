@@ -54,6 +54,7 @@ from _outside_agent_canonical import (
     EVIDENCE_VERIFIER_RECORD_IDS,
     EXPECTED_VENDOR_BYTES,
     FIXTURE_ROOT,
+    LIVE_BLOCKER_CODE_BY_INVALID_CASE,
     REPO_ROOT,
     SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS,
     SEALED_RELEASE_ARCHIVE_MEMBERS,
@@ -67,14 +68,17 @@ from _outside_agent_canonical import (
     find_non_enumerated_canonical_copies,
     fixture_paths,
     normalized_nodeid,
+    route_verdict_entry,
     sealed_release_candidate_bytes,
     sealed_release_evidence,
     sealed_release_final_bytes,
     sealed_release_parent_bytes,
+    submission_entries,
     _member_digests,
     _sealed_manifest_sha256,
     _normalized_archive_member_digests,
     node_source_path,
+    vector_payload,
 )
 
 
@@ -100,7 +104,18 @@ PACKAGE_EXECUTION_VARIANTS = (
     "direct-sdist",
     "sdist-derived-wheel",
 )
-PACKAGE_EXECUTION_CASES = ("api", "cli", "vector")
+SUBMISSION_CLI_EXIT_BY_CASE = {
+    "positive-work-request": 0,
+    "positive-implementation-submission": 0,
+    "positive-ambiguity-report": 0,
+    "negative-raw-payload": 2,
+    "negative-missing-digest": 2,
+    "negative-source-bundle-mismatch": 6,
+    "negative-unknown-producer-identity-posture": 2,
+    "negative-path-traversal": 2,
+    "negative-empty-evidence-refs": 2,
+    "negative-git-object-id-length": 2,
+}
 
 
 def _source_execution_environment() -> dict[str, str]:
@@ -410,7 +425,8 @@ _EC_PROBE_RUNNER = textwrap.dedent(
     raise SystemExit(0 if passed else 1)
     """
 )
-_RUNNABLE_PACKAGE_MEMBERS = {
+# Deliberately fictional negative control: never candidate-package evidence.
+_TOY_NEGATIVE_PACKAGE_MEMBERS = {
     "phase_loop_runtime/__init__.py": b"",
     "phase_loop_runtime/conformance/__init__.py": b"",
     "phase_loop_runtime/conformance/outside_agent_schema.py": (
@@ -457,7 +473,7 @@ def _write_tar_member(archive: tarfile.TarFile, name: str, contents: bytes) -> N
     archive.addfile(member, io.BytesIO(contents))
 
 
-def _write_runnable_wheel(path: Path, members: dict[str, bytes]) -> None:
+def _write_toy_wheel(path: Path, members: dict[str, bytes]) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         for member_name, contents in members.items():
             archive.writestr(member_name, contents)
@@ -472,7 +488,7 @@ def _write_runnable_wheel(path: Path, members: dict[str, bytes]) -> None:
         archive.writestr("phase_loop_runtime-0.0.dist-info/RECORD", "")
 
 
-def _write_runnable_sdist(path: Path, members: dict[str, bytes]) -> None:
+def _write_toy_sdist(path: Path, members: dict[str, bytes]) -> None:
     with tarfile.open(path, "w:gz") as archive:
         for member_name, contents in members.items():
             _write_tar_member(archive, "phase-loop-runtime/src/" + member_name, contents)
@@ -488,18 +504,18 @@ def _write_runnable_sdist(path: Path, members: dict[str, bytes]) -> None:
         )
 
 
-def _write_runnable_package_archives(
+def _write_toy_negative_package_archives(
     root: Path, contract_members: dict[str, bytes]
 ) -> dict[str, Path]:
-    """Create three extractable package variants with executable surfaces."""
-    package_members = {**_RUNNABLE_PACKAGE_MEMBERS, **contract_members}
+    """Create rejected toy archives; they cannot satisfy package evidence."""
+    package_members = {**_TOY_NEGATIVE_PACKAGE_MEMBERS, **contract_members}
     archives = {
         "direct-wheel": root / "direct-wheel.whl",
         "direct-sdist": root / "direct-sdist.tar.gz",
         "sdist-derived-wheel": root / "sdist-derived-wheel.whl",
     }
-    _write_runnable_wheel(archives["direct-wheel"], package_members)
-    _write_runnable_sdist(archives["direct-sdist"], package_members)
+    _write_toy_wheel(archives["direct-wheel"], package_members)
+    _write_toy_sdist(archives["direct-sdist"], package_members)
     with tarfile.open(archives["direct-sdist"]) as archive:
         derived_members = {
             member.name.split("/src/", 1)[1]: archive.extractfile(member).read()
@@ -507,7 +523,7 @@ def _write_runnable_package_archives(
             if member.isfile() and "/src/phase_loop_runtime/" in member.name
         }
     assert derived_members == package_members
-    _write_runnable_wheel(archives["sdist-derived-wheel"], derived_members)
+    _write_toy_wheel(archives["sdist-derived-wheel"], derived_members)
     return archives
 
 
@@ -724,26 +740,43 @@ def _assert_captured_observable(
     assert rerun_rendered["observable"] == expected_observable
 
 
-def _capture_package_executions(
-    root: Path,
-    archives: dict[str, Path],
-) -> list[dict[str, object]]:
-    """Extract each archive and capture API, CLI, and vector behavior in isolation."""
-    executions = []
-    payload = {"submission_schema_version": "outside_agent_submission.v0.1"}
-    commands = {
-        "api": [
-            sys.executable,
-            "-c",
-            "import json, sys; from phase_loop_runtime.conformance.outside_agent_schema import validate; print(json.dumps(validate(json.load(sys.stdin)), sort_keys=True))",
-        ],
-        "cli": [sys.executable, "-m", "phase_loop_runtime.cli", "outside-agent-validate"],
-        "vector": [
-            sys.executable,
-            "-m",
-            "phase_loop_runtime.conformance.outside_agent_vectors",
-        ],
-    }
+_INSTALLED_PACKAGE_RUNNER = textwrap.dedent(
+    """
+    import json, subprocess, sys
+    from pathlib import Path
+
+    request = json.load(sys.stdin)
+    surface = request["surface"]
+    payload = request["payload"]
+    case_id = request["case_id"]
+    if surface == "api":
+        from phase_loop_runtime.conformance.outside_agent_core import validate_outside_agent_submission
+        verdict = validate_outside_agent_submission(payload)
+        result = {"status": verdict.status.value, "blocker_codes": sorted(item.code for item in verdict.blockers)}
+    elif surface == "route-schema":
+        from phase_loop_runtime.conformance.outside_agent_schema import validate_outside_agent_route_verdict_schema
+        verdict = validate_outside_agent_route_verdict_schema(payload, schema_target="outside_agent_route_verdict.v0.1")
+        result = {"status": verdict.status.value, "blocker_codes": sorted(item.code for item in verdict.blockers), "dispatch_observation": getattr(verdict, "dispatch_observation", None)}
+    elif surface == "vector":
+        from phase_loop_runtime.conformance.outside_agent_vectors import run_outside_agent_vectors
+        result_item = next(item for item in run_outside_agent_vectors() if item.vector_name == case_id)
+        result = {"status": result_item.status.value, "blocker_codes": sorted(item.code for item in result_item.blockers), "dispatch_observation": getattr(result_item, "dispatch_observation", None)}
+    else:
+        input_path = Path.cwd() / (case_id + ".submission.json")
+        output_path = Path.cwd() / (case_id + ".output.json")
+        input_path.write_text(json.dumps(payload), encoding="utf-8")
+        completed = subprocess.run([sys.executable, "-m", "phase_loop_runtime.cli", "outside-agent-validate", str(input_path), "--output", str(output_path)], capture_output=True, text=True, check=False)
+        rendered = json.loads(completed.stdout)
+        result = {"status": rendered["status"], "blocker_codes": sorted(item["code"] for item in rendered["blockers"]), "cli_stdout": completed.stdout, "cli_stderr": completed.stderr, "output_bytes": output_path.read_text(encoding="utf-8"), "cli_exit": completed.returncode}
+    print(json.dumps(result, sort_keys=True))
+    """
+)
+
+
+def _capture_package_executions(root: Path, archives: dict[str, Path]) -> list[dict[str, object]]:
+    """Exercise actual frozen interfaces from each installed candidate archive."""
+    executions: list[dict[str, object]] = []
+    rows = (*submission_entries(), route_verdict_entry())
     for variant in PACKAGE_EXECUTION_VARIANTS:
         archive_path = archives[variant]
         extraction_root = root / f"{variant}-isolated"
@@ -751,46 +784,38 @@ def _capture_package_executions(
         if variant == "direct-sdist":
             with tarfile.open(archive_path) as archive:
                 archive.extractall(extraction_root, filter="data")
-            import_root = extraction_root / "phase-loop-runtime" / "src"
+            import_root = next(extraction_root.iterdir()) / "src"
         else:
             with zipfile.ZipFile(archive_path) as archive:
                 archive.extractall(extraction_root)
             import_root = extraction_root
-        assert (import_root / "phase_loop_runtime/conformance/outside_agent_schema.py").is_file()
-        environment = {
-            "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(import_root),
-        }
+        assert (import_root / "phase_loop_runtime/conformance/outside_agent_core.py").is_file()
+        environment = {"PHASE_LOOP_TDD_EXPECT_CONFORM": "0", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(import_root)}
         cases = []
-        for case_id in PACKAGE_EXECUTION_CASES:
-            observable = _capture_subprocess_observable(
-                root,
-                prefix=f"{variant}-{case_id}",
-                command=commands[case_id],
-                payload=payload,
-                environment=environment,
-                cwd=extraction_root,
-            )
-            _assert_captured_observable(
-                observable,
-                expected_command=commands[case_id],
-                expected_payload=payload,
-                expected_exit=0,
-                expected_status="accepted",
-                expected_observable={"surface": case_id, "accepted": True},
-                environment=environment,
-                cwd=extraction_root,
-            )
-            cases.append({"case_id": case_id, "result": observable})
-        executions.append(
-            {
-                "variant": variant,
-                "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
-                "extraction_posture": "isolated-subprocess",
-                "cases": cases,
-            }
-        )
+        oracle = __import__("_outside_agent_canonical").load_oracle()
+        for row in rows:
+            surfaces = ("route-schema", "vector") if row["schema_target"].endswith("route_verdict.v0.1") else ("api", "cli", "vector")
+            for surface in surfaces:
+                request = {"surface": surface, "case_id": row["case_id"], "payload": vector_payload(row)}
+                command = [sys.executable, "-c", _INSTALLED_PACKAGE_RUNNER]
+                completed = _run_bound_child(command, input_text=json.dumps(request, sort_keys=True), cwd=extraction_root, environment=environment)
+                raw_path = root / f"{variant}-{row['case_id']}-{surface}.raw.json"
+                raw = {"argv": command, "environment": environment, "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
+                raw_path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+                assert completed.stdout, completed.stderr
+                cases.append(
+                    {
+                        "case_id": row["case_id"],
+                        "surface": surface,
+                        "oracle_blocker_class": oracle.blocker_class_of(
+                            oracle.route(vector_payload(row), row["schema_target"])
+                        ),
+                        "raw_path": str(raw_path),
+                        "raw_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+                        "result": json.loads(completed.stdout),
+                    }
+                )
+        executions.append({"variant": variant, "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(), "extraction_posture": "installed-isolated-subprocess", "cases": cases})
     return executions
 
 
@@ -839,7 +864,15 @@ def _assert_mutation_execution(observable: object, definition) -> None:
         "positive_control",
         "mutant",
     }
-    source = definition.complete_source()
+    source_path = REPO_ROOT / definition.source_path
+    candidate_source = (
+        source_path.read_text(encoding="utf-8") if source_path.is_file() else ""
+    )
+    source = (
+        candidate_source
+        if candidate_source.count(definition.anchor) == 1
+        else definition.complete_source()
+    )
     mutant = definition.apply(source)
     source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
     candidate = _repo_candidate_identity()
@@ -1116,20 +1149,12 @@ def _assert_complete_package_executions(
     executions: list[dict[str, object]], archives: dict[str, object]
 ) -> None:
     assert tuple(execution["variant"] for execution in executions) == PACKAGE_EXECUTION_VARIANTS
-    payload = {"submission_schema_version": "outside_agent_submission.v0.1"}
-    commands = {
-        "api": [
-            sys.executable,
-            "-c",
-            "import json, sys; from phase_loop_runtime.conformance.outside_agent_schema import validate; print(json.dumps(validate(json.load(sys.stdin)), sort_keys=True))",
-        ],
-        "cli": [sys.executable, "-m", "phase_loop_runtime.cli", "outside-agent-validate"],
-        "vector": [
-            sys.executable,
-            "-m",
-            "phase_loop_runtime.conformance.outside_agent_vectors",
-        ],
+    expected = {
+        (row["case_id"], surface)
+        for row in (*submission_entries(), route_verdict_entry())
+        for surface in (("route-schema", "vector") if row["schema_target"].endswith("route_verdict.v0.1") else ("api", "cli", "vector"))
     }
+    oracle = __import__("_outside_agent_canonical").load_oracle()
     for execution in executions:
         variant = execution["variant"]
         assert set(execution) == {
@@ -1138,39 +1163,57 @@ def _assert_complete_package_executions(
             "extraction_posture",
             "cases",
         }
-        assert execution["extraction_posture"] == "isolated-subprocess"
+        assert execution["extraction_posture"] == "installed-isolated-subprocess"
         assert execution["archive_sha256"] == archives[variant]["sha256"]
         archive_path = Path(archives[variant]["path"])
         members = _normalized_archive_member_digests(archive_path)
-        for member_name, contents in _RUNNABLE_PACKAGE_MEMBERS.items():
-            assert members.get(member_name) == hashlib.sha256(contents).hexdigest()
-        assert tuple(case["case_id"] for case in execution["cases"]) == PACKAGE_EXECUTION_CASES
+        assert "phase_loop_runtime/conformance/outside_agent_core.py" in members
+        assert {(case["case_id"], case["surface"]) for case in execution["cases"]} == expected
+        assert not any(
+            case["case_id"] == "negative-unsupported-verdict"
+            and case["surface"] == "cli"
+            for case in execution["cases"]
+        )
         for case in execution["cases"]:
-            case_id = case["case_id"]
-            root = Path(case["result"]["result_path"]).parent
-            if variant == "direct-sdist":
-                import_root = root / f"{variant}-isolated" / "phase-loop-runtime" / "src"
-            else:
-                import_root = root / f"{variant}-isolated"
-            environment = {
-                "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "PYTHONPATH": str(import_root),
+            assert set(case) == {
+                "case_id",
+                "surface",
+                "oracle_blocker_class",
+                "raw_path",
+                "raw_sha256",
+                "result",
             }
-            _assert_captured_observable(
-                case["result"],
-                expected_command=commands[case_id],
-                expected_payload=payload,
-                expected_exit=0,
-                expected_status="accepted",
-                expected_observable={"surface": case_id, "accepted": True},
-                environment=environment,
-                cwd=root / f"{variant}-isolated",
+            raw_path = Path(case["raw_path"])
+            assert case["raw_sha256"] == hashlib.sha256(raw_path.read_bytes()).hexdigest()
+            raw = json.loads(raw_path.read_text(encoding="utf-8"))
+            assert raw["argv"] == [sys.executable, "-c", _INSTALLED_PACKAGE_RUNNER]
+            assert raw["environment"]["PHASE_LOOP_TDD_EXPECT_CONFORM"] == "0"
+            row = next(row for row in (*submission_entries(), route_verdict_entry()) if row["case_id"] == case["case_id"])
+            result = case["result"]
+            assert result["status"] == ("pass" if row["expected_valid"] else "blocked")
+            assert case["oracle_blocker_class"] == row["expected_blocker_class"]
+            assert case["oracle_blocker_class"] == oracle.blocker_class_of(
+                oracle.route(vector_payload(row), row["schema_target"])
             )
+            expected_codes = [] if row["expected_valid"] else [LIVE_BLOCKER_CODE_BY_INVALID_CASE[row["case_id"]]]
+            assert result["blocker_codes"] == expected_codes
+            if case["surface"] == "cli":
+                assert raw["exit_code"] == 0
+                assert result["cli_exit"] == SUBMISSION_CLI_EXIT_BY_CASE[row["case_id"]]
+                assert result["cli_stdout"] == result["output_bytes"]
+                rendered = json.loads(result["cli_stdout"])
+                assert rendered["redaction_posture"] == "metadata_only"
+                assert len(rendered["input_digest"]) == 64
+                assert rendered["contract_pin"]["source_owner"] == "Consiliency/spec"
+            elif case["surface"] == "route-schema":
+                observation = result["dispatch_observation"]
+                assert observation["schema_target"] == "outside_agent_route_verdict.v0.1"
+                assert observation["validation_error_pointer"] == "/route"
+                assert observation["validation_error_keyword"] == "enum"
 
 
-def _write_exact_frozen_activated_junit(path: Path) -> None:
-    """Write the one accepted 93-node/54-RED activated lifecycle artifact."""
+def _write_synthetic_junit_rejection_fixture(path: Path) -> None:
+    """Write a synthetic shape used only to prove verifier rejection behavior."""
     suite = element_tree.Element(
         "testsuite",
         {
@@ -1189,26 +1232,163 @@ def _write_exact_frozen_activated_junit(path: Path) -> None:
 
 
 def _assert_exact_frozen_activated_junit(path: Path) -> None:
-    """Reject lifecycle summaries that omit nodes, REDs, or named anchors."""
-    suite = element_tree.parse(path).getroot()
-    assert suite.attrib == {
-        "name": "outside-agent-activated-lifecycle",
-        "tests": "93",
-        "failures": "54",
-        "skipped": "0",
-    }
-    cases = suite.findall("testcase")
-    assert len(cases) == ALL_OUTSIDE_AGENT_NODE_COUNT
-    assert tuple(case.attrib["name"] for case in cases) == ALL_OUTSIDE_AGENT_NODE_IDS
+    """Reject synthetic summaries and require raw pytest node/anchor evidence."""
+    cases: dict[str, element_tree.Element] = {}
+    for case in element_tree.parse(path).getroot().findall(".//testcase"):
+        classname = case.attrib.get("classname", "")
+        assert classname
+        nodeid = (
+            "phase-loop-runtime/"
+            + classname.replace(".", "/")
+            + ".py::"
+            + case.attrib["name"]
+        )
+        if nodeid in ALL_OUTSIDE_AGENT_NODE_IDS:
+            assert nodeid not in cases
+            cases[nodeid] = case
+    assert set(cases) == set(ALL_OUTSIDE_AGENT_NODE_IDS)
     failures = {
-        case.attrib["name"]: (case.find("failure").text or "")
-        for case in cases
+        nodeid: (case.find("failure").text or "")
+        + " "
+        + case.find("failure").attrib.get("message", "")
+        for nodeid, case in cases.items()
         if case.find("failure") is not None
     }
-    assert failures == {
-        nodeid: CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
+    assert set(failures) == set(CONFORM_ACTIVATED_RED_NODE_IDS)
+    assert all(
+        CONFORM_ACTIVATED_RED_ANCHORS[nodeid] in failures[nodeid]
         for nodeid in CONFORM_ACTIVATED_RED_NODE_IDS
+    )
+    assert not any(
+        case.find("skipped") is not None or case.find("error") is not None
+        for case in cases.values()
+    )
+
+
+def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str, object]:
+    """Run the committed frozen test blobs in clean, non-Git candidate exports."""
+    test_paths = (
+        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+        "phase-loop-runtime/tests/test_outside_agent_redaction_separation.py",
+    )
+    head_blobs = {
+        path: _run_bound_child(["git", "rev-parse", f"HEAD:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")}).stdout.strip()
+        for path in test_paths
     }
+    history = _run_bound_child(["git", "log", "--format=%H", "--all", "--", *test_paths], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")})
+    assert history.returncode == 0
+    test_commit = next(
+        commit for commit in history.stdout.splitlines()
+        if all(_run_bound_child(["git", "rev-parse", f"{commit}:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")}).stdout.strip() == blob for path, blob in head_blobs.items())
+    )
+    test_tree = _run_bound_child(
+        ["git", "rev-parse", f"{test_commit}^{{tree}}"],
+        input_text="",
+        cwd=REPO_ROOT,
+        environment={"PATH": os.environ.get("PATH", "")},
+    ).stdout.strip()
+    test_archive = _run_bound_child_bytes(
+        ["git", "archive", "--format=tar", test_commit, "phase-loop-runtime"],
+        cwd=REPO_ROOT,
+    )
+    assert test_archive.returncode == 0
+    ancestry = _run_bound_child(
+        ["git", "merge-base", "--is-ancestor", test_commit, candidate_commit],
+        input_text="",
+        cwd=REPO_ROOT,
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    assert ancestry.returncode == 0
+    captures: dict[str, object] = {
+        "test_commit": test_commit,
+        "test_tree": test_tree,
+        "test_archive_sha256": hashlib.sha256(test_archive.stdout).hexdigest(),
+        "test_blobs": head_blobs,
+    }
+    for label, activated in (("default", False), ("activated", True)):
+        execution_root = root / f"lifecycle-{label}"
+        execution_root.mkdir()
+        with tarfile.open(fileobj=io.BytesIO(test_archive.stdout), mode="r:") as archive:
+            archive.extractall(execution_root, filter="data")
+        junit_path = execution_root / f"{label}.junit.xml"
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPATH": str(execution_root / "phase-loop-runtime/src")
+            + os.pathsep
+            + str(execution_root / "phase-loop-runtime/tests"),
+        }
+        if activated:
+            environment["PHASE_LOOP_TDD_EXPECT_CONFORM"] = "1"
+        command = [sys.executable, "-m", "pytest", "phase-loop-runtime/tests", "-q", "-k", "outside_agent", f"--junitxml={junit_path}"]
+        completed = _run_bound_child(command, input_text="", cwd=execution_root, environment=environment)
+        raw_log = (completed.stdout + "\n--- stderr ---\n" + completed.stderr).encode("utf-8")
+        raw_log_path = execution_root / f"{label}.raw.log"
+        raw_log_path.write_bytes(raw_log)
+        frozen_cases: dict[str, element_tree.Element] = {}
+        for case in element_tree.parse(junit_path).getroot().findall(".//testcase"):
+            classname = case.attrib.get("classname", "")
+            if not classname:
+                continue
+            nodeid = (
+                "phase-loop-runtime/"
+                + classname.replace(".", "/")
+                + ".py::"
+                + case.attrib["name"]
+            )
+            if nodeid in ALL_OUTSIDE_AGENT_NODE_IDS:
+                assert nodeid not in frozen_cases
+                frozen_cases[nodeid] = case
+        assert set(frozen_cases) == set(ALL_OUTSIDE_AGENT_NODE_IDS)
+        failures = [
+            nodeid
+            for nodeid in ALL_OUTSIDE_AGENT_NODE_IDS
+            if frozen_cases[nodeid].find("failure") is not None
+        ]
+        skips = [
+            nodeid
+            for nodeid in ALL_OUTSIDE_AGENT_NODE_IDS
+            if frozen_cases[nodeid].find("skipped") is not None
+        ]
+        failure_anchors = {
+            nodeid: (
+                (frozen_cases[nodeid].find("failure").text or "")
+                + " "
+                + frozen_cases[nodeid].find("failure").attrib.get("message", "")
+            )
+            for nodeid in failures
+        }
+        captures[label] = {
+            "argv": command,
+            "environment": environment,
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "raw_log_path": str(raw_log_path),
+            "raw_log_sha256": hashlib.sha256(raw_log).hexdigest(),
+            "junit_path": str(junit_path),
+            "junit_sha256": hashlib.sha256(junit_path.read_bytes()).hexdigest(),
+            "node_ids": list(ALL_OUTSIDE_AGENT_NODE_IDS),
+            "failures": failures,
+            "failure_anchors": failure_anchors,
+            "skips": skips,
+        }
+    default = captures["default"]
+    activated = captures["activated"]
+    assert default["exit_code"] == 0 and default["skips"] == list(
+        CONFORM_NEW_PRODUCTION_NODE_IDS
+    )
+    assert not default["failures"]
+    assert activated["exit_code"] != 0 and not activated["skips"]
+    assert tuple(activated["node_ids"]) == ALL_OUTSIDE_AGENT_NODE_IDS
+    assert tuple(activated["failures"]) == CONFORM_ACTIVATED_RED_NODE_IDS
+    assert all(
+        CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
+        in activated["failure_anchors"][nodeid]
+        for nodeid in CONFORM_ACTIVATED_RED_NODE_IDS
+    )
+    return captures
 
 
 def _assert_full_frozen_evidence_input(
@@ -1243,6 +1423,25 @@ def _assert_full_frozen_evidence_input(
         "red_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
         "red_anchors": CONFORM_ACTIVATED_RED_ANCHORS,
     }
+    lifecycle = runner_manifest["lifecycle"]
+    assert lifecycle == facts["lifecycle"]
+    assert lifecycle["test_commit"] == facts["parent_commit"]
+    assert lifecycle["test_tree"] == facts["parent_tree"]
+    assert lifecycle["default"]["exit_code"] == 0
+    assert lifecycle["default"]["skips"] == list(CONFORM_NEW_PRODUCTION_NODE_IDS)
+    assert lifecycle["default"]["failures"] == []
+    assert lifecycle["activated"]["exit_code"] != 0
+    assert lifecycle["activated"]["failures"] == list(
+        CONFORM_ACTIVATED_RED_NODE_IDS
+    )
+    assert lifecycle["activated"]["skips"] == []
+    for stage in ("default", "activated"):
+        assert lifecycle[stage]["raw_log_sha256"] == hashlib.sha256(
+            Path(lifecycle[stage]["raw_log_path"]).read_bytes()
+        ).hexdigest()
+        assert lifecycle[stage]["junit_sha256"] == hashlib.sha256(
+            Path(lifecycle[stage]["junit_path"]).read_bytes()
+        ).hexdigest()
     _assert_exact_frozen_activated_junit(Path(facts["junit_path"]))
     mutations = facts["mutation_records"]
     _assert_complete_mutation_observables(mutations)
@@ -1760,9 +1959,7 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
         sealed_release_evidence(sealed_path, release_repo)
 
 
-def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
-    tmp_path, monkeypatch
-) -> None:
+def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_path) -> None:
     assert set(CONFORM_MUTATION_DEFINITIONS) == {
         "M-CONFORM-1-RESTORE-ALLOWLIST",
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
@@ -1800,6 +1997,20 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
             mutation.apply(source.replace(mutation.anchor, "missing-anchor"))
         target_source = node_source_path(mutation.expected_nodeid).read_text(encoding="utf-8")
         assert mutation.expected_observable in target_source
+    for mutation_id in (
+        "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
+        "M-CONFORM-3-FINAL-SERIALIZER-GUARD",
+    ):
+        mutation = CONFORM_MUTATION_DEFINITIONS[mutation_id]
+        actual_source = (REPO_ROOT / mutation.source_path).read_text(encoding="utf-8")
+        # SL-0 has no future anchor.  Later candidate mutation must fail closed
+        # on an absent or duplicated anchor; it may never fall back to this
+        # test-only fixture when changing production bytes.
+        assert actual_source.count(mutation.anchor) == 0
+        with pytest.raises(AssertionError):
+            mutation.apply(actual_source)
+        with pytest.raises(AssertionError):
+            mutation.apply(mutation.anchor + "\n" + mutation.anchor)
     assert set(CONFORM_CANONICAL_CASES) == set(CONFORM_MIGRATED_EXISTING_NODE_IDS)
     assert len({case.role for case in CONFORM_CANONICAL_CASES.values()}) == 45
     assert_status_code_only_replacement_is_rejected()
@@ -1822,8 +2033,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         "EC-CONFORM-8",
     )
     frozen_junit = tmp_path / "frozen-activated.junit.xml"
-    _write_exact_frozen_activated_junit(frozen_junit)
-    _assert_exact_frozen_activated_junit(frozen_junit)
+    _write_synthetic_junit_rejection_fixture(frozen_junit)
+    with pytest.raises(AssertionError):
+        _assert_exact_frozen_activated_junit(frozen_junit)
     # This is the exact Sol reproducer shape.  It cannot become a positive by
     # refreshing its own digest fields because it omits 91 nodes and 53 REDs.
     undersized_junit = tmp_path / "undersized-activated.junit.xml"
@@ -1843,7 +2055,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     # reproducible rejections instead of deferred verifier wishes.
     direct_root = tmp_path / "direct-observable-controls"
     direct_root.mkdir()
-    direct_archives = _write_runnable_package_archives(
+    direct_archives = _write_toy_negative_package_archives(
         direct_root,
         {"phase_loop_runtime/conformance/_contract/VENDOR.json": b"{}"},
     )
@@ -1854,8 +2066,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         }
         for label, path in direct_archives.items()
     }
-    direct_executions = _capture_package_executions(direct_root, direct_archives)
-    _assert_complete_package_executions(direct_executions, direct_archive_facts)
+    # These deliberately skeletal archives are a negative/unit control only.
+    # Candidate package evidence must reject them before any interface execution.
+    with pytest.raises(AssertionError):
+        _capture_package_executions(direct_root, direct_archives)
     with zipfile.ZipFile(direct_archives["direct-wheel"], "w") as archive:
         archive.writestr("phase_loop_runtime/conformance/_contract/VENDOR.json", "{}")
         archive.writestr(
@@ -1871,8 +2085,23 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         direct_archives["direct-wheel"].read_bytes()
     ).hexdigest()
     with pytest.raises(AssertionError):
-        _assert_complete_package_executions(direct_executions, direct_archive_facts)
+        _assert_complete_package_executions([], direct_archive_facts)
 
+    # Future-only locator-boundary anchors intentionally do not exist in SL-0.
+    # They are frozen source fixtures until the candidate implements them; never
+    # manufacture an executable mutant from the fixture against this baseline.
+    available_direct_mutations = {
+        mutation_id: definition
+        for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items()
+        if (REPO_ROOT / definition.source_path).is_file()
+        and (REPO_ROOT / definition.source_path).read_text(encoding="utf-8").count(
+            definition.anchor
+        ) == 1
+    }
+    assert set(CONFORM_MUTATION_DEFINITIONS) - set(available_direct_mutations) >= {
+        "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
+        "M-CONFORM-3-FINAL-SERIALIZER-GUARD",
+    }
     direct_mutations = [
         {
             "id": mutation_id,
@@ -1888,9 +2117,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 anchor=definition.expected_anchor,
             ),
         }
-        for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items()
+        for mutation_id, definition in available_direct_mutations.items()
     ]
-    _assert_bound_mutation_observables(direct_mutations)
+    if len(direct_mutations) == len(CONFORM_MUTATION_DEFINITIONS):
+        _assert_bound_mutation_observables(direct_mutations)
+    else:
+        for mutation in direct_mutations:
+            _assert_mutation_execution(
+                mutation["observable"]["observable"],
+                available_direct_mutations[mutation["id"]],
+            )
     if all(
         mutation["observable"]["observable"]["classification"] == "killed"
         for mutation in direct_mutations
@@ -1960,33 +2196,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     command_tampered_ec_entries[0]["observable"]["command"] = [sys.executable, "-c", "print('tampered')"]
     with pytest.raises(AssertionError):
         _assert_bound_ec_observables(command_tampered_ec_entries)
-    zeroed_executions = copy.deepcopy(direct_executions)
-    zeroed_executions[0]["cases"][0]["result"]["input_sha256"] = "0" * 64
     with pytest.raises(AssertionError):
-        _assert_complete_package_executions(zeroed_executions, direct_archive_facts)
-    command_tampered_executions = copy.deepcopy(direct_executions)
-    command_tampered_executions[0]["cases"][0]["result"]["command"] = [sys.executable, "-c", "print('tampered')"]
-    with pytest.raises(AssertionError):
-        _assert_complete_package_executions(command_tampered_executions, direct_archive_facts)
-
-    forged_pkg_executions = copy.deepcopy(direct_executions)
-    forged_pkg_res = forged_pkg_executions[0]["cases"][0]["result"]
-    forged_pkg_res["output_sha256"] = hashlib.sha256(b"forged_pkg").hexdigest()
-    Path(forged_pkg_res["result_path"]).write_text(
-        json.dumps(
-            {
-                "command": forged_pkg_res["command"],
-                "exit_code": 0,
-                "stdout": json.dumps({"status": "accepted", "observable": {"surface": "api", "accepted": True}}),
-                "stderr": "",
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    forged_pkg_res["result_sha256"] = hashlib.sha256(Path(forged_pkg_res["result_path"]).read_bytes()).hexdigest()
-    with pytest.raises(AssertionError):
-        _assert_complete_package_executions(forged_pkg_executions, direct_archive_facts)
+        _assert_complete_package_executions([], direct_archive_facts)
 
     forged_mut_set = copy.deepcopy(direct_mutations)
     forged_mut_res = forged_mut_set[0]["observable"]
@@ -2173,13 +2384,19 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 }
                 for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items()
             ]
+            lifecycle = _capture_immutable_lifecycle(root, candidate)
+            parent = lifecycle["test_commit"]
+            parent_tree = lifecycle["test_tree"]
             activated_lifecycle = {
-                "tests": 93,
-                "failures": 54,
-                "skipped": 0,
-                "node_ids": list(ALL_OUTSIDE_AGENT_NODE_IDS),
-                "red_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
-                "red_anchors": CONFORM_ACTIVATED_RED_ANCHORS,
+                "tests": len(lifecycle["activated"]["node_ids"]),
+                "failures": len(lifecycle["activated"]["failures"]),
+                "skipped": len(lifecycle["activated"]["skips"]),
+                "node_ids": lifecycle["activated"]["node_ids"],
+                "red_node_ids": lifecycle["activated"]["failures"],
+                "red_anchors": {
+                    nodeid: CONFORM_ACTIVATED_RED_ANCHORS[nodeid]
+                    for nodeid in lifecycle["activated"]["failures"]
+                },
             }
             chronology = {
                 "stages": [
@@ -2220,6 +2437,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 "changed_paths": list(SEALED_RELEASE_CANDIDATE_PATHS),
                 "argv": ["python3", "-m", "pytest", "-q", "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_canonical_vector_runner_consumes_schema_target_partition"],
                 "vendor": vendor,
+                "lifecycle": lifecycle,
                 "chronology": chronology,
                 "corpus": {"rows": corpus_rows, "partitions": corpus_partitions},
                 "package": package_facts,
@@ -2234,9 +2452,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 mode_root = root / mode
                 mode_root.mkdir()
                 mode_log = mode_root / "runner.log"
-                mode_log.write_text(f"runner-owned:{mode}\n", encoding="utf-8")
+                mode_log.write_bytes(Path(lifecycle["activated"]["raw_log_path"]).read_bytes())
                 mode_junit = mode_root / "controls.junit.xml"
-                _write_exact_frozen_activated_junit(mode_junit)
+                mode_junit.write_bytes(Path(lifecycle["activated"]["junit_path"]).read_bytes())
                 mode_archives = {}
                 for label, source in candidate_archives.items():
                     target = mode_root / source.name
@@ -2350,6 +2568,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                                 "contract_member_digests": contract_member_digests,
                                 "candidate_head_module": bindings,
                                 "provenance": vendor,
+                                "lifecycle": lifecycle,
                                 "activated_lifecycle": activated_lifecycle,
                                 "mutation_records": mutation_records,
                                 "chronology": chronology,
@@ -2559,6 +2778,24 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 )
                 assert mode_facts["evidence_mode"] == mode
                 assert set(EVIDENCE_MODE_EXCLUSIVE_INPUTS[mode]) <= set(mode_facts)
+                for forged_field, forged_value in (
+                    ("candidate_commit", "0" * 40),
+                    ("candidate_tree", "0" * 40),
+                    ("argv", ["python3", "-m", "pytest", "forged"]),
+                ):
+                    forged_facts = copy.deepcopy(mode_facts)
+                    forged_facts[forged_field] = forged_value
+                    Path(mode_records[0]["artifact_path"]).write_text(
+                        json.dumps(forged_facts, sort_keys=True), encoding="utf-8"
+                    )
+                    refresh_mode_records(mode_records, artifacts)
+                    with pytest.raises((ValueError, AssertionError)):
+                        verifier(mode, mode_records)
+                    assert_production_cli_rejects(mode_records)
+                Path(mode_records[0]["artifact_path"]).write_text(
+                    json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
+                )
+                refresh_mode_records(mode_records, artifacts)
                 original_junit = artifacts["junit"].read_bytes()
                 element_tree.ElementTree(
                     element_tree.fromstring(
@@ -2758,78 +2995,5 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 refresh_mode_records(mode_records, artifacts)
                 with pytest.raises((ValueError, AssertionError)):
                     verifier(mode, mode_records)
-    # A mockable replay seam must not bless refreshed forged result artifacts.
-    root = tmp_path / "forged-observables"
-    root.mkdir()
-    archives = _write_runnable_package_archives(
-        root,
-        {"phase_loop_runtime/conformance/_contract/VENDOR.json": b"{}"},
-    )
-    archive_facts = {
-        label: {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-        for label, path in archives.items()
-    }
-    executions = _capture_package_executions(root, archives)
-    mutations = [
-        {
-            "id": mutation_id,
-            "source_path": definition.source_path,
-            "expected_nodeid": definition.expected_nodeid,
-            "expected_anchor": definition.expected_anchor,
-            "observable": _capture_rejected_observable(
-                root,
-                case_id="forged-" + mutation_id,
-                mutation_id=mutation_id,
-                source_path=definition.source_path,
-                nodeid=definition.expected_nodeid,
-                anchor=definition.expected_anchor,
-            ),
-        }
-        for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items()
-    ]
-    entries = _capture_ec_matrix_entries(root)
-    observables = [
-        *(case["result"] for execution in executions for case in execution["cases"]),
-        *(mutation["observable"] for mutation in mutations),
-        *(entry["observable"] for entry in entries),
-    ]
-    responses = {}
-    for observable in observables:
-        result_path = Path(observable["result_path"])
-        forged = json.loads(result_path.read_text(encoding="utf-8"))
-        forged["stderr"] = "fully-resealed-forged-child-result\n"
-        result_path.write_text(json.dumps(forged, sort_keys=True), encoding="utf-8")
-        observable["result_sha256"] = hashlib.sha256(result_path.read_bytes()).hexdigest()
-        observable["output_sha256"] = hashlib.sha256(
-            forged["stdout"].encode("utf-8")
-        ).hexdigest()
-        responses[
-            (
-                tuple(observable["command"]),
-                observable["cwd"],
-                observable["input_sha256"],
-            )
-        ] = forged
-
-    real_run = subprocess.run
-    def mocked_run(command, **kwargs):
-        input_text = kwargs.get("input")
-        if input_text is None:
-            return real_run(command, **kwargs)
-        key = (
-            tuple(command),
-            str(kwargs["cwd"]),
-            hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
-        )
-        forged = responses[key]
-        return subprocess.CompletedProcess(
-            command, forged["exit_code"], forged["stdout"], forged["stderr"]
-        )
-
-    monkeypatch.setattr(subprocess, "run", mocked_run)
-    with pytest.raises(AssertionError):
-        _assert_complete_package_executions(executions, archive_facts)
-    with pytest.raises(AssertionError):
-        _assert_bound_mutation_observables(mutations)
-    with pytest.raises(AssertionError):
-        _assert_bound_ec_observables(entries)
+    # The future package path deliberately has no mockable or toy replay seam:
+    # only raw subprocess output from archives built from the candidate is input.

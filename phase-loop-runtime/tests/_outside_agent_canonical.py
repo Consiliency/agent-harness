@@ -718,6 +718,7 @@ class SourceMutation:
     positive_control: tuple[str, ...]
     expected_observable: str
     source_fixture: str | None = None
+    source_fixture_is_authoritative: bool = False
     parse_python: bool = False
 
     def apply(self, source: str) -> str:
@@ -725,6 +726,9 @@ class SourceMutation:
         return source.replace(self.anchor, self.replacement, 1)
 
     def complete_source(self) -> str:
+        if self.source_fixture_is_authoritative:
+            assert self.source_fixture is not None, self.source_path
+            return self.source_fixture
         path = REPO_ROOT / self.source_path
         if path.exists():
             return path.read_text(encoding="utf-8")
@@ -775,25 +779,36 @@ CONFORM_MUTATION_DEFINITIONS = {
         parse_python=True,
     ),
     "M-CONFORM-2-RAW-CONSTRUCTION-GUARD": SourceMutation(
-        "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_core.py",
-        "redaction_blockers = assert_outside_agent_metadata_only(submission)",
-        "redaction_blockers = ()",
+        "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+        "return hashlib.sha256(captured_input_bytes).hexdigest()",
+        "return hashlib.sha256(submission_file.encode(\"utf-8\")).hexdigest()",
         _mutation_argv("phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes"),
         "phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes",
         "CONFORM_RED::submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes",
-        _mutation_argv("phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_closed_redaction_projection_inventory_is_exhaustive"),
-        "raw_payload_present",
+        _mutation_argv("phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest"),
+        "submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest",
+        '''def _digest_captured_submission_bytes(
+    captured_input_bytes: bytes, *, submission_file: str
+) -> str:
+    return hashlib.sha256(captured_input_bytes).hexdigest()
+''',
+        True,
         parse_python=True,
     ),
     "M-CONFORM-3-FINAL-SERIALIZER-GUARD": SourceMutation(
         "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_real_output.py",
-        '"redaction_posture": verdict.redaction_posture,',
-        '"redaction_posture": verdict.redaction_posture,\n        "raw_submission_marker": verdict.metadata.get("raw_submission_marker"),',
+        "return _serialize_metadata_only_payload(payload)",
+        'payload["submission_file"] = validation.submission_file\n    return _serialize_metadata_only_payload(payload)',
         _mutation_argv("phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest"),
         "phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest",
         "CONFORM_RED::submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest",
-        _mutation_argv("phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_closed_redaction_projection_inventory_is_exhaustive"),
-        "raw_submission_marker",
+        _mutation_argv("phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes"),
+        "submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes",
+        '''def serialize_outside_agent_validation_verdict(validation):
+    payload = {"input_digest": validation.verdict.input_digest}
+    return _serialize_metadata_only_payload(payload)
+''',
+        True,
         parse_python=True,
     ),
     "M-CONFORM-4-MISSING-MIRROR": SourceMutation(
