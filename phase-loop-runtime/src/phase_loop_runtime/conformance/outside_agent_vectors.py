@@ -13,6 +13,7 @@ from .outside_agent_core import (
     OutsideAgentVerdictStatus,
     validate_outside_agent_submission,
 )
+from .outside_agent_schema import validate_outside_agent_route_verdict_schema
 from .outside_agent_pin import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     OutsideAgentContractPin,
@@ -29,6 +30,7 @@ class OutsideAgentVectorResult:
     matched: bool
     blockers: tuple[OutsideAgentBlocker, ...]
     evidence_refs: tuple[str, ...]
+    dispatch_observation: Mapping[str, object] | None = None
 
 
 def run_outside_agent_vectors(
@@ -52,6 +54,9 @@ def run_outside_agent_vectors(
 
     results: list[OutsideAgentVectorResult] = []
     for vector in manifest_data.get("vectors", []):
+        if "case_id" in vector:
+            results.append(_run_canonical_vector(vector, contract_pin))
+            continue
         expected_status = OutsideAgentVerdictStatus(vector["expected_status"])
         verdict = validate_outside_agent_submission(
             vector["submission"], contract_pin=contract_pin
@@ -73,16 +78,41 @@ def run_outside_agent_vectors(
     return tuple(results)
 
 
+def _run_canonical_vector(vector: Mapping[str, Any], contract_pin: OutsideAgentContractPin) -> OutsideAgentVectorResult:
+    case_id = str(vector["case_id"])
+    target = str(vector["schema_target"])
+    payload_path = resources.files(__package__) / "_contract" / str(vector["path"])
+    payload = json.loads(payload_path.read_bytes())
+    expected_status = OutsideAgentVerdictStatus.PASS if vector["expected_valid"] else OutsideAgentVerdictStatus.BLOCKED
+    if target == "outside_agent_route_verdict.v0.1":
+        route = validate_outside_agent_route_verdict_schema(payload, schema_target=target)
+        return OutsideAgentVectorResult(
+            vector_name=case_id,
+            status=route.status,
+            expected_status=expected_status,
+            matched=route.status == expected_status,
+            blockers=route.blockers,
+            evidence_refs=(),
+            dispatch_observation=route.dispatch_observation,
+        )
+    verdict = validate_outside_agent_submission(payload, contract_pin=contract_pin)
+    return OutsideAgentVectorResult(
+        vector_name=case_id,
+        status=verdict.status,
+        expected_status=expected_status,
+        matched=verdict.status == expected_status,
+        blockers=verdict.blockers,
+        evidence_refs=tuple(ref.ref for ref in verdict.evidence_refs),
+    )
+
+
 def _load_manifest(
     manifest: Mapping[str, Any] | str | Path | None,
     contract_pin: OutsideAgentContractPin,
 ) -> tuple[Mapping[str, Any], str]:
     if manifest is None:
-        import consiliency_spec
-
         manifest_bytes = (
-            resources.files(consiliency_spec)
-            / f"_data/{contract_pin.vector_manifest_name}"
+            resources.files(__package__) / "_contract" / contract_pin.vector_manifest_name
         ).read_bytes()
         return json.loads(manifest_bytes), hashlib.sha256(manifest_bytes).hexdigest()
     if isinstance(manifest, Mapping):
@@ -138,6 +168,11 @@ def _validate_manifest(
                     ref=f"vectors.{index}",
                 )
             )
+            continue
+        if "case_id" in vector:
+            for field in ("case_id", "path", "schema_target", "expected_valid", "expected_blocker_class"):
+                if field not in vector:
+                    blockers.append(OutsideAgentBlocker("schema_validation_failed", "canonical outside-agent vector is incomplete", ref=f"vectors.{index}.{field}"))
             continue
         if "expected_status" not in vector:
             blockers.append(

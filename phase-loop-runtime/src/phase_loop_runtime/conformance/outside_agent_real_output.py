@@ -11,7 +11,7 @@ def serialize_outside_agent_validation_verdict(
     validation: OutsideAgentValidationVerdict,
 ) -> dict[str, Any]:
     verdict = validation.verdict
-    return {
+    payload = {
         "gate_id": "real_conformance_gate.v0.1",
         "authority": validation.authority,
         "validator_version": validation.validator_version,
@@ -45,6 +45,37 @@ def serialize_outside_agent_validation_verdict(
         "vectors_executed": validation.vectors_executed,
         "exit_code": int(validation.exit_code),
     }
+    return _serialize_metadata_only_payload(payload)
+
+
+_VALIDATION_PAYLOAD_FIELDS = frozenset(
+    {
+        "authority",
+        "blockers",
+        "command",
+        "contract_pin",
+        "evidence_refs",
+        "exit_code",
+        "gate_id",
+        "input_digest",
+        "redaction_posture",
+        "status",
+        "submission_kind",
+        "submitted_refs",
+        "validator_version",
+        "verdict_schema_version",
+        "vector_manifest_hash",
+        "vectors_executed",
+    }
+)
+
+
+def _serialize_metadata_only_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if set(payload) != _VALIDATION_PAYLOAD_FIELDS:
+        raise ValueError(
+            "CONFORM_RED::submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest"
+        )
+    return payload
 
 
 def digest_outside_agent_validation_bytes(value: bytes) -> str:

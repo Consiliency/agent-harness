@@ -101,6 +101,110 @@ def _preimport_attest_bootstrap(argv: list[str]) -> dict[str, object] | None:
 
 _ATTEST_PREIMPORT_BOOTSTRAP = _preimport_attest_bootstrap(sys.argv[1:])
 
+
+def _digest_captured_submission_bytes(
+    captured_input_bytes: bytes, *, submission_file: str
+) -> str:
+    return hashlib.sha256(captured_input_bytes).hexdigest()
+
+
+def _outside_agent_fast_path(argv: list[str]) -> int:
+    command = argv[0]
+    parser = argparse.ArgumentParser(prog=f"phase-loop {command}")
+    parser.add_argument("submission_file", metavar="submission-file")
+    parser.add_argument("--output", required=command == "outside-agent-validate")
+    if command == "outside-agent-validate":
+        parser.add_argument("--submitted-ref", action="append", default=[])
+    args = parser.parse_args(argv[1:])
+
+    submission_path = Path(args.submission_file)
+    try:
+        raw = submission_path.read_bytes()
+    except OSError:
+        read_failed = True
+        raw = b""
+        submission = None
+    else:
+        read_failed = False
+        try:
+            submission = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            submission = None
+
+    input_digest = _digest_captured_submission_bytes(
+        raw, submission_file=str(submission_path)
+    )
+    if command == "outside-agent-preflight":
+        from .conformance.outside_agent_advisory import (
+            build_malformed_outside_agent_advisory_evidence,
+            build_outside_agent_advisory_evidence,
+            serialize_outside_agent_advisory_evidence,
+        )
+
+        if submission is None:
+            evidence = build_malformed_outside_agent_advisory_evidence(
+                input_digest=input_digest,
+                message=(
+                    "outside-agent submission JSON could not be read"
+                    if read_failed
+                    else "outside-agent submission JSON could not be parsed"
+                ),
+            )
+        else:
+            from dataclasses import replace
+
+            evidence = build_outside_agent_advisory_evidence(submission)
+            evidence = replace(
+                evidence,
+                verdict=replace(evidence.verdict, input_digest=input_digest),
+            )
+        payload = serialize_outside_agent_advisory_evidence(evidence)
+        exit_code = int(evidence.exit_code)
+    else:
+        from .conformance.outside_agent_real import (
+            build_malformed_outside_agent_validation_verdict,
+            build_outside_agent_validation_verdict,
+        )
+        from .conformance.outside_agent_real_output import (
+            serialize_outside_agent_validation_verdict,
+        )
+
+        if submission is None:
+            validation = build_malformed_outside_agent_validation_verdict(
+                input_digest=input_digest,
+                message=(
+                    "outside-agent submission JSON could not be read"
+                    if read_failed
+                    else "outside-agent submission JSON could not be parsed"
+                ),
+            )
+        else:
+            from dataclasses import replace
+
+            validation = build_outside_agent_validation_verdict(
+                submission,
+                submitted_refs=tuple(args.submitted_ref or ()),
+            )
+            validation = replace(
+                validation,
+                verdict=replace(validation.verdict, input_digest=input_digest),
+            )
+        payload = serialize_outside_agent_validation_verdict(validation)
+        exit_code = int(validation.exit_code)
+
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    print(text, end="")
+    return exit_code
+
+
+if sys.argv[1:2] and sys.argv[1] in {
+    "outside-agent-preflight",
+    "outside-agent-validate",
+}:
+    raise SystemExit(_outside_agent_fast_path(sys.argv[1:]))
+
 from .closeout import build_phase_loop_closeout
 from .consiliency_ingest import ingest
 from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
@@ -1780,7 +1884,6 @@ def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
     from .conformance.outside_agent_advisory import (
         build_malformed_outside_agent_advisory_evidence,
         build_outside_agent_advisory_evidence,
-        digest_outside_agent_submission_bytes,
         serialize_outside_agent_advisory_evidence,
     )
 
@@ -1789,18 +1892,33 @@ def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
         raw = submission_path.read_bytes()
     except OSError as exc:
         evidence = build_malformed_outside_agent_advisory_evidence(
-            input_digest=digest_outside_agent_submission_bytes(str(submission_path).encode("utf-8")),
-            message=f"outside-agent submission JSON could not be read: {exc.__class__.__name__}",
+            input_digest=_digest_captured_submission_bytes(
+                b"", submission_file=str(submission_path)
+            ),
+            message="outside-agent submission JSON could not be read",
         )
     else:
         try:
             submission = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             evidence = build_malformed_outside_agent_advisory_evidence(
-                input_digest=digest_outside_agent_submission_bytes(raw),
+                input_digest=_digest_captured_submission_bytes(
+                    raw, submission_file=str(submission_path)
+                ),
             )
         else:
             evidence = build_outside_agent_advisory_evidence(submission)
+            from dataclasses import replace
+
+            evidence = replace(
+                evidence,
+                verdict=replace(
+                    evidence.verdict,
+                    input_digest=_digest_captured_submission_bytes(
+                        raw, submission_file=str(submission_path)
+                    ),
+                ),
+            )
 
     payload = serialize_outside_agent_advisory_evidence(evidence)
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -1816,7 +1934,6 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
         build_outside_agent_validation_verdict,
     )
     from .conformance.outside_agent_real_output import (
-        digest_outside_agent_validation_bytes,
         serialize_outside_agent_validation_verdict,
     )
 
@@ -1825,20 +1942,35 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
         raw = submission_path.read_bytes()
     except OSError as exc:
         validation = build_malformed_outside_agent_validation_verdict(
-            input_digest=digest_outside_agent_validation_bytes(str(submission_path).encode("utf-8")),
-            message=f"outside-agent submission JSON could not be read: {exc.__class__.__name__}",
+            input_digest=_digest_captured_submission_bytes(
+                b"", submission_file=str(submission_path)
+            ),
+            message="outside-agent submission JSON could not be read",
         )
     else:
         try:
             submission = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             validation = build_malformed_outside_agent_validation_verdict(
-                input_digest=digest_outside_agent_validation_bytes(raw),
+                input_digest=_digest_captured_submission_bytes(
+                    raw, submission_file=str(submission_path)
+                ),
             )
         else:
             validation = build_outside_agent_validation_verdict(
                 submission,
                 submitted_refs=tuple(args.submitted_ref or ()),
+            )
+            from dataclasses import replace
+
+            validation = replace(
+                validation,
+                verdict=replace(
+                    validation.verdict,
+                    input_digest=_digest_captured_submission_bytes(
+                        raw, submission_file=str(submission_path)
+                    ),
+                ),
             )
 
     payload = serialize_outside_agent_validation_verdict(validation)

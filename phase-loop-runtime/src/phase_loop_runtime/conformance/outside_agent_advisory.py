@@ -44,6 +44,7 @@ class OutsideAgentAdvisoryExitCode(IntEnum):
     MALFORMED_INPUT = 2
     REDACTION_VIOLATION = 3
     PROVENANCE_FAILURE = 4
+    CONFORMANCE_BLOCKED = 6
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,8 @@ def _exit_code_for_blockers(
         return OutsideAgentAdvisoryExitCode.REDACTION_VIOLATION
     if codes & _PROVENANCE_BLOCKER_CODES:
         return OutsideAgentAdvisoryExitCode.PROVENANCE_FAILURE
+    if "source_bundle_mismatch" in codes:
+        return OutsideAgentAdvisoryExitCode.CONFORMANCE_BLOCKED
     return OutsideAgentAdvisoryExitCode.MALFORMED_INPUT
 
 
@@ -165,6 +168,7 @@ def _classification_for_exit_code(exit_code: OutsideAgentAdvisoryExitCode) -> st
         OutsideAgentAdvisoryExitCode.MALFORMED_INPUT: "malformed_input",
         OutsideAgentAdvisoryExitCode.REDACTION_VIOLATION: "redaction_violation",
         OutsideAgentAdvisoryExitCode.PROVENANCE_FAILURE: "provenance_failure",
+        OutsideAgentAdvisoryExitCode.CONFORMANCE_BLOCKED: "conformance_blocked",
     }[exit_code]
 
 

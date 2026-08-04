@@ -16,62 +16,8 @@ TIERS.
 """
 from __future__ import annotations
 
-from ..consiliency_gates import (
-    CONSILIENCY_GATES_ENV,
-    CONSILIENCY_GATES_MODES,
-    DEFAULT_CONSILIENCY_GATES_MODE,
-    resolve_consiliency_gates_mode,
-    scan_consiliency_gates,
-)
-from ..consiliency_ingest import evaluate_governance_scope
-from ..git_discipline import evaluate_git_discipline, self_heal_partition
-from .certificate_tier import (
-    certificate_schema_available,
-    validate_certificate,
-)
-from .git_grounded_projection import (
-    GIT_GROUNDED_KIND,
-    GIT_GROUNDED_PROJECTION_SCHEMA,
-    PORTAL_KIND_MISNOMER,
-    RAW_SHA256_DOMAIN,
-    GitGroundedContractAbsent,
-    GitGroundedProjection,
-    build_git_grounded_body,
-    build_projection_index_entry,
-    reconcile_git_grounded_projection,
-)
-from .outside_agent_core import (
-    OutsideAgentBlocker,
-    OutsideAgentConformanceVerdict,
-    OutsideAgentEvidenceRef,
-    OutsideAgentSubmissionKind,
-    OutsideAgentVerdictStatus,
-    validate_outside_agent_submission,
-)
-from .outside_agent_advisory import (
-    OutsideAgentAdvisoryEvidence,
-    OutsideAgentAdvisoryExitCode,
-    build_outside_agent_advisory_evidence,
-    serialize_outside_agent_advisory_evidence,
-)
-from .outside_agent_imports import (
-    OutsideAgentContractError,
-    load_outside_agent_contract_pin,
-)
-from .outside_agent_pin import (
-    EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
-    OutsideAgentContractPin,
-)
-from .outside_agent_real import (
-    OutsideAgentSubmittedRef,
-    OutsideAgentValidationExitCode,
-    OutsideAgentValidationVerdict,
-    build_outside_agent_validation_verdict,
-)
-from .outside_agent_real_output import (
-    digest_outside_agent_validation_bytes,
-    serialize_outside_agent_validation_verdict,
-)
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "scan_consiliency_gates",
@@ -114,3 +60,59 @@ __all__ = [
     "digest_outside_agent_validation_bytes",
     "serialize_outside_agent_validation_verdict",
 ]
+
+_EXPORT_MODULES = {
+    "scan_consiliency_gates": "phase_loop_runtime.consiliency_gates",
+    "resolve_consiliency_gates_mode": "phase_loop_runtime.consiliency_gates",
+    "CONSILIENCY_GATES_ENV": "phase_loop_runtime.consiliency_gates",
+    "CONSILIENCY_GATES_MODES": "phase_loop_runtime.consiliency_gates",
+    "DEFAULT_CONSILIENCY_GATES_MODE": "phase_loop_runtime.consiliency_gates",
+    "evaluate_git_discipline": "phase_loop_runtime.git_discipline",
+    "self_heal_partition": "phase_loop_runtime.git_discipline",
+    "evaluate_governance_scope": "phase_loop_runtime.consiliency_ingest",
+    "validate_certificate": ".certificate_tier",
+    "certificate_schema_available": ".certificate_tier",
+    "GIT_GROUNDED_KIND": ".git_grounded_projection",
+    "GIT_GROUNDED_PROJECTION_SCHEMA": ".git_grounded_projection",
+    "PORTAL_KIND_MISNOMER": ".git_grounded_projection",
+    "RAW_SHA256_DOMAIN": ".git_grounded_projection",
+    "GitGroundedContractAbsent": ".git_grounded_projection",
+    "GitGroundedProjection": ".git_grounded_projection",
+    "build_git_grounded_body": ".git_grounded_projection",
+    "build_projection_index_entry": ".git_grounded_projection",
+    "reconcile_git_grounded_projection": ".git_grounded_projection",
+    "OutsideAgentBlocker": ".outside_agent_core",
+    "OutsideAgentConformanceVerdict": ".outside_agent_core",
+    "OutsideAgentEvidenceRef": ".outside_agent_core",
+    "OutsideAgentSubmissionKind": ".outside_agent_core",
+    "OutsideAgentVerdictStatus": ".outside_agent_core",
+    "validate_outside_agent_submission": ".outside_agent_core",
+    "OutsideAgentAdvisoryEvidence": ".outside_agent_advisory",
+    "OutsideAgentAdvisoryExitCode": ".outside_agent_advisory",
+    "build_outside_agent_advisory_evidence": ".outside_agent_advisory",
+    "serialize_outside_agent_advisory_evidence": ".outside_agent_advisory",
+    "OutsideAgentContractError": ".outside_agent_imports",
+    "load_outside_agent_contract_pin": ".outside_agent_imports",
+    "EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN": ".outside_agent_pin",
+    "OutsideAgentContractPin": ".outside_agent_pin",
+    "OutsideAgentSubmittedRef": ".outside_agent_real",
+    "OutsideAgentValidationExitCode": ".outside_agent_real",
+    "OutsideAgentValidationVerdict": ".outside_agent_real",
+    "build_outside_agent_validation_verdict": ".outside_agent_real",
+    "digest_outside_agent_validation_bytes": ".outside_agent_real_output",
+    "serialize_outside_agent_validation_verdict": ".outside_agent_real_output",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(module_name, __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

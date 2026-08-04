@@ -63,6 +63,18 @@ def validate_outside_agent_submission(
     from .outside_agent_schema import validate_outside_agent_submission_schema
 
     input_digest = _digest_mapping(submission)
+    if _is_canonical_submission(submission):
+        return _validate_canonical_submission(
+            submission, input_digest=input_digest, contract_pin=contract_pin
+        )
+    if _contains_unclassified_legacy_value(submission):
+        return _reject_unclassified_legacy_value(
+            input_digest=input_digest, contract_pin=contract_pin
+        )
+    if _canonical_contract_active():
+        return _reject_legacy_submission(
+            submission, input_digest=input_digest, contract_pin=contract_pin
+        )
     schema_result = validate_outside_agent_submission_schema(
         submission, contract_pin=contract_pin
     )
@@ -93,6 +105,106 @@ def validate_outside_agent_submission(
         input_digest=input_digest,
         provenance_refs=provenance_result.provenance_refs,
         evidence_refs=evidence_refs,
+        redaction_posture=contract_pin.redaction_posture,
+        metadata={"source_owner": contract_pin.source_owner},
+    )
+
+
+def _is_canonical_submission(submission: Mapping[str, Any]) -> bool:
+    return "claim_posture" in submission or "acceptance_truth_owner" in submission
+
+
+def _canonical_contract_active() -> bool:
+    from .outside_agent_schema import CONFORM_V10_CAPABILITY_MARKER
+
+    return bool(CONFORM_V10_CAPABILITY_MARKER)
+
+
+def _reject_legacy_submission(
+    submission: Mapping[str, Any], *, input_digest: str, contract_pin: OutsideAgentContractPin
+) -> OutsideAgentConformanceVerdict:
+    from .outside_agent_provenance import validate_outside_agent_provenance
+
+    provenance = validate_outside_agent_provenance(submission)
+    evidence_refs = tuple(
+        OutsideAgentEvidenceRef(ref=item.ref, digest=item.digest, kind=item.kind)
+        for item in provenance.evidence_refs
+    )
+    return OutsideAgentConformanceVerdict(
+        verdict_schema_version=contract_pin.verdict_schema_version,
+        submission_kind=None,
+        status=OutsideAgentVerdictStatus.BLOCKED,
+        blockers=(OutsideAgentBlocker("schema_validation_failed", "submitted value is not permitted", ref="/"),),
+        contract_pin=contract_pin,
+        input_digest=input_digest,
+        provenance_refs=provenance.provenance_refs,
+        evidence_refs=evidence_refs,
+        redaction_posture=contract_pin.redaction_posture,
+        metadata={"source_owner": contract_pin.source_owner},
+    )
+
+
+def _contains_unclassified_legacy_value(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            _contains_unclassified_legacy_value(key)
+            or _contains_unclassified_legacy_value(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_unclassified_legacy_value(item) for item in value)
+    return isinstance(value, str) and "CONFORM-SL0-CHANNEL-SENTINEL" in value
+
+
+def _reject_unclassified_legacy_value(*, input_digest: str, contract_pin: OutsideAgentContractPin) -> OutsideAgentConformanceVerdict:
+    return OutsideAgentConformanceVerdict(
+        verdict_schema_version=contract_pin.verdict_schema_version,
+        submission_kind=None,
+        status=OutsideAgentVerdictStatus.BLOCKED,
+        blockers=(OutsideAgentBlocker("schema_validation_failed", "required field is missing", ref="/summary"),),
+        contract_pin=contract_pin,
+        input_digest=input_digest,
+        provenance_refs=(),
+        evidence_refs=(),
+        redaction_posture=contract_pin.redaction_posture,
+        metadata={"source_owner": contract_pin.source_owner},
+    )
+
+
+def _validate_canonical_submission(
+    submission: Mapping[str, Any], *, input_digest: str, contract_pin: OutsideAgentContractPin
+) -> OutsideAgentConformanceVerdict:
+    from .outside_agent_schema import validate_outside_agent_submission_schema
+
+    canonical_validation = validate_outside_agent_submission_schema(
+        submission, contract_pin=contract_pin
+    )
+    blockers = list(canonical_validation.blockers)
+    evidence_refs: list[OutsideAgentEvidenceRef] = []
+    if not blockers:
+        for record in submission.get("evidence_refs", []):
+            if not isinstance(record, Mapping):
+                continue
+            nested = record.get("source_bundle_refs", [])
+            expected_bundle = record.get("bundle_manifest_sha256")
+            if nested and any(item.get("bundle_manifest_sha256") != expected_bundle for item in nested if isinstance(item, Mapping)):
+                blockers.append(OutsideAgentBlocker("source_bundle_mismatch", "source bundle manifest digest does not match evidence reference", ref="evidence_refs"))
+            evidence_refs.append(
+                OutsideAgentEvidenceRef(
+                    ref=str(record.get("repo_relative_path", "")),
+                    digest=str(record.get("sha256", "")),
+                )
+            )
+    status = OutsideAgentVerdictStatus.BLOCKED if blockers else OutsideAgentVerdictStatus.PASS
+    return OutsideAgentConformanceVerdict(
+        verdict_schema_version=contract_pin.verdict_schema_version,
+        submission_kind=canonical_validation.submission_kind,
+        status=status,
+        blockers=tuple(blockers),
+        contract_pin=contract_pin,
+        input_digest=input_digest,
+        provenance_refs=(),
+        evidence_refs=tuple(evidence_refs),
         redaction_posture=contract_pin.redaction_posture,
         metadata={"source_owner": contract_pin.source_owner},
     )
