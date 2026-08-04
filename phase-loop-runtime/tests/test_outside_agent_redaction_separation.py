@@ -5,6 +5,8 @@ import importlib
 import json
 import subprocess
 import sys
+from dataclasses import asdict, is_dataclass
+from enum import Enum
 from pathlib import Path
 
 from _outside_agent_canonical import (
@@ -142,6 +144,12 @@ def _production_capability_marker_present() -> bool:
         getattr(outside_agent_schema, "CONFORM_V10_CAPABILITY_MARKER", None)
         == CAPABILITY_MARKER
     )
+
+
+def _enum_json_value(value: object) -> object:
+    if isinstance(value, Enum):
+        return value.value
+    raise TypeError(f"unsupported route result value: {type(value).__name__}")
 
 
 def _assert_bounded_producer_diagnostic(
@@ -623,11 +631,12 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             {"code": blocker.code, "ref": blocker.ref, "message": blocker.message}
             for blocker in result.blockers
         ]
-        rendered = {
-            "status": result.status.value,
-            "blockers": blockers,
-            "dispatch_observation": getattr(result, "dispatch_observation", None),
-        }
+        assert is_dataclass(result), f"{red_anchor}: {channel}"
+        rendered = json.dumps(
+            asdict(result),
+            sort_keys=True,
+            default=_enum_json_value,
+        )
         if expected_success:
             assert result.status.value == "pass", f"{red_anchor}: {channel}"
             assert blockers == [], f"{red_anchor}: {channel}"
@@ -636,7 +645,7 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             _assert_bounded_producer_diagnostic(
                 blockers, sentinel=sentinel, channel=channel
             )
-        observation = rendered["dispatch_observation"]
+        observation = getattr(result, "dispatch_observation", None)
         assert observation is not None and observation["entered"] is True, (
             f"{red_anchor}: {channel}"
         )
@@ -645,16 +654,15 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
         )
         assert observation["selected_schema_id"], f"{red_anchor}: {channel}"
         assert observation["selected_schema_sha256"], f"{red_anchor}: {channel}"
-        assert sentinel not in json.dumps(rendered, sort_keys=True), (
-            f"{red_anchor}: {channel}"
-        )
+        assert sentinel not in rendered, f"{red_anchor}: {channel}"
 
     for channel, classification in canonical_channels.items():
-        payload = canonical_payload_for(channel)
-        relative = channel.removeprefix("submission.")
         if channel.startswith("route_verdict."):
             payload = canonical_route_verdict_for(channel)
             relative = channel.removeprefix("route_verdict.")
+        else:
+            payload = canonical_payload_for(channel)
+            relative = channel.removeprefix("submission.")
         replacement = sentinel
         if classification == "normalized_ref_projection":
             replacement = "../" + sentinel
