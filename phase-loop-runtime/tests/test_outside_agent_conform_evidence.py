@@ -2296,7 +2296,9 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
         sealed_release_evidence(sealed_path, release_repo)
 
 
-def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_path) -> None:
+def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
+    tmp_path, monkeypatch
+) -> None:
     assert set(CONFORM_MUTATION_DEFINITIONS) == {
         "M-CONFORM-1-RESTORE-ALLOWLIST",
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
@@ -2370,6 +2372,18 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
     assert len({case.role for case in CONFORM_CANONICAL_CASES.values()}) == 45
     verifier_spec = importlib.util.find_spec(
         "phase_loop_runtime.conformance.outside_agent_conform_evidence"
+    )
+    captured_mutation_ids: list[str] = []
+    capture_rejected_observable = _capture_rejected_observable
+
+    def capture_with_chronology_proof(root: Path, **kwargs) -> dict[str, object]:
+        captured_mutation_ids.append(kwargs["mutation_id"])
+        return capture_rejected_observable(root, **kwargs)
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_capture_rejected_observable",
+        capture_with_chronology_proof,
     )
     if verifier_spec is not None:
         assert_status_code_only_replacement_is_rejected()
@@ -2481,6 +2495,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         }
         for mutation_id, definition in available_direct_mutations.items()
     ]
+    assert captured_mutation_ids == (
+        list(available_direct_mutations) if verifier_spec is not None else []
+    )
     if len(direct_mutations) == len(CONFORM_MUTATION_DEFINITIONS):
         _assert_bound_mutation_observables(direct_mutations)
     else:
