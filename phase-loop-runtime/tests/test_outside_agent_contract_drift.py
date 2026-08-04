@@ -125,9 +125,19 @@ def _assert_installed_wheel_invocations(wheel_path: Path, target: Path, label: s
         [
             sys.executable,
             "-c",
-            "import json; "
-            "from phase_loop_runtime.conformance.outside_agent_vectors import run_outside_agent_vectors; "
-            "print(json.dumps({item.vector_name: {'status': item.status.value, 'codes': sorted(blocker.code for blocker in item.blockers), 'dispatch_observation': getattr(item, 'dispatch_observation', None)} for item in run_outside_agent_vectors()}, sort_keys=True))",
+            "import json, subprocess; "
+            "import phase_loop_runtime.cli as phase_loop_cli; "
+            "import phase_loop_runtime.conformance.outside_agent_vectors as vector_runner; "
+            "original_submission_validator = vector_runner.validate_outside_agent_submission\n"
+            "def guarded_submission(payload, *args, **kwargs):\n"
+            "    assert payload.get('verdict_schema_version') != 'outside_agent_route_verdict.v0.1', 'route row traversed submission builder'\n"
+            "    return original_submission_validator(payload, *args, **kwargs)\n"
+            "def forbidden_cli(*args, **kwargs):\n"
+            "    raise AssertionError('route row traversed submission CLI')\n"
+            "vector_runner.validate_outside_agent_submission = guarded_submission; "
+            "phase_loop_cli._outside_agent_validate_command = forbidden_cli; "
+            "subprocess.run = forbidden_cli; subprocess.Popen = forbidden_cli; "
+            "print(json.dumps({item.vector_name: {'status': item.status.value, 'codes': sorted(blocker.code for blocker in item.blockers), 'dispatch_observation': getattr(item, 'dispatch_observation', None)} for item in vector_runner.run_outside_agent_vectors()}, sort_keys=True))",
         ],
         cwd=target,
         env=environment,

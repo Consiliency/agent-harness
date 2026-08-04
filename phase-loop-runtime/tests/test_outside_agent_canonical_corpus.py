@@ -280,11 +280,47 @@ def test_canonical_vector_runner_consumes_schema_target_partition() -> None:
             }
 
 
-def test_route_verdict_requires_selected_schema_not_submission_cli() -> None:
-    from phase_loop_runtime.conformance.outside_agent_vectors import run_outside_agent_vectors
+def test_route_verdict_requires_selected_schema_not_submission_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import phase_loop_runtime.cli as phase_loop_cli
+    import phase_loop_runtime.conformance.outside_agent_vectors as vector_runner
 
     route_row = route_verdict_entry()
     assert route_row["case_id"] not in {row["case_id"] for row in submission_entries()}
+    route_payload = vector_payload(route_row)
+    anchor = "CONFORM_RED::route_verdict_requires_selected_schema_not_submission_cli"
+    submission_validator = vector_runner.validate_outside_agent_submission
+
+    def forbid_route_submission(payload, *args, **kwargs):
+        if payload == route_payload:
+            pytest.fail(anchor)
+        return submission_validator(payload, *args, **kwargs)
+
+    def forbid_submission_cli(*_args, **_kwargs):
+        pytest.fail(anchor)
+
+    subprocess_run = subprocess.run
+    subprocess_popen = subprocess.Popen
+
+    def guard_subprocess_run(command, *args, **kwargs):
+        if "outside-agent-validate" in tuple(str(item) for item in command):
+            pytest.fail(anchor)
+        return subprocess_run(command, *args, **kwargs)
+
+    def guard_subprocess_popen(command, *args, **kwargs):
+        if "outside-agent-validate" in tuple(str(item) for item in command):
+            pytest.fail(anchor)
+        return subprocess_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(
+        vector_runner, "validate_outside_agent_submission", forbid_route_submission
+    )
+    monkeypatch.setattr(
+        phase_loop_cli, "_outside_agent_validate_command", forbid_submission_cli
+    )
+    monkeypatch.setattr(subprocess, "run", guard_subprocess_run)
+    monkeypatch.setattr(subprocess, "Popen", guard_subprocess_popen)
     # This is the direct route-verdict seam.  It is intentionally independent of
     # the vector runner and never feeds the route row through either submission
     # CLI.  A flattened one-schema implementation cannot satisfy this probe.
@@ -294,7 +330,7 @@ def test_route_verdict_requires_selected_schema_not_submission_cli() -> None:
         )
 
         direct = validate_outside_agent_route_verdict_schema(
-            vector_payload(route_row), schema_target=route_row["schema_target"]
+            route_payload, schema_target=route_row["schema_target"]
         )
     except (AttributeError, ImportError, TypeError) as exc:
         pytest.fail(
@@ -308,7 +344,7 @@ def test_route_verdict_requires_selected_schema_not_submission_cli() -> None:
         LIVE_BLOCKER_CODE_BY_INVALID_CASE[route_row["case_id"]]
     }
     try:
-        results = run_outside_agent_vectors(manifest())
+        results = vector_runner.run_outside_agent_vectors(manifest())
     except Exception as exc:
         pytest.fail(
             "CONFORM_RED::route_verdict_requires_selected_schema_not_submission_cli: "
@@ -320,7 +356,7 @@ def test_route_verdict_requires_selected_schema_not_submission_cli() -> None:
     assert {blocker.code for blocker in result.blockers} == {
         LIVE_BLOCKER_CODE_BY_INVALID_CASE[route_row["case_id"]]
     }
-    payload = vector_payload(route_row)
+    payload = route_payload
     assert payload["verdict_schema_version"] == "outside_agent_route_verdict.v0.1"
     assert payload["route"] not in {"reject", "needs_clarification", "roadmap_intake", "review_candidate"}
     schema = json.loads(
