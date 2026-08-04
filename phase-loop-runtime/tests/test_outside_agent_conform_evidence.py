@@ -2346,6 +2346,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
             mutation.apply(source.replace(mutation.anchor, "missing-anchor"))
         target_source = node_source_path(mutation.expected_nodeid).read_text(encoding="utf-8")
         assert mutation.expected_observable in target_source
+    verifier_spec = importlib.util.find_spec(
+        "phase_loop_runtime.conformance.outside_agent_conform_evidence"
+    )
     for mutation_id in (
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
         "M-CONFORM-3-FINAL-SERIALIZER-GUARD",
@@ -2361,18 +2364,20 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         # SL-0 has no future anchor.  Later candidate mutation must fail closed
         # on an absent or duplicated anchor; it may never fall back to this
         # test-only fixture when changing production bytes.
-        assert actual_source.count(mutation.anchor) == 0
-        with pytest.raises(AssertionError):
-            _candidate_mutation_source(mutation)
-        with pytest.raises(AssertionError):
-            mutation.apply(actual_source)
+        if verifier_spec is None:
+            assert actual_source.count(mutation.anchor) == 0
+            with pytest.raises(AssertionError):
+                _candidate_mutation_source(mutation)
+            with pytest.raises(AssertionError):
+                mutation.apply(actual_source)
+        else:
+            assert actual_source.count(mutation.anchor) == 1
+            assert _candidate_mutation_source(mutation) == actual_source
+            assert mutation.apply(actual_source) != actual_source
         with pytest.raises(AssertionError):
             mutation.apply(mutation.anchor + "\n" + mutation.anchor)
     assert set(CONFORM_CANONICAL_CASES) == set(CONFORM_MIGRATED_EXISTING_NODE_IDS)
     assert len({case.role for case in CONFORM_CANONICAL_CASES.values()}) == 45
-    verifier_spec = importlib.util.find_spec(
-        "phase_loop_runtime.conformance.outside_agent_conform_evidence"
-    )
     captured_mutation_ids: list[str] = []
     capture_rejected_observable = _capture_rejected_observable
 
@@ -2474,10 +2479,13 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         if verifier_spec is not None
         else {}
     )
-    assert set(CONFORM_MUTATION_DEFINITIONS) - set(available_direct_mutations) >= {
-        "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
-        "M-CONFORM-3-FINAL-SERIALIZER-GUARD",
-    }
+    if verifier_spec is None:
+        assert set(CONFORM_MUTATION_DEFINITIONS) - set(available_direct_mutations) >= {
+            "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
+            "M-CONFORM-3-FINAL-SERIALIZER-GUARD",
+        }
+    else:
+        assert set(available_direct_mutations) == set(CONFORM_MUTATION_DEFINITIONS)
     direct_mutations = [
         {
             "id": mutation_id,
