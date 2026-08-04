@@ -918,11 +918,26 @@ def _capture_package_executions(root: Path, archives: dict[str, Path]) -> list[d
         )
         assert installed.returncode == 0, installed.stdout + installed.stderr
         assert (install_root / "phase_loop_runtime/conformance/outside_agent_core.py").is_file()
+        install_raw_path = execution_root / "installation.raw.json"
+        install_raw_path.write_text(
+            json.dumps(
+                {
+                    "argv": install_command,
+                    "environment": environment,
+                    "exit_code": installed.returncode,
+                    "stdout": installed.stdout,
+                    "stderr": installed.stderr,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
         install_observation = {
             "argv": install_command,
             "exit_code": installed.returncode,
-            "stdout_sha256": hashlib.sha256(installed.stdout.encode("utf-8")).hexdigest(),
-            "stderr_sha256": hashlib.sha256(installed.stderr.encode("utf-8")).hexdigest(),
+            "target": str(install_root),
+            "raw_path": str(install_raw_path),
+            "raw_sha256": hashlib.sha256(install_raw_path.read_bytes()).hexdigest(),
         }
         cases = []
         oracle = __import__("_outside_agent_canonical").load_oracle()
@@ -1368,12 +1383,40 @@ def _assert_complete_package_executions(
         }
         assert execution["installation_posture"] == "pip-target-no-deps-no-build-isolation"
         installation = execution["installation"]
+        assert set(installation) == {
+            "argv",
+            "exit_code",
+            "target",
+            "raw_path",
+            "raw_sha256",
+        }
         assert installation["exit_code"] == 0
-        assert installation["argv"][:4] == [sys.executable, "-m", "pip", "install"]
-        assert "--target" in installation["argv"]
-        assert installation["argv"][-1] == str(Path(archives[variant]["path"]))
-        assert len(installation["stdout_sha256"]) == 64
-        assert len(installation["stderr_sha256"]) == 64
+        expected_install_argv = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-compile",
+            "--no-deps",
+            "--no-build-isolation",
+            "--target",
+            installation["target"],
+            str(Path(archives[variant]["path"])),
+        ]
+        assert installation["argv"] == expected_install_argv
+        install_raw_path = Path(installation["raw_path"])
+        assert installation["raw_sha256"] == hashlib.sha256(
+            install_raw_path.read_bytes()
+        ).hexdigest()
+        install_raw = json.loads(install_raw_path.read_text(encoding="utf-8"))
+        assert install_raw["argv"] == expected_install_argv
+        assert install_raw["exit_code"] == 0
+        assert install_raw["stdout"]
+        assert install_raw["environment"]["PIP_NO_INDEX"] == "1"
+        assert install_raw["environment"]["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
+        assert install_raw["environment"]["PYTHONPATH"] == installation["target"]
+        assert Path(installation["target"], "phase_loop_runtime").is_dir()
+        assert tuple(Path(installation["target"]).glob("phase_loop_runtime-*.dist-info"))
         assert execution["archive_sha256"] == archives[variant]["sha256"]
         archive_path = Path(archives[variant]["path"])
         members = _normalized_archive_member_digests(archive_path)
@@ -2642,11 +2685,30 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 assert completed.returncode == 0, completed.stdout + completed.stderr
                 return completed.stdout.strip()
 
-            candidate_identity = _repo_candidate_identity()
-            assert candidate_identity["candidate_clean"] is True
-            candidate = candidate_identity["candidate_oid"]
-            candidate_tree = candidate_identity["candidate_tree"]
-            assert isinstance(candidate, str) and isinstance(candidate_tree, str)
+            head_identity = _repo_candidate_identity()
+            assert head_identity["candidate_clean"] is True
+            head_commit = head_identity["candidate_oid"]
+            head_tree = head_identity["candidate_tree"]
+            assert isinstance(head_commit, str) and isinstance(head_tree, str)
+            final_candidate = head_commit
+            chronology_scope = "a2_candidate"
+            if compatibility_due:
+                head_line = git("rev-list", "--parents", "-n", "1", head_commit).split()
+                if len(head_line) == 3:
+                    final_candidate = head_line[2]
+                    chronology_scope = "exact_main"
+                else:
+                    assert len(head_line) == 2
+                    chronology_scope = "b2_premerge"
+                candidate = git("rev-parse", f"{final_candidate}^")
+                assert candidate != final_candidate
+                assert set(git("diff", "--name-only", candidate, final_candidate).splitlines()) == set(
+                    SEALED_RELEASE_FINAL_PATHS
+                )
+            else:
+                candidate = head_commit
+            candidate_tree = git("rev-parse", f"{candidate}^{{tree}}")
+            final_candidate_tree = git("rev-parse", f"{final_candidate}^{{tree}}")
             parent = git("rev-parse", f"{candidate}^")
             parent_tree = git("rev-parse", f"{parent}^{{tree}}")
             fixture_manifest = json.loads(
@@ -2707,8 +2769,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
             bindings = {
                 "candidate_commit": candidate,
                 "candidate_tree": candidate_tree,
-                "head_commit": candidate,
-                "head_tree": candidate_tree,
+                "head_commit": head_commit,
+                "head_tree": head_tree,
                 "module_path": (
                     "phase-loop-runtime/src/phase_loop_runtime/conformance/"
                     "outside_agent_schema.py"
@@ -2792,9 +2854,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 chronology_stages.append(
                     {
                         "stage": "final_doc_chronology",
-                        "commit": candidate,
-                        "tree": candidate_tree,
+                        "commit": final_candidate,
+                        "tree": final_candidate_tree,
                         "b0": {
+                            "commit": candidate,
+                            "tree": candidate_tree,
                             "argv": B0_COMMAND,
                             "exit_code": 1,
                             "failing_node_ids": list(CONFORM_SL2_STALE_DOC_NODE_IDS),
@@ -2803,10 +2867,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                             "collection_errors": [],
                         },
                         "b1": {
+                            "before_commit": candidate,
+                            "before_tree": candidate_tree,
+                            "after_commit": final_candidate,
+                            "after_tree": final_candidate_tree,
                             "changed_paths": list(SEALED_RELEASE_FINAL_PATHS),
                             "test_paths_unchanged": True,
                         },
                         "b2": {
+                            "commit": final_candidate,
+                            "tree": final_candidate_tree,
                             "argv": B2_COMMAND,
                             "exit_code": 0,
                             "node_ids": list(ALL_OUTSIDE_AGENT_NODE_IDS),
@@ -2814,17 +2884,20 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                             "failed_node_ids": [],
                         },
                         "topology": {
-                            "scope": "b2_premerge",
+                            "scope": chronology_scope,
                             "test_candidate": parent,
                             "implementation_candidate": candidate,
-                            "final_candidate": candidate,
+                            "final_candidate": final_candidate,
+                            "canonical_main_head": (
+                                head_commit if chronology_scope == "exact_main" else None
+                            ),
                             "candidate_descends_from_test_candidate": True,
                             "final_descends_from_candidate": True,
                         },
                     }
                 )
             chronology = {
-                "scope": "b2_premerge" if compatibility_due else "a2_candidate",
+                "scope": chronology_scope,
                 "stages": chronology_stages,
                 "candidate_head_module": bindings,
             }
@@ -2972,8 +3045,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                     "evidence_mode": mode,
                     "candidate_commit": candidate,
                     "candidate_tree": candidate_tree,
-                    "head_commit": candidate,
-                    "head_tree": candidate_tree,
+                    "head_commit": head_commit,
+                    "head_tree": head_tree,
                     "module_path": facts["module_path"],
                     "corpus_partitions": corpus_partitions,
                     "contract_member_digests": contract_member_digests,
@@ -3151,7 +3224,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 assert set(verified) == set(EVIDENCE_VERIFIER_INTERFACE[mode]["outputs"])
                 assert verified["mode"] == mode
                 assert verified["candidate_commit"] == candidate
-                assert verified["head_commit"] == candidate
+                assert verified["head_commit"] == head_commit
                 assert verified["module_path"] == facts["module_path"]
                 assert verified["recomputed_input_digest"] == expected_input
                 assert verified["recomputed_evidence_digest"] == expected_evidence
@@ -3164,8 +3237,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 assert evidence["bindings"] == {
                     "candidate_commit": candidate,
                     "candidate_tree": candidate_tree,
-                    "head_commit": candidate,
-                    "head_tree": candidate_tree,
+                    "head_commit": head_commit,
+                    "head_tree": head_tree,
                     "module_path": facts["module_path"],
                 }
                 expected_chronology_stages = [
@@ -3174,9 +3247,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 ]
                 if compatibility_due:
                     expected_chronology_stages.append("final_doc_chronology")
-                assert evidence["chronology"]["scope"] == (
-                    "b2_premerge" if compatibility_due else "a2_candidate"
-                )
+                assert evidence["chronology"]["scope"] == chronology_scope
                 assert [stage["stage"] for stage in evidence["chronology"]["stages"]] == expected_chronology_stages
                 assert evidence["corpus"]["rows"] == corpus_rows
                 assert evidence["corpus"]["partitions"] == corpus_partitions
@@ -3264,6 +3335,21 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                         forged_b2 = copy.deepcopy(mode_facts)
                         forged_b2["chronology"]["stages"][2]["b2"]["argv"] = A2_COMMAND
                         chronology_mutations.append(forged_b2)
+                        aliased_candidates = copy.deepcopy(mode_facts)
+                        aliased_candidates["chronology"]["stages"][2]["topology"][
+                            "final_candidate"
+                        ] = candidate
+                        chronology_mutations.append(aliased_candidates)
+                        forged_b0_commit = copy.deepcopy(mode_facts)
+                        forged_b0_commit["chronology"]["stages"][2]["b0"][
+                            "commit"
+                        ] = final_candidate
+                        chronology_mutations.append(forged_b0_commit)
+                        forged_b1_transition = copy.deepcopy(mode_facts)
+                        forged_b1_transition["chronology"]["stages"][2]["b1"][
+                            "before_commit"
+                        ] = final_candidate
+                        chronology_mutations.append(forged_b1_transition)
                     for forged_facts in chronology_mutations:
                         Path(mode_records[0]["artifact_path"]).write_text(
                             json.dumps(forged_facts, sort_keys=True), encoding="utf-8"

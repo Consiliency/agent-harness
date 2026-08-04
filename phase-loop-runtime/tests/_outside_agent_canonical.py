@@ -2350,9 +2350,17 @@ def _assert_core_uses_no_network_or_provider_credentials(
 
     with (
         mock.patch.object(os, "system", side_effect=rejected_network),
+        mock.patch.object(os, "popen", side_effect=rejected_network),
+        mock.patch.object(subprocess, "Popen", side_effect=rejected_network),
         mock.patch.object(subprocess, "run", side_effect=rejected_network),
+        mock.patch.object(socket.socket, "connect", side_effect=rejected_network),
+        mock.patch.object(socket.socket, "connect_ex", side_effect=rejected_network),
+        mock.patch.object(socket.socket, "sendto", side_effect=rejected_network),
         mock.patch.object(socket, "create_connection", side_effect=rejected_network),
         mock.patch.object(socket, "getaddrinfo", side_effect=rejected_network),
+        mock.patch.object(socket, "gethostbyaddr", side_effect=rejected_network),
+        mock.patch.object(socket, "gethostbyname", side_effect=rejected_network),
+        mock.patch.object(socket, "gethostbyname_ex", side_effect=rejected_network),
         mock.patch.object(urllib_request, "urlopen", side_effect=rejected_network),
         mock.patch.object(os, "getenv", side_effect=guarded_getenv),
         mock.patch.object(os.environ, "get", side_effect=guarded_environ_get),
@@ -2367,13 +2375,16 @@ def _assert_core_uses_no_network_or_provider_credentials(
     )
 
 
-def _assert_advisory_uses_no_external_access(nodeid: str) -> None:
+def _assert_advisory_uses_no_external_access(
+    nodeid: str, *, advisory_builder: Any | None = None
+) -> None:
     from phase_loop_runtime.conformance.outside_agent_advisory import (
         build_outside_agent_advisory_evidence,
         serialize_outside_agent_advisory_evidence,
     )
 
     network_calls: list[str] = []
+    builder = advisory_builder or build_outside_agent_advisory_evidence
 
     def rejected_network(*_args: object, **_kwargs: object) -> None:
         network_calls.append("network")
@@ -2381,13 +2392,21 @@ def _assert_advisory_uses_no_external_access(nodeid: str) -> None:
 
     with (
         mock.patch.object(os, "system", side_effect=rejected_network),
+        mock.patch.object(os, "popen", side_effect=rejected_network),
+        mock.patch.object(subprocess, "Popen", side_effect=rejected_network),
         mock.patch.object(subprocess, "run", side_effect=rejected_network),
+        mock.patch.object(socket.socket, "connect", side_effect=rejected_network),
+        mock.patch.object(socket.socket, "connect_ex", side_effect=rejected_network),
+        mock.patch.object(socket.socket, "sendto", side_effect=rejected_network),
         mock.patch.object(socket, "create_connection", side_effect=rejected_network),
         mock.patch.object(socket, "getaddrinfo", side_effect=rejected_network),
+        mock.patch.object(socket, "gethostbyaddr", side_effect=rejected_network),
+        mock.patch.object(socket, "gethostbyname", side_effect=rejected_network),
+        mock.patch.object(socket, "gethostbyname_ex", side_effect=rejected_network),
         mock.patch.object(urllib_request, "urlopen", side_effect=rejected_network),
     ):
         rendered = serialize_outside_agent_advisory_evidence(
-            build_outside_agent_advisory_evidence(clean_canonical_submission())
+            builder(clean_canonical_submission())
         )
     _assert_status_and_codes(
         nodeid,
@@ -2440,6 +2459,39 @@ def assert_named_safety_mutations_rejected() -> None:
         except AssertionError:
             continue
         raise AssertionError(f"CONFORM_RED::credential_read_mutation_survived:{route}")
+
+    advisory_nodeid = next(
+        nodeid
+        for nodeid, guarantee in NAMED_SAFETY_NODE_IDS.items()
+        if guarantee == "advisory_network"
+    )
+    from phase_loop_runtime.conformance.outside_agent_advisory import (
+        build_outside_agent_advisory_evidence,
+    )
+
+    external_routes = {
+        "os.popen": lambda: os.popen("true"),
+        "subprocess.Popen": lambda: subprocess.Popen([sys.executable, "-c", ""]),
+        "socket.connect": lambda: socket.socket().connect(("127.0.0.1", 9)),
+        "socket.connect_ex": lambda: socket.socket().connect_ex(("127.0.0.1", 9)),
+        "socket.sendto": lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(
+            b"CONFORM", ("127.0.0.1", 9)
+        ),
+    }
+    for route, external_access in external_routes.items():
+        def mutated_builder(
+            submission: object, *, external_access: Any = external_access
+        ) -> Any:
+            external_access()
+            return build_outside_agent_advisory_evidence(submission)
+
+        try:
+            _assert_advisory_uses_no_external_access(
+                advisory_nodeid, advisory_builder=mutated_builder
+            )
+        except AssertionError:
+            continue
+        raise AssertionError(f"CONFORM_RED::external_access_mutation_survived:{route}")
 
 
 def _assert_live_validation_runs_zero_vectors(nodeid: str) -> None:
