@@ -724,6 +724,65 @@ class TestInvariant6LiveReverifyRunsVerification:
       f. Passing verification commands → True
     """
 
+    def test_proofgate_train_reverify_requires_exact_attested_proof(self):
+        from .proofgate_tdd_guard import PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES, ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        nodeid = "phase-loop-runtime/tests/test_train_invariants.py::TestInvariant6LiveReverifyRunsVerification::test_proofgate_train_reverify_requires_exact_attested_proof"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            import tempfile
+            from unittest.mock import patch
+            from phase_loop_runtime import goal_coverage
+            from phase_loop_runtime import train_runner
+
+            if not hasattr(train_runner, "reverify_proofgate_train_scenarios"):
+                raise ProofgateMissingCapabilityError("train_runner missing reverify_proofgate_train_scenarios capability")
+
+            with tempfile.TemporaryDirectory() as td:
+                ws, roadmap = self._make_reverify_repo(Path(td))
+                reverify_fn = getattr(train_runner, "_live_reverify", getattr(train_runner, "reverify_proofgate_train_scenarios", None))
+                for mode in ("PROOFGATE", "PROOFGATE_ATTENDED"):
+                    # 1. Uncorrupted / missing proof scenario must fail
+                    res1 = reverify_fn(ws, roadmap_path=roadmap, run_mode=mode)
+                    self.assertFalse(res1, f"Live reverify in mode {mode} with missing proof must return False")
+
+                    # 2. Corrupted plan file (invalid acceptance bytes)
+                    plan_file = ws / "plans" / "P1.md"
+                    if plan_file.exists():
+                        plan_file.write_text(PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES, encoding="utf-8")
+                        if not hasattr(goal_coverage, "extract_acceptance_contracts"):
+                            raise ProofgateMissingCapabilityError("goal_coverage.extract_acceptance_contracts missing")
+                        parser = goal_coverage.extract_acceptance_contracts
+                        with patch.object(
+                            goal_coverage,
+                            "extract_acceptance_contracts",
+                            wraps=parser,
+                        ) as parser_spy:
+                            res2 = reverify_fn(ws, roadmap_path=roadmap, run_mode=mode)
+                        self.assertFalse(res2, f"Live reverify in mode {mode} with corrupted plan must return False")
+                        self.assertTrue(
+                            any(
+                                call.args
+                                and call.args[0] == PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES
+                                for call in parser_spy.call_args_list
+                            ),
+                            f"Live reverify in mode {mode} must parse the exact invalid acceptance bytes",
+                        )
+
+                    # 3. Positive scenario control: valid verification must return True
+                    ws_pos, roadmap_pos = self._make_reverify_repo(
+                        Path(td) / f"pos_{mode}",
+                        verify_lines='- `python3 -c "import sys; sys.exit(0)"`\n',
+                    )
+                    res_pos = reverify_fn(ws_pos, roadmap_path=roadmap_pos, run_mode=mode)
+                    self.assertIsNotNone(res_pos, f"Live reverify in mode {mode} must not return None")
+                    self.assertTrue(res_pos, f"Live reverify in mode {mode} with valid proof must return True")
+
+        run_proofgate_contract(nodeid, _contract)
+
+
+
     def _make_reverify_repo(self, tmp_path: Path, verify_lines: str = "") -> tuple[Path, Path]:
         """Create a minimal workspace at awaiting_phase_closeout.
 

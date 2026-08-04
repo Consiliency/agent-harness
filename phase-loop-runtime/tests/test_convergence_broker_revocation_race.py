@@ -21,6 +21,7 @@ pre-fix tree.  It is deliberately NOT about epoch ALLOCATION (ah#363): no
 """
 from __future__ import annotations
 
+import json
 import threading
 
 import pytest
@@ -102,26 +103,77 @@ def _pcb_request(admission_key="adm-1", *, repo="repo", branch="feat/x", head="a
 # admission layer. Mutation to kill: drop `epoch_blocked=evidence_store.epoch_blocked`
 # at either `build_*` site -> these fail.
 
-def _assert_wired(service):
+from .proofgate_tdd_guard import assert_exact_mutation_observable, emit_mutation_observable
+
+
+def _assert_ec4_oracle_descriptor(param_id: str, expected_assertion_id: str) -> None:
+    """Keep the two plan-frozen assertion IDs independent of source anchors."""
+    properties: list[tuple[str, str]] = []
+    emit_mutation_observable(param_id, lambda name, value: properties.append((name, value)))
+    assert_exact_mutation_observable(param_id, properties)
+    observable = json.loads(properties[0][1])
+    assert observable["assertion_id"] == expected_assertion_id
+
+    with pytest.raises(AssertionError, match="exactly one canonical property"):
+        assert_exact_mutation_observable(param_id, [])
+    with pytest.raises(AssertionError, match="exactly one canonical property"):
+        assert_exact_mutation_observable(param_id, properties * 2)
+
+    for bad_assertion_id in ("", "PG-A-BROKER-GITHUB", "PG-A-BROKER-ROUTING", "github_builder_epoch_blocked_wiring_synthesized"):
+        tampered = dict(observable)
+        tampered["assertion_id"] = bad_assertion_id
+        with pytest.raises(AssertionError, match="mutation observable mismatch"):
+            assert_exact_mutation_observable(
+                param_id,
+                [("proofgate_mutation_observable", json.dumps(tampered, sort_keys=True))],
+            )
+
+
+def _assert_wired(service, record_property, *, param_id=None):
     ev = service.evidence_store
     assert service.admission_store.epoch_blocked() is False
     ev.record_intent("k")
     ev.record_terminal(EvidenceRecord("k", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revoked"))
     assert ev.epoch_blocked is True
-    assert service.admission_store.epoch_blocked() is True, (
+    cond = (service.admission_store.epoch_blocked() is True)
+    if not cond and record_property is not None and param_id is not None:
+        emit_mutation_observable(param_id, record_property)
+    assert cond, (
         "the admission store must read the evidence store's revocation flag under its lock; "
         "an unwired store (lambda: False) admits into a revoked epoch"
     )
 
 
-def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path):
+def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path, record_property):
+    from .proofgate_tdd_guard import guard_proofgate_nodeid
+    nodeid = "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_github_broker_admission_store_is_wired_to_evidence_revocation"
+    guard_proofgate_nodeid(nodeid)
+    _assert_ec4_oracle_descriptor(
+        "ec-proofgate-4.github-builder-epoch-blocked",
+        "github_builder_epoch_blocked_wiring",
+    )
     service = build_github_broker_client(tmp_path / "repo", broker_root=tmp_path / "broker")
-    _assert_wired(service)
+    _assert_wired(
+        service,
+        record_property,
+        param_id="ec-proofgate-4.github-builder-epoch-blocked",
+    )
 
 
-def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path):
+def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path, record_property):
+    from .proofgate_tdd_guard import guard_proofgate_nodeid
+    nodeid = "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_routing_broker_admission_store_is_wired_to_evidence_revocation"
+    guard_proofgate_nodeid(nodeid)
+    _assert_ec4_oracle_descriptor(
+        "ec-proofgate-4.routing-builder-epoch-blocked",
+        "routing_builder_epoch_blocked_wiring",
+    )
     client = build_routing_broker_client(broker_root=tmp_path / "broker")
-    _assert_wired(client._service_for(str(tmp_path / "repo")))
+    _assert_wired(
+        client._service_for(str(tmp_path / "repo")),
+        record_property,
+        param_id="ec-proofgate-4.routing-builder-epoch-blocked",
+    )
 
 
 # --- (B) end-to-end: execute refuses a publish when a revocation precedes admit -------
