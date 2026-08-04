@@ -103,6 +103,10 @@ PACKAGE_EXECUTION_VARIANTS = (
     "direct-sdist",
     "sdist-derived-wheel",
 )
+B2_COMMAND = (
+    "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest "
+    "phase-loop-runtime/tests -q -k outside_agent"
+)
 SUBMISSION_CLI_EXIT_BY_CASE = {
     "positive-work-request": 0,
     "positive-implementation-submission": 0,
@@ -883,18 +887,43 @@ def _capture_package_executions(root: Path, archives: dict[str, Path]) -> list[d
     rows = (*submission_entries(), route_verdict_entry())
     for variant in PACKAGE_EXECUTION_VARIANTS:
         archive_path = archives[variant]
-        extraction_root = root / f"{variant}-isolated"
-        extraction_root.mkdir()
-        if variant == "direct-sdist":
-            with tarfile.open(archive_path) as archive:
-                _extract_tar_archive(archive, extraction_root)
-            import_root = next(extraction_root.iterdir()) / "src"
-        else:
-            with zipfile.ZipFile(archive_path) as archive:
-                archive.extractall(extraction_root)
-            import_root = extraction_root
-        assert (import_root / "phase_loop_runtime/conformance/outside_agent_core.py").is_file()
-        environment = {"PHASE_LOOP_TDD_EXPECT_CONFORM": "0", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(import_root)}
+        execution_root = root / f"{variant}-isolated"
+        install_root = execution_root / "site-packages"
+        execution_root.mkdir()
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INDEX": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPATH": str(install_root),
+        }
+        install_command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-compile",
+            "--no-deps",
+            "--no-build-isolation",
+            "--target",
+            str(install_root),
+            str(archive_path),
+        ]
+        installed = _run_bound_child(
+            install_command,
+            input_text="",
+            cwd=execution_root,
+            environment=environment,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+        assert (install_root / "phase_loop_runtime/conformance/outside_agent_core.py").is_file()
+        install_observation = {
+            "argv": install_command,
+            "exit_code": installed.returncode,
+            "stdout_sha256": hashlib.sha256(installed.stdout.encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(installed.stderr.encode("utf-8")).hexdigest(),
+        }
         cases = []
         oracle = __import__("_outside_agent_canonical").load_oracle()
         for row in rows:
@@ -902,7 +931,7 @@ def _capture_package_executions(root: Path, archives: dict[str, Path]) -> list[d
             for surface in surfaces:
                 request = {"surface": surface, "case_id": row["case_id"], "payload": vector_payload(row)}
                 command = [sys.executable, "-c", _INSTALLED_PACKAGE_RUNNER]
-                completed = _run_bound_child(command, input_text=json.dumps(request, sort_keys=True), cwd=extraction_root, environment=environment)
+                completed = _run_bound_child(command, input_text=json.dumps(request, sort_keys=True), cwd=execution_root, environment=environment)
                 raw_path = root / f"{variant}-{row['case_id']}-{surface}.raw.json"
                 raw = {"argv": command, "environment": environment, "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
                 raw_path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
@@ -919,7 +948,15 @@ def _capture_package_executions(root: Path, archives: dict[str, Path]) -> list[d
                         "result": json.loads(completed.stdout),
                     }
                 )
-        executions.append({"variant": variant, "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(), "extraction_posture": "installed-isolated-subprocess", "cases": cases})
+        executions.append(
+            {
+                "variant": variant,
+                "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "installation_posture": "pip-target-no-deps-no-build-isolation",
+                "installation": install_observation,
+                "cases": cases,
+            }
+        )
     return executions
 
 
@@ -1325,10 +1362,18 @@ def _assert_complete_package_executions(
         assert set(execution) == {
             "variant",
             "archive_sha256",
-            "extraction_posture",
+            "installation_posture",
+            "installation",
             "cases",
         }
-        assert execution["extraction_posture"] == "installed-isolated-subprocess"
+        assert execution["installation_posture"] == "pip-target-no-deps-no-build-isolation"
+        installation = execution["installation"]
+        assert installation["exit_code"] == 0
+        assert installation["argv"][:4] == [sys.executable, "-m", "pip", "install"]
+        assert "--target" in installation["argv"]
+        assert installation["argv"][-1] == str(Path(archives[variant]["path"]))
+        assert len(installation["stdout_sha256"]) == 64
+        assert len(installation["stderr_sha256"]) == 64
         assert execution["archive_sha256"] == archives[variant]["sha256"]
         archive_path = Path(archives[variant]["path"])
         members = _normalized_archive_member_digests(archive_path)
@@ -2699,8 +2744,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                 "red_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
                 "red_anchors": CONFORM_ACTIVATED_RED_ANCHORS,
             }
-            chronology = {
-                "stages": [
+            chronology_stages = [
                     {
                         "stage": "preimplementation_red",
                         "commit": parent,
@@ -2708,6 +2752,24 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                         "exit_code": 1,
                         "failing_node_ids": list(CONFORM_ACTIVATED_RED_NODE_IDS),
                         "failing_anchors": CONFORM_ACTIVATED_RED_ANCHORS,
+                        "review": {
+                            "plan_path": "plans/phase-plan-v10-CONFORM.md",
+                            "plan_sha256": hashlib.sha256(
+                                (REPO_ROOT / "plans/phase-plan-v10-CONFORM.md").read_bytes()
+                            ).hexdigest(),
+                            "required_seats": ["Fable", "Sol", "Gemini", "Grok"],
+                            "outcomes": {
+                                "Fable": "AGREE",
+                                "Sol": "AGREE",
+                                "Gemini": "AGREE",
+                                "Grok": "AGREE",
+                            },
+                        },
+                        "topology": {
+                            "test_candidate": parent,
+                            "test_candidate_tree": parent_tree,
+                            "candidate_descends_from_test_candidate": True,
+                        },
                     },
                     {
                         "stage": "postimplementation_pre_doc",
@@ -2717,8 +2779,53 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                         "mutation_outcomes": {
                             mutation["id"]: "killed" for mutation in mutation_records
                         },
+                        "topology": {
+                            "test_candidate": parent,
+                            "candidate_commit": candidate,
+                            "candidate_tree": candidate_tree,
+                            "candidate_descends_from_test_candidate": True,
+                            "test_paths_unchanged": True,
+                        },
                     },
-                ],
+                ]
+            if compatibility_due:
+                chronology_stages.append(
+                    {
+                        "stage": "final_doc_chronology",
+                        "commit": candidate,
+                        "tree": candidate_tree,
+                        "b0": {
+                            "argv": B0_COMMAND,
+                            "exit_code": 1,
+                            "failing_node_ids": list(CONFORM_SL2_STALE_DOC_NODE_IDS),
+                            "skipped_node_ids": [],
+                            "xfail_node_ids": [],
+                            "collection_errors": [],
+                        },
+                        "b1": {
+                            "changed_paths": list(SEALED_RELEASE_FINAL_PATHS),
+                            "test_paths_unchanged": True,
+                        },
+                        "b2": {
+                            "argv": B2_COMMAND,
+                            "exit_code": 0,
+                            "node_ids": list(ALL_OUTSIDE_AGENT_NODE_IDS),
+                            "skipped_node_ids": [],
+                            "failed_node_ids": [],
+                        },
+                        "topology": {
+                            "scope": "b2_premerge",
+                            "test_candidate": parent,
+                            "implementation_candidate": candidate,
+                            "final_candidate": candidate,
+                            "candidate_descends_from_test_candidate": True,
+                            "final_descends_from_candidate": True,
+                        },
+                    }
+                )
+            chronology = {
+                "scope": "b2_premerge" if compatibility_due else "a2_candidate",
+                "stages": chronology_stages,
                 "candidate_head_module": bindings,
             }
             package_facts = {
@@ -3061,10 +3168,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                     "head_tree": candidate_tree,
                     "module_path": facts["module_path"],
                 }
-                assert [stage["stage"] for stage in evidence["chronology"]["stages"]] == [
+                expected_chronology_stages = [
                     "preimplementation_red",
                     "postimplementation_pre_doc",
                 ]
+                if compatibility_due:
+                    expected_chronology_stages.append("final_doc_chronology")
+                assert evidence["chronology"]["scope"] == (
+                    "b2_premerge" if compatibility_due else "a2_candidate"
+                )
+                assert [stage["stage"] for stage in evidence["chronology"]["stages"]] == expected_chronology_stages
                 assert evidence["corpus"]["rows"] == corpus_rows
                 assert evidence["corpus"]["partitions"] == corpus_partitions
                 assert evidence["package"]["contract_members"] == contract_member_digests
@@ -3129,6 +3242,40 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                     json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
                 )
                 refresh_mode_records(mode_records, artifacts)
+                if mode == "chronology":
+                    chronology_mutations = []
+                    missing_review = copy.deepcopy(mode_facts)
+                    missing_review["chronology"]["stages"][0].pop("review")
+                    chronology_mutations.append(missing_review)
+                    forged_topology = copy.deepcopy(mode_facts)
+                    forged_topology["chronology"]["stages"][1]["topology"][
+                        "candidate_descends_from_test_candidate"
+                    ] = False
+                    chronology_mutations.append(forged_topology)
+                    if compatibility_due:
+                        missing_final = copy.deepcopy(mode_facts)
+                        missing_final["chronology"]["stages"].pop()
+                        chronology_mutations.append(missing_final)
+                        forged_b0 = copy.deepcopy(mode_facts)
+                        forged_b0["chronology"]["stages"][2]["b0"][
+                            "failing_node_ids"
+                        ] = []
+                        chronology_mutations.append(forged_b0)
+                        forged_b2 = copy.deepcopy(mode_facts)
+                        forged_b2["chronology"]["stages"][2]["b2"]["argv"] = A2_COMMAND
+                        chronology_mutations.append(forged_b2)
+                    for forged_facts in chronology_mutations:
+                        Path(mode_records[0]["artifact_path"]).write_text(
+                            json.dumps(forged_facts, sort_keys=True), encoding="utf-8"
+                        )
+                        refresh_mode_records(mode_records, artifacts)
+                        with pytest.raises((ValueError, AssertionError)):
+                            verifier(mode, mode_records)
+                        assert_production_cli_rejects(mode_records)
+                    Path(mode_records[0]["artifact_path"]).write_text(
+                        json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
+                    )
+                    refresh_mode_records(mode_records, artifacts)
                 original_junit = artifacts["junit"].read_bytes()
                 element_tree.ElementTree(
                     element_tree.fromstring(

@@ -2260,6 +2260,8 @@ def _assert_status_and_codes(nodeid: str, status: str, codes: set[str], case: Ca
 
 
 NAMED_SAFETY_NODE_IDS = {
+    "phase-loop-runtime/tests/test_outside_agent_advisory.py::"
+    "test_builds_clean_advisory_evidence_without_external_access": "advisory_network",
     "phase-loop-runtime/tests/test_outside_agent_core_api.py::"
     "test_validation_does_not_use_network_or_provider_credentials": "network",
     "phase-loop-runtime/tests/test_outside_agent_real_ci.py::"
@@ -2280,7 +2282,7 @@ def _assert_named_safety_observables(
 ) -> None:
     """Reject status/code-only substitutes for the named migrated guarantees."""
     guarantee = NAMED_SAFETY_NODE_IDS[nodeid]
-    if guarantee == "network":
+    if guarantee in {"advisory_network", "network"}:
         assert network_calls == [], _red_anchor(nodeid)
         assert credential_reads == [], _red_anchor(nodeid)
     elif guarantee == "vectors":
@@ -2362,6 +2364,39 @@ def _assert_core_uses_no_network_or_provider_credentials(
     _assert_status_and_codes(nodeid, verdict.status.value, {b.code for b in verdict.blockers}, CONFORM_CANONICAL_CASES[nodeid])
     _assert_named_safety_observables(
         nodeid, network_calls=network_calls, credential_reads=credential_reads
+    )
+
+
+def _assert_advisory_uses_no_external_access(nodeid: str) -> None:
+    from phase_loop_runtime.conformance.outside_agent_advisory import (
+        build_outside_agent_advisory_evidence,
+        serialize_outside_agent_advisory_evidence,
+    )
+
+    network_calls: list[str] = []
+
+    def rejected_network(*_args: object, **_kwargs: object) -> None:
+        network_calls.append("network")
+        raise AssertionError(_red_anchor(nodeid))
+
+    with (
+        mock.patch.object(os, "system", side_effect=rejected_network),
+        mock.patch.object(subprocess, "run", side_effect=rejected_network),
+        mock.patch.object(socket, "create_connection", side_effect=rejected_network),
+        mock.patch.object(socket, "getaddrinfo", side_effect=rejected_network),
+        mock.patch.object(urllib_request, "urlopen", side_effect=rejected_network),
+    ):
+        rendered = serialize_outside_agent_advisory_evidence(
+            build_outside_agent_advisory_evidence(clean_canonical_submission())
+        )
+    _assert_status_and_codes(
+        nodeid,
+        rendered["status"],
+        {blocker["code"] for blocker in rendered["blockers"]},
+        CONFORM_CANONICAL_CASES[nodeid],
+    )
+    _assert_named_safety_observables(
+        nodeid, network_calls=network_calls, credential_reads=[]
     )
 
 
@@ -2664,7 +2699,9 @@ def assert_named_canonical_capability(nodeid: str) -> None:
     assert set(CONFORM_CANONICAL_CASES) == set(CONFORM_MIGRATED_EXISTING_NODE_IDS)
     case = CONFORM_CANONICAL_CASES[nodeid]
     if nodeid in NAMED_SAFETY_NODE_IDS:
-        if NAMED_SAFETY_NODE_IDS[nodeid] == "network":
+        if NAMED_SAFETY_NODE_IDS[nodeid] == "advisory_network":
+            _assert_advisory_uses_no_external_access(nodeid)
+        elif NAMED_SAFETY_NODE_IDS[nodeid] == "network":
             _assert_core_uses_no_network_or_provider_credentials(nodeid)
         elif NAMED_SAFETY_NODE_IDS[nodeid] == "vectors":
             _assert_live_validation_runs_zero_vectors(nodeid)
