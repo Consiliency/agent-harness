@@ -2117,7 +2117,7 @@
               "board_topology_nodeids_sha256": "161d57ceca75fc0131822802282ff52985e9ee081e536c0db78a5f3e9f37292b",
               "completion_record_contract_pin": "frozen_pre_amendment_CONFORM_and_HARDEN_dependency_completion_contract; digest_rebind_is_live_REVIEWTRUTH_plan_pin_only",
               "interim_enforcement": "coordinator_hand_enforces_at_every_gate_until_IF_0_REVIEWTRUTH_4_and_5_land",
-              "plan_sha256": "b7a7f1d2dc35a7b5953272bf0d11f3a9de9b8598fb5b63d8d7e43865b9fc651c",
+              "plan_sha256": "1359cdeddb609999b21dcbe71d2759e050009a329e191a40e5f7cfd7ec34b3c8",
               "president_authority_criterion": "EC-REVIEWTRUTH-19",
               "president_authority_nodeids_count": 4,
               "president_authority_nodeids_sha256": "01857917639d696d6163e219c16bf4f3ee1470300c6e24a68e2efd565f6d8eb9",
