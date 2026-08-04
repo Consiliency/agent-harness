@@ -10,6 +10,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     import tomli as tomllib
 
 import phase_loop_runtime
+from _outside_agent_canonical import sealed_release_evidence
 from phase_loop_runtime.conformance import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     build_outside_agent_advisory_evidence,
@@ -208,3 +209,56 @@ def test_public_docs_point_to_handoff_without_claiming_release_dispatch():
     assert "governed-pipeline pinning instructions" in changelog
     assert "maintainer-owned publish/tag/workflow-dispatch" in changelog
     assert "0.5.0" in changelog
+
+
+def test_v7_disposition_records_merged_contract_and_final_installed_behavior(tmp_path):
+    if not (RUNTIME_ROOT / "pyproject.toml").is_file():
+        pytest.skip("repository-mode v7 disposition is absent in standalone clean-room")
+    disposition_path = REPO_ROOT / "specs" / "phase-plans-v7.md"
+    _require_repo_files(disposition_path)
+    disposition = disposition_path.read_text(encoding="utf-8")
+
+    assert "Consiliency/spec@v0.2.1" in disposition, (
+        "CONFORM_RED::v7_disposition_records_merged_contract_and_final_installed_behavior"
+    )
+    assert EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN.contract_git_sha in disposition, (
+        "CONFORM_RED::v7_disposition_records_merged_contract_and_final_installed_behavior"
+    )
+    pin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN
+    required = {
+        "OACORE-3",
+        "OAREAL-2",
+        pin.contract_git_tag,
+        pin.contract_git_sha,
+        pin.submission_schema_sha256,
+        pin.verdict_schema_sha256,
+        pin.vector_manifest_hash,
+        "installed-package",
+        "direct-wheel",
+        "sdist-derived-wheel",
+        "outside-agent-preflight",
+        "outside-agent-validate",
+        "three valid submissions",
+        "route-verdict",
+        "metadata_only",
+        "not published",
+        "not dispatched",
+    }
+    assert all(term.lower() in disposition.lower() for term in required), (
+        "CONFORM_RED::v7_disposition_records_merged_contract_and_final_installed_behavior"
+    )
+
+    # Do not rebuild ambient HEAD or infer the last source-only commit.  The
+    # release statement is bound to a runner-sealed exact candidate/final tree
+    # and package archive evidence produced before this consumer runs.
+    evidence = sealed_release_evidence()
+    anchor = "CONFORM_RED::v7_disposition_records_merged_contract_and_final_installed_behavior"
+    assert evidence["candidate_commit"] != evidence["candidate_tree"], anchor
+    assert evidence["final_commit"] != evidence["final_tree"], anchor
+    assert evidence["candidate_commit"] in disposition, anchor
+    assert evidence["candidate_tree"] in disposition, anchor
+    assert evidence["final_commit"] in disposition, anchor
+    assert evidence["final_tree"] in disposition, anchor
+    for label, archive in evidence["archives"].items():
+        assert archive["sha256"] in disposition, (anchor, label)
+        assert "phase_loop_runtime/conformance/_contract/VENDOR.json" in archive["members"], (anchor, label)
