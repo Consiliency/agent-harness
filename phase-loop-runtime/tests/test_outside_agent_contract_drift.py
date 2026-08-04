@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -269,6 +270,15 @@ def test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror(tmp_path
         return
 
     dist_root = tmp_path / "dist"
+    missing_build_prerequisites = [
+        module
+        for module in ("build", "setuptools")
+        if importlib.util.find_spec(module) is None
+    ]
+    assert not missing_build_prerequisites, (
+        "package-build prerequisites unavailable: "
+        + ", ".join(missing_build_prerequisites)
+    )
     completed = subprocess.run(
         [
             sys.executable,

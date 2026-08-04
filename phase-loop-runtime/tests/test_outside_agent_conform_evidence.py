@@ -388,6 +388,9 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
 
     baseline, baseline_raw = execute(list(mutation.argv))
     positive_control, positive_raw = execute(list(mutation.positive_control))
+    companion_baseline = None
+    if mutation.companion_argv is not None:
+        companion_baseline, _ = execute(list(mutation.companion_argv))
     source_path.write_text(mutant, encoding="utf-8")
     mutant_result, mutant_raw = execute(list(mutation.argv))
     combined = mutant_raw.stdout + mutant_raw.stderr
@@ -395,11 +398,42 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
         mutation.expected_nodeid in combined
         or mutation.expected_nodeid.rsplit("::", 1)[-1] in combined
     )
+    anchor_matched = mutation.expected_anchor in combined
+    companion = None
+    companion_killed = True
+    if mutation.companion_argv is not None:
+        companion_mutant, companion_raw = execute(list(mutation.companion_argv))
+        companion_combined = companion_raw.stdout + companion_raw.stderr
+        companion_nodeid_matched = (
+            mutation.companion_expected_nodeid in companion_combined
+            or mutation.companion_expected_nodeid.rsplit("::", 1)[-1]
+            in companion_combined
+        )
+        companion_anchor_matched = (
+            mutation.companion_expected_anchor in companion_combined
+        )
+        companion_killed = (
+            companion_baseline["classification"] == "passed"
+            and companion_mutant["classification"] == "failed"
+            and companion_nodeid_matched
+            and companion_anchor_matched
+        )
+        companion = {
+            "argv": list(mutation.companion_argv),
+            "expected_nodeid": mutation.companion_expected_nodeid,
+            "expected_anchor": mutation.companion_expected_anchor,
+            "nodeid_matched": companion_nodeid_matched,
+            "anchor_matched": companion_anchor_matched,
+            "baseline": companion_baseline,
+            "mutant": companion_mutant,
+        }
     killed = (
         baseline["classification"] == "passed"
         and positive_control["classification"] == "passed"
         and mutant_result["classification"] == "failed"
         and nodeid_matched
+        and anchor_matched
+        and companion_killed
     )
     killed = killed and candidate_clean
     observable = {
@@ -417,6 +451,8 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
         "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
         "mutant_sha256": hashlib.sha256(mutant.encode("utf-8")).hexdigest(),
         "nodeid_matched": nodeid_matched,
+        "anchor_matched": anchor_matched,
+        "companion": companion,
         "baseline": baseline,
         "positive_control": positive_control,
         "mutant": mutant_result,
@@ -911,6 +947,8 @@ def _assert_mutation_execution(observable: object, definition) -> None:
         "source_sha256",
         "mutant_sha256",
         "nodeid_matched",
+        "anchor_matched",
+        "companion",
         "baseline",
         "positive_control",
         "mutant",
@@ -937,6 +975,8 @@ def _assert_mutation_execution(observable: object, definition) -> None:
     )
     assert observable["source_sha256"] == source_sha256
     assert observable["mutant_sha256"] == hashlib.sha256(mutant.encode("utf-8")).hexdigest()
+    assert isinstance(observable["nodeid_matched"], bool)
+    assert isinstance(observable["anchor_matched"], bool)
     execution_root = None
     for name, argv in (
         ("baseline", list(definition.argv)),
@@ -978,6 +1018,55 @@ def _assert_mutation_execution(observable: object, definition) -> None:
             and result[key] != "0" * 64
             for key in ("stdout_sha256", "stderr_sha256")
         )
+    companion = observable["companion"]
+    if definition.companion_argv is None:
+        assert companion is None
+    else:
+        assert isinstance(companion, dict)
+        assert set(companion) == {
+            "argv",
+            "expected_nodeid",
+            "expected_anchor",
+            "nodeid_matched",
+            "anchor_matched",
+            "baseline",
+            "mutant",
+        }
+        assert companion["argv"] == list(definition.companion_argv)
+        assert companion["expected_nodeid"] == definition.companion_expected_nodeid
+        assert companion["expected_anchor"] == definition.companion_expected_anchor
+        assert isinstance(companion["nodeid_matched"], bool)
+        assert isinstance(companion["anchor_matched"], bool)
+        for name in ("baseline", "mutant"):
+            result = companion[name]
+            assert isinstance(result, dict)
+            assert set(result) == {
+                "argv",
+                "cwd",
+                "environment",
+                "exit_code",
+                "stdout_sha256",
+                "stderr_sha256",
+                "classification",
+            }
+            assert result["argv"] == list(definition.companion_argv)
+            assert result["cwd"] == execution_root
+            assert result["environment"] == observable["baseline"]["environment"]
+            assert result["classification"] in {
+                "passed",
+                "skipped",
+                "failed",
+                "inconclusive",
+            }
+            assert (result["exit_code"] == 0) != (
+                result["classification"] == "failed"
+            )
+            assert all(
+                isinstance(result[key], str)
+                and len(result[key]) == 64
+                and result[key] != "0" * 64
+                for key in ("stdout_sha256", "stderr_sha256")
+            )
     baseline = observable["baseline"]
     positive_control = observable["positive_control"]
     mutant_result = observable["mutant"]
@@ -986,6 +1075,12 @@ def _assert_mutation_execution(observable: object, definition) -> None:
         assert positive_control["classification"] == "passed"
         assert mutant_result["classification"] == "failed"
         assert observable["nodeid_matched"] is True
+        assert observable["anchor_matched"] is True
+        if companion is not None:
+            assert companion["baseline"]["classification"] == "passed"
+            assert companion["mutant"]["classification"] == "failed"
+            assert companion["nodeid_matched"] is True
+            assert companion["anchor_matched"] is True
     else:
         assert (
             not candidate["candidate_clean"]
@@ -993,6 +1088,16 @@ def _assert_mutation_execution(observable: object, definition) -> None:
             or positive_control["classification"] != "passed"
             or mutant_result["classification"] != "failed"
             or observable["nodeid_matched"] is not True
+            or observable["anchor_matched"] is not True
+            or (
+                companion is not None
+                and (
+                    companion["baseline"]["classification"] != "passed"
+                    or companion["mutant"]["classification"] != "failed"
+                    or companion["nodeid_matched"] is not True
+                    or companion["anchor_matched"] is not True
+                )
+            )
         )
 
 
@@ -1686,6 +1791,32 @@ def test_planted_non_enumerated_copy_reports_its_exact_path(tmp_path) -> None:
         "phase-loop-runtime/src/phase_loop_runtime/_sl0_planted/"
         "outside-agent-submission.schema.json",
     )
+    planted.unlink()
+    planted = planted.with_name("invalid-unsupported-verdict.json")
+    planted.write_bytes(
+        (
+            FIXTURE_ROOT
+            / "test-vectors/outside-agent/invalid-unsupported-verdict.json"
+        ).read_bytes()
+    )
+    copied, scanned = find_non_enumerated_canonical_copies(tmp_path)
+    assert scanned == 1
+    assert copied == (
+        "phase-loop-runtime/src/phase_loop_runtime/_sl0_planted/"
+        "invalid-unsupported-verdict.json",
+    )
+    planted.write_text(
+        planted.read_text(encoding="utf-8")
+        .replace('"route": "accepted_for_merge"', '"route": "edited_route"')
+        .replace('"notes": "Rejected because', '"notes": "Edited copy because'),
+        encoding="utf-8",
+    )
+    copied, scanned = find_non_enumerated_canonical_copies(tmp_path)
+    assert scanned == 1
+    assert copied == (
+        "phase-loop-runtime/src/phase_loop_runtime/_sl0_planted/"
+        "invalid-unsupported-verdict.json",
+    )
 
 
 def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
@@ -2069,12 +2200,22 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         "M-CONFORM-8-SWAP-SCHEMA",
         "M-CONFORM-8-DISPATCH-BYPASS",
     }
-    for mutation in CONFORM_MUTATION_DEFINITIONS.values():
+    for mutation_id, mutation in CONFORM_MUTATION_DEFINITIONS.items():
         assert mutation.source_path.startswith("phase-loop-runtime/src/")
         assert mutation.argv[1:4] == ("-m", "pytest", "-q")
         assert mutation.argv[-1] == mutation.expected_nodeid
         assert mutation.positive_control[-1] != mutation.expected_nodeid
         assert mutation.expected_observable
+        if mutation_id == "M-CONFORM-1-RESTORE-ALLOWLIST":
+            assert mutation.companion_argv is not None
+            assert mutation.companion_argv[-1] == mutation.companion_expected_nodeid
+            assert mutation.companion_expected_anchor == (
+                "CONFORM_RED::canonical_submission_cli_accepts_three_valid_rows"
+            )
+        else:
+            assert mutation.companion_argv is None
+            assert mutation.companion_expected_nodeid is None
+            assert mutation.companion_expected_anchor is None
         source = mutation.complete_source()
         assert source.count(mutation.anchor) == 1
         mutated = mutation.apply(source)

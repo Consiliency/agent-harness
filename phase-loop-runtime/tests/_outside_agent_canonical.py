@@ -732,6 +732,9 @@ class SourceMutation:
     source_fixture: str | None = None
     source_fixture_is_authoritative: bool = False
     parse_python: bool = False
+    companion_argv: tuple[str, ...] | None = None
+    companion_expected_nodeid: str | None = None
+    companion_expected_anchor: str | None = None
 
     def apply(self, source: str) -> str:
         assert source.count(self.anchor) == 1, self.source_path
@@ -789,6 +792,16 @@ CONFORM_MUTATION_DEFINITIONS = {
         _mutation_argv("phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_canonical_submission_cli_accepts_three_valid_rows"),
         "canonical_submission_api_accepts_three_valid_rows",
         parse_python=True,
+        companion_argv=_mutation_argv(
+            "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_canonical_submission_cli_accepts_three_valid_rows"
+        ),
+        companion_expected_nodeid=(
+            "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::"
+            "test_canonical_submission_cli_accepts_three_valid_rows"
+        ),
+        companion_expected_anchor=(
+            "CONFORM_RED::canonical_submission_cli_accepts_three_valid_rows"
+        ),
     ),
     "M-CONFORM-2-RAW-CONSTRUCTION-GUARD": SourceMutation(
         "phase-loop-runtime/src/phase_loop_runtime/cli.py",
@@ -2045,11 +2058,29 @@ def _looks_like_canonical_contract_copy(path: Path) -> bool:
         return True
     if _matches_canonical_manifest_shape(value):
         return True
+    if _matches_canonical_route_vector_shape(value):
+        return True
     return (
         value.get("submission_schema_version") == "outside_agent_submission.v0.1"
         and value.get("claim_posture") == "claims_only"
         and value.get("acceptance_truth_owner") == "governed_pipeline"
         and isinstance(value.get("evidence_refs"), list)
+    )
+
+
+def _matches_canonical_route_vector_shape(value: Mapping[str, Any]) -> bool:
+    canonical = load_json(
+        FIXTURE_ROOT
+        / "test-vectors/outside-agent/invalid-unsupported-verdict.json"
+    )
+    canonical_keys = set(canonical)
+    if len(set(value) & canonical_keys) < len(canonical_keys) - 1:
+        return False
+    blocker = value.get("blocker")
+    canonical_blocker = canonical["blocker"]
+    return isinstance(blocker, Mapping) and (
+        len(set(blocker) & set(canonical_blocker))
+        >= len(canonical_blocker) - 1
     )
 
 
