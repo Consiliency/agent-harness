@@ -61,6 +61,20 @@ IMMUTABLE_SPEC_V0_2_1_DIGESTS = {
     for source_path, mirror_path, digest in IMMUTABLE_SPEC_V0_2_1_FILES
     if source_path == mirror_path
 }
+EXPECTED_VENDOR_RECORD = {
+    "source_repo": "Consiliency/spec",
+    "source_ref": PRODUCER_TAG,
+    "source_commit": PRODUCER_COMMIT,
+    "files": [
+        {
+            "source_path": source_path,
+            "mirror_path": mirror_path,
+            "raw_byte_sha256": digest,
+        }
+        for source_path, mirror_path, digest in IMMUTABLE_SPEC_V0_2_1_FILES
+    ],
+}
+EXPECTED_VENDOR_BYTES = json.dumps(EXPECTED_VENDOR_RECORD, sort_keys=True).encode("utf-8")
 
 # These are the Git blob identities of the exact test-owned candidate files.
 # They make the local fixture check hermetic: no sibling Consiliency/spec
@@ -1484,19 +1498,7 @@ SEALED_RELEASE_ARCHIVE_MEMBERS = (
 )
 SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS = {
     "phase_loop_runtime/conformance/_contract/VENDOR.json": hashlib.sha256(
-        json.dumps(
-            {
-                "files": [
-                    {
-                        "source_path": source_path,
-                        "mirror_path": mirror_path,
-                        "raw_byte_sha256": digest,
-                    }
-                    for source_path, mirror_path, digest in IMMUTABLE_SPEC_V0_2_1_FILES
-                ]
-            },
-            sort_keys=True,
-        ).encode("utf-8")
+        EXPECTED_VENDOR_BYTES
     ).hexdigest(),
     **{
         "phase_loop_runtime/conformance/_contract/" + relative: digest
@@ -1552,19 +1554,7 @@ def sealed_release_candidate_bytes(
 ) -> dict[str, bytes]:
     """Build the deterministic full SL-1 transition from reviewed-base blobs."""
     parent = sealed_release_parent_bytes(repository)
-    vendor = json.dumps(
-        {
-            "files": [
-                {
-                    "source_path": source_path,
-                    "mirror_path": mirror_path,
-                    "raw_byte_sha256": digest,
-                }
-                for source_path, mirror_path, digest in IMMUTABLE_SPEC_V0_2_1_FILES
-            ]
-        },
-        sort_keys=True,
-    ).encode("utf-8")
+    vendor = EXPECTED_VENDOR_BYTES
     result: dict[str, bytes] = {}
     for path in SEALED_RELEASE_CANDIDATE_PATHS:
         if path.endswith("/VENDOR.json"):

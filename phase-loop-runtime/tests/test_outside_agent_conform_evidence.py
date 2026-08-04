@@ -52,8 +52,8 @@ from _outside_agent_canonical import (
     EC_CONFORM_PROBES,
     EVIDENCE_VERIFIER_INTERFACE,
     EVIDENCE_VERIFIER_RECORD_IDS,
+    EXPECTED_VENDOR_BYTES,
     FIXTURE_ROOT,
-    IMMUTABLE_SPEC_V0_2_1_FILES,
     REPO_ROOT,
     SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS,
     SEALED_RELEASE_ARCHIVE_MEMBERS,
@@ -509,6 +509,91 @@ def _write_runnable_package_archives(
     assert derived_members == package_members
     _write_runnable_wheel(archives["sdist-derived-wheel"], derived_members)
     return archives
+
+
+def _build_candidate_package_archives(
+    root: Path, candidate_commit: str
+) -> dict[str, Path]:
+    """Build all package routes from one exact committed candidate tree."""
+    root.mkdir()
+    exported = _run_bound_child_bytes(
+        ["git", "archive", "--format=tar", candidate_commit], cwd=REPO_ROOT
+    )
+    assert exported.returncode == 0, exported.stderr.decode("utf-8", errors="replace")
+    candidate_export = root / "candidate-export"
+    candidate_export.mkdir()
+    with tarfile.open(fileobj=io.BytesIO(exported.stdout), mode="r:") as archive:
+        for member in archive.getmembers():
+            parts = Path(member.name).parts
+            assert parts and not member.name.startswith("/") and ".." not in parts
+            assert member.isfile() or member.isdir()
+        archive.extractall(candidate_export, filter="data")
+    candidate_runtime = candidate_export / "phase-loop-runtime"
+    source_date_epoch = _run_bound_child(
+        ["git", "show", "-s", "--format=%ct", candidate_commit],
+        input_text="",
+        cwd=REPO_ROOT,
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    assert source_date_epoch.returncode == 0 and source_date_epoch.stdout.strip().isdecimal()
+    environment = {
+        **os.environ,
+        "SOURCE_DATE_EPOCH": source_date_epoch.stdout.strip(),
+    }
+    direct_wheel_dist = root / "direct-wheel-dist"
+    direct_sdist_dist = root / "direct-sdist-dist"
+    for arguments, output in (
+        (("--wheel",), direct_wheel_dist),
+        (("--sdist",), direct_sdist_dist),
+    ):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "build",
+                *arguments,
+                "--no-isolation",
+                "--outdir",
+                str(output),
+                str(candidate_runtime),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+    direct_wheel = next(direct_wheel_dist.glob("*.whl"))
+    direct_sdist = next(direct_sdist_dist.glob("*.tar.gz"))
+    sdist_export = root / "sdist-export"
+    sdist_export.mkdir()
+    with tarfile.open(direct_sdist) as archive:
+        archive.extractall(sdist_export, filter="data")
+    sdist_roots = [path for path in sdist_export.iterdir() if path.is_dir()]
+    assert len(sdist_roots) == 1
+    derived_wheel_dist = root / "sdist-derived-wheel-dist"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "build",
+            "--wheel",
+            "--no-isolation",
+            "--outdir",
+            str(derived_wheel_dist),
+            str(sdist_roots[0]),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return {
+        "direct-wheel": direct_wheel,
+        "direct-sdist": direct_sdist,
+        "sdist-derived-wheel": next(derived_wheel_dist.glob("*.whl")),
+    }
 
 
 def _capture_subprocess_observable(
@@ -1387,20 +1472,9 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
             ).read_bytes()
             for relative in fixture_paths()
         }
-        vendor_bytes = json.dumps(
-            {
-                "files": [
-                    {
-                        "source_path": source_path,
-                        "mirror_path": mirror_path,
-                        "raw_byte_sha256": digest,
-                    }
-                    for source_path, mirror_path, digest in IMMUTABLE_SPEC_V0_2_1_FILES
-                ]
-            },
-            sort_keys=True,
-        ).encode("utf-8")
-        fixture_members["phase_loop_runtime/conformance/_contract/VENDOR.json"] = vendor_bytes
+        fixture_members["phase_loop_runtime/conformance/_contract/VENDOR.json"] = (
+            EXPECTED_VENDOR_BYTES
+        )
         assert _member_digests(fixture_members) == SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS
         return
 
@@ -2001,37 +2075,20 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         verifier = getattr(module, "verify_conform_evidence_records")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            repository = root / "runner-history"
-            repository.mkdir()
+            repository = REPO_ROOT
 
             def git(*argv: str) -> str:
                 completed = subprocess.run(["git", *argv], cwd=repository, capture_output=True, text=True, check=False)
                 assert completed.returncode == 0, completed.stdout + completed.stderr
                 return completed.stdout.strip()
 
-            git("init")
-            git("config", "user.email", "conform@example.test")
-            git("config", "user.name", "CONFORM runner")
-            runner_parent = sealed_release_parent_bytes()
-            runner_candidate = sealed_release_candidate_bytes()
-            for path, contents in runner_parent.items():
-                if contents is None:
-                    continue
-                materialized = repository / path
-                materialized.parent.mkdir(parents=True, exist_ok=True)
-                materialized.write_bytes(contents)
-            git("add", ".")
-            git("commit", "-m", "parent")
-            parent = git("rev-parse", "HEAD")
-            parent_tree = git("rev-parse", "HEAD^{tree}")
-            for path, contents in runner_candidate.items():
-                materialized = repository / path
-                materialized.parent.mkdir(parents=True, exist_ok=True)
-                materialized.write_bytes(contents)
-            git("add", ".")
-            git("commit", "-m", "full candidate")
-            candidate = git("rev-parse", "HEAD")
-            candidate_tree = git("rev-parse", "HEAD^{tree}")
+            candidate_identity = _repo_candidate_identity()
+            assert candidate_identity["candidate_clean"] is True
+            candidate = candidate_identity["candidate_oid"]
+            candidate_tree = candidate_identity["candidate_tree"]
+            assert isinstance(candidate, str) and isinstance(candidate_tree, str)
+            parent = git("rev-parse", f"{candidate}^")
+            parent_tree = git("rev-parse", f"{parent}^{{tree}}")
             fixture_manifest = json.loads(
                 (FIXTURE_ROOT / "test-vectors/outside-agent/manifest.json").read_text(
                     encoding="utf-8"
@@ -2072,22 +2129,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
             }
             assert tuple(len(ids) for ids in corpus_partitions.values()) == (3, 7, 1)
             contract_members = {
-                "phase_loop_runtime/conformance/_contract/VENDOR.json": json.dumps(
-                    {
-                        "source_repo": "Consiliency/spec",
-                        "source_ref": "v0.2.1",
-                        "source_commit": "b862f977897a7b87c4419680a3e83735d4ff07b0",
-                        "files": [
-                            {
-                                "source_path": source_path,
-                                "mirror_path": mirror_path,
-                                "raw_byte_sha256": digest,
-                            }
-                            for source_path, mirror_path, digest in IMMUTABLE_SPEC_V0_2_1_FILES
-                        ],
-                    },
-                    sort_keys=True,
-                ).encode("utf-8"),
+                "phase_loop_runtime/conformance/_contract/VENDOR.json": EXPECTED_VENDOR_BYTES,
                 **{
                     "phase_loop_runtime/conformance/_contract/" + relative: (
                         FIXTURE_ROOT / relative
@@ -2184,6 +2226,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 "mutation_records": mutation_records,
                 "mutations": mutation_records,
             }
+            candidate_archives = _build_candidate_package_archives(
+                root / "candidate-package-build", candidate
+            )
 
             def records_for(mode: str) -> tuple[list[dict[str, object]], dict[str, Path]]:
                 mode_root = root / mode
@@ -2192,9 +2237,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 mode_log.write_text(f"runner-owned:{mode}\n", encoding="utf-8")
                 mode_junit = mode_root / "controls.junit.xml"
                 _write_exact_frozen_activated_junit(mode_junit)
-                mode_archives = _write_runnable_package_archives(
-                    mode_root, contract_members
-                )
+                mode_archives = {}
+                for label, source in candidate_archives.items():
+                    target = mode_root / source.name
+                    shutil.copy2(source, target)
+                    mode_archives[label] = target
                 installed_package_facts = {
                     "package": "phase-loop-runtime",
                     "module_path": bindings["module_path"],
