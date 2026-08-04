@@ -181,26 +181,52 @@ def test_provider_projection_allows_only_selected_vendor_subscription_material(r
         if not hasattr(proofgate_isolation, "project_vendor_subscription") and not hasattr(proofgate_isolation, "AttendedProviderSupervisor"):
             raise ProofgateMissingCapabilityError("proofgate_isolation missing project_vendor_subscription or AttendedProviderSupervisor capability")
 
+        if not hasattr(proofgate_isolation, "verify_response_canary"):
+            raise ProofgateMissingCapabilityError("proofgate_isolation missing verify_response_canary capability")
+
         if not proofgate_attended_live():
             for prov_case in ATTENDED_REAL_PROVIDER_CASES:
                 record_property(prov_case, "not_executed_in_ordinary_mode")
 
-            # Verify response-control canary, transform representation, chunk split, overflow/encoding refusal
-            canary_eval = proofgate_isolation.verify_response_canary({
-                "payload": "chunk1_chunk2_clean",
-                "transform": "bounded_content_frame",
+            clean_eval = proofgate_isolation.verify_response_canary({
+                "response_chunks": (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n", b'{"content":"clean"}'),
                 "max_bytes": 1024,
+                "transform_closure": "credential_transform_closure.v1",
             })
-            assert canary_eval.get("canary_passed") is True
-            assert canary_eval.get("downstream_bytes_mutated") is False
-            assert canary_eval.get("followup_requests") == 0
+            assert clean_eval.get("schema") == "taint_clean_bounded_content_frame.v1"
+            assert clean_eval.get("refused") is False
+            assert clean_eval.get("downstream_bytes") == b'{"content":"clean"}'
+            assert clean_eval.get("session_mutations") == 0
+            assert clean_eval.get("followup_requests") == 0
 
-            refusal_eval = proofgate_isolation.verify_response_canary({
-                "payload": "A" * 2048,
-                "transform": "overflow_attempt",
-                "max_bytes": 1024,
-            })
-            assert refusal_eval.get("refused") is True
+            response_canaries = {
+                "set_cookie": (b"HTTP/1.1 200 OK\r\nSet-Cookie: sid=synthetic\r\n\r\n",),
+                "rotated_token": (b"HTTP/1.1 200 OK\r\nX-Rotated-Token: synthetic\r\n\r\n",),
+                "auth_challenge": (b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\n\r\n",),
+                "redirect": (b"HTTP/1.1 302 Found\r\nLocation: /refresh\r\n\r\n",),
+                "refresh_response": (b"HTTP/1.1 200 OK\r\nX-Refresh-Token: synthetic\r\n\r\n",),
+                "unsupported_control_metadata": (b"HTTP/1.1 200 OK\r\nX-Upstream-Control: mutate-session\r\n\r\n",),
+                "split_transform": (
+                    b"HTTP/1.1 200 OK\r\nX-Rotated-Token: c3ludG", b"hldGlj\r\n\r\n",
+                ),
+                "overflow_encoding": (
+                    b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n" + b"A" * 2048,
+                ),
+            }
+            for canary_id, response_chunks in response_canaries.items():
+                refusal_eval = proofgate_isolation.verify_response_canary({
+                    "canary_id": canary_id,
+                    "response_chunks": response_chunks,
+                    "max_bytes": 1024,
+                    "transform_closure": "credential_transform_closure.v1",
+                    "followup_request_probe": True,
+                })
+                assert refusal_eval.get("schema") == "proofgate_response_canary.v1"
+                assert refusal_eval.get("refused") is True
+                assert refusal_eval.get("downstream_bytes") == b""
+                assert refusal_eval.get("session_mutations") == 0
+                assert refusal_eval.get("followup_requests") == 0
+                assert refusal_eval.get("request_count") == 0
         else:
             supervisor = proofgate_isolation.AttendedProviderSupervisor()
             turn_results = supervisor.execute_attended_turn_matrix()

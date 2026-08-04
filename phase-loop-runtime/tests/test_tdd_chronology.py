@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 import pytest
 
 from .proofgate_bootstrap_verifier import (
+    BOOTSTRAP_MERGE_OBSERVATION_SCHEMA,
+    PR_B_5_PATHS,
     PR_T_18_PATHS,
+    ProofgateBootstrapMergeObservation,
     ProofgateBootstrapVerifierError,
+    RecordingBootstrapMergeObservationBoundary,
+    compute_git_source_binding_facts,
     evaluate_unit_double_bootstrap_merge_review_gate,
+    verify_observed_premerge_bootstrap_review_gate,
     verify_junit_accounting,
     verify_landed_bootstrap_source_binding,
     verify_premerge_bootstrap_review_gate,
@@ -121,6 +129,169 @@ def _valid_seats(target_digest: str) -> tuple[dict, list]:
     return records, chronology
 
 
+def _chronology_error_type(tdd_chronology):
+    error_type = getattr(tdd_chronology, "TddChronologyError", None)
+    if not isinstance(error_type, type) or not issubclass(error_type, Exception):
+        raise ProofgateMissingCapabilityError("phase_loop_runtime.tdd_chronology missing TddChronologyError")
+    return error_type
+
+
+def _assert_chronology_accepted(tdd_chronology, **kwargs):
+    result = tdd_chronology.verify_test_lane_chronology(**kwargs)
+    assert isinstance(result, dict), f"verify_test_lane_chronology must return a typed result, got {result!r}"
+    assert result.get("schema") == "test_lane_chronology.v1"
+    assert result.get("accepted") is True
+    assert result.get("decisive") is True
+    return result
+
+
+def _assert_chronology_rejected(tdd_chronology, rejection_code: str, **kwargs):
+    """Require the real chronology entrypoint to refuse a named invalid lifecycle."""
+    error_type = _chronology_error_type(tdd_chronology)
+    try:
+        result = tdd_chronology.verify_test_lane_chronology(**kwargs)
+    except error_type as exc:
+        code = getattr(exc, "code", str(exc))
+        assert rejection_code in str(code), f"expected chronology rejection {rejection_code!r}, got {code!r}"
+        return
+    assert isinstance(result, dict), f"chronology rejection must be typed, not {result!r}"
+    assert result.get("schema") == "test_lane_chronology.v1"
+    assert result.get("accepted") is False
+    assert result.get("rejection_code") == rejection_code
+    assert result.get("decisive") is True
+
+
+def _phase_reports_and_junit(mode: str) -> tuple[str, list[dict], dict | None]:
+    """Build canonical, complete artifacts for the decisive bootstrap boundary test."""
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(root, "testsuite", name="pytest")
+    reports: list[dict] = []
+    runner_envelope: dict | None = None
+    provider_values: dict[str, str] = {}
+    if mode == "ordinary_hermetic":
+        provider_values = {case: "not_executed_in_ordinary_mode" for case in (
+            "fable_subscription_transport_reachable",
+            "sol_terra_subscription_transport_reachable",
+            "gemini_subscription_transport_reachable",
+            "grok_subscription_transport_reachable",
+        )}
+    elif mode == "attended_live":
+        cases = (
+            "fable_subscription_transport_reachable",
+            "sol_terra_subscription_transport_reachable",
+            "gemini_subscription_transport_reachable",
+            "grok_subscription_transport_reachable",
+        )
+        runner_envelope = {
+            "runner_stage": "candidate",
+            "module_identity": "bootstrap-module-digest",
+            "head_identity": "a" * 40,
+            "nonces": {case: f"nonce-{index}" for index, case in enumerate(cases)},
+            "broker_digests": {case: (str(index) * 64) for index, case in enumerate(cases, 1)},
+            "profile_digests": {case: (str(index + 4) * 64) for index, case in enumerate(cases, 1)},
+        }
+        provider_values = {
+            case: json.dumps({
+                "runner_stage": runner_envelope["runner_stage"],
+                "module_identity": runner_envelope["module_identity"],
+                "head_identity": runner_envelope["head_identity"],
+                "nonce": runner_envelope["nonces"][case],
+                "broker_digest": runner_envelope["broker_digests"][case],
+                "profile_digest": runner_envelope["profile_digests"][case],
+            }, sort_keys=True)
+            for case in cases
+        }
+
+    for nodeid in EXPECTED_PHASE_NODEIDS:
+        parts = nodeid.replace("phase-loop-runtime/", "").split("::")
+        file_mod = parts[0].replace("/", ".").replace(".py", "")
+        classname = f"{file_mod}.{parts[1]}" if len(parts) == 3 else file_mod
+        testcase = ET.SubElement(suite, "testcase", classname=classname, name=parts[-1])
+        properties: dict[str, str] = {}
+        if nodeid.endswith("test_provider_projection_allows_only_selected_vendor_subscription_material"):
+            properties = provider_values
+            if properties:
+                props = ET.SubElement(testcase, "properties")
+                for name, value in properties.items():
+                    ET.SubElement(props, "property", name=name, value=value)
+
+        if mode == "default" and nodeid in DEFAULT_SKIP_NODEIDS:
+            ET.SubElement(testcase, "skipped", message="default_skip")
+            outcome, exception_type = "skipped", None
+        elif mode == "forced_red" and nodeid in RED_CASES_BY_NODEID:
+            tag = f"PROOFGATE_RED::{RED_CASES_BY_NODEID[nodeid][1]}"
+            ET.SubElement(testcase, "failure", message=tag).text = tag
+            outcome, exception_type = "failed", "AssertionError"
+        else:
+            outcome, exception_type = "passed", None
+        report = {"nodeid": nodeid, "phase": "call", "outcome": outcome, "properties": properties}
+        if exception_type is not None:
+            report["exception_type"] = exception_type
+        reports.append(report)
+    return ET.tostring(root, encoding="unicode"), reports, runner_envelope
+
+
+def _write_decisive_bootstrap_artifacts(repo: Path, candidate_oid: str) -> dict[str, dict]:
+    reports_by_mode: dict[str, dict] = {}
+    for filename, mode in (
+        ("junit_default.xml", "default"),
+        ("junit_forced_red.xml", "forced_red"),
+        ("junit_ordinary.xml", "ordinary_hermetic"),
+        ("junit_attended.xml", "attended_live"),
+    ):
+        junit, reports, runner_envelope = _phase_reports_and_junit(mode)
+        (repo / filename).write_text(junit, encoding="utf-8")
+        reports_by_mode[mode] = {"reports": reports}
+        if runner_envelope is not None:
+            reports_by_mode[mode]["runner_envelope"] = runner_envelope
+    for filename in (
+        "ctrl_isolation.log",
+        "ctrl_taint.log",
+        "ctrl_misuse.log",
+        "ctrl_control.log",
+        "ctrl_positive_canary.log",
+    ):
+        (repo / filename).write_text(json.dumps({
+            "schema": "proofgate_control_artifact.v1",
+            "control": filename,
+            "candidate_oid": candidate_oid,
+            "status": "passed",
+        }, sort_keys=True), encoding="utf-8")
+    return reports_by_mode
+
+
+def _observed_bootstrap_boundary(repo: Path, base_oid: str, candidate_oid: str, github_pr: dict, seats: dict, chronology: list):
+    reports_by_mode = _write_decisive_bootstrap_artifacts(repo, candidate_oid)
+    facts = compute_git_source_binding_facts(repo, base_oid, candidate_oid)
+    assert facts
+    path_scope_digest = hashlib.sha256(
+        json.dumps(facts["path_tuples"], separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    junit_digests = tuple(
+        (filename, hashlib.sha256((repo / filename).read_bytes()).hexdigest())
+        for filename in ("junit_default.xml", "junit_forced_red.xml", "junit_ordinary.xml", "junit_attended.xml")
+    )
+    control_digests = tuple(
+        (filename, hashlib.sha256((repo / filename).read_bytes()).hexdigest())
+        for filename in ("ctrl_isolation.log", "ctrl_taint.log", "ctrl_misuse.log", "ctrl_control.log", "ctrl_positive_canary.log")
+    )
+    observation = ProofgateBootstrapMergeObservation(
+        schema=BOOTSTRAP_MERGE_OBSERVATION_SCHEMA,
+        base_oid=base_oid,
+        candidate_oid=candidate_oid,
+        change_tuple_digest=facts["change_tuple_digest"],
+        path_blob_digest=facts["path_blob_digest"],
+        path_scope_digest=path_scope_digest,
+        github_pr_json=json.dumps(github_pr, sort_keys=True, separators=(",", ":")),
+        seat_records_json=json.dumps(seats, sort_keys=True, separators=(",", ":")),
+        seat_chronology=tuple(chronology),
+        junit_artifact_digests=junit_digests,
+        junit_phase_reports_json=json.dumps(reports_by_mode, sort_keys=True, separators=(",", ":")),
+        control_artifact_digests=control_digests,
+    )
+    return observation, RecordingBootstrapMergeObservationBoundary(observation)
+
+
 def test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landings():
     nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landings"
     if not guard_proofgate_nodeid(nodeid):
@@ -160,6 +331,81 @@ def test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landi
         pr_meta = _valid_pr_metadata(cand_t_oid, base_oid)
         seats, chron = _valid_seats(target_digest)
 
+        # The real Git tuple/path scope, exact PR identity, four seat digests, four
+        # JUnits and five control artifacts jointly authorize the pre-merge boundary.
+        observation, boundary = _observed_bootstrap_boundary(repo, base_oid, cand_t_oid, pr_meta, seats, chron)
+        decisive = verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, cand_t_oid, pr_meta, landing_kind="PR-T", boundary=boundary
+        )
+        assert decisive["decisive"] is True
+        assert decisive["evidence_kind"] == "coordinator_external_observation"
+        assert decisive["authorized"] is True
+        assert len(boundary.calls) == 1
+
+        # The same decisive boundary must be usable before the separately reviewed,
+        # production-only PR-B five-path landing.
+        subprocess.run(["git", "checkout", "-b", "pr-b-branch", landing_t_oid], cwd=repo, capture_output=True, check=True)
+        for rel_path in PR_B_5_PATHS:
+            full_p = repo / rel_path
+            full_p.parent.mkdir(parents=True, exist_ok=True)
+            full_p.write_text(f"# bootstrap {rel_path}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "PR-B bootstrap landing"], cwd=repo, capture_output=True, check=True)
+        cand_b_oid = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, check=True).stdout.decode().strip()
+        pr_b_meta = _valid_pr_metadata(cand_b_oid, landing_t_oid)
+        pr_b_digest = hashlib.sha256(
+            subprocess.run(
+                ["git", "diff-tree", "--raw", "-r", "-z", landing_t_oid, cand_b_oid],
+                cwd=repo,
+                capture_output=True,
+                check=True,
+            ).stdout
+        ).hexdigest()
+        pr_b_seats, pr_b_chronology = _valid_seats(pr_b_digest)
+        _observation_b, boundary_b = _observed_bootstrap_boundary(
+            repo, landing_t_oid, cand_b_oid, pr_b_meta, pr_b_seats, pr_b_chronology
+        )
+        decisive_b = verify_observed_premerge_bootstrap_review_gate(
+            repo, landing_t_oid, cand_b_oid, pr_b_meta, landing_kind="PR-B", boundary=boundary_b
+        )
+        assert decisive_b["decisive"] is True
+        assert decisive_b["evidence_kind"] == "coordinator_external_observation"
+
+        _write_decisive_bootstrap_artifacts(repo, cand_t_oid)
+        altered_seats = json.loads(observation.seat_records_json)
+        altered_seats["fable"]["candidate_digest"] = "0" * 64
+        invalid_observations = (
+            ("change_tuple", dataclasses.replace(observation, change_tuple_digest="0" * 64)),
+            ("path_scope", dataclasses.replace(observation, path_scope_digest="0" * 64)),
+            ("seat_digest", dataclasses.replace(
+                observation,
+                seat_records_json=json.dumps(altered_seats, sort_keys=True, separators=(",", ":")),
+            )),
+            ("junit_accounting", dataclasses.replace(
+                observation,
+                junit_phase_reports_json=json.dumps({"default": {"reports": []}}, sort_keys=True, separators=(",", ":")),
+            )),
+        )
+        for label, invalid_observation in invalid_observations:
+            with pytest.raises(ProofgateBootstrapVerifierError, match="(Git change tuple/path scope|JUnit report modes mismatch|Seat fable digest)"):
+                verify_observed_premerge_bootstrap_review_gate(
+                    repo,
+                    base_oid,
+                    cand_t_oid,
+                    pr_meta,
+                    landing_kind="PR-T",
+                    boundary=RecordingBootstrapMergeObservationBoundary(invalid_observation),
+                )
+
+        class _UnavailableBoundary:
+            def observe(self, _request):
+                raise RuntimeError("coordinator unavailable")
+
+        with pytest.raises(ProofgateBootstrapVerifierError, match="observation boundary unavailable"):
+            verify_observed_premerge_bootstrap_review_gate(
+                repo, base_oid, cand_t_oid, pr_meta, landing_kind="PR-T", boundary=_UnavailableBoundary()
+            )
+
         # Landed verification on 2-parent merge must succeed
         res = verify_landed_bootstrap_source_binding(repo, landing_t_oid, base_oid, cand_t_oid, pr_meta, seats, chron, landing_kind="PR-T")
         assert res["decisive"] is False
@@ -175,7 +421,29 @@ def test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landi
         with pytest.raises(ProofgateBootstrapVerifierError, match="two_parent_landing_required"):
             verify_landed_bootstrap_source_binding(repo, squash_oid, base_oid, cand_t_oid, pr_meta, seats, chron, landing_kind="PR-T")
 
-        tdd_chronology.verify_test_lane_chronology(repo_path=repo, landing_oid=landing_t_oid, base_oid=base_oid, candidate_oid=cand_t_oid, github_pr=pr_meta, seat_records=seats, seat_chronology=chron)
+        _assert_chronology_accepted(
+            tdd_chronology,
+            repo_path=repo,
+            landing_oid=landing_t_oid,
+            base_oid=base_oid,
+            candidate_oid=cand_t_oid,
+            github_pr=pr_meta,
+            seat_records=seats,
+            seat_chronology=chron,
+            landing_kind="PR-T",
+        )
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "two_parent_landing_required",
+            repo_path=repo,
+            landing_oid=squash_oid,
+            base_oid=base_oid,
+            candidate_oid=cand_t_oid,
+            github_pr=pr_meta,
+            seat_records=seats,
+            seat_chronology=chron,
+            landing_kind="PR-T",
+        )
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -219,7 +487,17 @@ def test_chronology_rejects_tests_only_range_with_non_test_bytes():
         with pytest.raises(ProofgateBootstrapVerifierError, match="PR-T candidate contains unauthorized non-test path"):
             verify_premerge_bootstrap_review_gate(repo, base_oid, cand_bad_oid, pr_meta, seats, chron, landing_kind="PR-T")
 
-        tdd_chronology.verify_test_lane_chronology(repo_path=repo, base_oid=base_oid, candidate_oid=cand_bad_oid, github_pr=pr_meta, seat_records=seats, seat_chronology=chron, landing_kind="PR-T")
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "pr_t_tests_only_path_scope",
+            repo_path=repo,
+            base_oid=base_oid,
+            candidate_oid=cand_bad_oid,
+            github_pr=pr_meta,
+            seat_records=seats,
+            seat_chronology=chron,
+            landing_kind="PR-T",
+        )
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -257,7 +535,7 @@ def test_chronology_rejects_bootstrap_range_outside_frozen_set_or_test_edit():
 
         # Bootstrap range verification must reject test file edit or paths outside frozen bootstrap set
         with pytest.raises(ProofgateBootstrapVerifierError):
-            verify_premerge_bootstrap_review_gate(repo, base_oid, cand_b_oid, pr_meta, seats, chron, landing_kind="PR-T")
+            verify_premerge_bootstrap_review_gate(repo, base_oid, cand_b_oid, pr_meta, seats, chron, landing_kind="PR-B")
 
         # Case B: Edit non-bootstrap production file
         subprocess.run(["git", "checkout", "main"], cwd=repo, capture_output=True, check=True)
@@ -276,9 +554,30 @@ def test_chronology_rejects_bootstrap_range_outside_frozen_set_or_test_edit():
         seats2, chron2 = _valid_seats(target_digest2)
 
         with pytest.raises(ProofgateBootstrapVerifierError):
-            verify_premerge_bootstrap_review_gate(repo, base_oid, cand_b_prod_oid, pr_meta2, seats2, chron2, landing_kind="PR-T")
+            verify_premerge_bootstrap_review_gate(repo, base_oid, cand_b_prod_oid, pr_meta2, seats2, chron2, landing_kind="PR-B")
 
-        tdd_chronology.verify_test_lane_chronology(repo_path=repo, base_oid=base_oid, candidate_oid=cand_b_oid, github_pr=pr_meta, seat_records=seats, seat_chronology=chron, landing_kind="PR-B")
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "pr_b_bootstrap_path_scope",
+            repo_path=repo,
+            base_oid=base_oid,
+            candidate_oid=cand_b_oid,
+            github_pr=pr_meta,
+            seat_records=seats,
+            seat_chronology=chron,
+            landing_kind="PR-B",
+        )
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "pr_b_bootstrap_path_scope",
+            repo_path=repo,
+            base_oid=base_oid,
+            candidate_oid=cand_b_prod_oid,
+            github_pr=pr_meta2,
+            seat_records=seats2,
+            seat_chronology=chron2,
+            landing_kind="PR-B",
+        )
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -303,7 +602,14 @@ def test_chronology_rejects_implementation_range_test_guard_selector_nodeid_coun
         subprocess.run(["git", "checkout", "-b", "pr-i-bad"], cwd=repo, capture_output=True, check=True)
         guard_file = repo / "phase-loop-runtime" / "tests" / "proofgate_tdd_guard.py"
         guard_file.parent.mkdir(parents=True, exist_ok=True)
-        guard_file.write_text("# edit guard\n", encoding="utf-8")
+        guard_file.write_text(
+            "EXPECTED_PHASE_NODEIDS = ()\n"
+            "DEFAULT_SKIP_NODEIDS = ()\n"
+            "RED_CASES_BY_NODEID = {}\n"
+            "PROOFGATE_SOURCE_ANCHOR_ROWS_V1 = ()\n"
+            "def proofgate_test_selection(): return ()\n",
+            encoding="utf-8",
+        )
 
         subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "PR-I edit guard"], cwd=repo, capture_output=True, check=True)
@@ -336,7 +642,28 @@ def test_chronology_rejects_implementation_range_test_guard_selector_nodeid_coun
         with pytest.raises(ProofgateBootstrapVerifierError):
             verify_premerge_bootstrap_review_gate(repo, base_oid, cand_i_test_oid, pr_meta2, seats2, chron2, landing_kind="PR-T")
 
-        tdd_chronology.verify_test_lane_chronology(repo_path=repo, base_oid=base_oid, candidate_oid=cand_i_oid, github_pr=pr_meta, seat_records=seats, seat_chronology=chron, landing_kind="PR-I")
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "pr_i_immutable_test_surface",
+            repo_path=repo,
+            base_oid=base_oid,
+            candidate_oid=cand_i_oid,
+            github_pr=pr_meta,
+            seat_records=seats,
+            seat_chronology=chron,
+            landing_kind="PR-I",
+        )
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "pr_i_immutable_test_surface",
+            repo_path=repo,
+            base_oid=base_oid,
+            candidate_oid=cand_i_test_oid,
+            github_pr=pr_meta2,
+            seat_records=seats2,
+            seat_chronology=chron2,
+            landing_kind="PR-I",
+        )
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -441,7 +768,41 @@ def test_chronology_rejects_same_branch_squash_rebase_direct_push_copy_or_hidden
         with pytest.raises(ProofgateBootstrapVerifierError):
             verify_landed_bootstrap_source_binding(repo, drift_landing_oid, base_oid, cand_t_oid, pr_meta, seats, chron, landing_kind="PR-T")
 
-        tdd_chronology.verify_test_lane_chronology(repo_path=repo, landing_oid=squash_oid, base_oid=base_oid, candidate_oid=cand_t_oid, github_pr=pr_meta, seat_records=seats, seat_chronology=chron)
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "two_parent_landing_required",
+            repo_path=repo,
+            landing_oid=squash_oid,
+            base_oid=base_oid,
+            candidate_oid=cand_t_oid,
+            github_pr=pr_meta,
+            seat_records=seats,
+            seat_chronology=chron,
+            landing_kind="PR-T",
+        )
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "direct_landing_required",
+            repo_path=repo,
+            landing_oid=direct_oid,
+            base_oid=base_oid,
+            candidate_oid=cand_t_oid,
+            github_pr=pr_meta,
+            seat_records=seats,
+            seat_chronology=chron,
+            landing_kind="PR-T",
+        )
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "same_branch_landing",
+            repo_path=repo,
+            base_oid=base_oid,
+            candidate_oid=cand_t_oid,
+            github_pr=same_branch_pr,
+            seat_records=seats,
+            seat_chronology=chron,
+            landing_kind="PR-T",
+        )
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -490,7 +851,13 @@ def test_candidate_snapshot_is_source_head_parented_and_rematerializes_byte_iden
         cat_blob = subprocess.run(["git", "cat-file", "-p", found_blob], cwd=repo, capture_output=True, check=True).stdout
         assert cat_blob == content
 
-        tdd_chronology.verify_test_lane_chronology(repo_path=repo, base_oid=base_oid, candidate_oid=cand_oid)
+        _assert_chronology_accepted(
+            tdd_chronology,
+            repo_path=repo,
+            base_oid=base_oid,
+            candidate_oid=cand_oid,
+            lifecycle_stage="candidate_snapshot",
+        )
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -607,11 +974,35 @@ if curr_pid == parent_pid:
         assert res_data["repository"] == "Consiliency/agent-harness"
         assert "loaded_modules_digests" in res_data and len(res_data["loaded_modules_digests"]) > 0
 
-        verify_kwargs = {"fresh_process_boundary": True}
-        if hasattr(tdd_chronology, "verify_test_lane_chronology_fresh_process"):
-            tdd_chronology.verify_test_lane_chronology_fresh_process(parent_pid=parent_pid, process_pid=res_data["pid"], head_sha=res_data["head_sha"], module_digests=res_data["loaded_modules_digests"])
-        else:
-            tdd_chronology.verify_test_lane_chronology(**verify_kwargs)
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "fresh_process_required",
+            repo_path=repo,
+            fresh_process_boundary=True,
+            parent_pid=parent_pid,
+            process_pid=parent_pid,
+            head_sha=res_data["head_sha"],
+            module_digests=res_data["loaded_modules_digests"],
+        )
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "stale_head",
+            repo_path=repo,
+            fresh_process_boundary=True,
+            parent_pid=parent_pid,
+            process_pid=res_data["pid"],
+            head_sha="0" * 40,
+            module_digests=res_data["loaded_modules_digests"],
+        )
+        _assert_chronology_accepted(
+            tdd_chronology,
+            repo_path=repo,
+            fresh_process_boundary=True,
+            parent_pid=parent_pid,
+            process_pid=res_data["pid"],
+            head_sha=res_data["head_sha"],
+            module_digests=res_data["loaded_modules_digests"],
+        )
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -787,6 +1178,21 @@ def test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_fi
         with pytest.raises(ProofgateBootstrapVerifierError):
             evaluate_unit_double_bootstrap_merge_review_gate(valid_evidence, expected_repo="Consiliency/other-repo")
 
-        tdd_chronology.verify_test_lane_chronology(junit_evidence=valid_evidence)
+        valid_junit, valid_reports, _runner_envelope = _phase_reports_and_junit("default")
+        _assert_chronology_accepted(
+            tdd_chronology,
+            lifecycle_stage="junit_lifecycle",
+            junit_xml=valid_junit,
+            phase_reports=valid_reports,
+            junit_evidence=valid_evidence,
+        )
+        _assert_chronology_rejected(
+            tdd_chronology,
+            "junit_lifecycle_invalid",
+            lifecycle_stage="junit_lifecycle",
+            junit_xml="<testsuite><testcase>",
+            phase_reports=valid_reports,
+            junit_evidence=valid_evidence,
+        )
 
     run_proofgate_contract(nodeid, _contract)

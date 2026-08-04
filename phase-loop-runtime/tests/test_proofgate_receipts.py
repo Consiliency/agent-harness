@@ -1,6 +1,8 @@
 """test_proofgate_receipts.py — PROOFGATE receipts and receipt chain tests."""
 
+import copy
 import json
+import subprocess
 import pytest
 
 from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
@@ -61,50 +63,152 @@ def test_receipt_chain_rejects_rewrite_truncation_fork_or_backfill(tmp_path):
         git_repo = tmp_path / "receipts_repo"
         supervisor = proofgate_receipts.ProofgateReceiptSupervisor(repo_path=git_repo)
 
+        required_methods = (
+            "append_receipt",
+            "verify_chain",
+            "verify_records",
+            "resolve_concurrent_append",
+            "reconstruct_verified_history",
+            "verify_history_change_kinds",
+            "recover_interrupted_update",
+        )
+        missing_methods = [name for name in required_methods if not callable(getattr(supervisor, name, None))]
+        if missing_methods:
+            raise ProofgateMissingCapabilityError(
+                f"proofgate_receipts missing receipt-history capability: {', '.join(missing_methods)}"
+            )
+
+        def _record(record: dict) -> None:
+            assert isinstance(record, dict)
+            required = {
+                "append",
+                "append_filename",
+                "append_sha256",
+                "bundle",
+                "bundle_filename",
+                "bundle_sha256",
+                "commit_oid",
+                "core",
+                "core_filename",
+                "core_sha256",
+            }
+            assert required.issubset(record), f"receipt record lacks canonical fields: {required - set(record)}"
+            assert record["core"]["schema"] == "proofgate_attested_core.v1"
+            assert record["append"]["schema"] == "proofgate_external_head_append.v1"
+            assert record["append"]["core_sha256"] == record["core_sha256"]
+            assert record["append"]["bundle_sha256"] == record["bundle_sha256"]
+            assert record["core_filename"].endswith(f"-{record['core_sha256']}.json")
+            assert record["append_filename"].endswith(f"-{record['append_sha256']}.json")
+            assert record["core_sha256"] not in record["core"].values()
+            assert "core_sha256" not in record["core"]
+
+        def _changes(commit_oid: str, *, root: bool) -> list[tuple[str, str]]:
+            command = ["git", "diff-tree", "--no-commit-id", "--name-status", "-r"]
+            if root:
+                command.append("--root")
+            command.append(commit_oid)
+            raw = subprocess.run(command, cwd=git_repo, capture_output=True, text=True, check=True).stdout
+            return [tuple(line.split("\t", 1)) for line in raw.splitlines() if line]
+
         # Zero-parent genesis commit
         r1 = supervisor.append_receipt(subject="PROOFGATE-AC-1", payload={"step": 1})
         assert supervisor.verify_chain()
+        _record(r1)
 
-        # Independently observe raw disk files and git commits rather than trusting supervisor-returned objects
+        # Independently observe raw disk and real commit tuples rather than trusting a boolean.
         assert (git_repo / ".git").is_dir(), "Receipt repository must be initialized git repo"
         latest_file = git_repo / "latest.json"
         assert latest_file.exists(), "latest.json must exist on disk after genesis commit"
         latest_data = json.loads(latest_file.read_text(encoding="utf-8"))
-        assert "sequence" in latest_data or "append_sha256" in latest_data or "core_sha256" in latest_data
-
-        # Core bytes must be self-digest-free: no self_digest or core_sha256 key inside serialized core
-        core1 = r1.get("core", r1)
-        assert "self_digest" not in core1
-        assert "core_sha256" not in core1
+        assert latest_data["append_sha256"] == r1["append_sha256"]
+        assert latest_data["core_sha256"] == r1["core_sha256"]
+        assert set(_changes(r1["commit_oid"], root=True)) == {
+            ("A", r1["core_filename"]),
+            ("A", r1["bundle_filename"]),
+            ("A", r1["append_filename"]),
+            ("A", "latest.json"),
+        }
 
         # One-parent appends
         r2 = supervisor.append_receipt(subject="PROOFGATE-AC-1", payload={"step": 2})
         r3 = supervisor.append_receipt(subject="PROOFGATE-AC-1", payload={"step": 3})
         assert supervisor.verify_chain()
+        _record(r2)
+        _record(r3)
+        assert r2["append"]["previous_append_sha256"] == r1["append_sha256"]
+        assert r3["append"]["previous_append_sha256"] == r2["append_sha256"]
+        assert set(_changes(r2["commit_oid"], root=False)) == {
+            ("A", r2["core_filename"]),
+            ("A", r2["bundle_filename"]),
+            ("A", r2["append_filename"]),
+            ("M", "latest.json"),
+        }
 
-        # Tampering at every stage: core, filename, subject, bundle, append, pointer, sequence, previous links
-        tampered_core = r1.copy()
-        tampered_core["payload"] = {"step": 999}
+        # A core self-digest is a cycle, not an external binding, and must be refused.
+        self_referential = copy.deepcopy(r1)
+        self_referential["core"]["core_sha256"] = r1["core_sha256"]
+        assert not supervisor.verify_records([self_referential, r2, r3])
+
+        # Tamper the actual canonical structures and bindings returned by the receipt writer.
+        tampered_core = copy.deepcopy(r1)
+        tampered_core["core"]["payload"] = {"step": 999}
         assert not supervisor.verify_records([tampered_core, r2, r3])
 
-        for tamper_field in ("filename", "subject", "bundle", "append", "pointer", "sequence", "previous_links"):
-            tampered_record = r1.copy()
-            tampered_record[tamper_field] = "tampered_value"
-            assert not supervisor.verify_records([tampered_record, r2, r3])
+        tampered_filename = copy.deepcopy(r1)
+        tampered_filename["core_filename"] = tampered_filename["core_filename"].replace(".json", "-tampered.json")
+        assert not supervisor.verify_records([tampered_filename, r2, r3])
+        tampered_append = copy.deepcopy(r2)
+        tampered_append["append"]["core_sha256"] = r1["core_sha256"]
+        assert not supervisor.verify_records([r1, tampered_append, r3])
 
         # Truncation check
         assert not supervisor.verify_records([r1], expected_length=3)
 
         # Fork / backfill / rewrite check over real Git object/ref history
-        forked = [r1.copy(), r2.copy(), proofgate_receipts.create_receipt(parent=r1, subject="PROOFGATE-AC-1", payload={"step": 3})]
+        forked = [copy.deepcopy(r1), copy.deepcopy(r2), proofgate_receipts.create_receipt(parent=r1, subject="PROOFGATE-AC-1", payload={"step": 3})]
         assert not supervisor.verify_records(forked)
 
-        backfilled = [r2.copy(), r1.copy(), r3.copy()]
+        backfilled = [copy.deepcopy(r2), copy.deepcopy(r1), copy.deepcopy(r3)]
         assert not supervisor.verify_records(backfilled)
 
-        # Concurrent single winner & journal reconstruction / rollback cases
-        winner = supervisor.resolve_concurrent_append(expected_parent=r2.get("oid", "oid2"), candidates=[r3, r3])
-        assert winner is not None
+        # The exact observed change kinds are structural evidence; adding/replacing them in
+        # the wrong generation must fail even when all digest fields are otherwise unchanged.
+        history = supervisor.reconstruct_verified_history()
+        assert history["records"] == [r1, r2, r3]
+        assert history["tip_append_sha256"] == r3["append_sha256"]
+        assert supervisor.verify_history_change_kinds(history)
+        swapped_kinds = copy.deepcopy(history)
+        swapped_kinds["records"][0]["change_tuples"][-1]["change_kind"] = "M"
+        swapped_kinds["records"][1]["change_tuples"][-1]["change_kind"] = "A"
+        assert not supervisor.verify_history_change_kinds(swapped_kinds)
+
+        # Two distinct concurrent candidates race the current expected head; exactly one wins.
+        candidate_a = proofgate_receipts.create_receipt(parent=r3, subject="PROOFGATE-AC-1", payload={"step": "4a"})
+        candidate_b = proofgate_receipts.create_receipt(parent=r3, subject="PROOFGATE-AC-1", payload={"step": "4b"})
+        assert candidate_a["append_sha256"] != candidate_b["append_sha256"]
+        winner = supervisor.resolve_concurrent_append(
+            expected_parent=r3["commit_oid"], candidates=[candidate_a, candidate_b]
+        )
+        assert winner["append_sha256"] in {candidate_a["append_sha256"], candidate_b["append_sha256"]}
+        assert winner["append_sha256"] != ({candidate_a["append_sha256"], candidate_b["append_sha256"]} - {winner["append_sha256"]}).pop()
+
+        missing_pointer = copy.deepcopy(r2)
+        del missing_pointer["append"]["previous_append_sha256"]
+        assert not supervisor.verify_records([r1, missing_pointer, r3])
+        assert not supervisor.verify_records([r1, r2], expected_append_sha256=r3["append_sha256"])
+
+        latest_bytes = latest_file.read_bytes()
+        latest_file.unlink()
+        assert not supervisor.verify_chain()
+        latest_file.write_bytes(latest_bytes)
+        assert supervisor.verify_chain()
+
+        recovered_once = supervisor.recover_interrupted_update(expected_parent=r3["commit_oid"], pending_record=winner)
+        recovered_twice = supervisor.recover_interrupted_update(expected_parent=r3["commit_oid"], pending_record=winner)
+        assert recovered_once == recovered_twice
+        reconstructed = supervisor.reconstruct_verified_history()
+        assert reconstructed["records"][-1] == recovered_once
+        assert supervisor.verify_chain()
 
     run_proofgate_contract(nodeid, _contract)
 

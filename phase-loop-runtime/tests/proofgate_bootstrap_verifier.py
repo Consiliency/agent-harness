@@ -148,6 +148,69 @@ PHASE_38_PATTERNS: tuple[str, ...] = (
 PHASE_38_PATTERNS_SHA256 = "a19e9ae2714f414d92b12314e8e9370aa1518a400d638c6eef211eb05e4b6c9b"
 EXPECTED_39_NODEIDS_SHA256 = "8e48a3efe3cb6fc534fc7dae67012e40b76e0fa14953d7a52801becc15614274"
 
+BOOTSTRAP_MERGE_OBSERVATION_SCHEMA = "proofgate_bootstrap_merge_observation.v1"
+BOOTSTRAP_JUNIT_ARTIFACTS: tuple[tuple[str, str], ...] = (
+    ("junit_default.xml", "default"),
+    ("junit_forced_red.xml", "forced_red"),
+    ("junit_ordinary.xml", "ordinary_hermetic"),
+    ("junit_attended.xml", "attended_live"),
+)
+BOOTSTRAP_CONTROL_ARTIFACTS: tuple[str, ...] = (
+    "ctrl_isolation.log",
+    "ctrl_taint.log",
+    "ctrl_misuse.log",
+    "ctrl_control.log",
+    "ctrl_positive_canary.log",
+)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ProofgateBootstrapMergeObservationRequest:
+    """A locator for the coordinator's pre-merge read-only observation."""
+
+    repository: str
+    base_oid: str
+    candidate_oid: str
+    landing_kind: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ProofgateBootstrapMergeObservation:
+    """Sealed coordinator observation used only for a trust-establishing merge."""
+
+    schema: str
+    base_oid: str
+    candidate_oid: str
+    change_tuple_digest: str
+    path_blob_digest: str
+    path_scope_digest: str
+    github_pr_json: str
+    seat_records_json: str
+    seat_chronology: tuple[str, ...]
+    junit_artifact_digests: tuple[tuple[str, str], ...]
+    junit_phase_reports_json: str
+    control_artifact_digests: tuple[tuple[str, str], ...]
+
+
+class RecordingBootstrapMergeObservationBoundary:
+    """Read-only deterministic coordinator boundary for tests of the decisive path."""
+
+    def __init__(self, observation: ProofgateBootstrapMergeObservation) -> None:
+        if type(observation) is not ProofgateBootstrapMergeObservation:
+            raise TypeError("bootstrap merge observation boundary requires a sealed observation")
+        self._observation = observation
+        self._calls: list[ProofgateBootstrapMergeObservationRequest] = []
+
+    @property
+    def calls(self) -> tuple[ProofgateBootstrapMergeObservationRequest, ...]:
+        return tuple(self._calls)
+
+    def observe(self, request: ProofgateBootstrapMergeObservationRequest) -> ProofgateBootstrapMergeObservation:
+        if type(request) is not ProofgateBootstrapMergeObservationRequest:
+            raise TypeError("bootstrap merge observation boundary accepts only a locator")
+        self._calls.append(request)
+        return self._observation
+
 
 def _norm_seat(seat: str) -> str:
     s = seat.lower().strip()
@@ -626,6 +689,226 @@ def verify_premerge_bootstrap_review_gate(
     eval_res["change_tuple_digest"] = target_digest
     eval_res["path_blob_digest"] = path_blob_dig
     return eval_res
+
+
+def _path_scope_digest(path_tuples: list[tuple[str, str, str, str, str, str, str]]) -> str:
+    """Digest the real, ordered Git tuple/path scope without trusting caller metadata."""
+    payload = json.dumps(path_tuples, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _read_bootstrap_artifact(repo_path: Path, filename: str) -> bytes:
+    """Reads one pre-merge artifact from the coordinator-owned evidence root only."""
+    run_dir = os.environ.get("PHASE_LOOP_RUN_DIR")
+    candidates = [repo_path / filename, repo_path / ".phase-loop" / "runs" / filename]
+    if run_dir:
+        candidates.insert(0, Path(run_dir) / filename)
+    for candidate in candidates:
+        if candidate.is_file() and not candidate.is_symlink():
+            try:
+                return candidate.read_bytes()
+            except OSError as exc:
+                raise ProofgateBootstrapVerifierError(
+                    f"bootstrap artifact unreadable: {filename}"
+                ) from exc
+    raise ProofgateBootstrapVerifierError(f"bootstrap artifact absent: {filename}")
+
+
+def _decode_observed_object(name: str, value: str) -> dict[str, Any]:
+    try:
+        decoded = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ProofgateBootstrapVerifierError(f"observed {name} is not canonical JSON") from exc
+    if not isinstance(decoded, dict):
+        raise ProofgateBootstrapVerifierError(f"observed {name} must be a JSON object")
+    if json.dumps(decoded, sort_keys=True, separators=(",", ":")) != value:
+        raise ProofgateBootstrapVerifierError(f"observed {name} is not canonical JSON bytes")
+    return decoded
+
+
+def _validate_observed_control_artifact(filename: str, raw: bytes, candidate_oid: str) -> None:
+    """Controls are opaque evidence except for their fixed identity and clean result."""
+    try:
+        control = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} is not valid JSON") from exc
+    if not isinstance(control, dict) or set(control) != {"candidate_oid", "control", "schema", "status"}:
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} has an invalid schema")
+    if control != {
+        "schema": "proofgate_control_artifact.v1",
+        "control": filename,
+        "candidate_oid": candidate_oid,
+        "status": "passed",
+    }:
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} is not a clean candidate-bound control")
+
+
+def verify_observed_premerge_bootstrap_review_gate(
+    repo_path: Path | str,
+    base_oid: str,
+    candidate_oid: str,
+    github_pr: dict[str, Any],
+    *,
+    landing_kind: str,
+    boundary: Any,
+) -> dict[str, Any]:
+    """Decisively authorize a PR-T/PR-B merge only from local Git plus coordinator observation.
+
+    The legacy unit-double evaluator remains intentionally non-decisive.  This path reads the
+    change tuple and artifact bytes itself, compares them to the coordinator's one-shot,
+    read-only observation, then validates the observed seats, PR identity, JUnit accounting,
+    and control artifacts before it can assert authority.
+    """
+    r_path = Path(repo_path)
+    if landing_kind not in {"PR-T", "PR-B"}:
+        raise ProofgateBootstrapVerifierError(f"observed pre-merge gate only authorizes PR-T/PR-B, got {landing_kind}")
+    if not isinstance(github_pr, dict):
+        raise ProofgateBootstrapVerifierError("github_pr must be a dictionary")
+    if not callable(getattr(boundary, "observe", None)):
+        raise ProofgateBootstrapVerifierError("coordinator observation boundary is unavailable")
+    facts = compute_git_source_binding_facts(r_path, base_oid, candidate_oid)
+    if not facts:
+        raise ProofgateBootstrapVerifierError("failed to obtain real Git source facts for decisive pre-merge gate")
+
+    # This performs the immutable, real-Git path inventory validation, including the exact
+    # candidate parent and the 18/5 path scope.  Its return is explicitly non-authoritative.
+    unit_result = verify_premerge_bootstrap_review_gate(
+        r_path,
+        base_oid,
+        candidate_oid,
+        github_pr,
+        seat_records={
+            "fable": {"verdict": "AGREE", "substantive": True, "candidate_digest": facts["change_tuple_digest"], "attester": "fable", "run_identity": "unit-fable", "is_author": False, "independent_attestor": True},
+            "gpt-5.6-sol": {"verdict": "AGREE", "substantive": True, "candidate_digest": facts["change_tuple_digest"], "attester": "gpt-5.6-sol", "run_identity": "unit-sol", "is_author": False, "independent_attestor": True},
+            "gemini": {"verdict": "AGREE", "substantive": True, "candidate_digest": facts["change_tuple_digest"], "attester": "gemini", "run_identity": "unit-gemini", "is_author": True, "independent_attestor": False},
+            "grok": {"verdict": "AGREE", "substantive": True, "candidate_digest": facts["change_tuple_digest"], "attester": "grok", "run_identity": "unit-grok", "is_author": False, "independent_attestor": True},
+        },
+        seat_chronology=["fable", "gpt-5.6-sol", "gemini", "grok"],
+        landing_kind=landing_kind,
+    )
+    # The evaluator must remain a negative-control helper; it cannot carry authority forward.
+    if unit_result.get("decisive") is not False or unit_result.get("evidence_kind") != "unit_double":
+        raise ProofgateBootstrapVerifierError("unit-double helper claimed authority")
+
+    request = ProofgateBootstrapMergeObservationRequest(
+        repository=str(github_pr.get("repo", "")),
+        base_oid=base_oid,
+        candidate_oid=candidate_oid,
+        landing_kind=landing_kind,
+    )
+    try:
+        observation = boundary.observe(request)
+    except Exception as exc:
+        raise ProofgateBootstrapVerifierError("coordinator observation boundary unavailable") from exc
+    if type(observation) is not ProofgateBootstrapMergeObservation:
+        raise ProofgateBootstrapVerifierError("coordinator observation has an invalid sealed schema")
+    if observation.schema != BOOTSTRAP_MERGE_OBSERVATION_SCHEMA:
+        raise ProofgateBootstrapVerifierError("coordinator observation schema mismatch")
+
+    actual_path_scope_digest = _path_scope_digest(facts["path_tuples"])
+    if (
+        observation.base_oid != base_oid
+        or observation.candidate_oid != candidate_oid
+        or observation.change_tuple_digest != facts["change_tuple_digest"]
+        or observation.path_blob_digest != facts["path_blob_digest"]
+        or observation.path_scope_digest != actual_path_scope_digest
+    ):
+        raise ProofgateBootstrapVerifierError("coordinator observation does not bind the real Git change tuple/path scope")
+
+    observed_pr = _decode_observed_object("github_pr", observation.github_pr_json)
+    required_pr_fields = {"number", "repo", "head_ref", "base_ref", "head_sha", "base_sha"}
+    if set(observed_pr) != required_pr_fields or observed_pr != github_pr:
+        raise ProofgateBootstrapVerifierError("coordinator observation GitHub PR identity mismatch")
+    if (
+        not isinstance(observed_pr["number"], int)
+        or observed_pr["number"] <= 0
+        or observed_pr["repo"] not in {"Consiliency/agent-harness", "1280382652"}
+        or observed_pr["base_sha"] != base_oid
+        or observed_pr["head_sha"] != candidate_oid
+    ):
+        raise ProofgateBootstrapVerifierError("coordinator observation GitHub PR identity is not candidate-bound")
+
+    actual_junit_digests = {
+        filename: hashlib.sha256(_read_bootstrap_artifact(r_path, filename)).hexdigest()
+        for filename, _mode in BOOTSTRAP_JUNIT_ARTIFACTS
+    }
+    observed_junit_digests = dict(observation.junit_artifact_digests)
+    if set(observed_junit_digests) != set(actual_junit_digests) or observed_junit_digests != actual_junit_digests:
+        raise ProofgateBootstrapVerifierError("coordinator observation JUnit artifact digest mismatch")
+
+    reports_by_mode = _decode_observed_object("junit_phase_reports", observation.junit_phase_reports_json)
+    expected_modes = {mode for _filename, mode in BOOTSTRAP_JUNIT_ARTIFACTS}
+    if set(reports_by_mode) != expected_modes:
+        raise ProofgateBootstrapVerifierError("coordinator observation JUnit report modes mismatch")
+    for filename, mode in BOOTSTRAP_JUNIT_ARTIFACTS:
+        report_payload = reports_by_mode[mode]
+        if not isinstance(report_payload, dict) or set(report_payload) not in ({"reports"}, {"reports", "runner_envelope"}):
+            raise ProofgateBootstrapVerifierError(f"coordinator observation JUnit reports malformed for {mode}")
+        if mode == "attended_live" and set(report_payload) != {"reports", "runner_envelope"}:
+            raise ProofgateBootstrapVerifierError("attended JUnit requires an external runner envelope")
+        if mode != "attended_live" and set(report_payload) != {"reports"}:
+            raise ProofgateBootstrapVerifierError(f"non-attended JUnit carries a forbidden runner envelope: {mode}")
+        verify_junit_accounting(
+            _read_bootstrap_artifact(r_path, filename).decode("utf-8"),
+            mode,
+            phase_reports=report_payload["reports"],
+            runner_envelope=report_payload.get("runner_envelope"),
+        )
+
+    actual_control_digests = {
+        filename: hashlib.sha256(_read_bootstrap_artifact(r_path, filename)).hexdigest()
+        for filename in BOOTSTRAP_CONTROL_ARTIFACTS
+    }
+    observed_control_digests = dict(observation.control_artifact_digests)
+    if set(observed_control_digests) != set(actual_control_digests) or observed_control_digests != actual_control_digests:
+        raise ProofgateBootstrapVerifierError("coordinator observation control artifact digest mismatch")
+    for filename in BOOTSTRAP_CONTROL_ARTIFACTS:
+        _validate_observed_control_artifact(filename, _read_bootstrap_artifact(r_path, filename), candidate_oid)
+
+    observed_seats = _decode_observed_object("seat_records", observation.seat_records_json)
+    evidence = {
+        "candidate_oid": candidate_oid,
+        "base_oid": base_oid,
+        "path_blob_digest": facts["path_blob_digest"],
+        "change_tuple_digest": facts["change_tuple_digest"],
+        "topology": {"two_parent": True, "every_parent_present": True, "parent_oids": [base_oid, candidate_oid]},
+        "seat_records": observed_seats,
+        "seat_chronology": list(observation.seat_chronology),
+        "author_vendor": AUTHOR_VENDOR,
+        "raw_log_digest": hashlib.sha256(_read_bootstrap_artifact(r_path, "verification.log")).hexdigest(),
+        "junit_mode_digests": {
+            "default": actual_junit_digests["junit_default.xml"],
+            "forced_red": actual_junit_digests["junit_forced_red.xml"],
+            "ordinary": actual_junit_digests["junit_ordinary.xml"],
+            "attended": actual_junit_digests["junit_attended.xml"],
+        },
+        "control_digests": {
+            "isolation": actual_control_digests["ctrl_isolation.log"],
+            "taint": actual_control_digests["ctrl_taint.log"],
+            "misuse": actual_control_digests["ctrl_misuse.log"],
+            "control": actual_control_digests["ctrl_control.log"],
+            "positive_canary": actual_control_digests["ctrl_positive_canary.log"],
+        },
+        "github_pr": observed_pr,
+    }
+    evaluate_unit_double_bootstrap_merge_review_gate(
+        evidence,
+        expected_digest=facts["change_tuple_digest"],
+        expected_candidate_oid=candidate_oid,
+        expected_base_oid=base_oid,
+        expected_repo=observed_pr["repo"],
+        expected_head_ref=observed_pr["head_ref"],
+        expected_base_ref=observed_pr["base_ref"],
+    )
+    return {
+        "status": "verified",
+        "authorized": True,
+        "decisive": True,
+        "evidence_kind": "coordinator_external_observation",
+        "change_tuple_digest": facts["change_tuple_digest"],
+        "path_blob_digest": facts["path_blob_digest"],
+        "path_scope_digest": actual_path_scope_digest,
+    }
 
 
 def verify_landed_bootstrap_source_binding(

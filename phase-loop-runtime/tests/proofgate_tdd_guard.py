@@ -373,6 +373,14 @@ MUTATION_RULES_BY_PARAMETER: dict[str, tuple[str, str, str, str, str, str]] = {
     ),
 }
 
+# These are assertion identities, not source-anchor identities.  They deliberately
+# stay test-owned because the runner must compare the emitted JUnit property rather
+# than reconstructing it from a declaration, nodeid, or failure text.
+EC_PROOFGATE_4_ASSERTION_IDS: dict[str, str] = {
+    "ec-proofgate-4.github-builder-epoch-blocked": "github_builder_epoch_blocked_wiring",
+    "ec-proofgate-4.routing-builder-epoch-blocked": "routing_builder_epoch_blocked_wiring",
+}
+
 
 def proofgate_active() -> bool:
     """True if PROOFGATE mode is active via environment or capability marker."""
@@ -526,12 +534,8 @@ def emit_mutation_observable(param_id: str, record_property: Any) -> None:
     if record_property is None or param_id not in MUTATION_RULES_BY_PARAMETER:
         return
     crit_id, crit_sha, rule_id, fail_class, nodeid, res_code = MUTATION_RULES_BY_PARAMETER[param_id]
-    assertion_id = "PG-A-GOAL"
-    if param_id == "ec-proofgate-4.github-builder-epoch-blocked":
-        assertion_id = "PG-A-BROKER-GITHUB"
-    elif param_id == "ec-proofgate-4.routing-builder-epoch-blocked":
-        assertion_id = "PG-A-BROKER-ROUTING"
-    elif nodeid in RED_CASES_BY_NODEID:
+    assertion_id = EC_PROOFGATE_4_ASSERTION_IDS.get(param_id, "PG-A-GOAL")
+    if param_id not in EC_PROOFGATE_4_ASSERTION_IDS and nodeid in RED_CASES_BY_NODEID:
         assertion_id, _ = RED_CASES_BY_NODEID[nodeid]
     observable = {
         "schema": "proofgate_mutation_observable.v1",
@@ -544,6 +548,42 @@ def emit_mutation_observable(param_id: str, record_property: Any) -> None:
         "assertion_id": assertion_id,
     }
     record_property("proofgate_mutation_observable", json.dumps(observable, sort_keys=True))
+
+
+def assert_exact_mutation_observable(param_id: str, properties: list[tuple[str, str]]) -> None:
+    """Rejects absent, substituted, or synthesized mutation oracle fields.
+
+    This small test-owned oracle intentionally accepts only the one exact call-phase
+    property for a declared parameter.  In particular, EC-PROOFGATE-4 assertion IDs
+    cannot be replaced with their PG-A source anchors or inferred from the nodeid.
+    """
+    if param_id not in MUTATION_RULES_BY_PARAMETER:
+        raise AssertionError(f"unknown mutation parameter: {param_id}")
+    if len(properties) != 1 or properties[0][0] != "proofgate_mutation_observable":
+        raise AssertionError("mutation observable must contain exactly one canonical property")
+    try:
+        actual = json.loads(properties[0][1])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise AssertionError("mutation observable property must contain canonical JSON") from exc
+    if not isinstance(actual, dict):
+        raise AssertionError("mutation observable JSON must be an object")
+
+    crit_id, crit_sha, rule_id, fail_class, nodeid, res_code = MUTATION_RULES_BY_PARAMETER[param_id]
+    assertion_id = EC_PROOFGATE_4_ASSERTION_IDS.get(param_id, "PG-A-GOAL")
+    if param_id not in EC_PROOFGATE_4_ASSERTION_IDS and nodeid in RED_CASES_BY_NODEID:
+        assertion_id, _ = RED_CASES_BY_NODEID[nodeid]
+    expected = {
+        "schema": "proofgate_mutation_observable.v1",
+        "roadmap_criterion_id": crit_id,
+        "roadmap_criterion_sha256": crit_sha,
+        "rule_id": rule_id,
+        "failure_class": fail_class,
+        "target_nodeid": nodeid,
+        "result_code": res_code,
+        "assertion_id": assertion_id,
+    }
+    if actual != expected:
+        raise AssertionError(f"mutation observable mismatch for {param_id}: {actual!r}")
 
 
 def validate_mutation_manifest_structure(manifest_data: dict[str, Any] | str | Path, repo_root: Path | None = None) -> dict[str, Any]:
