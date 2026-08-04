@@ -240,6 +240,24 @@ def _repo_candidate_identity() -> dict[str, object]:
     }
 
 
+def _b2_compatibility_evidence_due() -> bool:
+    changed = []
+    for path, parent_blob in SEALED_RELEASE_FINAL_PARENT_BLOBS.items():
+        result = _run_bound_child(
+            ["git", "rev-parse", f"HEAD:{path}"],
+            input_text="",
+            cwd=REPO_ROOT,
+            environment={"PATH": os.environ.get("PATH", "")},
+        )
+        if result.returncode != 0:
+            return False
+        changed.append(result.stdout.strip() != parent_blob)
+    assert not any(changed) or all(changed), (
+        "CONFORM_RED::partial_sl2_compatibility_transition"
+    )
+    return all(changed)
+
+
 def _candidate_mutation_source(definition) -> str:
     source_path = REPO_ROOT / definition.source_path
     assert source_path.is_file(), definition.source_path
@@ -2531,9 +2549,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         )
         assert "verified" not in contract["inputs"] + contract["outputs"]
         assert evidence_verifier_argv(mode)[-1] == mode
-    # SL-0 deliberately has no verifier.  Once SL-1 supplies it, this test gives
-    # it runner-owned Git, JUnit, log, mutation, and package facts; a self-authored
-    # boolean or a digest-only summary is never an acceptable substitute.
+    # SL-0 deliberately has no verifier. Once SL-1 supplies it, A2 exercises only
+    # its three allowed modes. Compatibility joins after all four pinned SL-2
+    # documentation paths transition, so this immutable test cannot run it early.
     spec = importlib.util.find_spec(
         "phase_loop_runtime.conformance.outside_agent_conform_evidence"
     )
@@ -2541,6 +2559,17 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         module = importlib.import_module(spec.name)
         assert module.EVIDENCE_VERIFIER_INTERFACE == EVIDENCE_VERIFIER_INTERFACE
         verifier = getattr(module, "verify_conform_evidence_records")
+        compatibility_due = _b2_compatibility_evidence_due()
+        executable_modes = tuple(
+            mode
+            for mode, contract in EVIDENCE_VERIFIER_INTERFACE.items()
+            if contract["timing"] == "A2" or compatibility_due
+        )
+        assert executable_modes == (
+            ("chronology", "corpus", "package", "compatibility")
+            if compatibility_due
+            else ("chronology", "corpus", "package")
+        )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repository = REPO_ROOT
@@ -2959,7 +2988,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
                     record["artifact_sha256"] = artifact_digest
                     record["raw_log_sha256"] = raw_log_digest
 
-            for mode in EVIDENCE_VERIFIER_INTERFACE:
+            for mode in executable_modes:
                 mode_records, artifacts = records_for(mode)
                 _assert_full_frozen_evidence_input(mode, mode_records)
                 expected_input, expected_evidence = expected_digests(mode_records)
