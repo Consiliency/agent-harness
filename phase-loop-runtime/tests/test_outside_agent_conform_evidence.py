@@ -1570,18 +1570,31 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
     sealed_path = tmp_path / "sealed-release-evidence.json"
     sealed_path.write_text(json.dumps(sealed, sort_keys=True), encoding="utf-8")
     assert sealed_release_evidence(sealed_path, release_repo) == sealed
+    repacked_wheel = tmp_path / "repacked-sdist-derived.whl"
+    with zipfile.ZipFile(derived_wheel) as source, zipfile.ZipFile(
+        repacked_wheel, "w", compression=zipfile.ZIP_STORED
+    ) as target:
+        for member in reversed(source.infolist()):
+            if not member.is_dir():
+                target.writestr(member.filename, source.read(member.filename))
+    assert _normalized_archive_member_digests(repacked_wheel) == (
+        _normalized_archive_member_digests(derived_wheel)
+    )
+    assert hashlib.sha256(repacked_wheel.read_bytes()).hexdigest() not in {
+        hashlib.sha256(direct_wheel.read_bytes()).hexdigest(),
+        hashlib.sha256(derived_wheel.read_bytes()).hexdigest(),
+    }
     forged = copy.deepcopy(sealed)
     for label in ("direct-wheel", "sdist-derived-wheel"):
-        forged["archives"][label] = copy.deepcopy(
-            sealed["archives"]["sdist-derived-wheel"]
-        )
+        forged["archives"][label] = copy.deepcopy(sealed["archives"][label])
+        forged["archives"][label]["path"] = str(repacked_wheel)
         forged["archives"][label]["sha256"] = hashlib.sha256(
             Path(forged["archives"][label]["path"]).read_bytes()
         ).hexdigest()
     forged["manifest_sha256"] = _sealed_manifest_sha256(forged)
     sealed_path.write_text(json.dumps(forged, sort_keys=True), encoding="utf-8")
-    # Freeze Sol's alias: refreshed caller hashes cannot make the derived wheel
-    # serve as evidence of a direct build from the exact candidate tree.
+    # Refreshed caller hashes cannot make a semantically equivalent repack serve
+    # as the exact runner-rebuilt output for either independently replayed route.
     with pytest.raises(AssertionError, match="sealed_release_evidence_archive_provenance"):
         sealed_release_evidence(sealed_path, release_repo)
     forged = copy.deepcopy(sealed)
