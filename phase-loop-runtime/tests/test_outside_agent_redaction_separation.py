@@ -549,6 +549,10 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
     )
 
     sentinel = "CONFORM-SL0-CHANNEL-SENTINEL"
+    red_anchor = (
+        "CONFORM_RED::"
+        "submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes"
+    )
     assignment = redaction_channel_assignment()
     canonical_channels = {
         channel: classification
@@ -588,6 +592,45 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
         else:
             _set_channel(payload, relative, sentinel)
 
+    def assert_route_channel_control(payload: dict, channel: str) -> None:
+        try:
+            from phase_loop_runtime.conformance.outside_agent_schema import (
+                validate_outside_agent_route_verdict_schema,
+            )
+
+            result = validate_outside_agent_route_verdict_schema(
+                payload, schema_target="outside_agent_route_verdict.v0.1"
+            )
+        except (AttributeError, ImportError, TypeError) as exc:
+            raise AssertionError(
+                f"{red_anchor}: route-verdict channel unavailable ({type(exc).__name__})"
+            ) from exc
+        blockers = [
+            {"code": blocker.code, "ref": blocker.ref, "message": blocker.message}
+            for blocker in result.blockers
+        ]
+        rendered = {
+            "status": result.status.value,
+            "blockers": blockers,
+            "dispatch_observation": getattr(result, "dispatch_observation", None),
+        }
+        assert result.status.value == "blocked", f"{red_anchor}: {channel}"
+        _assert_bounded_producer_diagnostic(
+            blockers, sentinel=sentinel, channel=channel
+        )
+        observation = rendered["dispatch_observation"]
+        assert observation is not None and observation["entered"] is True, (
+            f"{red_anchor}: {channel}"
+        )
+        assert observation["schema_target"] == "outside_agent_route_verdict.v0.1", (
+            f"{red_anchor}: {channel}"
+        )
+        assert observation["selected_schema_id"], f"{red_anchor}: {channel}"
+        assert observation["selected_schema_sha256"], f"{red_anchor}: {channel}"
+        assert sentinel not in json.dumps(rendered, sort_keys=True), (
+            f"{red_anchor}: {channel}"
+        )
+
     for channel, classification in canonical_channels.items():
         payload = canonical_payload_for(channel)
         relative = channel.removeprefix("submission.")
@@ -603,19 +646,21 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
         elif classification == "validated_digest_projection":
             replacement = sentinel + "-not-a-digest"
         _set_channel(payload, relative, replacement)
-        rendered = json.dumps(
-            {
-                "advisory": serialize_outside_agent_advisory_evidence(
-                    build_outside_agent_advisory_evidence(payload)
-                ),
-                "validation": serialize_outside_agent_validation_verdict(
-                    build_outside_agent_validation_verdict(payload)
-                ),
-            },
-            sort_keys=True,
-        )
-        assert sentinel not in rendered, channel
-        if channel.startswith("submission."):
+        if channel.startswith("route_verdict."):
+            assert_route_channel_control(payload, channel)
+        else:
+            rendered = json.dumps(
+                {
+                    "advisory": serialize_outside_agent_advisory_evidence(
+                        build_outside_agent_advisory_evidence(payload)
+                    ),
+                    "validation": serialize_outside_agent_validation_verdict(
+                        build_outside_agent_validation_verdict(payload)
+                    ),
+                },
+                sort_keys=True,
+            )
+            assert sentinel not in rendered, channel
             _assert_cli_channel_control(
                 payload,
                 sentinel=sentinel,
@@ -634,19 +679,21 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             else canonical_payload_for(channel)
         )
         inject_dynamic_channel(payload, channel)
-        rendered = json.dumps(
-            {
-                "advisory": serialize_outside_agent_advisory_evidence(
-                    build_outside_agent_advisory_evidence(payload)
-                ),
-                "validation": serialize_outside_agent_validation_verdict(
-                    build_outside_agent_validation_verdict(payload)
-                ),
-            },
-            sort_keys=True,
-        )
-        assert sentinel not in rendered, channel
-        if channel.startswith("submission."):
+        if channel.startswith("route_verdict."):
+            assert_route_channel_control(payload, channel)
+        else:
+            rendered = json.dumps(
+                {
+                    "advisory": serialize_outside_agent_advisory_evidence(
+                        build_outside_agent_advisory_evidence(payload)
+                    ),
+                    "validation": serialize_outside_agent_validation_verdict(
+                        build_outside_agent_validation_verdict(payload)
+                    ),
+                },
+                sort_keys=True,
+            )
+            assert sentinel not in rendered, channel
             _assert_cli_channel_control(
                 payload,
                 sentinel=sentinel,

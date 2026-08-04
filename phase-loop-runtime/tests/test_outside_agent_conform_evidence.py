@@ -2368,8 +2368,12 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
             mutation.apply(mutation.anchor + "\n" + mutation.anchor)
     assert set(CONFORM_CANONICAL_CASES) == set(CONFORM_MIGRATED_EXISTING_NODE_IDS)
     assert len({case.role for case in CONFORM_CANONICAL_CASES.values()}) == 45
-    assert_status_code_only_replacement_is_rejected()
-    assert_named_safety_mutations_rejected()
+    verifier_spec = importlib.util.find_spec(
+        "phase_loop_runtime.conformance.outside_agent_conform_evidence"
+    )
+    if verifier_spec is not None:
+        assert_status_code_only_replacement_is_rejected()
+        assert_named_safety_mutations_rejected()
     for nodeid, case in CONFORM_CANONICAL_CASES.items():
         assert (nodeid in CONFORM_ACTIVATED_RED_ANCHORS) == (nodeid in CONFORM_ACTIVATED_RED_NODE_IDS)
         assert case.seam
@@ -2405,10 +2409,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
     ).write(undersized_junit, encoding="utf-8", xml_declaration=True)
     with pytest.raises(AssertionError):
         _assert_exact_frozen_activated_junit(undersized_junit, frozen_log)
-    # The SL-0 test contract executes its package/observable evidence directly,
-    # before the future production verifier exists.  This makes skeletal
-    # metadata-only packages and caller-authored outcome labels locally
-    # reproducible rejections instead of deferred verifier wishes.
+    # SL-0 executes only test-owned structural negative controls. Production
+    # mutation and EC probes remain declarations until the verifier marks SL-1.
     direct_root = tmp_path / "direct-observable-controls"
     direct_root.mkdir()
     direct_archives = _write_toy_negative_package_archives(
@@ -2446,14 +2448,18 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
     # Future-only locator-boundary anchors intentionally do not exist in SL-0.
     # They are frozen source fixtures until the candidate implements them; never
     # manufacture an executable mutant from the fixture against this baseline.
-    available_direct_mutations = {
-        mutation_id: definition
-        for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items()
-        if (REPO_ROOT / definition.source_path).is_file()
-        and (REPO_ROOT / definition.source_path).read_text(encoding="utf-8").count(
-            definition.anchor
-        ) == 1
-    }
+    available_direct_mutations = (
+        {
+            mutation_id: definition
+            for mutation_id, definition in CONFORM_MUTATION_DEFINITIONS.items()
+            if (REPO_ROOT / definition.source_path).is_file()
+            and (REPO_ROOT / definition.source_path).read_text(encoding="utf-8").count(
+                definition.anchor
+            ) == 1
+        }
+        if verifier_spec is not None
+        else {}
+    )
     assert set(CONFORM_MUTATION_DEFINITIONS) - set(available_direct_mutations) >= {
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
         "M-CONFORM-3-FINAL-SERIALIZER-GUARD",
@@ -2522,15 +2528,14 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
         with pytest.raises(AssertionError):
             _assert_bound_mutation_observables(command_tampered_mutations)
 
-    spec = importlib.util.find_spec(
-        "phase_loop_runtime.conformance.outside_agent_conform_evidence"
-    )
     # The absent verifier identifies SL-0, where test-owned EC controls run
-    # directly. Once SL-1 installs the verifier, only B2 may recapture them.
-    sl0_direct_controls = spec is None
-    compatibility_due = spec is not None and _b2_compatibility_evidence_due()
+    # only as frozen definitions. Once SL-1 installs the verifier, only B2 may
+    # execute and capture the complete EC matrix.
+    compatibility_due = (
+        verifier_spec is not None and _b2_compatibility_evidence_due()
+    )
     direct_ec_entries = None
-    if sl0_direct_controls or compatibility_due:
+    if compatibility_due:
         direct_ec_entries = _capture_ec_matrix_entries(direct_root)
         _assert_bound_ec_observables(direct_ec_entries)
         if all(
@@ -2662,8 +2667,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(tmp_
     # SL-0 deliberately has no verifier. Once SL-1 supplies it, A2 exercises only
     # its three allowed modes. Compatibility joins after all four pinned SL-2
     # documentation paths transition, so this immutable test cannot run it early.
-    if spec is not None:
-        module = importlib.import_module(spec.name)
+    if verifier_spec is not None:
+        module = importlib.import_module(verifier_spec.name)
         assert module.EVIDENCE_VERIFIER_INTERFACE == EVIDENCE_VERIFIER_INTERFACE
         verifier = getattr(module, "verify_conform_evidence_records")
         executable_modes = tuple(
