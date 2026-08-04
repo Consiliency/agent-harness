@@ -1123,10 +1123,8 @@ REDACTION_PROJECTION_CLASSES = {
         "outside-agent-validate:submitted_ref[]",
     ),
     "structural_diagnostic_projection": (
-        "advisory_output.blockers[]",
         "advisory_output.blockers[].message",
         "advisory_output.blockers[].ref",
-        "validation_output.blockers[]",
         "validation_output.blockers[].message",
         "validation_output.blockers[].ref",
     ),

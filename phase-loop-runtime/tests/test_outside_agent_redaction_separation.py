@@ -184,7 +184,7 @@ def _recursive_value_channels(value, prefix: str) -> set[str]:
         }
     if isinstance(value, list):
         if not value:
-            return {prefix + "[]"}
+            return set()
         return {
             channel
             for child in value
