@@ -115,8 +115,6 @@ EC_CONFORM_2_CHANNEL_TO_TEMPLATE = {
     "route_verdict.acceptance_truth_owner": "rejected_projection",
     "route_verdict.blocker.class": "rejected_projection",
     "route_verdict.blocker.human_required": "rejected_projection",
-    "route_verdict.blocker.summary": "unknown",
-    "route_verdict.notes": "unknown",
     "legacy_submission.metadata.submission_id": "required",
     "legacy_submission.metadata.content_digest": "required",
     "legacy_submission.unknown_keys[]": "required",
@@ -233,9 +231,8 @@ def test_closed_redaction_projection_inventory_is_exhaustive() -> None:
         *(
             channel
             for channel, classification in assignment.items()
-            if channel.startswith("route_verdict.")
-            or (
-                channel.startswith("submission.")
+            if (
+                channel.startswith(("submission.", "route_verdict."))
                 and channel not in CANONICAL_DYNAMIC_INPUTS
                 and classification != "forbidden_free_text"
             )
@@ -583,6 +580,21 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             if row["submission_kind"] == kind
         )
 
+    def canonical_route_verdict_for(channel: str) -> dict:
+        payload = {
+            "verdict_schema_version": "outside_agent_route_verdict.v0.1",
+            "route": "review_candidate",
+            "claim_posture": "claims_only",
+            "acceptance_truth_owner": "governed_pipeline",
+        }
+        if channel.startswith("route_verdict.blocker."):
+            payload["blocker"] = {
+                "class": "policy_gap",
+                "summary": "producer-safe test summary",
+                "human_required": False,
+            }
+        return payload
+
     def inject_dynamic_channel(payload: dict, channel: str) -> None:
         relative = channel.removeprefix("submission.").removeprefix("route_verdict.")
         if relative == "unknown_keys[]":
@@ -592,7 +604,9 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
         else:
             _set_channel(payload, relative, sentinel)
 
-    def assert_route_channel_control(payload: dict, channel: str) -> None:
+    def assert_route_channel_control(
+        payload: dict, channel: str, *, expected_success: bool = False
+    ) -> None:
         try:
             from phase_loop_runtime.conformance.outside_agent_schema import (
                 validate_outside_agent_route_verdict_schema,
@@ -614,10 +628,14 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             "blockers": blockers,
             "dispatch_observation": getattr(result, "dispatch_observation", None),
         }
-        assert result.status.value == "blocked", f"{red_anchor}: {channel}"
-        _assert_bounded_producer_diagnostic(
-            blockers, sentinel=sentinel, channel=channel
-        )
+        if expected_success:
+            assert result.status.value == "pass", f"{red_anchor}: {channel}"
+            assert blockers == [], f"{red_anchor}: {channel}"
+        else:
+            assert result.status.value == "blocked", f"{red_anchor}: {channel}"
+            _assert_bounded_producer_diagnostic(
+                blockers, sentinel=sentinel, channel=channel
+            )
         observation = rendered["dispatch_observation"]
         assert observation is not None and observation["entered"] is True, (
             f"{red_anchor}: {channel}"
@@ -635,10 +653,7 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
         payload = canonical_payload_for(channel)
         relative = channel.removeprefix("submission.")
         if channel.startswith("route_verdict."):
-            payload = load_json(
-                FIXTURE_ROOT
-                / "test-vectors/outside-agent/invalid-unsupported-verdict.json"
-            )
+            payload = canonical_route_verdict_for(channel)
             relative = channel.removeprefix("route_verdict.")
         replacement = sentinel
         if classification == "normalized_ref_projection":
@@ -647,7 +662,11 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             replacement = sentinel + "-not-a-digest"
         _set_channel(payload, relative, replacement)
         if channel.startswith("route_verdict."):
-            assert_route_channel_control(payload, channel)
+            assert_route_channel_control(
+                payload,
+                channel,
+                expected_success=classification == "forbidden_free_text",
+            )
         else:
             rendered = json.dumps(
                 {
@@ -674,7 +693,7 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
 
     for channel in sorted(CANONICAL_DYNAMIC_INPUTS):
         payload = (
-            load_json(FIXTURE_ROOT / "test-vectors/outside-agent/invalid-unsupported-verdict.json")
+            canonical_route_verdict_for(channel)
             if channel.startswith("route_verdict.")
             else canonical_payload_for(channel)
         )
