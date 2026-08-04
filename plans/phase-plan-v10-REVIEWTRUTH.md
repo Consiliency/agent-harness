@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: REVIEWTRUTH
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: f77a1e566d67147f6ec938c83240bb900df9bec505bb7a17c6b00718175421cf
+roadmap_sha256: 040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"'
 ---
@@ -15,7 +15,7 @@ The 2026-08-04 maintainer ratification on `agent-harness#442` adds
 EC-REVIEWTRUTH-18 and EC-REVIEWTRUTH-19 to the downstream REVIEWTRUTH contract. This amendment is
 landed only at the current CONFORM phase boundary; it does not rewrite or invalidate CONFORM's
 already-frozen candidate. After it lands, any not-yet-executing downstream plan whose roadmap
-binding predates SHA-256 `f77a1e566d67147f6ec938c83240bb900df9bec505bb7a17c6b00718175421cf`
+binding predates SHA-256 `040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e`
 must be mechanically rebound or replanned before dispatch. The hand-enforced interim procedure
 applies immediately at every current gate.
 
@@ -2735,8 +2735,8 @@ if __name__ == "__main__":
 ## Spec Closeout Plan
 
 - schema: `spec_delta_closeout.v1`
-- decision: `roadmap_amendment`
-- target surfaces: `specs/phase-plans-v10.md` plus the repository-local REVIEWTRUTH plan/manifest bindings
+- decision: `no_spec_delta`
+- target surfaces: `none outside this repo`
 - evidence paths: `plans/phase-plan-v10-REVIEWTRUTH.md`, `phase-loop-runtime/uv.lock`, `docs/research/reviewtruth-leg-capability-ratification.md`, `docs/research/reviewtruth-red-baseline.md`, `docs/research/reviewtruth-phase-verification.md`, `docs/research/reviewtruth-real-panel-smoke.md`, `docs/research/reviewtruth-final-evidence-record.md`, `phase-loop-runtime/tests/conftest.py`, `phase-loop-runtime/tests/test_reviewtruth_phase.py`, `phase-loop-runtime/tests/test_phase_worktree_executor.py`, `phase-loop-runtime/tests/test_train_merge.py`, `phase-loop-runtime/tests/test_governed_cross_vendor_floor_358.py`, `phase-loop-runtime/tests/test_advisor_board_golden.py`, `phase-loop-runtime/tests/test_advisor_board_research.py`, `phase-loop-runtime/tests/test_panel_invoker_spawn.py`, `phase-loop-runtime/tests/test_panel_native_fill_183.py`
 - redaction posture: `metadata_only`
 - downstream handling: `none`; the plan/lock/manifest prerequisite is committed before the lane DAG and closeout may verify but never claim or rewrite the lock, while REVIEWTRUTH closeout follows `REVIEWTRUTH-redacted-transcript-policy` and carries only the exact canonical transcript/smoke path `docs/research/reviewtruth-real-panel-smoke.md` and its single frozen digest, seat metadata, and artifact-specific citations

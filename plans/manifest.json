@@ -2115,19 +2115,19 @@
               "board_topology_criterion": "EC-REVIEWTRUTH-18",
               "board_topology_nodeids_count": 6,
               "board_topology_nodeids_sha256": "161d57ceca75fc0131822802282ff52985e9ee081e536c0db78a5f3e9f37292b",
-              "completion_record_contract_pin": "frozen_pre_amendment_CONFORM_and_HARDEN_dependency_completion_contract; digest_rebind_is_live_REVIEWTRUTH_plan_and_roadmap_pin",
+              "completion_record_contract_pin": "frozen_pre_amendment_CONFORM_and_HARDEN_dependency_completion_contract; digest_rebind_is_live_REVIEWTRUTH_plan_pin_only",
               "interim_enforcement": "coordinator_hand_enforces_at_every_gate_until_IF_0_REVIEWTRUTH_4_and_5_land",
-              "plan_sha256": "a9e087eab8e066c021b5c6e9da96f41f4036da2e817c39d01e42bc5273b69743",
+              "plan_sha256": "b7a7f1d2dc35a7b5953272bf0d11f3a9de9b8598fb5b63d8d7e43865b9fc651c",
               "president_authority_criterion": "EC-REVIEWTRUTH-19",
               "president_authority_nodeids_count": 4,
               "president_authority_nodeids_sha256": "01857917639d696d6163e219c16bf4f3ee1470300c6e24a68e2efd565f6d8eb9",
               "rationale_binding_falsifier": "independent_exact_rationale_substitution_rejected",
-              "roadmap_sha256": "f77a1e566d67147f6ec938c83240bb900df9bec505bb7a17c6b00718175421cf",
+              "roadmap_bytes_posture": "frozen_v10_roadmap_bytes_unchanged; amendment_is_plan_and_manifest_local_only",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
               "schema": "v10.reviewtruth-board-governance-amendment.v2"
             },
             "predecessor_plan_sha256": "9af4eefec8f78e99baa73ef02d7ed5274e2004d993ca0c515c88e9b17184e528",
-            "predecessor_roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-            "reason": "canonicalize_agent_harness_442_goals_and_preserve_append_only_lifecycle_after_round_1_review"
+            "reason": "canonicalize_agent_harness_442_goals_in_plan_and_manifest_only_without_mutating_frozen_v10_roadmap_bytes"
           },
           "transition": "committed"
         }
