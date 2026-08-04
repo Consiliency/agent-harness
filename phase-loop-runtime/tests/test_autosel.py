@@ -592,7 +592,13 @@ def test_launch_scrubs_and_stamps_child_env_popen(monkeypatch, tmp_path):
         stdout = iter(())
 
         def __init__(self, command, **kwargs):
-            captured["env"] = kwargs.get("env")
+            # Record ONLY the launched command. `subprocess.run` resolves `Popen`
+            # through this same patched module attribute, so incidental helper
+            # spawns (the heartbeat's `ps` CPU sample, which fires whenever the
+            # fake pid below collides with a live process on the host) would
+            # otherwise clobber the captured child env with their own `env=None`.
+            if list(command) == ["true"]:
+                captured["env"] = kwargs.get("env")
 
         def wait(self, timeout=None):
             return 0
