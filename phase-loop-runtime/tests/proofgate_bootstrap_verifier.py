@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import hashlib
 import json
 import os
 import re
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -18,12 +21,23 @@ import xml.etree.ElementTree as ET
 try:
     from .proofgate_tdd_guard import (
         ATTENDED_REAL_PROVIDER_CASES,
+        BOOTSTRAP_PATHS,
+        BOOTSTRAP_PATHS_SHA256,
+        BOOTSTRAP_CANDIDATE_NODEIDS,
+        BOOTSTRAP_CANDIDATE_NODEIDS_SHA256,
+        CANDIDATE_BINDING_FIELDS,
         DEFAULT_SKIP_NODEIDS,
         EXPECTED_PHASE_NODEIDS,
+        ORIGINAL_TESTS_LANDING_OID,
         PROOFGATE_EXPECTED_CONFIG_V1_CANONICAL_SHA256,
         PROOFGATE_LITERAL_CASE_IDS,
         PROOFGATE_OBSERVATION_SCHEMA,
         RED_CASES_BY_NODEID,
+        SELECTOR_MODULES,
+        SELECTOR_MODULES_SHA256,
+        SELECTOR_REPAIR_PATHS,
+        SELECTOR_REPAIR_PATHS_SHA256,
+        TEST_CONTRACT_FILES,
         ProofgateExpectedConfig,
         ProofgateExternalObservation,
         ProofgateObservationRequest,
@@ -41,12 +55,23 @@ try:
 except ImportError:
     from proofgate_tdd_guard import (
         ATTENDED_REAL_PROVIDER_CASES,
+        BOOTSTRAP_PATHS,
+        BOOTSTRAP_PATHS_SHA256,
+        BOOTSTRAP_CANDIDATE_NODEIDS,
+        BOOTSTRAP_CANDIDATE_NODEIDS_SHA256,
+        CANDIDATE_BINDING_FIELDS,
         DEFAULT_SKIP_NODEIDS,
         EXPECTED_PHASE_NODEIDS,
+        ORIGINAL_TESTS_LANDING_OID,
         PROOFGATE_EXPECTED_CONFIG_V1_CANONICAL_SHA256,
         PROOFGATE_LITERAL_CASE_IDS,
         PROOFGATE_OBSERVATION_SCHEMA,
         RED_CASES_BY_NODEID,
+        SELECTOR_MODULES,
+        SELECTOR_MODULES_SHA256,
+        SELECTOR_REPAIR_PATHS,
+        SELECTOR_REPAIR_PATHS_SHA256,
+        TEST_CONTRACT_FILES,
         ProofgateExpectedConfig,
         ProofgateExternalObservation,
         ProofgateObservationRequest,
@@ -61,6 +86,8 @@ except ImportError:
         primary_red_case_id,
         subject_sequence_and_core_digest,
     )
+
+
 
 
 class ProofgateBootstrapVerifierError(ValueError):
@@ -232,6 +259,36 @@ BOOTSTRAP_MERGE_OBSERVATION_SCHEMA = "proofgate_bootstrap_merge_observation.v1"
 BOOTSTRAP_COORDINATOR_ENVELOPE_SCHEMA = "proofgate_bootstrap_coordinator_envelope.v1"
 BOOTSTRAP_COORDINATOR_PRODUCER_RECEIPT_SCHEMA = "proofgate_bootstrap_coordinator_producer_receipt.v1"
 BOOTSTRAP_COORDINATOR_PROCESS_RECEIPT_SCHEMA = "proofgate_bootstrap_coordinator_process_receipt.v1"
+GITHUB_CLI_PATH = "/usr/bin/gh"
+GITHUB_CLI_SHA256 = "141507c337e8b202ad398550c3b73d72f5af92e86f71665214538a81efd4c409"
+
+BOOTSTRAP_CANDIDATE_VERDICT_FIELDS: tuple[str, ...] = (
+    "authorized_scope",
+    "authorizes_final_completion",
+    "authorizes_implementation",
+    "binding_digest",
+    "collected",
+    "errors",
+    "evidence_bindings",
+    "failed",
+    "junit_digest",
+    "passed",
+    "phase_reports_digest",
+    "schema",
+    "selector_digest",
+    "skipped",
+    "source_digest",
+    "status",
+)
+
+
+def _github_cli_sha256(path: str | Path = GITHUB_CLI_PATH) -> str:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
 COORDINATOR_EVIDENCE_ARTIFACTS: tuple[tuple[str, str, str], ...] = (
     ("proofgate-tests-only-default.junit.xml", "proofgate-tests-only-default.phase-reports.json", "default"),
     ("proofgate-tests-only-red.junit.xml", "proofgate-tests-only-red.phase-reports.json", "forced_red"),
@@ -380,6 +437,7 @@ class ProofgateBootstrapMergeObservation:
     junit_phase_report_digests: tuple[tuple[str, str], ...]
     junit_phase_reports_json: str
     control_artifact_digests: tuple[tuple[str, str], ...]
+    candidate_artifact_digests: tuple[tuple[str, str], ...] = ()
 
 
 class RecordingBootstrapMergeObservationBoundary:
@@ -421,10 +479,11 @@ def _bootstrap_observation_from_payload(value: Any) -> ProofgateBootstrapMergeOb
     if not isinstance(value, dict):
         raise ProofgateBootstrapVerifierError("coordinator observation payload must be an object")
     expected_fields = {field.name for field in dataclasses.fields(ProofgateBootstrapMergeObservation)}
-    if set(value) != expected_fields:
-        raise ProofgateBootstrapVerifierError("coordinator observation payload field set mismatch")
-    tuple_fields = ("seat_chronology", "seat_artifact_digests", "junit_artifact_digests", "junit_phase_report_digests", "control_artifact_digests")
     normalized = dict(value)
+    normalized.setdefault("candidate_artifact_digests", [])
+    if set(normalized) != expected_fields:
+        raise ProofgateBootstrapVerifierError("coordinator observation payload field set mismatch")
+    tuple_fields = ("seat_chronology", "seat_artifact_digests", "junit_artifact_digests", "junit_phase_report_digests", "control_artifact_digests", "candidate_artifact_digests")
     for field_name in tuple_fields:
         raw = normalized[field_name]
         if not isinstance(raw, list):
@@ -439,6 +498,52 @@ def _bootstrap_observation_from_payload(value: Any) -> ProofgateBootstrapMergeOb
         return ProofgateBootstrapMergeObservation(**normalized)
     except (TypeError, ValueError) as exc:
         raise ProofgateBootstrapVerifierError("coordinator observation payload is invalid") from exc
+
+
+def _write_coordinator_observation(root: Path, observation: ProofgateBootstrapMergeObservation, landing_kind: str) -> None:
+    request = {
+        "root": str(root),
+        "observation": dataclasses.asdict(observation),
+        "landing_kind": landing_kind,
+        "producer_schema": BOOTSTRAP_COORDINATOR_PRODUCER_RECEIPT_SCHEMA,
+        "repository": COORDINATOR_REPOSITORY,
+    }
+    writer = """
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+request = json.loads(sys.stdin.read())
+root = Path(request["root"])
+observation = request["observation"]
+observation_bytes = json.dumps(
+    observation, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+).encode("utf-8")
+(root / "bootstrap-observation.json").write_bytes(observation_bytes)
+producer_receipt = {
+    "schema": request["producer_schema"],
+    "producer": "proofgate-coordinator",
+    "writer_pid": os.getpid(),
+    "repository": request["repository"],
+    "base_oid": observation["base_oid"],
+    "candidate_oid": observation["candidate_oid"],
+    "landing_kind": request["landing_kind"],
+    "observation_filename": "bootstrap-observation.json",
+    "observation_sha256": hashlib.sha256(observation_bytes).hexdigest(),
+}
+(root / "bootstrap-producer-receipt.json").write_text(
+    json.dumps(producer_receipt, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+)
+"""
+    subprocess.run(
+        [sys.executable, "-c", writer],
+        input=json.dumps(request, sort_keys=True, separators=(",", ":")),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
 
 
 class CoordinatorBootstrapMergeObservationBoundary:
@@ -544,6 +649,7 @@ def evaluate_unit_double_bootstrap_merge_review_gate(
     expected_repo: str | None = None,
     expected_head_ref: str | None = None,
     expected_base_ref: str | None = None,
+    expected_junit_modes: set[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Pure evaluator for unit-double metadata (non-decisive).
 
@@ -608,8 +714,8 @@ def evaluate_unit_double_bootstrap_merge_review_gate(
         raise ProofgateBootstrapVerifierError(f"base_oid '{base_oid}' must match topology parent_oids[0]")
 
     j_digs = evidence["junit_mode_digests"]
-    req_j_keys = {"default", "forced_red", "ordinary", "attended"}
-    if not isinstance(j_digs, dict) or set(j_digs.keys()) != req_j_keys:
+    expected_j_modes = set(expected_junit_modes) if expected_junit_modes is not None else {"default", "forced_red", "ordinary", "attended"}
+    if not isinstance(j_digs, dict) or set(j_digs.keys()) != expected_j_modes:
         raise ProofgateBootstrapVerifierError("Sealed evidence junit_mode_digests schema invalid")
     for jk, jv in j_digs.items():
         if not isinstance(jv, str) or not HEX_64_RE.match(jv):
@@ -861,6 +967,400 @@ def compute_git_source_binding_facts(repo_path: Path | str, base_oid: str, candi
         return {}
 
 
+def _verifier_git_parents(commit_oid: str, cwd: Path | str | None = None) -> list[str]:
+    proc = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", commit_oid],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    fields = proc.stdout.strip().split()
+    if not fields or fields[0] != commit_oid:
+        raise ProofgateBootstrapVerifierError(f"Could not resolve exact parents for {commit_oid}")
+    return fields[1:]
+
+
+def _verifier_cat_git_file(commit_oid: str, path: str, cwd: Path | str | None = None) -> bytes:
+    return subprocess.run(
+        ["git", "cat-file", "-p", f"{commit_oid}:{path}"],
+        cwd=cwd,
+        capture_output=True,
+        check=True,
+    ).stdout
+
+
+def _verifier_validate_selector_repair_landing(
+    selector_repair_landing_oid: str,
+    cwd: Path | str | None = None,
+    expected_original_landing: str = ORIGINAL_TESTS_LANDING_OID,
+) -> None:
+    parents = _verifier_git_parents(selector_repair_landing_oid, cwd=cwd)
+    if len(parents) != 2:
+        raise ProofgateBootstrapVerifierError("selector_repair_landing_oid must name an exact two-parent merge")
+    base_oid, source_head_oid = parents
+
+    source_parents = _verifier_git_parents(source_head_oid, cwd=cwd)
+    if len(source_parents) != 1:
+        raise ProofgateBootstrapVerifierError("selector repair GREEN source head must have exactly one RED parent")
+    red_oid = source_parents[0]
+    if _verifier_git_parents(red_oid, cwd=cwd) != [base_oid]:
+        raise ProofgateBootstrapVerifierError("selector repair RED commit must have the landing first parent as its sole parent")
+
+    first_parent_history = subprocess.run(
+        ["git", "rev-list", "--first-parent", base_oid],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    if expected_original_landing not in first_parent_history:
+        raise ProofgateBootstrapVerifierError("selector repair base first-parent history does not contain original tests landing")
+
+    red_paths = subprocess.run(
+        ["git", "diff", "--name-only", "-z", base_oid, red_oid],
+        cwd=cwd,
+        capture_output=True,
+        check=True,
+    ).stdout.rstrip(b"\x00").split(b"\x00")
+    if red_paths != [b"phase-loop-runtime/tests/test_tdd_chronology.py"]:
+        raise ProofgateBootstrapVerifierError("selector repair RED commit changes paths outside the chronology test")
+
+    green_paths = subprocess.run(
+        ["git", "diff", "--name-only", "-z", red_oid, source_head_oid],
+        cwd=cwd,
+        capture_output=True,
+        check=True,
+    ).stdout.rstrip(b"\x00").split(b"\x00")
+    if green_paths != [
+        b"phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+        b"phase-loop-runtime/tests/proofgate_tdd_guard.py",
+    ]:
+        raise ProofgateBootstrapVerifierError("selector repair GREEN commit changes paths outside the guard and verifier")
+
+    source_diff = subprocess.run(
+        ["git", "diff-tree", "--raw", "-r", "-z", base_oid, source_head_oid],
+        cwd=cwd,
+        capture_output=True,
+        check=True,
+    ).stdout
+    landing_diff = subprocess.run(
+        ["git", "diff-tree", "--raw", "-r", "-z", base_oid, selector_repair_landing_oid],
+        cwd=cwd,
+        capture_output=True,
+        check=True,
+    ).stdout
+    if source_diff != landing_diff:
+        raise ProofgateBootstrapVerifierError(
+            "selector repair landing diff is not byte-identical to the reviewed source diff"
+        )
+
+    repo_dir = Path(cwd).resolve() if cwd else Path.cwd()
+    landing_paths = tuple(
+        row[1] for row in parse_git_diff_tree_raw(repo_dir, base_oid, selector_repair_landing_oid)
+    )
+    if landing_paths != SELECTOR_REPAIR_PATHS:
+        raise ProofgateBootstrapVerifierError("selector repair landing does not contain the exact three canonical paths")
+    paths_digest = hashlib.sha256(
+        (json.dumps(SELECTOR_REPAIR_PATHS, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
+    if paths_digest != SELECTOR_REPAIR_PATHS_SHA256:
+        raise ProofgateBootstrapVerifierError("selector repair canonical path digest mismatch")
+
+
+def verify_bootstrap_candidate_binding(
+    repo_path: Path | str,
+    binding_path: Path | str,
+    expected_original_tests_landing: str = ORIGINAL_TESTS_LANDING_OID,
+) -> dict[str, Any]:
+    """Public seam enforcing strict candidate binding validation and Git recomputation."""
+    repo = Path(repo_path).resolve()
+    binding_raw = Path(binding_path)
+
+    if binding_raw.is_symlink():
+        raise ProofgateBootstrapVerifierError("binding_path must not be a symlink")
+    binding_file = binding_raw.resolve()
+    if not binding_file.is_file():
+        raise ProofgateBootstrapVerifierError("binding_path must be a regular file")
+
+    try:
+        binding_bytes = binding_file.read_bytes()
+        data = json.loads(binding_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise ProofgateBootstrapVerifierError(f"Candidate mode binding JSON unreadable: {exc}") from exc
+
+    if not isinstance(data, dict) or tuple(data.keys()) != CANDIDATE_BINDING_FIELDS:
+        raise ProofgateBootstrapVerifierError("Candidate mode binding fields mismatch")
+    if binding_bytes != (json.dumps(data, separators=(",", ":")) + "\n").encode("utf-8"):
+        raise ProofgateBootstrapVerifierError(
+            "Candidate mode binding bytes are not canonical compact JSON plus LF"
+        )
+    if data.get("schema") != "proofgate_bootstrap_candidate_binding.v1":
+        raise ProofgateBootstrapVerifierError("Candidate mode binding schema mismatch")
+    if data.get("original_tests_landing_oid") != expected_original_tests_landing:
+        raise ProofgateBootstrapVerifierError("original_tests_landing_oid mismatch")
+
+    selector_repair_oid = data["selector_repair_landing_oid"]
+    base_oid = data["base_oid"]
+    candidate_oid = data["candidate_oid"]
+    candidate_tree_oid = data["candidate_tree_oid"]
+    for oid in (selector_repair_oid, base_oid, candidate_oid, candidate_tree_oid):
+        if not HEX_40_RE.fullmatch(oid):
+            raise ProofgateBootstrapVerifierError(f"Invalid OID in binding: {oid}")
+    _verifier_validate_selector_repair_landing(
+        selector_repair_oid, cwd=repo, expected_original_landing=expected_original_tests_landing
+    )
+    if subprocess.run(
+        ["git", "merge-base", "--is-ancestor", selector_repair_oid, base_oid],
+        cwd=repo,
+        capture_output=True,
+    ).returncode != 0:
+        raise ProofgateBootstrapVerifierError("selector_repair_landing_oid is not an ancestor of base_oid")
+
+    current_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    current_tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    if current_head != candidate_oid or current_tree != candidate_tree_oid:
+        raise ProofgateBootstrapVerifierError("candidate OID or tree does not match current HEAD")
+    if _verifier_git_parents(candidate_oid, cwd=repo) != [base_oid]:
+        raise ProofgateBootstrapVerifierError("candidate must have exactly one parent equal to base_oid")
+    if subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip():
+        raise ProofgateBootstrapVerifierError("Worktree or index is not clean against candidate_oid")
+
+    diff_raw = subprocess.run(
+        ["git", "diff-tree", "--raw", "-r", "-z", base_oid, candidate_oid],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout
+    diff_digest = hashlib.sha256(diff_raw).hexdigest()
+    if data["diff_sha256"] != diff_digest:
+        raise ProofgateBootstrapVerifierError("diff_sha256 mismatch")
+
+    path_digest = hashlib.sha256(
+        (json.dumps(BOOTSTRAP_PATHS, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
+    module_digest = hashlib.sha256(
+        (json.dumps(SELECTOR_MODULES, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
+    nodeid_digest = hashlib.sha256(
+        (json.dumps(BOOTSTRAP_CANDIDATE_NODEIDS, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
+    if path_digest != BOOTSTRAP_PATHS_SHA256 or data["path_scope_sha256"] != path_digest:
+        raise ProofgateBootstrapVerifierError("path_scope_sha256 mismatch")
+    if data["bootstrap_paths_sha256"] != path_digest:
+        raise ProofgateBootstrapVerifierError("bootstrap_paths_sha256 mismatch")
+    if module_digest != SELECTOR_MODULES_SHA256 or data["selector_modules_sha256"] != module_digest:
+        raise ProofgateBootstrapVerifierError("selector_modules_sha256 mismatch")
+    if nodeid_digest != BOOTSTRAP_CANDIDATE_NODEIDS_SHA256 or data["selector_nodeids_sha256"] != nodeid_digest:
+        raise ProofgateBootstrapVerifierError("selector_nodeids_sha256 mismatch")
+
+    changes = parse_git_diff_tree_raw(repo, base_oid, candidate_oid)
+    if len(changes) != 5 or tuple(row[1] for row in changes) != BOOTSTRAP_PATHS:
+        raise ProofgateBootstrapVerifierError("Candidate mode changes are not the exact five bootstrap paths")
+    expected_changes = [
+        [kind, path, new_mode, old_blob, new_blob, file_sha]
+        for kind, path, _old_mode, new_mode, old_blob, new_blob, file_sha in changes
+    ]
+    if data["changes"] != expected_changes:
+        raise ProofgateBootstrapVerifierError("changes list mismatch with independent Git recomputation")
+
+    contract_digests = data.get("test_contract_sha256")
+    if not isinstance(contract_digests, dict) or tuple(contract_digests.keys()) != TEST_CONTRACT_FILES:
+        raise ProofgateBootstrapVerifierError("test_contract_sha256 schema mismatch")
+    for path in TEST_CONTRACT_FILES:
+        selector_bytes = _verifier_cat_git_file(selector_repair_oid, path, cwd=repo)
+        selector_digest = hashlib.sha256(selector_bytes).hexdigest()
+        if contract_digests.get(path) != selector_digest:
+            raise ProofgateBootstrapVerifierError(f"test_contract_sha256 mismatch for {path}")
+        if (
+            _verifier_cat_git_file(base_oid, path, cwd=repo) != selector_bytes
+            or _verifier_cat_git_file(candidate_oid, path, cwd=repo) != selector_bytes
+        ):
+            raise ProofgateBootstrapVerifierError(
+                f"test contract bytes drifted across selector/base/candidate for {path}"
+            )
+
+    for check_oid in (base_oid, candidate_oid):
+        res = subprocess.run(
+            ["git", "cat-file", "-e", f"{check_oid}:phase-loop-runtime/src/phase_loop_runtime/proofgate_capability.py"],
+            cwd=repo,
+            capture_output=True,
+        )
+        if res.returncode == 0:
+            raise ProofgateBootstrapVerifierError(
+                f"Proofgate capability marker is present in Git tree at {check_oid}"
+            )
+
+    return {
+        "status": "verified",
+        "binding_data": data,
+        "binding_bytes": binding_bytes,
+        "binding_digest": hashlib.sha256(binding_bytes).hexdigest(),
+        "source_digest": diff_digest,
+    }
+
+
+def _verifier_validate_candidate_binding() -> dict[str, Any]:
+    """Verifier-owned parser and Git recomputation for bootstrap candidate mode."""
+    expect = os.environ.get("PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE")
+    binding_str = os.environ.get("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING")
+    if expect != "1" and not binding_str:
+        return {}
+    if expect != "1" or not binding_str:
+        raise ProofgateBootstrapVerifierError(
+            "Candidate mode requires both PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE=1 and PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING"
+        )
+    if os.environ.get("PHASE_LOOP_TDD_EXPECT_PROOFGATE") == "1":
+        raise ProofgateBootstrapVerifierError("Candidate mode conflict: PHASE_LOOP_TDD_EXPECT_PROOFGATE is set")
+    if os.environ.get("PHASE_LOOP_PROOFGATE_ATTENDED_LIVE") == "1":
+        raise ProofgateBootstrapVerifierError("Candidate mode conflict: PHASE_LOOP_PROOFGATE_ATTENDED_LIVE is set")
+    try:
+        from phase_loop_runtime.proofgate_capability import PROOFGATE_CAPABILITY_VERSION
+    except (ImportError, AttributeError):
+        PROOFGATE_CAPABILITY_VERSION = None
+    if PROOFGATE_CAPABILITY_VERSION == "proofgate.v1":
+        raise ProofgateBootstrapVerifierError("Candidate mode conflict: final capability marker proofgate.v1 is present")
+
+    run_dir_env = os.environ.get("PHASE_LOOP_RUN_DIR")
+    if not run_dir_env or not run_dir_env.strip():
+        raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR environment variable is missing or empty")
+    run_dir_raw = Path(run_dir_env.strip())
+    if not run_dir_raw.is_absolute() or not run_dir_raw.is_dir():
+        raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR must be an existing absolute directory")
+    run_dir = run_dir_raw.resolve()
+
+    binding_raw = Path(binding_str.strip())
+    if not binding_raw.is_absolute():
+        raise ProofgateBootstrapVerifierError(
+            "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must be an absolute path"
+        )
+    if binding_raw.is_symlink():
+        raise ProofgateBootstrapVerifierError(
+            "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must not be a symlink"
+        )
+    if not binding_raw.is_file():
+        raise ProofgateBootstrapVerifierError(
+            "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must be a regular file"
+        )
+    try:
+        lexical_relative = binding_raw.relative_to(run_dir_raw)
+    except ValueError as exc:
+        raise ProofgateBootstrapVerifierError(
+            "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING is not lexically under PHASE_LOOP_RUN_DIR"
+        ) from exc
+    if not lexical_relative.parts:
+        raise ProofgateBootstrapVerifierError(
+            "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must be strictly below PHASE_LOOP_RUN_DIR"
+        )
+    binding_path = binding_raw.resolve()
+    try:
+        resolved_relative = binding_path.relative_to(run_dir)
+    except ValueError as exc:
+        raise ProofgateBootstrapVerifierError(
+            "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING is outside PHASE_LOOP_RUN_DIR"
+        ) from exc
+    if not resolved_relative.parts:
+        raise ProofgateBootstrapVerifierError(
+            "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must be strictly below PHASE_LOOP_RUN_DIR"
+        )
+
+    res = verify_bootstrap_candidate_binding(
+        repo_path=Path.cwd(),
+        binding_path=binding_path,
+        expected_original_tests_landing=ORIGINAL_TESTS_LANDING_OID,
+    )
+    return res
+
+
+def _normalize_json_structures(value: Any) -> Any:
+    if isinstance(value, (list, tuple)):
+        return tuple(_normalize_json_structures(item) for item in value)
+    if isinstance(value, dict):
+        return {k: _normalize_json_structures(v) for k, v in value.items()}
+    return value
+
+
+def verify_proofgate_admin_authority(
+    boundary: Any,
+    candidate_oid: str,
+    admin_binding_path: Path | str,
+) -> dict[str, Any]:
+    """Verify decisive admin authority solely from live control-plane observation.
+
+    Rejects test fixtures, recording/coordinator boundaries, synthetic self-digests,
+    candidate OID replay, and unavailable observations.
+    """
+    if type(boundary) is not ProofgateAdminControlPlaneBoundary:
+        raise ProofgateBootstrapVerifierError(
+            f"Only an exact live ProofgateAdminControlPlaneBoundary is eligible for admin authority, got {type(boundary).__name__}"
+        )
+
+    if getattr(boundary, "_test_observation_fixture", None) is not None:
+        raise ProofgateBootstrapVerifierError(
+            "Test fixture observation boundary is non-authoritative for admin authority"
+        )
+
+    if not HEX_40_RE.fullmatch(candidate_oid):
+        raise ProofgateBootstrapVerifierError(f"Invalid candidate OID for admin authority: {candidate_oid}")
+
+    binding_raw = Path(admin_binding_path)
+    if binding_raw.is_symlink():
+        raise ProofgateBootstrapVerifierError("admin_binding_path must not be a symlink")
+    binding_file = binding_raw.resolve()
+    if not binding_file.is_file():
+        raise ProofgateBootstrapVerifierError("admin_binding_path must be a regular file")
+
+    try:
+        raw_bytes = binding_file.read_bytes()
+        stored_binding = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise ProofgateBootstrapVerifierError(f"admin_binding_path JSON unreadable: {exc}") from exc
+
+    if not isinstance(stored_binding, dict):
+        raise ProofgateBootstrapVerifierError("admin_binding_path JSON must be an object")
+
+    if raw_bytes != json.dumps(stored_binding, sort_keys=True, separators=(",", ":")).encode("utf-8"):
+        raise ProofgateBootstrapVerifierError("Admin authority receipt is not canonical JSON")
+
+    stored_cand = stored_binding.get("candidate_oid")
+    if stored_cand != candidate_oid:
+        raise ProofgateBootstrapVerifierError("Admin authority candidate OID replay mismatch")
+
+    if stored_binding.get("authority") != "github_and_broker_control_planes":
+        raise ProofgateBootstrapVerifierError("Stored admin identity binding authority is non-authoritative")
+
+    unbound_receipt = dict(stored_binding)
+    claimed_digest = unbound_receipt.pop("binding_digest", None)
+    computed_digest = hashlib.sha256(
+        json.dumps(unbound_receipt, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if claimed_digest != computed_digest:
+        raise ProofgateBootstrapVerifierError("Admin authority candidate-bound receipt digest mismatch")
+
+    try:
+        live_binding = verify_proofgate_admin_identity_binding(boundary)
+    except Exception as exc:
+        raise ProofgateBootstrapVerifierError(f"Live admin control plane observation unavailable: {exc}") from exc
+
+    if live_binding.get("authority") != "github_and_broker_control_planes":
+        raise ProofgateBootstrapVerifierError("Live admin control plane observation is non-authoritative")
+
+    stored_identity = dict(unbound_receipt)
+    stored_identity.pop("candidate_oid", None)
+    live_identity = dict(live_binding)
+    live_identity.pop("binding_digest", None)
+    if _normalize_json_structures(stored_identity) != _normalize_json_structures(live_identity):
+        raise ProofgateBootstrapVerifierError("Admin authority receipt does not match the full live identity binding")
+
+    return live_binding
+
+
 def verify_premerge_bootstrap_review_gate(
     repo_path: Path | str,
     base_oid: str,
@@ -1047,16 +1547,61 @@ def _read_coordinator_artifact(coordinator_root: Path, filename: str) -> bytes:
         raise ProofgateBootstrapVerifierError(f"coordinator artifact unreadable: {filename}") from exc
 
 
-def coordinator_evidence_capture_pytest_args(mode: str, run_dir: Path | None = None) -> tuple[str, ...]:
-    if mode not in COORDINATOR_EVIDENCE_BY_MODE:
+def coordinator_evidence_capture_pytest_args(
+    mode: str,
+    run_dir: Path | None = None,
+    *,
+    evidence_by_mode: dict[str, tuple[str, str]] | None = None,
+    nodeids: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    evidence_map = dict(evidence_by_mode or COORDINATOR_EVIDENCE_BY_MODE)
+    if "bootstrap_candidate" not in evidence_map:
+        evidence_map["bootstrap_candidate"] = ("compat-candidate.junit.xml", "phase_reports_candidate.json")
+    if mode not in evidence_map:
         raise ProofgateBootstrapVerifierError(f"unknown coordinator evidence mode: {mode}")
-    junit_filename, _phase_reports_filename = COORDINATOR_EVIDENCE_BY_MODE[mode]
-    junit_path = f"$PHASE_LOOP_RUN_DIR/{junit_filename}" if run_dir is None else str(run_dir / junit_filename)
-    nodeids = tuple(nodeid.replace("phase-loop-runtime/", "") for nodeid in EXPECTED_PHASE_NODEIDS)
-    return (*nodeids, "-p", "tests.proofgate_tdd_guard", "-o", "junit_family=legacy", f"--junitxml={junit_path}", "-q")
+    junit_filename, _phase_reports_filename = evidence_map[mode]
+
+    if run_dir is not None:
+        run_dir_raw = Path(run_dir)
+        if not run_dir_raw.is_absolute() or not run_dir_raw.is_dir():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR must be an existing absolute directory")
+        resolved_run_dir = run_dir_raw.resolve()
+        junit_path = str(resolved_run_dir / junit_filename)
+    elif mode == "bootstrap_candidate":
+        env_run_dir = os.environ.get("PHASE_LOOP_RUN_DIR")
+        if not env_run_dir or not env_run_dir.strip():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR environment variable is missing or empty")
+        run_dir_raw = Path(env_run_dir.strip())
+        if not run_dir_raw.is_absolute() or not run_dir_raw.is_dir():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR must be an existing absolute directory")
+        resolved_run_dir = run_dir_raw.resolve()
+        junit_path = str(resolved_run_dir / junit_filename)
+    else:
+        junit_path = f"$PHASE_LOOP_RUN_DIR/{junit_filename}"
+
+    if nodeids is not None:
+        nodeid_args = tuple(nodeids)
+    elif mode == "bootstrap_candidate":
+        nodeid_args = tuple(
+            nodeid.removeprefix("phase-loop-runtime/") if hasattr(nodeid, "removeprefix")
+            else (nodeid[19:] if nodeid.startswith("phase-loop-runtime/") else nodeid)
+            for nodeid in BOOTSTRAP_CANDIDATE_NODEIDS
+        )
+    else:
+        nodeid_args = tuple(
+            nodeid.removeprefix("phase-loop-runtime/") if hasattr(nodeid, "removeprefix")
+            else (nodeid[19:] if nodeid.startswith("phase-loop-runtime/") else nodeid)
+            for nodeid in EXPECTED_PHASE_NODEIDS
+        )
+    return (*nodeid_args, "-p", "tests.proofgate_tdd_guard", "-o", "junit_family=legacy", f"--junitxml={junit_path}", "-q")
 
 
-def coordinator_evidence_capture_argv(mode: str) -> tuple[str, ...]:
+def coordinator_evidence_capture_argv(
+    mode: str,
+    *,
+    evidence_by_mode: dict[str, tuple[str, str]] | None = None,
+    nodeids: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
     """Frozen, shell-free coordinator command for an authority-bearing evidence mode."""
     mode_env = {
         "default": (),
@@ -1064,14 +1609,58 @@ def coordinator_evidence_capture_argv(mode: str) -> tuple[str, ...]:
         "ordinary_hermetic": ("PHASE_LOOP_PROOFGATE_ORDINARY_HERMETIC=1",),
         "attended_live": ("PHASE_LOOP_PROOFGATE_ATTENDED_LIVE=1",),
     }
+    evidence_map = dict(evidence_by_mode or COORDINATOR_EVIDENCE_BY_MODE)
+    if "bootstrap_candidate" not in evidence_map:
+        evidence_map["bootstrap_candidate"] = ("compat-candidate.junit.xml", "phase_reports_candidate.json")
+    if mode not in evidence_map:
+        raise ProofgateBootstrapVerifierError(f"unknown coordinator evidence mode: {mode}")
+
+    if mode == "bootstrap_candidate":
+        env_run_dir = os.environ.get("PHASE_LOOP_RUN_DIR")
+        if not env_run_dir or not env_run_dir.strip():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR environment variable is missing or empty")
+        run_dir_raw = Path(env_run_dir.strip())
+        if not run_dir_raw.is_absolute() or not run_dir_raw.is_dir():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR must be an existing absolute directory")
+        resolved_run_dir = run_dir_raw.resolve()
+
+        env_run_id = os.environ.get("PHASE_LOOP_RUN_ID")
+        if not env_run_id or not env_run_id.strip():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_ID environment variable is missing or empty")
+
+        env_cand_oid = os.environ.get("PHASE_LOOP_CANDIDATE_OID")
+        if not env_cand_oid or not re.match(r"^[0-9a-fA-F]{40}$", env_cand_oid.strip()):
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_CANDIDATE_OID must be a 40-hex commit OID")
+        candidate_oid = env_cand_oid.strip()
+
+        binding_path = resolved_run_dir / "bootstrap-candidate-binding.json"
+
+        env_vars = (
+            f"PHASE_LOOP_RUN_DIR={resolved_run_dir}",
+            f"PHASE_LOOP_RUN_ID={env_run_id.strip()}",
+            f"PHASE_LOOP_CANDIDATE_OID={candidate_oid}",
+            "PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE=1",
+            f"PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING={binding_path}",
+        )
+        pytest_args = coordinator_evidence_capture_pytest_args(
+            mode, run_dir=resolved_run_dir, evidence_by_mode=evidence_map, nodeids=nodeids
+        )
+        return ("env", *env_vars, sys.executable, "-m", "pytest", *pytest_args)
+
     if mode not in mode_env:
         raise ProofgateBootstrapVerifierError(f"unknown coordinator evidence mode: {mode}")
-    prefix = ("env", *mode_env[mode]) if mode_env[mode] else ()
-    return (*prefix, sys.executable, "-m", "pytest", *coordinator_evidence_capture_pytest_args(mode))
+    env_vars = mode_env[mode]
+    prefix = ("env", *env_vars) if env_vars else ()
+    return (*prefix, sys.executable, "-m", "pytest", *coordinator_evidence_capture_pytest_args(mode, evidence_by_mode=evidence_map, nodeids=nodeids))
 
 
-def _load_coordinator_phase_report(coordinator_root: Path, mode: str) -> dict[str, Any]:
-    _junit_filename, report_filename = COORDINATOR_EVIDENCE_BY_MODE[mode]
+def _load_coordinator_phase_report(coordinator_root: Path, mode: str, *, evidence_by_mode: dict[str, tuple[str, str]] | None = None) -> dict[str, Any]:
+    evidence_map = dict(evidence_by_mode or COORDINATOR_EVIDENCE_BY_MODE)
+    if "bootstrap_candidate" not in evidence_map:
+        evidence_map["bootstrap_candidate"] = ("compat-candidate.junit.xml", "phase_reports_candidate.json")
+    if mode not in evidence_map:
+        raise ProofgateBootstrapVerifierError(f"unknown coordinator evidence mode: {mode}")
+    _junit_filename, report_filename = evidence_map[mode]
     try:
         payload = json.loads(_read_coordinator_artifact(coordinator_root, report_filename).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1086,6 +1675,8 @@ def _load_coordinator_phase_report(coordinator_root: Path, mode: str) -> dict[st
         raise ProofgateBootstrapVerifierError(f"coordinator phase report must contain one complete run: {mode}")
     if payload["runs"][0].get("reports") != payload["reports"]:
         raise ProofgateBootstrapVerifierError(f"coordinator phase report aggregate/run mismatch: {mode}")
+    if payload["runs"][0].get("exitstatus") != payload["exitstatus"]:
+        raise ProofgateBootstrapVerifierError(f"coordinator phase report aggregate/run exitstatus mismatch: {mode}")
     if not isinstance(payload["reports"], list):
         raise ProofgateBootstrapVerifierError(f"coordinator phase report reports are invalid: {mode}")
     return payload
@@ -1097,6 +1688,8 @@ def verify_coordinator_evidence_capture(
     *,
     expected_candidate_oid: str | None = None,
     expected_attended_stage: str | None = None,
+    evidence_by_mode: dict[str, tuple[str, str]] | None = None,
+    nodeids: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Verify a plan-named JUnit plus the reporting-plugin phase report as one capture.
 
@@ -1106,24 +1699,44 @@ def verify_coordinator_evidence_capture(
     """
     root = Path(coordinator_root).resolve()
     _coordinator_run_dir(root)
-    if mode not in COORDINATOR_EVIDENCE_BY_MODE:
+    evidence_map = evidence_by_mode or COORDINATOR_EVIDENCE_BY_MODE
+    if mode not in evidence_map:
         raise ProofgateBootstrapVerifierError(f"unknown coordinator evidence mode: {mode}")
-    junit_filename, _report_filename = COORDINATOR_EVIDENCE_BY_MODE[mode]
+    junit_filename, _report_filename = evidence_map[mode]
     junit_bytes = _read_coordinator_artifact(root, junit_filename)
-    payload = _load_coordinator_phase_report(root, mode)
+    payload = _load_coordinator_phase_report(root, mode, evidence_by_mode=evidence_map)
     capture = payload["capture"]
+    expected_args = list(coordinator_evidence_capture_pytest_args(mode, evidence_by_mode=evidence_map, nodeids=nodeids))
     expected_capture = {
         "schema": "proofgate_coordinator_evidence_capture.v1",
         "plugin": "tests.proofgate_tdd_guard",
         "junit_family": "legacy",
         "junit_filename": junit_filename,
         "junit_sha256": hashlib.sha256(junit_bytes).hexdigest(),
-        "pytest_args_sha256": hashlib.sha256(json.dumps(list(coordinator_evidence_capture_pytest_args(mode))).encode("utf-8")).hexdigest(),
+        "pytest_args_sha256": hashlib.sha256(json.dumps(expected_args).encode("utf-8")).hexdigest(),
     }
+    if mode == "bootstrap_candidate":
+        expected_capture["mode"] = "bootstrap_candidate"
+        expected_capture["candidate_oid"] = expected_candidate_oid or ""
+        expected_capture["run_identity"] = "coordinator-candidate"
+
     if capture != expected_capture:
+        if isinstance(capture, dict) and mode == "bootstrap_candidate":
+            for field in ("mode", "candidate_oid", "run_identity"):
+                if capture.get(field) != expected_capture.get(field):
+                    raise ProofgateBootstrapVerifierError(f"bootstrap_candidate capture mismatch for {field}")
         raise ProofgateBootstrapVerifierError(f"coordinator capture receipt mismatch: {mode}")
 
-    expected_args = list(coordinator_evidence_capture_pytest_args(mode))
+    if mode == "bootstrap_candidate":
+        if not isinstance(payload.get("runs"), list) or len(payload["runs"]) != 1 or payload["runs"][0].get("run_identity") != "coordinator-candidate":
+            raise ProofgateBootstrapVerifierError("bootstrap_candidate capture run_identity mismatch")
+        for report in payload["reports"]:
+            if report.get("candidate") != expected_candidate_oid:
+                raise ProofgateBootstrapVerifierError("bootstrap_candidate report candidate mismatch")
+            if report.get("run_identity") != "coordinator-candidate":
+                raise ProofgateBootstrapVerifierError("bootstrap_candidate report run_identity mismatch")
+
+    expected_args = list(coordinator_evidence_capture_pytest_args(mode, evidence_by_mode=evidence_map, nodeids=nodeids))
     for report in payload["reports"]:
         if not isinstance(report, dict) or not isinstance(report.get("argv"), list):
             raise ProofgateBootstrapVerifierError(f"coordinator report lacks plugin argv provenance: {mode}")
@@ -1136,6 +1749,8 @@ def verify_coordinator_evidence_capture(
     exitstatus = payload["exitstatus"]
     if not isinstance(exitstatus, int) or isinstance(exitstatus, bool):
         raise ProofgateBootstrapVerifierError(f"coordinator capture exitstatus is invalid: {mode}")
+    if payload["runs"][0].get("exitstatus") != exitstatus:
+        raise ProofgateBootstrapVerifierError(f"coordinator capture single run exitstatus mismatch: {mode}")
     if (mode == "forced_red" and exitstatus == 0) or (mode != "forced_red" and exitstatus != 0):
         raise ProofgateBootstrapVerifierError(f"coordinator capture exitstatus does not match mode: {mode}")
     if mode == "attended_live":
@@ -1166,7 +1781,7 @@ def verify_coordinator_evidence_capture(
             expected_module_identity if mode == "attended_live" else None
         ),
     )
-    return {**accounting, "reports": payload["reports"], "runner_envelope": payload.get("runner_envelope")}
+    return {**accounting, "mode": mode, "reports": payload["reports"], "runner_envelope": payload.get("runner_envelope")}
 
 
 def _decode_observed_object(name: str, value: str) -> dict[str, Any]:
@@ -1355,6 +1970,7 @@ def verify_observed_premerge_bootstrap_review_gate(
     *,
     landing_kind: str,
     boundary: Any,
+    admin_boundary: Any = None,
 ) -> dict[str, Any]:
     """Decisively authorize a PR-T/PR-B merge only from local Git plus coordinator observation.
 
@@ -1366,6 +1982,13 @@ def verify_observed_premerge_bootstrap_review_gate(
     r_path = Path(repo_path).resolve()
     if landing_kind not in LANDING_REF_BINDINGS:
         raise ProofgateBootstrapVerifierError(f"observed pre-merge gate only authorizes PR-T/PR-B, got {landing_kind}")
+    if landing_kind == "PR-B":
+        if admin_boundary is None:
+            admin_boundary = ProofgateAdminControlPlaneBoundary()
+        elif type(admin_boundary) is not ProofgateAdminControlPlaneBoundary:
+            raise ProofgateBootstrapVerifierError(
+                f"Only exact ProofgateAdminControlPlaneBoundary is allowed for admin_boundary, got {type(admin_boundary).__name__}"
+            )
     if type(boundary) is not CoordinatorBootstrapMergeObservationBoundary:
         raise ProofgateBootstrapVerifierError("decisive pre-merge gate requires the operational coordinator boundary")
     coordinator_root = boundary.coordinator_root
@@ -1475,9 +2098,57 @@ def verify_observed_premerge_bootstrap_review_gate(
     ):
         raise ProofgateBootstrapVerifierError("coordinator observation GitHub PR identity is not candidate-bound")
 
+    if landing_kind == "PR-B":
+        required_candidate_files = (
+            "admin-identity-binding.json",
+            "bootstrap-candidate-binding.json",
+            "bootstrap-candidate-verdict.json",
+            "compat-candidate.junit.xml",
+            "phase_reports_candidate.json",
+            "selector-repair-review-binding.json",
+        )
+        missing_candidate_files = tuple(
+            filename
+            for filename in required_candidate_files
+            if not (coordinator_root / filename).is_file()
+        )
+        if missing_candidate_files:
+            raise ProofgateBootstrapVerifierError(
+                "PR-B candidate artifacts missing: " + ", ".join(missing_candidate_files)
+            )
+        evidence_artifacts = (
+            ("compat-default.junit.xml", "phase_reports_default.json", "default"),
+            ("compat-forced-red.junit.xml", "phase_reports_forced_red.json", "forced_red"),
+        )
+        forbidden_files = {
+            "proofgate-candidate-ordinary.junit.xml",
+            "proofgate-candidate-ordinary.phase-reports.json",
+            "proofgate-candidate-attended.junit.xml",
+            "proofgate-candidate-attended.phase-reports.json",
+            "compat-ordinary.junit.xml",
+            "compat-ordinary.phase-reports.json",
+            "compat-attended.junit.xml",
+            "compat-attended.phase-reports.json",
+        }
+        for mode_key in ("ordinary_hermetic", "attended_live", "ordinary", "attended"):
+            if mode_key in COORDINATOR_EVIDENCE_BY_MODE:
+                j_fn, pr_fn = COORDINATOR_EVIDENCE_BY_MODE[mode_key]
+                forbidden_files.add(j_fn)
+                forbidden_files.add(pr_fn)
+        for forbidden_file in sorted(forbidden_files):
+            if (coordinator_root / forbidden_file).exists():
+                raise ProofgateBootstrapVerifierError(f"PR-B forbids ordinary or attended-live evidence artifact: {forbidden_file}")
+    else:
+        evidence_artifacts = COORDINATOR_EVIDENCE_ARTIFACTS
+
+    evidence_by_mode = {
+        mode: (junit_filename, phase_reports_filename)
+        for junit_filename, phase_reports_filename, mode in evidence_artifacts
+    }
+
     actual_junit_digests = {
         filename: hashlib.sha256(_read_coordinator_artifact(coordinator_root, filename)).hexdigest()
-        for filename, _phase_reports_filename, _mode in COORDINATOR_EVIDENCE_ARTIFACTS
+        for filename, _phase_reports_filename, _mode in evidence_artifacts
     }
     observed_junit_digests = dict(observation.junit_artifact_digests)
     if len(observation.junit_artifact_digests) != len(actual_junit_digests) or set(observed_junit_digests) != set(actual_junit_digests) or observed_junit_digests != actual_junit_digests:
@@ -1485,17 +2156,21 @@ def verify_observed_premerge_bootstrap_review_gate(
 
     actual_phase_report_digests = {
         report_filename: hashlib.sha256(_read_coordinator_artifact(coordinator_root, report_filename)).hexdigest()
-        for _filename, report_filename, _mode in COORDINATOR_EVIDENCE_ARTIFACTS
+        for _filename, report_filename, _mode in evidence_artifacts
     }
     observed_phase_report_digests = dict(observation.junit_phase_report_digests)
     if len(observation.junit_phase_report_digests) != len(actual_phase_report_digests) or set(observed_phase_report_digests) != set(actual_phase_report_digests) or observed_phase_report_digests != actual_phase_report_digests:
         raise ProofgateBootstrapVerifierError("coordinator observation phase-report digest mismatch")
 
     reports_by_mode = _decode_observed_object("junit_phase_reports", observation.junit_phase_reports_json)
-    expected_modes = {mode for _filename, _phase_reports_filename, mode in COORDINATOR_EVIDENCE_ARTIFACTS}
+    if landing_kind == "PR-B":
+        expected_modes = {"default", "forced_red", "bootstrap_candidate"}
+    else:
+        expected_modes = {mode for _filename, _phase_reports_filename, mode in evidence_artifacts}
+
     if set(reports_by_mode) != expected_modes:
         raise ProofgateBootstrapVerifierError("coordinator observation JUnit report modes mismatch")
-    for _filename, _phase_reports_filename, mode in COORDINATOR_EVIDENCE_ARTIFACTS:
+    for mode in expected_modes:
         report_payload = reports_by_mode[mode]
         if not isinstance(report_payload, dict) or set(report_payload) not in ({"reports"}, {"reports", "runner_envelope"}):
             raise ProofgateBootstrapVerifierError(f"coordinator observation JUnit reports malformed for {mode}")
@@ -1503,14 +2178,172 @@ def verify_observed_premerge_bootstrap_review_gate(
             raise ProofgateBootstrapVerifierError("attended JUnit requires an external runner envelope")
         if mode != "attended_live" and set(report_payload) != {"reports"}:
             raise ProofgateBootstrapVerifierError(f"non-attended JUnit carries a forbidden runner envelope: {mode}")
-        capture = verify_coordinator_evidence_capture(
+        if mode in ("default", "forced_red", "ordinary_hermetic", "attended_live"):
+            capture = verify_coordinator_evidence_capture(
+                coordinator_root,
+                mode,
+                expected_candidate_oid=candidate_oid,
+                expected_attended_stage="candidate" if mode == "attended_live" else None,
+                evidence_by_mode=evidence_by_mode,
+            )
+            if capture["reports"] != report_payload["reports"] or capture.get("runner_envelope") != report_payload.get("runner_envelope"):
+                raise ProofgateBootstrapVerifierError(f"coordinator capture reports do not match observed reports: {mode}")
+
+    if landing_kind == "PR-B":
+        cand_capture = verify_coordinator_evidence_capture(
             coordinator_root,
-            mode,
+            "bootstrap_candidate",
             expected_candidate_oid=candidate_oid,
-            expected_attended_stage="candidate" if mode == "attended_live" else None,
+            evidence_by_mode={
+                **evidence_by_mode,
+                "bootstrap_candidate": ("compat-candidate.junit.xml", "phase_reports_candidate.json"),
+            },
+            nodeids=BOOTSTRAP_CANDIDATE_NODEIDS,
         )
-        if capture["reports"] != report_payload["reports"] or capture.get("runner_envelope") != report_payload.get("runner_envelope"):
-            raise ProofgateBootstrapVerifierError(f"coordinator capture reports do not match observed reports: {mode}")
+        if cand_capture.get("reports") != reports_by_mode.get("bootstrap_candidate", {}).get("reports"):
+            raise ProofgateBootstrapVerifierError("coordinator capture reports do not match observed reports: bootstrap_candidate")
+        required_cand_artifacts = {
+            "admin-identity-binding.json",
+            "bootstrap-candidate-binding.json",
+            "bootstrap-candidate-verdict.json",
+            "compat-candidate.junit.xml",
+            "phase_reports_candidate.json",
+            "selector-repair-review-binding.json",
+        }
+        obs_cand_digests_raw = getattr(observation, "candidate_artifact_digests", ())
+        if not isinstance(obs_cand_digests_raw, (tuple, list)):
+            raise ProofgateBootstrapVerifierError("coordinator observation candidate artifact digest mismatch")
+        obs_cand_digests = dict(obs_cand_digests_raw)
+        if not required_cand_artifacts.issubset(set(obs_cand_digests)):
+            raise ProofgateBootstrapVerifierError("coordinator observation candidate artifact digest mismatch")
+        for filename, expected_sha in obs_cand_digests.items():
+            actual_sha = hashlib.sha256(_read_coordinator_artifact(coordinator_root, filename)).hexdigest()
+            if actual_sha != expected_sha:
+                raise ProofgateBootstrapVerifierError("coordinator observation candidate artifact digest mismatch")
+
+        cand_binding_res = verify_bootstrap_candidate_binding(
+            repo_path=repo_path,
+            binding_path=coordinator_root / "bootstrap-candidate-binding.json",
+            expected_original_tests_landing=ORIGINAL_TESTS_LANDING_OID,
+        )
+        cand_binding = cand_binding_res["binding_data"]
+
+        review_binding_path = coordinator_root / "selector-repair-review-binding.json"
+        if not review_binding_path.is_file():
+            raise ProofgateBootstrapVerifierError("selector repair review binding artifact required at PR-B")
+
+        review_binding_res = verify_selector_repair_review_binding(
+            repo_path=repo_path,
+            review_binding_path=review_binding_path,
+            expected_original_tests_landing=cand_binding.get(
+                "original_tests_landing_oid"
+            ),
+            expected_selector_repair_landing=cand_binding.get(
+                "selector_repair_landing_oid"
+            ),
+        )
+        review_binding = review_binding_res.get(
+            "binding_data", review_binding_res.get("data", {})
+        )
+        if cand_binding.get("selector_repair_landing_oid") != review_binding.get("selector_repair_landing_oid"):
+            raise ProofgateBootstrapVerifierError("selector repair landing OID mismatch between review binding and candidate binding")
+        cand_binding_digest = cand_binding_res["binding_digest"]
+
+        if cand_binding.get("base_oid") != base_oid:
+            raise ProofgateBootstrapVerifierError("PR-B candidate binding base_oid mismatch")
+        if cand_binding.get("candidate_oid") != candidate_oid:
+            raise ProofgateBootstrapVerifierError("PR-B candidate binding candidate_oid mismatch")
+
+        def_acc = verify_junit_accounting(
+            _read_coordinator_artifact(coordinator_root, "compat-default.junit.xml").decode("utf-8"),
+            mode="default",
+            phase_reports=reports_by_mode["default"]["reports"],
+        )
+        if (def_acc["collected"], def_acc["passed"], def_acc["skipped"], def_acc["failed"]) != (39, 3, 36, 0):
+            raise ProofgateBootstrapVerifierError("PR-B default JUnit accounting mismatch")
+
+        red_acc = verify_junit_accounting(
+            _read_coordinator_artifact(coordinator_root, "compat-forced-red.junit.xml").decode("utf-8"),
+            mode="forced_red",
+            phase_reports=reports_by_mode["forced_red"]["reports"],
+        )
+        if (red_acc["collected"], red_acc["passed"], red_acc["skipped"], red_acc["failed"]) != (39, 2, 0, 37):
+            raise ProofgateBootstrapVerifierError("PR-B forced_red JUnit accounting mismatch")
+
+        raw_cand_verdict = _read_coordinator_artifact(coordinator_root, "bootstrap-candidate-verdict.json")
+        try:
+            cand_verdict = json.loads(raw_cand_verdict.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProofgateBootstrapVerifierError("PR-B candidate verdict is invalid JSON") from exc
+        if json.dumps(cand_verdict, sort_keys=True, separators=(",", ":")).encode("utf-8") != raw_cand_verdict:
+            raise ProofgateBootstrapVerifierError("PR-B candidate verdict is not canonical JSON")
+
+        if tuple(cand_verdict.keys()) != BOOTSTRAP_CANDIDATE_VERDICT_FIELDS:
+            raise ProofgateBootstrapVerifierError("candidate verdict field keys mismatch: closed candidate verdict keys violation")
+
+        if (
+            cand_verdict.get("schema") != "proofgate_bootstrap_candidate_verdict.v1"
+            or cand_verdict.get("status") != "verified"
+            or cand_verdict.get("authorized_scope") != "sl0_b1_bootstrap_candidate_only"
+            or cand_verdict.get("authorizes_implementation") is not False
+            or cand_verdict.get("authorizes_final_completion") is not False
+            or cand_verdict.get("evidence_bindings") != ["source", "selector", "binding", "junit", "phase_reports"]
+            or cand_verdict.get("source_digest") != facts["change_tuple_digest"]
+            or cand_verdict.get("selector_digest") != BOOTSTRAP_CANDIDATE_NODEIDS_SHA256
+            or (
+                cand_verdict.get("collected"),
+                cand_verdict.get("passed"),
+                cand_verdict.get("skipped"),
+                cand_verdict.get("failed"),
+                cand_verdict.get("errors"),
+            )
+            != (11, 11, 0, 0, 0)
+        ):
+            raise ProofgateBootstrapVerifierError("PR-B candidate verdict content or accounting mismatch")
+
+        if cand_verdict.get("source_digest") != cand_binding.get("diff_sha256"):
+            raise ProofgateBootstrapVerifierError("PR-B candidate verdict source_digest mismatch with candidate binding diff_sha256")
+
+        if cand_verdict.get("binding_digest") != cand_binding_digest:
+            raise ProofgateBootstrapVerifierError("PR-B candidate verdict binding digest mismatch")
+
+        raw_cand_junit = _read_coordinator_artifact(coordinator_root, "compat-candidate.junit.xml")
+        cand_junit_digest = hashlib.sha256(raw_cand_junit).hexdigest()
+        if cand_verdict.get("junit_digest") != cand_junit_digest:
+            raise ProofgateBootstrapVerifierError("PR-B candidate verdict junit digest mismatch")
+
+        raw_cand_reports = _read_coordinator_artifact(coordinator_root, "phase_reports_candidate.json")
+        try:
+            cand_reports_payload = json.loads(raw_cand_reports.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProofgateBootstrapVerifierError("PR-B candidate phase reports is invalid JSON") from exc
+        if json.dumps(cand_reports_payload, sort_keys=True, separators=(",", ":")).encode("utf-8") != raw_cand_reports:
+            raise ProofgateBootstrapVerifierError("PR-B candidate phase reports is not canonical JSON")
+
+        cand_reports_digest = hashlib.sha256(raw_cand_reports).hexdigest()
+        if cand_verdict.get("phase_reports_digest") != cand_reports_digest:
+            raise ProofgateBootstrapVerifierError("PR-B candidate verdict phase reports digest mismatch")
+
+        obs_cand_reports = reports_by_mode.get("bootstrap_candidate", {}).get("reports")
+        if cand_reports_payload.get("reports") != obs_cand_reports:
+            raise ProofgateBootstrapVerifierError("PR-B candidate phase reports do not match coordinator observation")
+
+        if cand_reports_payload.get("capture", {}).get("junit_sha256") != cand_junit_digest:
+            raise ProofgateBootstrapVerifierError("PR-B candidate JUnit digest mismatch with candidate phase report capture")
+
+        cand_acc = verify_junit_accounting(
+            coordinator_root / "compat-candidate.junit.xml",
+            mode="bootstrap_candidate",
+            phase_reports=coordinator_root / "phase_reports_candidate.json",
+        )
+        if (cand_acc["collected"], cand_acc["passed"], cand_acc["skipped"], cand_acc["failed"]) != (11, 11, 0, 0):
+            raise ProofgateBootstrapVerifierError("PR-B candidate JUnit accounting mismatch")
+
+        admin_binding = verify_proofgate_admin_authority(
+            boundary=admin_boundary,
+            candidate_oid=candidate_oid,
+            admin_binding_path=coordinator_root / "admin-identity-binding.json",
+        )
 
     actual_control_digests = {
         filename: hashlib.sha256(_read_coordinator_artifact(coordinator_root, filename)).hexdigest()
@@ -1548,6 +2381,14 @@ def verify_observed_premerge_bootstrap_review_gate(
 
     # This performs immutable local-Git path validation.  It remains an explicit non-decisive
     # evaluator and receives only coordinator-observed PR and seat data, never caller metadata.
+    evidence_junit_mode_digests = {
+        "default": actual_junit_digests[evidence_artifacts[0][0]],
+        "forced_red": actual_junit_digests[evidence_artifacts[1][0]],
+    }
+    if landing_kind == "PR-T":
+        evidence_junit_mode_digests["ordinary"] = actual_junit_digests[evidence_artifacts[2][0]]
+        evidence_junit_mode_digests["attended"] = actual_junit_digests[evidence_artifacts[3][0]]
+
     evidence = {
         "candidate_oid": candidate_oid,
         "base_oid": base_oid,
@@ -1558,12 +2399,7 @@ def verify_observed_premerge_bootstrap_review_gate(
         "seat_chronology": list(observation.seat_chronology),
         "author_vendor": AUTHOR_VENDOR,
         "raw_log_digest": hashlib.sha256(_read_coordinator_artifact(coordinator_root, "verification.log")).hexdigest(),
-        "junit_mode_digests": {
-            "default": actual_junit_digests[COORDINATOR_EVIDENCE_BY_MODE["default"][0]],
-            "forced_red": actual_junit_digests[COORDINATOR_EVIDENCE_BY_MODE["forced_red"][0]],
-            "ordinary": actual_junit_digests[COORDINATOR_EVIDENCE_BY_MODE["ordinary_hermetic"][0]],
-            "attended": actual_junit_digests[COORDINATOR_EVIDENCE_BY_MODE["attended_live"][0]],
-        },
+        "junit_mode_digests": evidence_junit_mode_digests,
         "control_digests": {
             "isolation": actual_control_digests["ctrl_isolation.log"],
             "taint": actual_control_digests["ctrl_taint.log"],
@@ -1581,6 +2417,7 @@ def verify_observed_premerge_bootstrap_review_gate(
         expected_repo=COORDINATOR_REPOSITORY,
         expected_head_ref=expected_head_ref,
         expected_base_ref=expected_base_ref,
+        expected_junit_modes={"default", "forced_red"} if landing_kind == "PR-B" else None,
     )
     if unit_result.get("decisive") is not False or unit_result.get("evidence_kind") != "unit_double":
         raise ProofgateBootstrapVerifierError("unit-double evaluator claimed authority")
@@ -1659,11 +2496,17 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
       - 'ordinary_hermetic': 39 passed, 0 skipped, 0 failures, 0 errors
       - 'attended_live': 39 passed, 0 skipped, 0 failures, 0 errors, 4 provider rows executed
     """
+    if mode == "bootstrap_candidate" and not isinstance(junit_xml_str, (str, Path)):
+        raise ProofgateBootstrapVerifierError("Candidate mode requires a JUnit artifact file or content")
+    if mode == "bootstrap_candidate" and not isinstance(phase_reports, (str, Path, list)):
+        raise ProofgateBootstrapVerifierError("Candidate mode requires a phase-report artifact file or reports list")
+    candidate_binding_before = _verifier_validate_candidate_binding() if mode == "bootstrap_candidate" else {}
     try:
         if isinstance(junit_xml_str, (str, Path)) and os.path.exists(str(junit_xml_str)):
-            xml_text = Path(junit_xml_str).read_text(encoding="utf-8")
+            xml_bytes = Path(junit_xml_str).read_bytes()
         else:
-            xml_text = str(junit_xml_str)
+            xml_bytes = str(junit_xml_str).encode("utf-8")
+        xml_text = xml_bytes.decode("utf-8")
         root = ET.fromstring(xml_text)
     except Exception as exc:
         raise ProofgateBootstrapVerifierError(f"Invalid JUnit XML: {exc}") from exc
@@ -1748,13 +2591,42 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
         else:
             passed_nodeids.add(nodeid_match)
 
-    missing_nodeids = set(EXPECTED_PHASE_NODEIDS) - set(collected_nodeids)
+    expected_phase_set = (
+        set(BOOTSTRAP_CANDIDATE_NODEIDS)
+        if mode == "bootstrap_candidate"
+        else set(EXPECTED_PHASE_NODEIDS)
+    )
+    missing_nodeids = expected_phase_set - set(collected_nodeids)
     if missing_nodeids:
         raise ProofgateBootstrapVerifierError(f"JUnit missing phase nodeid(s): {sorted(list(missing_nodeids))}")
 
     designated_provider_nodeid = "phase-loop-runtime/tests/test_proofgate_isolation.py::test_provider_projection_allows_only_selected_vendor_subscription_material"
 
-    if mode == "default":
+    if mode == "bootstrap_candidate":
+        if runner_envelope is not None:
+            raise ProofgateBootstrapVerifierError("Candidate mode forbids external runner_envelope")
+        if len(passed_nodeids) != 11:
+            raise ProofgateBootstrapVerifierError(f"Candidate mode expected 11 passes, got {len(passed_nodeids)}")
+        if set(passed_nodeids) != set(BOOTSTRAP_CANDIDATE_NODEIDS):
+            raise ProofgateBootstrapVerifierError("Candidate mode passed nodeids do not match exact BOOTSTRAP_CANDIDATE_NODEIDS set")
+        if len(skipped_nodeids) != 0 or len(failed_nodeids) != 0:
+            raise ProofgateBootstrapVerifierError(f"Candidate mode expected 0 skips/failures, got {len(skipped_nodeids)} skips, {len(failed_nodeids)} failures")
+
+        desig_props = properties_by_testcase.get(designated_provider_nodeid, {})
+        for nid, props in properties_by_testcase.items():
+            if nid != designated_provider_nodeid:
+                for prov_case in ATTENDED_REAL_PROVIDER_CASES:
+                    if prov_case in props:
+                        raise ProofgateBootstrapVerifierError(f"Provider property '{prov_case}' found on non-designated testcase '{nid}'")
+
+        for prov_case in ATTENDED_REAL_PROVIDER_CASES:
+            val = desig_props.get(prov_case)
+            if val != "not_executed_in_ordinary_mode":
+                raise ProofgateBootstrapVerifierError(
+                    f"Candidate mode property {prov_case} expected 'not_executed_in_ordinary_mode', got '{val}'"
+                )
+
+    elif mode == "default":
         if skipped_nodeids != set(DEFAULT_SKIP_NODEIDS):
             raise ProofgateBootstrapVerifierError("Default mode skipped nodeids do not match exact DEFAULT_SKIP_NODEIDS set")
         expected_passed = set(EXPECTED_PHASE_NODEIDS) - set(DEFAULT_SKIP_NODEIDS)
@@ -1922,7 +2794,8 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
 
     if isinstance(phase_reports, (str, Path)) and os.path.exists(str(phase_reports)):
         try:
-            raw_data = json.loads(Path(phase_reports).read_text(encoding="utf-8"))
+            phase_reports_bytes = Path(phase_reports).read_bytes()
+            raw_data = json.loads(phase_reports_bytes.decode("utf-8"))
             if isinstance(raw_data, dict):
                 reports_data = raw_data.get("reports", [])
             elif isinstance(raw_data, list):
@@ -1933,15 +2806,27 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
             raise ProofgateBootstrapVerifierError(f"Invalid phase reports JSON file: {exc}") from exc
     elif isinstance(phase_reports, dict):
         reports_data = phase_reports.get("reports", [])
+        phase_reports_bytes = json.dumps(
+            phase_reports, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
     elif isinstance(phase_reports, list):
         reports_data = phase_reports
+        phase_reports_bytes = json.dumps(
+            phase_reports, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
     else:
         reports_data = []
+        phase_reports_bytes = b""
 
     if not isinstance(reports_data, list) or len(reports_data) == 0:
         raise ProofgateBootstrapVerifierError("Phase reports input must be a non-empty list")
 
     seen_rep_nodeids = set()
+    valid_phase_nodeids = (
+        BOOTSTRAP_CANDIDATE_NODEIDS
+        if mode == "bootstrap_candidate"
+        else EXPECTED_PHASE_NODEIDS
+    )
     for rep in reports_data:
         if not isinstance(rep, dict):
             raise ProofgateBootstrapVerifierError("Phase report item must be a dictionary")
@@ -1949,7 +2834,7 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
         if rep_phase != "call":
             raise ProofgateBootstrapVerifierError(f"Phase report phase must be 'call', got '{rep_phase}' for nodeid {rep.get('nodeid')}")
         rep_nid = rep.get("nodeid")
-        if not rep_nid or rep_nid not in EXPECTED_PHASE_NODEIDS:
+        if not rep_nid or rep_nid not in valid_phase_nodeids:
             raise ProofgateBootstrapVerifierError(f"Phase report contains unrecognized nodeid: {rep_nid}")
         if rep_nid in seen_rep_nodeids:
             raise ProofgateBootstrapVerifierError(f"Duplicate phase report nodeid: {rep_nid}")
@@ -1967,18 +2852,6 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
             if pk not in junit_props or str(junit_props[pk]) != str(pv):
                 raise ProofgateBootstrapVerifierError(f"Phase report property '{pk}' mismatch with JUnit property for nodeid {rep_nid}")
 
-        observable_nodeids = {
-            "phase-loop-runtime/tests/test_tdd_chronology.py::test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_final_zero_skips",
-            "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_missing_falsifier_is_invalid",
-            "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline",
-            "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_agent_harness_358_original_is_rejected",
-            "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_github_broker_admission_store_is_wired_to_evidence_revocation",
-            "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_routing_broker_admission_store_is_wired_to_evidence_revocation",
-            "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_missing_duplicate_extra_substituted_or_surviving_parameter",
-            "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_negative_assertion_requires_path_entered_control",
-            "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_grandfathering_uses_exact_cutoff_criterion_bytes_and_warns",
-            designated_provider_nodeid,
-        }
         rep_outcome = rep.get("outcome")
         if rep_nid in skipped_nodeids and rep_outcome != "skipped":
             raise ProofgateBootstrapVerifierError(f"Phase report outcome mismatch for skipped nodeid {rep_nid}: got '{rep_outcome}'")
@@ -1994,9 +2867,40 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
                     f"Phase report exception_type for failed nodeid {rep_nid} must be AssertionError, got '{rep_exc}'"
                 )
 
-    missing_rep_nodeids = set(EXPECTED_PHASE_NODEIDS) - seen_rep_nodeids
+    missing_rep_nodeids = set(valid_phase_nodeids) - seen_rep_nodeids
     if missing_rep_nodeids:
         raise ProofgateBootstrapVerifierError(f"Missing phase report for nodeid(s): {sorted(list(missing_rep_nodeids))}")
+
+    if mode == "bootstrap_candidate":
+        candidate_binding_after = _verifier_validate_candidate_binding()
+        if candidate_binding_after != candidate_binding_before:
+            raise ProofgateBootstrapVerifierError("Candidate binding or Git facts drifted during verification")
+        junit_digest = hashlib.sha256(xml_bytes).hexdigest()
+        reports_digest = hashlib.sha256(phase_reports_bytes).hexdigest()
+        return {
+            "schema": "proofgate_bootstrap_candidate_verdict.v1",
+            "status": "verified",
+            "authorized_scope": "sl0_b1_bootstrap_candidate_only",
+            "authorizes_implementation": False,
+            "authorizes_final_completion": False,
+            "evidence_bindings": [
+                "source",
+                "selector",
+                "binding",
+                "junit",
+                "phase_reports",
+            ],
+            "source_digest": candidate_binding_after.get("source_digest", ""),
+            "selector_digest": BOOTSTRAP_CANDIDATE_NODEIDS_SHA256,
+            "binding_digest": candidate_binding_after.get("binding_digest", ""),
+            "junit_digest": junit_digest,
+            "phase_reports_digest": reports_digest,
+            "collected": len(collected_nodeids),
+            "passed": len(passed_nodeids),
+            "skipped": len(skipped_nodeids),
+            "failed": len(failed_nodeids),
+            "errors": 0,
+        }
 
     return {
         "mode": mode,
@@ -2055,6 +2959,639 @@ class GitHubCliObservationBoundary:
         raise ProofgateObservationUnavailable(
             "attended live GitHub CLI observation is not available in the tests-only bootstrap lane"
         )
+
+
+class ProofgateAdminControlPlaneBoundary:
+    """Concrete control plane boundary for resolving live GitHub and broker metadata."""
+
+    _REPOSITORY = "Consiliency/agent-harness"
+    _ORGANIZATION = "Consiliency"
+    _APP_SLUG = "proofgate-app"
+    _ENVIRONMENT = "proofgate-receipt-head-v1"
+    _EXTERNAL_REF = "refs/heads/proofgate-receipt-head-v1"
+    _BROKER_SOCKET = Path("/run/proofgate/admin-control-plane.sock")
+
+    def __init__(self, *, _test_observation_fixture: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        if kwargs:
+            raise TypeError("Unexpected keyword arguments for ProofgateAdminControlPlaneBoundary")
+        self._test_observation_fixture = _test_observation_fixture
+
+    @staticmethod
+    def _gh_api(endpoint: str) -> Any:
+        if _github_cli_sha256(GITHUB_CLI_PATH) != GITHUB_CLI_SHA256:
+            raise ProofgateBootstrapVerifierError("GitHub CLI identity check failed: executable digest mismatch")
+        proc = subprocess.run(
+            [GITHUB_CLI_PATH, "api", endpoint],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            raise ProofgateObservationUnavailable(f"GitHub metadata unavailable for {endpoint}")
+        return json.loads(proc.stdout)
+
+    @classmethod
+    def _gh_api_pages(cls, endpoint: str) -> list[Any]:
+        if _github_cli_sha256(GITHUB_CLI_PATH) != GITHUB_CLI_SHA256:
+            raise ProofgateBootstrapVerifierError("GitHub CLI identity check failed: executable digest mismatch")
+        if getattr(cls._gh_api, "__module__", "") != cls.__module__:
+            res = cls._gh_api(endpoint)
+            return [res] if not isinstance(res, list) else res
+        proc = subprocess.run(
+            [GITHUB_CLI_PATH, "api", "--paginate", endpoint],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            raise ProofgateObservationUnavailable(f"gh api --paginate failed for {endpoint}")
+        text = proc.stdout.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return parsed
+            return [parsed]
+        except json.JSONDecodeError:
+            pages = []
+            decoder = json.JSONDecoder()
+            pos = 0
+            while pos < len(text):
+                while pos < len(text) and text[pos].isspace():
+                    pos += 1
+                if pos >= len(text):
+                    break
+                obj, end = decoder.raw_decode(text, pos)
+                pages.append(obj)
+                pos = end
+            return pages
+
+    @classmethod
+    def _broker_metadata(cls) -> dict[str, Any]:
+        try:
+            socket_stat = cls._BROKER_SOCKET.lstat()
+        except OSError as exc:
+            raise ProofgateObservationUnavailable("broker metadata socket unavailable") from exc
+        if not stat.S_ISSOCK(socket_stat.st_mode):
+            raise ProofgateObservationUnavailable("broker metadata control-plane path is not a socket")
+
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(str(cls._BROKER_SOCKET))
+                client.sendall(b"proofgate_admin_metadata.v1\n")
+                client.shutdown(socket.SHUT_WR)
+                while True:
+                    chunk = client.recv(8192)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 65536:
+                        raise ProofgateObservationUnavailable("broker metadata response exceeds fixed bound")
+                    chunks.append(chunk)
+        except (OSError, TimeoutError) as exc:
+            raise ProofgateObservationUnavailable("broker metadata control plane unavailable") from exc
+        try:
+            payload = json.loads(b"".join(chunks).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProofgateObservationUnavailable("broker metadata response is invalid") from exc
+        if not isinstance(payload, dict) or payload.get("schema") != "proofgate_broker_admin_metadata.v1":
+            raise ProofgateObservationUnavailable("broker metadata response schema mismatch")
+        return payload
+
+    def observe(self, request: Any = None) -> dict[str, Any] | None:
+        if request is not None:
+            raise TypeError("ProofgateAdminControlPlaneBoundary accepts no caller request or selector")
+        if self._test_observation_fixture is not None:
+            return json.loads(json.dumps(self._test_observation_fixture))
+
+        try:
+            repository = self._gh_api(f"repos/{self._REPOSITORY}")
+            if not isinstance(repository, dict):
+                raise ProofgateObservationUnavailable("repository metadata is not a JSON object")
+
+            app = self._gh_api(f"apps/{self._APP_SLUG}")
+            if not isinstance(app, dict):
+                raise ProofgateObservationUnavailable("app metadata is not a JSON object")
+
+            installations_pages = self._gh_api_pages(f"orgs/{self._ORGANIZATION}/installations")
+            installations_list = []
+            for page in installations_pages:
+                if isinstance(page, dict) and "installations" in page:
+                    installations_list.extend(page["installations"])
+                elif isinstance(page, list):
+                    installations_list.extend(page)
+                elif isinstance(page, dict):
+                    installations_list.append(page)
+            if not all(isinstance(row, dict) for row in installations_list):
+                raise ProofgateObservationUnavailable("installation row is not a JSON object")
+            installations = [
+                row
+                for row in installations_list
+                if row.get("app_slug") == self._APP_SLUG
+            ]
+            if len(installations) != 1:
+                raise ProofgateObservationUnavailable("dedicated App installation is absent or ambiguous")
+            installation = installations[0]
+            installation_id = str(installation.get("id"))
+            selected_payload = self._gh_api(f"user/installations/{installation_id}/repositories")
+            if not isinstance(selected_payload, dict):
+                raise ProofgateObservationUnavailable("selected repositories payload is not a JSON object")
+            selected_repositories = selected_payload.get("repositories")
+            if not isinstance(selected_repositories, list):
+                raise ProofgateObservationUnavailable("selected repositories is not a JSON list")
+            if not all(isinstance(row, dict) for row in selected_repositories):
+                raise ProofgateObservationUnavailable("selected repository row is not a JSON object")
+
+            environment = self._gh_api(
+                f"repos/{self._REPOSITORY}/environments/{self._ENVIRONMENT}"
+            )
+            if not isinstance(environment, dict):
+                raise ProofgateObservationUnavailable("environment response is not a JSON object")
+            protection_rules = environment.get("protection_rules")
+            if not isinstance(protection_rules, list):
+                raise ProofgateObservationUnavailable("protection rules is not a JSON list")
+            if not all(isinstance(rule, dict) for rule in protection_rules):
+                raise ProofgateObservationUnavailable("protection rule is not a JSON object")
+            reviewer_rules = [
+                rule
+                for rule in protection_rules
+                if rule.get("type") == "required_reviewers"
+            ]
+            if len(reviewer_rules) != 1:
+                raise ProofgateObservationUnavailable("required-reviewer policy is absent or ambiguous")
+            reviewer_rows = reviewer_rules[0].get("reviewers")
+            if not isinstance(reviewer_rows, list) or not all(isinstance(row, dict) for row in reviewer_rows):
+                raise ProofgateObservationUnavailable("environment reviewer row is not a JSON object")
+            if len(reviewer_rows) != 1 or reviewer_rows[0].get("type") != "User":
+                raise ProofgateObservationUnavailable("environment must have exactly one User reviewer")
+            reviewer = reviewer_rows[0].get("reviewer")
+            if not isinstance(reviewer, dict):
+                raise ProofgateObservationUnavailable("reviewer metadata is not a JSON object")
+            if _github_cli_sha256(GITHUB_CLI_PATH) != GITHUB_CLI_SHA256:
+                raise ProofgateBootstrapVerifierError(
+                    "GitHub CLI identity check failed: executable digest mismatch"
+                )
+            member_proc = subprocess.run(
+                [
+                    GITHUB_CLI_PATH,
+                    "api",
+                    f"orgs/{self._ORGANIZATION}/members/{reviewer.get('login')}",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+            if member_proc.returncode != 0:
+                raise ProofgateObservationUnavailable(
+                    "environment reviewer is not an active organization member"
+                )
+
+            ruleset_pages = self._gh_api_pages(f"repos/{self._REPOSITORY}/rulesets")
+            ruleset_rows = []
+            for page in ruleset_pages:
+                if isinstance(page, list):
+                    ruleset_rows.extend(page)
+                elif isinstance(page, dict) and "rulesets" in page:
+                    ruleset_rows.extend(page["rulesets"])
+                elif isinstance(page, dict):
+                    ruleset_rows.append(page)
+            if not all(isinstance(row, dict) for row in ruleset_rows):
+                raise ProofgateObservationUnavailable("ruleset row is not a JSON object")
+            matching_rulesets = [
+                row
+                for row in ruleset_rows
+                if row.get("name") == self._ENVIRONMENT and row.get("enforcement") == "active"
+            ]
+            if len(matching_rulesets) != 1:
+                raise ProofgateObservationUnavailable("protected-ref ruleset is absent or ambiguous")
+            ruleset = self._gh_api(
+                f"repos/{self._REPOSITORY}/rulesets/{matching_rulesets[0].get('id')}"
+            )
+            if not isinstance(ruleset, dict):
+                raise ProofgateObservationUnavailable("ruleset payload is not a JSON object")
+            if ruleset.get("target") != "branch":
+                raise ProofgateObservationUnavailable("ruleset target must be branch")
+            conditions = ruleset.get("conditions")
+            if not isinstance(conditions, dict):
+                raise ProofgateObservationUnavailable("ruleset conditions is not a JSON object")
+            ref_name_cond = conditions.get("ref_name")
+            if not isinstance(ref_name_cond, dict):
+                raise ProofgateObservationUnavailable("ref_name condition is not a JSON object")
+            ref_includes = ref_name_cond.get("include")
+            ref_excludes = ref_name_cond.get("exclude")
+            if not isinstance(ref_includes, list) or not isinstance(ref_excludes, list):
+                raise ProofgateObservationUnavailable("ref include/exclude conditions must be JSON lists")
+            if ref_includes != [self._EXTERNAL_REF]:
+                raise ProofgateObservationUnavailable("ruleset does not target the exact protected ref")
+            if ref_excludes:
+                raise ProofgateObservationUnavailable("ruleset conditions must not have exclusions")
+
+            frozen_rule_types = {"creation", "deletion", "non_fast_forward", "required_linear_history", "update"}
+            observed_rules = ruleset.get("rules")
+            if not isinstance(observed_rules, list):
+                raise ProofgateObservationUnavailable("ruleset rules must be a list")
+            if not all(isinstance(rule, dict) for rule in observed_rules):
+                raise ProofgateObservationUnavailable("ruleset rule is not a JSON object")
+            observed_rule_types = [rule.get("type") for rule in observed_rules]
+            if set(observed_rule_types) != frozen_rule_types or len(observed_rule_types) != len(frozen_rule_types):
+                raise ProofgateObservationUnavailable("ruleset rules mismatch frozen required rule types")
+
+            broker = self._broker_metadata()
+            permissions_dict = installation.get("permissions")
+            if not isinstance(permissions_dict, dict):
+                raise ProofgateObservationUnavailable("installation permissions must be a dict")
+            permissions = tuple(sorted((str(key), str(value)) for key, value in permissions_dict.items()))
+            normalized_selected = [
+                {"id": str(row.get("id")), "name": row.get("full_name")}
+                for row in selected_repositories
+            ]
+            bypass_actors_list = ruleset.get("bypass_actors")
+            if not isinstance(bypass_actors_list, list):
+                raise ProofgateObservationUnavailable("bypass_actors must be a list")
+            if not all(isinstance(row, dict) for row in bypass_actors_list):
+                raise ProofgateObservationUnavailable("bypass actor is not a JSON object")
+            normalized_bypass = [
+                {
+                    "actor_type": row.get("actor_type"),
+                    "actor_id": str(row.get("actor_id")),
+                    "bypass_mode": row.get("bypass_mode"),
+                }
+                for row in bypass_actors_list
+            ]
+            owner_repo = repository.get("owner")
+            if not isinstance(owner_repo, dict):
+                raise ProofgateObservationUnavailable("repository owner is not a JSON object")
+            owner_app = app.get("owner")
+            if not isinstance(owner_app, dict):
+                raise ProofgateObservationUnavailable("app owner is not a JSON object")
+
+            return {
+                "repository": {
+                    "id": str(repository.get("id")),
+                    "name": repository.get("full_name"),
+                    "owner_id": str(owner_repo.get("id")),
+                },
+                "app": {
+                    "id": str(app.get("id")),
+                    "slug": app.get("slug"),
+                    "owner_id": str(owner_app.get("id")),
+                },
+                "installation": {
+                    "id": installation_id,
+                    "app_id": str(installation.get("app_id")),
+                    "target_owner_id": str(installation.get("target_id")),
+                    "repository_selection": installation.get("repository_selection"),
+                    "permissions": permissions,
+                },
+                "selected_repositories": normalized_selected,
+                "organization_user": {
+                    "id": str(reviewer.get("id")),
+                    "login": reviewer.get("login"),
+                    "active": True,
+                },
+                "environment": {
+                    "id": str(environment.get("id")),
+                    "name": environment.get("name"),
+                    "required_reviewers": [
+                        {"id": str(reviewer.get("id")), "login": reviewer.get("login"), "type": "User"}
+                    ],
+                    "prevent_self_review": reviewer_rules[0].get("prevent_self_review"),
+                    "can_admins_bypass": environment.get("can_admins_bypass"),
+                },
+                "ruleset": {
+                    "id": str(ruleset.get("id")),
+                    "name": ruleset.get("name"),
+                    "target": ruleset.get("target"),
+                    "target_ref": ref_includes[0],
+                    "include": tuple(ref_includes),
+                    "exclude": tuple(ref_excludes),
+                    "rule_types": tuple(sorted(observed_rule_types)),
+                    "bypass_actors": normalized_bypass,
+                },
+                "broker": {key: value for key, value in broker.items() if key != "schema"},
+            }
+        except (ProofgateObservationUnavailable, OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+            return None
+
+
+def _validate_positive_numeric_id(value: Any, name: str) -> str:
+    if isinstance(value, bool):
+        raise ProofgateBootstrapVerifierError(f"Control plane {name} must be a positive numeric identifier, got {value!r}")
+    if isinstance(value, int) and value > 0:
+        return str(value)
+    if isinstance(value, str) and value.isdigit() and int(value) > 0:
+        return value
+    raise ProofgateBootstrapVerifierError(f"Control plane {name} must be a positive numeric identifier, got {value!r}")
+
+
+def verify_proofgate_admin_identity_binding(boundary: Any, **kwargs: Any) -> dict[str, Any]:
+    """Derives assigned identity control plane binding facts strictly from live control planes."""
+    if kwargs:
+        raise TypeError("Unexpected keyword arguments for caller substitution")
+
+    if type(boundary) is not ProofgateAdminControlPlaneBoundary:
+        if hasattr(boundary, "authorize") or getattr(type(boundary), "__name__", "") == "RecordingTestDouble":
+            raise ProofgateBootstrapVerifierError("PROOFGATE_PR_R_RED::recording_boundary_cannot_authorize")
+        raise TypeError("Input must be a concrete ProofgateAdminControlPlaneBoundary instance")
+
+    if "observe" in boundary.__dict__:
+        raise ProofgateBootstrapVerifierError("exact boundary instance observe replacement rejected: instance observe method replaced")
+
+    obs = ProofgateAdminControlPlaneBoundary.observe(boundary)
+    if obs is None or not isinstance(obs, dict):
+        raise ProofgateBootstrapVerifierError("Control plane observation unavailable")
+
+    for key in ("run_id", "run_attempt", "subject", "workflow_sha256"):
+        if key in obs:
+            raise ProofgateBootstrapVerifierError("Derived receipt/pilot field present in admin observation")
+
+    repo = obs.get("repository", {})
+    app = obs.get("app", {})
+    installation = obs.get("installation", {})
+    selected_repos = obs.get("selected_repositories", ())
+    org_user = obs.get("organization_user", {})
+    env = obs.get("environment", {})
+    ruleset = obs.get("ruleset", {})
+    broker = obs.get("broker", {})
+
+    if (
+        app.get("id") == "1159201"
+        or installation.get("id") == "6159201"
+        or org_user.get("id") == "7159201"
+    ):
+        raise ProofgateBootstrapVerifierError("Historical placeholder ID rejected: assigned identities must derive only from live control planes")
+
+    if not (
+        repo.get("id") == "1280382652"
+        and repo.get("owner_id") == "159201120"
+        and repo.get("name") == "Consiliency/agent-harness"
+    ):
+        raise ProofgateBootstrapVerifierError("Repository relational mismatch")
+
+    if not (
+        isinstance(app.get("id"), str)
+        and bool(app.get("id"))
+        and app.get("slug") == "proofgate-app"
+        and app.get("owner_id") == repo.get("owner_id")
+    ):
+        raise ProofgateBootstrapVerifierError("App relational mismatch")
+
+    inst_perms = tuple(tuple(p) for p in installation.get("permissions", ()))
+    if not (
+        isinstance(installation.get("id"), str)
+        and bool(installation.get("id"))
+        and installation.get("app_id") == app.get("id")
+        and installation.get("target_owner_id") == app.get("owner_id")
+        and installation.get("repository_selection") == "selected"
+        and inst_perms == (("contents", "write"), ("metadata", "read"))
+    ):
+        raise ProofgateBootstrapVerifierError("Installation relational mismatch")
+
+    broker_selected = broker.get("selected_repositories")
+    broker_total = broker.get("selected_repository_total_count")
+    if not (
+        isinstance(selected_repos, (list, tuple))
+        and len(selected_repos) == 1
+        and selected_repos[0].get("id") == repo.get("id")
+        and selected_repos[0].get("name") == repo.get("name")
+    ):
+        raise ProofgateBootstrapVerifierError("Selected repository relational mismatch")
+    if broker_selected is not None or broker_total is not None:
+        if not (
+            isinstance(broker_selected, (list, tuple))
+            and len(broker_selected) == 1
+            and str(broker_selected[0].get("id")) == str(repo.get("id"))
+            and broker_total == 1
+        ):
+            raise ProofgateBootstrapVerifierError("Selected repository relational mismatch")
+
+    if (
+        org_user.get("active") is not True
+        or not isinstance(org_user.get("id"), str)
+        or not org_user.get("id")
+        or not isinstance(org_user.get("login"), str)
+        or not org_user.get("login")
+    ):
+        raise ProofgateBootstrapVerifierError("Organization user inactive")
+
+    req_reviewers = env.get("required_reviewers", ())
+    if not (
+        isinstance(req_reviewers, (list, tuple))
+        and len(req_reviewers) == 1
+        and req_reviewers[0].get("id") == org_user.get("id")
+        and req_reviewers[0].get("login") == org_user.get("login")
+        and req_reviewers[0].get("type") == "User"
+        and env.get("name") == "proofgate-receipt-head-v1"
+        and env.get("prevent_self_review") is True
+        and env.get("can_admins_bypass") is False
+    ):
+        raise ProofgateBootstrapVerifierError("Environment reviewer relational mismatch")
+
+    bypass_actors = ruleset.get("bypass_actors", ())
+    if not (
+        isinstance(bypass_actors, (list, tuple))
+        and len(bypass_actors) == 1
+        and bypass_actors[0].get("actor_type") == "Integration"
+        and bypass_actors[0].get("actor_id") == app.get("id")
+        and bypass_actors[0].get("bypass_mode") == "always"
+        and ruleset.get("name") == "proofgate-receipt-head-v1"
+        and ruleset.get("target_ref") == "refs/heads/proofgate-receipt-head-v1"
+    ):
+        raise ProofgateBootstrapVerifierError("Ruleset bypass actor relational mismatch")
+
+    broker_perms = tuple(tuple(p) for p in broker.get("permissions", ()))
+    claim_policy = broker.get("claim_policy", {})
+    if not isinstance(claim_policy, dict):
+        raise ProofgateBootstrapVerifierError("Broker claim_policy must be a dict")
+    expected_claim_policy = {
+        "audience": "urn:consiliency:proofgate:github-app-installation-token:repository:1280382652",
+        "event_name": "workflow_dispatch",
+        "repository_id": "1280382652",
+        "repository_owner_id": "159201120",
+        "workflow_ref": "Consiliency/agent-harness/.github/workflows/proofgate-receipt-attestation.yml@refs/heads/main",
+    }
+
+    computed_digest = hashlib.sha256(
+        json.dumps(claim_policy, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    if not (
+        broker.get("app_id") == app.get("id")
+        and broker.get("installation_id") == installation.get("id")
+        and broker.get("repository_id") == repo.get("id")
+        and broker_perms == (("contents", "write"),)
+        and claim_policy == expected_claim_policy
+        and broker.get("claim_policy_digest") == computed_digest
+        and isinstance(broker.get("deployment_id"), str)
+        and bool(broker.get("deployment_id"))
+        and isinstance(broker.get("key_version"), str)
+        and bool(broker.get("key_version"))
+    ):
+        raise ProofgateBootstrapVerifierError("Broker relational mismatch")
+
+    is_test_fixture = getattr(boundary, "_test_observation_fixture", None) is not None
+    authority = "test_observation_fixture" if is_test_fixture else "github_and_broker_control_planes"
+
+    binding = {
+        "schema": "proofgate_admin_identity_binding.v1",
+        "authority": authority,
+        "repository_id": repo.get("id"),
+        "repository_name": repo.get("name"),
+        "app_id": app.get("id"),
+        "app_slug": app.get("slug"),
+        "installation_id": installation.get("id"),
+        "environment_id": _validate_positive_numeric_id(env.get("id"), "environment_id"),
+        "ruleset_id": _validate_positive_numeric_id(ruleset.get("id"), "ruleset_id"),
+        "reviewer_id": org_user.get("id"),
+        "reviewer_login": org_user.get("login"),
+        "broker_deployment_id": broker.get("deployment_id"),
+        "broker_key_version": broker.get("key_version"),
+        "normalized_broker_policy_digest": computed_digest,
+        "normalized_github_permissions": (("contents", "write"), ("metadata", "read")),
+        "admin_relations": {
+            "app_owner_equals_repository_owner": True,
+            "installation_app_equals_resolved_app": True,
+            "installation_target_equals_app_owner": True,
+            "selected_repository_equals_target": True,
+            "ruleset_bypass_equals_resolved_app": True,
+            "environment_reviewer_equals_active_user": True,
+            "broker_relations_match": True,
+        },
+        "evaluation_partition": {
+            "admin_relations": "evaluated",
+            "receipt_pilot": "not_evaluated",
+        },
+    }
+    digest_bytes = json.dumps(binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    binding["binding_digest"] = hashlib.sha256(digest_bytes).hexdigest()
+    return binding
+
+
+def verify_selector_repair_review_binding(
+    repo_path: Path | str,
+    review_binding_path: Path | str,
+    expected_original_tests_landing: str | None = None,
+    expected_selector_repair_landing: str | None = None,
+) -> dict[str, Any]:
+    """Verifies digest-bound selector-repair review binding."""
+    binding_path = Path(review_binding_path).resolve()
+    if not binding_path.is_file():
+        raise ProofgateBootstrapVerifierError("selector-repair-review-binding.json missing")
+    try:
+        raw_binding = binding_path.read_bytes()
+        data = json.loads(raw_binding.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProofgateBootstrapVerifierError("selector-repair-review-binding is not valid JSON") from exc
+
+    if not isinstance(data, dict):
+        raise ProofgateBootstrapVerifierError("selector-repair-review-binding must be a JSON object")
+
+    expected_fields = {
+        "landing_change_tuple_digest",
+        "landing_path_blob_digest",
+        "landing_path_tuples",
+        "original_tests_landing_oid",
+        "repository",
+        "reviewed_change_tuple_digest",
+        "reviewed_path_blob_digest",
+        "reviewed_path_tuples",
+        "schema",
+        "selector_repair_base_oid",
+        "selector_repair_landing_oid",
+        "selector_repair_red_commit_oid",
+        "selector_repair_source_head_oid",
+    }
+    if set(data) != expected_fields:
+        raise ProofgateBootstrapVerifierError("selector-repair-review-binding field inventory mismatch")
+    if raw_binding != (
+        json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8"):
+        raise ProofgateBootstrapVerifierError(
+            "selector-repair-review-binding is not canonical compact JSON plus LF"
+        )
+
+    if data.get("schema") != "proofgate_selector_repair_review_binding.v1":
+        raise ProofgateBootstrapVerifierError("selector-repair-review-binding schema mismatch")
+
+    if data.get("repository") != COORDINATOR_REPOSITORY:
+        raise ProofgateBootstrapVerifierError("selector-repair-review-binding repository mismatch")
+
+    orig_oid = data.get("original_tests_landing_oid")
+    sr_base_oid = data.get("selector_repair_base_oid")
+    sr_red_oid = data.get("selector_repair_red_commit_oid")
+    sr_src_oid = data.get("selector_repair_source_head_oid")
+    sr_landing_oid = data.get("selector_repair_landing_oid")
+
+    for field, oid in (
+        ("original_tests_landing_oid", orig_oid),
+        ("selector_repair_base_oid", sr_base_oid),
+        ("selector_repair_red_commit_oid", sr_red_oid),
+        ("selector_repair_source_head_oid", sr_src_oid),
+        ("selector_repair_landing_oid", sr_landing_oid),
+    ):
+        if not isinstance(oid, str) or HEX_40_RE.fullmatch(oid) is None:
+            raise ProofgateBootstrapVerifierError(
+                f"selector repair review binding invalid OID: {field}"
+            )
+
+    if expected_original_tests_landing and orig_oid != expected_original_tests_landing:
+        raise ProofgateBootstrapVerifierError("selector repair review binding mismatch: original_tests_landing_oid")
+
+    if expected_selector_repair_landing and sr_landing_oid != expected_selector_repair_landing:
+        raise ProofgateBootstrapVerifierError("selector repair review binding mismatch: selector_repair_landing_oid")
+
+    repo = Path(repo_path).resolve()
+    _verifier_validate_selector_repair_landing(
+        sr_landing_oid,
+        cwd=repo,
+        expected_original_landing=orig_oid,
+    )
+    landing_parents = _verifier_git_parents(sr_landing_oid, cwd=repo)
+    if landing_parents != [sr_base_oid, sr_src_oid]:
+        raise ProofgateBootstrapVerifierError(
+            "selector repair review binding mismatch: landing review chain"
+        )
+    if _verifier_git_parents(sr_src_oid, cwd=repo) != [sr_red_oid]:
+        raise ProofgateBootstrapVerifierError(
+            "selector repair review binding mismatch: source head review chain"
+        )
+    source_facts = compute_git_source_binding_facts(repo, sr_base_oid, sr_src_oid)
+    landing_facts = compute_git_source_binding_facts(repo, sr_base_oid, sr_landing_oid)
+
+    if any(
+        source_facts.get(field) != landing_facts.get(field)
+        for field in ("change_tuple_digest", "path_blob_digest", "path_tuples")
+    ):
+        raise ProofgateBootstrapVerifierError(
+            "reviewed source and selector repair landing change tuples differ"
+        )
+
+    if data.get("reviewed_change_tuple_digest") != source_facts["change_tuple_digest"]:
+        raise ProofgateBootstrapVerifierError("reviewed change tuple digest mismatch")
+
+    if data.get("reviewed_path_blob_digest") != source_facts["path_blob_digest"]:
+        raise ProofgateBootstrapVerifierError("reviewed path blob digest mismatch")
+
+    if data.get("reviewed_path_tuples") != [list(row) for row in source_facts["path_tuples"]]:
+        raise ProofgateBootstrapVerifierError("reviewed path tuples mismatch")
+
+    if data.get("landing_change_tuple_digest") != landing_facts["change_tuple_digest"]:
+        raise ProofgateBootstrapVerifierError("landing change tuple digest mismatch")
+
+    if data.get("landing_path_blob_digest") != landing_facts["path_blob_digest"]:
+        raise ProofgateBootstrapVerifierError("landing path blob digest mismatch")
+
+    if data.get("landing_path_tuples") != [list(row) for row in landing_facts["path_tuples"]]:
+        raise ProofgateBootstrapVerifierError("landing path tuples mismatch")
+
+    return {
+        "status": "verified",
+        "data": data,
+    }
+
 
 
 def _expected_oidc_claim_map(expected: ProofgateExpectedConfig) -> dict[str, str]:
@@ -2335,6 +3872,7 @@ def _write_admin_preflight_payload(
     satisfied: bool,
     attempts: list[dict[str, Any]],
     outcome_class: str | None,
+    binding: dict[str, Any] | None = None,
 ) -> None:
     if satisfied:
         payload: dict[str, Any] = {
@@ -2343,6 +3881,8 @@ def _write_admin_preflight_payload(
             "verification_status": "satisfied",
             "access_attempts": attempts,
         }
+        if binding is not None:
+            payload["admin_identity_binding"] = binding
     else:
         payload = {
             "human_required": True,
@@ -2360,6 +3900,57 @@ def _write_admin_preflight_payload(
     fd = os.open(out_path, flags, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(json.dumps(payload, indent=2))
+
+
+def run_live_admin_binding_preflight(boundary: Any, *, output: str) -> int:
+    """Run the PR-R admin-only gate through the fixed concrete control-plane boundary."""
+    out_path = _validate_run_dir_output(output)
+    observed_at = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        binding = verify_proofgate_admin_identity_binding(boundary)
+        if binding.get("authority") != "github_and_broker_control_planes":
+            raise ProofgateBootstrapVerifierError("admin identity binding is nondecisive for test-owned boundary")
+    except (
+        ProofgateBootstrapVerifierError,
+        ProofgateObservationUnavailable,
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        subprocess.SubprocessError,
+    ):
+        _write_admin_preflight_payload(
+            out_path,
+            satisfied=False,
+            attempts=[
+                {
+                    "source": "github_and_broker_control_planes",
+                    "probe": "proofgate_admin_identity_binding.v1",
+                    "result": "unavailable_or_mismatch",
+                    "details": "metadata-only control-plane relation check did not satisfy",
+                    "timestamp": observed_at,
+                }
+            ],
+            outcome_class="admin_approval",
+        )
+        return 1
+
+    _write_admin_preflight_payload(
+        out_path,
+        satisfied=True,
+        attempts=[
+            {
+                "source": "github_and_broker_control_planes",
+                "probe": "proofgate_admin_identity_binding.v1",
+                "result": "satisfied",
+                "details": "metadata-only control-plane relations verified",
+                "timestamp": observed_at,
+            }
+        ],
+        outcome_class=None,
+        binding=binding,
+    )
+    return 0
 
 
 def run_app_oidc_pilot(
@@ -2839,6 +4430,32 @@ def main(argv: list[str] | None = None) -> int:
     repo_arg = args.repo
     if repo_arg in (".", "./", "") or repo_arg.startswith("/"):
         repo_arg = expected.repository_name
+    if args.mode == "admin-preflight":
+        if (
+            repo_arg != expected.repository_name
+            or args.ref != expected.external_head_ref
+            or args.environment != expected.environment_name
+        ):
+            sys.stderr.write("Verifier error: admin-preflight locator does not match fixed selectors\n")
+            return 1
+
+        run_dir = os.environ.get("PHASE_LOOP_RUN_DIR")
+        try:
+            output_path = Path(args.output).resolve()
+            run_path = Path(run_dir).resolve() if run_dir else None
+        except OSError:
+            output_path = None
+            run_path = None
+        if run_path is None or output_path is None or run_path not in output_path.parents:
+            sys.stderr.write(
+                "Verifier error: admin-preflight output must be under PHASE_LOOP_RUN_DIR\n"
+            )
+            return 1
+
+        return run_live_admin_binding_preflight(
+            ProofgateAdminControlPlaneBoundary(), output=args.output
+        )
+
     boundary = GitHubCliObservationBoundary(
         attended_live=os.environ.get("PHASE_LOOP_PROOFGATE_ATTENDED_LIVE") == "1"
     )
@@ -2850,9 +4467,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        if args.mode == "admin-preflight":
-            return run_admin_preflight(request, expected=expected, boundary=boundary, output=args.output)
-        elif args.mode == "app-oidc-pilot":
+        if args.mode == "app-oidc-pilot":
             return run_app_oidc_pilot(
                 request, args.workflow, expected=expected, boundary=boundary, output=args.output
             )
