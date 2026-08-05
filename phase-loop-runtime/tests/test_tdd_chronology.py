@@ -57,6 +57,33 @@ from .proofgate_tdd_guard import (
 )
 
 
+PR_B_BOOTSTRAP_PATHS_SHA256 = "3c365db032ad94622149fde1cadcb84b45480d65d8d789387ef47de286b59c44"
+PR_B_SELECTOR_MODULES_SHA256 = "6d72046058d5b186bc50817c298f919806a09bd3826b10dec51cd000600cfe2d"
+PR_B_BOOTSTRAP_CANDIDATE_NODEIDS: tuple[str, ...] = (
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_bootstrap_records_are_single_use_and_server_bound",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_receipt_chain_rejects_rewrite_truncation_fork_or_backfill",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_receipt_chain_rejects_wrong_workflow_signer_source_blob_subject_or_timestamp",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_implementation_authorization_requires_activation_preflight_panel_and_red_order",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_runner_routes_reject_child_claims_and_missing_latest_external_head",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py::test_isolation_preflight_masks_host_sibling_receipt_logs_fds_and_credentials",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py::test_provider_projection_allows_only_selected_vendor_subscription_material",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py::test_capability_socket_rejects_privileged_unknown_replayed_or_wrong_peer_requests",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py::test_execute_and_panel_routes_use_remote_less_assigned_clone_or_refuse",
+    "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py::test_attestation_workflow_is_github_hosted_exact_subject_and_blob_bound",
+    "phase-loop-runtime/tests/test_review_leg_sandbox.py::test_codex_execute_command_is_danger_full_access_and_live_repo",
+)
+PR_B_BOOTSTRAP_CANDIDATE_NODEIDS_SHA256 = "9f5ccd2d7d101f7681e1f93c5c6248502f76859f9c74df9289ecf312497c1bb7"
+PR_B_TEST_CONTRACT_FILES: tuple[str, ...] = (
+    "phase-loop-runtime/tests/proofgate_tdd_guard.py",
+    "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+    "phase-loop-runtime/tests/test_tdd_chronology.py",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py",
+    "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py",
+    "phase-loop-runtime/tests/test_review_leg_sandbox.py",
+)
+
+
 _BOOTSTRAP_ARTIFACTS = (
     "verification.log",
     "compat-default.junit.xml",
@@ -592,6 +619,403 @@ def _observed_bootstrap_boundary(repo: Path, base_oid: str, candidate_oid: str, 
     return observation, CoordinatorBootstrapMergeObservationBoundary(coordinator_root), coordinator_root, coordinator_tmp
 
 
+def _candidate_phase_reports_and_junit() -> tuple[str, list[dict]]:
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(root, "testsuite", name="pytest", tests="11", failures="0", errors="0", skipped="0")
+    reports: list[dict] = []
+    provider_values = {
+        case: "not_executed_in_ordinary_mode"
+        for case in ATTENDED_REAL_PROVIDER_CASES
+    }
+    for nodeid in PR_B_BOOTSTRAP_CANDIDATE_NODEIDS:
+        parts = nodeid.replace("phase-loop-runtime/", "").split("::")
+        file_mod = parts[0].replace("/", ".").replace(".py", "")
+        classname = f"{file_mod}.{parts[1]}" if len(parts) == 3 else file_mod
+        testcase = ET.SubElement(suite, "testcase", classname=classname, name=parts[-1])
+        properties: dict[str, str] = {}
+        if nodeid.endswith("test_provider_projection_allows_only_selected_vendor_subscription_material"):
+            properties = provider_values
+            props = ET.SubElement(testcase, "properties")
+            for name, value in properties.items():
+                ET.SubElement(props, "property", name=name, value=value)
+        report = {"nodeid": nodeid, "phase": "call", "outcome": "passed", "properties": properties}
+        reports.append(report)
+    return ET.tostring(root, encoding="unicode"), reports
+
+
+def _pr_b_write_decisive_bootstrap_artifacts(
+    run_dir: Path,
+    candidate_oid: str,
+    repo: Path | None = None,
+    base_oid: str | None = None,
+    *,
+    original_tests_landing_oid: str | None = None,
+) -> tuple[dict[str, dict], dict, dict]:
+    reports_by_mode: dict[str, dict] = {}
+    pr_b_artifacts = (
+        ("compat-default.junit.xml", "phase_reports_default.json", "default"),
+        ("compat-forced-red.junit.xml", "phase_reports_forced_red.json", "forced_red"),
+    )
+    nodeids = tuple(nodeid.replace("phase-loop-runtime/", "") for nodeid in EXPECTED_PHASE_NODEIDS)
+    for filename, phase_reports_filename, mode in pr_b_artifacts:
+        junit, reports, runner_envelope = _phase_reports_and_junit(
+            mode,
+            candidate_oid=candidate_oid,
+        )
+        pytest_args = (
+            *nodeids,
+            "-p",
+            "tests.proofgate_tdd_guard",
+            "-o",
+            "junit_family=legacy",
+            f"--junitxml=$PHASE_LOOP_RUN_DIR/{filename}",
+            "-q",
+        )
+        argv = ["pytest", *pytest_args]
+        for report in reports:
+            report["argv"] = list(argv)
+            report["command_digest"] = hashlib.sha256(json.dumps(list(argv)).encode("utf-8")).hexdigest()
+        (run_dir / filename).write_text(junit, encoding="utf-8")
+        reports_by_mode[mode] = {"reports": reports}
+        phase_payload = {
+            "schema": "proofgate_phase_reports.v1",
+            "exitstatus": 1 if mode == "forced_red" else 0,
+            "runs": [{"run_identity": f"coordinator-{mode}", "exitstatus": 1 if mode == "forced_red" else 0, "reports": reports}],
+            "reports": reports,
+            "capture": {
+                "schema": "proofgate_coordinator_evidence_capture.v1",
+                "plugin": "tests.proofgate_tdd_guard",
+                "junit_family": "legacy",
+                "junit_filename": filename,
+                "junit_sha256": hashlib.sha256((run_dir / filename).read_bytes()).hexdigest(),
+                "pytest_args_sha256": hashlib.sha256(
+                    json.dumps(list(pytest_args)).encode("utf-8")
+                ).hexdigest(),
+            },
+        }
+        (run_dir / phase_reports_filename).write_text(
+            json.dumps(phase_payload, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+        )
+
+    cand_junit_xml, cand_reports = _candidate_phase_reports_and_junit()
+    cand_junit_filename = "compat-candidate.junit.xml"
+    cand_reports_filename = "phase_reports_candidate.json"
+    (run_dir / cand_junit_filename).write_text(cand_junit_xml, encoding="utf-8")
+    cand_junit_bytes = (run_dir / cand_junit_filename).read_bytes()
+    cand_junit_digest = hashlib.sha256(cand_junit_bytes).hexdigest()
+
+    cand_pytest_args = (
+        *PR_B_BOOTSTRAP_CANDIDATE_NODEIDS,
+        "-p",
+        "tests.proofgate_tdd_guard",
+        "-o",
+        "junit_family=legacy",
+        f"--junitxml=$PHASE_LOOP_RUN_DIR/{cand_junit_filename}",
+        "-q",
+    )
+    cand_argv = ["pytest", *cand_pytest_args]
+    cand_cmd_digest = hashlib.sha256(json.dumps(cand_argv).encode("utf-8")).hexdigest()
+    for report in cand_reports:
+        report["argv"] = list(cand_argv)
+        report["command_digest"] = cand_cmd_digest
+
+    cand_phase_payload = {
+        "schema": "proofgate_phase_reports.v1",
+        "exitstatus": 0,
+        "runs": [{"run_identity": "coordinator-candidate", "exitstatus": 0, "reports": cand_reports}],
+        "reports": cand_reports,
+        "capture": {
+            "schema": "proofgate_coordinator_evidence_capture.v1",
+            "plugin": "tests.proofgate_tdd_guard",
+            "junit_family": "legacy",
+            "junit_filename": cand_junit_filename,
+            "junit_sha256": cand_junit_digest,
+            "pytest_args_sha256": hashlib.sha256(
+                json.dumps(list(cand_pytest_args)).encode("utf-8")
+            ).hexdigest(),
+        },
+    }
+    cand_reports_bytes = json.dumps(cand_phase_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    (run_dir / cand_reports_filename).write_bytes(cand_reports_bytes)
+    cand_reports_digest = hashlib.sha256(cand_reports_bytes).hexdigest()
+    reports_by_mode["bootstrap_candidate"] = {"reports": cand_reports}
+
+    if repo is not None and base_oid is not None:
+        diff_raw = subprocess.run(
+            ["git", "diff-tree", "--raw", "-r", "-z", base_oid, candidate_oid],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        ).stdout
+        source_digest = hashlib.sha256(diff_raw).hexdigest()
+        facts = compute_git_source_binding_facts(repo, base_oid, candidate_oid)
+        changes = [
+            [kind, path, new_mode, old_blob, new_blob, file_sha]
+            for kind, path, _old_mode, new_mode, old_blob, new_blob, file_sha in facts.get("path_tuples", [])
+        ]
+        contract_digests = {}
+        for path in PR_B_TEST_CONTRACT_FILES:
+            try:
+                content = subprocess.run(
+                    ["git", "show", f"{base_oid}:{path}"],
+                    cwd=repo,
+                    capture_output=True,
+                    check=True,
+                ).stdout
+            except Exception:
+                content = f"# contract {path}\n".encode("utf-8")
+            contract_digests[path] = hashlib.sha256(content).hexdigest()
+        candidate_tree_oid = subprocess.run(
+            ["git", "rev-parse", f"{candidate_oid}^{{tree}}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    else:
+        source_digest = hashlib.sha256(f"source:{candidate_oid}".encode("utf-8")).hexdigest()
+        changes = []
+        contract_digests = {}
+        candidate_tree_oid = "0" * 40
+
+    if original_tests_landing_oid is None:
+        candidate_binding = {
+            "schema": "proofgate_bootstrap_candidate_binding.v1",
+            "base_oid": base_oid if base_oid else "0" * 40,
+            "candidate_oid": candidate_oid,
+            "selector_repair_landing_oid": base_oid if base_oid else "0" * 40,
+            "diff_sha256": source_digest,
+            "path_scope_sha256": PR_B_BOOTSTRAP_PATHS_SHA256,
+            "bootstrap_paths_sha256": PR_B_BOOTSTRAP_PATHS_SHA256,
+            "selector_modules_sha256": PR_B_SELECTOR_MODULES_SHA256,
+            "selector_nodeids_sha256": PR_B_BOOTSTRAP_CANDIDATE_NODEIDS_SHA256,
+            "changes": changes,
+            "test_contract_sha256": contract_digests,
+        }
+        binding_bytes = json.dumps(candidate_binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    else:
+        candidate_binding = {
+            "schema": "proofgate_bootstrap_candidate_binding.v1",
+            "original_tests_landing_oid": original_tests_landing_oid,
+            "selector_repair_landing_oid": base_oid if base_oid else "0" * 40,
+            "base_oid": base_oid if base_oid else "0" * 40,
+            "candidate_oid": candidate_oid,
+            "candidate_tree_oid": candidate_tree_oid,
+            "diff_sha256": source_digest,
+            "path_scope_sha256": PR_B_BOOTSTRAP_PATHS_SHA256,
+            "bootstrap_paths_sha256": PR_B_BOOTSTRAP_PATHS_SHA256,
+            "selector_modules_sha256": PR_B_SELECTOR_MODULES_SHA256,
+            "selector_nodeids_sha256": PR_B_BOOTSTRAP_CANDIDATE_NODEIDS_SHA256,
+            "changes": changes,
+            "test_contract_sha256": contract_digests,
+        }
+        binding_bytes = (json.dumps(candidate_binding, separators=(",", ":")) + "\n").encode("utf-8")
+    (run_dir / "bootstrap-candidate-binding.json").write_bytes(binding_bytes)
+    binding_digest = hashlib.sha256(binding_bytes).hexdigest()
+
+    candidate_verdict = {
+        "schema": "proofgate_bootstrap_candidate_verdict.v1",
+        "status": "verified",
+        "authorized_scope": "sl0_b1_bootstrap_candidate_only",
+        "authorizes_implementation": False,
+        "authorizes_final_completion": False,
+        "evidence_bindings": ["source", "selector", "binding", "junit", "phase_reports"],
+        "source_digest": source_digest,
+        "selector_digest": PR_B_BOOTSTRAP_CANDIDATE_NODEIDS_SHA256,
+        "binding_digest": binding_digest,
+        "junit_digest": cand_junit_digest,
+        "phase_reports_digest": cand_reports_digest,
+        "collected": 11,
+        "passed": 11,
+        "skipped": 0,
+        "failed": 0,
+        "errors": 0,
+    }
+    (run_dir / "bootstrap-candidate-verdict.json").write_text(
+        json.dumps(candidate_verdict, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+
+    claim_policy = {
+        "audience": "urn:consiliency:proofgate:github-app-installation-token:repository:1280382652",
+        "event_name": "workflow_dispatch",
+        "repository_id": "1280382652",
+        "repository_owner_id": "159201120",
+        "workflow_ref": "Consiliency/agent-harness/.github/workflows/proofgate-receipt-attestation.yml@refs/heads/main",
+    }
+    claim_policy_digest = hashlib.sha256(json.dumps(claim_policy, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    admin_binding = {
+        "schema": "proofgate_admin_identity_binding.v1",
+        "authority": "github_and_broker_control_planes",
+        "repository_id": "1280382652",
+        "repository_name": "Consiliency/agent-harness",
+        "app_id": "990001",
+        "app_slug": "proofgate-app",
+        "installation_id": "880001",
+        "reviewer_id": "770001",
+        "reviewer_login": "proofgate-reviewer",
+        "broker_deployment_id": "proofgate-broker-v1",
+        "broker_key_version": "v1",
+        "normalized_broker_policy_digest": claim_policy_digest,
+        "normalized_github_permissions": (("contents", "write"), ("metadata", "read")),
+        "admin_relations": {
+            "app_owner_equals_repository_owner": True,
+            "installation_app_equals_resolved_app": True,
+            "installation_target_equals_app_owner": True,
+            "selected_repository_equals_target": True,
+            "ruleset_bypass_equals_resolved_app": True,
+            "environment_reviewer_equals_active_user": True,
+            "broker_relations_match": True,
+        },
+        "evaluation_partition": {
+            "admin_relations": "evaluated",
+            "receipt_pilot": "not_evaluated",
+        },
+    }
+    admin_binding["binding_digest"] = hashlib.sha256(json.dumps(admin_binding, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    (run_dir / "admin-identity-binding.json").write_text(
+        json.dumps(admin_binding, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+
+    (run_dir / "verification.log").write_text(
+        json.dumps({"schema": "proofgate_coordinator_verification_log.v1", "candidate_oid": candidate_oid}, sort_keys=True),
+        encoding="utf-8",
+    )
+    component_bindings = {}
+    for component in BOOTSTRAP_CONTROL_COMPONENTS:
+        component_path = f"proofgate-reference-{component}.bin"
+        component_bytes = (
+            ATTENDED_REFERENCE_RUNNER_BYTES
+            if component == "code"
+            else f"coordinator-reference:{component}:{candidate_oid}".encode("utf-8")
+        )
+        (run_dir / component_path).write_bytes(component_bytes)
+        component_bindings[component] = {
+            "path": component_path,
+            "sha256": hashlib.sha256(component_bytes).hexdigest(),
+        }
+    for filename in (
+        "ctrl_isolation.log",
+        "ctrl_taint.log",
+        "ctrl_misuse.log",
+        "ctrl_control.log",
+        "ctrl_positive_canary.log",
+    ):
+        raw_observations = {
+            case_id: f"coordinator-observed:{case_id}:{candidate_oid}"
+            for case_id in BOOTSTRAP_CONTROL_CASES[filename]
+        }
+        raw_bytes = json.dumps(
+            raw_observations,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        raw_path = f"{filename}.raw"
+        (run_dir / raw_path).write_bytes(raw_bytes)
+        cases = []
+        for case_id in BOOTSTRAP_CONTROL_CASES[filename]:
+            counters = {
+                "connect": 0, "dns": 0, "downstream_bytes": 0, "followup_requests": 0,
+                "http": 0, "provider_trap": 0, "request_count": 0, "session_mutations": 0,
+                "tls": 0, "tool_round_trip_count": 0, "turn_count": 0,
+            }
+            if case_id in BOOTSTRAP_LIVE_REACHABILITY_CASES:
+                outcome = "reachable"
+                counters.update({"connect": 1, "dns": 1, "downstream_bytes": 1, "http": 2, "request_count": 2, "tls": 1, "tool_round_trip_count": 1, "turn_count": 2})
+            elif case_id in BOOTSTRAP_ZERO_EFFECT_CASES:
+                outcome = "denied"
+            else:
+                outcome = "verified"
+            cases.append({
+                "case_id": case_id, "counters": counters, "expected_outcome": outcome, "observed_outcome": outcome, "path_entered": True,
+                "raw_observation_sha256": hashlib.sha256(raw_observations[case_id].encode("utf-8")).hexdigest(),
+            })
+        artifact = {
+            "schema": "proofgate_control_artifact.v2", "control": filename, "candidate_oid": candidate_oid, "producer": "proofgate-coordinator-reference",
+            "raw_probe_log": {"path": raw_path, "sha256": hashlib.sha256(raw_bytes).hexdigest()}, "components": component_bindings, "cases": cases,
+            "case_matrix_sha256": hashlib.sha256(json.dumps(cases, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+        }
+        (run_dir / filename).write_text(json.dumps(artifact, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    return reports_by_mode, candidate_verdict, admin_binding
+
+
+def _pr_b_observed_bootstrap_boundary(
+    repo: Path,
+    base_oid: str,
+    candidate_oid: str,
+    github_pr: dict,
+    seats: dict,
+    chronology: list,
+    *,
+    original_tests_landing_oid: str | None = None,
+):
+    coordinator_tmp = tempfile.TemporaryDirectory()
+    coordinator_root = Path(coordinator_tmp.name)
+    reports_by_mode, _candidate_verdict, _admin_binding = _pr_b_write_decisive_bootstrap_artifacts(
+        coordinator_root,
+        candidate_oid,
+        repo=repo,
+        base_oid=base_oid,
+        original_tests_landing_oid=original_tests_landing_oid,
+    )
+    facts = compute_git_source_binding_facts(repo, base_oid, candidate_oid)
+    assert facts
+    path_scope_digest = hashlib.sha256(
+        json.dumps(facts["path_tuples"], separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    pr_b_artifacts = (
+        ("compat-default.junit.xml", "phase_reports_default.json", "default"),
+        ("compat-forced-red.junit.xml", "phase_reports_forced_red.json", "forced_red"),
+    )
+    junit_digests = tuple(
+        (filename, hashlib.sha256((coordinator_root / filename).read_bytes()).hexdigest())
+        for filename, _phase_reports_filename, _mode in pr_b_artifacts
+    )
+    phase_report_digests = tuple(
+        (filename, hashlib.sha256((coordinator_root / filename).read_bytes()).hexdigest())
+        for _junit_filename, filename, _mode in pr_b_artifacts
+    )
+    candidate_artifact_digests = tuple(
+        (filename, hashlib.sha256((coordinator_root / filename).read_bytes()).hexdigest())
+        for filename in (
+            "admin-identity-binding.json",
+            "bootstrap-candidate-binding.json",
+            "bootstrap-candidate-verdict.json",
+            "compat-candidate.junit.xml",
+            "phase_reports_candidate.json",
+        )
+    )
+    control_digests = tuple(
+        (filename, hashlib.sha256((coordinator_root / filename).read_bytes()).hexdigest())
+        for filename in ("ctrl_isolation.log", "ctrl_taint.log", "ctrl_misuse.log", "ctrl_control.log", "ctrl_positive_canary.log")
+    )
+    seat_digests = []
+    for seat, filename in COORDINATOR_SEAT_ARTIFACTS:
+        (coordinator_root / filename).write_text(
+            json.dumps(seats[seat], sort_keys=True, separators=(",", ":")), encoding="utf-8"
+        )
+        seat_digests.append((filename, hashlib.sha256((coordinator_root / filename).read_bytes()).hexdigest()))
+    observation = ProofgateBootstrapMergeObservation(
+        schema=BOOTSTRAP_MERGE_OBSERVATION_SCHEMA,
+        base_oid=base_oid,
+        candidate_oid=candidate_oid,
+        change_tuple_digest=facts["change_tuple_digest"],
+        path_blob_digest=facts["path_blob_digest"],
+        path_scope_digest=path_scope_digest,
+        github_pr_json=json.dumps(github_pr, sort_keys=True, separators=(",", ":")),
+        seat_records_json=json.dumps(seats, sort_keys=True, separators=(",", ":")),
+        seat_chronology=tuple(chronology),
+        seat_artifact_digests=tuple(seat_digests),
+        junit_artifact_digests=junit_digests,
+        junit_phase_report_digests=phase_report_digests,
+        junit_phase_reports_json=json.dumps(reports_by_mode, sort_keys=True, separators=(",", ":")),
+        control_artifact_digests=control_digests,
+        candidate_artifact_digests=candidate_artifact_digests,
+    )
+    _write_coordinator_observation(coordinator_root, observation, "PR-B")
+    _freeze_coordinator_root(coordinator_root)
+    return observation, CoordinatorBootstrapMergeObservationBoundary(coordinator_root), coordinator_root, coordinator_tmp
+
+
 def test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landings():
     nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landings"
     if not guard_proofgate_nodeid(nodeid):
@@ -861,15 +1285,51 @@ def test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landi
             ).stdout
         ).hexdigest()
         pr_b_seats, pr_b_chronology = _valid_seats(pr_b_digest)
-        _observation_b, boundary_b, coordinator_root_b, _coordinator_tmp_b = _observed_bootstrap_boundary(
-            repo, landing_t_oid, cand_b_oid, pr_b_meta, pr_b_seats, pr_b_chronology, "PR-B"
+        _observation_b, boundary_b, coordinator_root_b, _coordinator_tmp_b = _pr_b_observed_bootstrap_boundary(
+            repo, landing_t_oid, cand_b_oid, pr_b_meta, pr_b_seats, pr_b_chronology
         )
+
+        # Explicitly assert pre-marker accounting/default topology: default 3/36, forced RED 2/37, candidate 11/11/0/0/0;
+        # ordinary and attended-live artifacts are absent and must not be required or accepted.
+        assert not (coordinator_root_b / "proofgate-candidate-ordinary.junit.xml").exists()
+        assert not (coordinator_root_b / "proofgate-candidate-attended.junit.xml").exists()
+        assert not (coordinator_root_b / "compat-ordinary.junit.xml").exists()
+        assert not (coordinator_root_b / "compat-attended.junit.xml").exists()
+
+        reports_by_mode_b = json.loads(
+            (coordinator_root_b / "bootstrap-observation.json").read_text(encoding="utf-8")
+        ).get("junit_phase_reports_json", "{}")
+        reports_by_mode_b_dict = json.loads(reports_by_mode_b) if isinstance(reports_by_mode_b, str) else reports_by_mode_b
+
+        def_acc = verify_junit_accounting(
+            (coordinator_root_b / "compat-default.junit.xml").read_text(encoding="utf-8"),
+            mode="default",
+            phase_reports=reports_by_mode_b_dict["default"]["reports"],
+        )
+        assert (def_acc["collected"], def_acc["passed"], def_acc["skipped"], def_acc["failed"]) == (39, 3, 36, 0)
+
+        red_acc = verify_junit_accounting(
+            (coordinator_root_b / "compat-forced-red.junit.xml").read_text(encoding="utf-8"),
+            mode="forced_red",
+            phase_reports=reports_by_mode_b_dict["forced_red"]["reports"],
+        )
+        assert (red_acc["collected"], red_acc["passed"], red_acc["skipped"], red_acc["failed"]) == (39, 2, 0, 37)
+
+        cand_acc = verify_junit_accounting(
+            coordinator_root_b / "compat-candidate.junit.xml",
+            mode="bootstrap_candidate",
+            phase_reports=coordinator_root_b / "phase_reports_candidate.json",
+        )
+        assert (cand_acc["collected"], cand_acc["passed"], cand_acc["skipped"], cand_acc["failed"]) == (11, 11, 0, 0)
+
+        # Broad chronology test proves fail-closed pre-merge gate ordering for PR-B
+        # without asserting synthetic authorization.
         with _coordinator_run_dir(coordinator_root_b):
-            decisive_b = verify_observed_premerge_bootstrap_review_gate(
-                repo, landing_t_oid, cand_b_oid, landing_kind="PR-B", boundary=boundary_b
-            )
-        assert decisive_b["decisive"] is True
-        assert decisive_b["evidence_kind"] == "coordinator_external_observation"
+            with pytest.raises(ProofgateBootstrapVerifierError):
+                verify_observed_premerge_bootstrap_review_gate(
+                    repo, landing_t_oid, cand_b_oid, landing_kind="PR-B", boundary=boundary_b
+                )
+
         subprocess.run(["git", "checkout", "main"], cwd=repo, capture_output=True, check=True)
         subprocess.run(["git", "merge", "--no-ff", "proofgate-pr-b", "-m", "Merge PR-B"], cwd=repo, capture_output=True, check=True)
 
@@ -1787,3 +2247,1871 @@ def test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_fi
         )
 
     run_proofgate_contract(nodeid, _contract)
+
+
+def test_pr_r_admin_binding_derives_assigned_ids_only_from_live_control_planes():
+    """Verify agent-harness#454/#456 admin binding derives assigned IDs only from live control planes."""
+    try:
+        from .proofgate_bootstrap_verifier import (
+            ProofgateAdminControlPlaneBoundary,
+            ProofgateBootstrapVerifierError,
+            run_live_admin_binding_preflight,
+            verify_proofgate_admin_identity_binding,
+        )
+    except (ImportError, AttributeError):
+        raise AssertionError(
+            "PROOFGATE_PR_R_RED::assigned_identity_control_plane_binding_unimplemented"
+        )
+
+    claim_policy_1 = {
+        "audience": "urn:consiliency:proofgate:github-app-installation-token:repository:1280382652",
+        "event_name": "workflow_dispatch",
+        "repository_id": "1280382652",
+        "repository_owner_id": "159201120",
+        "workflow_ref": "Consiliency/agent-harness/.github/workflows/proofgate-receipt-attestation.yml@refs/heads/main",
+    }
+    claim_policy_digest_1 = hashlib.sha256(
+        json.dumps(claim_policy_1, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    claim_policy_2 = {
+        "audience": "urn:consiliency:proofgate:github-app-installation-token:repository:1280382652",
+        "event_name": "workflow_dispatch",
+        "repository_id": "1280382652",
+        "repository_owner_id": "159201120",
+        "workflow_ref": "Consiliency/agent-harness/.github/workflows/proofgate-receipt-attestation.yml@refs/heads/main",
+    }
+    claim_policy_digest_2 = hashlib.sha256(
+        json.dumps(claim_policy_2, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    synthetic_observation_1 = {
+        "repository": {
+            "id": "1280382652",
+            "owner_id": "159201120",
+            "name": "Consiliency/agent-harness",
+        },
+        "app": {
+            "id": "990001",
+            "slug": "proofgate-app",
+            "owner_id": "159201120",
+        },
+        "installation": {
+            "id": "880001",
+            "app_id": "990001",
+            "target_owner_id": "159201120",
+            "repository_selection": "selected",
+            "permissions": (("contents", "write"), ("metadata", "read")),
+        },
+        "selected_repositories": (
+            {"id": "1280382652", "name": "Consiliency/agent-harness"},
+        ),
+        "organization_user": {
+            "id": "770001",
+            "login": "proofgate-reviewer",
+            "active": True,
+        },
+        "environment": {
+            "name": "proofgate-receipt-head-v1",
+            "required_reviewers": (
+                {"id": "770001", "type": "User", "login": "proofgate-reviewer"},
+            ),
+            "prevent_self_review": True,
+            "can_admins_bypass": False,
+        },
+        "ruleset": {
+            "name": "proofgate-receipt-head-v1",
+            "target_ref": "refs/heads/proofgate-receipt-head-v1",
+            "bypass_actors": (
+                {"actor_type": "Integration", "actor_id": "990001", "bypass_mode": "always"},
+            ),
+        },
+        "broker": {
+            "deployment_id": "proofgate-broker-v1",
+            "key_version": "v1",
+            "app_id": "990001",
+            "installation_id": "880001",
+            "repository_id": "1280382652",
+            "permissions": (("contents", "write"),),
+            "claim_policy": claim_policy_1,
+            "claim_policy_digest": claim_policy_digest_1,
+        },
+    }
+
+    synthetic_observation_2 = {
+        "repository": {
+            "id": "1280382652",
+            "owner_id": "159201120",
+            "name": "Consiliency/agent-harness",
+        },
+        "app": {
+            "id": "990002",
+            "slug": "proofgate-app",
+            "owner_id": "159201120",
+        },
+        "installation": {
+            "id": "880002",
+            "app_id": "990002",
+            "target_owner_id": "159201120",
+            "repository_selection": "selected",
+            "permissions": (("contents", "write"), ("metadata", "read")),
+        },
+        "selected_repositories": (
+            {"id": "1280382652", "name": "Consiliency/agent-harness"},
+        ),
+        "organization_user": {
+            "id": "770002",
+            "login": "proofgate-reviewer-2",
+            "active": True,
+        },
+        "environment": {
+            "name": "proofgate-receipt-head-v1",
+            "required_reviewers": (
+                {"id": "770002", "type": "User", "login": "proofgate-reviewer-2"},
+            ),
+            "prevent_self_review": True,
+            "can_admins_bypass": False,
+        },
+        "ruleset": {
+            "name": "proofgate-receipt-head-v1",
+            "target_ref": "refs/heads/proofgate-receipt-head-v1",
+            "bypass_actors": (
+                {"actor_type": "Integration", "actor_id": "990002", "bypass_mode": "always"},
+            ),
+        },
+        "broker": {
+            "deployment_id": "proofgate-broker-v1",
+            "key_version": "v2",
+            "app_id": "990002",
+            "installation_id": "880002",
+            "repository_id": "1280382652",
+            "permissions": (("contents", "write"),),
+            "claim_policy": claim_policy_2,
+            "claim_policy_digest": claim_policy_digest_2,
+        },
+    }
+
+    # 1. Concrete boundary instances created via explicit test-owned nondecisive seam
+    boundary_1 = ProofgateAdminControlPlaneBoundary(_test_observation_fixture=synthetic_observation_1)
+    boundary_2 = ProofgateAdminControlPlaneBoundary(_test_observation_fixture=synthetic_observation_2)
+
+    # Enforce type(boundary) exactness
+    assert type(boundary_1) is ProofgateAdminControlPlaneBoundary
+    assert type(boundary_2) is ProofgateAdminControlPlaneBoundary
+
+    # 2. Reject non-concrete inputs: dict mappings, files, signatures, process runners,
+    #    executable overrides, public requests, flags, environment dicts, replayed payloads
+    unauthorized_inputs = [
+        synthetic_observation_1,
+        "/path/to/admin_config.json",
+        "signature_bytes_or_string",
+        subprocess.Popen,
+        "/usr/bin/custom_gh_override",
+        {"public_request": "authorize_app_1159201"},
+        "--override-admin-ids",
+        {"PHASE_LOOP_ADMIN_APP_ID": "990001"},
+        b"replayed_payload_bytes",
+    ]
+    for invalid_input in unauthorized_inputs:
+        with pytest.raises((TypeError, ProofgateBootstrapVerifierError)):
+            verify_proofgate_admin_identity_binding(invalid_input)
+
+    # 3. Reject subclasses and wrappers of ProofgateAdminControlPlaneBoundary
+    class SubclassedAdminBoundary(ProofgateAdminControlPlaneBoundary):
+        pass
+
+    class WrappedAdminBoundary:
+        def __init__(self, inner):
+            self._inner = inner
+
+    subclassed = SubclassedAdminBoundary(_test_observation_fixture=synthetic_observation_1)
+    wrapped = WrappedAdminBoundary(boundary_1)
+    for bad_boundary in (subclassed, wrapped):
+        with pytest.raises((TypeError, ProofgateBootstrapVerifierError)):
+            verify_proofgate_admin_identity_binding(bad_boundary)
+
+    # 4. Prove a recording observer can record but cannot authorize
+    class RecordingTestDouble:
+        def __init__(self):
+            self.recorded_requests = []
+            self.authorize_called = False
+
+        def observe(self, request):
+            self.recorded_requests.append(request)
+            return None
+
+        def authorize(self, *args, **kwargs):
+            self.authorize_called = True
+            return True
+
+    recording_double = RecordingTestDouble()
+    with pytest.raises(
+        (TypeError, ProofgateBootstrapVerifierError),
+        match="PROOFGATE_PR_R_RED::recording_boundary_cannot_authorize",
+    ):
+        verify_proofgate_admin_identity_binding(recording_double)
+    assert recording_double.authorize_called is False
+
+    # 5. Reject unexpected keyword arguments for caller substitution
+    with pytest.raises(TypeError):
+        verify_proofgate_admin_identity_binding(boundary_1, caller_app_integration_id="990001")
+    with pytest.raises(TypeError):
+        verify_proofgate_admin_identity_binding(boundary_1, caller_app_installation_id="880001")
+    with pytest.raises(TypeError):
+        verify_proofgate_admin_identity_binding(boundary_1, caller_reviewer_id="770001")
+    with pytest.raises(TypeError):
+        verify_proofgate_admin_identity_binding(boundary_1, allow_caller_override=True)
+
+    # 6. Verify historical placeholder IDs 1159201, 6159201, 7159201 are rejected
+    for ph_obs in (
+        # Historical App ID 1159201
+        {
+            **synthetic_observation_1,
+            "app": {**synthetic_observation_1["app"], "id": "1159201"},
+            "installation": {**synthetic_observation_1["installation"], "app_id": "1159201"},
+            "ruleset": {
+                **synthetic_observation_1["ruleset"],
+                "bypass_actors": ({"actor_type": "Integration", "actor_id": "1159201", "bypass_mode": "always"},),
+            },
+            "broker": {**synthetic_observation_1["broker"], "app_id": "1159201"},
+        },
+        # Historical Installation ID 6159201
+        {
+            **synthetic_observation_1,
+            "installation": {**synthetic_observation_1["installation"], "id": "6159201"},
+            "broker": {**synthetic_observation_1["broker"], "installation_id": "6159201"},
+        },
+        # Historical Reviewer ID 7159201
+        {
+            **synthetic_observation_1,
+            "organization_user": {**synthetic_observation_1["organization_user"], "id": "7159201"},
+            "environment": {
+                **synthetic_observation_1["environment"],
+                "required_reviewers": ({"id": "7159201", "type": "User", "login": "placeholder-reviewer"},),
+            },
+        },
+    ):
+        bad_b = ProofgateAdminControlPlaneBoundary(_test_observation_fixture=ph_obs)
+        with pytest.raises((ValueError, ProofgateBootstrapVerifierError), match="(?i)placeholder|assigned|invalid"):
+            verify_proofgate_admin_identity_binding(bad_b)
+
+    # 7. Verify relational mismatches are rejected (modifying one operand while leaving counterpart unchanged)
+    for mm_obs in (
+        # App owner_id ("999000") vs repo owner_id ("159201120") mismatch
+        {
+            **synthetic_observation_1,
+            "app": {**synthetic_observation_1["app"], "owner_id": "999000"},
+        },
+        # Installation app_id ("999999") vs App id ("990001") mismatch
+        {
+            **synthetic_observation_1,
+            "installation": {**synthetic_observation_1["installation"], "app_id": "999999"},
+        },
+        # Installation target_owner_id ("999000") vs App owner_id ("159201120") mismatch
+        {
+            **synthetic_observation_1,
+            "installation": {**synthetic_observation_1["installation"], "target_owner_id": "999000"},
+        },
+        # Selected repository ID ("999999") vs repo ID ("1280382652") mismatch
+        {
+            **synthetic_observation_1,
+            "selected_repositories": ({"id": "999999", "name": "Consiliency/other-repo"},),
+        },
+        # Ruleset bypass actor_id ("999999") vs App id ("990001") mismatch
+        {
+            **synthetic_observation_1,
+            "ruleset": {
+                **synthetic_observation_1["ruleset"],
+                "bypass_actors": ({"actor_type": "Integration", "actor_id": "999999", "bypass_mode": "always"},),
+            },
+        },
+        # Environment reviewer mismatch changing only environment reviewer
+        {
+            **synthetic_observation_1,
+            "environment": {
+                **synthetic_observation_1["environment"],
+                "required_reviewers": ({"id": "999999", "type": "User", "login": "other-user"},),
+            },
+        },
+        # Inactive organization user rejection
+        {
+            **synthetic_observation_1,
+            "organization_user": {**synthetic_observation_1["organization_user"], "active": False},
+        },
+        # Extra GitHub permission
+        {
+            **synthetic_observation_1,
+            "installation": {
+                **synthetic_observation_1["installation"],
+                "permissions": (("contents", "write"), ("metadata", "read"), ("actions", "write")),
+            },
+        },
+        # Extra broker permission
+        {
+            **synthetic_observation_1,
+            "broker": {
+                **synthetic_observation_1["broker"],
+                "permissions": (("contents", "write"), ("actions", "write")),
+            },
+        },
+        # Broker app_id ("999999") vs App id ("990001") mismatch
+        {
+            **synthetic_observation_1,
+            "broker": {**synthetic_observation_1["broker"], "app_id": "999999"},
+        },
+        # Claim policy digest mismatch (digest changed while policy object remains unchanged)
+        {**synthetic_observation_1, "broker": {**synthetic_observation_1["broker"], "claim_policy_digest": "0" * 64}},
+    ):
+        bad_b = ProofgateAdminControlPlaneBoundary(_test_observation_fixture=mm_obs)
+        with pytest.raises((ValueError, ProofgateBootstrapVerifierError)):
+            verify_proofgate_admin_identity_binding(bad_b)
+
+    # 8. Derived receipt/pilot fields (run_id, run_attempt, subject, workflow_sha256) must be absent from input/output
+    obs_with_derived_fields = {
+        **synthetic_observation_1,
+        "run_id": "1000000001",
+        "run_attempt": "1",
+        "subject": "cores/00000000000000000001-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.json",
+        "workflow_sha256": "3c365db032ad94622149fde1cadcb84b45480d65d8d789387ef47de286b59c44",
+    }
+    b_derived = ProofgateAdminControlPlaneBoundary(_test_observation_fixture=obs_with_derived_fields)
+    with pytest.raises((ValueError, ProofgateBootstrapVerifierError), match="(?i)derived|receipt|pilot|constant"):
+        verify_proofgate_admin_identity_binding(b_derived)
+
+    # Derive valid binding results for coherent sets 1 and 2
+    binding_result_1 = verify_proofgate_admin_identity_binding(boundary_1)
+    binding_result_2 = verify_proofgate_admin_identity_binding(boundary_2)
+
+    assert binding_result_1["schema"] == "proofgate_admin_identity_binding.v1"
+    assert binding_result_2["schema"] == "proofgate_admin_identity_binding.v1"
+    assert binding_result_1["authority"] != "github_and_broker_control_planes"
+    assert binding_result_1["normalized_broker_policy_digest"] == claim_policy_digest_1
+    assert binding_result_1["normalized_github_permissions"] == (("contents", "write"), ("metadata", "read"))
+
+    with tempfile.TemporaryDirectory() as preflight_tmp:
+        preflight_out = Path(preflight_tmp) / "admin_preflight.json"
+        with _coordinator_run_dir(Path(preflight_tmp)):
+            preflight_code = run_live_admin_binding_preflight(boundary_1, output=str(preflight_out))
+        assert preflight_code == 1, "run_live_admin_binding_preflight must fail closed for test-owned nondecisive boundary"
+        preflight_payload = json.loads(preflight_out.read_text(encoding="utf-8"))
+        assert preflight_payload["verification_status"] == "blocked"
+        assert preflight_payload["human_required"] is True
+        assert preflight_payload["blocker_class"] == "admin_approval"
+        assert preflight_payload["access_attempts"]
+
+    # Reject replaying the first binding result back as authority
+    with pytest.raises((TypeError, ProofgateBootstrapVerifierError)):
+        verify_proofgate_admin_identity_binding(binding_result_1)
+
+    # Both coherent sets pass but produce different binding digests!
+    assert binding_result_1["binding_digest"] != binding_result_2["binding_digest"]
+
+    # Explicit evaluation partition
+    assert binding_result_1["evaluation_partition"] == {
+        "admin_relations": "evaluated",
+        "receipt_pilot": "not_evaluated",
+    }
+
+    # Verify admin_relations is present and derived receipt/pilot fields are absent from binding output
+    assert "admin_relations" in binding_result_1
+    assert "receipt_pilot" not in binding_result_1
+    for derived_key in ("run_id", "run_attempt", "subject", "workflow_sha256"):
+        assert derived_key not in binding_result_1
+        assert derived_key not in binding_result_1["admin_relations"]
+
+    # Assert _test_observation_fixture does NOT appear in resulting evidence
+    assert "_test_observation_fixture" not in binding_result_1
+    assert "_test_observation_fixture" not in binding_result_1["admin_relations"]
+
+
+def _setup_pr_r_candidate_history():
+    tmp, repo, original_tests_landing_oid = _setup_git_repo()
+    for rel_path in PR_B_TEST_CONTRACT_FILES:
+        path = repo / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# contract {rel_path}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "Seed test contracts"], cwd=repo, capture_output=True, check=True)
+    selector_base_oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    subprocess.run(["git", "checkout", "-b", "selector-repair-red"], cwd=repo, capture_output=True, check=True)
+    chronology_path = repo / "phase-loop-runtime/tests/test_tdd_chronology.py"
+    chronology_path.write_text(chronology_path.read_text(encoding="utf-8") + "# RED\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "Selector repair RED"], cwd=repo, capture_output=True, check=True)
+
+    subprocess.run(["git", "checkout", "-b", "selector-repair-green"], cwd=repo, capture_output=True, check=True)
+    for rel_path in (
+        "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+        "phase-loop-runtime/tests/proofgate_tdd_guard.py",
+    ):
+        path = repo / rel_path
+        path.write_text(path.read_text(encoding="utf-8") + "# GREEN\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "Selector repair GREEN"], cwd=repo, capture_output=True, check=True)
+
+    subprocess.run(["git", "checkout", "main"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "merge", "--no-ff", "selector-repair-green", "-m", "Merge selector repair"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    selector_repair_landing_oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", original_tests_landing_oid, selector_base_oid],
+        cwd=repo,
+        capture_output=True,
+    ).returncode == 0
+
+    subprocess.run(["git", "checkout", "-b", "proofgate-pr-b"], cwd=repo, capture_output=True, check=True)
+    for rel_path in PR_B_5_PATHS:
+        path = repo / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# candidate {rel_path}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "PR-B candidate"], cwd=repo, capture_output=True, check=True)
+    candidate_oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    pr_metadata = _valid_pr_metadata(candidate_oid, selector_repair_landing_oid, "PR-B")
+    digest = hashlib.sha256(
+        subprocess.run(
+            ["git", "diff-tree", "--raw", "-r", "-z", selector_repair_landing_oid, candidate_oid],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        ).stdout
+    ).hexdigest()
+    seats, chronology = _valid_seats(digest)
+    _observation, boundary, coordinator_root, coordinator_tmp = _pr_b_observed_bootstrap_boundary(
+        repo,
+        selector_repair_landing_oid,
+        candidate_oid,
+        pr_metadata,
+        seats,
+        chronology,
+        original_tests_landing_oid=original_tests_landing_oid,
+    )
+    return (
+        tmp,
+        repo,
+        original_tests_landing_oid,
+        selector_repair_landing_oid,
+        candidate_oid,
+        boundary,
+        coordinator_root,
+        coordinator_tmp,
+    )
+
+
+def test_pr_r_terra_001_gh_timeout_fails_closed(monkeypatch):
+    try:
+        from . import proofgate_bootstrap_verifier
+        from .proofgate_bootstrap_verifier import (
+            ProofgateAdminControlPlaneBoundary,
+            run_live_admin_binding_preflight,
+        )
+    except (ImportError, AttributeError) as exc:
+        raise ProofgateMissingCapabilityError(
+            "PRR-TERRA-001::live_admin_preflight_timeout_handling_unimplemented"
+        ) from exc
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "admin-preflight.json"
+
+        def timeout(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=10)
+
+        monkeypatch.setattr(proofgate_bootstrap_verifier.subprocess, "run", timeout)
+        try:
+            with _coordinator_run_dir(Path(tmp_dir)):
+                exit_code = run_live_admin_binding_preflight(
+                    ProofgateAdminControlPlaneBoundary(), output=str(out_path)
+                )
+        except subprocess.TimeoutExpired as exc:
+            pytest.fail(f"PRR-TERRA-001::live_admin_preflight_timeout_escapes_uncaught: {exc}")
+
+        assert exit_code == 1
+        payload = json.loads(out_path.read_text(encoding="utf-8"))
+        assert payload["human_required"] is True
+        assert payload["blocker_class"] == "admin_approval"
+        assert payload["verification_status"] == "blocked"
+        assert payload["access_attempts"][0]["result"] == "unavailable_or_mismatch"
+        assert payload["access_attempts"][0]["timestamp"]
+
+
+def test_pr_r_terra_001_gh_structurally_wrong_json_payload_fails_closed(monkeypatch):
+    try:
+        from . import proofgate_bootstrap_verifier
+        from .proofgate_bootstrap_verifier import (
+            ProofgateAdminControlPlaneBoundary,
+            run_live_admin_binding_preflight,
+        )
+    except (ImportError, AttributeError) as exc:
+        raise ProofgateMissingCapabilityError(
+            "PRR-TERRA-001::live_admin_preflight_structurally_wrong_payload_unimplemented"
+        ) from exc
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "admin-preflight.json"
+
+        def mock_run(cmd, *_args, **_kwargs):
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout='[{"id": 880001}]\n', stderr=""
+            )
+
+        monkeypatch.setattr(proofgate_bootstrap_verifier.subprocess, "run", mock_run)
+        with _coordinator_run_dir(Path(tmp_dir)):
+            exit_code = run_live_admin_binding_preflight(
+                ProofgateAdminControlPlaneBoundary(), output=str(out_path)
+            )
+
+        assert exit_code == 1
+        payload = json.loads(out_path.read_text(encoding="utf-8"))
+        assert payload["human_required"] is True
+        assert payload["blocker_class"] == "admin_approval"
+        assert payload["verification_status"] == "blocked"
+        assert payload["access_attempts"][0]["result"] == "unavailable_or_mismatch"
+        assert payload["access_attempts"][0]["timestamp"]
+
+
+def test_pr_r_terra_002_pr_b_strict_candidate_binding(monkeypatch):
+    nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_pr_r_terra_002_pr_b_strict_candidate_binding"
+
+    def contract():
+        try:
+            from . import proofgate_bootstrap_verifier
+            from .proofgate_bootstrap_verifier import verify_bootstrap_candidate_binding
+            from .proofgate_tdd_guard import CANDIDATE_BINDING_FIELDS
+        except (ImportError, AttributeError) as exc:
+            raise ProofgateMissingCapabilityError(
+                "PRR-TERRA-002::verify_bootstrap_candidate_binding_unimplemented"
+            ) from exc
+
+        (
+            _tmp,
+            repo,
+            original_oid,
+            base_oid,
+            candidate_oid,
+            boundary,
+            coordinator_root,
+            _coordinator_tmp,
+        ) = _setup_pr_r_candidate_history()
+        binding_path = coordinator_root / "bootstrap-candidate-binding.json"
+        binding_bytes = binding_path.read_bytes()
+        binding = json.loads(binding_bytes)
+        assert tuple(binding) == CANDIDATE_BINDING_FIELDS
+        assert binding_bytes == (json.dumps(binding, separators=(",", ":")) + "\n").encode()
+        assert verify_bootstrap_candidate_binding(
+            repo_path=repo,
+            binding_path=binding_path,
+            expected_original_tests_landing=original_oid,
+        )["status"] == "verified"
+
+        mutations = {
+            "missing-fields": {key: value for key, value in binding.items() if key != "changes"},
+            "wrong-order": {key: binding[key] for key in reversed(binding)},
+            "candidate-tree": {**binding, "candidate_tree_oid": "0" * 40},
+            "selector-topology": {**binding, "selector_repair_landing_oid": candidate_oid},
+            "change-tuple": {**binding, "changes": []},
+            "test-contract": {**binding, "test_contract_sha256": {**binding["test_contract_sha256"], PR_B_TEST_CONTRACT_FILES[0]: "0" * 64}},
+        }
+        with tempfile.TemporaryDirectory() as mutation_dir:
+            mutation_root = Path(mutation_dir)
+            for label, mutated in mutations.items():
+                path = mutation_root / f"mutated-{label}.json"
+                path.write_bytes((json.dumps(mutated, separators=(",", ":")) + "\n").encode())
+                with pytest.raises(ProofgateBootstrapVerifierError, match="(?i)field|tree|selector|change|contract|mismatch"):
+                    verify_bootstrap_candidate_binding(
+                        repo_path=repo,
+                        binding_path=path,
+                        expected_original_tests_landing=original_oid,
+                    )
+            missing_lf = mutation_root / "mutated-missing-lf.json"
+            missing_lf.write_bytes(json.dumps(binding, separators=(",", ":")).encode())
+            with pytest.raises(ProofgateBootstrapVerifierError, match="(?i)canonical|compact|LF"):
+                verify_bootstrap_candidate_binding(
+                    repo_path=repo,
+                    binding_path=missing_lf,
+                    expected_original_tests_landing=original_oid,
+                )
+
+        def strict_activation(**_kwargs):
+            raise ProofgateBootstrapVerifierError("PRR-TERRA-002::strict_binding_activated")
+
+        monkeypatch.setattr(proofgate_bootstrap_verifier, "verify_bootstrap_candidate_binding", strict_activation)
+        with _coordinator_run_dir(coordinator_root), pytest.raises(
+            ProofgateBootstrapVerifierError, match="PRR-TERRA-002::strict_binding_activated"
+        ):
+            verify_observed_premerge_bootstrap_review_gate(
+                repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary
+            )
+
+    run_proofgate_contract(nodeid, contract)
+
+
+def test_pr_r_admin_003_decisive_pr_b_rejects_synthetic_or_replayed_admin_binding(monkeypatch):
+    nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_pr_r_admin_003_decisive_pr_b_rejects_synthetic_or_replayed_admin_binding"
+
+    def contract():
+        try:
+            from . import proofgate_bootstrap_verifier
+            from .proofgate_bootstrap_verifier import (
+                ProofgateAdminControlPlaneBoundary,
+                verify_proofgate_admin_authority,
+            )
+        except (ImportError, AttributeError) as exc:
+            raise ProofgateMissingCapabilityError(
+                "PRR-ADMIN-003::verify_proofgate_admin_authority_unimplemented"
+            ) from exc
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            binding_path = Path(tmp_dir) / "admin-binding.json"
+            synthetic = {
+                "schema": "proofgate_admin_identity_binding.v1",
+                "authority": "github_and_broker_control_planes",
+                "candidate_oid": "a" * 40,
+            }
+            synthetic["binding_digest"] = hashlib.sha256(
+                json.dumps(synthetic, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            binding_path.write_text(json.dumps(synthetic, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+            for _label, boundary, candidate_oid in (
+                ("caller-authored", object(), "a" * 40),
+                ("fixture", ProofgateAdminControlPlaneBoundary(_test_observation_fixture={}), "a" * 40),
+                ("replay", ProofgateAdminControlPlaneBoundary(), "b" * 40),
+            ):
+                with pytest.raises(ProofgateBootstrapVerifierError, match="(?i)admin|authority|candidate|control plane|live|replay"):
+                    verify_proofgate_admin_authority(
+                        boundary=boundary,
+                        candidate_oid=candidate_oid,
+                        admin_binding_path=binding_path,
+                    )
+
+            monkeypatch.setattr(ProofgateAdminControlPlaneBoundary, "observe", lambda _self: None)
+            with pytest.raises(ProofgateBootstrapVerifierError, match="(?i)unavailable|admin|authority|control plane"):
+                verify_proofgate_admin_authority(
+                    boundary=ProofgateAdminControlPlaneBoundary(),
+                    candidate_oid="a" * 40,
+                    admin_binding_path=binding_path,
+                )
+
+        called = False
+
+        def admin_activation(**_kwargs):
+            nonlocal called
+            called = True
+            raise ProofgateBootstrapVerifierError("PRR-ADMIN-003::live_admin_authority_required")
+
+        def strict_binding_already_verified(*, binding_path, **_kwargs):
+            binding_bytes = Path(binding_path).read_bytes()
+            return {
+                "status": "verified",
+                "binding_data": json.loads(binding_bytes),
+                "binding_bytes": binding_bytes,
+                "binding_digest": hashlib.sha256(binding_bytes).hexdigest(),
+            }
+
+        monkeypatch.setattr(
+            proofgate_bootstrap_verifier,
+            "verify_bootstrap_candidate_binding",
+            strict_binding_already_verified,
+        )
+        monkeypatch.setattr(proofgate_bootstrap_verifier, "verify_proofgate_admin_authority", admin_activation)
+        (
+            _tmp,
+            repo,
+            _original_oid,
+            base_oid,
+            candidate_oid,
+            boundary,
+            coordinator_root,
+            _coordinator_tmp,
+        ) = _setup_pr_r_candidate_history()
+        with _coordinator_run_dir(coordinator_root), pytest.raises(
+            ProofgateBootstrapVerifierError, match="PRR-ADMIN-003::live_admin_authority_required"
+        ):
+            verify_observed_premerge_bootstrap_review_gate(
+                repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary
+            )
+        assert called is True
+
+    run_proofgate_contract(nodeid, contract)
+
+
+def test_pr_r_admin_001_omitted_admin_boundary_selects_concrete_control_plane(monkeypatch):
+    nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_pr_r_admin_001_omitted_admin_boundary_selects_concrete_control_plane"
+
+    def contract():
+        try:
+            from . import proofgate_bootstrap_verifier
+            from .proofgate_bootstrap_verifier import (
+                ProofgateAdminControlPlaneBoundary,
+                verify_observed_premerge_bootstrap_review_gate,
+            )
+        except (ImportError, AttributeError) as exc:
+            raise ProofgateMissingCapabilityError(
+                "PRR-TERRA-001::verify_observed_premerge_bootstrap_review_gate_unimplemented"
+            ) from exc
+
+        (
+            _tmp,
+            repo,
+            original_oid,
+            base_oid,
+            candidate_oid,
+            boundary,
+            coordinator_root,
+            _coordinator_tmp,
+        ) = _setup_pr_r_candidate_history()
+
+        real_verify_binding = proofgate_bootstrap_verifier.verify_bootstrap_candidate_binding
+
+        def patched_verify_binding(repo_path, binding_path, expected_original_tests_landing=None):
+            return real_verify_binding(
+                repo_path=repo_path,
+                binding_path=binding_path,
+                expected_original_tests_landing=original_oid,
+            )
+
+        monkeypatch.setattr(
+            proofgate_bootstrap_verifier, "verify_bootstrap_candidate_binding", patched_verify_binding
+        )
+
+        captured_boundary = None
+
+        def fake_admin_authority(boundary=None, candidate_oid=None, admin_binding_path=None, **_kwargs):
+            nonlocal captured_boundary
+            captured_boundary = boundary
+            return {
+                "schema": "proofgate_admin_identity_binding.v1",
+                "authority": "github_and_broker_control_planes",
+                "binding_digest": "a" * 64,
+            }
+
+        monkeypatch.setattr(
+            proofgate_bootstrap_verifier, "verify_proofgate_admin_authority", fake_admin_authority
+        )
+
+        with _coordinator_run_dir(coordinator_root):
+            verify_observed_premerge_bootstrap_review_gate(
+                repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary
+            )
+
+        assert type(captured_boundary) is ProofgateAdminControlPlaneBoundary, (
+            f"PRR-ADMIN-001: Expected omitted admin_boundary to pass exact concrete "
+            f"ProofgateAdminControlPlaneBoundary to authority seam, got {type(captured_boundary)}"
+        )
+
+    run_proofgate_contract(nodeid, contract)
+
+
+def test_pr_r_admin_001_structural_normalization_and_rejection_rules(monkeypatch):
+    nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_pr_r_admin_001_structural_normalization_and_rejection_rules"
+
+    def contract():
+        try:
+            from . import proofgate_bootstrap_verifier
+            from .proofgate_bootstrap_verifier import (
+                ProofgateAdminControlPlaneBoundary,
+                verify_proofgate_admin_authority,
+            )
+        except (ImportError, AttributeError) as exc:
+            raise ProofgateMissingCapabilityError(
+                "PRR-B1::verify_proofgate_admin_authority_unimplemented"
+            ) from exc
+
+        claim_policy = {
+            "audience": "urn:consiliency:proofgate:github-app-installation-token:repository:1280382652",
+            "event_name": "workflow_dispatch",
+            "repository_id": "1280382652",
+            "repository_owner_id": "159201120",
+            "workflow_ref": "Consiliency/agent-harness/.github/workflows/proofgate-receipt-attestation.yml@refs/heads/main",
+        }
+        claim_policy_digest = hashlib.sha256(
+            json.dumps(claim_policy, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+        expected_live_binding = {
+            "schema": "proofgate_admin_identity_binding.v1",
+            "authority": "github_and_broker_control_planes",
+            "repository_id": "1280382652",
+            "repository_name": "Consiliency/agent-harness",
+            "app_id": "990001",
+            "app_slug": "proofgate-app",
+            "installation_id": "880001",
+            "reviewer_id": "770001",
+            "reviewer_login": "proofgate-reviewer",
+            "broker_deployment_id": "proofgate-broker-v1",
+            "broker_key_version": "v1",
+            "normalized_broker_policy_digest": claim_policy_digest,
+            "normalized_github_permissions": (("contents", "write"), ("metadata", "read")),
+            "admin_relations": {
+                "app_owner_equals_repository_owner": True,
+                "installation_app_equals_resolved_app": True,
+                "installation_target_equals_app_owner": True,
+                "selected_repository_equals_target": True,
+                "ruleset_bypass_equals_resolved_app": True,
+                "environment_reviewer_equals_active_user": True,
+                "broker_relations_match": True,
+            },
+            "evaluation_partition": {
+                "admin_relations": "evaluated",
+                "receipt_pilot": "not_evaluated",
+            },
+        }
+        digest_bytes = json.dumps(expected_live_binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        expected_live_binding["binding_digest"] = hashlib.sha256(digest_bytes).hexdigest()
+
+        monkeypatch.setattr(
+            proofgate_bootstrap_verifier,
+            "verify_proofgate_admin_identity_binding",
+            lambda _boundary: expected_live_binding,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            binding_path = Path(tmp_dir) / "admin-binding.json"
+
+            stored = {
+                "schema": "proofgate_admin_identity_binding.v1",
+                "authority": "github_and_broker_control_planes",
+                "repository_id": "1280382652",
+                "repository_name": "Consiliency/agent-harness",
+                "app_id": "990001",
+                "app_slug": "proofgate-app",
+                "installation_id": "880001",
+                "reviewer_id": "770001",
+                "reviewer_login": "proofgate-reviewer",
+                "broker_deployment_id": "proofgate-broker-v1",
+                "broker_key_version": "v1",
+                "normalized_broker_policy_digest": claim_policy_digest,
+                "normalized_github_permissions": [["contents", "write"], ["metadata", "read"]],
+                "candidate_oid": "a" * 40,
+                "admin_relations": {
+                    "app_owner_equals_repository_owner": True,
+                    "installation_app_equals_resolved_app": True,
+                    "installation_target_equals_app_owner": True,
+                    "selected_repository_equals_target": True,
+                    "ruleset_bypass_equals_resolved_app": True,
+                    "environment_reviewer_equals_active_user": True,
+                    "broker_relations_match": True,
+                },
+                "evaluation_partition": {
+                    "admin_relations": "evaluated",
+                    "receipt_pilot": "not_evaluated",
+                },
+            }
+            unbound = dict(stored)
+            unbound.pop("binding_digest", None)
+            stored["binding_digest"] = hashlib.sha256(
+                json.dumps(unbound, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            binding_path.write_text(json.dumps(stored, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+            result = verify_proofgate_admin_authority(
+                boundary=ProofgateAdminControlPlaneBoundary(),
+                candidate_oid="a" * 40,
+                admin_binding_path=binding_path,
+            )
+            assert result == expected_live_binding, (
+                "PRR-ADMIN-001: Structural normalization failed to normalize stored JSON lists to tuples"
+            )
+
+            partial = dict(stored)
+            partial.pop("candidate_oid")
+            partial_unbound = dict(partial)
+            partial_unbound.pop("binding_digest", None)
+            partial["binding_digest"] = hashlib.sha256(
+                json.dumps(partial_unbound, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            partial_path = Path(tmp_dir) / "partial-binding.json"
+            partial_path.write_text(json.dumps(partial, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            with pytest.raises(ProofgateBootstrapVerifierError):
+                verify_proofgate_admin_authority(
+                    boundary=ProofgateAdminControlPlaneBoundary(),
+                    candidate_oid="a" * 40,
+                    admin_binding_path=partial_path,
+                )
+
+            wrong_dig = dict(stored)
+            wrong_dig["binding_digest"] = "0" * 64
+            wrong_path = Path(tmp_dir) / "wrong-digest.json"
+            wrong_path.write_text(json.dumps(wrong_dig, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            with pytest.raises(ProofgateBootstrapVerifierError, match="(?i)digest"):
+                verify_proofgate_admin_authority(
+                    boundary=ProofgateAdminControlPlaneBoundary(),
+                    candidate_oid="a" * 40,
+                    admin_binding_path=wrong_path,
+                )
+
+            with pytest.raises(ProofgateBootstrapVerifierError, match="(?i)replay"):
+                verify_proofgate_admin_authority(
+                    boundary=ProofgateAdminControlPlaneBoundary(),
+                    candidate_oid="b" * 40,
+                    admin_binding_path=binding_path,
+                )
+
+            non_auth = dict(stored)
+            non_auth["authority"] = "test_observation_fixture"
+            non_auth_unbound = dict(non_auth)
+            non_auth_unbound.pop("binding_digest", None)
+            non_auth["binding_digest"] = hashlib.sha256(
+                json.dumps(non_auth_unbound, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            non_auth_path = Path(tmp_dir) / "non-auth-binding.json"
+            non_auth_path.write_text(json.dumps(non_auth, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            with pytest.raises(ProofgateBootstrapVerifierError, match="(?i)authoritative"):
+                verify_proofgate_admin_authority(
+                    boundary=ProofgateAdminControlPlaneBoundary(),
+                    candidate_oid="a" * 40,
+                    admin_binding_path=non_auth_path,
+                )
+
+    run_proofgate_contract(nodeid, contract)
+
+
+def test_pr_r_admin_002_live_ruleset_parser_contract(monkeypatch):
+    nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_pr_r_admin_002_live_ruleset_parser_contract"
+
+    def contract():
+        try:
+            from .proofgate_bootstrap_verifier import (
+                ProofgateAdminControlPlaneBoundary,
+                verify_proofgate_admin_identity_binding,
+            )
+        except (ImportError, AttributeError) as exc:
+            raise ProofgateMissingCapabilityError(
+                "PRR-ADMIN-002::verify_proofgate_admin_identity_binding_unimplemented"
+            ) from exc
+
+        claim_policy = {
+            "audience": "urn:consiliency:proofgate:github-app-installation-token:repository:1280382652",
+            "event_name": "workflow_dispatch",
+            "repository_id": "1280382652",
+            "repository_owner_id": "159201120",
+            "workflow_ref": "Consiliency/agent-harness/.github/workflows/proofgate-receipt-attestation.yml@refs/heads/main",
+        }
+        claim_policy_digest = hashlib.sha256(
+            json.dumps(claim_policy, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+        broker_payload = {
+            "schema": "proofgate_broker_admin_metadata.v1",
+            "deployment_id": "proofgate-broker-v1",
+            "key_version": "v1",
+            "app_id": "990001",
+            "installation_id": "880001",
+            "repository_id": "1280382652",
+            "permissions": [["contents", "write"]],
+            "claim_policy": claim_policy,
+            "claim_policy_digest": claim_policy_digest,
+        }
+
+        current_ruleset_response = {
+            "id": 550001,
+            "name": "proofgate-receipt-head-v1",
+            "target": "branch",
+            "enforcement": "active",
+            "conditions": {
+                "ref_name": {
+                    "include": ["refs/heads/proofgate-receipt-head-v1"],
+                    "exclude": [],
+                }
+            },
+            "rules": [
+                {"type": "creation"},
+                {"type": "deletion"},
+                {"type": "non_fast_forward"},
+                {"type": "required_linear_history"},
+                {"type": "update"},
+            ],
+            "bypass_actors": [
+                {
+                    "actor_type": "Integration",
+                    "actor_id": 990001,
+                    "bypass_mode": "always",
+                }
+            ],
+        }
+
+        def fake_gh_api(endpoint: str):
+            if endpoint == "repos/Consiliency/agent-harness":
+                return {"id": 1280382652, "full_name": "Consiliency/agent-harness", "owner": {"id": 159201120}}
+            if endpoint == "apps/proofgate-app":
+                return {"id": 990001, "slug": "proofgate-app", "owner": {"id": 159201120}}
+            if endpoint == "orgs/Consiliency/installations":
+                return {
+                    "installations": [
+                        {
+                            "id": 880001,
+                            "app_slug": "proofgate-app",
+                            "app_id": 990001,
+                            "target_id": 159201120,
+                            "repository_selection": "selected",
+                            "permissions": {"contents": "write", "metadata": "read"},
+                        }
+                    ]
+                }
+            if endpoint == "user/installations/880001/repositories":
+                return {"repositories": [{"id": 1280382652, "full_name": "Consiliency/agent-harness"}]}
+            if endpoint == "repos/Consiliency/agent-harness/environments/proofgate-receipt-head-v1":
+                return {
+                    "name": "proofgate-receipt-head-v1",
+                    "can_admins_bypass": False,
+                    "protection_rules": [
+                        {
+                            "type": "required_reviewers",
+                            "prevent_self_review": True,
+                            "reviewers": [{"type": "User", "reviewer": {"id": 770001, "login": "proofgate-reviewer"}}],
+                        }
+                    ],
+                }
+            if endpoint == "repos/Consiliency/agent-harness/rulesets":
+                return [{"id": 550001, "name": "proofgate-receipt-head-v1", "enforcement": "active"}]
+            if endpoint == "repos/Consiliency/agent-harness/rulesets/550001":
+                return current_ruleset_response
+            raise ValueError(f"Unexpected endpoint: {endpoint}")
+
+        monkeypatch.setattr(ProofgateAdminControlPlaneBoundary, "_gh_api", staticmethod(fake_gh_api))
+        monkeypatch.setattr(
+            ProofgateAdminControlPlaneBoundary, "_broker_metadata", classmethod(lambda cls: broker_payload)
+        )
+
+        real_subprocess_run = subprocess.run
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if isinstance(cmd, list) and "orgs/Consiliency/members/proofgate-reviewer" in " ".join(cmd):
+                return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+            return real_subprocess_run(cmd, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+
+        boundary = ProofgateAdminControlPlaneBoundary()
+
+        obs = boundary.observe()
+        assert obs is not None, "PRR-ADMIN-002: Observation should be available for valid ruleset"
+        assert "ruleset" in obs and "rule_types" in obs["ruleset"], (
+            "PRR-ADMIN-002: Observed ruleset must include parsed rule_types, not hard-coded values"
+        )
+        assert tuple(sorted(obs["ruleset"]["rule_types"])) == (
+            "creation",
+            "deletion",
+            "non_fast_forward",
+            "required_linear_history",
+            "update",
+        )
+        binding = verify_proofgate_admin_identity_binding(boundary)
+        assert binding.get("authority") == "github_and_broker_control_planes"
+
+        mutations = [
+            (
+                "wrong-target-ref",
+                {
+                    **current_ruleset_response,
+                    "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+                },
+            ),
+            ("wrong-target-kind", {**current_ruleset_response, "target": "tag"}),
+            (
+                "exclusions-present",
+                {
+                    **current_ruleset_response,
+                    "conditions": {
+                        "ref_name": {
+                            "include": ["refs/heads/proofgate-receipt-head-v1"],
+                            "exclude": ["refs/heads/proofgate-receipt-head-v1"],
+                        }
+                    },
+                },
+            ),
+            (
+                "missing-creation",
+                {
+                    **current_ruleset_response,
+                    "rules": [
+                        {"type": "deletion"},
+                        {"type": "non_fast_forward"},
+                        {"type": "required_linear_history"},
+                        {"type": "update"},
+                    ],
+                },
+            ),
+            (
+                "missing-deletion",
+                {
+                    **current_ruleset_response,
+                    "rules": [
+                        {"type": "creation"},
+                        {"type": "non_fast_forward"},
+                        {"type": "required_linear_history"},
+                        {"type": "update"},
+                    ],
+                },
+            ),
+            (
+                "missing-non-fast-forward",
+                {
+                    **current_ruleset_response,
+                    "rules": [
+                        {"type": "creation"},
+                        {"type": "deletion"},
+                        {"type": "required_linear_history"},
+                        {"type": "update"},
+                    ],
+                },
+            ),
+            (
+                "missing-required-linear-history",
+                {
+                    **current_ruleset_response,
+                    "rules": [
+                        {"type": "creation"},
+                        {"type": "deletion"},
+                        {"type": "non_fast_forward"},
+                        {"type": "update"},
+                    ],
+                },
+            ),
+            (
+                "missing-update",
+                {
+                    **current_ruleset_response,
+                    "rules": [
+                        {"type": "creation"},
+                        {"type": "deletion"},
+                        {"type": "non_fast_forward"},
+                        {"type": "required_linear_history"},
+                    ],
+                },
+            ),
+            (
+                "extra-rule-type",
+                {
+                    **current_ruleset_response,
+                    "rules": [
+                        {"type": "creation"},
+                        {"type": "deletion"},
+                        {"type": "non_fast_forward"},
+                        {"type": "pull_request"},
+                        {"type": "required_linear_history"},
+                        {"type": "update"},
+                    ],
+                },
+            ),
+        ]
+
+        for label, mutated_ruleset in mutations:
+            current_ruleset_response = mutated_ruleset
+            with pytest.raises(ProofgateBootstrapVerifierError, match=r"(?i)ruleset|observation|rule|target|ref"):
+                mutated_obs = boundary.observe()
+                if mutated_obs is None:
+                    raise ProofgateBootstrapVerifierError(f"PRR-ADMIN-002::{label} observation rejected")
+                verify_proofgate_admin_identity_binding(boundary)
+
+    run_proofgate_contract(nodeid, contract)
+
+
+def test_pr_r_evid_003_pr_b_candidate_digests_bound_to_observation(monkeypatch):
+    nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_pr_r_evid_003_pr_b_candidate_digests_bound_to_observation"
+
+    def contract():
+        try:
+            from . import proofgate_bootstrap_verifier
+            from .proofgate_bootstrap_verifier import (
+                ProofgateAdminControlPlaneBoundary,
+                verify_observed_premerge_bootstrap_review_gate,
+            )
+        except (ImportError, AttributeError) as exc:
+            raise ProofgateMissingCapabilityError(
+                "PRR-EVID-003::verify_observed_premerge_bootstrap_review_gate_unimplemented"
+            ) from exc
+
+        (
+            _tmp,
+            repo,
+            original_oid,
+            base_oid,
+            candidate_oid,
+            boundary,
+            coordinator_root,
+            _coordinator_tmp,
+        ) = _setup_pr_r_candidate_history()
+
+        real_verify_binding = proofgate_bootstrap_verifier.verify_bootstrap_candidate_binding
+
+        def patched_verify_binding(repo_path, binding_path, expected_original_tests_landing=None):
+            return real_verify_binding(
+                repo_path=repo_path,
+                binding_path=binding_path,
+                expected_original_tests_landing=original_oid,
+            )
+
+        monkeypatch.setattr(
+            proofgate_bootstrap_verifier, "verify_bootstrap_candidate_binding", patched_verify_binding
+        )
+
+        def fake_admin_authority(**_kwargs):
+            return {
+                "schema": "proofgate_admin_identity_binding.v1",
+                "authority": "github_and_broker_control_planes",
+                "binding_digest": "a" * 64,
+            }
+
+        monkeypatch.setattr(
+            proofgate_bootstrap_verifier, "verify_proofgate_admin_authority", fake_admin_authority
+        )
+
+        admin_boundary = ProofgateAdminControlPlaneBoundary()
+
+        with _coordinator_run_dir(coordinator_root):
+            pos_res = verify_observed_premerge_bootstrap_review_gate(
+                repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+            )
+        assert pos_res["decisive"] is True
+        assert pos_res["evidence_kind"] == "coordinator_external_observation"
+
+        _thaw_coordinator_root(coordinator_root)
+        omission_payload = json.loads(
+            (coordinator_root / "bootstrap-observation.json").read_text(encoding="utf-8")
+        )
+        omission_payload["candidate_artifact_digests"] = []
+        omission_observation = proofgate_bootstrap_verifier._bootstrap_observation_from_payload(
+            omission_payload
+        )
+        _write_coordinator_observation(coordinator_root, omission_observation, "PR-B")
+        _freeze_coordinator_root(coordinator_root)
+
+        with _coordinator_run_dir(coordinator_root), pytest.raises(
+            ProofgateBootstrapVerifierError,
+            match=r"(?i)candidate artifact digest",
+        ):
+            verify_observed_premerge_bootstrap_review_gate(
+                repo,
+                base_oid,
+                candidate_oid,
+                landing_kind="PR-B",
+                boundary=boundary,
+                admin_boundary=admin_boundary,
+            )
+
+        # Co-substitute candidate bytes on disk and internally recompute verdict/binding digests
+        _thaw_coordinator_root(coordinator_root)
+        cand_junit = coordinator_root / "compat-candidate.junit.xml"
+        cand_reports = coordinator_root / "phase_reports_candidate.json"
+        verdict_file = coordinator_root / "bootstrap-candidate-verdict.json"
+        binding_file = coordinator_root / "bootstrap-candidate-binding.json"
+        original_cand_junit = cand_junit.read_bytes()
+        original_verdict = verdict_file.read_bytes()
+
+        cand_junit.write_text(cand_junit.read_text(encoding="utf-8") + "<!-- modified -->\n", encoding="utf-8")
+        cand_junit_sha = hashlib.sha256(cand_junit.read_bytes()).hexdigest()
+        cand_reports_sha = hashlib.sha256(cand_reports.read_bytes()).hexdigest()
+        cand_binding_sha = hashlib.sha256(binding_file.read_bytes()).hexdigest()
+
+        verdict_data = json.loads(verdict_file.read_text(encoding="utf-8"))
+        verdict_data["junit_digest"] = cand_junit_sha
+        verdict_data["phase_reports_digest"] = cand_reports_sha
+        verdict_data["binding_digest"] = cand_binding_sha
+        verdict_bytes = json.dumps(verdict_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        verdict_file.write_bytes(verdict_bytes)
+        _freeze_coordinator_root(coordinator_root)
+
+        # First assert unchanged observation fails because its schema/digests omit candidate bytes
+        with _coordinator_run_dir(coordinator_root), pytest.raises(
+            ProofgateBootstrapVerifierError, match=r"(?i)candidate|digest|observation"
+        ):
+            verify_observed_premerge_bootstrap_review_gate(
+                repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+            )
+
+        # A fresh observation that binds every candidate artifact must remain
+        # authorizable; fail-closed-only behavior is not a repair.
+        _thaw_coordinator_root(coordinator_root)
+        cand_junit.write_bytes(original_cand_junit)
+        verdict_file.write_bytes(original_verdict)
+        candidate_artifacts = (
+            "admin-identity-binding.json",
+            "bootstrap-candidate-binding.json",
+            "bootstrap-candidate-verdict.json",
+            "compat-candidate.junit.xml",
+            "phase_reports_candidate.json",
+        )
+        observation_payload = json.loads(
+            (coordinator_root / "bootstrap-observation.json").read_text(encoding="utf-8")
+        )
+        observation_payload["candidate_artifact_digests"] = [
+            [filename, hashlib.sha256((coordinator_root / filename).read_bytes()).hexdigest()]
+            for filename in candidate_artifacts
+        ]
+        bound_observation = proofgate_bootstrap_verifier._bootstrap_observation_from_payload(
+            observation_payload
+        )
+        _write_coordinator_observation(coordinator_root, bound_observation, "PR-B")
+        _freeze_coordinator_root(coordinator_root)
+
+        with _coordinator_run_dir(coordinator_root):
+            result = verify_observed_premerge_bootstrap_review_gate(
+                repo,
+                base_oid,
+                candidate_oid,
+                landing_kind="PR-B",
+                boundary=boundary,
+                admin_boundary=admin_boundary,
+            )
+        assert result["decisive"] is True
+        assert result["evidence_kind"] == "coordinator_external_observation"
+
+    run_proofgate_contract(nodeid, contract)
+
+
+def test_pr_r_bind_004_strict_candidate_binding_rejects_capability_marker():
+    nodeid = "phase-loop-runtime/tests/test_tdd_chronology.py::test_pr_r_bind_004_strict_candidate_binding_rejects_capability_marker"
+
+    def contract():
+        try:
+            from .proofgate_bootstrap_verifier import (
+                _verifier_cat_git_file,
+                parse_git_diff_tree_raw,
+                verify_bootstrap_candidate_binding,
+            )
+        except (ImportError, AttributeError) as exc:
+            raise ProofgateMissingCapabilityError(
+                "PRR-BIND-004::verify_bootstrap_candidate_binding_unimplemented"
+            ) from exc
+
+        # Case 1: Capability marker present unchanged in base and candidate
+        (
+            _tmp1,
+            repo1,
+            original_oid1,
+            base_oid1,
+            _candidate_oid1,
+            _boundary1,
+            coordinator_root1,
+            _coordinator_tmp1,
+        ) = _setup_pr_r_candidate_history()
+
+        subprocess.run(["git", "checkout", "-b", "cap-base1", base_oid1], cwd=repo1, capture_output=True, check=True)
+        cap_file1 = repo1 / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "proofgate_capability.py"
+        cap_file1.parent.mkdir(parents=True, exist_ok=True)
+        cap_file1.write_text('PROOFGATE_CAPABILITY_VERSION = "proofgate.v1"\n', encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo1, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Base with capability marker"], cwd=repo1, capture_output=True, check=True)
+        new_base_oid1 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo1, capture_output=True, text=True, check=True).stdout.strip()
+
+        subprocess.run(["git", "checkout", "-b", "cap-cand1", new_base_oid1], cwd=repo1, capture_output=True, check=True)
+        for rel_path in PR_B_5_PATHS:
+            path = repo1 / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# bootstrap candidate {rel_path}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo1, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "PR-B 5 bootstrap paths"], cwd=repo1, capture_output=True, check=True)
+        new_cand_oid1 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo1, capture_output=True, text=True, check=True).stdout.strip()
+        new_cand_tree_oid1 = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=repo1, capture_output=True, text=True, check=True).stdout.strip()
+
+        diff_raw1 = subprocess.run(["git", "diff-tree", "--raw", "-r", "-z", new_base_oid1, new_cand_oid1], cwd=repo1, capture_output=True, check=True).stdout
+        diff_digest1 = hashlib.sha256(diff_raw1).hexdigest()
+
+        changes1 = parse_git_diff_tree_raw(repo1, new_base_oid1, new_cand_oid1)
+        expected_changes1 = [
+            [kind, path, new_mode, old_blob, new_blob, file_sha]
+            for kind, path, _old_mode, new_mode, old_blob, new_blob, file_sha in changes1
+        ]
+
+        test_contract_digests1 = {}
+        for path in PR_B_TEST_CONTRACT_FILES:
+            selector_bytes = _verifier_cat_git_file(base_oid1, path, cwd=repo1)
+            test_contract_digests1[path] = hashlib.sha256(selector_bytes).hexdigest()
+
+        binding_path1 = coordinator_root1 / "bootstrap-candidate-binding.json"
+        _thaw_coordinator_root(coordinator_root1)
+        binding_data1 = json.loads(binding_path1.read_text(encoding="utf-8"))
+        binding_data1["selector_repair_landing_oid"] = base_oid1
+        binding_data1["base_oid"] = new_base_oid1
+        binding_data1["candidate_oid"] = new_cand_oid1
+        binding_data1["candidate_tree_oid"] = new_cand_tree_oid1
+        binding_data1["diff_sha256"] = diff_digest1
+        binding_data1["changes"] = expected_changes1
+        binding_data1["test_contract_sha256"] = test_contract_digests1
+        binding_path1.write_bytes((json.dumps(binding_data1, separators=(",", ":")) + "\n").encode("utf-8"))
+        _freeze_coordinator_root(coordinator_root1)
+
+        with pytest.raises(
+            ProofgateBootstrapVerifierError,
+            match=r"(?i)capability|marker",
+        ):
+            verify_bootstrap_candidate_binding(
+                repo_path=repo1,
+                binding_path=binding_path1,
+                expected_original_tests_landing=original_oid1,
+            )
+
+        # Case 2: Capability marker introduced in candidate commit
+        (
+            _tmp2,
+            repo2,
+            original_oid2,
+            base_oid2,
+            _candidate_oid2,
+            _boundary2,
+            coordinator_root2,
+            _coordinator_tmp2,
+        ) = _setup_pr_r_candidate_history()
+
+        subprocess.run(["git", "checkout", "-b", "cap-cand2", base_oid2], cwd=repo2, capture_output=True, check=True)
+        for rel_path in PR_B_5_PATHS:
+            path = repo2 / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# bootstrap candidate {rel_path}\n", encoding="utf-8")
+        cap_file2 = repo2 / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "proofgate_capability.py"
+        cap_file2.parent.mkdir(parents=True, exist_ok=True)
+        cap_file2.write_text('PROOFGATE_CAPABILITY_VERSION = "proofgate.v1"\n', encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo2, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "PR-B 5 bootstrap paths + capability marker"], cwd=repo2, capture_output=True, check=True)
+        new_cand_oid2 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo2, capture_output=True, text=True, check=True).stdout.strip()
+        new_cand_tree_oid2 = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=repo2, capture_output=True, text=True, check=True).stdout.strip()
+
+        diff_raw2 = subprocess.run(["git", "diff-tree", "--raw", "-r", "-z", base_oid2, new_cand_oid2], cwd=repo2, capture_output=True, check=True).stdout
+        diff_digest2 = hashlib.sha256(diff_raw2).hexdigest()
+
+        changes2 = parse_git_diff_tree_raw(repo2, base_oid2, new_cand_oid2)
+        expected_changes2 = [
+            [kind, path, new_mode, old_blob, new_blob, file_sha]
+            for kind, path, _old_mode, new_mode, old_blob, new_blob, file_sha in changes2
+        ]
+
+        test_contract_digests2 = {}
+        for path in PR_B_TEST_CONTRACT_FILES:
+            selector_bytes = _verifier_cat_git_file(base_oid2, path, cwd=repo2)
+            test_contract_digests2[path] = hashlib.sha256(selector_bytes).hexdigest()
+
+        binding_path2 = coordinator_root2 / "bootstrap-candidate-binding.json"
+        _thaw_coordinator_root(coordinator_root2)
+        binding_data2 = json.loads(binding_path2.read_text(encoding="utf-8"))
+        binding_data2["selector_repair_landing_oid"] = base_oid2
+        binding_data2["base_oid"] = base_oid2
+        binding_data2["candidate_oid"] = new_cand_oid2
+        binding_data2["candidate_tree_oid"] = new_cand_tree_oid2
+        binding_data2["diff_sha256"] = diff_digest2
+        binding_data2["changes"] = expected_changes2
+        binding_data2["test_contract_sha256"] = test_contract_digests2
+        binding_path2.write_bytes((json.dumps(binding_data2, separators=(",", ":")) + "\n").encode("utf-8"))
+        _freeze_coordinator_root(coordinator_root2)
+
+        with pytest.raises(
+            ProofgateBootstrapVerifierError,
+            match=r"(?i)capability|marker|five bootstrap paths|changes",
+        ):
+            verify_bootstrap_candidate_binding(
+                repo_path=repo2,
+                binding_path=binding_path2,
+                expected_original_tests_landing=original_oid2,
+            )
+
+    run_proofgate_contract(nodeid, contract)
+
+
+def test_pr_r_evid_004_decisive_pr_b_candidate_and_compat_capture_provenance(monkeypatch):
+    try:
+        from . import proofgate_bootstrap_verifier
+        from .proofgate_bootstrap_verifier import (
+            ProofgateAdminControlPlaneBoundary,
+            verify_observed_premerge_bootstrap_review_gate,
+        )
+    except (ImportError, AttributeError) as exc:
+        raise ProofgateMissingCapabilityError(
+            "PRR-EVID-004::candidate_capture_provenance_unimplemented"
+        ) from exc
+
+    (
+        _tmp,
+        repo,
+        original_oid,
+        base_oid,
+        candidate_oid,
+        boundary,
+        coordinator_root,
+        _coordinator_tmp,
+    ) = _setup_pr_r_candidate_history()
+
+    real_verify_binding = proofgate_bootstrap_verifier.verify_bootstrap_candidate_binding
+
+    def patched_verify_binding(repo_path, binding_path, expected_original_tests_landing=None):
+        return real_verify_binding(
+            repo_path=repo_path,
+            binding_path=binding_path,
+            expected_original_tests_landing=original_oid,
+        )
+
+    monkeypatch.setattr(
+        proofgate_bootstrap_verifier, "verify_bootstrap_candidate_binding", patched_verify_binding
+    )
+
+    def fake_admin_authority(**_kwargs):
+        return {
+            "schema": "proofgate_admin_identity_binding.v1",
+            "authority": "github_and_broker_control_planes",
+            "binding_digest": "a" * 64,
+        }
+
+    monkeypatch.setattr(
+        proofgate_bootstrap_verifier, "verify_proofgate_admin_authority", fake_admin_authority
+    )
+
+    admin_boundary = ProofgateAdminControlPlaneBoundary()
+
+    with _coordinator_run_dir(coordinator_root):
+        pos_res = verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+    assert pos_res["decisive"] is True
+    assert pos_res["evidence_kind"] == "coordinator_external_observation"
+
+    def _sync_observation_and_digests():
+        cand_reports_file = coordinator_root / "phase_reports_candidate.json"
+        cand_junit_file = coordinator_root / "compat-candidate.junit.xml"
+        binding_file = coordinator_root / "bootstrap-candidate-binding.json"
+        verdict_file = coordinator_root / "bootstrap-candidate-verdict.json"
+        def_reports_file = coordinator_root / "phase_reports_default.json"
+        red_reports_file = coordinator_root / "phase_reports_forced_red.json"
+
+        cand_reports_digest = hashlib.sha256(cand_reports_file.read_bytes()).hexdigest()
+        cand_junit_digest = hashlib.sha256(cand_junit_file.read_bytes()).hexdigest()
+        binding_digest = hashlib.sha256(binding_file.read_bytes()).hexdigest()
+
+        verdict_payload = json.loads(verdict_file.read_text(encoding="utf-8"))
+        verdict_payload["phase_reports_digest"] = cand_reports_digest
+        verdict_payload["junit_digest"] = cand_junit_digest
+        verdict_payload["binding_digest"] = binding_digest
+        verdict_file.write_bytes(json.dumps(verdict_payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+        cand_payload = json.loads(cand_reports_file.read_text(encoding="utf-8"))
+        def_payload = json.loads(def_reports_file.read_text(encoding="utf-8"))
+        red_payload = json.loads(red_reports_file.read_text(encoding="utf-8"))
+
+        reports_by_mode = {
+            "default": {"reports": def_payload["reports"]},
+            "forced_red": {"reports": red_payload["reports"]},
+            "bootstrap_candidate": {"reports": cand_payload["reports"]},
+        }
+
+        obs_payload = json.loads(
+            (coordinator_root / "bootstrap-observation.json").read_text(encoding="utf-8")
+        )
+        obs_payload["junit_phase_reports_json"] = json.dumps(reports_by_mode, sort_keys=True, separators=(",", ":"))
+        obs_payload["junit_phase_report_digests"] = [
+            ["phase_reports_default.json", hashlib.sha256(def_reports_file.read_bytes()).hexdigest()],
+            ["phase_reports_forced_red.json", hashlib.sha256(red_reports_file.read_bytes()).hexdigest()],
+        ]
+        candidate_artifacts = (
+            "admin-identity-binding.json",
+            "bootstrap-candidate-binding.json",
+            "bootstrap-candidate-verdict.json",
+            "compat-candidate.junit.xml",
+            "phase_reports_candidate.json",
+        )
+        obs_payload["candidate_artifact_digests"] = [
+            [filename, hashlib.sha256((coordinator_root / filename).read_bytes()).hexdigest()]
+            for filename in candidate_artifacts
+        ]
+        obs = proofgate_bootstrap_verifier._bootstrap_observation_from_payload(obs_payload)
+        _write_coordinator_observation(coordinator_root, obs, "PR-B")
+
+    cand_reports_file = coordinator_root / "phase_reports_candidate.json"
+    def_reports_file = coordinator_root / "phase_reports_default.json"
+    orig_cand_reports_bytes = cand_reports_file.read_bytes()
+
+    # Independent mutation 1: Wrong candidate argv and command digest
+    _thaw_coordinator_root(coordinator_root)
+    payload1 = json.loads(cand_reports_file.read_text(encoding="utf-8"))
+    payload1["reports"][0]["argv"] = ["pytest", "wrong_nodeid"]
+    payload1["reports"][0]["command_digest"] = hashlib.sha256(json.dumps(payload1["reports"][0]["argv"]).encode("utf-8")).hexdigest()
+    payload1["runs"][0]["reports"] = payload1["reports"]
+    cand_reports_file.write_bytes(json.dumps(payload1, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    with _coordinator_run_dir(coordinator_root), pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)candidate|capture|argv|command digest",
+    ):
+        verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+
+    # Restore fixture state
+    _thaw_coordinator_root(coordinator_root)
+    cand_reports_file.write_bytes(orig_cand_reports_bytes)
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    # Independent mutation 2: Wrong candidate exitstatus
+    _thaw_coordinator_root(coordinator_root)
+    payload2 = json.loads(cand_reports_file.read_text(encoding="utf-8"))
+    payload2["exitstatus"] = 1
+    payload2["runs"][0]["exitstatus"] = 1
+    cand_reports_file.write_bytes(json.dumps(payload2, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    with _coordinator_run_dir(coordinator_root), pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)candidate|capture|exitstatus",
+    ):
+        verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+
+    # Restore fixture state
+    _thaw_coordinator_root(coordinator_root)
+    cand_reports_file.write_bytes(orig_cand_reports_bytes)
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    # Independent mutation 3: Wrong candidate pytest_args_sha256 in capture
+    _thaw_coordinator_root(coordinator_root)
+    payload3 = json.loads(cand_reports_file.read_text(encoding="utf-8"))
+    payload3["capture"]["pytest_args_sha256"] = "0" * 64
+    cand_reports_file.write_bytes(json.dumps(payload3, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    with _coordinator_run_dir(coordinator_root), pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)candidate|capture|pytest_args",
+    ):
+        verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+
+    # Restore fixture state
+    _thaw_coordinator_root(coordinator_root)
+    cand_reports_file.write_bytes(orig_cand_reports_bytes)
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    # Independent mutation 4: Wrong candidate junit_filename in capture
+    _thaw_coordinator_root(coordinator_root)
+    payload4 = json.loads(cand_reports_file.read_text(encoding="utf-8"))
+    payload4["capture"]["junit_filename"] = "wrong-candidate.junit.xml"
+    cand_reports_file.write_bytes(json.dumps(payload4, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    with _coordinator_run_dir(coordinator_root), pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)candidate|capture|junit_filename",
+    ):
+        verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+
+    # Restore fixture state
+    _thaw_coordinator_root(coordinator_root)
+    cand_reports_file.write_bytes(orig_cand_reports_bytes)
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    # Independent mutation 5: Default mode phase report uses legacy proofgate-tests-only-default.junit.xml in argv and capture pytest_args_sha256 instead of compat-default.junit.xml
+    _thaw_coordinator_root(coordinator_root)
+    def_payload = json.loads(def_reports_file.read_text(encoding="utf-8"))
+
+    legacy_pytest_args = coordinator_evidence_capture_pytest_args("default")
+    legacy_argv = ["pytest", *legacy_pytest_args]
+    legacy_cmd_digest = hashlib.sha256(json.dumps(legacy_argv).encode("utf-8")).hexdigest()
+
+    for report in def_payload["reports"]:
+        report["argv"] = legacy_argv
+        report["command_digest"] = legacy_cmd_digest
+    def_payload["runs"][0]["reports"] = def_payload["reports"]
+    def_payload["capture"]["pytest_args_sha256"] = hashlib.sha256(
+        json.dumps(list(legacy_pytest_args)).encode("utf-8")
+    ).hexdigest()
+
+    def_reports_file.write_bytes(json.dumps(def_payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    _sync_observation_and_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    with _coordinator_run_dir(coordinator_root), pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)default|proofgate-tests-only|argv|pytest_args|command digest",
+    ):
+        verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+
+
+def test_pr_r_bind_005_decisive_pr_b_candidate_binding_base_cand_and_diff_digest(monkeypatch):
+    try:
+        from . import proofgate_bootstrap_verifier
+        from .proofgate_bootstrap_verifier import (
+            ProofgateAdminControlPlaneBoundary,
+            verify_observed_premerge_bootstrap_review_gate,
+        )
+    except (ImportError, AttributeError) as exc:
+        raise ProofgateMissingCapabilityError(
+            "PRR-BIND-005::candidate_binding_pair_matching_unimplemented"
+        ) from exc
+
+    (
+        _tmp,
+        repo,
+        original_oid,
+        base_oid,
+        candidate_oid,
+        boundary,
+        coordinator_root,
+        _coordinator_tmp,
+    ) = _setup_pr_r_candidate_history()
+
+    def patched_verify_binding(repo_path, binding_path, expected_original_tests_landing=None):
+        binding_bytes = Path(binding_path).read_bytes()
+        binding_data = json.loads(binding_bytes.decode("utf-8"))
+        return {
+            "status": "verified",
+            "binding_data": binding_data,
+            "binding_bytes": binding_bytes,
+            "binding_digest": hashlib.sha256(binding_bytes).hexdigest(),
+        }
+
+    monkeypatch.setattr(
+        proofgate_bootstrap_verifier, "verify_bootstrap_candidate_binding", patched_verify_binding
+    )
+
+    def verified_capture_for_binding_test(coordinator_root, mode, **_kwargs):
+        report_filenames = {
+            "default": "phase_reports_default.json",
+            "forced_red": "phase_reports_forced_red.json",
+            "bootstrap_candidate": "phase_reports_candidate.json",
+        }
+        payload = json.loads(
+            (Path(coordinator_root) / report_filenames[mode]).read_text(encoding="utf-8")
+        )
+        return {"reports": payload["reports"]}
+
+    monkeypatch.setattr(
+        proofgate_bootstrap_verifier,
+        "verify_coordinator_evidence_capture",
+        verified_capture_for_binding_test,
+    )
+
+    def fake_admin_authority(**_kwargs):
+        return {
+            "schema": "proofgate_admin_identity_binding.v1",
+            "authority": "github_and_broker_control_planes",
+            "binding_digest": "a" * 64,
+        }
+
+    monkeypatch.setattr(
+        proofgate_bootstrap_verifier, "verify_proofgate_admin_authority", fake_admin_authority
+    )
+
+    admin_boundary = ProofgateAdminControlPlaneBoundary()
+
+    with _coordinator_run_dir(coordinator_root):
+        pos_res = verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+    assert pos_res["decisive"] is True
+    assert pos_res["evidence_kind"] == "coordinator_external_observation"
+
+    def _sync_candidate_digests():
+        binding_path = coordinator_root / "bootstrap-candidate-binding.json"
+        binding_bytes = binding_path.read_bytes()
+        binding_sha = hashlib.sha256(binding_bytes).hexdigest()
+
+        verdict_path = coordinator_root / "bootstrap-candidate-verdict.json"
+        verdict_payload = json.loads(verdict_path.read_text(encoding="utf-8"))
+        verdict_payload["binding_digest"] = binding_sha
+        verdict_bytes = json.dumps(verdict_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        verdict_path.write_bytes(verdict_bytes)
+
+        candidate_artifacts = (
+            "admin-identity-binding.json",
+            "bootstrap-candidate-binding.json",
+            "bootstrap-candidate-verdict.json",
+            "compat-candidate.junit.xml",
+            "phase_reports_candidate.json",
+        )
+        obs_payload = json.loads(
+            (coordinator_root / "bootstrap-observation.json").read_text(encoding="utf-8")
+        )
+        obs_payload["candidate_artifact_digests"] = [
+            [filename, hashlib.sha256((coordinator_root / filename).read_bytes()).hexdigest()]
+            for filename in candidate_artifacts
+        ]
+        obs = proofgate_bootstrap_verifier._bootstrap_observation_from_payload(obs_payload)
+        _write_coordinator_observation(coordinator_root, obs, "PR-B")
+
+    binding_file = coordinator_root / "bootstrap-candidate-binding.json"
+    orig_binding_bytes = binding_file.read_bytes()
+
+    # Independent Mutation 1: Stale base OID in candidate binding
+    _thaw_coordinator_root(coordinator_root)
+    binding_data1 = json.loads(binding_file.read_bytes())
+    binding_data1["base_oid"] = original_oid
+    binding_file.write_bytes((json.dumps(binding_data1, separators=(",", ":")) + "\n").encode("utf-8"))
+    _sync_candidate_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    with _coordinator_run_dir(coordinator_root), pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)base_oid|base|stale|binding",
+    ):
+        verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+
+    # Restore fixture state
+    _thaw_coordinator_root(coordinator_root)
+    binding_file.write_bytes(orig_binding_bytes)
+    _sync_candidate_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    # Independent Mutation 2: Stale candidate OID in candidate binding
+    _thaw_coordinator_root(coordinator_root)
+    binding_data2 = json.loads(binding_file.read_bytes())
+    binding_data2["base_oid"] = base_oid
+    binding_data2["candidate_oid"] = original_oid
+    binding_file.write_bytes((json.dumps(binding_data2, separators=(",", ":")) + "\n").encode("utf-8"))
+    _sync_candidate_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    with _coordinator_run_dir(coordinator_root), pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)candidate_oid|candidate|stale|binding",
+    ):
+        verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
+
+    # Restore fixture state
+    _thaw_coordinator_root(coordinator_root)
+    binding_file.write_bytes(orig_binding_bytes)
+    _sync_candidate_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    # Independent Mutation 3: Mismatched binding diff_sha256 vs candidate verdict source_digest
+    _thaw_coordinator_root(coordinator_root)
+    binding_data3 = json.loads(binding_file.read_bytes())
+    binding_data3["candidate_oid"] = candidate_oid
+    binding_data3["diff_sha256"] = "3" * 64
+    binding_file.write_bytes((json.dumps(binding_data3, separators=(",", ":")) + "\n").encode("utf-8"))
+    _sync_candidate_digests()
+    _freeze_coordinator_root(coordinator_root)
+
+    with _coordinator_run_dir(coordinator_root), pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)diff_sha256|source_digest|mismatch|binding",
+    ):
+        verify_observed_premerge_bootstrap_review_gate(
+            repo, base_oid, candidate_oid, landing_kind="PR-B", boundary=boundary, admin_boundary=admin_boundary
+        )
