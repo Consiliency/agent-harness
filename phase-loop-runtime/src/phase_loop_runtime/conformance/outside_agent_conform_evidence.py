@@ -139,39 +139,103 @@ def _parse_junit(facts: dict[str, Any], runner_manifest: dict[str, Any]) -> dict
     if facts.get("junit_path") != facts["junit_xml"]["path"] or facts.get("junit_sha256") != facts["junit_xml"]["sha256"]:
         raise ValueError("JUnit aliases disagree")
     root = element_tree.fromstring(junit_bytes)
-    suite = root if root.tag == "testsuite" else root.find("testsuite")
-    if suite is None:
-        raise ValueError("JUnit suite missing")
-    cases = suite.findall(".//testcase")
-    summary = {"tests": int(suite.attrib["tests"]), "failures": int(suite.attrib["failures"]), "skipped": int(suite.attrib["skipped"])}
+    if root.tag != "testsuites" or root.attrib.get("name") != "pytest tests":
+        raise ValueError("JUnit envelope mismatch")
+    suites = root.findall("testsuite")
+    if len(suites) != 1 or suites[0].attrib.get("name") != "pytest" or not suites[0].attrib.get("hostname") or not suites[0].attrib.get("timestamp"):
+        raise ValueError("JUnit suite envelope mismatch")
+    suite = suites[0]
+    cases = suite.findall("testcase")
+    try:
+        summary = {
+            "tests": int(suite.attrib["tests"]),
+            "errors": int(suite.attrib["errors"]),
+            "failures": int(suite.attrib["failures"]),
+            "skipped": int(suite.attrib["skipped"]),
+        }
+    except (KeyError, ValueError) as error:
+        raise ValueError("JUnit summary malformed") from error
+    if summary["tests"] != len(cases) or summary["errors"] != 0:
+        raise ValueError("JUnit global summary mismatch")
+    if min(summary.values()) < 0 or summary["failures"] + summary["skipped"] > summary["tests"]:
+        raise ValueError("JUnit global summary bounds invalid")
     expected = runner_manifest.get("activated_lifecycle")
-    if not isinstance(expected, dict) or summary != {"tests": expected.get("tests"), "failures": expected.get("failures"), "skipped": expected.get("skipped")} or summary["tests"] != len(cases):
-        raise ValueError("JUnit summary does not match the frozen lifecycle")
-    node_ids, failed_ids, outcomes = [], [], []
+    if not isinstance(expected, dict):
+        raise ValueError("frozen lifecycle missing")
+    expected_node_ids = expected.get("node_ids")
+    expected_failed_ids = expected.get("red_node_ids")
     anchors = expected.get("red_anchors", {})
+    if (
+        not isinstance(expected_node_ids, list)
+        or not all(isinstance(nodeid, str) for nodeid in expected_node_ids)
+        or len(expected_node_ids) != len(set(expected_node_ids))
+        or not isinstance(expected_failed_ids, list)
+        or not all(isinstance(nodeid, str) for nodeid in expected_failed_ids)
+        or len(expected_failed_ids) != len(set(expected_failed_ids))
+        or not set(expected_failed_ids).issubset(expected_node_ids)
+        or not isinstance(anchors, dict)
+        or set(anchors) != set(expected_failed_ids)
+        or not all(isinstance(anchor, str) and anchor for anchor in anchors.values())
+        or any(not isinstance(expected.get(name), int) or isinstance(expected.get(name), bool) for name in ("tests", "failures", "skipped"))
+        or {"tests": expected["tests"], "failures": expected["failures"], "skipped": expected["skipped"]}
+        != {"tests": len(expected_node_ids), "failures": len(expected_failed_ids), "skipped": expected["skipped"]}
+    ):
+        raise ValueError("frozen lifecycle malformed")
+    expected_node_id_set = set(expected_node_ids)
+    governed_cases: dict[str, element_tree.Element] = {}
+    failed_ids, skipped_ids, outcomes = [], [], []
+    global_failures = global_skips = 0
     for case in cases:
         failure, skipped = case.find("failure"), case.find("skipped")
-        outcomes.append({"name": case.attrib["name"], "outcome": "failed" if failure is not None else "skipped" if skipped is not None else "passed"})
-        classname = case.attrib.get("classname")
-        if classname:
-            nodeid = "phase-loop-runtime/" + classname.replace(".", "/") + ".py::" + case.attrib["name"]
-            node_ids.append(nodeid)
-            properties = {item.attrib.get("name"): item.attrib.get("value") for item in case.findall("./properties/property")}
-            if properties.get("conform_expected_node_id") != nodeid:
-                raise ValueError("JUnit node binding property missing")
+        if case.find("error") is not None or sum(item is not None for item in (failure, skipped)) > 1:
+            raise ValueError("JUnit case outcome malformed")
+        outcome = "failed" if failure is not None else "skipped" if skipped is not None else "passed"
+        global_failures += failure is not None
+        global_skips += skipped is not None
+        name = case.attrib.get("name")
+        if not name:
+            raise ValueError("JUnit case name missing")
+        classname = case.attrib.get("classname", "")
+        nodeid = "phase-loop-runtime/" + classname.replace(".", "/") + ".py::" + name if classname else None
+        tagged_properties = [item for item in case.findall("./properties/property") if item.attrib.get("name") == "conform_expected_node_id"]
+        if len(tagged_properties) > 1:
+            raise ValueError("JUnit node binding property duplicated")
+        if tagged_properties:
+            tagged_nodeid = tagged_properties[0].attrib.get("value")
+            if tagged_nodeid not in expected_node_id_set:
+                raise ValueError("JUnit node binding property unknown")
+            if nodeid != tagged_nodeid:
+                raise ValueError("JUnit node binding property spoofed")
+            if nodeid in governed_cases:
+                raise ValueError("JUnit expected case duplicated")
+            governed_cases[nodeid] = case
+            outcomes.append({"name": name, "outcome": outcome})
             if failure is not None:
                 failed_ids.append(nodeid)
-                if anchors.get(nodeid) not in ((failure.text or "") + " " + failure.attrib.get("message", "")):
-                    raise ValueError("JUnit failure anchor mismatch")
-    if node_ids != expected.get("node_ids") or set(failed_ids) != set(expected.get("red_node_ids", [])):
+            if skipped is not None:
+                skipped_ids.append(nodeid)
+        elif nodeid in expected_node_id_set:
+            raise ValueError("JUnit node binding property missing")
+        elif outcome != "skipped":
+            raise ValueError("JUnit unrelated case did not skip")
+    if global_failures != summary["failures"] or global_skips != summary["skipped"]:
+        raise ValueError("JUnit global case summary mismatch")
+    lifecycle_summary = {"tests": len(governed_cases), "failures": len(failed_ids), "skipped": len(skipped_ids)}
+    if lifecycle_summary != {"tests": expected["tests"], "failures": expected["failures"], "skipped": expected["skipped"]}:
+        raise ValueError("JUnit summary does not match the frozen lifecycle")
+    if set(governed_cases) != expected_node_id_set or set(failed_ids) != set(expected_failed_ids):
         raise ValueError("JUnit case inventory mismatch")
+    for nodeid in failed_ids:
+        failure = governed_cases[nodeid].find("failure")
+        if failure is None or anchors[nodeid] not in ((failure.text or "") + " " + failure.attrib.get("message", "")):
+            raise ValueError("JUnit failure anchor mismatch")
     raw_log = _read_verified(facts["runner_log"]["path"], facts["runner_log"]["sha256"]).decode("utf-8")
     if facts.get("runner_log_path") != facts["runner_log"]["path"] or facts.get("runner_log_sha256") != facts["runner_log"]["sha256"]:
         raise ValueError("runner log aliases disagree")
     passed = summary["tests"] - summary["failures"] - summary["skipped"]
     if f"{summary['failures']} failed, {passed} passed, {summary['skipped']} skipped," not in raw_log or any(f"FAILED {nodeid}" not in raw_log for nodeid in failed_ids):
         raise ValueError("runner log summary mismatch")
-    return {**summary, "cases": outcomes}
+    return {**lifecycle_summary, "cases": outcomes}
 
 
 def _validate_mutations(facts: dict[str, Any]) -> list[dict[str, Any]]:
