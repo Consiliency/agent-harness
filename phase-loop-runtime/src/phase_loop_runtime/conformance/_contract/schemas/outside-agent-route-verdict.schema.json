@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.consiliency/schemas/outside-agent-route-verdict.schema.json",
+  "title": "Outside-agent route verdict contract",
+  "description": "outside_agent_route_verdict.v0.1. This schema defines intake routing only. It does not grant merge acceptance, Portal projection state, or downstream authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict_schema_version",
+    "route",
+    "claim_posture",
+    "acceptance_truth_owner"
+  ],
+  "properties": {
+    "verdict_schema_version": {
+      "const": "outside_agent_route_verdict.v0.1"
+    },
+    "route": {
+      "enum": [
+        "reject",
+        "needs_clarification",
+        "roadmap_intake",
+        "review_candidate"
+      ]
+    },
+    "claim_posture": {
+      "const": "claims_only"
+    },
+    "acceptance_truth_owner": {
+      "const": "governed_pipeline"
+    },
+    "blocker": {
+      "$ref": "#/$defs/blocker"
+    },
+    "notes": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "blocker_class": {
+      "enum": [
+        "missing_information",
+        "unsafe_evidence_reference",
+        "unsupported_submission_kind",
+        "ambiguous_request",
+        "policy_gap"
+      ]
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "summary",
+        "human_required"
+      ],
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/blocker_class"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "human_required": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
