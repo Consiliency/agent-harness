@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -60,12 +62,12 @@ class CloseoutVerificationGateTest(unittest.TestCase):
             repo = Path(td)
             plan = repo / "plans/phase-plan-v1-LEGACY.md"
             plan.parent.mkdir(parents=True, exist_ok=True)
-            plan.write_text("# LEGACY\n", encoding="utf-8")
+            plan.write_text("# LEGACY\n\n## Verification\n- `python3 -c \"print('ok')\"`\n", encoding="utf-8")
 
             closeout = build_phase_loop_closeout(
                 phase_alias="LEGACY",
                 plan_path=plan,
-                terminal_summary={"terminal_status": "complete", "verification_status": "passed"},
+                terminal_summary={"terminal_status": "complete", "verification_status": "passed", "verification_evidence_opt_out": "no_executable_verification"},
                 automation={"status": "complete", "verification_status": "passed", "human_required": False},
             )
 
@@ -78,7 +80,7 @@ class CloseoutVerificationGateTest(unittest.TestCase):
             repo = Path(td)
             plan = repo / "plans/phase-plan-v1-AUDIT.md"
             plan.parent.mkdir(parents=True, exist_ok=True)
-            plan.write_text("**Interfaces provided**: IF-0-RG-1\n", encoding="utf-8")
+            plan.write_text("**Interfaces provided**: IF-0-RG-1\n\n## Verification\n- `python3 -c \"print('ok')\"`\n", encoding="utf-8")
 
             closeout = build_phase_loop_closeout(
                 phase_alias="AUDIT",
@@ -394,6 +396,250 @@ class CloseoutVerificationGateTest(unittest.TestCase):
             diag = closeout["verification"]["results"][0]["diagnostics"][0]
             self.assertTrue(diag["redacted"])
             self.assertEqual(diag["redaction_reason"], "operator_forced")
+
+    def test_proofgate_closeout_rejects_missing_or_invalid_attested_proof(self):
+        from .proofgate_bootstrap_verifier import (
+            ProofgateContractViolation,
+            assert_closeout_attestation_contract,
+            verify_external_observation,
+        )
+        from .proofgate_tdd_guard import (
+            PROOFGATE_EXPECTED_CONFIG_V1,
+            ProofgateMissingCapabilityError,
+            ProofgateObservationRequest,
+            RecordingObservationBoundary,
+            assert_frozen_authority_contract,
+            conforming_observation,
+            guard_proofgate_nodeid,
+            proofgate_invalid_acceptance_route_cases,
+            run_proofgate_contract,
+        )
+        nodeid = "phase-loop-runtime/tests/test_closeout_verification_gate.py::CloseoutVerificationGateTest::test_proofgate_closeout_rejects_missing_or_invalid_attested_proof"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            # Control A: the typed authority contracts are frozen and authority-free.
+            assert_frozen_authority_contract()
+
+            # Control B: the oracle is not vacuous — the test-owned reference verifier satisfies it.
+            assert_closeout_attestation_contract(verify_external_observation, expected=PROOFGATE_EXPECTED_CONFIG_V1)
+
+            # Control C: a marker-only closeout, whose verdict comes from caller-supplied
+            # `evidence_kind=production_external_boundary` / `decisive=True` / status labels or
+            # equivalent local receipt labels rather than from an external observation, must reject.
+            def _marker_only_closeout(request, *, expected, boundary, markers=None):
+                labels = markers or {
+                    "evidence_kind": "production_external_boundary",
+                    "decisive": True,
+                    "status": "verified",
+                }
+                if (
+                    labels.get("evidence_kind") == "production_external_boundary"
+                    and labels.get("decisive") is True
+                    and labels.get("status") == "verified"
+                ):
+                    return {
+                        "status": "verified",
+                        "decisive": True,
+                        "evidence_kind": "production_external_boundary",
+                        "observation_digest": "",
+                    }
+                return {"status": "blocked", "decisive": False}
+
+            with self.assertRaises(ProofgateContractViolation):
+                assert_closeout_attestation_contract(_marker_only_closeout, expected=PROOFGATE_EXPECTED_CONFIG_V1)
+
+            from phase_loop_runtime import closeout
+            from phase_loop_runtime.closeout import build_phase_loop_closeout
+
+            if not hasattr(closeout, "verify_proofgate_closeout_attestation"):
+                raise ProofgateMissingCapabilityError("verify_proofgate_closeout_attestation capability missing on closeout")
+
+            # Production positive: the production closeout attestation verifier is handed only the
+            # locator, the immutable expected configuration and a recording boundary.
+            assert_closeout_attestation_contract(
+                closeout.verify_proofgate_closeout_attestation,
+                expected=PROOFGATE_EXPECTED_CONFIG_V1,
+            )
+
+            with tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                plan = repo / "plans" / "phase-plan-v1-PROOFGATE.md"
+                plan.parent.mkdir(parents=True, exist_ok=True)
+                plan.write_text("# PROOFGATE\n\n## Verification\n- `python3 -c \"print('ok')\"`\n", encoding="utf-8")
+                run_dir = repo / ".phase-loop" / "runs" / "test-run"
+                # First create valid generic verification evidence so missing-artifact gate doesn't interfere
+                run_verification(repo, run_dir, [[sys.executable, "-c", "print('ok')"]], None, None, 5)
+
+                scenarios = [
+                    ("missing", None, None, None),
+                    ("stale", {"status": "stale"}, None, None),
+                    ("wrong_candidate", {"status": "wrong_candidate"}, None, None),
+                    ("wrong_external_head", {"status": "wrong_external_head"}, None, None),
+                    ("mutation_block", {"status": "mutation_block"}, None, None),
+                    *(
+                        (
+                            f"invalid_grammar_{reason}",
+                            {"status": "verified", "grammar_status": "valid"},
+                            invalid_bytes,
+                            reason,
+                        )
+                        for reason, invalid_bytes in proofgate_invalid_acceptance_route_cases()
+                    ),
+                ]
+
+                for scenario_name, proofgate_meta, invalid_bytes, expected_reason in scenarios:
+                    if invalid_bytes is None:
+                        plan.write_text(
+                            "# PROOFGATE\n\n## Verification\n- `python3 -c \"print('ok')\"`\n",
+                            encoding="utf-8",
+                        )
+                    else:
+                        plan.write_text(invalid_bytes, encoding="utf-8")
+                    automation_payload = {
+                        "status": "complete",
+                        "verification_status": "passed",
+                        "human_required": False,
+                    }
+                    if proofgate_meta is not None:
+                        automation_payload["proofgate"] = proofgate_meta
+
+                    closeout = build_phase_loop_closeout(
+                        phase_alias="PROOFGATE",
+                        plan_path=plan,
+                        terminal_summary={
+                            "terminal_status": "complete",
+                            "verification_status": "passed",
+                            "artifact_paths": {"root": str(run_dir)},
+                        },
+                        automation=automation_payload,
+                    )
+                    if not isinstance(closeout, dict) or closeout.get("terminal_status") != "blocked":
+                        raise AssertionError(
+                            f"PROOFGATE closeout missing proofgate attestation verification capability for scenario {scenario_name}"
+                        )
+                    self.assertEqual(closeout.get("terminal_status"), "blocked", f"Scenario {scenario_name} must block closeout")
+                    self.assertEqual(closeout.get("blocker", {}).get("blocker_class"), "contract_bug")
+                    self.assertFalse(closeout.get("blocker", {}).get("human_required", True))
+                    if expected_reason is not None:
+                        self.assertEqual(
+                            closeout.get("blocker", {}).get("reason"),
+                            expected_reason,
+                            "closeout must block on reparsing the invalid acceptance bytes",
+                        )
+
+                # Local JSON with internally consistent computed hashes and proofgate-app[bot] text MUST explicitly reject
+                core_obj_loc = {
+                    "schema": "proofgate_attested_core.v1",
+                    "sequence": 1,
+                    "repository": "Consiliency/agent-harness",
+                    "workflow_path": ".github/workflows/proofgate-receipt-attestation.yml",
+                    "environment": "proofgate-receipt-head-v1",
+                }
+                core_text_loc = json.dumps(core_obj_loc, sort_keys=True, separators=(",", ":"))
+                core_dig_loc = hashlib.sha256(core_text_loc.encode("utf-8")).hexdigest()
+                wf_file_loc = Path(__file__).resolve().parents[2] / ".github/workflows/proofgate-receipt-attestation.yml"
+                wf_bytes_loc = wf_file_loc.read_bytes() if wf_file_loc.exists() else b"name: proofgate"
+                wf_dig_loc = hashlib.sha1(b"blob " + str(len(wf_bytes_loc)).encode("utf-8") + b"\x00" + wf_bytes_loc).hexdigest()
+                bundle_dig_loc = hashlib.sha256((core_dig_loc + wf_dig_loc).encode("utf-8")).hexdigest()
+                head_oid_loc = hashlib.sha1(b"commit 0\x00").hexdigest()
+
+                proof_file_loc = run_dir / "proofgate_attestation_proof.json"
+                proof_file_loc.write_text(json.dumps({
+                    "status": "verified",
+                    "phase": "PROOFGATE",
+                    "verification_status": "satisfied",
+                    "repository_id": "1280382652",
+                    "sequence": 1,
+                    "external_head_oid": head_oid_loc,
+                    "workflow_sha": wf_dig_loc,
+                    "core_sha256": core_dig_loc,
+                    "bundle_sha256": bundle_dig_loc,
+                    "attestation_bundle": {
+                        "status": "verified",
+                        "signer": "proofgate-app[bot]",
+                        "repository": "Consiliency/agent-harness",
+                        "workflow_path": ".github/workflows/proofgate-receipt-attestation.yml",
+                    },
+                    "core_bytes": core_text_loc,
+                }), encoding="utf-8")
+
+                local_closeout = build_phase_loop_closeout(
+                    phase_alias="PROOFGATE",
+                    plan_path=plan,
+                    terminal_summary={
+                        "terminal_status": "complete",
+                        "verification_status": "passed",
+                        "artifact_paths": {"root": str(run_dir)},
+                    },
+                    automation={
+                        "status": "complete",
+                        "verification_status": "passed",
+                        "human_required": False,
+                        "proofgate": {"evidence_kind": "local_json", "decisive": False},
+                    },
+                )
+                self.assertEqual(local_closeout.get("terminal_status"), "blocked", "Local JSON attestation proof must explicitly reject closeout")
+
+                # Remove local json before the production positive
+                if proof_file_loc.exists():
+                    proof_file_loc.unlink()
+
+                # Production positive: `complete` closeout is reachable only through the external
+                # observation boundary. The caller supplies no receipt tree, no attestation mapping,
+                # and no `evidence_kind`/`decisive`/status/hash/identity/receipt bytes — only the
+                # locator, the immutable expected configuration and a recording boundary.
+                exp = PROOFGATE_EXPECTED_CONFIG_V1
+                head_oid_pos = hashlib.sha1(b"commit 1\x00").hexdigest()
+                pos_request = ProofgateObservationRequest(
+                    repository=exp.repository_name,
+                    ref=exp.accepted_refs[0],
+                    environment=exp.environment_name,
+                    external_head_ref=exp.external_head_ref,
+                    candidate_oid=head_oid_pos,
+                    plan_path=str(plan),
+                    sequence=1,
+                )
+                pos_boundary = RecordingObservationBoundary(
+                    conforming_observation(
+                        exp,
+                        external_head_oid=head_oid_pos,
+                        candidate_oid=head_oid_pos,
+                        plan_sha256=hashlib.sha256(plan.read_bytes()).hexdigest(),
+                    )
+                )
+
+                pos_closeout = build_phase_loop_closeout(
+                    phase_alias="PROOFGATE",
+                    plan_path=plan,
+                    terminal_summary={
+                        "terminal_status": "complete",
+                        "verification_status": "passed",
+                        "artifact_paths": {"root": str(run_dir)},
+                    },
+                    automation={
+                        "status": "complete",
+                        "verification_status": "passed",
+                        "human_required": False,
+                    },
+                    proofgate_request=pos_request,
+                    proofgate_expected=exp,
+                    proofgate_boundary=pos_boundary,
+                )
+                self.assertIsInstance(pos_closeout, dict, "closeout must return a dict for the valid scenario")
+                self.assertEqual(
+                    pos_boundary.calls, (pos_request,),
+                    "Closeout must observe the external boundary exactly once with exactly the locator",
+                )
+                self.assertEqual(
+                    pos_closeout.get("terminal_status"), "complete",
+                    "Externally observed closeout scenario must return terminal_status='complete'",
+                )
+
+        run_proofgate_contract(nodeid, _contract)
+
+
 
     def _plan(self, repo: Path) -> Path:
         plan = repo / "plans/phase-plan-v1-RG.md"

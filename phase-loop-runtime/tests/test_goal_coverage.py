@@ -79,6 +79,72 @@ class GoalCoverageTest(unittest.TestCase):
         self.assertTrue(r.is_clean())
         self.assertTrue(r.applicable)
 
+    def test_acceptance_contracts_classify_valid_invalid_and_grandfathered(self):
+        from .proofgate_tdd_guard import (
+            PROOFGATE_GRANDFATHER_CUTOFF_OID,
+            PROOFGATE_GRANDFATHER_SERVER_DATE,
+            PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+            ProofgateMissingCapabilityError,
+            guard_proofgate_nodeid,
+            proofgate_grandfather_plan_bytes,
+            run_proofgate_contract,
+        )
+        nodeid = "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoverageTest::test_acceptance_contracts_classify_valid_invalid_and_grandfathered"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            from phase_loop_runtime import goal_coverage
+
+            if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
+                raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")
+
+            # 1. Valid contract
+            contracts_valid = goal_coverage.extract_acceptance_contracts(
+                "# Plan\n\n## Acceptance Criteria\n- [ ] EC-1: Valid. Falsifier: Fails if error not raised on invalid input.\n"
+            )
+            res_valid = goal_coverage.check_acceptance_falsifiers(contracts_valid)
+            self.assertTrue(res_valid.get("valid", False))
+
+            # 2. Missing falsifier
+            contracts_missing = goal_coverage.extract_acceptance_contracts(
+                "# Plan\n\n## Acceptance Criteria\n- [ ] EC-1: Missing falsifier.\n"
+            )
+            res_missing = goal_coverage.check_acceptance_falsifiers(contracts_missing)
+            self.assertFalse(res_missing.get("valid", True))
+            self.assertEqual(res_missing.get("reason"), "missing_falsifier")
+
+            # 3. Vacuous falsifier
+            contracts_vacuous = goal_coverage.extract_acceptance_contracts(
+                "# Plan\n\n## Acceptance Criteria\n- [ ] EC-1: Vacuous. Falsifier: Fails if true.\n"
+            )
+            res_vacuous = goal_coverage.check_acceptance_falsifiers(contracts_vacuous)
+            self.assertFalse(res_vacuous.get("valid", True))
+
+            # 4. Missing path-entered control
+            contracts_no_control = goal_coverage.extract_acceptance_contracts(
+                "# Plan\n\n## Acceptance Criteria\n- [ ] EC-1: Absence claim. Falsifier: Fails if invalid key is accepted.\n"
+            )
+            res_no_control = goal_coverage.check_acceptance_falsifiers(contracts_no_control)
+            self.assertFalse(res_no_control.get("valid", True))
+
+            # 5. Exact grandfathered bytes
+            contracts_gf = goal_coverage.extract_acceptance_contracts(
+                proofgate_grandfather_plan_bytes()
+            )
+            res_gf = goal_coverage.check_acceptance_falsifiers(
+                contracts_gf,
+                cutoff_commit_oid=PROOFGATE_GRANDFATHER_CUTOFF_OID,
+                successor_commit_oid=PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+                server_attested_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
+            )
+            self.assertTrue(res_gf.get("valid", False))
+            self.assertEqual(res_gf.get("disposition"), "grandfathered")
+
+        run_proofgate_contract(nodeid, _contract)
+
+
+
     def test_dropped_goal_is_gap(self):
         r = self._cov(["EC-P1-1 — a", "EC-P1-3 — b"], ["EC-P1-1 — proven by t1"])
         self.assertTrue(r.has_gaps())

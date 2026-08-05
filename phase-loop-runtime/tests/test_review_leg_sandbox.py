@@ -242,13 +242,101 @@ def test_codex_read_only_overrides_bypass_approvals():
 
 
 def test_codex_execute_command_is_danger_full_access_and_live_repo():
-    selection = resolve_profile_for_executor(action="execute", executor="codex")
-    cmd = build_codex_command(Path("/repo"), selection, "p")
-    assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
-    # execute runs against the LIVE repo (it must write) and needs user config.
-    assert cmd[cmd.index("--cd") + 1] == "/repo"
-    assert "--ignore-user-config" not in cmd
-    assert "--skip-git-repo-check" not in cmd
+    from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+    nodeid = "phase-loop-runtime/tests/test_review_leg_sandbox.py::test_codex_execute_command_is_danger_full_access_and_live_repo"
+    if not guard_proofgate_nodeid(nodeid):
+        selection = resolve_profile_for_executor(action="execute", executor="codex")
+        cmd = build_codex_command(Path("/repo"), selection, "p")
+        assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+        assert cmd[cmd.index("--cd") + 1] == "/repo"
+        assert "--ignore-user-config" not in cmd
+        assert "--skip-git-repo-check" not in cmd
+        return
+
+    def _contract():
+        try:
+            from phase_loop_runtime import launcher
+        except ImportError as err:
+            raise ProofgateMissingCapabilityError("phase_loop_runtime.launcher module missing") from err
+        if not hasattr(launcher, "build_proofgate_executable_launch_spec") or not hasattr(launcher, "execute_proofgate_launch_spec"):
+            raise ProofgateMissingCapabilityError("Launcher missing build_proofgate_executable_launch_spec or execute_proofgate_launch_spec capabilities")
+
+        probe_script = (
+            "import os, sys, socket\n"
+            "results = {}\n"
+            "clone_dir = os.environ.get('ASSIGNED_CLONE_DIR', '.')\n"
+            "test_file = os.path.join(clone_dir, 'probe_test.tmp')\n"
+            "try:\n"
+            "    with open(test_file, 'w') as f: f.write('clone_ok')\n"
+            "    with open(test_file, 'r') as f: data = f.read()\n"
+            "    results['clone_write_read'] = (data == 'clone_ok')\n"
+            "except Exception:\n"
+            "    results['clone_write_read'] = False\n"
+            "try:\n"
+            "    with open('/root/.ssh/id_rsa', 'r') as f: f.read()\n"
+            "    results['outside_path_read_failed'] = False\n"
+            "except Exception:\n"
+            "    results['outside_path_read_failed'] = True\n"
+            "try:\n"
+            "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "    s.settimeout(0.5)\n"
+            "    s.connect(('8.8.8.8', 53))\n"
+            "    results['host_network_connection_failed'] = False\n"
+            "except Exception:\n"
+            "    results['host_network_connection_failed'] = True\n"
+            "try:\n"
+            "    os.fstat(99)\n"
+            "    results['inherited_fd_access_failed'] = False\n"
+            "except Exception:\n"
+            "    results['inherited_fd_access_failed'] = True\n"
+            "try:\n"
+            "    s2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+            "    s2.connect('/run/proofgate/unauthorized.sock')\n"
+            "    results['alternate_socket_connection_failed'] = False\n"
+            "except Exception:\n"
+            "    results['alternate_socket_connection_failed'] = True\n"
+            "print('PROBE_RESULTS:' + str(results))\n"
+        )
+
+        spec = launcher.build_proofgate_executable_launch_spec(
+            probe_cmd=["python3", "-c", probe_script],
+            action="execute",
+            executor="codex",
+        )
+        if not isinstance(spec, dict) or not spec.get("is_executable"):
+            raise AssertionError("Launcher build_proofgate_executable_launch_spec returned invalid spec")
+
+        argv = spec.get("argv", spec.get("command", []))
+        assert any("bwrap" in str(arg) for arg in argv)
+        assert "--unshare-net" in argv
+        assert "--new-session" in argv
+        assert "--die-with-parent" in argv
+
+        env = spec.get("env", {})
+        assert env.get("PYTHONNOUSERSITE") == "1"
+        assert env.get("PYTHONDONTWRITEBYTECODE") == "1"
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+        assert "GITHUB_TOKEN" not in env
+
+        mounts = spec.get("mounts", [])
+        assert any("/run/proofgate/intended-inference.sock" in str(m) for m in mounts)
+        assert any("/run/proofgate/coordinator-ipc.sock" in str(m) for m in mounts)
+
+        res = launcher.execute_proofgate_launch_spec(spec)
+        if not isinstance(res, dict) or res.get("status") != "success":
+            raise AssertionError("Launcher execute_proofgate_launch_spec failed to run executable probe")
+
+        stdout = res.get("stdout", "")
+        assert "PROBE_RESULTS:" in stdout
+        assert res.get("clone_write_read") is True
+        assert res.get("outside_path_read_failed") is True
+        assert res.get("host_network_connection_failed") is True
+        assert res.get("inherited_fd_access_failed") is True
+        assert res.get("alternate_socket_connection_failed") is True
+
+    run_proofgate_contract(nodeid, _contract)
+
+
 
 
 def test_resolve_codex_review_stage_materializes_then_cleans(tmp_path):

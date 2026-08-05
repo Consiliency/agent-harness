@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -25,14 +26,12 @@ from phase_loop_test_utils import build_fake_automation_output, commit_fixture_p
 
 import pytest
 
-# TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
-# runtime execute path, which resolves the dotfiles skill-source / profile overlay
-# (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
-# conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
+# TESTDECOUPLE SL-1 (overlay-dependent): existing tests call run_loop which resolves dotfiles.
+# Proofgate preflight test is standalone.
 
 
 class PreflightVerificationTest(unittest.TestCase):
+    @pytest.mark.dotfiles_integration
     def test_suite_command_prefers_plan_frontmatter_and_ignores_body_automation(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -67,6 +66,7 @@ class PreflightVerificationTest(unittest.TestCase):
 
             self.assertEqual(command, [sys.executable, "-c", 'print("plan")'])
 
+    @pytest.mark.dotfiles_integration
     def test_malformed_suite_command_returns_structured_finding(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -87,6 +87,7 @@ class PreflightVerificationTest(unittest.TestCase):
             self.assertIsNone(command)
             self.assertEqual(findings[0].code, "malformed_suite_command")
 
+    @pytest.mark.dotfiles_integration
     def test_dependency_manifest_change_resolves_install_and_failure_blocks_artifact(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -112,6 +113,7 @@ class PreflightVerificationTest(unittest.TestCase):
             self.assertFalse(validation.ok)
             self.assertEqual(validation.exit_summary["env_refresh"], 9)
 
+    @pytest.mark.dotfiles_integration
     def test_operational_evidence_is_recorded_but_not_executed(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -138,6 +140,7 @@ class PreflightVerificationTest(unittest.TestCase):
             self.assertEqual(payload["operational_exemptions"][0]["reason"], "evidence: operational")
             self.assertNotIn("definitely-not-executed", (run_dir / "verification.log").read_text(encoding="utf-8"))
 
+    @pytest.mark.dotfiles_integration
     def test_reducer_note_bullets_are_not_verification_commands(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -164,6 +167,7 @@ class PreflightVerificationTest(unittest.TestCase):
             self.assertEqual(len(operational), 1)
             self.assertEqual(operational[0]["command"], "definitely-not-executed-operational-command")
 
+    @pytest.mark.dotfiles_integration
     def test_execute_launch_writes_runner_verification_metadata_before_reduction(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -209,6 +213,7 @@ class PreflightVerificationTest(unittest.TestCase):
             self.assertEqual(verification["verification_exit_summary"]["commands"], [0])
             self.assertEqual(verification["verification_exit_summary"]["suite"], 0)
 
+    @pytest.mark.dotfiles_integration
     def test_hard_mode_missing_suite_blocks_before_execute_launch(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -231,6 +236,7 @@ class PreflightVerificationTest(unittest.TestCase):
             self.assertEqual(snapshot.phases["RUNNER"], "blocked")
             self.assertEqual(snapshot.blocker_class, "verification_evidence_missing")
 
+    @pytest.mark.dotfiles_integration
     def test_bogus_verification_command_is_rejected_at_intake(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
@@ -245,6 +251,199 @@ class PreflightVerificationTest(unittest.TestCase):
             findings = validate_plan_verification_commands_for_intake(repo, plan)
 
             self.assertEqual(findings[0].code, "unresolved_executable")
+
+    def test_proofgate_preflight_requires_attested_authorization_and_exact_candidate(self):
+        from .proofgate_bootstrap_verifier import (
+            ProofgateContractViolation,
+            assert_admin_preflight_authority_contract,
+            assert_preflight_intake_contract,
+            verify_external_observation,
+        )
+        from .proofgate_tdd_guard import (
+            PROOFGATE_EXPECTED_CONFIG_V1,
+            ProofgateMissingCapabilityError,
+            assert_frozen_authority_contract,
+            guard_proofgate_nodeid,
+            proofgate_invalid_acceptance_route_cases,
+            run_proofgate_contract,
+        )
+        nodeid = "phase-loop-runtime/tests/test_preflight_verification.py::PreflightVerificationTest::test_proofgate_preflight_requires_attested_authorization_and_exact_candidate"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            # Control A: the typed authority contracts are frozen. The expected configuration cannot
+            # be mutated in place, the locator carries no evidence/status/decisive/authority field,
+            # the sealed observation carries no verdict of its own, and the boundary is read-only.
+            assert_frozen_authority_contract()
+
+            # Control B: the oracle is not vacuous — the test-owned reference verifier, whose whole
+            # authority is the comparison of a sealed observation to the independently supplied
+            # expected configuration, satisfies the frozen preflight-intake contract.
+            assert_preflight_intake_contract(verify_external_observation, expected=PROOFGATE_EXPECTED_CONFIG_V1)
+
+            # Control C: a shallow local-file preflight verifier, which trusts a caller-written
+            # `proofgate_authorization.v1` file and never observes the external boundary, must reject.
+            def _shallow_local_file_preflight(request, *, expected, boundary):
+                auth_file = Path(request.plan_path).parent / "proofgate_authorization.json"
+                if not auth_file.is_file():
+                    return {"authorized": False, "decisive": False, "blocker_class": "contract_bug"}
+                data = json.loads(auth_file.read_text(encoding="utf-8"))
+                if data.get("schema") == "proofgate_authorization.v1":
+                    return {
+                        "status": "verified",
+                        "authorized": True,
+                        "decisive": True,
+                        "evidence_kind": "production_external_boundary",
+                        "observation_digest": data.get("observation_digest", ""),
+                    }
+                return {"authorized": False, "decisive": False, "blocker_class": "contract_bug"}
+
+            with self.assertRaises(ProofgateContractViolation):
+                assert_preflight_intake_contract(_shallow_local_file_preflight, expected=PROOFGATE_EXPECTED_CONFIG_V1)
+
+            # Control D: the admin verifier receives the immutable expected configuration and the
+            # observation boundary explicitly. A matching 42/42/43-plus-garbage observation and a
+            # mutable expected-configuration substitute both reject, and the GitHub CLI adapter is
+            # only constructed — it never executes a live observation in an ordinary run.
+            with tempfile.TemporaryDirectory() as td_ap:
+                run_dir = Path(td_ap) / "run_dir"
+                run_dir.mkdir(parents=True)
+                old_env = os.environ.get("PHASE_LOOP_RUN_DIR")
+                try:
+                    os.environ["PHASE_LOOP_RUN_DIR"] = str(run_dir)
+                    assert_admin_preflight_authority_contract(PROOFGATE_EXPECTED_CONFIG_V1, run_dir)
+                finally:
+                    if old_env is not None:
+                        os.environ["PHASE_LOOP_RUN_DIR"] = old_env
+                    else:
+                        os.environ.pop("PHASE_LOOP_RUN_DIR", None)
+
+            try:
+                from phase_loop_runtime import proofgate_receipts
+            except ImportError as err:
+                raise ProofgateMissingCapabilityError("proofgate_receipts module missing") from err
+
+            if not hasattr(proofgate_receipts, "verify_proofgate_preflight_intake"):
+                raise ProofgateMissingCapabilityError("verify_proofgate_preflight_intake attribute missing on proofgate_receipts")
+
+            # Production positive: the production preflight intake is handed only the locator, the
+            # immutable expected configuration and a recording boundary. It must observe exactly once
+            # with exactly that locator and derive its authority from the sealed observation alone.
+            assert_preflight_intake_contract(
+                proofgate_receipts.verify_proofgate_preflight_intake,
+                expected=PROOFGATE_EXPECTED_CONFIG_V1,
+            )
+
+            # Scenario: caller-authored local authority must never authorize preflight.
+            # The complete rich `proofgate_authorization.v1` tree — schema, satisfied status,
+            # external head/candidate/plan digests, admin prerequisites, OIDC claims, panel
+            # records, RED lifecycle and a decisive receipt — is written to disk exactly as an
+            # attacker would, and the production intake must refuse to draw authority from it
+            # through any call shape that supplies no external observation boundary.
+            with tempfile.TemporaryDirectory() as td_local:
+                r_local = make_repo(Path(td_local))
+                rm_local = r_local / "specs" / "phase-plans-v1.md"
+                pl_local = write_phase_plan(r_local, "PROOFGATE", rm_local)
+                head_oid = hashlib.sha1(b"commit 1\x00").hexdigest()
+                ext_head = r_local / ".git" / "refs" / "heads" / "proofgate-receipt-head-v1"
+                ext_head.parent.mkdir(parents=True, exist_ok=True)
+                ext_head.write_text(f"{head_oid}\n", encoding="utf-8")
+
+                exp = PROOFGATE_EXPECTED_CONFIG_V1
+                auth_file = r_local / ".phase-loop" / "proofgate_authorization.json"
+                auth_file.parent.mkdir(parents=True, exist_ok=True)
+                auth_file.write_text(json.dumps({
+                    "schema": "proofgate_authorization.v1",
+                    "authorized": True,
+                    "status": "verified",
+                    "decisive": True,
+                    "evidence_kind": "production_external_boundary",
+                    "stage": "SL0-T1",
+                    "verification_status": "satisfied",
+                    "external_head_ref": exp.external_head_ref,
+                    "external_head_oid": head_oid,
+                    "candidate_oid": head_oid,
+                    "plan_sha256": hashlib.sha256(pl_local.read_bytes()).hexdigest(),
+                    "admin_prerequisites": {
+                        "status": "satisfied",
+                        "dedicated_github_app_id": exp.dedicated_app_integration_id,
+                        "installation_id": exp.dedicated_app_installation_id,
+                        "required_reviewer_id": exp.required_reviewer_id,
+                        "broker_deployment_id": exp.broker_deployment_id,
+                        "broker_key_version": exp.broker_key_version,
+                        "broker_claim_policy_digest": exp.broker_claim_policy_digest,
+                    },
+                    "oidc_claims": {
+                        "aud": exp.oidc_audience,
+                        "repository_id": exp.repository_id,
+                        "repository_owner_id": exp.repository_owner_id,
+                        "repository": exp.repository_name,
+                        "ref": exp.accepted_refs[0],
+                        "environment": exp.environment_name,
+                        "event_name": exp.event_name,
+                        "runner_environment": exp.runner_environment,
+                        "workflow_ref": exp.workflow_ref,
+                        "workflow_path": exp.workflow_path,
+                        "workflow_sha": exp.workflow_sha256,
+                        "actor": exp.actor,
+                        "subject": exp.subject,
+                        "run_id": exp.run_id,
+                        "run_attempt": exp.run_attempt,
+                    },
+                    "panel_records": {
+                        seat: {"verdict": "AGREE", "substantive": True, "run_identity": f"run-{seat}-1"}
+                        for seat in exp.required_panel_seats
+                    },
+                    "red_lifecycle": {
+                        "mode": "forced_red",
+                        "expected_nodeids": exp.expected_nodeid_count,
+                        "passed": exp.forced_red_passed,
+                        "failed": exp.forced_red_failed,
+                    },
+                    "decisive_receipt": {"status": "verified", "sequence": 1, "external_head_oid": head_oid},
+                }), encoding="utf-8")
+
+                for call_shape, invoke in (
+                    ("repo_roadmap_plan", lambda: proofgate_receipts.verify_proofgate_preflight_intake(
+                        r_local, rm_local, pl_local)),
+                    ("repo_only", lambda: proofgate_receipts.verify_proofgate_preflight_intake(r_local)),
+                ):
+                    try:
+                        legacy_res = invoke()
+                    except Exception:
+                        continue
+                    self.assertNotIsInstance(
+                        legacy_res, bool,
+                        f"Caller-local authorization must not authorize preflight via {call_shape}",
+                    )
+                    if isinstance(legacy_res, dict):
+                        self.assertIsNot(
+                            legacy_res.get("authorized"), True,
+                            f"Caller-written local authorization tree authorized preflight via {call_shape}",
+                        )
+                        self.assertIsNot(
+                            legacy_res.get("decisive"), True,
+                            f"Caller-written local authorization tree was decisive via {call_shape}",
+                        )
+
+                for expected_reason, invalid_bytes in proofgate_invalid_acceptance_route_cases():
+                    pl_local.write_text(invalid_bytes, encoding="utf-8")
+                    for route in ("direct", "delegated", "lane"):
+                        invalid_result = proofgate_receipts.verify_proofgate_preflight_intake(
+                            r_local,
+                            rm_local,
+                            pl_local,
+                            acceptance_route=route,
+                        )
+                        self.assertIsInstance(invalid_result, dict)
+                        self.assertFalse(invalid_result.get("authorized", True), route)
+                        self.assertFalse(invalid_result.get("decisive", True), route)
+                        self.assertEqual(invalid_result.get("blocker_class"), "contract_bug", route)
+                        self.assertEqual(invalid_result.get("reason"), expected_reason, route)
+
+        run_proofgate_contract(nodeid, _contract)
+
 
 
 if __name__ == "__main__":

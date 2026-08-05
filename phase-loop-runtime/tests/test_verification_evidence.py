@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+import pytest
 
 from phase_loop_runtime.verification_evidence import (
     append_evidence_entry,
@@ -262,6 +263,267 @@ class VerificationEvidenceTest(unittest.TestCase):
             appended = json.loads(data.splitlines()[-1])
             self.assertEqual(appended["entry"], {"kind": "operator_check", "status": "passed"})
             self.assertEqual(payload["entry"]["kind"], "operator_check")
+
+    def test_proofgate_v3_unmatched_anchor_is_mutation_not_applied(self):
+        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_unmatched_anchor_is_mutation_not_applied"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            from phase_loop_runtime import verification_evidence
+            if not hasattr(verification_evidence, "apply_proofgate_mutation_anchor"):
+                raise ProofgateMissingCapabilityError("apply_proofgate_mutation_anchor attribute missing on verification_evidence")
+
+            import subprocess
+            try:
+                cand_oid = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            except Exception:
+                cand_oid = "0000000000000000000000000000000000000000"
+
+            fn = verification_evidence.apply_proofgate_mutation_anchor
+            res = fn(
+                candidate_oid=cand_oid,
+                target_path="phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                anchor="NONEXISTENT_ANCHOR_123",
+                replacement_bytes="invalid",
+            )
+            assert isinstance(res, dict)
+            assert res.get("status") == "mutation_not_applied"
+            assert res.get("candidate") == cand_oid
+            assert res.get("path") == "phase-loop-runtime/src/phase_loop_runtime/runner.py"
+            assert res.get("anchor_count") == 0
+
+        run_proofgate_contract(nodeid, _contract)
+
+    @pytest.fixture(autouse=True)
+    def _inject_record_property(self, record_property):
+        self.record_property = record_property
+
+    def test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline(self):
+        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
+        nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            from phase_loop_runtime import verification_evidence
+            if not hasattr(verification_evidence, "execute_proofgate_mutation_manifest"):
+                raise ProofgateMissingCapabilityError("execute_proofgate_mutation_manifest attribute missing on verification_evidence")
+
+            import subprocess
+            try:
+                cand_oid = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            except Exception:
+                cand_oid = "0000000000000000000000000000000000000000"
+
+            manifest_path = Path(__file__).parent / "fixtures" / "proofgate" / "v10-proofgate-mutations.json"
+            fn = verification_evidence.execute_proofgate_mutation_manifest
+            res = fn(
+                manifest_path=manifest_path,
+                candidate_oid=cand_oid,
+                parameter_id="ec-proofgate-2.mutation-application",
+            )
+            cond = (
+                isinstance(res, dict)
+                and res.get("baseline_status") == "passed"
+                and res.get("applied_replacements") == 1
+                and res.get("status") == "killed"
+                and "bindings" in res
+            )
+            if not cond:
+                emit_mutation_observable("ec-proofgate-2.mutation-application", getattr(self, "record_property", None))
+            assert cond, f"expected killed with green baseline and exact bindings, got {res}"
+
+        run_proofgate_contract(nodeid, _contract)
+
+    def test_proofgate_v3_rejects_missing_duplicate_extra_substituted_or_surviving_parameter(self):
+        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
+        nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_missing_duplicate_extra_substituted_or_surviving_parameter"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            from phase_loop_runtime import verification_evidence
+            if not hasattr(verification_evidence, "reduce_proofgate_mutation_results"):
+                raise ProofgateMissingCapabilityError("reduce_proofgate_mutation_results attribute missing on verification_evidence")
+
+            reducer = verification_evidence.reduce_proofgate_mutation_results
+
+            all_params = [
+                "ec-proofgate-0.chronology-guard",
+                "ec-proofgate-1.missing-falsifier",
+                "ec-proofgate-2.mutation-application",
+                "ec-proofgate-3.vacuous-falsifier",
+                "ec-proofgate-4.github-builder-epoch-blocked",
+                "ec-proofgate-4.routing-builder-epoch-blocked",
+                "ec-proofgate-5.parameter-coverage",
+                "ec-proofgate-6.missing-path-entered",
+                "ec-proofgate-7.grandfathering",
+            ]
+            clean_records = [{"parameter_id": p, "status": "killed"} for p in all_params]
+            res_clean = reducer(clean_records)
+            cond = (isinstance(res_clean, dict) and res_clean.get("coverage_ok") is True and res_clean.get("killed_count") == 9)
+            if not cond:
+                emit_mutation_observable("ec-proofgate-5.parameter-coverage", getattr(self, "record_property", None))
+            assert cond, f"expected coverage_ok for 9 killed parameters, got {res_clean}"
+
+            block_classes = [
+                "baseline_failed",
+                "mutation_not_applied",
+                "survived",
+                "syntax_error",
+                "import_error",
+                "collection_error",
+                "setup_error",
+                "harness_error",
+                "timeout",
+                "missing_evidence",
+                "unrelated_failure",
+                "rejection_class_mismatch",
+                "observable_mismatch",
+            ]
+            for block_cls in block_classes:
+                records = [{"parameter_id": p, "status": "killed"} for p in all_params]
+                records[0] = {"parameter_id": all_params[0], "status": block_cls}
+                res_block = reducer(records)
+                assert isinstance(res_block, dict)
+                assert res_block.get("coverage_ok") is False, f"Expected coverage_ok=False for status {block_cls}"
+
+            res_missing = reducer(clean_records[:-1])
+            assert isinstance(res_missing, dict) and res_missing.get("coverage_ok") is False
+
+            res_dup = reducer(clean_records + [clean_records[0]])
+            assert isinstance(res_dup, dict) and res_dup.get("coverage_ok") is False
+
+            res_extra = reducer(clean_records + [{"parameter_id": "unknown_p", "status": "killed"}])
+            assert isinstance(res_extra, dict) and res_extra.get("coverage_ok") is False
+
+            sub_records = list(clean_records)
+            sub_records[0] = {"parameter_id": "substituted_p", "status": "killed"}
+            res_sub = reducer(sub_records)
+            assert isinstance(res_sub, dict) and res_sub.get("coverage_ok") is False
+
+            if not hasattr(verification_evidence, "validate_verification_artifact_for_plan"):
+                raise ProofgateMissingCapabilityError("validate_verification_artifact_for_plan missing")
+
+            from unittest.mock import patch
+
+            with tempfile.TemporaryDirectory() as td:
+                artifact = Path(td) / "verification.json"
+                artifact.write_text(
+                    json.dumps({
+                        "extensions": {
+                            "phase_loop_runtime.proofgate_evidence": {
+                                "schema": "proofgate_evidence.v1",
+                                "candidate_snapshot": {},
+                                "mutations": {"parameters": clean_records},
+                                "chronology": {},
+                            }
+                        }
+                    }),
+                    encoding="utf-8",
+                )
+                base_validation = verification_evidence.VerificationArtifactValidation(
+                    ok=True,
+                    code="ok",
+                    artifact_path=str(artifact),
+                )
+                with patch.object(
+                    verification_evidence,
+                    "validate_verification_artifact",
+                    return_value=base_validation,
+                ), patch.object(
+                    verification_evidence,
+                    "reduce_proofgate_mutation_results",
+                    wraps=reducer,
+                ) as reduce_spy:
+                    verification_evidence.validate_verification_artifact_for_plan(
+                        artifact,
+                        ("phase_loop_runtime.proofgate_evidence",),
+                    )
+                called_records = None
+                if reduce_spy.call_count == 1:
+                    call = reduce_spy.call_args
+                    called_records = call.args[0] if call.args else call.kwargs.get("records")
+                cond_plan_coverage = called_records == clean_records
+                if not cond_plan_coverage:
+                    emit_mutation_observable(
+                        "ec-proofgate-5.parameter-coverage",
+                        getattr(self, "record_property", None),
+                    )
+                assert cond_plan_coverage, "plan-aware validation must reduce the exact nine-parameter table"
+
+        run_proofgate_contract(nodeid, _contract)
+
+    def test_proofgate_v3_rejects_candidate_or_command_digest_drift(self):
+        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
+        nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_candidate_or_command_digest_drift"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            from phase_loop_runtime import verification_evidence
+            if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
+                raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings attribute missing on verification_evidence")
+
+            registry_schema = verification_evidence.EXTENSION_NAMESPACE_REGISTRY.get(
+                "phase_loop_runtime.legible_evidence"
+            )
+            if registry_schema != "verification_evidence_sidecar.v1":
+                emit_mutation_observable(
+                    "ec-proofgate-2.mutation-application",
+                    getattr(self, "record_property", None),
+                )
+            assert registry_schema == "verification_evidence_sidecar.v1"
+
+            verifier = verification_evidence.verify_proofgate_mutation_bindings
+
+            valid_bindings = {
+                "candidate": "sha256:1111",
+                "candidate_tree": "sha256:2222",
+                "target_path": "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                "target_blob": "sha256:3333",
+                "argv": ["pytest", "foo.py"],
+                "command": "pytest foo.py",
+                "environment": {"PATH": "/usr/bin"},
+                "testcase": "test_foo",
+                "assertion": "assert_bar",
+                "observable": "ec-proofgate-1",
+            }
+
+            res_valid = verifier(expected_bindings=valid_bindings, actual_bindings=valid_bindings)
+            assert isinstance(res_valid, dict) and res_valid.get("valid") is True
+
+            mismatch_keys = [
+                "candidate",
+                "candidate_tree",
+                "target_path",
+                "target_blob",
+                "argv",
+                "command",
+                "environment",
+                "testcase",
+                "assertion",
+                "observable",
+            ]
+            for key in mismatch_keys:
+                mutated = dict(valid_bindings)
+                if isinstance(mutated[key], list):
+                    mutated[key] = mutated[key] + ["--extra"]
+                elif isinstance(mutated[key], dict):
+                    mutated[key] = {"PATH": "/bin"}
+                else:
+                    mutated[key] = str(mutated[key]) + "_drift"
+
+                res_mismatch = verifier(expected_bindings=valid_bindings, actual_bindings=mutated)
+                assert isinstance(res_mismatch, dict)
+                assert res_mismatch.get("valid") is False
+                assert res_mismatch.get("mismatch_key") == key
+                assert res_mismatch.get("status") == f"mismatch_{key}"
+
+        run_proofgate_contract(nodeid, _contract)
+
 
 
 class VerificationFailureDiagnosticsTest(unittest.TestCase):
