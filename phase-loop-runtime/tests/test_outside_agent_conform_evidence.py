@@ -316,9 +316,19 @@ _EC_PROBE_NODEIDS = {
         "test_outside_agent_canonical_corpus.py::test_route_verdict_requires_selected_schema_not_submission_cli",
     ),
 }
-_MUTATION_PROBE_RUNNER = textwrap.dedent(
+_MUTATION_OUTPUT_NORMALIZER_SOURCE = textwrap.dedent(
     """
-    import hashlib, io, json, os, re, shutil, subprocess, sys, tarfile
+    import re
+
+    def normalize_mutation_output(text):
+        text = re.sub(r"object at 0x[0-9a-fA-F]+", "object at <address>", text)
+        text = re.sub(r"pytest-[0-9]+", "pytest-<run>", text)
+        return re.sub(r" in [0-9.]+s", " in <duration>", text)
+    """
+)
+_MUTATION_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
+    """
+    import hashlib, io, json, os, shutil, subprocess, sys, tarfile
     from pathlib import Path
 
     def extract_tar_archive(archive, destination):
@@ -394,16 +404,13 @@ _MUTATION_PROBE_RUNNER = textwrap.dedent(
             classification = "passed"
         else:
             classification = "inconclusive"
-        def normalize(text):
-            text = re.sub(r"pytest-[0-9]+", "pytest-<run>", text)
-            return re.sub(r" in [0-9.]+s", " in <duration>", text)
         return {
             "argv": argv,
             "cwd": str(execution_root),
             "environment": environment,
             "exit_code": completed.returncode,
-            "stdout_sha256": hashlib.sha256(normalize(completed.stdout).encode("utf-8")).hexdigest(),
-            "stderr_sha256": hashlib.sha256(normalize(completed.stderr).encode("utf-8")).hexdigest(),
+            "stdout_sha256": hashlib.sha256(normalize_mutation_output(completed.stdout).encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(normalize_mutation_output(completed.stderr).encode("utf-8")).hexdigest(),
             "classification": classification,
         }, completed
 
@@ -2305,6 +2312,21 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
 def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     tmp_path, monkeypatch
 ) -> None:
+    namespace: dict[str, object] = {}
+    exec(_MUTATION_OUTPUT_NORMALIZER_SOURCE, namespace)
+    normalize = namespace["normalize_mutation_output"]
+    digest = "a1" * 32
+    rendered = (
+        "node=test_dispatch_bypass CONFORM_RED::dispatch_bypass "
+        "monkeypatch=<MonkeyPatch object at 0x7f1FeC1993c0> "
+        f"digest={digest} pytest-123 in 0.42s"
+    )
+
+    assert normalize(rendered) == (
+        "node=test_dispatch_bypass CONFORM_RED::dispatch_bypass "
+        "monkeypatch=<MonkeyPatch object at <address>> "
+        f"digest={digest} pytest-<run> in <duration>"
+    )
     assert set(CONFORM_MUTATION_DEFINITIONS) == {
         "M-CONFORM-1-RESTORE-ALLOWLIST",
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
