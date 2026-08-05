@@ -2350,6 +2350,19 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         "M-CONFORM-8-SWAP-SCHEMA",
         "M-CONFORM-8-DISPATCH-BYPASS",
     }
+    for mutation_id, expected_observable in (
+        (
+            "M-CONFORM-5-SUBMISSION-SCHEMA-BYTE",
+            "submission_schema_sha256_mismatch",
+        ),
+        (
+            "M-CONFORM-5-VERDICT-SCHEMA-BYTE",
+            "verdict_schema_sha256_mismatch",
+        ),
+    ):
+        mutation = CONFORM_MUTATION_DEFINITIONS[mutation_id]
+        assert mutation.expected_anchor == "DID NOT RAISE"
+        assert mutation.expected_observable == expected_observable
     for mutation_id, mutation in CONFORM_MUTATION_DEFINITIONS.items():
         assert mutation.source_path.startswith("phase-loop-runtime/src/")
         assert mutation.argv[1:4] == ("-m", "pytest", "-q")
