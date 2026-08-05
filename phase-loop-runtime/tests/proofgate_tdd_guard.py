@@ -7,6 +7,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -293,6 +294,7 @@ COORDINATOR_EVIDENCE_FILES: dict[str, tuple[str, str]] = {
     "proofgate-tests-only-red.junit.xml": ("proofgate-tests-only-red.phase-reports.json", "forced_red"),
     "proofgate-candidate-ordinary.junit.xml": ("proofgate-candidate-ordinary.phase-reports.json", "ordinary_hermetic"),
     "proofgate-candidate-attended.junit.xml": ("proofgate-candidate-attended.phase-reports.json", "attended_live"),
+    "compat-candidate.junit.xml": ("phase_reports_candidate.json", "bootstrap_candidate"),
 }
 
 
@@ -781,6 +783,404 @@ def assert_source_anchor(anchor_id: str) -> None:
     else:
         raise ValueError(f"Unknown anchor ID {anchor_id}")
 
+HEX_40_RE = re.compile(r"^[0-9a-f]{40}$")
+
+CANDIDATE_BINDING_FIELDS: tuple[str, ...] = (
+    "schema",
+    "original_tests_landing_oid",
+    "selector_repair_landing_oid",
+    "base_oid",
+    "candidate_oid",
+    "candidate_tree_oid",
+    "diff_sha256",
+    "path_scope_sha256",
+    "bootstrap_paths_sha256",
+    "selector_modules_sha256",
+    "selector_nodeids_sha256",
+    "changes",
+    "test_contract_sha256",
+)
+
+BOOTSTRAP_PATHS: tuple[str, ...] = (
+    ".github/workflows/proofgate-receipt-attestation.yml",
+    "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+    "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+    "phase-loop-runtime/src/phase_loop_runtime/proofgate_isolation.py",
+    "phase-loop-runtime/src/phase_loop_runtime/proofgate_receipts.py",
+)
+BOOTSTRAP_PATHS_SHA256 = "3c365db032ad94622149fde1cadcb84b45480d65d8d789387ef47de286b59c44"
+
+SELECTOR_MODULES: tuple[str, ...] = (
+    "phase-loop-runtime/tests/test_proofgate_receipts.py",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py",
+    "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py",
+    "phase-loop-runtime/tests/test_review_leg_sandbox.py",
+)
+SELECTOR_MODULES_SHA256 = "6d72046058d5b186bc50817c298f919806a09bd3826b10dec51cd000600cfe2d"
+
+BOOTSTRAP_CANDIDATE_NODEIDS: tuple[str, ...] = (
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_bootstrap_records_are_single_use_and_server_bound",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_receipt_chain_rejects_rewrite_truncation_fork_or_backfill",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_receipt_chain_rejects_wrong_workflow_signer_source_blob_subject_or_timestamp",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_implementation_authorization_requires_activation_preflight_panel_and_red_order",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py::test_runner_routes_reject_child_claims_and_missing_latest_external_head",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py::test_isolation_preflight_masks_host_sibling_receipt_logs_fds_and_credentials",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py::test_provider_projection_allows_only_selected_vendor_subscription_material",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py::test_capability_socket_rejects_privileged_unknown_replayed_or_wrong_peer_requests",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py::test_execute_and_panel_routes_use_remote_less_assigned_clone_or_refuse",
+    "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py::test_attestation_workflow_is_github_hosted_exact_subject_and_blob_bound",
+    "phase-loop-runtime/tests/test_review_leg_sandbox.py::test_codex_execute_command_is_danger_full_access_and_live_repo",
+)
+BOOTSTRAP_CANDIDATE_NODEIDS_SHA256 = "9f5ccd2d7d101f7681e1f93c5c6248502f76859f9c74df9289ecf312497c1bb7"
+ORIGINAL_TESTS_LANDING_OID = "0a17901e16269c8f11bce49383840457e1ea3772"
+
+SELECTOR_REPAIR_PATHS: tuple[str, ...] = (
+    "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+    "phase-loop-runtime/tests/proofgate_tdd_guard.py",
+    "phase-loop-runtime/tests/test_tdd_chronology.py",
+)
+SELECTOR_REPAIR_PATHS_SHA256 = "5c530d01ebb8f63edc33e457076d56549226955ee74790e6fc789a62dd6c7268"
+
+TEST_CONTRACT_FILES: tuple[str, ...] = (
+    "phase-loop-runtime/tests/proofgate_tdd_guard.py",
+    "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+    "phase-loop-runtime/tests/test_tdd_chronology.py",
+    "phase-loop-runtime/tests/test_proofgate_receipts.py",
+    "phase-loop-runtime/tests/test_proofgate_isolation.py",
+    "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py",
+    "phase-loop-runtime/tests/test_review_leg_sandbox.py",
+)
+
+
+def _parse_diff_tree_raw(base_oid: str, cand_oid: str) -> list[tuple[str, str, str, str, str, str, str]]:
+    res = subprocess.run(
+        ["git", "diff-tree", "--raw", "-r", "-z", base_oid, cand_oid],
+        capture_output=True,
+        check=True,
+    )
+    raw = res.stdout
+    if not raw:
+        return []
+    parts = raw.split(b"\x00")
+    i = 0
+    tuples = []
+    while i < len(parts):
+        chunk = parts[i].decode("utf-8", errors="replace").strip()
+        if not chunk or not chunk.startswith(":"):
+            i += 1
+            continue
+        meta = chunk[1:].split()
+        if len(meta) < 5:
+            i += 1
+            continue
+        old_mode, new_mode, old_blob, new_blob, status_str = meta[0], meta[1], meta[2], meta[3], meta[4]
+        ch_kind = status_str[0]
+        i += 1
+        if i >= len(parts):
+            break
+        path_str = parts[i].decode("utf-8", errors="replace")
+        f_sha = ""
+        if new_blob and new_blob != "0" * 40:
+            cat_p = subprocess.run(["git", "cat-file", "-p", new_blob], capture_output=True)
+            if cat_p.returncode == 0:
+                f_sha = hashlib.sha256(cat_p.stdout).hexdigest()
+        tuples.append((ch_kind, path_str, old_mode, new_mode, old_blob, new_blob, f_sha))
+        i += 1
+    return tuples
+
+
+def _cat_git_file(commit_oid: str, path_str: str) -> bytes:
+    res = subprocess.run(
+        ["git", "cat-file", "-p", f"{commit_oid}:{path_str}"],
+        capture_output=True,
+        check=True,
+    )
+    return res.stdout
+
+
+def _git_commit_parents(commit_oid: str) -> list[str]:
+    proc = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", commit_oid],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    fields = proc.stdout.strip().split()
+    if not fields or fields[0] != commit_oid:
+        raise ValueError(f"Could not resolve exact parents for {commit_oid}")
+    return fields[1:]
+
+
+def _validate_selector_repair_landing(selector_repair_landing_oid: str, err_cls: type[Exception]) -> None:
+    parents = _git_commit_parents(selector_repair_landing_oid)
+    if len(parents) != 2:
+        raise err_cls("selector_repair_landing_oid must name an exact two-parent merge")
+    base_oid, source_head_oid = parents
+
+    source_parents = _git_commit_parents(source_head_oid)
+    if len(source_parents) != 1:
+        raise err_cls("selector repair GREEN source head must have exactly one RED parent")
+    red_oid = source_parents[0]
+    if _git_commit_parents(red_oid) != [base_oid]:
+        raise err_cls("selector repair RED commit must have the landing first parent as its sole parent")
+
+    first_parent_history = subprocess.run(
+        ["git", "rev-list", "--first-parent", base_oid],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    if ORIGINAL_TESTS_LANDING_OID not in first_parent_history:
+        raise err_cls("selector repair base first-parent history does not contain original tests landing")
+
+    red_paths = subprocess.run(
+        ["git", "diff", "--name-only", "-z", base_oid, red_oid],
+        capture_output=True,
+        check=True,
+    ).stdout.rstrip(b"\x00").split(b"\x00")
+    if red_paths != [b"phase-loop-runtime/tests/test_tdd_chronology.py"]:
+        raise err_cls("selector repair RED commit changes paths outside the chronology test")
+
+    green_paths = subprocess.run(
+        ["git", "diff", "--name-only", "-z", red_oid, source_head_oid],
+        capture_output=True,
+        check=True,
+    ).stdout.rstrip(b"\x00").split(b"\x00")
+    if green_paths != [
+        b"phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+        b"phase-loop-runtime/tests/proofgate_tdd_guard.py",
+    ]:
+        raise err_cls("selector repair GREEN commit changes paths outside the guard and verifier")
+
+    source_diff = subprocess.run(
+        ["git", "diff-tree", "--raw", "-r", "-z", base_oid, source_head_oid],
+        capture_output=True,
+        check=True,
+    ).stdout
+    landing_diff = subprocess.run(
+        ["git", "diff-tree", "--raw", "-r", "-z", base_oid, selector_repair_landing_oid],
+        capture_output=True,
+        check=True,
+    ).stdout
+    if source_diff != landing_diff:
+        raise err_cls("selector repair landing diff is not byte-identical to the reviewed source diff")
+
+    landing_paths = tuple(row[1] for row in _parse_diff_tree_raw(base_oid, selector_repair_landing_oid))
+    if landing_paths != SELECTOR_REPAIR_PATHS:
+        raise err_cls("selector repair landing does not contain the exact three canonical paths")
+    paths_digest = hashlib.sha256(
+        (json.dumps(SELECTOR_REPAIR_PATHS, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
+    if paths_digest != SELECTOR_REPAIR_PATHS_SHA256:
+        raise err_cls("selector repair canonical path digest mismatch")
+
+
+def validate_candidate_binding(err_cls: type[Exception] = ValueError) -> dict[str, Any]:
+    """Full independent validation and recomputation of the candidate binding contract."""
+    expect = os.environ.get("PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE")
+    binding_str = os.environ.get("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING")
+
+    if expect != "1" and not binding_str:
+        return {}
+    if expect != "1" or not binding_str:
+        raise err_cls("Candidate mode requires both PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE=1 and PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING")
+
+    if os.environ.get("PHASE_LOOP_TDD_EXPECT_PROOFGATE") == "1":
+        raise err_cls("Candidate mode conflict: PHASE_LOOP_TDD_EXPECT_PROOFGATE is set")
+    if os.environ.get("PHASE_LOOP_PROOFGATE_ATTENDED_LIVE") == "1":
+        raise err_cls("Candidate mode conflict: PHASE_LOOP_PROOFGATE_ATTENDED_LIVE is set")
+    if proofgate_capability_version() == "proofgate.v1":
+        raise err_cls("Candidate mode conflict: final capability marker proofgate.v1 is present")
+
+    run_dir_env = os.environ.get("PHASE_LOOP_RUN_DIR")
+    if not run_dir_env or not run_dir_env.strip():
+        raise err_cls("PHASE_LOOP_RUN_DIR environment variable is missing or empty")
+
+    run_dir_raw = Path(run_dir_env.strip())
+    if not run_dir_raw.is_absolute() or not run_dir_raw.is_dir():
+        raise err_cls("PHASE_LOOP_RUN_DIR must be an existing absolute directory")
+    run_dir = run_dir_raw.resolve()
+
+    binding_raw = Path(binding_str.strip())
+    if not binding_raw.is_absolute():
+        raise err_cls("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must be an absolute path")
+    if binding_raw.is_symlink():
+        raise err_cls("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must not be a symlink")
+    if not binding_raw.is_file():
+        raise err_cls("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must be a regular file")
+
+    try:
+        lexical_relative = binding_raw.relative_to(run_dir_raw)
+    except ValueError:
+        raise err_cls("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING is not lexically under PHASE_LOOP_RUN_DIR")
+    if not lexical_relative.parts:
+        raise err_cls("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must be strictly below PHASE_LOOP_RUN_DIR")
+
+    binding_path = binding_raw.resolve()
+    try:
+        resolved_relative = binding_path.relative_to(run_dir)
+    except ValueError:
+        raise err_cls("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING is outside PHASE_LOOP_RUN_DIR")
+    if not resolved_relative.parts:
+        raise err_cls("PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must be strictly below PHASE_LOOP_RUN_DIR")
+
+    try:
+        binding_bytes = binding_path.read_bytes()
+        data = json.loads(binding_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise err_cls(f"Candidate mode binding JSON unreadable: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise err_cls("Candidate mode binding must be a JSON object")
+
+    if tuple(data.keys()) != CANDIDATE_BINDING_FIELDS:
+        raise err_cls(f"Candidate mode binding fields mismatch. Expected {CANDIDATE_BINDING_FIELDS}, got {tuple(data.keys())}")
+    if binding_bytes != (json.dumps(data, separators=(",", ":")) + "\n").encode("utf-8"):
+        raise err_cls("Candidate mode binding bytes are not canonical compact JSON plus LF")
+
+    if data["schema"] != "proofgate_bootstrap_candidate_binding.v1":
+        raise err_cls("Candidate mode binding schema mismatch")
+
+    if data["original_tests_landing_oid"] != ORIGINAL_TESTS_LANDING_OID:
+        raise err_cls("original_tests_landing_oid mismatch")
+
+    sr_oid = data["selector_repair_landing_oid"]
+    if not HEX_40_RE.match(sr_oid):
+        raise err_cls("selector_repair_landing_oid is not 40 lowercase hex")
+    try:
+        _validate_selector_repair_landing(sr_oid, err_cls)
+    except Exception as exc:
+        if isinstance(exc, err_cls):
+            raise
+        raise err_cls(f"selector repair landing validation failed: {exc}") from exc
+
+    base_oid = data["base_oid"]
+    cand_oid = data["candidate_oid"]
+    cand_tree = data["candidate_tree_oid"]
+
+    for oid_val in (base_oid, cand_oid, cand_tree):
+        if not HEX_40_RE.match(oid_val):
+            raise err_cls(f"Invalid OID in binding: {oid_val}")
+
+    try:
+        mb1 = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ORIGINAL_TESTS_LANDING_OID, sr_oid],
+            capture_output=True,
+        )
+        if mb1.returncode != 0:
+            raise err_cls(f"original_tests_landing_oid is not ancestor of selector_repair_landing_oid {sr_oid}")
+
+        mb2 = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sr_oid, base_oid],
+            capture_output=True,
+        )
+        if mb2.returncode != 0:
+            raise err_cls(f"selector_repair_landing_oid {sr_oid} is not ancestor of base_oid {base_oid}")
+    except Exception as exc:
+        if isinstance(exc, err_cls):
+            raise
+        raise err_cls(f"Git ancestry check failed: {exc}") from exc
+
+    try:
+        head_proc = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+        current_head = head_proc.stdout.strip()
+        if current_head != cand_oid:
+            raise err_cls(f"candidate_oid {cand_oid} does not match current clean HEAD {current_head}")
+
+        tree_proc = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], capture_output=True, text=True, check=True)
+        current_tree = tree_proc.stdout.strip()
+        if current_tree != cand_tree:
+            raise err_cls(f"candidate_tree_oid {cand_tree} does not match current HEAD tree {current_tree}")
+
+        candidate_parents = _git_commit_parents(cand_oid)
+        if candidate_parents != [base_oid]:
+            raise err_cls(f"candidate_oid must have exactly one parent equal to base_oid; got {candidate_parents}")
+
+        status_proc = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True)
+        if status_proc.stdout.strip():
+            raise err_cls("Worktree or index is not clean against candidate_oid")
+    except Exception as exc:
+        if isinstance(exc, err_cls):
+            raise
+        raise err_cls(f"Git HEAD/worktree validation failed: {exc}") from exc
+
+    try:
+        diff_proc = subprocess.run(
+            ["git", "diff-tree", "--raw", "-r", "-z", base_oid, cand_oid],
+            capture_output=True,
+            check=True,
+        )
+        computed_diff_sha256 = hashlib.sha256(diff_proc.stdout).hexdigest()
+        if data["diff_sha256"] != computed_diff_sha256:
+            raise err_cls(f"diff_sha256 mismatch: expected {data['diff_sha256']}, got {computed_diff_sha256}")
+    except Exception as exc:
+        if isinstance(exc, err_cls):
+            raise
+        raise err_cls(f"diff_sha256 recomputation failed: {exc}") from exc
+
+    computed_path_scope_sha256 = hashlib.sha256((json.dumps(BOOTSTRAP_PATHS, separators=(",", ":")) + "\n").encode("utf-8")).hexdigest()
+    if data["path_scope_sha256"] != BOOTSTRAP_PATHS_SHA256 or computed_path_scope_sha256 != BOOTSTRAP_PATHS_SHA256:
+        raise err_cls("path_scope_sha256 mismatch")
+
+    if data["bootstrap_paths_sha256"] != BOOTSTRAP_PATHS_SHA256:
+        raise err_cls("bootstrap_paths_sha256 mismatch")
+
+    if data["selector_modules_sha256"] != SELECTOR_MODULES_SHA256:
+        raise err_cls("selector_modules_sha256 mismatch")
+    computed_modules_sha256 = hashlib.sha256(
+        (json.dumps(SELECTOR_MODULES, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
+    if computed_modules_sha256 != SELECTOR_MODULES_SHA256:
+        raise err_cls("frozen selector module digest mismatch")
+
+    computed_nodeids_sha256 = hashlib.sha256((json.dumps(BOOTSTRAP_CANDIDATE_NODEIDS, separators=(",", ":")) + "\n").encode("utf-8")).hexdigest()
+    if data["selector_nodeids_sha256"] != BOOTSTRAP_CANDIDATE_NODEIDS_SHA256 or computed_nodeids_sha256 != BOOTSTRAP_CANDIDATE_NODEIDS_SHA256:
+        raise err_cls("selector_nodeids_sha256 mismatch")
+
+    diff_tuples = _parse_diff_tree_raw(base_oid, cand_oid)
+    if len(diff_tuples) != 5:
+        raise err_cls(f"Candidate mode changes count mismatch: expected 5, got {len(diff_tuples)}")
+
+    expected_changes = []
+    for idx, (ch_kind, path_str, old_m, new_m, old_b, new_b, f_sha) in enumerate(diff_tuples):
+        if path_str != BOOTSTRAP_PATHS[idx]:
+            raise err_cls(f"Candidate mode change path order mismatch at index {idx}: expected {BOOTSTRAP_PATHS[idx]}, got {path_str}")
+        if ch_kind in ("R", "C"):
+            raise err_cls("Rename or copy in candidate changes is forbidden")
+        expected_changes.append([ch_kind, path_str, new_m, old_b, new_b, f_sha])
+
+    if data["changes"] != expected_changes:
+        raise err_cls("changes list mismatch with git diff-tree recomputation")
+
+    test_contract_map = data["test_contract_sha256"]
+    if not isinstance(test_contract_map, dict) or tuple(test_contract_map.keys()) != TEST_CONTRACT_FILES:
+        raise err_cls("test_contract_sha256 schema mismatch")
+
+    for tf in TEST_CONTRACT_FILES:
+        sr_content = _cat_git_file(sr_oid, tf)
+        sr_sha = hashlib.sha256(sr_content).hexdigest()
+        if test_contract_map[tf] != sr_sha:
+            raise err_cls(f"test_contract_sha256 for {tf} mismatch with selector_repair_landing_oid {sr_oid}")
+
+        base_sha = hashlib.sha256(_cat_git_file(base_oid, tf)).hexdigest()
+        cand_sha = hashlib.sha256(_cat_git_file(cand_oid, tf)).hexdigest()
+        if base_sha != sr_sha or cand_sha != sr_sha:
+            raise err_cls(f"test_contract_sha256 for {tf} is not byte-equal across base/candidate/selector_repair")
+
+    return {
+        "binding_data": data,
+        "binding_bytes": binding_bytes,
+        "binding_digest": hashlib.sha256(binding_bytes).hexdigest(),
+        "source_digest": computed_diff_sha256,
+    }
+
+
+def proofgate_bootstrap_candidate_mode() -> bool:
+    """True iff binding-bound proofgate_bootstrap_candidate_mode is active."""
+    res = validate_candidate_binding(err_cls=ValueError)
+    return bool(res)
+
+
 
 def guard_proofgate_nodeid(nodeid: str) -> bool:
     """TDD lifecycle guard for a PROOFGATE nodeid.
@@ -789,6 +1189,11 @@ def guard_proofgate_nodeid(nodeid: str) -> bool:
         True if capability marker is present or forced RED mode (run candidate/substantive test),
         False if test should execute legacy/positive assertions (when inactive or positive control).
     """
+    if proofgate_bootstrap_candidate_mode():
+        if nodeid not in BOOTSTRAP_CANDIDATE_NODEIDS:
+            raise ValueError(f"Nodeid {nodeid} not admitted in candidate mode")
+        return True
+
     if not proofgate_active():
         if nodeid in DEFAULT_SKIP_NODEIDS:
             pytest.skip("PROOFGATE capability or PHASE_LOOP_TDD_EXPECT_PROOFGATE required")
@@ -826,6 +1231,16 @@ def run_proofgate_contract(nodeid: str, contract_fn) -> None:
     In forced RED mode against unchanged production, converts pre-implementation missing capability into the nodeid's typed RED failure.
     Semantic assertions (AssertionError) and ValueErrors are NOT caught.
     """
+    if proofgate_bootstrap_candidate_mode():
+        if nodeid not in BOOTSTRAP_CANDIDATE_NODEIDS:
+            raise ValueError(f"Nodeid {nodeid} not admitted in candidate mode")
+        if nodeid in RED_CASES_BY_NODEID:
+            anchor_id, _ = RED_CASES_BY_NODEID[nodeid]
+            if anchor_id not in ("PG-A-LAUNCH", "PG-A-PANEL"):
+                assert_source_anchor(anchor_id)
+        contract_fn()
+        return
+
     if proofgate_capability_version() == "proofgate.v1":
         contract_fn()
         return
@@ -846,6 +1261,7 @@ def run_proofgate_contract(nodeid: str, contract_fn) -> None:
         raise AssertionError(f"Expected ProofgateMissingCapabilityError for {nodeid}, but contract completed without raising expected missing capability exception")
 
     contract_fn()
+
 
 
 def emit_mutation_observable(param_id: str, record_property: Any) -> None:
@@ -1261,6 +1677,11 @@ class ProofgateReportingPlugin:
                             "junit_sha256": hashlib.sha256(junit_bytes).hexdigest(),
                             "pytest_args_sha256": hashlib.sha256(json.dumps(sys.argv[1:]).encode("utf-8")).hexdigest(),
                         }
+                        if _mode == "bootstrap_candidate":
+                            head_proc = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+                            payload["capture"]["mode"] = "bootstrap_candidate"
+                            payload["capture"]["candidate_oid"] = head_proc.stdout.strip()
+                            payload["capture"]["run_identity"] = "coordinator-candidate"
                         if _ATTENDED_RUNNER_ENVELOPE is not None:
                             payload["runner_envelope"] = _ATTENDED_RUNNER_ENVELOPE
 
