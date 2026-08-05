@@ -1553,6 +1553,380 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-05T07:28:05Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "proofgate_selector_repair_contract_amendment": {
+              "authority_status": "amended_digest_requires_fresh_review_before_pr_r_dispatch",
+              "bootstrap_candidate_mode": {
+                "accounting": {
+                  "collected": 11,
+                  "errors": 0,
+                  "failures": 0,
+                  "passed": 11,
+                  "skipped": 0,
+                  "tests": 11
+                },
+                "activation_env": "PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE",
+                "activation_value": "1",
+                "binding_contract": "proofgate_bootstrap_candidate_binding.v1",
+                "binding_env": "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING",
+                "binding_fields": [
+                  "schema",
+                  "original_tests_landing_oid",
+                  "selector_repair_landing_oid",
+                  "base_oid",
+                  "candidate_oid",
+                  "candidate_tree_oid",
+                  "diff_sha256",
+                  "path_scope_sha256",
+                  "bootstrap_paths_sha256",
+                  "selector_modules_sha256",
+                  "selector_nodeids_sha256",
+                  "changes",
+                  "test_contract_sha256"
+                ],
+                "binding_path_contract": "absolute_regular_non_symlink_path_strictly_under_resolved_PHASE_LOOP_RUN_DIR",
+                "bootstrap_paths": [
+                  ".github/workflows/proofgate-receipt-attestation.yml",
+                  "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                  "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                  "phase-loop-runtime/src/phase_loop_runtime/proofgate_isolation.py",
+                  "phase-loop-runtime/src/phase_loop_runtime/proofgate_receipts.py"
+                ],
+                "bootstrap_paths_count": 5,
+                "bootstrap_paths_sha256": "3c365db032ad94622149fde1cadcb84b45480d65d8d789387ef47de286b59c44",
+                "candidate_verdict": {
+                  "authorized_scope": "sl0_b1_bootstrap_candidate_only",
+                  "authorizes_final_completion": false,
+                  "authorizes_implementation": false,
+                  "evidence_bindings": [
+                    "source",
+                    "selector",
+                    "binding",
+                    "junit",
+                    "phase_reports"
+                  ],
+                  "generic_authorized_field": "forbidden",
+                  "schema": "proofgate_bootstrap_candidate_verdict.v1",
+                  "status": "verified"
+                },
+                "conflicts_fail_closed": [
+                  "PHASE_LOOP_TDD_EXPECT_PROOFGATE=1",
+                  "PHASE_LOOP_PROOFGATE_ATTENDED_LIVE=1",
+                  "phase_loop_runtime.proofgate_capability:PROOFGATE_CAPABILITY_VERSION=proofgate.v1"
+                ],
+                "direct_contract_failure_posture": "binding_import_collection_accounting_and_direct_contract_fail_closed",
+                "mode_scope": "test_owned_non_production_additive_exception",
+                "ordinary_activation_outside_candidate": "unchanged_env_or_exact_final_capability_marker",
+                "provider_sentinel_count": 4,
+                "provider_sentinel_cases": [
+                  "fable_subscription_transport_reachable",
+                  "sol_terra_subscription_transport_reachable",
+                  "gemini_subscription_transport_reachable",
+                  "grok_subscription_transport_reachable"
+                ],
+                "provider_sentinel_value": "not_executed_in_ordinary_mode",
+                "selector_modules": [
+                  "phase-loop-runtime/tests/test_proofgate_receipts.py",
+                  "phase-loop-runtime/tests/test_proofgate_isolation.py",
+                  "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py",
+                  "phase-loop-runtime/tests/test_review_leg_sandbox.py"
+                ],
+                "selector_module_file_sha256": {
+                  "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py": "82a47cd5df4dc7fe35fce4f1cf25ef56f6dd46bfd431c912b6b04c577213618c",
+                  "phase-loop-runtime/tests/test_proofgate_isolation.py": "04e3ceadbce5985e9ee3f537bfaa0bca6ee9a594b846a6b16e6e420d268761f1",
+                  "phase-loop-runtime/tests/test_proofgate_receipts.py": "0d69a53506a7723de7456a958fc3d23b5779bd96533f37542f295c88f303c0e1",
+                  "phase-loop-runtime/tests/test_review_leg_sandbox.py": "657676e2b00c4531fb86e120ebd5ed90e827842d566576c1cb0e36b0f6bb7fc9"
+                },
+                "selector_modules_count": 4,
+                "selector_modules_digest_serialization": "compact_json_exact_displayed_order_plus_lf",
+                "selector_modules_sha256": "6d72046058d5b186bc50817c298f919806a09bd3826b10dec51cd000600cfe2d",
+                "selector_nodeids": [
+                  "phase-loop-runtime/tests/test_proofgate_receipts.py::test_bootstrap_records_are_single_use_and_server_bound",
+                  "phase-loop-runtime/tests/test_proofgate_receipts.py::test_receipt_chain_rejects_rewrite_truncation_fork_or_backfill",
+                  "phase-loop-runtime/tests/test_proofgate_receipts.py::test_receipt_chain_rejects_wrong_workflow_signer_source_blob_subject_or_timestamp",
+                  "phase-loop-runtime/tests/test_proofgate_receipts.py::test_implementation_authorization_requires_activation_preflight_panel_and_red_order",
+                  "phase-loop-runtime/tests/test_proofgate_receipts.py::test_runner_routes_reject_child_claims_and_missing_latest_external_head",
+                  "phase-loop-runtime/tests/test_proofgate_isolation.py::test_isolation_preflight_masks_host_sibling_receipt_logs_fds_and_credentials",
+                  "phase-loop-runtime/tests/test_proofgate_isolation.py::test_provider_projection_allows_only_selected_vendor_subscription_material",
+                  "phase-loop-runtime/tests/test_proofgate_isolation.py::test_capability_socket_rejects_privileged_unknown_replayed_or_wrong_peer_requests",
+                  "phase-loop-runtime/tests/test_proofgate_isolation.py::test_execute_and_panel_routes_use_remote_less_assigned_clone_or_refuse",
+                  "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py::test_attestation_workflow_is_github_hosted_exact_subject_and_blob_bound",
+                  "phase-loop-runtime/tests/test_review_leg_sandbox.py::test_codex_execute_command_is_danger_full_access_and_live_repo"
+                ],
+                "selector_nodeids_count": 11,
+                "selector_nodeids_digest_serialization": "compact_json_exact_displayed_order_plus_lf",
+                "selector_nodeids_sha256": "9f5ccd2d7d101f7681e1f93c5c6248502f76859f9c74df9289ecf312497c1bb7",
+                "source_anchor_exception": "bypass_assert_source_anchor_only_for_exact_five_selected_PG_A_LAUNCH_or_PG_A_PANEL_contracts_after_binding_while_six_selected_PG_A_RUNNER_or_PG_A_WORKFLOW_contracts_execute_unchanged_frozen_anchor_checks",
+                "verifier_signature": "def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, expected_attended_stage: str | None = None, expected_attended_module_identity: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:",
+                "verifier_signature_posture": "preserve_exact_signature_bytes_body_only_mode_aware"
+              },
+              "chronology_amendment": {
+                "bootstrap_base_requirement": "fresh_fetched_target_contains_exact_PR_T_and_exact_PR_R",
+                "implementation_rematerialization": "copy_only_existing_five_candidate_bytes_into_fresh_base",
+                "landing_order": [
+                  "PR-T",
+                  "PR-R",
+                  "PR-B",
+                  "PR-I"
+                ],
+                "required_oid_fields": [
+                  "pre_phase_target_oid",
+                  "test_source_head_oid",
+                  "original_tests_landing_oid",
+                  "selector_repair_base_oid",
+                  "selector_repair_red_commit_oid",
+                  "selector_repair_source_head_oid",
+                  "selector_repair_landing_oid",
+                  "bootstrap_base_oid",
+                  "bootstrap_source_head_oid",
+                  "bootstrap_landing_oid",
+                  "implementation_base_oid",
+                  "candidate_head_oid",
+                  "implementation_landing_oid",
+                  "canonical_main_oid"
+                ],
+                "selector_repair_exception": "only_exact_reviewed_PR_R_is_admitted_after_PR_T_every_other_test_guard_verifier_chronology_fixture_selector_or_nodeid_edit_fails",
+                "test_blob_binding_stages": [
+                  "PR-T",
+                  "PR-R-base",
+                  "PR-R-RED",
+                  "PR-R-GREEN",
+                  "PR-R-landing",
+                  "PR-B",
+                  "implementation-base",
+                  "candidate",
+                  "implementation-landing",
+                  "canonical-main"
+                ]
+              },
+              "historical_blocking_evidence": {
+                "authorization_posture": "blocking_evidence_only_authorizes_nothing",
+                "complete_ratified_review_artifact_sha256": "0f7145b9cfb5ceccb2fac9097e6c2ddc99fbd00c8d87061d9c0ad6e0fb6d6382",
+                "reviewed_sol_plan_sha256": "2bbf7c51b57e0e8361391877c1f190773b24d40c60b2e6681ba404277b7be567"
+              },
+              "historic_phase_profiles": {
+                "attended_candidate": {
+                  "passed": 39,
+                  "phase_nodeids": 39
+                },
+                "attended_main": {
+                  "passed": 39,
+                  "phase_nodeids": 39
+                },
+                "default": {
+                  "passed": 3,
+                  "skipped": 36
+                },
+                "final_marker_present_ordinary": {
+                  "passed": 39,
+                  "phase_nodeids": 39
+                },
+                "forced_red": {
+                  "failed": 37,
+                  "historic_red_relabelled": false,
+                  "passed": 2
+                },
+                "phase_nodeids": 39
+              },
+              "issue": "Consiliency/agent-harness#456",
+              "mandatory_prerequisite": "plan_and_manifest_amendment_then_renewed_exact_digest_plan_gate_before_PR_R",
+              "plan_sha256": "bd7f834025cdeb4a7cae5e9d470c0a9b1431957c433a6383bb9a7dd0503b9d6e",
+              "pre_marker_pr_b_evidence_profile": {
+                "admin_prerequisite": "proofgate_protected_ref_admin_prerequisite.v1_independent_merge_blocking_agent-harness#454",
+                "consumed_by": [
+                  "repaired_test_owned_proofgate_bootstrap_verifier.py",
+                  "bootstrap_merge_review_gate.v1"
+                ],
+                "forbidden_before_SL2_T2": [
+                  "marker_present_ordinary_39_pass",
+                  "attended_live_39_pass"
+                ],
+                "required": [
+                  "default_3_pass_36_skip",
+                  "forced_red_2_pass_37_fail",
+                  "binding_bound_bootstrap_candidate_11_pass",
+                  "independent_bootstrap_security_evidence",
+                  "independent_admin_preflight",
+                  "exact_digest_reviewer_evidence"
+                ]
+              },
+              "predecessor_plan_sha256": "2121863f20a74899446efca005683b7305b2d48e87926dfc64ea77b2d04a3160",
+              "renewed_plan_gate": {
+                "blocking_posture": "every_frozen_test_chronology_activation_accounting_and_attestation_contradiction_blocks",
+                "complete_board_seats": [
+                  "grok",
+                  "gpt-5.6-sol",
+                  "gemini",
+                  "opus"
+                ],
+                "early_prober": "terra",
+                "required_before": "PR-R_dispatch",
+                "separate_president": "fable"
+              },
+              "roadmap_bytes_posture": "unchanged_no_duplicated_activation_count_or_landing_freeze",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "schema": "proofgate_selector_repair_contract_amendment.v1",
+              "selector_repair_landing": {
+                "base_oid_field": "selector_repair_base_oid",
+                "canonical_paths_digest_serialization": "compact_json_sorted_unique_plus_lf",
+                "canonical_paths_sha256": "5c530d01ebb8f63edc33e457076d56549226955ee74790e6fc789a62dd6c7268",
+                "change_tuple_fields": [
+                  "status",
+                  "path",
+                  "mode",
+                  "old_blob",
+                  "new_blob",
+                  "file_sha256"
+                ],
+                "forbidden_edits": [
+                  "production",
+                  "fixtures",
+                  "final_capability_marker",
+                  "frozen_four_selector_modules",
+                  "other_tests"
+                ],
+                "green_commit": {
+                  "allowed_paths": [
+                    "phase-loop-runtime/tests/proofgate_tdd_guard.py",
+                    "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py"
+                  ],
+                  "parent": "selector_repair_red_commit_oid"
+                },
+                "landing_name": "PR-R",
+                "landing_oid_field": "selector_repair_landing_oid",
+                "landing_ordered_parents": [
+                  "selector_repair_base_oid",
+                  "selector_repair_source_head_oid"
+                ],
+                "original_tests_landing_oid": "0a17901e16269c8f11bce49383840457e1ea3772",
+                "paths": [
+                  "phase-loop-runtime/tests/proofgate_tdd_guard.py",
+                  "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+                  "phase-loop-runtime/tests/test_tdd_chronology.py"
+                ],
+                "paths_count": 3,
+                "pr_t_file_sha256": {
+                  "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py": "4ff9abc555a47b5f9d80938c83abd8d35edabfa4c746fb0c14f5ced27fa81d20",
+                  "phase-loop-runtime/tests/proofgate_tdd_guard.py": "b16453e1b524244b357b3009bc24d577729cff85fbc66dcba4dc8f29e230f76b",
+                  "phase-loop-runtime/tests/test_tdd_chronology.py": "a4d72836ce95bad48fad73d30b099cd0b2c01c9e98da61a50262151c1bfb9c38"
+                },
+                "red_commit": {
+                  "allowed_paths": [
+                    "phase-loop-runtime/tests/test_tdd_chronology.py"
+                  ],
+                  "oid_field": "selector_repair_red_commit_oid",
+                  "parent": "selector_repair_base_oid"
+                },
+                "source_commit_count": 2,
+                "source_head_oid_field": "selector_repair_source_head_oid",
+                "topology": "server_recorded_two_parent_merge_exact_reviewed_red_then_green_head"
+              }
+            }
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-05T09:21:16Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "proofgate_admin_identity_binding_contract_amendment": {
+              "authority_source": "github_and_broker_control_planes",
+              "authority_status": "amended_digest_requires_fresh_review_before_PR_R_dispatch",
+              "binding": {
+                "authority_role": "evidence_only_never_caller_authority",
+                "digest_serialization": "canonical_compact_sorted_keys_utf8",
+                "schema": "proofgate_admin_identity_binding.v1"
+              },
+              "decisive_boundary": "fixed_read_only_ProofgateAdminControlPlaneBoundary",
+              "dynamic_assignment_fields": [
+                "dedicated_app_integration_id",
+                "dedicated_app_installation_id",
+                "environment_id",
+                "required_reviewer_id",
+                "ruleset_id"
+              ],
+              "derived_receipt_evidence_fields": [
+                "run_id",
+                "run_attempt",
+                "subject",
+                "workflow_sha256"
+              ],
+              "evaluation_partition": {
+                "admin_preflight": "admin_relations_only",
+                "receipt_and_pilot": "dynamic_receipt_and_workflow_evidence"
+              },
+              "forbidden_authority_inputs": [
+                "caller_mapping_or_file_or_signature",
+                "stdin_or_environment_or_cli_identity",
+                "process_or_executable_or_response_injection",
+                "boundary_subclass_or_wrapper",
+                "replayed_binding_or_digest_only_substitution"
+              ],
+              "governance": "terra_then_grok_sol_gemini_opus_then_fable",
+              "historical_assigned_ids": {
+                "1159201": "integration_negative_test_only_non_authoritative",
+                "6159201": "installation_negative_test_only_non_authoritative",
+                "7159201": "reviewer_negative_test_only_non_authoritative"
+              },
+              "issue": "Consiliency/agent-harness#454",
+              "plan_sha256": "eaae0407b8ed66e744820e4b4f46c5064fc658a96cf9b990515f5d52f531fea2",
+              "pr_b_paths_sha256": "3c365db032ad94622149fde1cadcb84b45480d65d8d789387ef47de286b59c44",
+              "pr_r": {
+                "issues": [
+                  "Consiliency/agent-harness#454",
+                  "Consiliency/agent-harness#456"
+                ],
+                "paths_sha256": "5c530d01ebb8f63edc33e457076d56549226955ee74790e6fc789a62dd6c7268",
+                "source_commit_count": 2,
+                "topology": "unchanged_server_recorded_two_parent_merge"
+              },
+              "pr_t_merge_oid": "0a17901e16269c8f11bce49383840457e1ea3772",
+              "pr_t_posture": "immutable",
+              "recording_boundary_posture": "test_only_nondecisive",
+              "relational_equalities": [
+                "app_owner_equals_frozen_owner",
+                "installation_app_equals_resolved_app",
+                "installation_target_equals_frozen_owner",
+                "selected_repositories_equal_frozen_repository",
+                "sole_ruleset_bypass_equals_resolved_integration_always",
+                "reviewer_id_login_equal_same_active_user",
+                "broker_targets_equal_resolved_github_and_frozen_policy"
+              ],
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "schema": "proofgate_admin_identity_binding_contract_amendment.v1",
+              "selector_amendment_predecessor_head": "632ce935e429f866300e088e528ba0f3eb8df79f",
+              "stable_selectors": {
+                "app_slug": "proofgate-app",
+                "environment_and_ref": "proofgate-receipt-head-v1",
+                "permissions": "contents_write_plus_implicit_metadata_read_only",
+                "repository_full_name": "Consiliency/agent-harness",
+                "repository_id": 1280382652,
+                "repository_owner_id": 159201120,
+                "repository_selection": "selected_exactly_one",
+                "reviewer": "exactly_one_active_User"
+              },
+              "stage_boundaries": [
+                "PR_R_code_only_no_provisioning",
+                "administrator_provisioning_after_PR_R",
+                "fresh_binding_at_PR_B_review_and_pre_merge",
+                "post_PR_B_pilot_rebinds_and_separates_reviewer_dispatcher_app_actor"
+              ],
+              "falsifier_classes": [
+                "artifact_substitution",
+                "caller_authorization",
+                "stale_ids",
+                "repo_owner_permission_or_bypass_mismatch",
+                "reviewer_mismatch",
+                "broker_self_attestation",
+                "chronology_drift"
+              ]
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1568,7 +1942,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T15:33:39Z"
+      "updated_at": "2026-08-05T09:21:16Z"
     },
     {
       "acceptance_criteria_count": null,
