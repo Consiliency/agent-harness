@@ -490,7 +490,7 @@ _MUTATION_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
     raise SystemExit(1)
     """
 )
-_EC_PROBE_RUNNER = textwrap.dedent(
+_EC_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
     """
     import hashlib, json, os, re, subprocess, sys
     from pathlib import Path
@@ -530,8 +530,8 @@ _EC_PROBE_RUNNER = textwrap.dedent(
             "cwd": str(runtime),
             "environment": environment,
             "exit_code": completed.returncode,
-            "stdout_sha256": hashlib.sha256(re.sub(r" in [0-9.]+s", " in <duration>", completed.stdout).encode("utf-8")).hexdigest(),
-            "stderr_sha256": hashlib.sha256(re.sub(r" in [0-9.]+s", " in <duration>", completed.stderr).encode("utf-8")).hexdigest(),
+            "stdout_sha256": hashlib.sha256(normalize_mutation_output(completed.stdout).encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(normalize_mutation_output(completed.stderr).encode("utf-8")).hexdigest(),
             "classification": classification,
         },
     }
