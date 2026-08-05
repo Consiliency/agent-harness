@@ -87,6 +87,7 @@ def _validate_attended_provider_receipts(
     *,
     expected_stage: str,
     expected_head: str,
+    expected_module_identity: str,
 ) -> dict[str, Any]:
     receipts = runner_envelope.get("provider_receipts")
     if not isinstance(receipts, dict) or tuple(receipts) != tuple(sorted(ATTENDED_REAL_PROVIDER_CASES)):
@@ -119,7 +120,7 @@ def _validate_attended_provider_receipts(
             receipt["schema"] != "proofgate_attended_provider_receipt.v1"
             or receipt["provider_case"] != provider_case
             or receipt["runner_stage"] != expected_stage
-            or receipt["module_identity"] != expected_attended_runner_module_identity()
+            or receipt["module_identity"] != expected_module_identity
             or receipt["head_identity"] != expected_head
             or receipt["nonce"] != runner_envelope["nonces"].get(provider_case)
             or receipt["broker_digest"] != runner_envelope["broker_digests"].get(provider_case)
@@ -1138,6 +1139,9 @@ def verify_coordinator_evidence_capture(
     if (mode == "forced_red" and exitstatus == 0) or (mode != "forced_red" and exitstatus != 0):
         raise ProofgateBootstrapVerifierError(f"coordinator capture exitstatus does not match mode: {mode}")
     if mode == "attended_live":
+        expected_module_identity = hashlib.sha256(
+            _read_coordinator_artifact(root, "proofgate-reference-code.bin")
+        ).hexdigest()
         raw_receipts = _read_coordinator_artifact(root, ATTENDED_PROVIDER_RECEIPTS_FILENAME)
         try:
             external_receipts = json.loads(raw_receipts.decode("utf-8"))
@@ -1158,6 +1162,9 @@ def verify_coordinator_evidence_capture(
         runner_envelope=payload.get("runner_envelope"),
         expected_attended_head_identity=expected_candidate_oid,
         expected_attended_stage=expected_attended_stage,
+        expected_attended_module_identity=(
+            expected_module_identity if mode == "attended_live" else None
+        ),
     )
     return {**accounting, "reports": payload["reports"], "runner_envelope": payload.get("runner_envelope")}
 
@@ -1179,6 +1186,7 @@ def _validate_observed_control_artifact(
     filename: str,
     raw: bytes,
     candidate_oid: str,
+    expected_module_identity: str,
 ) -> None:
     """Validate case-level coordinator probes and their bound raw/component bytes."""
     try:
@@ -1248,6 +1256,10 @@ def _validate_observed_control_artifact(
             raise ProofgateBootstrapVerifierError(
                 f"control artifact {filename} {component} digest mismatch"
             )
+    if components["code"]["sha256"] != expected_module_identity:
+        raise ProofgateBootstrapVerifierError(
+            f"control artifact {filename} code identity does not match attended runner"
+        )
 
     cases = control["cases"]
     if not isinstance(cases, list):
@@ -1507,12 +1519,16 @@ def verify_observed_premerge_bootstrap_review_gate(
     observed_control_digests = dict(observation.control_artifact_digests)
     if len(observation.control_artifact_digests) != len(actual_control_digests) or set(observed_control_digests) != set(actual_control_digests) or observed_control_digests != actual_control_digests:
         raise ProofgateBootstrapVerifierError("coordinator observation control artifact digest mismatch")
+    expected_module_identity = hashlib.sha256(
+        _read_coordinator_artifact(coordinator_root, "proofgate-reference-code.bin")
+    ).hexdigest()
     for filename in BOOTSTRAP_CONTROL_ARTIFACTS:
         _validate_observed_control_artifact(
             coordinator_root,
             filename,
             _read_coordinator_artifact(coordinator_root, filename),
             candidate_oid,
+            expected_module_identity,
         )
 
     observed_seats = _decode_observed_object("seat_records", observation.seat_records_json)
@@ -1634,7 +1650,7 @@ def verify_landed_bootstrap_source_binding(
     return premerge_res
 
 
-def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, expected_attended_stage: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:
+def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, expected_attended_stage: str | None = None, expected_attended_module_identity: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:
     """Validates pytest JUnit XML and typed phase reports for expected PROOFGATE nodeid and mode accounting.
 
     Modes:
@@ -1812,8 +1828,15 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
             )
         if expected_attended_stage is not None and runner_stage != expected_attended_stage:
             raise ProofgateBootstrapVerifierError("Attended live runner_stage is not stage-bound")
-        if runner_envelope.get("module_identity") != expected_attended_runner_module_identity():
-            raise ProofgateBootstrapVerifierError("Attended live module_identity is not guard-byte-bound")
+        expected_module_identity = (
+            expected_attended_module_identity
+            if expected_attended_module_identity is not None
+            else expected_attended_runner_module_identity()
+        )
+        if runner_envelope.get("module_identity") != expected_module_identity:
+            raise ProofgateBootstrapVerifierError(
+                "attended runner identity does not match coordinator code bytes"
+            )
         if (
             not expected_attended_head_identity
             or not HEX_40_RE.match(expected_attended_head_identity)
@@ -1824,6 +1847,7 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
             runner_envelope,
             expected_stage=runner_stage,
             expected_head=expected_attended_head_identity,
+            expected_module_identity=expected_module_identity,
         )
 
         desig_props = properties_by_testcase.get(designated_provider_nodeid, {})

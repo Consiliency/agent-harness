@@ -794,6 +794,48 @@ def test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landi
                         boundary=CoordinatorBootstrapMergeObservationBoundary(control_root),
                     )
 
+            # Recomputing every component/control/observation digest cannot make
+            # different coordinator reference code match the attended runner identity.
+            _code_tmp = tempfile.TemporaryDirectory()
+            code_root = Path(_code_tmp.name)
+            shutil.copytree(coordinator_root, code_root, dirs_exist_ok=True)
+            _thaw_coordinator_root(code_root)
+            changed_code = b"attacker-controlled-proofgate-reference-runner"
+            (code_root / "proofgate-reference-code.bin").write_bytes(changed_code)
+            changed_code_digest = hashlib.sha256(changed_code).hexdigest()
+            for control_filename, _digest in observation.control_artifact_digests:
+                control_path = code_root / control_filename
+                control_payload = json.loads(control_path.read_text(encoding="utf-8"))
+                control_payload["components"]["code"]["sha256"] = changed_code_digest
+                control_path.write_text(
+                    json.dumps(control_payload, sort_keys=True, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+            changed_control_digests = tuple(
+                (
+                    artifact_name,
+                    hashlib.sha256((code_root / artifact_name).read_bytes()).hexdigest(),
+                )
+                for artifact_name, _digest in observation.control_artifact_digests
+            )
+            changed_observation = dataclasses.replace(
+                observation,
+                control_artifact_digests=changed_control_digests,
+            )
+            _write_coordinator_observation(code_root, changed_observation, "PR-T")
+            _freeze_coordinator_root(code_root)
+            with _coordinator_run_dir(code_root), pytest.raises(
+                ProofgateBootstrapVerifierError,
+                match="attended runner identity does not match coordinator code bytes",
+            ):
+                verify_observed_premerge_bootstrap_review_gate(
+                    repo,
+                    base_oid,
+                    cand_t_oid,
+                    landing_kind="PR-T",
+                    boundary=CoordinatorBootstrapMergeObservationBoundary(code_root),
+                )
+
         # Land PR-T via a real two-parent merge only after its pre-merge gate succeeds.
         subprocess.run(["git", "checkout", "main"], cwd=repo, capture_output=True, check=True)
         subprocess.run(["git", "merge", "--no-ff", "proofgate-pr-t", "-m", "Merge PR-T"], cwd=repo, capture_output=True, check=True)
