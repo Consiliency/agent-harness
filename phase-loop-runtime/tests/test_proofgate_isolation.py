@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -239,7 +240,19 @@ def test_provider_projection_allows_only_selected_vendor_subscription_material(r
                 "nonces",
                 "broker_digests",
                 "profile_digests",
+                "provider_receipts",
+                "provider_receipts_sha256",
             }
+            provider_receipts = runner_envelope["provider_receipts"]
+            assert isinstance(provider_receipts, dict)
+            assert set(provider_receipts) == set(ATTENDED_REAL_PROVIDER_CASES)
+            assert runner_envelope["provider_receipts_sha256"] == hashlib.sha256(
+                json.dumps(
+                    provider_receipts,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
             supervisor = proofgate_isolation.AttendedProviderSupervisor()
             turn_results = supervisor.execute_attended_turn_matrix()
             assert isinstance(turn_results, dict)
@@ -248,6 +261,18 @@ def test_provider_projection_allows_only_selected_vendor_subscription_material(r
 
             for prov_case in ATTENDED_REAL_PROVIDER_CASES:
                 record = turn_results["records"][prov_case]
+                receipt = provider_receipts[prov_case]
+                assert receipt.get("schema") == "proofgate_attended_provider_receipt.v1"
+                assert receipt.get("provider_case") == prov_case
+                assert receipt.get("subscription_transport_observed") is True
+                assert receipt.get("process_start_token")
+                for digest_field in (
+                    "first_party_executable_sha256",
+                    "protocol_sha256",
+                    "request_transcript_sha256",
+                    "response_transcript_sha256",
+                ):
+                    assert len(receipt.get(digest_field, "")) == 64
                 assert record.get("request_count", 0) >= 2
                 assert record.get("turn_count", 0) >= 2
                 assert record.get("tool_round_trip_count", 0) >= 1

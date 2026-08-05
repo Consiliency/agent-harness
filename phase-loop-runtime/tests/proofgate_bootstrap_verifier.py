@@ -21,6 +21,7 @@ try:
         DEFAULT_SKIP_NODEIDS,
         EXPECTED_PHASE_NODEIDS,
         PROOFGATE_EXPECTED_CONFIG_V1_CANONICAL_SHA256,
+        PROOFGATE_LITERAL_CASE_IDS,
         PROOFGATE_OBSERVATION_SCHEMA,
         RED_CASES_BY_NODEID,
         ProofgateExpectedConfig,
@@ -43,6 +44,7 @@ except ImportError:
         DEFAULT_SKIP_NODEIDS,
         EXPECTED_PHASE_NODEIDS,
         PROOFGATE_EXPECTED_CONFIG_V1_CANONICAL_SHA256,
+        PROOFGATE_LITERAL_CASE_IDS,
         PROOFGATE_OBSERVATION_SCHEMA,
         RED_CASES_BY_NODEID,
         ProofgateExpectedConfig,
@@ -72,6 +74,76 @@ HEX_64_RE = re.compile(r"^[0-9a-f]{64}$")
 def expected_attended_runner_module_identity() -> str:
     guard_path = Path(__file__).with_name("proofgate_tdd_guard.py")
     return hashlib.sha256(guard_path.read_bytes()).hexdigest()
+
+
+def attended_provider_receipts_digest(receipts: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(receipts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_attended_provider_receipts(
+    runner_envelope: dict[str, Any],
+    *,
+    expected_stage: str,
+    expected_head: str,
+) -> dict[str, Any]:
+    receipts = runner_envelope.get("provider_receipts")
+    if not isinstance(receipts, dict) or tuple(receipts) != tuple(sorted(ATTENDED_REAL_PROVIDER_CASES)):
+        raise ProofgateBootstrapVerifierError("Attended provider receipt inventory mismatch")
+    if runner_envelope.get("provider_receipts_sha256") != attended_provider_receipts_digest(receipts):
+        raise ProofgateBootstrapVerifierError("Attended provider receipt digest mismatch")
+    required = {
+        "broker_digest",
+        "first_party_executable_sha256",
+        "head_identity",
+        "module_identity",
+        "nonce",
+        "process_start_token",
+        "profile_digest",
+        "protocol_sha256",
+        "provider_case",
+        "request_transcript_sha256",
+        "response_transcript_sha256",
+        "runner_stage",
+        "schema",
+        "subscription_transport_observed",
+    }
+    for provider_case in sorted(ATTENDED_REAL_PROVIDER_CASES):
+        receipt = receipts[provider_case]
+        if not isinstance(receipt, dict) or set(receipt) != required:
+            raise ProofgateBootstrapVerifierError(
+                f"Attended provider receipt schema mismatch: {provider_case}"
+            )
+        if (
+            receipt["schema"] != "proofgate_attended_provider_receipt.v1"
+            or receipt["provider_case"] != provider_case
+            or receipt["runner_stage"] != expected_stage
+            or receipt["module_identity"] != expected_attended_runner_module_identity()
+            or receipt["head_identity"] != expected_head
+            or receipt["nonce"] != runner_envelope["nonces"].get(provider_case)
+            or receipt["broker_digest"] != runner_envelope["broker_digests"].get(provider_case)
+            or receipt["profile_digest"] != runner_envelope["profile_digests"].get(provider_case)
+            or receipt["subscription_transport_observed"] is not True
+            or not isinstance(receipt["process_start_token"], str)
+            or not receipt["process_start_token"]
+        ):
+            raise ProofgateBootstrapVerifierError(
+                f"Attended provider receipt identity mismatch: {provider_case}"
+            )
+        for digest_field in (
+            "first_party_executable_sha256",
+            "protocol_sha256",
+            "request_transcript_sha256",
+            "response_transcript_sha256",
+        ):
+            if not isinstance(receipt[digest_field], str) or not HEX_64_RE.match(
+                receipt[digest_field]
+            ):
+                raise ProofgateBootstrapVerifierError(
+                    f"Attended provider receipt lacks {digest_field}: {provider_case}"
+                )
+    return receipts
 
 AUTHOR_VENDOR = "gemini"
 AUTHOR_MODEL = "gemini-3.6-flash"
@@ -183,6 +255,99 @@ BOOTSTRAP_CONTROL_ARTIFACTS: tuple[str, ...] = (
     "ctrl_misuse.log",
     "ctrl_control.log",
     "ctrl_positive_canary.log",
+)
+ATTENDED_PROVIDER_RECEIPTS_FILENAME = "proofgate-attended-provider-receipts.json"
+BOOTSTRAP_CONTROL_COMPONENTS: tuple[str, ...] = (
+    "code",
+    "policy",
+    "profile",
+    "protocol",
+)
+BOOTSTRAP_LIVE_REACHABILITY_CASES = frozenset(
+    {
+        *ATTENDED_REAL_PROVIDER_CASES,
+        "child_multi_turn_local_tool_loop_reachable",
+        "mandatory_provider_real_inference_reachable",
+        "safe_intended_inference_and_import_succeeds",
+    }
+)
+BOOTSTRAP_ZERO_EFFECT_CASES = frozenset(
+    case_id
+    for case_id in PROOFGATE_LITERAL_CASE_IDS
+    if any(
+        token in case_id
+        for token in (
+            "rejected",
+            "refused",
+            "cannot_",
+            "absent",
+            "hostile_",
+            "misuse",
+            "exfiltration",
+            "wrong_",
+            "unsupported_",
+            "redirect",
+            "refresh",
+            "set_cookie",
+            "rotated_token",
+            "auth_challenge",
+        )
+    )
+)
+
+
+def _control_artifact_name(case_id: str) -> str:
+    if case_id in BOOTSTRAP_LIVE_REACHABILITY_CASES:
+        return "ctrl_positive_canary.log"
+    if any(token in case_id for token in ("taint", "credential_transform", "live_secret")):
+        return "ctrl_taint.log"
+    if any(
+        token in case_id
+        for token in (
+            "external_head",
+            "acceptance_",
+            "check_p_",
+            "required_before_",
+            "response_rejected",
+            "unsupported_control_metadata",
+        )
+    ):
+        return "ctrl_control.log"
+    if any(
+        token in case_id
+        for token in (
+            "credential_argv",
+            "credential_env",
+            "credential_fd",
+            "credential_mount",
+            "credentialless_",
+            "semantic_namespaces",
+            "owner_cannot_read",
+            "session_owner",
+            "subscription_state",
+            "subscription_transport_broker",
+            "provider_adapter",
+            "trusted_parent",
+        )
+    ):
+        return "ctrl_isolation.log"
+    return "ctrl_misuse.log"
+
+
+BOOTSTRAP_CONTROL_CASES: dict[str, tuple[str, ...]] = {
+    filename: tuple(
+        case_id
+        for case_id in PROOFGATE_LITERAL_CASE_IDS
+        if _control_artifact_name(case_id) == filename
+    )
+    for filename in BOOTSTRAP_CONTROL_ARTIFACTS
+}
+assert all(BOOTSTRAP_CONTROL_CASES.values())
+assert set().union(*(set(values) for values in BOOTSTRAP_CONTROL_CASES.values())) == set(
+    PROOFGATE_LITERAL_CASE_IDS
+)
+assert sum(len(values) for values in BOOTSTRAP_CONTROL_CASES.values()) == len(
+    PROOFGATE_LITERAL_CASE_IDS
 )
 
 
@@ -930,6 +1095,7 @@ def verify_coordinator_evidence_capture(
     mode: str,
     *,
     expected_candidate_oid: str | None = None,
+    expected_attended_stage: str | None = None,
 ) -> dict[str, Any]:
     """Verify a plan-named JUnit plus the reporting-plugin phase report as one capture.
 
@@ -971,12 +1137,27 @@ def verify_coordinator_evidence_capture(
         raise ProofgateBootstrapVerifierError(f"coordinator capture exitstatus is invalid: {mode}")
     if (mode == "forced_red" and exitstatus == 0) or (mode != "forced_red" and exitstatus != 0):
         raise ProofgateBootstrapVerifierError(f"coordinator capture exitstatus does not match mode: {mode}")
+    if mode == "attended_live":
+        raw_receipts = _read_coordinator_artifact(root, ATTENDED_PROVIDER_RECEIPTS_FILENAME)
+        try:
+            external_receipts = json.loads(raw_receipts.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProofgateBootstrapVerifierError("external attended provider receipts are invalid") from exc
+        if (
+            json.dumps(external_receipts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            != raw_receipts
+            or external_receipts != payload.get("runner_envelope", {}).get("provider_receipts")
+        ):
+            raise ProofgateBootstrapVerifierError(
+                "attended provider receipts do not match coordinator-owned bytes"
+            )
     accounting = verify_junit_accounting(
         junit_bytes.decode("utf-8"),
         mode,
         phase_reports=payload["reports"],
         runner_envelope=payload.get("runner_envelope"),
         expected_attended_head_identity=expected_candidate_oid,
+        expected_attended_stage=expected_attended_stage,
     )
     return {**accounting, "reports": payload["reports"], "runner_envelope": payload.get("runner_envelope")}
 
@@ -993,21 +1174,166 @@ def _decode_observed_object(name: str, value: str) -> dict[str, Any]:
     return decoded
 
 
-def _validate_observed_control_artifact(filename: str, raw: bytes, candidate_oid: str) -> None:
-    """Controls are opaque evidence except for their fixed identity and clean result."""
+def _validate_observed_control_artifact(
+    coordinator_root: Path,
+    filename: str,
+    raw: bytes,
+    candidate_oid: str,
+) -> None:
+    """Validate case-level coordinator probes and their bound raw/component bytes."""
     try:
         control = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProofgateBootstrapVerifierError(f"control artifact {filename} is not valid JSON") from exc
-    if not isinstance(control, dict) or set(control) != {"candidate_oid", "control", "schema", "status"}:
+    if json.dumps(control, sort_keys=True, separators=(",", ":")).encode("utf-8") != raw:
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} is not canonical JSON")
+    required = {
+        "candidate_oid",
+        "case_matrix_sha256",
+        "cases",
+        "components",
+        "control",
+        "producer",
+        "raw_probe_log",
+        "schema",
+    }
+    if not isinstance(control, dict) or set(control) != required:
         raise ProofgateBootstrapVerifierError(f"control artifact {filename} has an invalid schema")
-    if control != {
-        "schema": "proofgate_control_artifact.v1",
-        "control": filename,
-        "candidate_oid": candidate_oid,
-        "status": "passed",
-    }:
-        raise ProofgateBootstrapVerifierError(f"control artifact {filename} is not a clean candidate-bound control")
+    if (
+        control["schema"] != "proofgate_control_artifact.v2"
+        or control["control"] != filename
+        or control["candidate_oid"] != candidate_oid
+        or control["producer"] != "proofgate-coordinator-reference"
+    ):
+        raise ProofgateBootstrapVerifierError(
+            f"control artifact {filename} is not candidate/coordinator bound"
+        )
+
+    raw_binding = control["raw_probe_log"]
+    expected_raw_path = f"{filename}.raw"
+    if not isinstance(raw_binding, dict) or set(raw_binding) != {"path", "sha256"}:
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} raw-log binding is invalid")
+    if raw_binding.get("path") != expected_raw_path:
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} raw-log path drifted")
+    raw_probe_bytes = _read_coordinator_artifact(coordinator_root, expected_raw_path)
+    if raw_binding.get("sha256") != hashlib.sha256(raw_probe_bytes).hexdigest():
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} raw-log digest mismatch")
+    try:
+        raw_observations = json.loads(raw_probe_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProofgateBootstrapVerifierError(
+            f"control artifact {filename} raw-log content is invalid"
+        ) from exc
+    if (
+        not isinstance(raw_observations, dict)
+        or json.dumps(raw_observations, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        != raw_probe_bytes
+    ):
+        raise ProofgateBootstrapVerifierError(
+            f"control artifact {filename} raw-log content is not canonical"
+        )
+
+    components = control["components"]
+    if not isinstance(components, dict) or set(components) != set(BOOTSTRAP_CONTROL_COMPONENTS):
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} component provenance is invalid")
+    for component in BOOTSTRAP_CONTROL_COMPONENTS:
+        binding = components[component]
+        expected_path = f"proofgate-reference-{component}.bin"
+        if not isinstance(binding, dict) or binding.get("path") != expected_path or set(binding) != {"path", "sha256"}:
+            raise ProofgateBootstrapVerifierError(
+                f"control artifact {filename} {component} provenance is invalid"
+            )
+        component_bytes = _read_coordinator_artifact(coordinator_root, expected_path)
+        if binding["sha256"] != hashlib.sha256(component_bytes).hexdigest():
+            raise ProofgateBootstrapVerifierError(
+                f"control artifact {filename} {component} digest mismatch"
+            )
+
+    cases = control["cases"]
+    if not isinstance(cases, list):
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} case matrix is invalid")
+    if control["case_matrix_sha256"] != hashlib.sha256(
+        json.dumps(cases, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest():
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} case-matrix digest mismatch")
+    expected_case_ids = BOOTSTRAP_CONTROL_CASES[filename]
+    if tuple(record.get("case_id") for record in cases if isinstance(record, dict)) != expected_case_ids:
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} case inventory mismatch")
+    if tuple(raw_observations) != expected_case_ids or any(
+        not isinstance(value, str) or not value for value in raw_observations.values()
+    ):
+        raise ProofgateBootstrapVerifierError(f"control artifact {filename} raw observation inventory mismatch")
+    counter_fields = {
+        "connect",
+        "dns",
+        "downstream_bytes",
+        "followup_requests",
+        "http",
+        "provider_trap",
+        "request_count",
+        "session_mutations",
+        "tls",
+        "tool_round_trip_count",
+        "turn_count",
+    }
+    for record in cases:
+        if not isinstance(record, dict) or set(record) != {
+            "case_id",
+            "counters",
+            "expected_outcome",
+            "observed_outcome",
+            "path_entered",
+            "raw_observation_sha256",
+        }:
+            raise ProofgateBootstrapVerifierError(f"control artifact {filename} contains a malformed case")
+        case_id = record["case_id"]
+        counters = record["counters"]
+        if record["path_entered"] is not True:
+            raise ProofgateBootstrapVerifierError(f"control artifact {filename} did not enter {case_id}")
+        if not isinstance(record["raw_observation_sha256"], str) or not HEX_64_RE.match(
+            record["raw_observation_sha256"]
+        ):
+            raise ProofgateBootstrapVerifierError(f"control artifact {filename} lacks raw observation for {case_id}")
+        if record["raw_observation_sha256"] != hashlib.sha256(
+            raw_observations[case_id].encode("utf-8")
+        ).hexdigest():
+            raise ProofgateBootstrapVerifierError(
+                f"control artifact {filename} raw observation digest mismatch for {case_id}"
+            )
+        if not isinstance(counters, dict) or set(counters) != counter_fields or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in counters.values()
+        ):
+            raise ProofgateBootstrapVerifierError(f"control artifact {filename} counters are invalid for {case_id}")
+        if case_id in BOOTSTRAP_LIVE_REACHABILITY_CASES:
+            if record["expected_outcome"] != "reachable" or record["observed_outcome"] != "reachable":
+                raise ProofgateBootstrapVerifierError(f"control artifact {filename} positive canary failed: {case_id}")
+            if (
+                counters["request_count"] < 2
+                or counters["turn_count"] < 2
+                or counters["tool_round_trip_count"] < 1
+                or counters["downstream_bytes"] < 1
+                or counters["provider_trap"] != 0
+                or counters["session_mutations"] != 0
+                or counters["followup_requests"] != 0
+            ):
+                raise ProofgateBootstrapVerifierError(
+                    f"control artifact {filename} positive counters are invalid: {case_id}"
+                )
+        elif case_id in BOOTSTRAP_ZERO_EFFECT_CASES:
+            if record["expected_outcome"] != "denied" or record["observed_outcome"] != "denied":
+                raise ProofgateBootstrapVerifierError(f"control artifact {filename} denial failed: {case_id}")
+            if any(counters.values()):
+                raise ProofgateBootstrapVerifierError(
+                    f"control artifact {filename} denial produced an effect: {case_id}"
+                )
+        else:
+            if record["expected_outcome"] != "verified" or record["observed_outcome"] != "verified":
+                raise ProofgateBootstrapVerifierError(f"control artifact {filename} invariant failed: {case_id}")
+            if any(counters.values()):
+                raise ProofgateBootstrapVerifierError(
+                    f"control artifact {filename} invariant counters drifted: {case_id}"
+                )
 
 
 def verify_observed_premerge_bootstrap_review_gate(
@@ -1169,6 +1495,7 @@ def verify_observed_premerge_bootstrap_review_gate(
             coordinator_root,
             mode,
             expected_candidate_oid=candidate_oid,
+            expected_attended_stage="candidate" if mode == "attended_live" else None,
         )
         if capture["reports"] != report_payload["reports"] or capture.get("runner_envelope") != report_payload.get("runner_envelope"):
             raise ProofgateBootstrapVerifierError(f"coordinator capture reports do not match observed reports: {mode}")
@@ -1181,7 +1508,12 @@ def verify_observed_premerge_bootstrap_review_gate(
     if len(observation.control_artifact_digests) != len(actual_control_digests) or set(observed_control_digests) != set(actual_control_digests) or observed_control_digests != actual_control_digests:
         raise ProofgateBootstrapVerifierError("coordinator observation control artifact digest mismatch")
     for filename in BOOTSTRAP_CONTROL_ARTIFACTS:
-        _validate_observed_control_artifact(filename, _read_coordinator_artifact(coordinator_root, filename), candidate_oid)
+        _validate_observed_control_artifact(
+            coordinator_root,
+            filename,
+            _read_coordinator_artifact(coordinator_root, filename),
+            candidate_oid,
+        )
 
     observed_seats = _decode_observed_object("seat_records", observation.seat_records_json)
     actual_seat_digests: dict[str, str] = {}
@@ -1302,7 +1634,7 @@ def verify_landed_bootstrap_source_binding(
     return premerge_res
 
 
-def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:
+def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, expected_attended_stage: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:
     """Validates pytest JUnit XML and typed phase reports for expected PROOFGATE nodeid and mode accounting.
 
     Modes:
@@ -1473,8 +1805,13 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
 
         if not runner_envelope or not isinstance(runner_envelope, dict):
             raise ProofgateBootstrapVerifierError("Attended live mode requires a valid external runner_envelope")
-        if runner_envelope.get("runner_stage") != "candidate":
-            raise ProofgateBootstrapVerifierError("Attended live runner_stage must be candidate")
+        runner_stage = runner_envelope.get("runner_stage")
+        if runner_stage not in {"candidate", "canonical-main"}:
+            raise ProofgateBootstrapVerifierError(
+                "Attended live runner_stage must be candidate or canonical-main"
+            )
+        if expected_attended_stage is not None and runner_stage != expected_attended_stage:
+            raise ProofgateBootstrapVerifierError("Attended live runner_stage is not stage-bound")
         if runner_envelope.get("module_identity") != expected_attended_runner_module_identity():
             raise ProofgateBootstrapVerifierError("Attended live module_identity is not guard-byte-bound")
         if (
@@ -1483,6 +1820,11 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
             or runner_envelope.get("head_identity") != expected_attended_head_identity
         ):
             raise ProofgateBootstrapVerifierError("Attended live head_identity is not candidate-bound")
+        _validate_attended_provider_receipts(
+            runner_envelope,
+            expected_stage=runner_stage,
+            expected_head=expected_attended_head_identity,
+        )
 
         desig_props = properties_by_testcase.get(designated_provider_nodeid, {})
         for nid, props in properties_by_testcase.items():

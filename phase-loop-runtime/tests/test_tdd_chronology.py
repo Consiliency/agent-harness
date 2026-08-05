@@ -16,8 +16,13 @@ from pathlib import Path
 import pytest
 
 from .proofgate_bootstrap_verifier import (
+    BOOTSTRAP_CONTROL_CASES,
+    BOOTSTRAP_CONTROL_COMPONENTS,
+    BOOTSTRAP_LIVE_REACHABILITY_CASES,
     BOOTSTRAP_MERGE_OBSERVATION_SCHEMA,
     BOOTSTRAP_COORDINATOR_PRODUCER_RECEIPT_SCHEMA,
+    BOOTSTRAP_ZERO_EFFECT_CASES,
+    ATTENDED_PROVIDER_RECEIPTS_FILENAME,
     COORDINATOR_EVIDENCE_ARTIFACTS,
     COORDINATOR_REPOSITORY,
     COORDINATOR_SEAT_ARTIFACTS,
@@ -32,6 +37,7 @@ from .proofgate_bootstrap_verifier import (
     compute_git_source_binding_facts,
     evaluate_unit_double_bootstrap_merge_review_gate,
     expected_attended_runner_module_identity,
+    attended_provider_receipts_digest,
     verify_coordinator_evidence_capture,
     verify_observed_premerge_bootstrap_review_gate,
     verify_junit_accounting,
@@ -219,6 +225,37 @@ def _phase_reports_and_junit(
             "broker_digests": {case: (str(index) * 64) for index, case in enumerate(cases, 1)},
             "profile_digests": {case: (str(index + 4) * 64) for index, case in enumerate(cases, 1)},
         }
+        provider_receipts = {
+            case: {
+                "schema": "proofgate_attended_provider_receipt.v1",
+                "provider_case": case,
+                "runner_stage": runner_envelope["runner_stage"],
+                "module_identity": runner_envelope["module_identity"],
+                "head_identity": runner_envelope["head_identity"],
+                "nonce": runner_envelope["nonces"][case],
+                "broker_digest": runner_envelope["broker_digests"][case],
+                "profile_digest": runner_envelope["profile_digests"][case],
+                "first_party_executable_sha256": hashlib.sha256(
+                    f"first-party-executable:{case}".encode("utf-8")
+                ).hexdigest(),
+                "protocol_sha256": hashlib.sha256(
+                    f"subscription-protocol:{case}".encode("utf-8")
+                ).hexdigest(),
+                "process_start_token": f"fresh-process:{case}",
+                "request_transcript_sha256": hashlib.sha256(
+                    f"request-transcript:{case}".encode("utf-8")
+                ).hexdigest(),
+                "response_transcript_sha256": hashlib.sha256(
+                    f"response-transcript:{case}".encode("utf-8")
+                ).hexdigest(),
+                "subscription_transport_observed": True,
+            }
+            for case in sorted(cases)
+        }
+        runner_envelope["provider_receipts"] = provider_receipts
+        runner_envelope["provider_receipts_sha256"] = attended_provider_receipts_digest(
+            provider_receipts
+        )
         provider_values = {
             case: json.dumps({
                 "runner_stage": runner_envelope["runner_stage"],
@@ -276,6 +313,11 @@ def _forge_attended_identity(
     forged_reports = json.loads(json.dumps(reports))
     forged_envelope = json.loads(json.dumps(runner_envelope))
     forged_envelope[field] = value
+    for receipt in forged_envelope["provider_receipts"].values():
+        receipt[field] = value
+    forged_envelope["provider_receipts_sha256"] = attended_provider_receipts_digest(
+        forged_envelope["provider_receipts"]
+    )
     root = ET.fromstring(junit_xml)
     designated = next(
         report
@@ -328,6 +370,14 @@ def _write_decisive_bootstrap_artifacts(run_dir: Path, candidate_oid: str) -> di
         }
         if runner_envelope is not None:
             phase_payload["runner_envelope"] = runner_envelope
+            (run_dir / ATTENDED_PROVIDER_RECEIPTS_FILENAME).write_text(
+                json.dumps(
+                    runner_envelope["provider_receipts"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
         (run_dir / phase_reports_filename).write_text(
             json.dumps(phase_payload, sort_keys=True, separators=(",", ":")), encoding="utf-8"
         )
@@ -335,6 +385,15 @@ def _write_decisive_bootstrap_artifacts(run_dir: Path, candidate_oid: str) -> di
         json.dumps({"schema": "proofgate_coordinator_verification_log.v1", "candidate_oid": candidate_oid}, sort_keys=True),
         encoding="utf-8",
     )
+    component_bindings = {}
+    for component in BOOTSTRAP_CONTROL_COMPONENTS:
+        component_path = f"proofgate-reference-{component}.bin"
+        component_bytes = f"coordinator-reference:{component}:{candidate_oid}".encode("utf-8")
+        (run_dir / component_path).write_bytes(component_bytes)
+        component_bindings[component] = {
+            "path": component_path,
+            "sha256": hashlib.sha256(component_bytes).hexdigest(),
+        }
     for filename in (
         "ctrl_isolation.log",
         "ctrl_taint.log",
@@ -342,12 +401,81 @@ def _write_decisive_bootstrap_artifacts(run_dir: Path, candidate_oid: str) -> di
         "ctrl_control.log",
         "ctrl_positive_canary.log",
     ):
-        (run_dir / filename).write_text(json.dumps({
-            "schema": "proofgate_control_artifact.v1",
+        raw_observations = {
+            case_id: f"coordinator-observed:{case_id}:{candidate_oid}"
+            for case_id in BOOTSTRAP_CONTROL_CASES[filename]
+        }
+        raw_bytes = json.dumps(
+            raw_observations,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        raw_path = f"{filename}.raw"
+        (run_dir / raw_path).write_bytes(raw_bytes)
+        cases = []
+        for case_id in BOOTSTRAP_CONTROL_CASES[filename]:
+            counters = {
+                "connect": 0,
+                "dns": 0,
+                "downstream_bytes": 0,
+                "followup_requests": 0,
+                "http": 0,
+                "provider_trap": 0,
+                "request_count": 0,
+                "session_mutations": 0,
+                "tls": 0,
+                "tool_round_trip_count": 0,
+                "turn_count": 0,
+            }
+            if case_id in BOOTSTRAP_LIVE_REACHABILITY_CASES:
+                outcome = "reachable"
+                counters.update(
+                    {
+                        "connect": 1,
+                        "dns": 1,
+                        "downstream_bytes": 1,
+                        "http": 2,
+                        "request_count": 2,
+                        "tls": 1,
+                        "tool_round_trip_count": 1,
+                        "turn_count": 2,
+                    }
+                )
+            elif case_id in BOOTSTRAP_ZERO_EFFECT_CASES:
+                outcome = "denied"
+            else:
+                outcome = "verified"
+            cases.append(
+                {
+                    "case_id": case_id,
+                    "counters": counters,
+                    "expected_outcome": outcome,
+                    "observed_outcome": outcome,
+                    "path_entered": True,
+                    "raw_observation_sha256": hashlib.sha256(
+                        raw_observations[case_id].encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
+        artifact = {
+            "schema": "proofgate_control_artifact.v2",
             "control": filename,
             "candidate_oid": candidate_oid,
-            "status": "passed",
-        }, sort_keys=True), encoding="utf-8")
+            "producer": "proofgate-coordinator-reference",
+            "raw_probe_log": {
+                "path": raw_path,
+                "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+            },
+            "components": component_bindings,
+            "cases": cases,
+            "case_matrix_sha256": hashlib.sha256(
+                json.dumps(cases, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        }
+        (run_dir / filename).write_text(
+            json.dumps(artifact, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
     return reports_by_mode
 
 
@@ -578,6 +706,87 @@ def test_chronology_requires_two_parent_tests_bootstrap_and_implementation_landi
                         cand_t_oid,
                         landing_kind="PR-T",
                         boundary=CoordinatorBootstrapMergeObservationBoundary(invalid_root),
+                    )
+
+            # A caller cannot replace the probe matrix with a clean label, omit a case,
+            # or make a positive transport row effect-free even after recomputing every
+            # caller-visible artifact and observation digest.
+            for label, mutate_control in (
+                (
+                    "clean-label",
+                    lambda _payload: {
+                        "schema": "proofgate_control_artifact.v1",
+                        "control": "ctrl_isolation.log",
+                        "candidate_oid": cand_t_oid,
+                        "status": "passed",
+                    },
+                ),
+                (
+                    "missing-case",
+                    lambda payload: {**payload, "cases": payload["cases"][:-1]},
+                ),
+                (
+                    "vacuous-positive",
+                    lambda payload: {
+                        **payload,
+                        "cases": [
+                            {
+                                **record,
+                                "counters": {key: 0 for key in record["counters"]},
+                            }
+                            if record["case_id"] in BOOTSTRAP_LIVE_REACHABILITY_CASES
+                            else record
+                            for record in payload["cases"]
+                        ],
+                    },
+                ),
+            ):
+                _control_tmp = tempfile.TemporaryDirectory()
+                control_root = Path(_control_tmp.name)
+                shutil.copytree(coordinator_root, control_root, dirs_exist_ok=True)
+                _thaw_coordinator_root(control_root)
+                control_filename = (
+                    "ctrl_positive_canary.log"
+                    if label == "vacuous-positive"
+                    else "ctrl_isolation.log"
+                )
+                control_path = control_root / control_filename
+                original_control = json.loads(control_path.read_text(encoding="utf-8"))
+                changed_control = mutate_control(original_control)
+                if changed_control.get("schema") == "proofgate_control_artifact.v2":
+                    changed_control["case_matrix_sha256"] = hashlib.sha256(
+                        json.dumps(
+                            changed_control["cases"],
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                control_path.write_text(
+                    json.dumps(changed_control, sort_keys=True, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                changed_digests = tuple(
+                    (
+                        artifact_name,
+                        hashlib.sha256((control_root / artifact_name).read_bytes()).hexdigest(),
+                    )
+                    for artifact_name, _digest in observation.control_artifact_digests
+                )
+                changed_observation = dataclasses.replace(
+                    observation,
+                    control_artifact_digests=changed_digests,
+                )
+                _write_coordinator_observation(control_root, changed_observation, "PR-T")
+                _freeze_coordinator_root(control_root)
+                with _coordinator_run_dir(control_root), pytest.raises(
+                    ProofgateBootstrapVerifierError
+                ):
+                    verify_observed_premerge_bootstrap_review_gate(
+                        repo,
+                        base_oid,
+                        cand_t_oid,
+                        landing_kind="PR-T",
+                        boundary=CoordinatorBootstrapMergeObservationBoundary(control_root),
                     )
 
         # Land PR-T via a real two-parent merge only after its pre-merge gate succeeds.
@@ -1421,7 +1630,47 @@ def test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_fi
             phase_reports=attended_reports,
             runner_envelope=attended_envelope,
             expected_attended_head_identity="a" * 40,
+            expected_attended_stage="candidate",
         )["passed"] == 39
+        main_junit, main_reports, main_envelope = _forge_attended_identity(
+            attended_junit,
+            attended_reports,
+            attended_envelope,
+            "runner_stage",
+            "canonical-main",
+        )
+        main_junit, main_reports, main_envelope = _forge_attended_identity(
+            main_junit,
+            main_reports,
+            main_envelope,
+            "head_identity",
+            "b" * 40,
+        )
+        assert verify_junit_accounting(
+            main_junit,
+            "attended_live",
+            phase_reports=main_reports,
+            runner_envelope=main_envelope,
+            expected_attended_head_identity="b" * 40,
+            expected_attended_stage="canonical-main",
+        )["passed"] == 39
+        fabricated_transport = json.loads(json.dumps(attended_envelope))
+        provider_case = ATTENDED_REAL_PROVIDER_CASES[0]
+        fabricated_transport["provider_receipts"][provider_case][
+            "subscription_transport_observed"
+        ] = False
+        fabricated_transport["provider_receipts_sha256"] = attended_provider_receipts_digest(
+            fabricated_transport["provider_receipts"]
+        )
+        with pytest.raises(ProofgateBootstrapVerifierError, match="receipt identity mismatch"):
+            verify_junit_accounting(
+                attended_junit,
+                "attended_live",
+                phase_reports=attended_reports,
+                runner_envelope=fabricated_transport,
+                expected_attended_head_identity="a" * 40,
+                expected_attended_stage="candidate",
+            )
         for field, forged_value, rejection in (
             ("runner_stage", "forged-stage", "runner_stage"),
             ("module_identity", "0" * 64, "module_identity"),
@@ -1449,6 +1698,20 @@ def test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_fi
             captured_default = verify_coordinator_evidence_capture(coordinator_root, "default")
             assert captured_default["mode"] == "default"
             assert (captured_default["collected"], captured_default["passed"], captured_default["skipped"], captured_default["failed"]) == (39, 3, 36, 0)
+            external_receipts_path = coordinator_root / ATTENDED_PROVIDER_RECEIPTS_FILENAME
+            external_receipts_bytes = external_receipts_path.read_bytes()
+            external_receipts_path.write_text("{}", encoding="utf-8")
+            with pytest.raises(
+                ProofgateBootstrapVerifierError,
+                match="do not match coordinator-owned bytes",
+            ):
+                verify_coordinator_evidence_capture(
+                    coordinator_root,
+                    "attended_live",
+                    expected_candidate_oid="a" * 40,
+                    expected_attended_stage="candidate",
+                )
+            external_receipts_path.write_bytes(external_receipts_bytes)
 
             # A copied default/xunit2 report cannot become authority: the plan-named artifact
             # requires a plugin capture receipt bound to legacy bytes and command provenance.

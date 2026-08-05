@@ -255,6 +255,7 @@ def proofgate_invalid_acceptance_route_cases() -> tuple[tuple[str, str], ...]:
         ("missing_falsifier", PROOFGATE_MISSING_FALSIFIER_ROUTE_BYTES),
         ("vacuous_falsifier", vacuous.stdout),
         ("missing_path_entered_control", PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES),
+        ("missing_falsifier", proofgate_changed_grandfather_plan_bytes()),
     )
 
 
@@ -276,6 +277,16 @@ def proofgate_grandfather_plan_bytes() -> str:
         "## Acceptance Criteria\n"
         f"{PROOFGATE_GRANDFATHER_RAW_ITEM}\n"
     )
+
+
+def proofgate_changed_grandfather_plan_bytes() -> str:
+    changed = proofgate_grandfather_plan_bytes().replace(
+        "register_validator`",
+        "register_validator_changed`",
+    )
+    if changed == proofgate_grandfather_plan_bytes():
+        raise AssertionError("PROOFGATE changed-grandfather fixture did not change")
+    return changed
 
 COORDINATOR_EVIDENCE_FILES: dict[str, tuple[str, str]] = {
     "proofgate-tests-only-default.junit.xml": ("proofgate-tests-only-default.phase-reports.json", "default"),
@@ -315,6 +326,10 @@ PROOFGATE_SOURCE_ANCHOR_ROWS_V1: tuple[str, ...] = (
     "| `PG-A-BROKER-GITHUB` | `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py`: the `Path(broker_root), admission_policy or _default_admission_policy, epoch_blocked=lambda: evidence_store.epoch_blocked,` constructor context |\n",
     "| `PG-A-BROKER-ROUTING` | `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py`: the `root, self._admission_policy, epoch_blocked=lambda: evidence_store.epoch_blocked` constructor context |\n",
 )
+
+LEGIBLE_TWO_PARENT_LANDING_OID = "5be0ac70b194257c76c215478702a22858b72b2c"
+LEGIBLE_VERIFICATION_EVIDENCE_BLOB_OID = "2e9c1110e36c1fd5903bcb46b9ed074b5ecbfcc3"
+LEGIBLE_EVIDENCE_BLOB_OID = "60b8903a0a77cf1e266859b1fc4015958013af7c"
 
 RED_CASES_BY_NODEID: dict[str, tuple[str, str | tuple[str, ...]]] = {
     "phase-loop-runtime/tests/test_proofgate_receipts.py::test_bootstrap_records_are_single_use_and_server_bound": (
@@ -643,9 +658,100 @@ def assert_source_anchor(anchor_id: str) -> None:
         assert "EXTENSION_NAMESPACE_REGISTRY" in content, f"Anchor {anchor_id} missing in {path}"
         from phase_loop_runtime.verification_evidence import (
             EXTENSION_NAMESPACE_REGISTRY,
+            VerificationArtifactContractError,
+            _ARTIFACT_SEAL_PREFIX,
             _SUPPORTED_SCHEMA_VERSIONS,
+            _bind_sidecar_extension,
+            _canonical_artifact_digest,
+            _extract_artifact_seal,
+            _validate_v3_extensions,
+            load_verification_artifact,
+            validate_verification_artifact,
+            validate_verification_artifact_for_plan,
         )
-        assert 3 in _SUPPORTED_SCHEMA_VERSIONS, f"Anchor {anchor_id} schema v3 unsupported"
+        landing = subprocess.run(
+            ["git", "rev-list", "--parents", "-n", "1", LEGIBLE_TWO_PARENT_LANDING_OID],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert landing.returncode == 0, f"Anchor {anchor_id} landing unavailable"
+        assert len(landing.stdout.split()) == 3, f"Anchor {anchor_id} landing is not two-parent"
+        assert subprocess.run(
+            ["git", "merge-base", "--is-ancestor", LEGIBLE_TWO_PARENT_LANDING_OID, "HEAD"],
+            cwd=root,
+            check=False,
+        ).returncode == 0, f"Anchor {anchor_id} landing is not an ancestor"
+        for revision, rel_path, expected_blob in (
+            (
+                LEGIBLE_TWO_PARENT_LANDING_OID,
+                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+                LEGIBLE_VERIFICATION_EVIDENCE_BLOB_OID,
+            ),
+            (
+                "HEAD",
+                "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
+                LEGIBLE_VERIFICATION_EVIDENCE_BLOB_OID,
+            ),
+            (
+                LEGIBLE_TWO_PARENT_LANDING_OID,
+                "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+                LEGIBLE_EVIDENCE_BLOB_OID,
+            ),
+            (
+                "HEAD",
+                "phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py",
+                LEGIBLE_EVIDENCE_BLOB_OID,
+            ),
+        ):
+            observed = subprocess.run(
+                ["git", "rev-parse", f"{revision}:{rel_path}"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert observed.returncode == 0 and observed.stdout.strip() == expected_blob, (
+                f"Anchor {anchor_id} blob drift: {revision}:{rel_path}"
+            )
+        assert _SUPPORTED_SCHEMA_VERSIONS == frozenset({1, 2, 3}), (
+            f"Anchor {anchor_id} schema versions drifted"
+        )
+        assert EXTENSION_NAMESPACE_REGISTRY == {
+            "phase_loop_runtime.legible_evidence": "verification_evidence_sidecar.v1"
+        }, f"Anchor {anchor_id} extension registry drifted"
+        assert all(
+            callable(symbol)
+            for symbol in (
+                load_verification_artifact,
+                validate_verification_artifact,
+                validate_verification_artifact_for_plan,
+                _bind_sidecar_extension,
+                _canonical_artifact_digest,
+                _extract_artifact_seal,
+            )
+        ), f"Anchor {anchor_id} reader/seal protocol missing"
+        assert _ARTIFACT_SEAL_PREFIX == "verification-artifact-sha256:"
+        _validate_v3_extensions({
+            "phase_loop_runtime.legible_evidence": {
+                "schema": "verification_evidence_sidecar.v1",
+                "path": "legible.json",
+                "byte_length": 1,
+                "sha256": "0" * 64,
+                "stage": "candidate",
+                "expected_head": "0" * 40,
+                "bootstrap_head": "1" * 40,
+                "process_start_token": "fresh-process",
+            }
+        })
+        with pytest.raises(VerificationArtifactContractError) as reserved:
+            _validate_v3_extensions({
+                "phase_loop_runtime.proofgate_evidence": {
+                    "schema": "proofgate_evidence_sidecar.v1"
+                }
+            })
+        assert reserved.value.code == "unsupported_extension_namespace"
         assert "phase_loop_runtime.legible_evidence" in EXTENSION_NAMESPACE_REGISTRY, f"Anchor {anchor_id} legible missing"
         assert "phase_loop_runtime.proofgate_evidence" not in EXTENSION_NAMESPACE_REGISTRY, f"Anchor {anchor_id} proofgate present"
     elif anchor_id == "PG-A-CLOSEOUT":
