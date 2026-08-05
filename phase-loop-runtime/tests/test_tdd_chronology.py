@@ -5010,3 +5010,165 @@ def test_pr_r_blocker_fable_f006_pr_b_only_requires_candidate_evidence():
             landing_kind="PR-B",
             boundary=boundary,
         )
+
+
+def test_pr_r_blocker_fable_f007_producer_output_satisfies_decisive_pr_b_verifier_contract(monkeypatch):
+    try:
+        from .proofgate_tdd_guard import ProofgateReportingPlugin, EXPECTED_PHASE_NODEIDS
+        from .proofgate_bootstrap_verifier import (
+            verify_coordinator_evidence_capture,
+            coordinator_evidence_capture_pytest_args,
+        )
+    except (ImportError, AttributeError) as exc:
+        raise ProofgateMissingCapabilityError(
+            "FABLE-F007::producer_verifier_contract_unimplemented"
+        ) from exc
+
+    (
+        _tmp,
+        repo,
+        original_oid,
+        base_oid,
+        _synth_candidate_oid,
+        boundary,
+        _old_coordinator_root,
+        _coordinator_tmp,
+    ) = _setup_pr_r_candidate_history()
+
+    candidate_oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    coordinator_root = repo.parent / "coordinator_evidence"
+    if coordinator_root.exists():
+        shutil.rmtree(coordinator_root)
+    coordinator_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("PHASE_LOOP_RUN_DIR", str(coordinator_root))
+    monkeypatch.setenv("PHASE_LOOP_RUN_ID", "coordinator-candidate")
+    monkeypatch.setenv("PHASE_LOOP_CANDIDATE_OID", candidate_oid)
+
+    class DummyItem:
+        def __init__(self, nodeid):
+            self.nodeid = nodeid
+            self.user_properties = []
+
+    class DummyCall:
+        def __init__(self, when="call"):
+            self.when = when
+            self.outcome = "passed"
+            self.skipped = False
+            self.failed = False
+
+    class DummyReport:
+        def __init__(self, nodeid, outcome="passed"):
+            self.nodeid = nodeid
+            self.when = "call"
+            self.outcome = outcome
+
+    class DummyOutcome:
+        def __init__(self, result):
+            self._result = result
+
+        def get_result(self):
+            return self._result
+
+    def _invoke_makereport(plugin, nodeid, outcome="passed"):
+        item = DummyItem(nodeid)
+        call = DummyCall(when="call")
+        rep = DummyReport(nodeid, outcome=outcome)
+
+        def wrapper():
+            yield rep
+
+        gen = plugin.pytest_runtest_makereport(item, call)
+        next(gen)
+        try:
+            gen.send(DummyOutcome(rep))
+        except StopIteration:
+            pass
+
+    # 1. Candidate evidence generated via ProofgateReportingPlugin producer
+    cand_args = coordinator_evidence_capture_pytest_args(
+        "bootstrap_candidate",
+        nodeids=PR_B_BOOTSTRAP_CANDIDATE_NODEIDS,
+    )
+    cand_argv = ["pytest", *cand_args]
+    cand_junit_xml, _ = _candidate_phase_reports_and_junit()
+    (coordinator_root / "compat-candidate.junit.xml").write_text(cand_junit_xml, encoding="utf-8")
+
+    plugin_cand = ProofgateReportingPlugin()
+    for nodeid in PR_B_BOOTSTRAP_CANDIDATE_NODEIDS:
+        _invoke_makereport(plugin_cand, nodeid, "passed")
+
+    old_argv = sys.argv
+    sys.argv = list(cand_argv)
+    try:
+        plugin_cand.pytest_sessionfinish(None, 0)
+    finally:
+        sys.argv = old_argv
+
+    # 2. Compat-default evidence generated via ProofgateReportingPlugin producer
+    def_args = coordinator_evidence_capture_pytest_args(
+        "default",
+        evidence_by_mode={"default": ("compat-default.junit.xml", "phase_reports_default.json")},
+    )
+    def_argv = ["pytest", *def_args]
+    def_junit_xml, _, _ = _phase_reports_and_junit("default")
+    (coordinator_root / "compat-default.junit.xml").write_text(def_junit_xml, encoding="utf-8")
+
+    plugin_def = ProofgateReportingPlugin()
+    for nodeid in EXPECTED_PHASE_NODEIDS:
+        _invoke_makereport(plugin_def, nodeid, "passed")
+
+    old_argv = sys.argv
+    sys.argv = list(def_argv)
+    try:
+        plugin_def.pytest_sessionfinish(None, 0)
+    finally:
+        sys.argv = old_argv
+
+    # 3. Compat-forced-red evidence generated via ProofgateReportingPlugin producer
+    red_args = coordinator_evidence_capture_pytest_args(
+        "forced_red",
+        evidence_by_mode={"forced_red": ("compat-forced-red.junit.xml", "phase_reports_forced_red.json")},
+    )
+    red_argv = ["pytest", *red_args]
+    red_junit_xml, _, _ = _phase_reports_and_junit("forced_red")
+    (coordinator_root / "compat-forced-red.junit.xml").write_text(red_junit_xml, encoding="utf-8")
+
+    plugin_red = ProofgateReportingPlugin()
+    for nodeid in EXPECTED_PHASE_NODEIDS:
+        _invoke_makereport(plugin_red, nodeid, "failed" if nodeid == EXPECTED_PHASE_NODEIDS[0] else "skipped")
+
+    old_argv = sys.argv
+    sys.argv = list(red_argv)
+    try:
+        plugin_red.pytest_sessionfinish(None, 1)
+    finally:
+        sys.argv = old_argv
+
+    # Verify that the real producer output satisfies the decisive verifier contract
+    with _coordinator_run_dir(coordinator_root):
+        captured_cand = verify_coordinator_evidence_capture(
+            coordinator_root,
+            "bootstrap_candidate",
+            expected_candidate_oid=candidate_oid,
+            evidence_by_mode={"bootstrap_candidate": ("compat-candidate.junit.xml", "phase_reports_candidate.json")},
+            nodeids=PR_B_BOOTSTRAP_CANDIDATE_NODEIDS,
+        )
+        assert captured_cand["mode"] == "bootstrap_candidate"
+
+        captured_def = verify_coordinator_evidence_capture(
+            coordinator_root,
+            "default",
+            evidence_by_mode={"default": ("compat-default.junit.xml", "phase_reports_default.json")},
+        )
+        assert captured_def["mode"] == "default"
+
+        captured_red = verify_coordinator_evidence_capture(
+            coordinator_root,
+            "forced_red",
+            evidence_by_mode={"forced_red": ("compat-forced-red.junit.xml", "phase_reports_forced_red.json")},
+        )
+        assert captured_red["mode"] == "forced_red"
