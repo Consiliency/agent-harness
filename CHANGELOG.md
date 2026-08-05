@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: install archive-capable build tooling in the pytest matrix (Consiliency/agent-harness#464)
+
+- The ordinary pytest matrix in `.github/workflows/test.yml` now installs `build==1.5.1`
+  and `setuptools>=68` alongside the package, so the archive-input tests have a
+  sdist/wheel builder available instead of being capability-gated away in CI.
+  This is a CI-only workaround; runtime and release dependencies are unchanged, and
+  Consiliency/agent-harness#464 stays open to replace the pin with a non-yanked release
+  or a ratified test repair.
+
 ### CI: run the frozen LEGIBLE files from a standalone copied tests tree
 
 - The two frozen LEGIBLE files (`test_legible_roadmap_contract.py`, `test_legible_evidence.py`)
