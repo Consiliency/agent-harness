@@ -1,8 +1,10 @@
 # Phase roadmap v10 — Review Integrity, Contract Conformance, and Debt Retirement
 
 > **Status (2026-07-29): ACTIVE — created this date, nothing executed yet.**
-> Completion is recorded in the ledger, NOT by ticking these boxes (see `EC-LEGIBLE-1`,
-> which exists to fix exactly that). Do not read unchecked boxes as "unstarted".
+> **Current execution (2026-08-05): LEGIBLE is completed; PROOFGATE and CONFORM are in execution.**
+> Phase lifecycle is recorded in `plans/manifest.json`; roadmap lifecycle is recorded in
+> `specs/roadmap-status.json`. Criterion ticks are optional evidence-annotated mirrors, never the
+> record. Do not read unchecked boxes as "unstarted".
 
 ## Context
 
@@ -1189,6 +1191,9 @@ Coordination happens through the four-repo outside-agent release train
 
 The coordinator owns the run and applies these gates to EVERY phase, including the bootstrap phases
 that later make the same controls machine-enforceable:
+
+Until `EC-REVIEWTRUTH-17` is implemented and checked, the coordinator hand-enforces its review
+ordering at every gate. `EC-REVIEWTRUTH-17` is normative; do not restate it here.
 
 1. **Planner boundary.** Plan only with Claude Fable 5 or GPT-5.6 Sol at maximum reasoning. The
    roadmap policy defaults to Sol; a Fable substitution must be explicit in the dispatch record.
