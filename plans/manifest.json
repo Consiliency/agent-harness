@@ -1828,6 +1828,105 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-05T09:21:16Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "proofgate_admin_identity_binding_contract_amendment": {
+              "authority_source": "github_and_broker_control_planes",
+              "authority_status": "amended_digest_requires_fresh_review_before_PR_R_dispatch",
+              "binding": {
+                "authority_role": "evidence_only_never_caller_authority",
+                "digest_serialization": "canonical_compact_sorted_keys_utf8",
+                "schema": "proofgate_admin_identity_binding.v1"
+              },
+              "decisive_boundary": "fixed_read_only_ProofgateAdminControlPlaneBoundary",
+              "dynamic_assignment_fields": [
+                "dedicated_app_integration_id",
+                "dedicated_app_installation_id",
+                "environment_id",
+                "required_reviewer_id",
+                "ruleset_id"
+              ],
+              "derived_receipt_evidence_fields": [
+                "run_id",
+                "run_attempt",
+                "subject",
+                "workflow_sha256"
+              ],
+              "evaluation_partition": {
+                "admin_preflight": "admin_relations_only",
+                "receipt_and_pilot": "dynamic_receipt_and_workflow_evidence"
+              },
+              "forbidden_authority_inputs": [
+                "caller_mapping_or_file_or_signature",
+                "stdin_or_environment_or_cli_identity",
+                "process_or_executable_or_response_injection",
+                "boundary_subclass_or_wrapper",
+                "replayed_binding_or_digest_only_substitution"
+              ],
+              "governance": "terra_then_grok_sol_gemini_opus_then_fable",
+              "historical_assigned_ids": {
+                "1159201": "integration_negative_test_only_non_authoritative",
+                "6159201": "installation_negative_test_only_non_authoritative",
+                "7159201": "reviewer_negative_test_only_non_authoritative"
+              },
+              "issue": "Consiliency/agent-harness#454",
+              "plan_sha256": "eaae0407b8ed66e744820e4b4f46c5064fc658a96cf9b990515f5d52f531fea2",
+              "pr_b_paths_sha256": "3c365db032ad94622149fde1cadcb84b45480d65d8d789387ef47de286b59c44",
+              "pr_r": {
+                "issues": [
+                  "Consiliency/agent-harness#454",
+                  "Consiliency/agent-harness#456"
+                ],
+                "paths_sha256": "5c530d01ebb8f63edc33e457076d56549226955ee74790e6fc789a62dd6c7268",
+                "source_commit_count": 2,
+                "topology": "unchanged_server_recorded_two_parent_merge"
+              },
+              "pr_t_merge_oid": "0a17901e16269c8f11bce49383840457e1ea3772",
+              "pr_t_posture": "immutable",
+              "recording_boundary_posture": "test_only_nondecisive",
+              "relational_equalities": [
+                "app_owner_equals_frozen_owner",
+                "installation_app_equals_resolved_app",
+                "installation_target_equals_frozen_owner",
+                "selected_repositories_equal_frozen_repository",
+                "sole_ruleset_bypass_equals_resolved_integration_always",
+                "reviewer_id_login_equal_same_active_user",
+                "broker_targets_equal_resolved_github_and_frozen_policy"
+              ],
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "schema": "proofgate_admin_identity_binding_contract_amendment.v1",
+              "selector_amendment_predecessor_head": "632ce935e429f866300e088e528ba0f3eb8df79f",
+              "stable_selectors": {
+                "app_slug": "proofgate-app",
+                "environment_and_ref": "proofgate-receipt-head-v1",
+                "permissions": "contents_write_plus_implicit_metadata_read_only",
+                "repository_full_name": "Consiliency/agent-harness",
+                "repository_id": 1280382652,
+                "repository_owner_id": 159201120,
+                "repository_selection": "selected_exactly_one",
+                "reviewer": "exactly_one_active_User"
+              },
+              "stage_boundaries": [
+                "PR_R_code_only_no_provisioning",
+                "administrator_provisioning_after_PR_R",
+                "fresh_binding_at_PR_B_review_and_pre_merge",
+                "post_PR_B_pilot_rebinds_and_separates_reviewer_dispatcher_app_actor"
+              ],
+              "falsifier_classes": [
+                "artifact_substitution",
+                "caller_authorization",
+                "stale_ids",
+                "repo_owner_permission_or_bypass_mismatch",
+                "reviewer_mismatch",
+                "broker_self_attestation",
+                "chronology_drift"
+              ]
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1843,7 +1942,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-05T07:28:05Z"
+      "updated_at": "2026-08-05T09:21:16Z"
     },
     {
       "acceptance_criteria_count": null,
