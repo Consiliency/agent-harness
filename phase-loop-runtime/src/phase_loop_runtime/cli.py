@@ -931,13 +931,13 @@ def build_parser() -> argparse.ArgumentParser:
         "outside-agent-preflight",
         help="Emit advisory metadata-only outside-agent preflight evidence.",
     )
-    outside_agent_sub.add_argument("submission_file", metavar="submission-file")
+    outside_agent_sub.add_argument("submission_file", metavar="submission-file", nargs="+")
     outside_agent_sub.add_argument("--output", help="Path to write advisory evidence JSON.")
     outside_agent_validate_sub = subparsers.add_parser(
         "outside-agent-validate",
         help="Emit governed-pipeline outside-agent validation verdict JSON.",
     )
-    outside_agent_validate_sub.add_argument("submission_file", metavar="submission-file")
+    outside_agent_validate_sub.add_argument("submission_file", metavar="submission-file", nargs="+")
     outside_agent_validate_sub.add_argument(
         "--output",
         required=True,
@@ -1780,16 +1780,18 @@ def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
     from .conformance.outside_agent_advisory import (
         build_malformed_outside_agent_advisory_evidence,
         build_outside_agent_advisory_evidence,
-        digest_outside_agent_submission_bytes,
         serialize_outside_agent_advisory_evidence,
     )
 
-    submission_path = Path(args.submission_file)
+    submission_file = _outside_agent_submission_file(args.submission_file)
+    submission_path = Path(submission_file)
     try:
         raw = submission_path.read_bytes()
     except OSError as exc:
         evidence = build_malformed_outside_agent_advisory_evidence(
-            input_digest=digest_outside_agent_submission_bytes(str(submission_path).encode("utf-8")),
+            input_digest=_digest_captured_submission_bytes(
+                b"", submission_file=submission_file
+            ),
             message=f"outside-agent submission JSON could not be read: {exc.__class__.__name__}",
         )
     else:
@@ -1797,10 +1799,17 @@ def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
             submission = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             evidence = build_malformed_outside_agent_advisory_evidence(
-                input_digest=digest_outside_agent_submission_bytes(raw),
+                input_digest=_digest_captured_submission_bytes(
+                    raw, submission_file=submission_file
+                ),
             )
         else:
-            evidence = build_outside_agent_advisory_evidence(submission)
+            evidence = build_outside_agent_advisory_evidence(
+                submission,
+                input_digest=_digest_captured_submission_bytes(
+                    raw, submission_file=submission_file
+                ),
+            )
 
     payload = serialize_outside_agent_advisory_evidence(evidence)
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -1816,29 +1825,39 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
         build_outside_agent_validation_verdict,
     )
     from .conformance.outside_agent_real_output import (
-        digest_outside_agent_validation_bytes,
         serialize_outside_agent_validation_verdict,
     )
 
-    submission_path = Path(args.submission_file)
+    submission_file = _outside_agent_submission_file(args.submission_file)
+    submission_path = Path(submission_file)
     try:
         raw = submission_path.read_bytes()
     except OSError as exc:
         validation = build_malformed_outside_agent_validation_verdict(
-            input_digest=digest_outside_agent_validation_bytes(str(submission_path).encode("utf-8")),
+            input_digest=_digest_captured_submission_bytes(
+                b"", submission_file=submission_file
+            ),
             message=f"outside-agent submission JSON could not be read: {exc.__class__.__name__}",
+            submission_file=submission_file,
         )
     else:
         try:
             submission = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             validation = build_malformed_outside_agent_validation_verdict(
-                input_digest=digest_outside_agent_validation_bytes(raw),
+                input_digest=_digest_captured_submission_bytes(
+                    raw, submission_file=submission_file
+                ),
+                submission_file=submission_file,
             )
         else:
             validation = build_outside_agent_validation_verdict(
                 submission,
                 submitted_refs=tuple(args.submitted_ref or ()),
+                input_digest=_digest_captured_submission_bytes(
+                    raw, submission_file=submission_file
+                ),
+                submission_file=submission_file,
             )
 
     payload = serialize_outside_agent_validation_verdict(validation)
@@ -1846,6 +1865,19 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
     Path(args.output).write_text(text, encoding="utf-8")
     print(text, end="")
     return int(validation.exit_code)
+
+
+def _outside_agent_submission_file(value: str | list[str]) -> str:
+    """Consume only the first locator; repeated identical locators stay read-only."""
+    if isinstance(value, str):
+        return value
+    return value[0]
+
+
+def _digest_captured_submission_bytes(
+    captured_input_bytes: bytes, *, submission_file: str
+) -> str:
+    return hashlib.sha256(captured_input_bytes).hexdigest()
 
 
 def _task_message_command(args: argparse.Namespace, *, resolve: bool) -> int:
