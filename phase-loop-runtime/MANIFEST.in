@@ -4,3 +4,4 @@ recursive-include src/phase_loop_runtime *.py py.typed
 recursive-include src/phase_loop_runtime/baml_src *.baml
 recursive-include src/phase_loop_runtime/advisor_board *.toml *.md
 recursive-include src/phase_loop_runtime/deploy *.service
+recursive-include src/phase_loop_runtime/conformance/_contract *

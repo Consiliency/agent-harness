@@ -1,0 +1,20 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_id": "oavectors-invalid-empty-evidence-refs",
+  "submission_kind": "work_request",
+  "claim_posture": "claims_only",
+  "acceptance_truth_owner": "governed_pipeline",
+  "summary": "Work request submitted with no evidence references at all",
+  "producer": {
+    "agent_name": "outside-agent",
+    "agent_version": "0.1.0"
+  },
+  "evidence_refs": [],
+  "work_request": {
+    "goal": "Add vector coverage for outside-agent work requests",
+    "constraints": [
+      "Keep the corpus metadata-only",
+      "Stay inside repo-relative evidence references"
+    ]
+  }
+}

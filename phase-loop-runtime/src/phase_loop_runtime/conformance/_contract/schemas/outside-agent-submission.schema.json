@@ -1,0 +1,342 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.consiliency/schemas/outside-agent-submission.schema.json",
+  "title": "Outside-agent submission contract",
+  "description": "outside_agent_submission.v0.1. Outside agents submit claims only and never own acceptance truth. Governed-pipeline remains the acceptance authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submission_schema_version",
+    "submission_id",
+    "submission_kind",
+    "claim_posture",
+    "acceptance_truth_owner",
+    "summary",
+    "producer",
+    "evidence_refs"
+  ],
+  "properties": {
+    "submission_schema_version": {
+      "const": "outside_agent_submission.v0.1"
+    },
+    "submission_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "submission_kind": {
+      "enum": [
+        "work_request",
+        "implementation_submission",
+        "ambiguity_report"
+      ]
+    },
+    "claim_posture": {
+      "const": "claims_only"
+    },
+    "acceptance_truth_owner": {
+      "const": "governed_pipeline"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "producer": {
+      "$ref": "#/$defs/producer"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/evidence_ref"
+      }
+    },
+    "work_request": {
+      "$ref": "#/$defs/work_request"
+    },
+    "implementation_submission": {
+      "$ref": "#/$defs/implementation_submission"
+    },
+    "ambiguity_report": {
+      "$ref": "#/$defs/ambiguity_report"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "submission_kind": {
+            "const": "work_request"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "work_request"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "implementation_submission"
+              ]
+            },
+            {
+              "required": [
+                "ambiguity_report"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "submission_kind": {
+            "const": "implementation_submission"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "implementation_submission"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "work_request"
+              ]
+            },
+            {
+              "required": [
+                "ambiguity_report"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "submission_kind": {
+            "const": "ambiguity_report"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ambiguity_report"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "work_request"
+              ]
+            },
+            {
+              "required": [
+                "implementation_submission"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_name"
+      ],
+      "properties": {
+        "agent_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "repo_relative_path": {
+      "type": "string",
+      "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
+    "git_sha": {
+      "type": "string",
+      "description": "Git object id: exactly 40 hex (SHA-1) or exactly 64 hex (SHA-256). Intermediate lengths are not representable and are rejected.",
+      "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+    },
+    "source_bundle_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_id",
+        "bundle_manifest_sha256"
+      ],
+      "properties": {
+        "bundle_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bundle_manifest_sha256": {
+          "$ref": "#/$defs/sha256_hex"
+        }
+      }
+    },
+    "claimed_path_membership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proof_type",
+        "included"
+      ],
+      "properties": {
+        "proof_type": {
+          "const": "bundle_manifest_path"
+        },
+        "included": {
+          "const": true
+        }
+      }
+    },
+    "evidence_ref": {
+      "title": "outside_agent_evidence_ref.v0.1",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_ref_schema_version",
+        "repo_owner",
+        "repo_name",
+        "immutable_git_ref",
+        "repo_relative_path",
+        "digest_algorithm",
+        "sha256",
+        "source_role",
+        "source_bundle_refs",
+        "bundle_manifest_sha256",
+        "claimed_path_membership",
+        "redaction_posture"
+      ],
+      "properties": {
+        "evidence_ref_schema_version": {
+          "const": "outside_agent_evidence_ref.v0.1"
+        },
+        "repo_owner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+$"
+        },
+        "repo_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+$"
+        },
+        "immutable_git_ref": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "repo_relative_path": {
+          "$ref": "#/$defs/repo_relative_path"
+        },
+        "digest_algorithm": {
+          "const": "sha256"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        "source_role": {
+          "enum": [
+            "primary_claim",
+            "supporting_context",
+            "test_evidence",
+            "documentation"
+          ]
+        },
+        "source_bundle_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/source_bundle_ref"
+          }
+        },
+        "bundle_manifest_sha256": {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        "claimed_path_membership": {
+          "$ref": "#/$defs/claimed_path_membership"
+        },
+        "redaction_posture": {
+          "const": "metadata_only"
+        }
+      }
+    },
+    "work_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goal",
+        "constraints"
+      ],
+      "properties": {
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "implementation_submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "head_commit_sha",
+        "change_summary"
+      ],
+      "properties": {
+        "head_commit_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "change_summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ambiguity_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ambiguity_summary",
+        "questions"
+      ],
+      "properties": {
+        "ambiguity_summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

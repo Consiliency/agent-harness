@@ -1,0 +1,112 @@
+{
+  "manifest_schema_version": "outside_agent_vector_manifest.v0.1",
+  "vectors": [
+    {
+      "case_id": "positive-work-request",
+      "path": "test-vectors/outside-agent/valid-work-request.json",
+      "submission_kind": "work_request",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": true,
+      "expected_verdict": "roadmap_intake",
+      "expected_blocker_class": "none"
+    },
+    {
+      "case_id": "positive-implementation-submission",
+      "path": "test-vectors/outside-agent/valid-implementation-submission.json",
+      "submission_kind": "implementation_submission",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": true,
+      "expected_verdict": "review_candidate",
+      "expected_blocker_class": "none"
+    },
+    {
+      "case_id": "positive-ambiguity-report",
+      "path": "test-vectors/outside-agent/valid-ambiguity-report.json",
+      "submission_kind": "ambiguity_report",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": true,
+      "expected_verdict": "needs_clarification",
+      "expected_blocker_class": "none"
+    },
+    {
+      "case_id": "negative-raw-payload",
+      "path": "test-vectors/outside-agent/invalid-raw-payload.json",
+      "submission_kind": "implementation_submission",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "unsafe_evidence_reference",
+      "negative_reason": "raw_payload"
+    },
+    {
+      "case_id": "negative-missing-digest",
+      "path": "test-vectors/outside-agent/invalid-missing-digest.json",
+      "submission_kind": "work_request",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "missing_information",
+      "negative_reason": "missing_digest"
+    },
+    {
+      "case_id": "negative-source-bundle-mismatch",
+      "path": "test-vectors/outside-agent/invalid-source-bundle-mismatch.json",
+      "submission_kind": "implementation_submission",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "unsafe_evidence_reference",
+      "negative_reason": "source_bundle_mismatch"
+    },
+    {
+      "case_id": "negative-unsupported-verdict",
+      "path": "test-vectors/outside-agent/invalid-unsupported-verdict.json",
+      "submission_kind": "implementation_submission",
+      "schema_target": "outside_agent_route_verdict.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "policy_gap",
+      "negative_reason": "unsupported_verdict"
+    },
+    {
+      "case_id": "negative-unknown-producer-identity-posture",
+      "path": "test-vectors/outside-agent/invalid-unknown-producer-identity-posture.json",
+      "submission_kind": "ambiguity_report",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "policy_gap",
+      "negative_reason": "unknown_producer_identity"
+    },
+    {
+      "case_id": "negative-path-traversal",
+      "path": "test-vectors/outside-agent/invalid-path-traversal.json",
+      "submission_kind": "work_request",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "unsafe_evidence_reference",
+      "negative_reason": "path_traversal"
+    },
+    {
+      "case_id": "negative-empty-evidence-refs",
+      "path": "test-vectors/outside-agent/invalid-empty-evidence-refs.json",
+      "submission_kind": "work_request",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "missing_information",
+      "negative_reason": "empty_evidence_refs"
+    },
+    {
+      "case_id": "negative-git-object-id-length",
+      "path": "test-vectors/outside-agent/invalid-git-object-id-length.json",
+      "submission_kind": "work_request",
+      "schema_target": "outside_agent_submission.v0.1",
+      "expected_valid": false,
+      "expected_verdict": "reject",
+      "expected_blocker_class": "unsafe_evidence_reference",
+      "negative_reason": "malformed_git_object_id"
+    }
+  ]
+}

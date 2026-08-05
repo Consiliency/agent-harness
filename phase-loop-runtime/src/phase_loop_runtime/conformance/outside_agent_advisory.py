@@ -44,6 +44,7 @@ class OutsideAgentAdvisoryExitCode(IntEnum):
     MALFORMED_INPUT = 2
     REDACTION_VIOLATION = 3
     PROVENANCE_FAILURE = 4
+    CONFORMANCE_BLOCKED = 6
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ def build_outside_agent_advisory_evidence(
     submission: Any,
     *,
     contract_pin: OutsideAgentContractPin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
+    input_digest: str | None = None,
 ) -> OutsideAgentAdvisoryEvidence:
     """Build deterministic advisory evidence without external I/O."""
     if not isinstance(submission, Mapping):
@@ -73,7 +75,12 @@ def build_outside_agent_advisory_evidence(
         )
         return _evidence_for_verdict(verdict)
 
-    verdict = validate_outside_agent_submission(submission, contract_pin=contract_pin)
+    if input_digest is None:
+        verdict = validate_outside_agent_submission(submission, contract_pin=contract_pin)
+    else:
+        verdict = validate_outside_agent_submission(
+            submission, contract_pin=contract_pin, input_digest=input_digest
+        )
     return _evidence_for_verdict(verdict)
 
 
@@ -94,8 +101,10 @@ def build_malformed_outside_agent_advisory_evidence(
 def serialize_outside_agent_advisory_evidence(
     evidence: OutsideAgentAdvisoryEvidence,
 ) -> dict[str, Any]:
+    from .outside_agent_redaction import redact_outside_agent_serialized_payload
+
     verdict = evidence.verdict
-    return {
+    payload = {
         "authority": evidence.authority,
         "classification": evidence.classification,
         "exit_code": int(evidence.exit_code),
@@ -126,6 +135,7 @@ def serialize_outside_agent_advisory_evidence(
         "redaction_posture": verdict.redaction_posture,
         "metadata": dict(evidence.metadata),
     }
+    return redact_outside_agent_serialized_payload(payload)
 
 
 def digest_outside_agent_submission_bytes(value: bytes) -> str:
@@ -155,6 +165,8 @@ def _exit_code_for_blockers(
         return OutsideAgentAdvisoryExitCode.REDACTION_VIOLATION
     if codes & _PROVENANCE_BLOCKER_CODES:
         return OutsideAgentAdvisoryExitCode.PROVENANCE_FAILURE
+    if "source_bundle_mismatch" in codes:
+        return OutsideAgentAdvisoryExitCode.CONFORMANCE_BLOCKED
     return OutsideAgentAdvisoryExitCode.MALFORMED_INPUT
 
 
@@ -165,6 +177,7 @@ def _classification_for_exit_code(exit_code: OutsideAgentAdvisoryExitCode) -> st
         OutsideAgentAdvisoryExitCode.MALFORMED_INPUT: "malformed_input",
         OutsideAgentAdvisoryExitCode.REDACTION_VIOLATION: "redaction_violation",
         OutsideAgentAdvisoryExitCode.PROVENANCE_FAILURE: "provenance_failure",
+        OutsideAgentAdvisoryExitCode.CONFORMANCE_BLOCKED: "conformance_blocked",
     }[exit_code]
 
 

@@ -1,0 +1,43 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_id": "oavectors-valid-ambiguity-report",
+  "submission_kind": "ambiguity_report",
+  "claim_posture": "claims_only",
+  "acceptance_truth_owner": "governed_pipeline",
+  "summary": "Ambiguity report for intake-safe contract questions",
+  "producer": {
+    "agent_name": "outside-agent",
+    "agent_version": "0.1.0"
+  },
+  "evidence_refs": [
+    {
+      "evidence_ref_schema_version": "outside_agent_evidence_ref.v0.1",
+      "repo_owner": "Consiliency",
+      "repo_name": "spec",
+      "immutable_git_ref": "6058cdece6f6404bb653b9b4c5bbdd886b433a3d",
+      "repo_relative_path": "schemas/outside-agent-route-verdict.schema.json",
+      "digest_algorithm": "sha256",
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "source_role": "supporting_context",
+      "source_bundle_refs": [
+        {
+          "bundle_id": "bundle-ambiguity",
+          "bundle_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      ],
+      "bundle_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "claimed_path_membership": {
+        "proof_type": "bundle_manifest_path",
+        "included": true
+      },
+      "redaction_posture": "metadata_only"
+    }
+  ],
+  "ambiguity_report": {
+    "ambiguity_summary": "Two intake-safe routes remain plausible until a maintainer clarifies scope",
+    "questions": [
+      "Should this claim become a roadmap intake or stay a review candidate?",
+      "Is additional metadata-only evidence required before review?"
+    ]
+  }
+}

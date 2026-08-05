@@ -1,0 +1,39 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_id": "oavectors-invalid-source-bundle-mismatch",
+  "submission_kind": "implementation_submission",
+  "claim_posture": "claims_only",
+  "acceptance_truth_owner": "governed_pipeline",
+  "summary": "Rejected because the bundle manifest digest disagrees with the source bundle reference",
+  "producer": {
+    "agent_name": "outside-agent"
+  },
+  "evidence_refs": [
+    {
+      "evidence_ref_schema_version": "outside_agent_evidence_ref.v0.1",
+      "repo_owner": "Consiliency",
+      "repo_name": "spec",
+      "immutable_git_ref": "6058cdece6f6404bb653b9b4c5bbdd886b433a3d",
+      "repo_relative_path": "docs/outside-agent-contract.md",
+      "digest_algorithm": "sha256",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "source_role": "primary_claim",
+      "source_bundle_refs": [
+        {
+          "bundle_id": "bundle-invalid-mismatch",
+          "bundle_manifest_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      ],
+      "bundle_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "claimed_path_membership": {
+        "proof_type": "bundle_manifest_path",
+        "included": true
+      },
+      "redaction_posture": "metadata_only"
+    }
+  ],
+  "implementation_submission": {
+    "head_commit_sha": "6058cdece6f6404bb653b9b4c5bbdd886b433a3d",
+    "change_summary": "The schema accepts this shape, but the checker must reject the source-bundle mismatch"
+  }
+}

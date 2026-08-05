@@ -1,0 +1,40 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_id": "oavectors-valid-implementation-submission",
+  "submission_kind": "implementation_submission",
+  "claim_posture": "claims_only",
+  "acceptance_truth_owner": "governed_pipeline",
+  "summary": "Claim-only implementation submission for contract conformance",
+  "producer": {
+    "agent_name": "outside-agent",
+    "agent_version": "0.1.0"
+  },
+  "evidence_refs": [
+    {
+      "evidence_ref_schema_version": "outside_agent_evidence_ref.v0.1",
+      "repo_owner": "Consiliency",
+      "repo_name": "spec",
+      "immutable_git_ref": "6058cdece6f6404bb653b9b4c5bbdd886b433a3d",
+      "repo_relative_path": "docs/outside-agent-contract.md",
+      "digest_algorithm": "sha256",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "source_role": "primary_claim",
+      "source_bundle_refs": [
+        {
+          "bundle_id": "bundle-implementation",
+          "bundle_manifest_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ],
+      "bundle_manifest_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "claimed_path_membership": {
+        "proof_type": "bundle_manifest_path",
+        "included": true
+      },
+      "redaction_posture": "metadata_only"
+    }
+  ],
+  "implementation_submission": {
+    "head_commit_sha": "6058cdece6f6404bb653b9b4c5bbdd886b433a3d",
+    "change_summary": "Adds outside-agent conformance vectors and deterministic manifest checks"
+  }
+}

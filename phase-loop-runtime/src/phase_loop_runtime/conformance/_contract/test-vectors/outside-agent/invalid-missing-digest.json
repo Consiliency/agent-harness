@@ -1,0 +1,40 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_id": "oavectors-invalid-missing-digest",
+  "submission_kind": "work_request",
+  "claim_posture": "claims_only",
+  "acceptance_truth_owner": "governed_pipeline",
+  "summary": "Rejected because digest metadata is incomplete",
+  "producer": {
+    "agent_name": "outside-agent"
+  },
+  "evidence_refs": [
+    {
+      "evidence_ref_schema_version": "outside_agent_evidence_ref.v0.1",
+      "repo_owner": "Consiliency",
+      "repo_name": "spec",
+      "immutable_git_ref": "6058cdece6f6404bb653b9b4c5bbdd886b433a3d",
+      "repo_relative_path": "plans/oaspec/FIELD-NAME-FREEZE.md",
+      "digest_algorithm": "sha256",
+      "source_role": "documentation",
+      "source_bundle_refs": [
+        {
+          "bundle_id": "bundle-invalid-missing-digest",
+          "bundle_manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ],
+      "bundle_manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "claimed_path_membership": {
+        "proof_type": "bundle_manifest_path",
+        "included": true
+      },
+      "redaction_posture": "metadata_only"
+    }
+  ],
+  "work_request": {
+    "goal": "Demonstrate missing SHA-256 digest rejection",
+    "constraints": [
+      "Missing digest metadata must fail closed"
+    ]
+  }
+}
