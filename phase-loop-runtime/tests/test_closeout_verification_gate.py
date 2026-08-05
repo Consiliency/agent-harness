@@ -405,13 +405,13 @@ class CloseoutVerificationGateTest(unittest.TestCase):
         )
         from .proofgate_tdd_guard import (
             PROOFGATE_EXPECTED_CONFIG_V1,
-            PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES,
             ProofgateMissingCapabilityError,
             ProofgateObservationRequest,
             RecordingObservationBoundary,
             assert_frozen_authority_contract,
             conforming_observation,
             guard_proofgate_nodeid,
+            proofgate_invalid_acceptance_route_cases,
             run_proofgate_contract,
         )
         nodeid = "phase-loop-runtime/tests/test_closeout_verification_gate.py::CloseoutVerificationGateTest::test_proofgate_closeout_rejects_missing_or_invalid_attested_proof"
@@ -473,22 +473,30 @@ class CloseoutVerificationGateTest(unittest.TestCase):
                 run_verification(repo, run_dir, [[sys.executable, "-c", "print('ok')"]], None, None, 5)
 
                 scenarios = [
-                    ("missing", None),
-                    ("stale", {"status": "stale"}),
-                    ("wrong_candidate", {"status": "wrong_candidate"}),
-                    ("wrong_external_head", {"status": "wrong_external_head"}),
-                    ("invalid_grammar", {"status": "verified", "grammar_status": "valid"}),
-                    ("mutation_block", {"status": "mutation_block"}),
+                    ("missing", None, None, None),
+                    ("stale", {"status": "stale"}, None, None),
+                    ("wrong_candidate", {"status": "wrong_candidate"}, None, None),
+                    ("wrong_external_head", {"status": "wrong_external_head"}, None, None),
+                    ("mutation_block", {"status": "mutation_block"}, None, None),
+                    *(
+                        (
+                            f"invalid_grammar_{reason}",
+                            {"status": "verified", "grammar_status": "valid"},
+                            invalid_bytes,
+                            reason,
+                        )
+                        for reason, invalid_bytes in proofgate_invalid_acceptance_route_cases()
+                    ),
                 ]
 
-                for scenario_name, proofgate_meta in scenarios:
-                    if scenario_name == "invalid_grammar":
-                        plan.write_text(PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES, encoding="utf-8")
-                    else:
+                for scenario_name, proofgate_meta, invalid_bytes, expected_reason in scenarios:
+                    if invalid_bytes is None:
                         plan.write_text(
                             "# PROOFGATE\n\n## Verification\n- `python3 -c \"print('ok')\"`\n",
                             encoding="utf-8",
                         )
+                    else:
+                        plan.write_text(invalid_bytes, encoding="utf-8")
                     automation_payload = {
                         "status": "complete",
                         "verification_status": "passed",
@@ -514,10 +522,10 @@ class CloseoutVerificationGateTest(unittest.TestCase):
                     self.assertEqual(closeout.get("terminal_status"), "blocked", f"Scenario {scenario_name} must block closeout")
                     self.assertEqual(closeout.get("blocker", {}).get("blocker_class"), "contract_bug")
                     self.assertFalse(closeout.get("blocker", {}).get("human_required", True))
-                    if scenario_name == "invalid_grammar":
+                    if expected_reason is not None:
                         self.assertEqual(
                             closeout.get("blocker", {}).get("reason"),
-                            "missing_path_entered_control",
+                            expected_reason,
                             "closeout must block on reparsing the invalid acceptance bytes",
                         )
 

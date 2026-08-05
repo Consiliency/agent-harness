@@ -31,6 +31,7 @@ from .proofgate_bootstrap_verifier import (
     coordinator_evidence_capture_pytest_args,
     compute_git_source_binding_facts,
     evaluate_unit_double_bootstrap_merge_review_gate,
+    expected_attended_runner_module_identity,
     verify_coordinator_evidence_capture,
     verify_observed_premerge_bootstrap_review_gate,
     verify_junit_accounting,
@@ -38,6 +39,7 @@ from .proofgate_bootstrap_verifier import (
     verify_premerge_bootstrap_review_gate,
 )
 from .proofgate_tdd_guard import (
+    ATTENDED_REAL_PROVIDER_CASES,
     DEFAULT_SKIP_NODEIDS,
     EXPECTED_PHASE_NODEIDS,
     RED_CASES_BY_NODEID,
@@ -186,7 +188,9 @@ def _assert_chronology_rejected(tdd_chronology, rejection_code: str, **kwargs):
     assert result.get("decisive") is True
 
 
-def _phase_reports_and_junit(mode: str) -> tuple[str, list[dict], dict | None]:
+def _phase_reports_and_junit(
+    mode: str, *, candidate_oid: str = "a" * 40
+) -> tuple[str, list[dict], dict | None]:
     """Build canonical, complete artifacts for the decisive bootstrap boundary test."""
     root = ET.Element("testsuites")
     suite = ET.SubElement(root, "testsuite", name="pytest")
@@ -209,8 +213,8 @@ def _phase_reports_and_junit(mode: str) -> tuple[str, list[dict], dict | None]:
         )
         runner_envelope = {
             "runner_stage": "candidate",
-            "module_identity": "bootstrap-module-digest",
-            "head_identity": "a" * 40,
+            "module_identity": expected_attended_runner_module_identity(),
+            "head_identity": candidate_oid,
             "nonces": {case: f"nonce-{index}" for index, case in enumerate(cases)},
             "broker_digests": {case: (str(index) * 64) for index, case in enumerate(cases, 1)},
             "profile_digests": {case: (str(index + 4) * 64) for index, case in enumerate(cases, 1)},
@@ -262,10 +266,42 @@ def _phase_reports_and_junit(mode: str) -> tuple[str, list[dict], dict | None]:
     return ET.tostring(root, encoding="unicode"), reports, runner_envelope
 
 
+def _forge_attended_identity(
+    junit_xml: str,
+    reports: list[dict],
+    runner_envelope: dict,
+    field: str,
+    value: str,
+) -> tuple[str, list[dict], dict]:
+    forged_reports = json.loads(json.dumps(reports))
+    forged_envelope = json.loads(json.dumps(runner_envelope))
+    forged_envelope[field] = value
+    root = ET.fromstring(junit_xml)
+    designated = next(
+        report
+        for report in forged_reports
+        if report["nodeid"].endswith(
+            "test_provider_projection_allows_only_selected_vendor_subscription_material"
+        )
+    )
+    for prop in root.findall(".//property"):
+        if prop.get("name") not in ATTENDED_REAL_PROVIDER_CASES:
+            continue
+        payload = json.loads(prop.get("value", ""))
+        payload[field] = value
+        rendered = json.dumps(payload, sort_keys=True)
+        prop.set("value", rendered)
+        designated["properties"][prop.get("name")] = rendered
+    return ET.tostring(root, encoding="unicode"), forged_reports, forged_envelope
+
+
 def _write_decisive_bootstrap_artifacts(run_dir: Path, candidate_oid: str) -> dict[str, dict]:
     reports_by_mode: dict[str, dict] = {}
     for filename, phase_reports_filename, mode in COORDINATOR_EVIDENCE_ARTIFACTS:
-        junit, reports, runner_envelope = _phase_reports_and_junit(mode)
+        junit, reports, runner_envelope = _phase_reports_and_junit(
+            mode,
+            candidate_oid=candidate_oid,
+        )
         argv = ["pytest", *coordinator_evidence_capture_pytest_args(mode)]
         for report in reports:
             report["argv"] = argv
@@ -1375,6 +1411,37 @@ def test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_fi
         assert "PHASE_LOOP_TDD_EXPECT_PROOFGATE=1" not in attended_command
         assert "PHASE_LOOP_PROOFGATE_ORDINARY_HERMETIC=1" in ordinary_command
         assert "PHASE_LOOP_PROOFGATE_ATTENDED_LIVE=1" in attended_command
+        attended_junit, attended_reports, attended_envelope = _phase_reports_and_junit(
+            "attended_live",
+            candidate_oid="a" * 40,
+        )
+        assert verify_junit_accounting(
+            attended_junit,
+            "attended_live",
+            phase_reports=attended_reports,
+            runner_envelope=attended_envelope,
+            expected_attended_head_identity="a" * 40,
+        )["passed"] == 39
+        for field, forged_value, rejection in (
+            ("runner_stage", "forged-stage", "runner_stage"),
+            ("module_identity", "0" * 64, "module_identity"),
+            ("head_identity", "b" * 40, "head_identity"),
+        ):
+            forged_junit, forged_reports, forged_envelope = _forge_attended_identity(
+                attended_junit,
+                attended_reports,
+                attended_envelope,
+                field,
+                forged_value,
+            )
+            with pytest.raises(ProofgateBootstrapVerifierError, match=rejection):
+                verify_junit_accounting(
+                    forged_junit,
+                    "attended_live",
+                    phase_reports=forged_reports,
+                    runner_envelope=forged_envelope,
+                    expected_attended_head_identity="a" * 40,
+                )
         _coordinator_tmp = tempfile.TemporaryDirectory()
         coordinator_root = Path(_coordinator_tmp.name)
         _write_decisive_bootstrap_artifacts(coordinator_root, "a" * 40)

@@ -80,7 +80,15 @@ class GoalCoverageTest(unittest.TestCase):
         self.assertTrue(r.applicable)
 
     def test_acceptance_contracts_classify_valid_invalid_and_grandfathered(self):
-        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        from .proofgate_tdd_guard import (
+            PROOFGATE_GRANDFATHER_CUTOFF_OID,
+            PROOFGATE_GRANDFATHER_SERVER_DATE,
+            PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+            ProofgateMissingCapabilityError,
+            guard_proofgate_nodeid,
+            proofgate_grandfather_plan_bytes,
+            run_proofgate_contract,
+        )
         nodeid = "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoverageTest::test_acceptance_contracts_classify_valid_invalid_and_grandfathered"
         if not guard_proofgate_nodeid(nodeid):
             return
@@ -121,19 +129,17 @@ class GoalCoverageTest(unittest.TestCase):
             self.assertFalse(res_no_control.get("valid", True))
 
             # 5. Exact grandfathered bytes
-            import subprocess
-            pinned_358_bytes = subprocess.check_output(
-                ["git", "cat-file", "-p", "0196f19c7e9fd90e9a707de076271057b521e1d1:plans/detailed-board-silent-degradation-358-20260728.md"],
-                text=True,
+            contracts_gf = goal_coverage.extract_acceptance_contracts(
+                proofgate_grandfather_plan_bytes()
             )
-            contracts_gf = goal_coverage.extract_acceptance_contracts(pinned_358_bytes)
             res_gf = goal_coverage.check_acceptance_falsifiers(
                 contracts_gf,
-                cutoff_commit_oid="5328694ae31b4f13f091903d96ed89395d74f3b2",
-                successor_commit_oid="a3fbb196b3b57d75e403bcea3bad972e9491f675",
-                server_attested_date="2026-07-29T22:09:58Z",
+                cutoff_commit_oid=PROOFGATE_GRANDFATHER_CUTOFF_OID,
+                successor_commit_oid=PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+                server_attested_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
             )
             self.assertTrue(res_gf.get("valid", False))
+            self.assertEqual(res_gf.get("disposition"), "grandfathered")
 
         run_proofgate_contract(nodeid, _contract)
 

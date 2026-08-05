@@ -725,7 +725,7 @@ class TestInvariant6LiveReverifyRunsVerification:
     """
 
     def test_proofgate_train_reverify_requires_exact_attested_proof(self):
-        from .proofgate_tdd_guard import PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES, ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, proofgate_invalid_acceptance_route_cases, run_proofgate_contract
         nodeid = "phase-loop-runtime/tests/test_train_invariants.py::TestInvariant6LiveReverifyRunsVerification::test_proofgate_train_reverify_requires_exact_attested_proof"
         if not guard_proofgate_nodeid(nodeid):
             return
@@ -747,28 +747,31 @@ class TestInvariant6LiveReverifyRunsVerification:
                     res1 = reverify_fn(ws, roadmap_path=roadmap, run_mode=mode)
                     self.assertFalse(res1, f"Live reverify in mode {mode} with missing proof must return False")
 
-                    # 2. Corrupted plan file (invalid acceptance bytes)
+                    # 2. Corrupted plan files (all authoritative invalid acceptance bytes)
                     plan_file = ws / "plans" / "P1.md"
                     if plan_file.exists():
-                        plan_file.write_text(PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES, encoding="utf-8")
                         if not hasattr(goal_coverage, "extract_acceptance_contracts"):
                             raise ProofgateMissingCapabilityError("goal_coverage.extract_acceptance_contracts missing")
                         parser = goal_coverage.extract_acceptance_contracts
-                        with patch.object(
-                            goal_coverage,
-                            "extract_acceptance_contracts",
-                            wraps=parser,
-                        ) as parser_spy:
-                            res2 = reverify_fn(ws, roadmap_path=roadmap, run_mode=mode)
-                        self.assertFalse(res2, f"Live reverify in mode {mode} with corrupted plan must return False")
-                        self.assertTrue(
-                            any(
-                                call.args
-                                and call.args[0] == PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES
-                                for call in parser_spy.call_args_list
-                            ),
-                            f"Live reverify in mode {mode} must parse the exact invalid acceptance bytes",
-                        )
+                        for expected_reason, invalid_bytes in proofgate_invalid_acceptance_route_cases():
+                            plan_file.write_text(invalid_bytes, encoding="utf-8")
+                            with patch.object(
+                                goal_coverage,
+                                "extract_acceptance_contracts",
+                                wraps=parser,
+                            ) as parser_spy:
+                                res2 = reverify_fn(ws, roadmap_path=roadmap, run_mode=mode)
+                            self.assertFalse(
+                                res2,
+                                f"Live reverify in mode {mode} with {expected_reason} plan must return False",
+                            )
+                            self.assertTrue(
+                                any(
+                                    call.args and call.args[0] == invalid_bytes
+                                    for call in parser_spy.call_args_list
+                                ),
+                                f"Live reverify in mode {mode} must parse {expected_reason} bytes",
+                            )
 
                     # 3. Positive scenario control: valid verification must return True
                     ws_pos, roadmap_pos = self._make_reverify_repo(

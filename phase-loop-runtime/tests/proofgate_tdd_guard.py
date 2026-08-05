@@ -7,6 +7,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -220,6 +221,61 @@ PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES = (
     "- [ ] EC-PROOFGATE-ROUTE-1 — proven by `python3 -c \"print('ok')\"`, "
     "falsified by `fails if invalid key is accepted`\n"
 )
+PROOFGATE_MISSING_FALSIFIER_ROUTE_BYTES = (
+    "# PROOFGATE missing falsifier\n\n"
+    "## Acceptance Criteria\n"
+    "- [ ] EC-PROOFGATE-ROUTE-2 — proven by `python3 -c \"print('ok')\"`\n"
+)
+PROOFGATE_VACUOUS_CORPUS_SPEC = (
+    "0196f19c7e9fd90e9a707de076271057b521e1d1:"
+    "plans/detailed-board-silent-degradation-358-20260728.md"
+)
+PROOFGATE_GRANDFATHER_PLAN_PATH = (
+    "plans/detailed-goal-id-single-source-of-truth-211-redesign-20260719.md"
+)
+PROOFGATE_GRANDFATHER_RAW_ITEM = (
+    "- [ ] EC-P1-1 — proven by `pytest tests/test_closeout.py -k register_validator`"
+)
+PROOFGATE_GRANDFATHER_CUTOFF_OID = "5328694ae31b4f13f091903d96ed89395d74f3b2"
+PROOFGATE_GRANDFATHER_SUCCESSOR_OID = "a3fbb196b3b57d75e403bcea3bad972e9491f675"
+PROOFGATE_GRANDFATHER_SERVER_DATE = "2026-07-29T22:09:58Z"
+
+
+def proofgate_invalid_acceptance_route_cases() -> tuple[tuple[str, str], ...]:
+    vacuous = subprocess.run(
+        ["git", "cat-file", "-p", PROOFGATE_VACUOUS_CORPUS_SPEC],
+        cwd=_repo_root(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if vacuous.returncode != 0 or not vacuous.stdout:
+        raise AssertionError("pinned PROOFGATE vacuous corpus is unavailable")
+    return (
+        ("missing_falsifier", PROOFGATE_MISSING_FALSIFIER_ROUTE_BYTES),
+        ("vacuous_falsifier", vacuous.stdout),
+        ("missing_path_entered_control", PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES),
+    )
+
+
+def proofgate_grandfather_plan_bytes() -> str:
+    for revision in (PROOFGATE_GRANDFATHER_CUTOFF_OID, "HEAD"):
+        observed = subprocess.run(
+            ["git", "show", f"{revision}:{PROOFGATE_GRANDFATHER_PLAN_PATH}"],
+            cwd=_repo_root(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if observed.returncode != 0 or observed.stdout.count(PROOFGATE_GRANDFATHER_RAW_ITEM) != 1:
+            raise AssertionError(
+                f"grandfather raw item is not unique at {revision}:{PROOFGATE_GRANDFATHER_PLAN_PATH}"
+            )
+    return (
+        "# PROOFGATE grandfather compatibility\n\n"
+        "## Acceptance Criteria\n"
+        f"{PROOFGATE_GRANDFATHER_RAW_ITEM}\n"
+    )
 
 COORDINATOR_EVIDENCE_FILES: dict[str, tuple[str, str]] = {
     "proofgate-tests-only-default.junit.xml": ("proofgate-tests-only-default.phase-reports.json", "default"),
@@ -585,7 +641,11 @@ def assert_source_anchor(anchor_id: str) -> None:
         path = root / "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py"
         content = path.read_text(encoding="utf-8")
         assert "EXTENSION_NAMESPACE_REGISTRY" in content, f"Anchor {anchor_id} missing in {path}"
-        from phase_loop_runtime.verification_evidence import EXTENSION_NAMESPACE_REGISTRY
+        from phase_loop_runtime.verification_evidence import (
+            EXTENSION_NAMESPACE_REGISTRY,
+            _SUPPORTED_SCHEMA_VERSIONS,
+        )
+        assert 3 in _SUPPORTED_SCHEMA_VERSIONS, f"Anchor {anchor_id} schema v3 unsupported"
         assert "phase_loop_runtime.legible_evidence" in EXTENSION_NAMESPACE_REGISTRY, f"Anchor {anchor_id} legible missing"
         assert "phase_loop_runtime.proofgate_evidence" not in EXTENSION_NAMESPACE_REGISTRY, f"Anchor {anchor_id} proofgate present"
     elif anchor_id == "PG-A-CLOSEOUT":

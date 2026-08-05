@@ -68,6 +68,11 @@ class ProofgateBootstrapVerifierError(ValueError):
 HEX_40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX_64_RE = re.compile(r"^[0-9a-f]{64}$")
 
+
+def expected_attended_runner_module_identity() -> str:
+    guard_path = Path(__file__).with_name("proofgate_tdd_guard.py")
+    return hashlib.sha256(guard_path.read_bytes()).hexdigest()
+
 AUTHOR_VENDOR = "gemini"
 AUTHOR_MODEL = "gemini-3.6-flash"
 AUTHOR_EFFORT = "high"
@@ -920,7 +925,12 @@ def _load_coordinator_phase_report(coordinator_root: Path, mode: str) -> dict[st
     return payload
 
 
-def verify_coordinator_evidence_capture(coordinator_root: Path | str, mode: str) -> dict[str, Any]:
+def verify_coordinator_evidence_capture(
+    coordinator_root: Path | str,
+    mode: str,
+    *,
+    expected_candidate_oid: str | None = None,
+) -> dict[str, Any]:
     """Verify a plan-named JUnit plus the reporting-plugin phase report as one capture.
 
     A bare JUnit report is compatibility evidence only.  Authorization requires the matching
@@ -966,6 +976,7 @@ def verify_coordinator_evidence_capture(coordinator_root: Path | str, mode: str)
         mode,
         phase_reports=payload["reports"],
         runner_envelope=payload.get("runner_envelope"),
+        expected_attended_head_identity=expected_candidate_oid,
     )
     return {**accounting, "reports": payload["reports"], "runner_envelope": payload.get("runner_envelope")}
 
@@ -1154,7 +1165,11 @@ def verify_observed_premerge_bootstrap_review_gate(
             raise ProofgateBootstrapVerifierError("attended JUnit requires an external runner envelope")
         if mode != "attended_live" and set(report_payload) != {"reports"}:
             raise ProofgateBootstrapVerifierError(f"non-attended JUnit carries a forbidden runner envelope: {mode}")
-        capture = verify_coordinator_evidence_capture(coordinator_root, mode)
+        capture = verify_coordinator_evidence_capture(
+            coordinator_root,
+            mode,
+            expected_candidate_oid=candidate_oid,
+        )
         if capture["reports"] != report_payload["reports"] or capture.get("runner_envelope") != report_payload.get("runner_envelope"):
             raise ProofgateBootstrapVerifierError(f"coordinator capture reports do not match observed reports: {mode}")
 
@@ -1287,7 +1302,7 @@ def verify_landed_bootstrap_source_binding(
     return premerge_res
 
 
-def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, strict_nodeids: bool = True) -> dict[str, Any]:
+def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:
     """Validates pytest JUnit XML and typed phase reports for expected PROOFGATE nodeid and mode accounting.
 
     Modes:
@@ -1458,6 +1473,16 @@ def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: lis
 
         if not runner_envelope or not isinstance(runner_envelope, dict):
             raise ProofgateBootstrapVerifierError("Attended live mode requires a valid external runner_envelope")
+        if runner_envelope.get("runner_stage") != "candidate":
+            raise ProofgateBootstrapVerifierError("Attended live runner_stage must be candidate")
+        if runner_envelope.get("module_identity") != expected_attended_runner_module_identity():
+            raise ProofgateBootstrapVerifierError("Attended live module_identity is not guard-byte-bound")
+        if (
+            not expected_attended_head_identity
+            or not HEX_40_RE.match(expected_attended_head_identity)
+            or runner_envelope.get("head_identity") != expected_attended_head_identity
+        ):
+            raise ProofgateBootstrapVerifierError("Attended live head_identity is not candidate-bound")
 
         desig_props = properties_by_testcase.get(designated_provider_nodeid, {})
         for nid, props in properties_by_testcase.items():

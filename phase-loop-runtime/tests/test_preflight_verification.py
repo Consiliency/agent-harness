@@ -261,10 +261,10 @@ class PreflightVerificationTest(unittest.TestCase):
         )
         from .proofgate_tdd_guard import (
             PROOFGATE_EXPECTED_CONFIG_V1,
-            PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES,
             ProofgateMissingCapabilityError,
             assert_frozen_authority_contract,
             guard_proofgate_nodeid,
+            proofgate_invalid_acceptance_route_cases,
             run_proofgate_contract,
         )
         nodeid = "phase-loop-runtime/tests/test_preflight_verification.py::PreflightVerificationTest::test_proofgate_preflight_requires_attested_authorization_and_exact_candidate"
@@ -427,19 +427,20 @@ class PreflightVerificationTest(unittest.TestCase):
                             f"Caller-written local authorization tree was decisive via {call_shape}",
                         )
 
-                pl_local.write_text(PROOFGATE_INVALID_ACCEPTANCE_ROUTE_BYTES, encoding="utf-8")
-                for route in ("direct", "delegated", "lane"):
-                    invalid_result = proofgate_receipts.verify_proofgate_preflight_intake(
-                        r_local,
-                        rm_local,
-                        pl_local,
-                        acceptance_route=route,
-                    )
-                    self.assertIsInstance(invalid_result, dict)
-                    self.assertFalse(invalid_result.get("authorized", True), route)
-                    self.assertFalse(invalid_result.get("decisive", True), route)
-                    self.assertEqual(invalid_result.get("blocker_class"), "contract_bug", route)
-                    self.assertEqual(invalid_result.get("reason"), "missing_path_entered_control", route)
+                for expected_reason, invalid_bytes in proofgate_invalid_acceptance_route_cases():
+                    pl_local.write_text(invalid_bytes, encoding="utf-8")
+                    for route in ("direct", "delegated", "lane"):
+                        invalid_result = proofgate_receipts.verify_proofgate_preflight_intake(
+                            r_local,
+                            rm_local,
+                            pl_local,
+                            acceptance_route=route,
+                        )
+                        self.assertIsInstance(invalid_result, dict)
+                        self.assertFalse(invalid_result.get("authorized", True), route)
+                        self.assertFalse(invalid_result.get("decisive", True), route)
+                        self.assertEqual(invalid_result.get("blocker_class"), "contract_bug", route)
+                        self.assertEqual(invalid_result.get("reason"), expected_reason, route)
 
         run_proofgate_contract(nodeid, _contract)
 

@@ -6,13 +6,19 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import hashlib
 from pathlib import Path
 import pytest
 
 from .proofgate_tdd_guard import (
     ProofgateMissingCapabilityError,
+    PROOFGATE_GRANDFATHER_CUTOFF_OID,
+    PROOFGATE_GRANDFATHER_RAW_ITEM,
+    PROOFGATE_GRANDFATHER_SERVER_DATE,
+    PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
     emit_mutation_observable,
     guard_proofgate_nodeid,
+    proofgate_grandfather_plan_bytes,
     run_proofgate_contract,
 )
 
@@ -25,12 +31,8 @@ def _get_validator_script() -> Path:
     return script
 
 
-PROOFGATE_GRANDFATHER_TIMESTAMP = "2026-07-29T22:09:58Z"
-
 OBJECT_358_SPEC = "0196f19c7e9fd90e9a707de076271057b521e1d1:plans/detailed-board-silent-degradation-358-20260728.md"
 OBJECT_288_SPEC = "4e7dbf419b85ffc5e57b43d424a680b1e92e9461:plans/detailed-288-fab-broker-readmission-20260726.md"
-CUTOFF_COMMIT_OID = "5328694ae31b4f13f091903d96ed89395d74f3b2"
-SUCCESSOR_COMMIT_OID = "a3fbb196b3b57d75e403bcea3bad972e9491f675"
 
 
 def _load_git_object_bytes(spec: str) -> str:
@@ -166,8 +168,8 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
                 raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")
 
-            bytes_358 = _load_git_object_bytes(OBJECT_358_SPEC)
-            contracts = goal_coverage.extract_acceptance_contracts(bytes_358)
+            grandfather_plan = proofgate_grandfather_plan_bytes()
+            contracts = goal_coverage.extract_acceptance_contracts(grandfather_plan)
             cutoff_bytes_parsed = bool(contracts)
             if not cutoff_bytes_parsed:
                 emit_mutation_observable(
@@ -177,18 +179,47 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             self.assertTrue(cutoff_bytes_parsed, "trusted cutoff criterion bytes must remain parseable")
             check_res = goal_coverage.check_acceptance_falsifiers(
                 contracts,
-                cutoff_commit_oid=CUTOFF_COMMIT_OID,
-                successor_commit_oid=SUCCESSOR_COMMIT_OID,
-                grandfather_timestamp=PROOFGATE_GRANDFATHER_TIMESTAMP,
+                cutoff_commit_oid=PROOFGATE_GRANDFATHER_CUTOFF_OID,
+                successor_commit_oid=PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+                server_attested_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
             )
+            raw_item_sha256 = hashlib.sha256(
+                PROOFGATE_GRANDFATHER_RAW_ITEM.encode("utf-8")
+            ).hexdigest()
             cond = (
                 isinstance(check_res, dict)
                 and check_res.get("valid", False) is True
-                and ("grandfathered" in check_res.get("warnings", []) or check_res.get("disposition") == "grandfathered")
+                and check_res.get("disposition") == "grandfathered"
+                and check_res.get("grandfather_records") == [
+                    {
+                        "criterion_id": "EC-P1-1",
+                        "raw_item_sha256": raw_item_sha256,
+                        "server_attested_pre_grammar_date": PROOFGATE_GRANDFATHER_SERVER_DATE,
+                    }
+                ]
             )
             if not cond:
                 emit_mutation_observable("ec-proofgate-7.grandfathering", getattr(self, "record_property", None))
-            self.assertTrue(check_res.get("valid", False))
+            self.assertTrue(cond, check_res)
+
+            validator_script = _get_validator_script()
+            with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
+                tf.write(grandfather_plan)
+                tf_path = tf.name
+            proc = subprocess.run(
+                [sys.executable, str(validator_script), tf_path],
+                capture_output=True,
+                text=True,
+            )
+            output = proc.stdout + proc.stderr
+            warning_lines = [
+                line for line in output.splitlines() if "WARN" in line
+            ]
+            self.assertEqual(proc.returncode, 0, output)
+            self.assertEqual(len(warning_lines), 1, output)
+            self.assertIn("grandfathered", warning_lines[0])
+            self.assertIn(PROOFGATE_GRANDFATHER_SERVER_DATE, warning_lines[0])
+            self.assertNotIn("ERROR", output)
 
         run_proofgate_contract(nodeid, _contract)
 
@@ -203,14 +234,18 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
                 raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")
 
-            bytes_358 = _load_git_object_bytes(OBJECT_358_SPEC)
-            new_plan = bytes_358.replace("Acceptance Criteria", "Acceptance Criteria\n- [ ] EC-NEW-1 — proven by t")
+            grandfather_plan = proofgate_grandfather_plan_bytes()
+            new_plan = grandfather_plan.replace(
+                "register_validator`",
+                "register_validator_changed`",
+            )
+            self.assertNotEqual(new_plan, grandfather_plan)
             contracts = goal_coverage.extract_acceptance_contracts(new_plan)
             check_res = goal_coverage.check_acceptance_falsifiers(
                 contracts,
-                cutoff_commit_oid=CUTOFF_COMMIT_OID,
-                successor_commit_oid=SUCCESSOR_COMMIT_OID,
-                grandfather_timestamp=PROOFGATE_GRANDFATHER_TIMESTAMP,
+                cutoff_commit_oid=PROOFGATE_GRANDFATHER_CUTOFF_OID,
+                successor_commit_oid=PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+                server_attested_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
             )
             self.assertFalse(check_res.get("valid", True), "Changed or new criterion must hard-fail grandfathering check")
 
