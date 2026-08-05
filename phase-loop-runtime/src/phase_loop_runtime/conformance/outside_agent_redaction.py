@@ -54,6 +54,32 @@ def sanitize_outside_agent_verdict(
     return replace(verdict, blockers=blockers, status=status)
 
 
+def redact_outside_agent_serialized_payload(value: Any) -> Any:
+    """Apply the final metadata-only scalar gate to a constructed payload.
+
+    Builders choose the closed output shape; this independent final pass rejects
+    raw-field names and replaces secret-shaped scalar values before bytes reach
+    either CLI sink.
+    """
+    if isinstance(value, Mapping):
+        rendered: dict[str, Any] = {}
+        for key, child in value.items():
+            key_text = str(key)
+            if key_text.lower() in _RAW_FIELD_NAMES or any(
+                fragment in key_text.lower() for fragment in _SECRET_FIELD_FRAGMENTS
+            ):
+                raise ValueError("outside-agent serialized payload contains a raw field")
+            rendered[key_text] = redact_outside_agent_serialized_payload(child)
+        return rendered
+    if isinstance(value, list):
+        return [redact_outside_agent_serialized_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact_outside_agent_serialized_payload(item) for item in value]
+    if isinstance(value, str) and any(marker in value for marker in _SECRET_VALUE_MARKERS):
+        return "[redacted]"
+    return value
+
+
 def _walk_metadata(value: Any, path: str, blockers: list[OutsideAgentBlocker]) -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
@@ -119,5 +145,6 @@ def _check_key(key: str, path: str, blockers: list[OutsideAgentBlocker]) -> None
 
 __all__ = [
     "assert_outside_agent_metadata_only",
+    "redact_outside_agent_serialized_payload",
     "sanitize_outside_agent_verdict",
 ]
