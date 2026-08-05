@@ -209,7 +209,6 @@ def _parse_junit(facts: dict[str, Any], runner_manifest: dict[str, Any]) -> dict
             if nodeid in governed_cases:
                 raise ValueError("JUnit expected case duplicated")
             governed_cases[nodeid] = case
-            outcomes.append({"name": name, "outcome": outcome})
             if failure is not None:
                 failed_ids.append(nodeid)
             if skipped is not None:
@@ -218,6 +217,7 @@ def _parse_junit(facts: dict[str, Any], runner_manifest: dict[str, Any]) -> dict
             raise ValueError("JUnit node binding property missing")
         elif outcome != "skipped":
             raise ValueError("JUnit unrelated case did not skip")
+        outcomes.append({"name": name, "outcome": outcome})
     if global_failures != summary["failures"] or global_skips != summary["skipped"]:
         raise ValueError("JUnit global case summary mismatch")
     lifecycle_summary = {"tests": len(governed_cases), "failures": len(failed_ids), "skipped": len(skipped_ids)}
@@ -235,7 +235,7 @@ def _parse_junit(facts: dict[str, Any], runner_manifest: dict[str, Any]) -> dict
     passed = summary["tests"] - summary["failures"] - summary["skipped"]
     if f"{summary['failures']} failed, {passed} passed, {summary['skipped']} skipped," not in raw_log or any(f"FAILED {nodeid}" not in raw_log for nodeid in failed_ids):
         raise ValueError("runner log summary mismatch")
-    return {**lifecycle_summary, "cases": outcomes}
+    return {"tests": summary["tests"], "failures": summary["failures"], "skipped": summary["skipped"], "cases": outcomes}
 
 
 def _validate_mutations(facts: dict[str, Any]) -> list[dict[str, Any]]:
