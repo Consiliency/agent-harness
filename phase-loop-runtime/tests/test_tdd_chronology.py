@@ -726,7 +726,7 @@ def _pr_b_write_decisive_bootstrap_artifacts(
         "tests.proofgate_tdd_guard",
         "-o",
         "junit_family=legacy",
-        f"--junitxml=$PHASE_LOOP_RUN_DIR/{cand_junit_filename}",
+        f"--junitxml={run_dir.resolve()}/{cand_junit_filename}",
         "-q",
     )
     cand_argv = ["pytest", *cand_pytest_args]
@@ -4897,7 +4897,13 @@ def test_pr_r_blocker_fable_f004_explicit_admin_preflight_invokes_live_preflight
     assert output.read_text(encoding="utf-8") == "{}"
 
 
-def test_pr_r_blocker_fable_f005_bootstrap_candidate_capture_argv_is_bound_to_11_nodeids():
+def test_pr_r_blocker_fable_f005_bootstrap_candidate_capture_argv_is_bound_to_11_nodeids(monkeypatch, tmp_path):
+    run_dir = str(tmp_path.resolve())
+    candidate_oid = "a" * 40
+    monkeypatch.setenv("PHASE_LOOP_RUN_DIR", run_dir)
+    monkeypatch.setenv("PHASE_LOOP_RUN_ID", "coordinator-candidate")
+    monkeypatch.setenv("PHASE_LOOP_CANDIDATE_OID", candidate_oid)
+
     try:
         candidate_args = coordinator_evidence_capture_pytest_args("bootstrap_candidate")
         candidate_argv = coordinator_evidence_capture_argv("bootstrap_candidate")
@@ -4919,18 +4925,23 @@ def test_pr_r_blocker_fable_f005_bootstrap_candidate_capture_argv_is_bound_to_11
         "tests.proofgate_tdd_guard",
         "-o",
         "junit_family=legacy",
-        "--junitxml=$PHASE_LOOP_RUN_DIR/compat-candidate.junit.xml",
+        f"--junitxml={run_dir}/compat-candidate.junit.xml",
         "-q",
     )
     assert candidate_argv == (
         "env",
+        f"PHASE_LOOP_RUN_DIR={run_dir}",
+        "PHASE_LOOP_RUN_ID=coordinator-candidate",
+        f"PHASE_LOOP_CANDIDATE_OID={candidate_oid}",
         "PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE=1",
-        "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING=$PHASE_LOOP_RUN_DIR/bootstrap-candidate-binding.json",
+        f"PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING={run_dir}/bootstrap-candidate-binding.json",
         sys.executable,
         "-m",
         "pytest",
         *candidate_args,
     )
+    assert all("$PHASE_LOOP_RUN_DIR" not in arg for arg in candidate_argv)
+    assert all("$PHASE_LOOP_RUN_DIR" not in arg for arg in candidate_args)
 
 
 def test_pr_r_blocker_fable_f006_pr_b_only_requires_candidate_evidence():
@@ -5172,3 +5183,252 @@ def test_pr_r_blocker_fable_f007_producer_output_satisfies_decisive_pr_b_verifie
             evidence_by_mode={"forced_red": ("compat-forced-red.junit.xml", "phase_reports_forced_red.json")},
         )
         assert captured_red["mode"] == "forced_red"
+
+
+def _setup_real_repo_candidate_history():
+    from .proofgate_tdd_guard import ORIGINAL_TESTS_LANDING_OID
+
+    tmp = tempfile.TemporaryDirectory()
+    repo = Path(tmp.name) / "repo"
+    source_repo = Path(__file__).resolve().parents[2]
+
+    subprocess.run(
+        ["git", "clone", "--local", str(source_repo), str(repo)],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "checkout", "-b", "selector-repair-base", ORIGINAL_TESTS_LANDING_OID],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "checkout", "-b", "selector-repair-red"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    chron_src = Path(__file__)
+    (repo / "phase-loop-runtime/tests/test_tdd_chronology.py").write_bytes(chron_src.read_bytes())
+    subprocess.run(
+        ["git", "add", "phase-loop-runtime/tests/test_tdd_chronology.py"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Selector repair RED"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "checkout", "-b", "selector-repair-green"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    guard_src = chron_src.parent / "proofgate_tdd_guard.py"
+    verifier_src = chron_src.parent / "proofgate_bootstrap_verifier.py"
+    (repo / "phase-loop-runtime/tests/proofgate_tdd_guard.py").write_bytes(guard_src.read_bytes())
+    (repo / "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py").write_bytes(verifier_src.read_bytes())
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "phase-loop-runtime/tests/proofgate_tdd_guard.py",
+            "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
+        ],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Selector repair GREEN"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "checkout", "selector-repair-base"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "merge", "--no-ff", "selector-repair-green", "-m", "Merge selector repair"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    selector_landing_oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    subprocess.run(
+        ["git", "checkout", "-b", "proofgate-pr-b"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    for rel_path in PR_B_5_PATHS:
+        src = source_repo / rel_path
+        dst = repo / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        base_content = src.read_bytes() if src.exists() else b""
+        dst.write_bytes(base_content + f"# candidate {rel_path}\n".encode("utf-8"))
+
+    subprocess.run(
+        ["git", "add", *PR_B_5_PATHS],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "PR-B candidate"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    candidate_oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    pr_metadata = _valid_pr_metadata(candidate_oid, selector_landing_oid, "PR-B")
+    digest = hashlib.sha256(
+        subprocess.run(
+            ["git", "diff-tree", "--raw", "-r", "-z", selector_landing_oid, candidate_oid],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        ).stdout
+    ).hexdigest()
+    seats, chronology = _valid_seats(digest)
+    _obs, boundary, coordinator_root, coordinator_tmp = _pr_b_observed_bootstrap_boundary(
+        repo,
+        selector_landing_oid,
+        candidate_oid,
+        pr_metadata,
+        seats,
+        chronology,
+        original_tests_landing_oid=ORIGINAL_TESTS_LANDING_OID,
+    )
+
+    _thaw_coordinator_root(coordinator_root)
+
+    for name in ("phase_reports_candidate.json", "phase_reports_candidate.jsonl"):
+        path = coordinator_root / name
+        if path.exists():
+            path.unlink()
+
+    return (
+        tmp,
+        repo,
+        ORIGINAL_TESTS_LANDING_OID,
+        selector_landing_oid,
+        candidate_oid,
+        boundary,
+        coordinator_root,
+        coordinator_tmp,
+    )
+
+
+def test_pr_r_blocker_fable_f008_real_producer_subprocess_execution_satisfies_verifier_contract(monkeypatch):
+    try:
+        from .proofgate_bootstrap_verifier import (
+            coordinator_evidence_capture_argv,
+        )
+    except (ImportError, AttributeError) as exc:
+        raise ProofgateMissingCapabilityError(
+            "FABLE-F008::producer_subprocess_contract_unimplemented"
+        ) from exc
+
+    (
+        tmp,
+        repo,
+        _original_oid,
+        _selector_landing_oid,
+        candidate_oid,
+        _boundary,
+        coordinator_root,
+        coordinator_tmp,
+    ) = _setup_real_repo_candidate_history()
+
+    monkeypatch.setenv("PHASE_LOOP_RUN_DIR", str(coordinator_root))
+    monkeypatch.setenv("PHASE_LOOP_RUN_ID", "coordinator-candidate")
+    monkeypatch.setenv("PHASE_LOOP_CANDIDATE_OID", candidate_oid)
+
+    # Subprocess-level execution of canonical shell-free producer command
+    cand_argv = coordinator_evidence_capture_argv("bootstrap_candidate")
+    env = dict(os.environ)
+    env["PHASE_LOOP_RUN_DIR"] = str(coordinator_root)
+    env["PHASE_LOOP_RUN_ID"] = "coordinator-candidate"
+    env["PHASE_LOOP_CANDIDATE_OID"] = candidate_oid
+
+    repo_pkg = repo / "phase-loop-runtime"
+
+    proc = subprocess.run(
+        list(cand_argv),
+        cwd=repo_pkg,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    combined_out = f"{proc.stdout}\n{proc.stderr}"
+    assert proc.returncode == 1, (
+        f"Producer subprocess expected returncode 1 (governed RED tests), got {proc.returncode}:\n"
+        f"{combined_out}"
+    )
+
+    forbidden_errors = (
+        "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING must",
+        "original_tests_landing_oid mismatch",
+        "Candidate mode changes count mismatch",
+        "No module named",
+    )
+    for forbidden in forbidden_errors:
+        assert forbidden not in combined_out, f"Found setup/path error in output: {forbidden}\n{combined_out}"
+
+    cand_junit = coordinator_root / "compat-candidate.junit.xml"
+    cand_reports = coordinator_root / "phase_reports_candidate.json"
+
+    assert cand_junit.is_file(), f"Missing junit artifact: {cand_junit}"
+    assert cand_reports.is_file(), f"Missing phase reports artifact: {cand_reports}"
+
+    payload = json.loads(cand_reports.read_text(encoding="utf-8"))
+    assert payload.get("schema") == "proofgate_phase_reports.v1"
+    assert payload.get("exitstatus") == 1
+    assert payload.get("capture", {}).get("run_identity") == "coordinator-candidate"
+    assert payload.get("capture", {}).get("mode") == "bootstrap_candidate"
+
+    rep_nodeids = tuple(
+        r["nodeid"] for r in payload.get("reports", []) if isinstance(r, dict) and "nodeid" in r
+    )
+    assert rep_nodeids == PR_B_BOOTSTRAP_CANDIDATE_NODEIDS
