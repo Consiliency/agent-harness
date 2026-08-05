@@ -323,7 +323,7 @@ _MUTATION_OUTPUT_NORMALIZER_SOURCE = textwrap.dedent(
     def normalize_mutation_output(text):
         text = re.sub(r"object at 0x[0-9a-fA-F]+", "object at <address>", text)
         text = re.sub(r"pytest-[0-9]+", "pytest-<run>", text)
-        return re.sub(r" in [0-9.]+s", " in <duration>", text)
+        return re.sub(r" in [0-9.]+s(?: \\([0-9:]+\\))?", " in <duration>", text)
     """
 )
 _MUTATION_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
@@ -490,7 +490,7 @@ _MUTATION_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
     raise SystemExit(1)
     """
 )
-_EC_PROBE_RUNNER = textwrap.dedent(
+_EC_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
     """
     import hashlib, json, os, re, subprocess, sys
     from pathlib import Path
@@ -530,8 +530,8 @@ _EC_PROBE_RUNNER = textwrap.dedent(
             "cwd": str(runtime),
             "environment": environment,
             "exit_code": completed.returncode,
-            "stdout_sha256": hashlib.sha256(re.sub(r" in [0-9.]+s", " in <duration>", completed.stdout).encode("utf-8")).hexdigest(),
-            "stderr_sha256": hashlib.sha256(re.sub(r" in [0-9.]+s", " in <duration>", completed.stderr).encode("utf-8")).hexdigest(),
+            "stdout_sha256": hashlib.sha256(normalize_mutation_output(completed.stdout).encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(normalize_mutation_output(completed.stderr).encode("utf-8")).hexdigest(),
             "classification": classification,
         },
     }
@@ -2326,6 +2326,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         "node=test_dispatch_bypass CONFORM_RED::dispatch_bypass "
         "monkeypatch=<MonkeyPatch object at <address>> "
         f"digest={digest} pytest-<run> in <duration>"
+    )
+    assert normalize("1 passed in 196.00s (0:03:15)") == "1 passed in <duration>"
+    assert _EC_PROBE_RUNNER.startswith(_MUTATION_OUTPUT_NORMALIZER_SOURCE)
+    assert (
+        "hashlib.sha256(normalize_mutation_output(completed.stdout).encode(\"utf-8\")).hexdigest()"
+        in _EC_PROBE_RUNNER
+    )
+    assert (
+        "hashlib.sha256(normalize_mutation_output(completed.stderr).encode(\"utf-8\")).hexdigest()"
+        in _EC_PROBE_RUNNER
     )
     assert set(CONFORM_MUTATION_DEFINITIONS) == {
         "M-CONFORM-1-RESTORE-ALLOWLIST",
