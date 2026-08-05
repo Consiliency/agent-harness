@@ -311,6 +311,19 @@ def _validate_corpus(facts: dict[str, Any]) -> dict[str, Any]:
     return corpus
 
 
+def _wheel_payload_members(members: dict[str, str]) -> dict[str, str]:
+    dist_info_roots = {member.split("/", 1)[0] for member in members if member.split("/", 1)[0].endswith(".dist-info")}
+    if len(dist_info_roots) != 1:
+        raise ValueError("wheel must contain one dist-info root")
+    dist_info_root = next(iter(dist_info_roots))
+    if not dist_info_root.startswith("phase_loop_runtime-") or dist_info_root == "phase_loop_runtime-.dist-info":
+        raise ValueError("wheel dist-info root does not match phase-loop-runtime")
+    data_member = f"{dist_info_root[:-len('.dist-info')]}.data/data/share/phase-loop-runtime/protocol/protocol.md"
+    if any(not (member.startswith("phase_loop_runtime/") or member.startswith(f"{dist_info_root}/") or member == data_member) for member in members):
+        raise ValueError("wheel contains an unexpected top-level member")
+    return {member: digest for member, digest in members.items() if member.startswith("phase_loop_runtime/") or member == data_member}
+
+
 def _validate_packages(facts: dict[str, Any], bindings: dict[str, Any], corpus: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, str]]]:
     expected_contract, _ = _expected_contract_members()
     package, archives = facts.get("package"), facts.get("archives")
@@ -327,12 +340,10 @@ def _validate_packages(facts: dict[str, Any], bindings: dict[str, Any], corpus: 
         if any(members.get(member) != digest for member, digest in expected_contract.items()):
             raise ValueError("archive contract mirror differs from packaged contract")
         archive_members[name] = members
-    direct_runtime = {k: v for k, v in archive_members["direct-wheel"].items() if k.startswith("phase_loop_runtime/")}
-    derived_runtime = {k: v for k, v in archive_members["sdist-derived-wheel"].items() if k.startswith("phase_loop_runtime/")}
-    if direct_runtime != derived_runtime:
+    direct_payload = _wheel_payload_members(archive_members["direct-wheel"])
+    derived_payload = _wheel_payload_members(archive_members["sdist-derived-wheel"])
+    if direct_payload != derived_payload:
         raise ValueError("wheel variants contain different runtime bytes")
-    if any(any(not (member.startswith("phase_loop_runtime/") or ".dist-info/" in member) for member in archive_members[name]) for name in ("direct-wheel", "sdist-derived-wheel")):
-        raise ValueError("wheel contains an unexpected top-level member")
     installed = _read_json_fact(facts.get("installed_package"))
     if set(installed) != {"package", "module_path", "variants", "contract_members", "corpus_partitions", "executions"} or installed["package"] != "phase-loop-runtime" or installed["module_path"] != bindings["module_path"] or installed["variants"] != list(_PACKAGE_VARIANTS) or installed["contract_members"] != expected_contract or installed["corpus_partitions"] != corpus["partitions"]:
         raise ValueError("installed-package evidence binding mismatch")
