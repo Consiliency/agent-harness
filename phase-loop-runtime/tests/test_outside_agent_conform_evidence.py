@@ -323,7 +323,7 @@ _MUTATION_OUTPUT_NORMALIZER_SOURCE = textwrap.dedent(
     def normalize_mutation_output(text):
         text = re.sub(r"object at 0x[0-9a-fA-F]+", "object at <address>", text)
         text = re.sub(r"pytest-[0-9]+", "pytest-<run>", text)
-        return re.sub(r" in [0-9.]+s", " in <duration>", text)
+        return re.sub(r" in [0-9.]+s(?: \\([0-9:]+\\))?", " in <duration>", text)
     """
 )
 _MUTATION_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
