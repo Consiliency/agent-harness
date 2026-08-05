@@ -1660,7 +1660,7 @@
                 "selector_nodeids_count": 11,
                 "selector_nodeids_digest_serialization": "compact_json_exact_displayed_order_plus_lf",
                 "selector_nodeids_sha256": "9f5ccd2d7d101f7681e1f93c5c6248502f76859f9c74df9289ecf312497c1bb7",
-                "source_anchor_exception": "bypass_assert_source_anchor_for_exact_11_after_binding_because_five_candidate_files_change_PG_A_LAUNCH_and_PG_A_PANEL_bytes",
+                "source_anchor_exception": "bypass_assert_source_anchor_only_for_exact_five_selected_PG_A_LAUNCH_or_PG_A_PANEL_contracts_after_binding_while_six_selected_PG_A_RUNNER_or_PG_A_WORKFLOW_contracts_execute_unchanged_frozen_anchor_checks",
                 "verifier_signature": "def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, expected_attended_stage: str | None = None, expected_attended_module_identity: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:",
                 "verifier_signature_posture": "preserve_exact_signature_bytes_body_only_mode_aware"
               },
@@ -1734,7 +1734,7 @@
               },
               "issue": "Consiliency/agent-harness#456",
               "mandatory_prerequisite": "plan_and_manifest_amendment_then_renewed_exact_digest_plan_gate_before_PR_R",
-              "plan_sha256": "427358ed06f7fb848e06fd978fbe4ac3ab32bcfa35fcfc1f982a99d98a2e61d9",
+              "plan_sha256": "bd7f834025cdeb4a7cae5e9d470c0a9b1431957c433a6383bb9a7dd0503b9d6e",
               "pre_marker_pr_b_evidence_profile": {
                 "admin_prerequisite": "proofgate_protected_ref_admin_prerequisite.v1_independent_merge_blocking_agent-harness#454",
                 "consumed_by": [
