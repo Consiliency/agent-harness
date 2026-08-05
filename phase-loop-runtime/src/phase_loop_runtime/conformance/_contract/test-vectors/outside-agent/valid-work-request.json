@@ -1,0 +1,43 @@
+{
+  "submission_schema_version": "outside_agent_submission.v0.1",
+  "submission_id": "oavectors-valid-work-request",
+  "submission_kind": "work_request",
+  "claim_posture": "claims_only",
+  "acceptance_truth_owner": "governed_pipeline",
+  "summary": "Request schema-safe outside-agent intake for vector coverage",
+  "producer": {
+    "agent_name": "outside-agent",
+    "agent_version": "0.1.0"
+  },
+  "evidence_refs": [
+    {
+      "evidence_ref_schema_version": "outside_agent_evidence_ref.v0.1",
+      "repo_owner": "Consiliency",
+      "repo_name": "spec",
+      "immutable_git_ref": "6058cdece6f6404bb653b9b4c5bbdd886b433a3d",
+      "repo_relative_path": "plans/oaspec/FIELD-NAME-FREEZE.md",
+      "digest_algorithm": "sha256",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_role": "documentation",
+      "source_bundle_refs": [
+        {
+          "bundle_id": "bundle-work-request",
+          "bundle_manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "bundle_manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "claimed_path_membership": {
+        "proof_type": "bundle_manifest_path",
+        "included": true
+      },
+      "redaction_posture": "metadata_only"
+    }
+  ],
+  "work_request": {
+    "goal": "Add vector coverage for outside-agent work requests",
+    "constraints": [
+      "Keep the corpus metadata-only",
+      "Stay inside repo-relative evidence references"
+    ]
+  }
+}
