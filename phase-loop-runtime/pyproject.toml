@@ -127,6 +127,7 @@ phase_loop_runtime = [
     # pinned install resolves them via importlib.resources (ABDFREEZE).
     "advisor_board/fixtures/*.toml",
     "advisor_board/CONTRACTS.md",
+    "conformance/_contract/**",
 ]
 
 # TESTDECOUPLE SL-0: the dotfiles_integration marker. Integration-bucket tests
