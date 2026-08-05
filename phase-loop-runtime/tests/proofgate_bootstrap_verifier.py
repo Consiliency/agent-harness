@@ -1560,7 +1560,25 @@ def coordinator_evidence_capture_pytest_args(
     if mode not in evidence_map:
         raise ProofgateBootstrapVerifierError(f"unknown coordinator evidence mode: {mode}")
     junit_filename, _phase_reports_filename = evidence_map[mode]
-    junit_path = f"$PHASE_LOOP_RUN_DIR/{junit_filename}" if run_dir is None else str(run_dir / junit_filename)
+
+    if run_dir is not None:
+        run_dir_raw = Path(run_dir)
+        if not run_dir_raw.is_absolute() or not run_dir_raw.is_dir():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR must be an existing absolute directory")
+        resolved_run_dir = run_dir_raw.resolve()
+        junit_path = str(resolved_run_dir / junit_filename)
+    elif mode == "bootstrap_candidate":
+        env_run_dir = os.environ.get("PHASE_LOOP_RUN_DIR")
+        if not env_run_dir or not env_run_dir.strip():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR environment variable is missing or empty")
+        run_dir_raw = Path(env_run_dir.strip())
+        if not run_dir_raw.is_absolute() or not run_dir_raw.is_dir():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR must be an existing absolute directory")
+        resolved_run_dir = run_dir_raw.resolve()
+        junit_path = str(resolved_run_dir / junit_filename)
+    else:
+        junit_path = f"$PHASE_LOOP_RUN_DIR/{junit_filename}"
+
     if nodeids is not None:
         nodeid_args = tuple(nodeids)
     elif mode == "bootstrap_candidate":
@@ -1590,16 +1608,45 @@ def coordinator_evidence_capture_argv(
         "forced_red": ("PHASE_LOOP_TDD_EXPECT_PROOFGATE=1",),
         "ordinary_hermetic": ("PHASE_LOOP_PROOFGATE_ORDINARY_HERMETIC=1",),
         "attended_live": ("PHASE_LOOP_PROOFGATE_ATTENDED_LIVE=1",),
-        "bootstrap_candidate": (
-            "PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE=1",
-            "PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING=$PHASE_LOOP_RUN_DIR/bootstrap-candidate-binding.json",
-        ),
     }
     evidence_map = dict(evidence_by_mode or COORDINATOR_EVIDENCE_BY_MODE)
     if "bootstrap_candidate" not in evidence_map:
         evidence_map["bootstrap_candidate"] = ("compat-candidate.junit.xml", "phase_reports_candidate.json")
     if mode not in evidence_map:
         raise ProofgateBootstrapVerifierError(f"unknown coordinator evidence mode: {mode}")
+
+    if mode == "bootstrap_candidate":
+        env_run_dir = os.environ.get("PHASE_LOOP_RUN_DIR")
+        if not env_run_dir or not env_run_dir.strip():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR environment variable is missing or empty")
+        run_dir_raw = Path(env_run_dir.strip())
+        if not run_dir_raw.is_absolute() or not run_dir_raw.is_dir():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_DIR must be an existing absolute directory")
+        resolved_run_dir = run_dir_raw.resolve()
+
+        env_run_id = os.environ.get("PHASE_LOOP_RUN_ID")
+        if not env_run_id or not env_run_id.strip():
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_RUN_ID environment variable is missing or empty")
+
+        env_cand_oid = os.environ.get("PHASE_LOOP_CANDIDATE_OID")
+        if not env_cand_oid or not re.match(r"^[0-9a-fA-F]{40}$", env_cand_oid.strip()):
+            raise ProofgateBootstrapVerifierError("PHASE_LOOP_CANDIDATE_OID must be a 40-hex commit OID")
+        candidate_oid = env_cand_oid.strip()
+
+        binding_path = resolved_run_dir / "bootstrap-candidate-binding.json"
+
+        env_vars = (
+            f"PHASE_LOOP_RUN_DIR={resolved_run_dir}",
+            f"PHASE_LOOP_RUN_ID={env_run_id.strip()}",
+            f"PHASE_LOOP_CANDIDATE_OID={candidate_oid}",
+            "PHASE_LOOP_TDD_EXPECT_PROOFGATE_BOOTSTRAP_CANDIDATE=1",
+            f"PHASE_LOOP_TDD_PROOFGATE_BOOTSTRAP_BINDING={binding_path}",
+        )
+        pytest_args = coordinator_evidence_capture_pytest_args(
+            mode, run_dir=resolved_run_dir, evidence_by_mode=evidence_map, nodeids=nodeids
+        )
+        return ("env", *env_vars, sys.executable, "-m", "pytest", *pytest_args)
+
     if mode not in mode_env:
         raise ProofgateBootstrapVerifierError(f"unknown coordinator evidence mode: {mode}")
     env_vars = mode_env[mode]
