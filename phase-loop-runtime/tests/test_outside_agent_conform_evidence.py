@@ -2327,6 +2327,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         "monkeypatch=<MonkeyPatch object at <address>> "
         f"digest={digest} pytest-<run> in <duration>"
     )
+    assert normalize("1 passed in 196.00s (0:03:15)") == "1 passed in <duration>"
     assert set(CONFORM_MUTATION_DEFINITIONS) == {
         "M-CONFORM-1-RESTORE-ALLOWLIST",
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
