@@ -1734,7 +1734,7 @@ def verify_coordinator_evidence_capture(
             expected_module_identity if mode == "attended_live" else None
         ),
     )
-    return {**accounting, "reports": payload["reports"], "runner_envelope": payload.get("runner_envelope")}
+    return {**accounting, "mode": mode, "reports": payload["reports"], "runner_envelope": payload.get("runner_envelope")}
 
 
 def _decode_observed_object(name: str, value: str) -> dict[str, Any]:

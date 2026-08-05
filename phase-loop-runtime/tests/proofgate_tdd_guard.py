@@ -295,6 +295,8 @@ COORDINATOR_EVIDENCE_FILES: dict[str, tuple[str, str]] = {
     "proofgate-candidate-ordinary.junit.xml": ("proofgate-candidate-ordinary.phase-reports.json", "ordinary_hermetic"),
     "proofgate-candidate-attended.junit.xml": ("proofgate-candidate-attended.phase-reports.json", "attended_live"),
     "compat-candidate.junit.xml": ("phase_reports_candidate.json", "bootstrap_candidate"),
+    "compat-default.junit.xml": ("phase_reports_default.json", "default"),
+    "compat-forced-red.junit.xml": ("phase_reports_forced_red.json", "forced_red"),
 }
 
 
@@ -1489,6 +1491,88 @@ def _recover_runs_from_text(text: str) -> list[dict[str, Any]]:
     return runs
 
 
+def _parse_junit_testcase_data(junit_bytes: bytes) -> dict[str, dict[str, Any]]:
+    if not junit_bytes:
+        return {}
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(junit_bytes.decode("utf-8"))
+    except Exception:
+        return {}
+
+    data_by_nodeid: dict[str, dict[str, Any]] = {}
+    for tc in root.findall(".//testcase"):
+        classname = tc.get("classname", "")
+        name = tc.get("name", "")
+        nodeid_match = None
+        norm_cls = classname.lstrip(".")
+        for exp in EXPECTED_PHASE_NODEIDS:
+            exp_clean = exp.replace("phase-loop-runtime/", "")
+            parts = exp_clean.split("::")
+            file_mod = parts[0].replace("/", ".").replace(".py", "")
+            base_mod = parts[0].split("/")[-1].replace(".py", "")
+
+            valid_cls_names = {
+                file_mod,
+                f"tests.{file_mod}",
+                f"phase-loop-runtime.tests.{file_mod}",
+                f"phase_loop_runtime.tests.{file_mod}",
+                base_mod,
+                f"tests.{base_mod}",
+                f"phase-loop-runtime.tests.{base_mod}",
+                f"phase_loop_runtime.tests.{base_mod}",
+            }
+
+            if len(parts) == 3:
+                cls_name = parts[1]
+                fn_name = parts[2]
+                valid_cls_names = {f"{c}.{cls_name}" for c in valid_cls_names}
+                if name == fn_name and norm_cls in valid_cls_names:
+                    nodeid_match = exp
+                    break
+            elif len(parts) == 2:
+                fn_name = parts[1]
+                valid_2part_cls_names = {
+                    file_mod,
+                    f"tests.{file_mod}",
+                    f"phase-loop-runtime.tests.{base_mod}",
+                    f"phase_loop_runtime.tests.{base_mod}",
+                    base_mod,
+                    f"tests.{base_mod}",
+                }
+                if (name == fn_name or name == exp or name == exp_clean) and norm_cls in valid_2part_cls_names:
+                    nodeid_match = exp
+                    break
+
+        if nodeid_match:
+            tc_props: dict[str, str] = {}
+            for prop in tc.findall(".//property"):
+                pname = prop.get("name")
+                pval = prop.get("value", "true")
+                if pname:
+                    tc_props[pname] = pval
+
+            skip_elem = tc.find("skipped")
+            fail_elem = tc.find("failure")
+            if fail_elem is not None:
+                outcome = "failed"
+                exc_type = "AssertionError"
+            elif skip_elem is not None:
+                outcome = "skipped"
+                exc_type = "Skipped"
+            else:
+                outcome = "passed"
+                exc_type = None
+
+            data_by_nodeid[nodeid_match] = {
+                "properties": tc_props,
+                "outcome": outcome,
+                "exception_type": exc_type,
+            }
+
+    return data_by_nodeid
+
+
 class ProofgateReportingPlugin:
     """Explicitly registered pytest plugin contract for PROOFGATE test phase reporting.
 
@@ -1578,6 +1662,12 @@ class ProofgateReportingPlugin:
             })
 
     def pytest_sessionfinish(self, session: Any, exitstatus: int):
+        current_argv = list(sys.argv)
+        current_cmd_digest = hashlib.sha256(json.dumps(current_argv).encode("utf-8")).hexdigest()
+        for r in self.phase_reports:
+            if isinstance(r, dict):
+                r["argv"] = current_argv
+                r["command_digest"] = current_cmd_digest
         run_dir = os.environ.get("PHASE_LOOP_RUN_DIR")
         target_path = self.output_path
         coordinator_capture: tuple[Path, str, str] | None = None
@@ -1669,6 +1759,17 @@ class ProofgateReportingPlugin:
                             junit_bytes = junit_path.read_bytes()
                         except OSError:
                             junit_bytes = b""
+                        if junit_bytes:
+                            junit_data_map = _parse_junit_testcase_data(junit_bytes)
+                            for r in self.phase_reports:
+                                if isinstance(r, dict):
+                                    nid = r.get("nodeid")
+                                    if nid in junit_data_map:
+                                        tc_data = junit_data_map[nid]
+                                        r_props = r.setdefault("properties", {})
+                                        r_props.update(tc_data["properties"])
+                                        r["outcome"] = tc_data["outcome"]
+                                        r["exception_type"] = tc_data["exception_type"]
                         payload["capture"] = {
                             "schema": "proofgate_coordinator_evidence_capture.v1",
                             "plugin": "tests.proofgate_tdd_guard",
@@ -1688,7 +1789,7 @@ class ProofgateReportingPlugin:
                     # Atomic write to target_path via temporary file
                     tmp_path = target_path.with_suffix(".tmp")
                     with open(tmp_path, "w", encoding="utf-8") as tmp_f:
-                        tmp_f.write(json.dumps(payload, indent=2, sort_keys=True))
+                        tmp_f.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
                         tmp_f.flush()
                         os.fsync(tmp_f.fileno())
                     os.replace(tmp_path, target_path)
