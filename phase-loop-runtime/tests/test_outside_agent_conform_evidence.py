@@ -2328,6 +2328,15 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         f"digest={digest} pytest-<run> in <duration>"
     )
     assert normalize("1 passed in 196.00s (0:03:15)") == "1 passed in <duration>"
+    assert _EC_PROBE_RUNNER.startswith(_MUTATION_OUTPUT_NORMALIZER_SOURCE)
+    assert (
+        "hashlib.sha256(normalize_mutation_output(completed.stdout).encode(\"utf-8\")).hexdigest()"
+        in _EC_PROBE_RUNNER
+    )
+    assert (
+        "hashlib.sha256(normalize_mutation_output(completed.stderr).encode(\"utf-8\")).hexdigest()"
+        in _EC_PROBE_RUNNER
+    )
     assert set(CONFORM_MUTATION_DEFINITIONS) == {
         "M-CONFORM-1-RESTORE-ALLOWLIST",
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
