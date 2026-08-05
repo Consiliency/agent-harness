@@ -1,0 +1,12 @@
+{
+  "verdict_schema_version": "outside_agent_route_verdict.v0.1",
+  "route": "accepted_for_merge",
+  "claim_posture": "claims_only",
+  "acceptance_truth_owner": "governed_pipeline",
+  "blocker": {
+    "class": "policy_gap",
+    "summary": "Merge acceptance is not an intake route",
+    "human_required": false
+  },
+  "notes": "Rejected because accepted_for_merge belongs to governed-pipeline review, not outside-agent intake"
+}
