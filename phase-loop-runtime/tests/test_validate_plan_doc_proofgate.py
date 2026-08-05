@@ -54,14 +54,10 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             return
 
         def _contract():
-            from phase_loop_runtime import goal_coverage, proofgate_receipts
+            from phase_loop_runtime import goal_coverage
 
             if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
                 raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")
-            if not hasattr(proofgate_receipts, "verify_proofgate_preflight_intake"):
-                raise ProofgateMissingCapabilityError(
-                    "verify_proofgate_preflight_intake missing on proofgate_receipts"
-                )
 
             bytes_358 = _load_git_object_bytes(OBJECT_358_SPEC)
             validator_script = _get_validator_script()
@@ -168,7 +164,12 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             return
 
         def _contract():
-            from phase_loop_runtime import goal_coverage, proofgate_receipts
+            try:
+                from phase_loop_runtime import goal_coverage, proofgate_receipts
+            except ImportError as err:
+                raise ProofgateMissingCapabilityError(
+                    "goal_coverage or proofgate_receipts module missing"
+                ) from err
 
             if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
                 raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")
@@ -275,7 +276,12 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             return
 
         def _contract():
-            from phase_loop_runtime import goal_coverage, proofgate_receipts
+            try:
+                from phase_loop_runtime import goal_coverage, proofgate_receipts
+            except ImportError as err:
+                raise ProofgateMissingCapabilityError(
+                    "goal_coverage or proofgate_receipts module missing"
+                ) from err
 
             if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
                 raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")

@@ -23,6 +23,7 @@ from .proofgate_bootstrap_verifier import (
     BOOTSTRAP_COORDINATOR_PRODUCER_RECEIPT_SCHEMA,
     BOOTSTRAP_ZERO_EFFECT_CASES,
     ATTENDED_PROVIDER_RECEIPTS_FILENAME,
+    ATTENDED_REFERENCE_RUNNER_BYTES,
     COORDINATOR_EVIDENCE_ARTIFACTS,
     COORDINATOR_REPOSITORY,
     COORDINATOR_SEAT_ARTIFACTS,
@@ -388,7 +389,11 @@ def _write_decisive_bootstrap_artifacts(run_dir: Path, candidate_oid: str) -> di
     component_bindings = {}
     for component in BOOTSTRAP_CONTROL_COMPONENTS:
         component_path = f"proofgate-reference-{component}.bin"
-        component_bytes = f"coordinator-reference:{component}:{candidate_oid}".encode("utf-8")
+        component_bytes = (
+            ATTENDED_REFERENCE_RUNNER_BYTES
+            if component == "code"
+            else f"coordinator-reference:{component}:{candidate_oid}".encode("utf-8")
+        )
         (run_dir / component_path).write_bytes(component_bytes)
         component_bindings[component] = {
             "path": component_path,

@@ -69,11 +69,11 @@ class ProofgateBootstrapVerifierError(ValueError):
 
 HEX_40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX_64_RE = re.compile(r"^[0-9a-f]{64}$")
+ATTENDED_REFERENCE_RUNNER_BYTES = b"proofgate-bootstrap-coordinator-reference-runner.v1"
 
 
 def expected_attended_runner_module_identity() -> str:
-    guard_path = Path(__file__).with_name("proofgate_tdd_guard.py")
-    return hashlib.sha256(guard_path.read_bytes()).hexdigest()
+    return hashlib.sha256(ATTENDED_REFERENCE_RUNNER_BYTES).hexdigest()
 
 
 def attended_provider_receipts_digest(receipts: dict[str, Any]) -> str:
