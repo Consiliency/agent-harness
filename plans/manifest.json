@@ -1927,6 +1927,50 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-06T02:42:36Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "proofgate_cross_landing_red_amendment": {
+              "authority_status": "amended_digest_requires_fresh_review_before_pr_r_dispatch",
+              "cross_landing_nodeid": "phase-loop-runtime/tests/test_tdd_chronology.py::test_pr_r_blocker_fable_f008_real_producer_subprocess_execution_satisfies_verifier_contract",
+              "issue": "Consiliency/agent-harness#463",
+              "plan_sha256": "41c4d442f4cd41b68823c5240b61b187d1299f9d6c79cecbec0c19617dd2938e",
+              "pr_b_gate": {
+                "candidate_accounting": "11/11/0/0/0",
+                "cross_landing_node": "unchanged_and_green_against_real_producer",
+                "full_suite": "green_without_deselection"
+              },
+              "pr_r_gate": {
+                "cross_landing_node": "expected_intended_assertion_red_because_pr_b_paths_absent",
+                "ordinary_suite": "green_with_only_exact_cross_landing_nodeid_deselected"
+              },
+              "predecessor_plan_sha256": "eaae0407b8ed66e744820e4b4f46c5064fc658a96cf9b990515f5d52f531fea2",
+              "prohibited_substitutes": [
+                "dummy_reports",
+                "injected_production_modules",
+                "copied_or_frozen_future_implementation_bytes",
+                "expected_nonzero_producer_exit",
+                "alternate_failing_or_deselected_nodeid"
+              ],
+              "ratification": {
+                "complete_board_seats": [
+                  "grok",
+                  "gpt-5.6-sol",
+                  "gemini",
+                  "opus"
+                ],
+                "early_prober": "terra",
+                "required_before": "PR-R_dispatch",
+                "separate_president": "fable"
+              },
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "schema": "proofgate_cross_landing_red_amendment.v1",
+              "sol_analysis_sha256": "295c71b52926dfb2094ac419010ce291f497a8f24dc7c0f49b2229575b393329"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1942,7 +1986,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-05T09:21:16Z"
+      "updated_at": "2026-08-06T02:42:36Z"
     },
     {
       "acceptance_criteria_count": null,
