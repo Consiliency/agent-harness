@@ -5414,6 +5414,32 @@ def _setup_real_repo_candidate_history():
     )
 
 
+def test_pr_r_blocker_terra_001_real_repo_history_honors_process_temp_root(monkeypatch, tmp_path):
+    process_tmp = tmp_path / "phase-loop-probe-tmp"
+    process_tmp.mkdir()
+    real_temporary_directory = tempfile.TemporaryDirectory
+
+    def sandboxed_temporary_directory(*args, **kwargs):
+        requested = kwargs.get("dir")
+        if requested is not None and Path(requested).resolve() != process_tmp.resolve():
+            raise OSError(30, "Read-only file system", str(requested))
+        kwargs["dir"] = process_tmp
+        return real_temporary_directory(*args, **kwargs)
+
+    class CopyObserved(Exception):
+        pass
+
+    def observe_copy(_source, destination, **_kwargs):
+        assert Path(destination).resolve().is_relative_to(process_tmp.resolve())
+        raise CopyObserved
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", sandboxed_temporary_directory)
+    monkeypatch.setattr(shutil, "copytree", observe_copy)
+
+    with pytest.raises(CopyObserved):
+        _setup_real_repo_candidate_history()
+
+
 def test_pr_r_blocker_fable_f008_real_producer_subprocess_execution_satisfies_verifier_contract(monkeypatch):
     try:
         from .proofgate_bootstrap_verifier import (
