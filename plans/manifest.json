@@ -978,6 +978,42 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-06T15:27:23Z",
+          "by": "codex-v10-coordinator",
+          "metadata": {
+            "digest_rebind": {
+              "plan_sha256": "721c9fb2a1ded3c2cf727168a27b0fc57be24957d17d91a97e4446fe50c95181",
+              "predecessor_plan_sha256": "68b1880af0631b6ffeca6ccbbf6ad2c60f3412e31e2db34cff530956811ac6e9",
+              "reason": "Consiliency/agent-harness#475_complete_candidate_reachable_history_and_selector_provenance_boundary",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            },
+            "superseded_review": {
+              "board_sha256": "545a37209ab818dd24b7b87e51a3721ec06a1667d36136e5f39d5d061983a6b0",
+              "early_terra_sha256": "4163560f582c03e9d7c6d98a516e825d1c9bb96b377945cacf461cd6181c7893",
+              "gemini_status": "non_probative_external_context_refs_unopened",
+              "grok_verdict": "AGREE",
+              "head": "7bb37cfa30163c93273fd3cacdfc778c4b08b5a2",
+              "opus_status": "DEGRADED_claude_tui_stalled",
+              "panel_sha256": "badd43988f5b0f9fc2e40fb29e90e88820c8c18e65e718ff759c7890c036dfbf",
+              "president_status": "DEGRADED_claude_tui_stalled",
+              "review_bundle_sha256": "9ff3b030bc3c33332ae53a536b4e9fe046a695826fbd609b3e0ea4d8992da129",
+              "sol_blocker": "path_simplified_candidate_history_and_overbroad_historical_oid_prohibition_conflicted_with_frozen_fixture",
+              "sol_verdict": "DISAGREE",
+              "status": "superseded_no_authorization"
+            },
+            "targeted_correction": {
+              "ancestry_hunk": "complete_unfiltered_git_rev_list_candidate_commit_without_pathspec",
+              "frozen_unchanged_hunks": "four_existing_non_ancestry_repair_hunks",
+              "repair_budget": "three_test_paths_six_logical_hunks_unchanged",
+              "selector_prohibition": "no_hardcoded_candidate_or_selection_commit",
+              "topology_provenance": "exact_historical_oids_remain_required_evidence_inputs_not_selectors",
+              "total_budget": "four_paths_seven_logical_hunks_unchanged"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -993,7 +1029,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-06T14:50:16Z"
+      "updated_at": "2026-08-06T15:27:23Z"
     },
     {
       "acceptance_criteria_count": null,
