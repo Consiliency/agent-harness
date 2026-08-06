@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -3035,10 +3036,19 @@ class ProofgateAdminControlPlaneBoundary:
     def _broker_metadata(cls) -> dict[str, Any]:
         try:
             socket_stat = cls._BROKER_SOCKET.lstat()
+            parent_stat = cls._BROKER_SOCKET.parent.stat()
         except OSError as exc:
             raise ProofgateObservationUnavailable("broker metadata socket unavailable") from exc
         if not stat.S_ISSOCK(socket_stat.st_mode):
             raise ProofgateObservationUnavailable("broker metadata control-plane path is not a socket")
+        if (
+            not stat.S_ISDIR(parent_stat.st_mode)
+            or parent_stat.st_uid != 0
+            or stat.S_IMODE(parent_stat.st_mode) & 0o022
+        ):
+            raise ProofgateObservationUnavailable(
+                "broker metadata socket parent is not root-owned and write-protected"
+            )
 
         chunks: list[bytes] = []
         total = 0
@@ -3046,6 +3056,27 @@ class ProofgateAdminControlPlaneBoundary:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.settimeout(5)
                 client.connect(str(cls._BROKER_SOCKET))
+                peer_option = getattr(socket, "SO_PEERCRED", None)
+                if peer_option is None:
+                    raise ProofgateObservationUnavailable(
+                        "broker socket peer credentials are unavailable"
+                    )
+                peer_bytes = client.getsockopt(
+                    socket.SOL_SOCKET,
+                    peer_option,
+                    struct.calcsize("3i"),
+                )
+                peer_pid, peer_uid, _peer_gid = struct.unpack("3i", peer_bytes)
+                connected_stat = cls._BROKER_SOCKET.lstat()
+                if (
+                    peer_pid <= 0
+                    or peer_uid != socket_stat.st_uid
+                    or connected_stat.st_dev != socket_stat.st_dev
+                    or connected_stat.st_ino != socket_stat.st_ino
+                ):
+                    raise ProofgateObservationUnavailable(
+                        "broker socket peer identity or pinned inode mismatch"
+                    )
                 client.sendall(b"proofgate_admin_metadata.v1\n")
                 client.shutdown(socket.SHUT_WR)
                 while True:
@@ -3281,6 +3312,9 @@ class ProofgateAdminControlPlaneBoundary:
             return None
 
 
+_PROOFGATE_ADMIN_OBSERVE = ProofgateAdminControlPlaneBoundary.observe
+
+
 def _validate_positive_numeric_id(value: Any, name: str) -> str:
     if isinstance(value, bool):
         raise ProofgateBootstrapVerifierError(f"Control plane {name} must be a positive numeric identifier, got {value!r}")
@@ -3303,8 +3337,12 @@ def verify_proofgate_admin_identity_binding(boundary: Any, **kwargs: Any) -> dic
 
     if "observe" in boundary.__dict__:
         raise ProofgateBootstrapVerifierError("exact boundary instance observe replacement rejected: instance observe method replaced")
+    if ProofgateAdminControlPlaneBoundary.observe is not _PROOFGATE_ADMIN_OBSERVE:
+        raise ProofgateBootstrapVerifierError(
+            "exact boundary class observe replacement rejected: class observe method replaced"
+        )
 
-    obs = ProofgateAdminControlPlaneBoundary.observe(boundary)
+    obs = _PROOFGATE_ADMIN_OBSERVE(boundary)
     if obs is None or not isinstance(obs, dict):
         raise ProofgateBootstrapVerifierError("Control plane observation unavailable")
 
@@ -3906,7 +3944,12 @@ def _write_admin_preflight_payload(
         f.write(json.dumps(payload, indent=2))
 
 
-def run_live_admin_binding_preflight(boundary: Any, *, output: str) -> int:
+def run_live_admin_binding_preflight(
+    boundary: Any,
+    *,
+    output: str,
+    candidate_oid: str | None = None,
+) -> int:
     """Run the PR-R admin-only gate through the fixed concrete control-plane boundary."""
     out_path = _validate_run_dir_output(output)
     observed_at = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -3939,6 +3982,53 @@ def run_live_admin_binding_preflight(boundary: Any, *, output: str) -> int:
         )
         return 1
 
+    if candidate_oid is None:
+        candidate_proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        candidate_oid = candidate_proc.stdout.strip()
+        if candidate_proc.returncode != 0:
+            candidate_oid = ""
+    if not HEX_40_RE.fullmatch(candidate_oid):
+        _write_admin_preflight_payload(
+            out_path,
+            satisfied=False,
+            attempts=[
+                {
+                    "source": "local_git_candidate",
+                    "probe": "git_rev_parse_head.v1",
+                    "result": "unavailable_or_mismatch",
+                    "details": "candidate Git identity did not satisfy the fixed 40-hex contract",
+                    "timestamp": observed_at,
+                }
+            ],
+            outcome_class="contract_bug",
+        )
+        return 1
+
+    candidate_binding = dict(binding)
+    candidate_binding.pop("binding_digest", None)
+    candidate_binding["candidate_oid"] = candidate_oid
+    candidate_binding["binding_digest"] = hashlib.sha256(
+        json.dumps(candidate_binding, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    receipt_path = _validate_run_dir_output(
+        str(out_path.parent / "admin-identity-binding.json")
+    )
+    receipt_flags = (
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    )
+    receipt_fd = os.open(receipt_path, receipt_flags, 0o600)
+    with os.fdopen(receipt_fd, "w", encoding="utf-8") as receipt_file:
+        receipt_file.write(
+            json.dumps(candidate_binding, sort_keys=True, separators=(",", ":"))
+        )
+
     _write_admin_preflight_payload(
         out_path,
         satisfied=True,
@@ -3952,7 +4042,7 @@ def run_live_admin_binding_preflight(boundary: Any, *, output: str) -> int:
             }
         ],
         outcome_class=None,
-        binding=binding,
+        binding=candidate_binding,
     )
     return 0
 
