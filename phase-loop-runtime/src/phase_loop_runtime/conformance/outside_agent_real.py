@@ -70,12 +70,15 @@ class OutsideAgentValidationVerdict:
     submitted_refs: tuple[OutsideAgentSubmittedRef, ...]
     vectors_executed: bool = False
     metadata: Mapping[str, str] = field(default_factory=dict)
+    submission_file: str | None = None
 
 
 def build_outside_agent_validation_verdict(
     submission: Any,
     *,
     submitted_refs: Iterable[str] = (),
+    input_digest: str | None = None,
+    submission_file: str | None = None,
     contract_pin: OutsideAgentContractPin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     validator_version: str = __version__,
     core_validator: Callable[..., OutsideAgentConformanceVerdict] = validate_outside_agent_submission,
@@ -93,7 +96,12 @@ def build_outside_agent_validation_verdict(
             ),
         )
     else:
-        verdict = core_validator(submission, contract_pin=contract_pin)
+        if input_digest is None:
+            verdict = core_validator(submission, contract_pin=contract_pin)
+        else:
+            verdict = core_validator(
+                submission, contract_pin=contract_pin, input_digest=input_digest
+            )
 
     if ref_blockers:
         verdict = _verdict_with_extra_blockers(verdict, ref_blockers)
@@ -106,6 +114,7 @@ def build_outside_agent_validation_verdict(
         submitted_refs=tuple(OutsideAgentSubmittedRef(ref=ref) for ref in normalized_refs),
         vectors_executed=False,
         metadata={"source": "outside_agent_governed_pipeline_validator"},
+        submission_file=submission_file,
     )
 
 
@@ -115,6 +124,7 @@ def build_malformed_outside_agent_validation_verdict(
     message: str = "outside-agent submission JSON could not be parsed",
     contract_pin: OutsideAgentContractPin = EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     validator_version: str = __version__,
+    submission_file: str | None = None,
 ) -> OutsideAgentValidationVerdict:
     verdict = _malformed_verdict(
         input_digest=input_digest,
@@ -129,6 +139,7 @@ def build_malformed_outside_agent_validation_verdict(
         submitted_refs=(),
         vectors_executed=False,
         metadata={"source": "outside_agent_governed_pipeline_validator"},
+        submission_file=submission_file,
     )
 
 

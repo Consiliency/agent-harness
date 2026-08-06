@@ -115,3 +115,9 @@ Downstream governed-pipeline refresh work should pin the published
 `vector_manifest_hash`, then call the real validator command from its acceptance
 flow. Agent-harness supplies deterministic conformance evidence, while
 governed-pipeline remains the acceptance and merge authority.
+
+## Consumer Mirror Policy
+
+Consiliency/spec remains the canonical source of truth for all outside-agent contract schemas, test vectors, and route verdicts. Agent-harness maintains a digest-enumerated packaged contract mirror whose `VENDOR.json` inventories exactly 15 source/mirror files: 2 schemas, 1 manifest, 11 vectors, and the test-only oracle `consiliency_spec/outside_agent_router.py`.
+
+The packaged mirror contains raw-byte copies from Consiliency/spec@v0.2.1 verified by SHA-256 digests. There are no copied canonical schema definitions or raw vector bodies outside this digest-enumerated mirror. The mirror's test-only oracle is used exclusively for CI and vector conformance checks; it is not a production parser.
