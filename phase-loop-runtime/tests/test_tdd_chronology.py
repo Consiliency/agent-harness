@@ -8,6 +8,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -4570,6 +4572,146 @@ def test_pr_r_blocker_fable_f002_rejects_instance_observe_replacement(monkeypatc
         match=r"(?i)exact.*boundary|instance.*observe|replaced.*observe|control plane",
     ):
         verify_proofgate_admin_identity_binding(boundary)
+
+
+def test_pr_r_blocker_sol_001_admin_preflight_produces_candidate_bound_decisive_receipt(
+    monkeypatch, tmp_path
+):
+    from . import proofgate_bootstrap_verifier
+    from .proofgate_bootstrap_verifier import run_live_admin_binding_preflight
+
+    boundary, _state, _calls = _install_pr_r_admin_control_plane_fakes(
+        monkeypatch, proofgate_bootstrap_verifier
+    )
+    candidate_oid = "a" * 40
+    monkeypatch.setenv("PHASE_LOOP_RUN_DIR", str(tmp_path))
+    preflight_path = tmp_path / "proofgate-protected-ref-admin.json"
+
+    assert (
+        run_live_admin_binding_preflight(
+            boundary,
+            candidate_oid=candidate_oid,
+            output=str(preflight_path),
+        )
+        == 0
+    )
+
+    receipt_path = tmp_path / "admin-identity-binding.json"
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = json.loads(receipt_bytes)
+    assert receipt_bytes == json.dumps(
+        receipt, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    assert receipt["candidate_oid"] == candidate_oid
+    claimed_digest = receipt.pop("binding_digest")
+    assert claimed_digest == hashlib.sha256(
+        json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def test_pr_r_blocker_sol_002_rejects_class_observe_replacement(monkeypatch):
+    from . import proofgate_bootstrap_verifier
+    from .proofgate_bootstrap_verifier import (
+        ProofgateAdminControlPlaneBoundary,
+        verify_proofgate_admin_identity_binding,
+    )
+
+    boundary, _state, _calls = _install_pr_r_admin_control_plane_fakes(
+        monkeypatch, proofgate_bootstrap_verifier
+    )
+    forged = ProofgateAdminControlPlaneBoundary.observe(boundary)
+    monkeypatch.setattr(
+        ProofgateAdminControlPlaneBoundary,
+        "observe",
+        lambda _self: forged,
+    )
+
+    with pytest.raises(
+        ProofgateBootstrapVerifierError,
+        match=r"(?i)exact.*boundary|class.*observe|replaced.*observe|control plane",
+    ):
+        verify_proofgate_admin_identity_binding(boundary)
+
+
+def test_pr_r_blocker_sol_003_rejects_broker_socket_peer_identity_mismatch(monkeypatch):
+    from . import proofgate_bootstrap_verifier
+    from .proofgate_bootstrap_verifier import (
+        ProofgateAdminControlPlaneBoundary,
+        ProofgateObservationUnavailable,
+    )
+
+    class FakeParent:
+        @staticmethod
+        def stat():
+            return type("ParentStat", (), {"st_uid": 0, "st_mode": stat.S_IFDIR | 0o755})()
+
+    class FakeSocketPath:
+        parent = FakeParent()
+
+        @staticmethod
+        def lstat():
+            return type(
+                "SocketStat",
+                (),
+                {
+                    "st_dev": 7,
+                    "st_ino": 11,
+                    "st_mode": stat.S_IFSOCK | 0o600,
+                    "st_uid": 1001,
+                },
+            )()
+
+        def __str__(self):
+            return "/run/proofgate/admin-control-plane.sock"
+
+    payload = json.dumps({"schema": "proofgate_broker_admin_metadata.v1"}).encode(
+        "utf-8"
+    )
+
+    class FakeSocket:
+        def __init__(self):
+            self._chunks = iter((payload, b""))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, _timeout):
+            return None
+
+        def connect(self, _path):
+            return None
+
+        def sendall(self, _data):
+            return None
+
+        def shutdown(self, _how):
+            return None
+
+        def recv(self, _size):
+            return next(self._chunks)
+
+        def getsockopt(self, _level, _option, _size):
+            return struct.pack("3i", 4242, 1002, 1002)
+
+    monkeypatch.setattr(
+        ProofgateAdminControlPlaneBoundary,
+        "_BROKER_SOCKET",
+        FakeSocketPath(),
+    )
+    monkeypatch.setattr(
+        proofgate_bootstrap_verifier.socket,
+        "socket",
+        lambda *_args: FakeSocket(),
+    )
+
+    with pytest.raises(
+        ProofgateObservationUnavailable,
+        match=r"(?i)broker.*peer|peer.*identity|socket.*credential",
+    ):
+        ProofgateAdminControlPlaneBoundary._broker_metadata()
 
 
 @pytest.mark.parametrize(
