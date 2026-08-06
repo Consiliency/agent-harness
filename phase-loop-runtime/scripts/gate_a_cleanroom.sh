@@ -47,7 +47,7 @@ env -u PYTHONPATH "$PY" -m pip install --quiet --upgrade pip >/dev/null
 # standalone suite run below (step 4) includes the FAV visual-evidence gate's
 # decode-requiring tests, which need Pillow installed in THIS venv or they'd
 # error at test time (agent-harness#91 round-4 CR).
-env -u PYTHONPATH "$PY" -m pip install --quiet "${WHEEL}[visual]" >/dev/null
+env -u PYTHONPATH "$PY" -m pip install --quiet --no-compile "${WHEEL}[visual]" >/dev/null
 
 # The non-empty profile_commands group must now actually ship in the installed
 # dist-info (empty groups were dropped by setuptools before Option A).
@@ -134,14 +134,21 @@ if [ "${PHASE_LOOP_SKIP_GATE_A_SUITE:-0}" = "1" ]; then
   echo "-- full standalone suite: SKIPPED (PHASE_LOOP_SKIP_GATE_A_SUITE=1) --"
 else
   echo "-- full standalone suite: pytest -m 'not dotfiles_integration' vs installed wheel --"
-  env -u PYTHONPATH "$PY" -m pip install --quiet pytest >/dev/null
+  env -u PYTHONPATH "$PY" -m pip install --quiet pytest build >/dev/null
   SUITE_TREE="$WORK/standalone/phase-loop-runtime"
   mkdir -p "$SUITE_TREE"
   cp -r "$PKG_ROOT/tests" "$SUITE_TREE/tests"
+  # Repository-contract tests inspect source and release surfaces as immutable
+  # data. Keep those bytes available without adding the copied source tree to
+  # PYTHONPATH; production imports must still resolve from the installed wheel.
+  cp -r "$PKG_ROOT/src" "$SUITE_TREE/src"
+  cp "$PKG_ROOT/pyproject.toml" "$PKG_ROOT/MANIFEST.in" "$PKG_ROOT/README.md" "$SUITE_TREE/"
   # Repo-contract tests resolve canonical roadmap fixtures from the monorepo
   # root (tests/../..). Keep those immutable inputs available without exposing
   # the source package tree to the installed-wheel test process.
   cp -r "$PKG_ROOT/../specs" "$WORK/standalone/specs"
+  cp -r "$PKG_ROOT/../docs" "$WORK/standalone/docs"
+  cp "$PKG_ROOT/../README.md" "$PKG_ROOT/../CHANGELOG.md" "$WORK/standalone/"
   # Sanity: the copied tree's parents[3] must NOT be a dotfiles checkout.
   if env -i "$PY" - "$SUITE_TREE/tests" <<'PYEOF'
 import sys
@@ -162,6 +169,7 @@ PYEOF
       HOME="$CLEAN_HOME" \
       PATH="$VENV/bin:/usr/bin:/bin" \
       PYTHONNOUSERSITE=1 \
+      PYTHONDONTWRITEBYTECODE=1 \
       PYTHONPATH="$SUITE_TREE/tests" \
       "$PY" -m pytest "$SUITE_TREE/tests" -q -p no:cacheprovider -m "not dotfiles_integration"; then
     echo "GATE-A FAIL: standalone test suite is not green (see failures above)" >&2
