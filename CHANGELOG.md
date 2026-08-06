@@ -10,12 +10,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - CI now checks out full history for source and clean-room test lanes. When the
   installed wheel exposes the CONFORM evidence command, Gate A stages the exact
-  candidate's tests, runtime sources, docs, and specs in a sparse private clone so
-  repository-bound evidence can be verified without importing production code from
-  the checkout. The candidate source path is installed as trailing data-only path
+  candidate's tests, runtime sources, docs, specs, plans, and `.claude` inputs in a
+  sparse private clone. The candidate source path is installed as trailing data-only
   evidence; Gate A preloads the installed package before test collection and fails unless
-  site-packages and the installed wheel retain import precedence. Legacy candidates retain
-  the existing tests-only clean-room layout.
+  site-packages and the installed wheel retain import precedence in the outer suite
+  process. Test-owned mutation and EC children deliberately execute digest-bound candidate
+  or mutant source. Capability-probe errors fail closed, and the isolated package-evidence
+  environment explicitly installs its build backend. Legacy candidates retain the existing
+  tests-only clean-room layout.
 
 ### Outside-Agent Conformance Runtime (OARELEASE) for phase-loop-runtime 0.5.0
 
@@ -25,8 +27,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### CI: run the frozen LEGIBLE files from a standalone copied tests tree
 
 - The two frozen LEGIBLE files (`test_legible_roadmap_contract.py`, `test_legible_evidence.py`)
-  distinguish a full-history canonical repo from an installed consumer. GitHub's shallow
-  `actions/checkout` is neither, so `.github/workflows/test.yml` now runs those two files
+  distinguish a canonical source checkout from an installed consumer, so
+  `.github/workflows/test.yml` runs those two files
   from a copied tests tree with the canonical roadmap at its repository-relative sibling
   path, while every other test keeps its existing source-checkout mode.
   This is a CI-execution change only; no shipped runtime behaviour changes.
