@@ -120,8 +120,9 @@ jobs:
 
       - name: Gate A — standalone-from-wheel clean room
         # Builds the wheel, installs it into an isolated venv, and runs the FULL
-        # standalone suite (TESTDECOUPLE). Skills-bundle tests skip when the sibling
-        # phase-loop-skills/ is absent (#9); the runtime must resolve only under
-        # site-packages, never a dotfiles checkout.
+        # standalone suite (TESTDECOUPLE), apart from CONFORM's four exact
+        # runner-owned final-document nodes. Skills-bundle tests skip when the
+        # sibling phase-loop-skills/ is absent (agent-harness#9); the runtime must
+        # resolve only under site-packages, never a dotfiles checkout.
         working-directory: phase-loop-runtime
         run: bash scripts/gate_a_cleanroom.sh

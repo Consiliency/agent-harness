@@ -148,6 +148,7 @@ raise SystemExit(
 PYEOF
   CONFORM_CAPABILITY_STATUS=$?
   set -e
+  CONFORM_STANDALONE_DESELECTS=()
   if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]; then
     # CONFORM's final mutation/lifecycle proof needs source and Git history as
     # immutable data. A sparse private clone supplies those bytes while scripts
@@ -156,14 +157,18 @@ PYEOF
     SOURCE_REPO="$PKG_ROOT/.."
     SOURCE_HEAD="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
     git clone --quiet --no-local --no-checkout "$SOURCE_REPO" "$STANDALONE_ROOT"
-    git -C "$STANDALONE_ROOT" sparse-checkout init --cone
+    git -C "$STANDALONE_ROOT" sparse-checkout init --no-cone
     git -C "$STANDALONE_ROOT" sparse-checkout set \
-      phase-loop-runtime/tests \
-      phase-loop-runtime/src \
-      docs \
-      specs \
-      plans \
-      .claude
+      /phase-loop-runtime/tests/ \
+      /phase-loop-runtime/src/ \
+      /phase-loop-runtime/protocol/ \
+      /phase-loop-runtime/pyproject.toml \
+      /phase-loop-runtime/MANIFEST.in \
+      /phase-loop-runtime/README.md \
+      /docs/ \
+      /specs/ \
+      /plans/phase-plan-v10-CONFORM.md \
+      /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
     SUITE_TREE="$STANDALONE_ROOT/phase-loop-runtime"
     # tests/__init__.py prepends a sibling src tree unless that exact path is
@@ -210,6 +215,15 @@ PYEOF
       echo "GATE-A FAIL: CONFORM candidate source can shadow the installed wheel" >&2
       exit 1
     fi
+    # The four final-document nodes consume runner-owned B0/B2 evidence that a
+    # standalone wheel gate cannot manufacture. CONFORM's frozen A2 selector
+    # excludes the same exact identities; every other non-integration test runs.
+    CONFORM_STANDALONE_DESELECTS=(
+      "--deselect=$SUITE_TREE/tests/test_outside_agent_contract_drift.py::test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes"
+      "--deselect=$SUITE_TREE/tests/test_outside_agent_release_surface.py::test_v7_disposition_records_merged_contract_and_final_installed_behavior"
+      "--deselect=$SUITE_TREE/tests/test_outside_agent_release_surface.py::test_release_handoff_records_metadata_only_package_contract_and_dispatch_boundary"
+      "--deselect=$SUITE_TREE/tests/test_outside_agent_release_surface.py::test_public_docs_point_to_handoff_without_claiming_release_dispatch"
+    )
     echo "-- full standalone suite: CONFORM repository evidence staged at $SOURCE_HEAD --"
   elif [ "$CONFORM_CAPABILITY_STATUS" -eq 10 ]; then
     SUITE_TREE="$WORK/standalone/phase-loop-runtime"
@@ -245,11 +259,12 @@ PYEOF
       PYTHONNOUSERSITE=1 \
       PYTHONDONTWRITEBYTECODE=1 \
       PYTHONPATH="$SUITE_TREE/tests" \
-      "$PY" - "$SUITE_TREE" <<'PYEOF'
+      "$PY" - "$SUITE_TREE" "${CONFORM_STANDALONE_DESELECTS[@]}" <<'PYEOF'
 import sys
 from pathlib import Path
 
 suite = Path(sys.argv[1]).resolve()
+extra_pytest_args = sys.argv[2:]
 import phase_loop_runtime
 
 runtime_file = Path(phase_loop_runtime.__file__).resolve()
@@ -267,6 +282,7 @@ raise SystemExit(
             "no:cacheprovider",
             "-m",
             "not dotfiles_integration",
+            *extra_pytest_args,
         ]
     )
 )

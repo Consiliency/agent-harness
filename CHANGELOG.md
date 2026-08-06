@@ -9,15 +9,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### Clean-room CONFORM repository evidence
 
 - CI now checks out full history for source and clean-room test lanes. When the
-  installed wheel exposes the CONFORM evidence command, Gate A stages the exact
-  candidate's tests, runtime sources, docs, specs, plans, and `.claude` inputs in a
-  sparse private clone. The candidate source path is installed as trailing data-only
-  evidence; Gate A preloads the installed package before test collection and fails unless
-  site-packages and the installed wheel retain import precedence in the outer suite
-  process. Test-owned mutation and EC children deliberately execute digest-bound candidate
-  or mutant source. Capability-probe errors fail closed, and the isolated package-evidence
-  environment explicitly installs its build backend. Legacy candidates retain the existing
-  tests-only clean-room layout.
+  installed wheel exposes the CONFORM evidence command, Gate A stages only the exact
+  candidate's tests, runtime sources, package protocol inputs, docs, specs, CONFORM plan,
+  and changelog in a sparse private clone. The candidate source path is installed as
+  trailing data-only evidence; Gate A preloads the installed package before test collection
+  and fails unless site-packages and the installed wheel retain import precedence in the
+  outer suite process. Test-owned mutation and EC children deliberately execute digest-bound
+  candidate or mutant source. The four frozen final-document nodes remain runner-evidence
+  gates and are exactly deselected from this standalone wheel run; all other
+  non-integration tests run. Capability-probe errors fail closed, and the isolated
+  package-evidence environment explicitly installs its build backend. Legacy candidates
+  retain the existing tests-only clean-room layout.
 
 ### Outside-Agent Conformance Runtime (OARELEASE) for phase-loop-runtime 0.5.0
 

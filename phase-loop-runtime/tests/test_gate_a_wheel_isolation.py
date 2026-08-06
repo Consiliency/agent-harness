@@ -26,13 +26,11 @@ import pytest
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
 # conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
-
-
 def _have(module: str) -> bool:
     return importlib.util.find_spec(module) is not None
 
 
+@pytest.mark.dotfiles_integration
 class GateAWheelIsolationTest(unittest.TestCase):
     def test_gate_a_cleanroom_passes(self):
         # Gate A is the IF-0-DECOUPLE-1 success gate. A SKIP would be a silent
@@ -81,6 +79,32 @@ class GateAWheelIsolationTest(unittest.TestCase):
             self.assertIn("full standalone suite: SKIPPED", result.stdout)
         else:
             self.assertIn("full standalone suite: GREEN", result.stdout)
+
+
+@unittest.skipUnless(GATE_SCRIPT.is_file(), "source Gate A script unavailable")
+class GateAConformEvidenceScopeTest(unittest.TestCase):
+    def test_conform_evidence_scope_is_minimal_and_excludes_final_nodes(self):
+        script = GATE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("sparse-checkout init --no-cone", script)
+        for required in (
+            "/phase-loop-runtime/tests/",
+            "/phase-loop-runtime/src/",
+            "/phase-loop-runtime/protocol/",
+            "/plans/phase-plan-v10-CONFORM.md",
+            "/CHANGELOG.md",
+        ):
+            self.assertIn(required, script)
+        self.assertNotIn("sparse-checkout set \\\n      phase-loop-runtime/tests", script)
+        self.assertNotIn("      .claude", script)
+
+        for nodeid in (
+            "test_outside_agent_contract_drift.py::test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes",
+            "test_outside_agent_release_surface.py::test_v7_disposition_records_merged_contract_and_final_installed_behavior",
+            "test_outside_agent_release_surface.py::test_release_handoff_records_metadata_only_package_contract_and_dispatch_boundary",
+            "test_outside_agent_release_surface.py::test_public_docs_point_to_handoff_without_claiming_release_dispatch",
+        ):
+            self.assertIn(f"--deselect=$SUITE_TREE/tests/{nodeid}", script)
 
 
 if __name__ == "__main__":
