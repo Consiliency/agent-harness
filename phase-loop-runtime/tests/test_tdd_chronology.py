@@ -5180,13 +5180,22 @@ def test_pr_r_blocker_fable_f007_producer_output_satisfies_decisive_pr_b_verifie
 
 def _setup_real_repo_candidate_history():
     source_repo = Path(__file__).resolve().parents[2]
-    tmp = tempfile.TemporaryDirectory(dir=source_repo.parent)
+    tmp = tempfile.TemporaryDirectory()
     repo = Path(tmp.name) / "repo"
 
     shutil.copytree(
         source_repo,
         repo,
-        ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "*.pyc", ".pytest_cache", ".tox", ".mypy_cache"),
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".venv",
+            ".phase-loop-probe-tmp",
+            "__pycache__",
+            "*.pyc",
+            ".pytest_cache",
+            ".tox",
+            ".mypy_cache",
+        ),
     )
     subprocess.run(
         ["git", "init"],
