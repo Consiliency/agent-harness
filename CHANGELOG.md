@@ -17,6 +17,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   site-packages and the installed wheel retain import precedence. Legacy candidates retain
   the existing tests-only clean-room layout.
 
+### Outside-Agent Conformance Runtime (OARELEASE) for phase-loop-runtime 0.5.0
+
+- Prepared the release handoff at [`docs/releases/outside-agent-release-handoff.md`](docs/releases/outside-agent-release-handoff.md) for the outside-agent conformance runtime (OARELEASE) tracking phase-loop-runtime 0.5.0 and `Consiliency/spec@v0.2.1`.
+- Includes governed-pipeline pinning instructions, a digest-enumerated packaged contract mirror, and explicit maintainer-owned publish/tag/workflow-dispatch boundaries.
+
 ### CI: run the frozen LEGIBLE files from a standalone copied tests tree
 
 - The two frozen LEGIBLE files (`test_legible_roadmap_contract.py`, `test_legible_evidence.py`)
