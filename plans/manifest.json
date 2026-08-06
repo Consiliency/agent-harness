@@ -756,6 +756,174 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-06T07:57:23Z",
+          "by": "codex-v10-coordinator",
+          "metadata": {
+            "digest_rebind": {
+              "plan_sha256": "f4d62011da41abd222272ef35d51f62018b4871d80b3fa0dc49dcc7e7a305a19",
+              "predecessor_manifest_sha256": "e02a75cd3840106f853b858417573093236f014ccbef47f7d335edba7e5f209b",
+              "predecessor_plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
+              "reason": "Consiliency/agent-harness#470_post_freeze_three_path_six_hunk_fixture_and_trusted_chronology_repair_authorization",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            },
+            "post_freeze_fixture_repair": {
+              "allowed_changes": [
+                "candidate_commit_bounded_complete_ancestry_walk_replacing_only_ambient_git_log_all_selection",
+                "deterministic_test_local_per_mode_invocation_directory_allocation_inside_records_for",
+                "criterion_execution_only_nested_stdout_stderr_digest_sentinel_canonicalization_for_replay_comparison",
+                "safe_sdist_extraction_to_exactly_one_source_directory_before_derived_wheel_build",
+                "opt_in_forged_git_topology_red_subcase_inside_existing_mutation_definition_node",
+                "trusted_git_recomputation_inside_validate_chronology_only"
+              ],
+              "allowed_paths": [
+                "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
+                "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"
+              ],
+              "causal_validation_base": "974593899bbecfbe092ba0aec369e69eee1aabdd",
+              "completion_identity": "exact_two_parent_tests_landing_plus_exact_two_parent_repair_landing_plus_exact_two_parent_implementation_landing_and_exact_main_audit",
+              "forbidden_changes": [
+                "CONFORM_IMMUTABLE_LIFECYCLE_PATHS",
+                "HEAD_blob_capture",
+                "all_path_blob_equality_predicate",
+                "immutable_lifecycle_archive_source",
+                "ancestry_assertion",
+                "fallback_when_no_matching_ancestor_exists",
+                "hardcoded_commit_selection",
+                "ambient_branch_remote_reflog_enumeration_or_ref_mutation",
+                "first_parent_or_other_incomplete_ancestry_restriction",
+                "exist_ok_cleanup_reuse_uuid_random_timestamp_pid_or_shared_cross_test_counter",
+                "mutation_definitions",
+                "schemas",
+                "record_ids",
+                "evidence_modes",
+                "node_ids",
+                "counts",
+                "selectors",
+                "command_literals_outside_exact_opt_in_chronology_proof_command",
+                "production_imports",
+                "expected_outcomes_outside_exact_fixture_repairs_and_forged_topology_red_green_pair",
+                "captured_output_digest_refresh_or_digest_field_removal",
+                "replay_skip_exit_only_classification_only_or_broad_hash_path_erasure",
+                "mutation_execution_replay_weakening",
+                "build_pin_or_gate_prerequisite_change",
+                "derived_wheel_runtime_root_or_direct_wheel_reuse_or_skip",
+                "unsafe_sdist_extraction_or_archive_member_digest_installed_behavior_weakening",
+                "production_paths_outside_validate_chronology_local_git_proof_hunk",
+                "documentation_paths"
+              ],
+              "gate_a_pr": "Consiliency/agent-harness#468",
+              "green_commands": [
+                "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation",
+                "PHASE_LOOP_CONFORM_CHRONOLOGY_PROOF=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation",
+                "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
+                "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
+                "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests -q -k outside_agent",
+                "bash phase-loop-runtime/scripts/gate_a_cleanroom.sh"
+              ],
+              "green_topologies": [
+                "shared_refs_with_sibling_87d64db_visible",
+                "single_branch_candidate_ancestry_only",
+                "candidate_gate_a_composition_with_merged_agent_harness_468_ba9407f",
+                "forged_single_parent_repair_landing_rejected_from_resolvable_git_objects"
+              ],
+              "implementation_pr": "Consiliency/agent-harness#467",
+              "implementation_rebase_exception": {
+                "allowed_count": 1,
+                "destination": "canonical_main_containing_repair_landing",
+                "forbidden": "squash_reorder_repair_fold_in_further_rebase_or_semantic_drift",
+                "original_sequence": [
+                  "59cbf5a",
+                  "00dec41",
+                  "7df3cc7",
+                  "9745938",
+                  "80d9a14"
+                ],
+                "inserted_commit_position": "after_rebased_9745938_equivalent_before_rebased_80d9a14_equivalent",
+                "proof": "internally_generated_git_range_diff_plus_exact_two_test_path_five_hunk_test_blobs_plus_one_verifier_path_hunk_and_production_semantic_equivalence"
+              },
+              "issue": "Consiliency/agent-harness#470",
+              "landing_topology": "amendment_two_parent_then_one_commit_two_test_path_five_hunk_repair_candidate_then_separate_two_parent_repair_landing_then_single_implementation_rebase_with_one_verifier_commit",
+              "pre_repair": {
+                  "commit": "974593899bbecfbe092ba0aec369e69eee1aabdd",
+                "contract_drift_blob": "2c52aea5952662775d3ad2296b930362c0ecee88",
+                "contract_drift_sha256": "4ccc4df8063d9de639da63094cd7b39723add91e26ba2b32a1ef4e3d01921486",
+                "helper_blob": "e5044f381c556226d76586c6fa824f2485590dc3",
+                "helper_sha256": "903ab2a0138bffc5a3d534194822476bd3bb3dcb046a5905d06750d0bbe7554a",
+                "test_tree": "f8907dfdc182ac18c3928d58cab0af24604e2663",
+                "tree": "f58958d6b85983f9b7b4e337dd801be5fa64fcca"
+              },
+              "red_evidence": {
+                "candidate_gate_a_v6": {
+                  "composition_head": "465bafec3e5811928fb7686b4a50d1c174a72792",
+                  "composition_parent": "6c2e8042c23f281691709956bdd0403a7c5a1eb0",
+                  "raw_log_path": "/mnt/workspace/v10-conform-468-candidate-gate-a-v6.log",
+                  "raw_log_sha256": "e68b0fbbc51656f511767f4bb3350cea9d5bad4ee59b707f5d57a1b0a5a8c776",
+                  "rerun_stdout_actual_sha256": "4bbd11e8762c629e2216c81a0e62cd19f6f99633ed2ffae716884d82096d88c4",
+                  "rerun_stdout_expected_sha256": "825e65e949166ae2b7974e318f4c7bf1ede1c6ae2442c8c0c766f6b96fd7d0c8",
+                  "sdist_derived_wheel_error": "source_tar_gz_is_not_a_directory",
+                  "sol_addendum_path": "/mnt/workspace/v10-conform-470-v6-sol-addendum/response.md",
+                  "sol_addendum_sha256": "eb5f99d314d8dc1304055647bf61d081bce495743b7a4f8132ac779106d475d8",
+                  "status": "complete_red_replay_digest_and_sdist_source_directory_fixture_defects"
+                },
+                "isolated_directory_collision": {
+                  "junit_path": "/mnt/workspace/conform-evidence/974593899bbecfbe092ba0aec369e69eee1aabdd/repair-red/isolated-exact-node.junit.xml",
+                  "junit_sha256": "cd36c380277f2c334a8465f2ace2a457eb351ab09f126f63f05770bfb735cbf8",
+                  "raw_log_path": "/mnt/workspace/conform-evidence/974593899bbecfbe092ba0aec369e69eee1aabdd/repair-red/isolated-exact-node.raw.log",
+                  "raw_log_sha256": "dec743413d847f63b230cb25e5a71c6ae858d55c582d80bc32458f1b45853e61",
+                  "status": "complete_red_directory_collision_file_exists_error"
+                },
+                "chronology_forgery": {
+                  "command": "PHASE_LOOP_CONFORM_CHRONOLOGY_PROOF=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation",
+                  "expected_failure": "CONFORM_RED::chronology_accepts_forged_git_topology",
+                  "forgery": "repair_landing_aliases_single_parent_repair_candidate_while_boolean_claims_report_two_parent_exact_diff_single_rebase_and_range_diff_equivalence",
+                  "landing_order": "test_hunk_lands_with_repair_then_red_runs_at_rebased_9745938_equivalent_before_one_path_verifier_commit",
+                  "status": "planned_tdd_red_not_yet_executed"
+                },
+                "node_id": "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation",
+                "shared_refs_ancestry": {
+                  "candidate_bounded_matching_ancestor": "4718462c486dfd22e6e2e3528730edfd9ce00ec8",
+                  "junit_path": "/mnt/workspace/conform-evidence/974593899bbecfbe092ba0aec369e69eee1aabdd/repair-red/shared-refs-ancestry.junit.xml",
+                  "junit_sha256": "5b507699eac439cc2d7e2feaa413b45fe39c32318033e0120031b5c4c0d7c312",
+                  "raw_log_path": "/mnt/workspace/conform-evidence/974593899bbecfbe092ba0aec369e69eee1aabdd/repair-red/shared-refs-ancestry.raw.log",
+                  "raw_log_sha256": "9fd6192ffabf0f124a8d0de06e99eaed4ba90cebcc7ed4400049cfba1a4d429b",
+                  "selected_non_ancestor": "87d64db81d65f73bd538331548391087e001f6a0",
+                  "status": "complete_red_ancestry_postcondition_failed"
+                }
+              },
+              "required_review_outputs": [
+                "terra_early_can_probe",
+                "grok_critic",
+                "gpt_5_6_sol_critic",
+                "gemini_3_6_flash_critic",
+                "claude_opus_5_read_write_prover",
+                "claude_fable_5_president"
+              ],
+              "predecessor_review": {
+                "artifact_sha256": "fac9b4015a47b3fdc41e67a90f2c5246b5ab8610aeee1648c72ab6b24bd56da9",
+                "reviewed_plan_sha256": "d6fd6946718c154ab4eed2667dbd9e9d6761878f358c07c86673ee0751484f12",
+                "sol_blocker": "chronology_acceptance_impossible_within_two_test_path_four_hunk_scope_because_verifier_trusts_caller_supplied_topology_booleans",
+                "sol_correction_sha256": "e910f3df067bc065192b532db1ab9fd5d1e24ad74eaea8ac808505f8c4109ff1",
+                "status": "superseded_by_material_plan_correction_requires_fresh_full_wave"
+              },
+              "review_status": "unreviewed_not_approved",
+              "review_topology": "terra_then_grok_sol_gemini_then_opus_then_fable_all_usable_substantive_digest_bound_AGREE",
+              "schema": "v10.conform-post-freeze-fixture-repair.v4",
+              "trusted_chronology_proof": {
+                "fact_object": "chronology.git_proof.closed_v1",
+                "git_environment": "module_derived_clean_exact_head_repo_root_full_lowercase_oids_no_refs_no_replacements_no_grafts_no_shallow_no_ambient_git_overrides_no_lazy_fetch",
+                "implementation_delta": "one_path_one_localized_hunk_inside_validate_chronology_with_local_helpers",
+                "proofs": "commit_tree_existence_ordered_ancestry_exact_merge_parents_exact_repair_patch_exact_verifier_patch_bound_red_green_and_internal_range_diff",
+                "test_delta": "two_paths_five_localized_hunks",
+                "total_exception": "three_paths_six_localized_logical_hunks"
+              },
+              "test_immutability_after_repair": "zero_test_path_changes_through_rebased_candidate_final_candidate_implementation_landing_and_exact_main"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -771,7 +939,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T14:16:54Z"
+      "updated_at": "2026-08-06T07:57:23Z"
     },
     {
       "acceptance_criteria_count": null,
