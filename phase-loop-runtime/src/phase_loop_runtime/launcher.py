@@ -16,6 +16,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable, Mapping
+from .proofgate_isolation import BubblewrapIsolationBuilder, ExecuteAndPanelRoute, IsolationRouteError, ProofgateRouteRequest
+
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
@@ -210,6 +212,7 @@ class LaunchSpec:
     # command holds CODEX_OUTPUT_SCHEMA_PLACEHOLDER until launch substitutes a
     # run-scoped path. Never serialized raw (would dump the schema body).
     codex_output_schema: dict[str, Any] | None = None
+    proofgate_route_request: ProofgateRouteRequest | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -1633,6 +1636,31 @@ def build_launch_spec(request: LaunchRequest) -> LaunchSpec:
     )
 
 
+def build_proofgate_launch_spec(request: LaunchRequest) -> LaunchSpec:
+    """Public bootstrap entrypoint that attaches a typed ProofgateRouteRequest and builds LaunchSpec."""
+    repo_path = Path(getattr(request, "repo", ".")).resolve()
+    head_res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=False)
+    if head_res.returncode != 0 or not head_res.stdout.strip():
+        raise IsolationRouteError(f"git_lookup_failed: unable to resolve HEAD OID in {repo_path}")
+    head_oid = head_res.stdout.strip()
+
+    tree_res = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=repo_path, capture_output=True, text=True, check=False)
+    if tree_res.returncode != 0 or not tree_res.stdout.strip():
+        raise IsolationRouteError(f"git_lookup_failed: unable to resolve HEAD^{{tree}} in {repo_path}")
+    tree_digest = tree_res.stdout.strip()
+
+    route_req = ProofgateRouteRequest(
+        source_repo=str(repo_path),
+        source_head_oid=getattr(request, "source_head_oid", None) or head_oid,
+        tree_digest=getattr(request, "tree_digest", None) or tree_digest,
+        action=request.action,
+        executor=request.executor,
+        model=getattr(request.model_selection, "model", None) if hasattr(request, "model_selection") else None,
+    )
+    spec = build_launch_spec(request)
+    return replace(spec, proofgate_route_request=route_req)
+
+
 def _build_command_launch_spec(request: LaunchRequest, capability) -> LaunchSpec:
     config = request.command_adapter
     if config is None:
@@ -1954,21 +1982,44 @@ def launch_with_spec(
 ) -> LaunchResult:
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
-    if spec.executor == "claude" and spec.claude_route == "claude_channel" and not dry_run:
-        return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
-    if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
-        return _result_with_spec(_launch_claude_agent_view(spec, log_path=log_path), spec)
-    command, staged_review_paths = _resolve_command_context(spec, log_path, dry_run=dry_run)
-    # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): runtime no-hidden-print guard. A primary
-    # Claude route (Channel / Agent View) must never resolve to a real `claude -p`
-    # invocation; the build path guarantees this structurally, so a violation is a
-    # contract bug, not an operator error — fail loudly rather than silently spend
-    # API/usage credit under a primary route.
-    if spec.executor == "claude" and spec.claude_route in {"claude_channel", "claude_agent_view"} and command_runs_claude_print(command):
-        raise RuntimeError(
-            f"no-hidden-print violation: {spec.claude_route} resolved to a real claude print command"
-        )
+
+    if spec.proofgate_route_request is not None and not dry_run:
+        if spec.executor == "claude" and spec.claude_route in {"claude_channel", "claude_agent_view"}:
+            raise IsolationRouteError("proofgate_route_ineligible: claude channel/agent_view sidecar routes cannot run under child bubblewrap isolation")
+
+    proofgate_scratch = None
+    launch_cwd = spec.wrapped_cwd
+    launch_env = None
+    command: list[str] = []
+    staged_review_paths: tuple[Path, ...] = ()
+
     try:
+        if spec.proofgate_route_request is not None and not dry_run:
+            route = ExecuteAndPanelRoute()
+            proofgate_scratch = tempfile.mkdtemp(prefix="pl-proofgate-scratch-")
+            clone_desc = route.prepare_authoritative_assigned_clone(
+                spec.proofgate_route_request.source_repo,
+                spec.proofgate_route_request.source_head_oid,
+                proofgate_scratch,
+                expected_tree_digest=spec.proofgate_route_request.tree_digest,
+            )
+            bwrap_builder = BubblewrapIsolationBuilder()
+            launch_env = bwrap_builder.mask_credentials_and_config(dict(os.environ))
+            launch_cwd = clone_desc["clone_dir"]
+
+        if spec.executor == "claude" and spec.claude_route == "claude_channel" and not dry_run:
+            return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
+        if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
+            return _result_with_spec(_launch_claude_agent_view(spec, log_path=log_path), spec)
+        command, staged_review_paths = _resolve_command_context(spec, log_path, dry_run=dry_run)
+        if spec.proofgate_route_request is not None and not dry_run:
+            bwrap_builder = BubblewrapIsolationBuilder()
+            extra_ro = tuple(str(p) for p in staged_review_paths if os.path.exists(p))
+            command = bwrap_builder.build_bwrap_command(command, launch_cwd, extra_ro_binds=extra_ro)
+        if spec.executor == "claude" and spec.claude_route in {"claude_channel", "claude_agent_view"} and command_runs_claude_print(command):
+            raise RuntimeError(
+                f"no-hidden-print violation: {spec.claude_route} resolved to a real claude print command"
+            )
         result = launch(
             command,
             dry_run=dry_run,
@@ -1980,12 +2031,15 @@ def launch_with_spec(
             quiet_warning_seconds=quiet_warning_seconds,
             quiet_blocker_seconds=quiet_blocker_seconds,
             timeout_seconds=spec.launch_timeout_seconds,
-            cwd=spec.wrapped_cwd,
+            cwd=launch_cwd,
+            env=launch_env,
             # #61/#86: even an unobserved (--no-observe) executor child must get
             # quiet-child / stall detection so it can't hang the parent silently.
             ephemeral_monitor=log_path is None,
         )
     finally:
+        if proofgate_scratch and os.path.exists(proofgate_scratch):
+            shutil.rmtree(proofgate_scratch, ignore_errors=True)
         # Clean from the RESOLVED command so the launch-time materialized codex
         # schema path (run-scoped or fallback) is removed here (#63), alongside any
         # build-time cleanup paths. Review-stage copies are cleaned by their EXACT
@@ -3469,3 +3523,140 @@ def _opencode_variant(action: str, effort: str) -> str | None:
     if effort == "low":
         return "minimal"
     return None
+
+
+def build_proofgate_executable_launch_spec(
+    probe_cmd: list[str] | None = None,
+    action: str = "execute",
+    executor: str = "codex",
+) -> dict[str, Any]:
+    cmd = probe_cmd or [os.sys.executable, "-c", "print('PROBE_RESULTS:{}')"]
+    assigned_clone = os.environ.get("ASSIGNED_CLONE_DIR")
+    cleanup_root: str | None = None
+    if assigned_clone is None:
+        source_repo = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=os.getcwd(),
+            capture_output=True,
+            text=True,
+        )
+        source_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=os.getcwd(),
+            capture_output=True,
+            text=True,
+        )
+        if source_repo.returncode != 0 or source_head.returncode != 0:
+            assigned_clone = os.getcwd()
+        else:
+            cleanup_root = tempfile.mkdtemp(prefix="proofgate-assigned-")
+            clone = ExecuteAndPanelRoute().prepare_authoritative_assigned_clone(
+                source_repo.stdout.strip(),
+                source_head.stdout.strip(),
+                cleanup_root,
+            )
+            assigned_clone = clone["clone_dir"]
+    if not os.path.exists(assigned_clone):
+        return {
+            "is_executable": False,
+            "status": "blocked",
+            "reason": "assigned_clone_missing",
+            "action": action,
+            "executor": executor,
+            "argv": [],
+            "command": [],
+            "probe_cmd": cmd,
+            "env": {},
+            "mounts": [],
+        }
+
+    bwrap_builder = BubblewrapIsolationBuilder()
+    argv = bwrap_builder.build_bwrap_command(cmd, clone_dir=assigned_clone)
+    env = bwrap_builder.mask_credentials_and_config(dict(os.environ))
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["ASSIGNED_CLONE_DIR"] = assigned_clone
+
+    mounts = [
+        "/run/proofgate/intended-inference.sock",
+        "/run/proofgate/coordinator-ipc.sock",
+    ]
+
+    return {
+        "is_executable": True,
+        "action": action,
+        "executor": executor,
+        "argv": argv,
+        "command": argv,
+        "probe_cmd": cmd,
+        "env": env,
+        "mounts": mounts,
+        "cleanup_root": cleanup_root,
+    }
+
+
+def execute_proofgate_launch_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    argv = spec.get("argv", spec.get("command", []))
+    if not argv:
+        argv = spec.get("probe_cmd", [])
+
+    env = dict(spec.get("env", {}))
+    if "PATH" not in env:
+        env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+
+    cleanup_root = spec.get("cleanup_root")
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    finally:
+        if isinstance(cleanup_root, str) and cleanup_root:
+            shutil.rmtree(cleanup_root, ignore_errors=True)
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+
+    if proc.returncode != 0 or "PROBE_RESULTS:" not in stdout:
+        return {
+            "status": "error",
+            "stdout": stdout,
+            "stderr": stderr,
+            "clone_write_read": False,
+            "outside_path_read_failed": False,
+            "host_network_connection_failed": False,
+            "inherited_fd_access_failed": False,
+            "alternate_socket_connection_failed": False,
+        }
+
+    results: dict[str, Any] = {}
+    try:
+        import ast
+
+        raw_res = stdout.split("PROBE_RESULTS:", 1)[1].strip()
+        parsed_res = ast.literal_eval(raw_res)
+        if isinstance(parsed_res, dict):
+            results = parsed_res
+    except Exception:
+        return {
+            "status": "error",
+            "stdout": stdout,
+            "stderr": stderr,
+            "clone_write_read": False,
+            "outside_path_read_failed": False,
+            "host_network_connection_failed": False,
+            "inherited_fd_access_failed": False,
+            "alternate_socket_connection_failed": False,
+        }
+
+    return {
+        "status": "success",
+        "stdout": stdout,
+        "stderr": stderr,
+        "clone_write_read": results.get("clone_write_read", False),
+        "outside_path_read_failed": results.get("outside_path_read_failed", False),
+        "host_network_connection_failed": results.get("host_network_connection_failed", False),
+        "inherited_fd_access_failed": results.get("inherited_fd_access_failed", False),
+        "alternate_socket_connection_failed": results.get("alternate_socket_connection_failed", False),
+    }
