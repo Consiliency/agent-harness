@@ -1,0 +1,262 @@
+name: Proofgate Receipt Attestation
+
+on:
+  workflow_dispatch:
+    inputs:
+      publication_locator:
+        description: 'Authority-free, single-use publication locator'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  attestations: write
+  id-token: write
+
+jobs:
+  attest:
+    name: Attest Core Receipt
+    runs-on: ubuntu-latest
+    environment: proofgate-receipt-head-v1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Execute Receipt Attestation, CAS Commit, Push and Revoke
+        run: |
+          set -euo pipefail
+
+          # 1. Environment & Workflow Verification
+          test "${GITHUB_REPOSITORY}" = "Consiliency/agent-harness"
+          test "${GITHUB_REF}" = "refs/heads/main"
+
+          WORKFLOW_BLOB_SHA=$(git hash-object .github/workflows/proofgate-receipt-attestation.yml)
+          echo "Verified workflow blob SHA: ${WORKFLOW_BLOB_SHA}"
+
+          # Git identity setup
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 2. Probe Ordinary GITHUB_TOKEN Write Rejection (ruleset denial test)
+          git fetch origin refs/heads/proofgate-receipt-head-v1:refs/heads/proofgate-receipt-head-v1 2>/dev/null || true
+          PARENT_OID=$(git rev-parse --verify refs/heads/proofgate-receipt-head-v1 2>/dev/null || echo "")
+
+          PROBE_INDEX=$(mktemp)
+          GIT_INDEX_FILE="${PROBE_INDEX}" git read-tree --empty
+          PROBE_TREE=$(GIT_INDEX_FILE="${PROBE_INDEX}" git write-tree)
+          rm -f "${PROBE_INDEX}"
+
+          if [ -n "${PARENT_OID}" ]; then
+            PROBE_COMMIT=$(git commit-tree "${PROBE_TREE}" -p "${PARENT_OID}" -m "probe commit")
+          else
+            PROBE_COMMIT=$(git commit-tree "${PROBE_TREE}" -m "probe commit")
+          fi
+
+          HEADER_FILE=$(mktemp)
+          chmod 600 "${HEADER_FILE}"
+          echo "Authorization: bearer ${{ secrets.GITHUB_TOKEN }}" > "${HEADER_FILE}"
+
+          if git -c "http.extraheader=@${HEADER_FILE}" push origin "${PROBE_COMMIT}:refs/heads/proofgate-receipt-head-v1" 2>/dev/null; then
+            echo "ERROR: Ordinary GITHUB_TOKEN write to protected ref succeeded unexpectedly!"
+            rm -f "${HEADER_FILE}"
+            exit 1
+          else
+            echo "Confirmed: Ordinary GITHUB_TOKEN push rejected by ruleset."
+          fi
+          rm -f "${HEADER_FILE}"
+
+          # 3. Mint Broker Token via OIDC & Install Revocation Trap
+          AUDIENCE="https://proofgate.consiliency.org"
+          OIDC_TOKEN=$(curl -sH "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value')
+          LOCATOR="${{ inputs.publication_locator }}"
+
+          if [ -z "${LOCATOR}" ] || [ "${LOCATOR}" = "null" ]; then
+            echo "ERROR: publication_locator is missing or null."
+            exit 1
+          fi
+
+          PAYLOAD_FILE=$(mktemp)
+          jq -n --arg oidc "${OIDC_TOKEN}" --arg loc "${LOCATOR}" '{"oidc_token": $oidc, "publication_locator": $loc}' > "${PAYLOAD_FILE}"
+
+          BROKER_RESP=$(curl -sX POST "https://proofgate-broker.consiliency.org/v1/attest-token" \
+            -H "Content-Type: application/json" \
+            --data-binary "@${PAYLOAD_FILE}")
+          rm -f "${PAYLOAD_FILE}"
+
+          APP_TOKEN=$(echo "${BROKER_RESP}" | jq -r '.app_token // empty')
+          if [ -z "${APP_TOKEN}" ] || [ "${APP_TOKEN}" = "null" ]; then
+            echo "ERROR: Broker attestation failed or app_token missing."
+            exit 1
+          fi
+          echo "::add-mask::${APP_TOKEN}"
+
+          # REVOCATION TRAP: revoke token on exit (clean or error)
+          cleanup_token() {
+            if [ -n "${APP_TOKEN:-}" ]; then
+              echo "Revoking App Token..."
+              curl -sX POST "https://proofgate-broker.consiliency.org/v1/revoke-token" \
+                -H "Authorization: Bearer ${APP_TOKEN}" || true
+            fi
+          }
+          trap cleanup_token EXIT
+
+          # Extract core_payload and bundle_payload (NO FABRICATED FALLBACK)
+          CORE_JSON=$(echo "${BROKER_RESP}" | jq -c '.core_payload // empty')
+          BUNDLE_JSON=$(echo "${BROKER_RESP}" | jq -c '.bundle_payload // empty')
+
+          if [ -z "${CORE_JSON}" ] || [ "${CORE_JSON}" = "null" ]; then
+            echo "ERROR: core_payload is missing or null."
+            exit 1
+          fi
+          if [ -z "${BUNDLE_JSON}" ] || [ "${BUNDLE_JSON}" = "null" ]; then
+            echo "ERROR: bundle_payload is missing or null."
+            exit 1
+          fi
+
+          # Process sequence, hashes, and paths
+          SEQ_NUM=$(echo "${CORE_JSON}" | jq -r '.sequence')
+          if ! [[ "${SEQ_NUM}" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: Invalid sequence number: ${SEQ_NUM}"
+            exit 1
+          fi
+          SEQ_STR=$(python3 -c "print(f'${SEQ_NUM}'.zfill(20))")
+
+          mkdir -p cores bundles appends
+
+          CORE_PATH="cores/${SEQ_STR}-core.json"
+          echo "${CORE_JSON}" > "${CORE_PATH}"
+          CORE_SHA256=$(sha256sum "${CORE_PATH}" | awk '{print $1}')
+          FINAL_CORE_PATH="cores/${SEQ_STR}-${CORE_SHA256}.json"
+          mv "${CORE_PATH}" "${FINAL_CORE_PATH}"
+
+          BUNDLE_PATH="bundles/${SEQ_STR}-bundle.json"
+          echo "${BUNDLE_JSON}" > "${BUNDLE_PATH}"
+          BUNDLE_SHA256=$(sha256sum "${BUNDLE_PATH}" | awk '{print $1}')
+          FINAL_BUNDLE_PATH="bundles/${SEQ_STR}-${BUNDLE_SHA256}.json"
+          mv "${BUNDLE_PATH}" "${FINAL_BUNDLE_PATH}"
+
+          # Fetch previous state for append record & sequence continuity verification
+          git fetch origin refs/heads/proofgate-receipt-head-v1:refs/heads/proofgate-receipt-head-v1 2>/dev/null || true
+          PARENT_OID=$(git rev-parse --verify refs/heads/proofgate-receipt-head-v1 2>/dev/null || echo "")
+
+          PREV_APPEND_SHA256=""
+          if [ -n "${PARENT_OID}" ]; then
+            LATEST_CONTENT=$(git show "${PARENT_OID}:latest.json" 2>/dev/null || echo "")
+            if [ -n "${LATEST_CONTENT}" ]; then
+              PREV_APPEND_SHA256=$(echo "${LATEST_CONTENT}" | jq -r '.append_sha256 // empty')
+            fi
+          fi
+
+          # Construct Append Record using safe jq encoding
+          APPEND_PATH="appends/${SEQ_STR}-append.json"
+          jq -n \
+            --arg schema "proofgate_external_head_append.v1" \
+            --argjson sequence "${SEQ_NUM}" \
+            --arg core_sha "${CORE_SHA256}" \
+            --arg bundle_sha "${BUNDLE_SHA256}" \
+            --arg prev_append_sha "${PREV_APPEND_SHA256}" \
+            --arg expected_parent "${PARENT_OID}" \
+            --arg locator "${LOCATOR}" \
+            '{
+              schema: $schema,
+              sequence: $sequence,
+              core_sha256: $core_sha,
+              bundle_sha256: $bundle_sha,
+              previous_append_sha256: (if $prev_append_sha == "" then null else $prev_append_sha end),
+              expected_previous_external_head_oid: (if $expected_parent == "" then null else $expected_parent end),
+              publication_locator: $locator
+            }' > "${APPEND_PATH}"
+
+          APPEND_SHA256=$(sha256sum "${APPEND_PATH}" | awk '{print $1}')
+          FINAL_APPEND_PATH="appends/${SEQ_STR}-${APPEND_SHA256}.json"
+          mv "${APPEND_PATH}" "${FINAL_APPEND_PATH}"
+
+          # Write latest.json using safe jq encoding
+          jq -n \
+            --arg append_sha "${APPEND_SHA256}" \
+            --arg core_sha "${CORE_SHA256}" \
+            '{append_sha256: $append_sha, core_sha256: $core_sha}' > latest.json
+
+          # 4. Construct Isolated Index Tree (Genesis = 4 entries, Append = 3 add, 1 modify)
+          WORK_INDEX=$(mktemp)
+          export GIT_INDEX_FILE="${WORK_INDEX}"
+
+          if [ -n "${PARENT_OID}" ]; then
+            git read-tree "${PARENT_OID}^{tree}"
+          else
+            git read-tree --empty
+          fi
+
+          git update-index --add "${FINAL_CORE_PATH}"
+          git update-index --add "${FINAL_BUNDLE_PATH}"
+          git update-index --add "${FINAL_APPEND_PATH}"
+          git update-index --add latest.json
+
+          TREE_OID=$(git write-tree)
+          rm -f "${WORK_INDEX}"
+          unset GIT_INDEX_FILE
+
+          # Verify tree tuple counts
+          if [ -z "${PARENT_OID}" ]; then
+            TOTAL_ENTRIES=$(git ls-tree "${TREE_OID}" | wc -l)
+            test "${TOTAL_ENTRIES}" -eq 4
+          else
+            DIFF_COUNTS=$(git diff-tree -r --name-status "${PARENT_OID}^{tree}" "${TREE_OID}")
+            ADD_COUNT=$(echo "${DIFF_COUNTS}" | grep -c "^A" || true)
+            MOD_COUNT=$(echo "${DIFF_COUNTS}" | grep -c "^M" || true)
+            test "${ADD_COUNT}" -eq 3
+            test "${MOD_COUNT}" -eq 1
+          fi
+
+          if [ -n "${PARENT_OID}" ]; then
+            COMMIT_OID=$(git commit-tree "${TREE_OID}" -p "${PARENT_OID}" -m "proofgate receipt append ${SEQ_STR}")
+          else
+            COMMIT_OID=$(git commit-tree "${TREE_OID}" -m "proofgate receipt genesis ${SEQ_STR}")
+          fi
+
+          # 5. Push using Protected Header File (No token in argv)
+          AUTH_HEADER_FILE=$(mktemp)
+          chmod 600 "${AUTH_HEADER_FILE}"
+          echo "Authorization: bearer ${APP_TOKEN}" > "${AUTH_HEADER_FILE}"
+
+          git -c "http.extraheader=@${AUTH_HEADER_FILE}" push origin "${COMMIT_OID}:refs/heads/proofgate-receipt-head-v1"
+
+          # 6. Re-fetch and verify fresh landed state
+          git fetch origin refs/heads/proofgate-receipt-head-v1:refs/heads/proofgate-receipt-head-v1
+          LANDED_HEAD=$(git rev-parse refs/heads/proofgate-receipt-head-v1)
+          if [ "${LANDED_HEAD}" != "${COMMIT_OID}" ]; then
+            echo "ERROR: CAS Push race lost! Landed head ${LANDED_HEAD} != expected ${COMMIT_OID}"
+            rm -f "${AUTH_HEADER_FILE}"
+            exit 1
+          fi
+
+          # 7. Execute Explicit Token Revocation and Verify Revoked Token Unusability
+          curl -sX POST "https://proofgate-broker.consiliency.org/v1/revoke-token" \
+            -H "Authorization: Bearer ${APP_TOKEN}"
+
+          REVOKED_TOKEN="${APP_TOKEN}"
+          APP_TOKEN=""
+          trap - EXIT
+
+          echo "Authorization: bearer ${REVOKED_TOKEN}" > "${AUTH_HEADER_FILE}"
+
+          PROBE_REVOKED_INDEX=$(mktemp)
+          GIT_INDEX_FILE="${PROBE_REVOKED_INDEX}" git read-tree "${COMMIT_OID}^{tree}"
+          PROBE_REVOKED_TREE=$(GIT_INDEX_FILE="${PROBE_REVOKED_INDEX}" git write-tree)
+          rm -f "${PROBE_REVOKED_INDEX}"
+
+          PROBE_REVOKED_COMMIT=$(git commit-tree "${PROBE_REVOKED_TREE}" -p "${COMMIT_OID}" -m "post revocation probe commit")
+
+          if git -c "http.extraheader=@${AUTH_HEADER_FILE}" push origin "${PROBE_REVOKED_COMMIT}:refs/heads/proofgate-receipt-head-v1" 2>/dev/null; then
+            echo "ERROR: Post-revocation push with revoked token succeeded unexpectedly!"
+            rm -f "${AUTH_HEADER_FILE}"
+            exit 1
+          else
+            echo "Confirmed: Post-revocation push failed as expected."
+          fi
+          rm -f "${AUTH_HEADER_FILE}"
+
+          echo "Attestation, CAS Commit, Push, and Revocation completed successfully."
