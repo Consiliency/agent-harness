@@ -219,10 +219,11 @@ PYEOF
     # standalone wheel gate cannot manufacture. CONFORM's frozen A2 selector
     # excludes the same exact identities; every other non-integration test runs.
     CONFORM_STANDALONE_DESELECTS=(
-      "--deselect=$SUITE_TREE/tests/test_outside_agent_contract_drift.py::test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes"
-      "--deselect=$SUITE_TREE/tests/test_outside_agent_release_surface.py::test_v7_disposition_records_merged_contract_and_final_installed_behavior"
-      "--deselect=$SUITE_TREE/tests/test_outside_agent_release_surface.py::test_release_handoff_records_metadata_only_package_contract_and_dispatch_boundary"
-      "--deselect=$SUITE_TREE/tests/test_outside_agent_release_surface.py::test_public_docs_point_to_handoff_without_claiming_release_dispatch"
+      "--rootdir=$SUITE_TREE"
+      "--deselect=tests/test_outside_agent_contract_drift.py::test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes"
+      "--deselect=tests/test_outside_agent_release_surface.py::test_v7_disposition_records_merged_contract_and_final_installed_behavior"
+      "--deselect=tests/test_outside_agent_release_surface.py::test_release_handoff_records_metadata_only_package_contract_and_dispatch_boundary"
+      "--deselect=tests/test_outside_agent_release_surface.py::test_public_docs_point_to_handoff_without_claiming_release_dispatch"
     )
     echo "-- full standalone suite: CONFORM repository evidence staged at $SOURCE_HEAD --"
   elif [ "$CONFORM_CAPABILITY_STATUS" -eq 10 ]; then

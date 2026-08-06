@@ -97,6 +97,7 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
             self.assertIn(required, script)
         self.assertNotIn("sparse-checkout set \\\n      phase-loop-runtime/tests", script)
         self.assertNotIn("      .claude", script)
+        self.assertIn('"--rootdir=$SUITE_TREE"', script)
 
         for nodeid in (
             "test_outside_agent_contract_drift.py::test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes",
@@ -104,7 +105,8 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
             "test_outside_agent_release_surface.py::test_release_handoff_records_metadata_only_package_contract_and_dispatch_boundary",
             "test_outside_agent_release_surface.py::test_public_docs_point_to_handoff_without_claiming_release_dispatch",
         ):
-            self.assertIn(f"--deselect=$SUITE_TREE/tests/{nodeid}", script)
+            self.assertIn(f"--deselect=tests/{nodeid}", script)
+            self.assertNotIn(f"--deselect=$SUITE_TREE/tests/{nodeid}", script)
 
 
 if __name__ == "__main__":
