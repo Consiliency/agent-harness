@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -338,6 +338,27 @@ def test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror(tmp_path
         "CONFORM_RED::sdist_contract_mirror_missing: "
         "phase_loop_runtime/conformance/_contract/VENDOR.json"
     )
+    sdist_extract_root = tmp_path / "sdist-extract"
+    sdist_extract_root.mkdir()
+    with tarfile.open(sdist_path) as archive:
+        members = archive.getmembers()
+        for member in members:
+            path = PurePosixPath(member.name)
+            assert not path.is_absolute()
+            assert ".." not in path.parts
+            assert member.isfile() or member.isdir()
+        top_levels = {PurePosixPath(member.name).parts[0] for member in members}
+        assert len(top_levels) == 1
+        top_level_name = list(top_levels)[0]
+        top_member = next(
+            (m for m in members if PurePosixPath(m.name) == PurePosixPath(top_level_name)),
+            None
+        )
+        assert top_member is not None and top_member.isdir()
+        archive.extractall(sdist_extract_root)
+    sdist_roots = [path for path in sdist_extract_root.iterdir() if path.is_dir()]
+    assert len(sdist_roots) == 1
+    sdist_dir = sdist_roots[0]
     derived_dist = tmp_path / "derived-wheel"
     derived = subprocess.run(
         [
@@ -348,7 +369,7 @@ def test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror(tmp_path
             "--no-isolation",
             "--outdir",
             str(derived_dist),
-            str(sdist_path),
+            str(sdist_dir),
         ],
         capture_output=True,
         text=True,
