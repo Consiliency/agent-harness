@@ -924,6 +924,60 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-06T14:50:16Z",
+          "by": "codex-v10-coordinator",
+          "metadata": {
+            "causal_validation_repair": {
+              "allowed_paths": [
+                "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
+                "phase-loop-runtime/tests/_outside_agent_canonical.py",
+                "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"
+              ],
+              "changelog_parent_rebind": {
+                "new": "0da6158723da5324086ed064a83fce97b90a694b",
+                "old": "d57713c07468aba942c31744d0a272dd73771f2f",
+                "reason": "preserve_merged_Consiliency_agent_harness_468_clean_room_release_note"
+              },
+              "documentation_replay": {
+                "allowed_range_diff_rows": "first_four_original_commits_equal_one_inserted_verifier_commit_only_documentation_commit_may_be_bang",
+                "final_blobs": {
+                  "CHANGELOG.md": "300127fb4cfddb3e1333d91b3e19b5624be77ab7",
+                  "docs/outside-agent-conformance.md": "014423efead1baef42ba3c0c047acf4e03659f10",
+                  "docs/releases/outside-agent-release-handoff.md": "6239dd4f9a50378ac32c3ed3ff194c195349e300",
+                  "specs/phase-plans-v7.md": "6700a05c82c06fb6960497518dd051bf5b0b1a3b"
+                }
+              },
+              "failed_attempt": {
+                "head": "61f73393f5db6591d20b9cf3450eb71af63ddb4a",
+                "observed_vector": [
+                  true,
+                  false,
+                  false,
+                  false
+                ],
+                "raw_log_sha256": "8531ba13171f835411ad37501446aca01bd1fdd133bbafda746424e90b0e6009",
+                "status": "non_authorizing_causal_validation_failure",
+                "tree": "482be26224cd1b075e83c8aa2606fd0693ff5392",
+                "typed_failure": "CONFORM_RED::partial_sl2_compatibility_transition"
+              },
+              "implementation_delta": "one_production_path_one_localized_validate_chronology_hunk",
+              "issue": "Consiliency/agent-harness#470",
+              "repair_delta": "three_test_paths_six_localized_logical_hunks",
+              "review_status": "unreviewed_not_approved",
+              "total_exception": "four_paths_seven_localized_logical_hunks"
+            },
+            "digest_rebind": {
+              "plan_sha256": "68b1880af0631b6ffeca6ccbbf6ad2c60f3412e31e2db34cff530956811ac6e9",
+              "predecessor_plan_sha256": "f4d62011da41abd222272ef35d51f62018b4871d80b3fa0dc49dcc7e7a305a19",
+              "reason": "Consiliency/agent-harness#470_changelog_parent_and_documentation_replay_rebind",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -939,7 +993,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-06T07:57:23Z"
+      "updated_at": "2026-08-06T14:50:16Z"
     },
     {
       "acceptance_criteria_count": null,
