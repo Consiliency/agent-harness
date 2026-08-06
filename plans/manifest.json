@@ -1014,6 +1014,43 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-06T16:04:00Z",
+          "by": "codex-v10-coordinator",
+          "metadata": {
+            "digest_rebind": {
+              "plan_sha256": "c800d91c2bb3a41cdc078b4bb4b663a0e097ccd24015d8531a5d9fe75dd21c16",
+              "predecessor_plan_sha256": "721c9fb2a1ded3c2cf727168a27b0fc57be24957d17d91a97e4446fe50c95181",
+              "reason": "Consiliency/agent-harness#475_unique_matching_introduction_boundary",
+              "repaired_digest_review_status": "unreviewed_not_approved",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            },
+            "superseded_review": {
+              "board_sha256": "b2156844998748379599e5486610f50b07ffe0966fe64a3d061a8c0de4a2e91b",
+              "early_terra_sha256": "ac4e7372924aaff1557fd8dd294488f88694d3afa4c9972bd3ff4ebc80037ce7",
+              "early_terra_verdict": "AGREE",
+              "fable_blocker": "newest_first_complete_walk_selects_post_implementation_candidate_instead_of_frozen_repair_introduction",
+              "fable_verdict": "DISAGREE",
+              "gemini_staged_supplement_sha256": "4ce3247e4002b66af1419232f7b1e928f0e1509344bd843b27bbae3e45f3dbdc",
+              "gemini_staged_supplement_verdict": "AGREE",
+              "grok_verdict": "AGREE",
+              "head": "33092af548118269f3e06c2548b7749c05506f85",
+              "opus_verdict": "AGREE",
+              "panel_sha256": "3b45a2e0c4f986e58e2539ab11f9a67a6416f3adee671b3675e6802bf8a3d794",
+              "review_bundle_sha256": "bd8e22a16aaefeac813b0b11600003f28bf82c9d977c64852d5442978fafde7d",
+              "sol_verdict": "DISAGREE",
+              "status": "superseded_president_blocked"
+            },
+            "targeted_correction": {
+              "ambiguity_policy": "fail_on_zero_multiple_or_parallel_introduction_boundaries_or_missing_parent_object",
+              "introduction_boundary": "matches_all_head_blobs_nonempty_parent_vector_no_parent_matches",
+              "repair_budget": "three_test_paths_six_logical_hunks_unchanged",
+              "selection": "unique_matching_introduction_boundary_from_complete_unfiltered_candidate_reachable_walk",
+              "total_budget": "four_paths_seven_logical_hunks_unchanged"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1029,7 +1066,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-06T15:27:23Z"
+      "updated_at": "2026-08-06T16:04:00Z"
     },
     {
       "acceptance_criteria_count": null,
