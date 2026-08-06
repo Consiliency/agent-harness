@@ -47,7 +47,7 @@ env -u PYTHONPATH "$PY" -m pip install --quiet --upgrade pip >/dev/null
 # standalone suite run below (step 4) includes the FAV visual-evidence gate's
 # decode-requiring tests, which need Pillow installed in THIS venv or they'd
 # error at test time (agent-harness#91 round-4 CR).
-env -u PYTHONPATH "$PY" -m pip install --quiet "${WHEEL}[visual]" >/dev/null
+env -u PYTHONPATH "$PY" -m pip install --quiet --no-compile "${WHEEL}[visual]" >/dev/null
 
 # The non-empty profile_commands group must now actually ship in the installed
 # dist-info (empty groups were dropped by setuptools before Option A).
@@ -134,14 +134,43 @@ if [ "${PHASE_LOOP_SKIP_GATE_A_SUITE:-0}" = "1" ]; then
   echo "-- full standalone suite: SKIPPED (PHASE_LOOP_SKIP_GATE_A_SUITE=1) --"
 else
   echo "-- full standalone suite: pytest -m 'not dotfiles_integration' vs installed wheel --"
-  env -u PYTHONPATH "$PY" -m pip install --quiet pytest >/dev/null
-  SUITE_TREE="$WORK/standalone/phase-loop-runtime"
-  mkdir -p "$SUITE_TREE"
-  cp -r "$PKG_ROOT/tests" "$SUITE_TREE/tests"
-  # Repo-contract tests resolve canonical roadmap fixtures from the monorepo
-  # root (tests/../..). Keep those immutable inputs available without exposing
-  # the source package tree to the installed-wheel test process.
-  cp -r "$PKG_ROOT/../specs" "$WORK/standalone/specs"
+  env -u PYTHONPATH "$PY" -m pip install --quiet pytest build >/dev/null
+  if env -u PYTHONPATH PYTHONNOUSERSITE=1 "$PY" - <<'PYEOF'
+import importlib.util
+raise SystemExit(
+    0
+    if importlib.util.find_spec(
+        "phase_loop_runtime.conformance.outside_agent_conform_evidence"
+    ) is not None
+    else 1
+)
+PYEOF
+  then
+    # CONFORM's final mutation/lifecycle proof needs source and Git history as
+    # immutable data. A sparse private clone supplies those bytes while scripts
+    # stay absent and PYTHONPATH still resolves production from the installed wheel.
+    STANDALONE_ROOT="$WORK/standalone"
+    SOURCE_REPO="$PKG_ROOT/.."
+    SOURCE_HEAD="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
+    git clone --quiet --no-local --no-checkout "$SOURCE_REPO" "$STANDALONE_ROOT"
+    git -C "$STANDALONE_ROOT" sparse-checkout init --cone
+    git -C "$STANDALONE_ROOT" sparse-checkout set \
+      phase-loop-runtime/tests \
+      phase-loop-runtime/src \
+      docs \
+      specs
+    git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
+    SUITE_TREE="$STANDALONE_ROOT/phase-loop-runtime"
+    echo "-- full standalone suite: CONFORM repository evidence staged at $SOURCE_HEAD --"
+  else
+    SUITE_TREE="$WORK/standalone/phase-loop-runtime"
+    mkdir -p "$SUITE_TREE"
+    cp -r "$PKG_ROOT/tests" "$SUITE_TREE/tests"
+    # Repo-contract tests resolve canonical roadmap fixtures from the monorepo
+    # root (tests/../..). Keep those immutable inputs available without exposing
+    # the source package tree to the installed-wheel test process.
+    cp -r "$PKG_ROOT/../specs" "$WORK/standalone/specs"
+  fi
   # Sanity: the copied tree's parents[3] must NOT be a dotfiles checkout.
   if env -i "$PY" - "$SUITE_TREE/tests" <<'PYEOF'
 import sys
@@ -162,6 +191,7 @@ PYEOF
       HOME="$CLEAN_HOME" \
       PATH="$VENV/bin:/usr/bin:/bin" \
       PYTHONNOUSERSITE=1 \
+      PYTHONDONTWRITEBYTECODE=1 \
       PYTHONPATH="$SUITE_TREE/tests" \
       "$PY" -m pytest "$SUITE_TREE/tests" -q -p no:cacheprovider -m "not dotfiles_integration"; then
     echo "GATE-A FAIL: standalone test suite is not green (see failures above)" >&2
