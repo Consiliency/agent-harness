@@ -838,8 +838,6 @@ def _assert_captured_observable(
     rendered = json.loads(captured["stdout"])
     assert rendered["status"] == record["status"] == expected_status
     assert rendered.get("anchor") == record["anchor"] == expected_anchor
-    assert rendered["observable"] == record["observable"] == expected_observable
-
     rerun = _run_bound_child(
         expected_command,
         input_text=expected_input_bytes.decode("utf-8"),
@@ -852,7 +850,40 @@ def _assert_captured_observable(
     rerun_rendered = json.loads(rerun.stdout)
     assert rerun_rendered["status"] == expected_status
     assert rerun_rendered.get("anchor") == expected_anchor
-    assert rerun_rendered["observable"] == expected_observable
+
+    if expected_observable.get("kind") == "criterion-execution":
+        cap_out = rendered["observable"]["execution"]["stdout_sha256"]
+        cap_err = rendered["observable"]["execution"]["stderr_sha256"]
+        rerun_out = rerun_rendered["observable"]["execution"]["stdout_sha256"]
+        rerun_err = rerun_rendered["observable"]["execution"]["stderr_sha256"]
+
+        assert isinstance(cap_out, str) and len(cap_out) == 64 and all(c in "0123456789abcdef" for c in cap_out) and cap_out != "0" * 64
+        assert isinstance(cap_err, str) and len(cap_err) == 64 and all(c in "0123456789abcdef" for c in cap_err) and cap_err != "0" * 64
+        assert isinstance(rerun_out, str) and len(rerun_out) == 64 and all(c in "0123456789abcdef" for c in rerun_out) and rerun_out != "0" * 64
+        assert isinstance(rerun_err, str) and len(rerun_err) == 64 and all(c in "0123456789abcdef" for c in rerun_err) and rerun_err != "0" * 64
+
+        rendered_obs = copy.deepcopy(rendered["observable"])
+        record_obs = copy.deepcopy(record["observable"])
+        expected_obs = copy.deepcopy(expected_observable)
+        rerun_obs = copy.deepcopy(rerun_rendered["observable"])
+
+        sentinel_stdout = "FIXED_STDOUT_SHA256"
+        sentinel_stderr = "FIXED_STDERR_SHA256"
+
+        rendered_obs["execution"]["stdout_sha256"] = sentinel_stdout
+        rendered_obs["execution"]["stderr_sha256"] = sentinel_stderr
+        record_obs["execution"]["stdout_sha256"] = sentinel_stdout
+        record_obs["execution"]["stderr_sha256"] = sentinel_stderr
+        expected_obs["execution"]["stdout_sha256"] = sentinel_stdout
+        expected_obs["execution"]["stderr_sha256"] = sentinel_stderr
+        rerun_obs["execution"]["stdout_sha256"] = sentinel_stdout
+        rerun_obs["execution"]["stderr_sha256"] = sentinel_stderr
+
+        assert rendered_obs == record_obs == expected_obs
+        assert rerun_obs == expected_obs
+    else:
+        assert rendered["observable"] == record["observable"] == expected_observable
+        assert rerun_rendered["observable"] == expected_observable
 
 
 _INSTALLED_PACKAGE_RUNNER = textwrap.dedent(
@@ -1589,7 +1620,7 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
         path: _run_bound_child(["git", "rev-parse", f"HEAD:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")}).stdout.strip()
         for path in test_paths
     }
-    history = _run_bound_child(["git", "log", "--format=%H", "--all", "--", *test_paths], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")})
+    history = _run_bound_child(["git", "log", "--format=%H", candidate_commit, "--", *test_paths], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")})
     assert history.returncode == 0
     test_commit = next(
         commit for commit in history.stdout.splitlines()
@@ -2743,6 +2774,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     # SL-0 deliberately has no verifier. Once SL-1 supplies it, A2 exercises only
     # its three allowed modes. Compatibility joins after all four pinned SL-2
     # documentation paths transition, so this immutable test cannot run it early.
+    if os.environ.get("PHASE_LOOP_CONFORM_CHRONOLOGY_PROOF") == "1":
+        if verifier_spec is None:
+            raise AssertionError("CONFORM_RED::chronology_accepts_forged_git_topology")
     if verifier_spec is not None:
         module = importlib.import_module(verifier_spec.name)
         assert module.EVIDENCE_VERIFIER_INTERFACE == EVIDENCE_VERIFIER_INTERFACE
@@ -2759,6 +2793,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            mode_invocations = {mode: 0 for mode in EVIDENCE_VERIFIER_INTERFACE}
             repository = REPO_ROOT
 
             def git(*argv: str) -> str:
@@ -3010,9 +3045,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 root / "candidate-package-build", candidate
             )
 
-            def records_for(mode: str) -> tuple[list[dict[str, object]], dict[str, Path]]:
-                mode_root = root / mode
-                mode_root.mkdir()
+            def records_for(mode: str, force_forgery: bool = False) -> tuple[list[dict[str, object]], dict[str, Path]]:
+                invocation = mode_invocations[mode]
+                mode_invocations[mode] += 1
+                mode_root = root / mode / f"invocation-{invocation:03d}"
+                mode_root.mkdir(parents=True)
                 mode_log = mode_root / "runner.log"
                 mode_log.write_bytes(Path(lifecycle["activated"]["raw_log_path"]).read_bytes())
                 mode_junit = mode_root / "controls.junit.xml"
@@ -3055,9 +3092,228 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     "installed-package", installed_package_facts
                 )
 
+                mode_chronology = copy.deepcopy(chronology)
+                if mode == "chronology":
+                    merges = []
+                    curr = head_commit
+                    base_oid = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
+                    while curr and curr != base_oid:
+                        parents = git("rev-list", "--parents", "-n", "1", curr).split()
+                        if len(parents) > 2:
+                            merges.append((parents[0], parents[1:]))
+                        if len(parents) > 1:
+                            curr = parents[1]
+                        else:
+                            curr = None
+
+                    test_landing, test_candidate, test_parent = None, None, None
+                    repair_landing, repair_candidate, repair_parent = None, None, None
+                    impl_landing, impl_candidate, impl_parent = None, None, None
+
+                    for m, parents in merges:
+                        p1, p2 = parents[0], parents[1]
+                        files_changed = set(git("diff", "--name-only", p1, p2).splitlines())
+                        if files_changed == {
+                            "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                            "phase-loop-runtime/tests/test_outside_agent_contract_drift.py"
+                        }:
+                            repair_landing = m
+                            repair_candidate = p2
+                            repair_parent = p1
+                        elif "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py" in files_changed:
+                            impl_landing = m
+                            impl_candidate = p2
+                            impl_parent = p1
+                        elif "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py" in files_changed:
+                            if m != repair_landing:
+                                test_landing = m
+                                test_candidate = p2
+                                test_parent = p1
+
+                    if test_landing is None or test_candidate is None or test_parent is None:
+                        raise ValueError("Missing required test landing/candidate/parent")
+                    if repair_landing is None or repair_candidate is None or repair_parent is None:
+                        raise ValueError("Missing required repair landing/candidate/parent")
+                    if compatibility_due:
+                        if impl_landing is None or impl_candidate is None or impl_parent is None:
+                            raise ValueError("Missing required implementation landing/candidate/parent")
+                    else:
+                        impl_landing, impl_candidate, impl_parent = None, None, None
+
+                    actual_repair_landing = repair_candidate if force_forgery else repair_landing
+
+                    repair_paths_dict = {}
+                    for path in [
+                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                        "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
+                    ]:
+                        before_blob = git("rev-parse", f"{repair_parent}:{path}")
+                        after_blob = git("rev-parse", f"{repair_candidate}:{path}")
+                        patch = git("diff", "--no-color", "-U0", repair_parent, repair_candidate, "--", path)
+                        patch_digest = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+                        repair_paths_dict[path] = {
+                            "before_blob": before_blob,
+                            "after_blob": after_blob,
+                            "patch": patch,
+                            "patch_digest": patch_digest,
+                        }
+
+                    original_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
+                    orig_head = "80d9a14c94785f81044d67b60e05d61242838a1b" if compatibility_due else "974593899bbecfbe092ba0aec369e69eee1aabdd"
+                    reb_head = final_candidate if compatibility_due else candidate
+                    range_diff_output = git("range-diff", f"{original_base}..{orig_head}", f"{repair_landing}..{reb_head}")
+
+                    if compatibility_due:
+                        original_commits = [
+                            "59cbf5a167bfc8bde4e5841fd977e542158aff3d",
+                            "00dec41aa950f4d1affead3a9c7fdfea4e91099e",
+                            "7df3cc74ec1ba2cb3e3216624f611009dbae2eca",
+                            "974593899bbecfbe092ba0aec369e69eee1aabdd",
+                            "80d9a14c94785f81044d67b60e05d61242838a1b",
+                        ]
+                    else:
+                        original_commits = [
+                            "59cbf5a167bfc8bde4e5841fd977e542158aff3d",
+                            "00dec41aa950f4d1affead3a9c7fdfea4e91099e",
+                            "7df3cc74ec1ba2cb3e3216624f611009dbae2eca",
+                            "974593899bbecfbe092ba0aec369e69eee1aabdd",
+                        ]
+
+                    rebased_commits = git("rev-list", "--reverse", f"{repair_landing}..{reb_head}").splitlines()
+                    rebased_commits = [git("rev-parse", c).lower() for c in rebased_commits]
+
+                    if compatibility_due:
+                        if len(original_commits) != 5:
+                            raise ValueError(f"original_commits count mismatch: {len(original_commits)}")
+                        if len(rebased_commits) != 6:
+                            raise ValueError(f"rebased_commits count mismatch: {len(rebased_commits)}")
+                    else:
+                        if len(original_commits) != 4:
+                            raise ValueError(f"original_commits count mismatch: {len(original_commits)}")
+                        if len(rebased_commits) not in (4, 5):
+                            raise ValueError(f"rebased_commits count mismatch: {len(rebased_commits)}")
+
+                    has_inserted = False
+                    inserted_commit = None
+                    if chronology_scope == "a2_candidate":
+                        if len(rebased_commits) == 5:
+                            has_inserted = True
+                            inserted_commit = rebased_commits[4]
+                        elif len(rebased_commits) == 4:
+                            has_inserted = False
+                            inserted_commit = None
+                        else:
+                            raise ValueError(f"Unexpected rebased_commits count for a2_candidate: {len(rebased_commits)}")
+                    else:  # exact_main or b2_premerge
+                        if len(rebased_commits) == 6:
+                            has_inserted = True
+                            inserted_commit = rebased_commits[4]
+                        else:
+                            raise ValueError(f"Unexpected rebased_commits count for {chronology_scope}: {len(rebased_commits)}")
+
+                    if has_inserted:
+                        inserted_parents = git("rev-list", "--parents", "-n", "1", inserted_commit).split()
+                        if len(inserted_parents) != 2:
+                            raise ValueError(f"Chronology verifier commit {inserted_commit} must have exactly one parent, got: {inserted_parents}")
+                        inserted_parent = inserted_parents[1]
+
+                        inserted_files = set(git("diff", "--name-only", inserted_parent, inserted_commit).splitlines())
+                        if inserted_files != {"phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"}:
+                            raise ValueError(f"Chronology verifier commit {inserted_commit} changed unexpected files: {inserted_files}")
+
+                        impl_patch = git("diff", "--no-color", "-U0", inserted_parent, inserted_commit, "--", "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py")
+                        if not impl_patch:
+                            raise ValueError(f"Chronology verifier commit {inserted_commit} has an empty patch")
+                        impl_patch_digest = hashlib.sha256(impl_patch.encode("utf-8")).hexdigest()
+                        if impl_patch_digest == "0" * 64 or impl_patch_digest == hashlib.sha256(b"").hexdigest() or not impl_patch_digest:
+                            raise ValueError(f"Chronology verifier commit {inserted_commit} has a zero or invalid digest")
+                        implementation_patch_slot = {
+                            "path": "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py",
+                            "patch": impl_patch,
+                            "patch_digest": impl_patch_digest,
+                        }
+                    else:
+                        implementation_patch_slot = None
+
+                    transition = {
+                        "original_commits": original_commits,
+                        "rebased_commits": rebased_commits,
+                        "range_diff": range_diff_output,
+                    }
+
+                    red_junit_path = lifecycle["activated"]["junit_path"]
+                    red_raw_log_path = lifecycle["activated"]["raw_log_path"]
+                    green_junit_path = lifecycle["default"]["junit_path"]
+                    green_raw_log_path = lifecycle["default"]["raw_log_path"]
+
+                    red_junit = {
+                        "path": red_junit_path,
+                        "sha256": hashlib.sha256(Path(red_junit_path).read_bytes()).hexdigest(),
+                    }
+                    red_raw_log = {
+                        "path": red_raw_log_path,
+                        "sha256": hashlib.sha256(Path(red_raw_log_path).read_bytes()).hexdigest(),
+                    }
+                    green_junit = {
+                        "path": green_junit_path,
+                        "sha256": hashlib.sha256(Path(green_junit_path).read_bytes()).hexdigest(),
+                    }
+                    green_raw_log = {
+                        "path": green_raw_log_path,
+                        "sha256": hashlib.sha256(Path(green_raw_log_path).read_bytes()).hexdigest(),
+                    }
+
+                    git_proof = {
+                        "identities": {
+                            "test_parent": test_parent,
+                            "test_parent_tree": git("rev-parse", f"{test_parent}^{{tree}}"),
+                            "test_candidate": test_candidate,
+                            "test_candidate_tree": git("rev-parse", f"{test_candidate}^{{tree}}"),
+                            "test_landing": test_landing,
+                            "test_landing_tree": git("rev-parse", f"{test_landing}^{{tree}}"),
+                            "repair_parent": repair_parent,
+                            "repair_parent_tree": git("rev-parse", f"{repair_parent}^{{tree}}"),
+                            "repair_candidate": repair_candidate,
+                            "repair_candidate_tree": git("rev-parse", f"{repair_candidate}^{{tree}}"),
+                            "repair_landing": actual_repair_landing,
+                            "repair_landing_tree": git("rev-parse", f"{actual_repair_landing}^{{tree}}"),
+                            "candidate_commit": candidate,
+                            "candidate_tree": candidate_tree,
+                            "final_candidate": final_candidate,
+                            "final_candidate_tree": final_candidate_tree,
+                            "implementation_parent": impl_parent,
+                            "implementation_parent_tree": git("rev-parse", f"{impl_parent}^{{tree}}") if impl_parent else None,
+                            "implementation_landing": impl_landing,
+                            "implementation_landing_tree": git("rev-parse", f"{impl_landing}^{{tree}}") if impl_landing else None,
+                            "canonical_main_head": head_commit,
+                            "canonical_main_head_tree": head_tree,
+                        },
+                        "parent_vectors": {
+                            "test_landing": git("rev-list", "--parents", "-n", "1", test_landing).split()[1:],
+                            "repair_landing": git("rev-list", "--parents", "-n", "1", actual_repair_landing).split()[1:],
+                            "implementation_landing": git("rev-list", "--parents", "-n", "1", impl_landing).split()[1:] if impl_landing else [],
+                        },
+                        "repair_landing_two_parent": True,
+                        "repair_diff_exact": True,
+                        "single_rebase": True,
+                        "range_diff_equivalent": True,
+                        "repair_paths": repair_paths_dict,
+                        "implementation_patch_slot": implementation_patch_slot,
+                        "transition": transition,
+                        "red_references": {
+                            "junit": red_junit,
+                            "raw_log": red_raw_log,
+                        },
+                        "green_references": {
+                            "junit": green_junit,
+                            "raw_log": green_raw_log,
+                        },
+                    }
+                    mode_chronology["git_proof"] = git_proof
+
                 mode_exclusive_facts: dict[str, dict[str, object]] = {
                     "chronology": {
-                        "chronology": chronology
+                        "chronology": mode_chronology
                     },
                     "corpus": {
                         "fixture_manifest": write_mode_fact(
@@ -3136,7 +3392,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     "lifecycle": lifecycle,
                     "activated_lifecycle": activated_lifecycle,
                     "mutation_records": mutation_records,
-                    "chronology": chronology,
+                    "chronology": mode_chronology,
                     "package": package_facts,
                     "installed_package": installed_package_facts,
                     "corpus": {
@@ -3642,5 +3898,14 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 refresh_mode_records(mode_records, artifacts)
                 with pytest.raises((ValueError, AssertionError)):
                     verifier(mode, mode_records)
+
+        if os.environ.get("PHASE_LOOP_CONFORM_CHRONOLOGY_PROOF") == "1":
+            forged_records, forged_artifacts = records_for("chronology", force_forgery=True)
+            try:
+                verifier("chronology", forged_records)
+            except Exception:
+                pass
+            else:
+                raise AssertionError("CONFORM_RED::chronology_accepts_forged_git_topology")
     # The future package path deliberately has no mockable or toy replay seam:
     # only raw subprocess output from archives built from the candidate is input.
