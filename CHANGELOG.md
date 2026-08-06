@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Clean-room CONFORM repository evidence
+
+- CI now checks out full history for source and clean-room test lanes. When the
+  installed wheel exposes the CONFORM evidence command, Gate A stages the exact
+  candidate's tests, runtime sources, docs, and specs in a sparse private clone so
+  repository-bound evidence can be verified without importing production code from
+  the checkout. The candidate source path is installed as trailing data-only path
+  evidence; Gate A preloads the installed package before test collection and fails unless
+  site-packages and the installed wheel retain import precedence. Legacy candidates retain
+  the existing tests-only clean-room layout.
+
 ### CI: run the frozen LEGIBLE files from a standalone copied tests tree
 
 - The two frozen LEGIBLE files (`test_legible_roadmap_contract.py`, `test_legible_evidence.py`)
