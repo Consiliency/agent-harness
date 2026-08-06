@@ -134,18 +134,21 @@ if [ "${PHASE_LOOP_SKIP_GATE_A_SUITE:-0}" = "1" ]; then
   echo "-- full standalone suite: SKIPPED (PHASE_LOOP_SKIP_GATE_A_SUITE=1) --"
 else
   echo "-- full standalone suite: pytest -m 'not dotfiles_integration' vs installed wheel --"
-  env -u PYTHONPATH "$PY" -m pip install --quiet pytest build >/dev/null
-  if env -u PYTHONPATH PYTHONNOUSERSITE=1 "$PY" - <<'PYEOF'
+  env -u PYTHONPATH "$PY" -m pip install --quiet pytest build "setuptools>=68" >/dev/null
+  set +e
+  env -u PYTHONPATH PYTHONNOUSERSITE=1 "$PY" - <<'PYEOF'
 import importlib.util
 raise SystemExit(
     0
     if importlib.util.find_spec(
         "phase_loop_runtime.conformance.outside_agent_conform_evidence"
     ) is not None
-    else 1
+    else 10
 )
 PYEOF
-  then
+  CONFORM_CAPABILITY_STATUS=$?
+  set -e
+  if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]; then
     # CONFORM's final mutation/lifecycle proof needs source and Git history as
     # immutable data. A sparse private clone supplies those bytes while scripts
     # stay absent and PYTHONPATH still resolves production from the installed wheel.
@@ -158,13 +161,16 @@ PYEOF
       phase-loop-runtime/tests \
       phase-loop-runtime/src \
       docs \
-      specs
+      specs \
+      plans \
+      .claude
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
     SUITE_TREE="$STANDALONE_ROOT/phase-loop-runtime"
     # tests/__init__.py prepends a sibling src tree unless that exact path is
     # already present. Add it after site-packages so candidate source remains
     # immutable evidence while the installed wheel retains import authority in
-    # this process and every subprocess.
+    # the outer suite process. Test-owned mutation and EC children deliberately
+    # execute candidate or mutant source and bind that source identity as evidence.
     env -u PYTHONPATH "$PY" - "$SUITE_TREE/src" <<'PYEOF'
 import site
 import sys
@@ -205,7 +211,7 @@ PYEOF
       exit 1
     fi
     echo "-- full standalone suite: CONFORM repository evidence staged at $SOURCE_HEAD --"
-  else
+  elif [ "$CONFORM_CAPABILITY_STATUS" -eq 10 ]; then
     SUITE_TREE="$WORK/standalone/phase-loop-runtime"
     mkdir -p "$SUITE_TREE"
     cp -r "$PKG_ROOT/tests" "$SUITE_TREE/tests"
@@ -213,6 +219,9 @@ PYEOF
     # root (tests/../..). Keep those immutable inputs available without exposing
     # the source package tree to the installed-wheel test process.
     cp -r "$PKG_ROOT/../specs" "$WORK/standalone/specs"
+  else
+    echo "GATE-A FAIL: CONFORM capability probe errored ($CONFORM_CAPABILITY_STATUS)" >&2
+    exit 1
   fi
   # Sanity: the copied tree's parents[3] must NOT be a dotfiles checkout.
   if env -i "$PY" - "$SUITE_TREE/tests" <<'PYEOF'

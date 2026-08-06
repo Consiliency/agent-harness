@@ -75,10 +75,9 @@ jobs:
         run: python3 scripts/check_model_id_sources.py
 
       - name: Run standalone test suite
-        # The two frozen LEGIBLE files distinguish a full-history canonical repo
-        # from an installed consumer. GitHub's shallow checkout is neither, so run
-        # those two files from a copied tests tree and keep every other test in its
-        # existing source-checkout mode.
+        # The two frozen LEGIBLE files distinguish a canonical source checkout
+        # from an installed consumer. Run them from a copied tests tree so this
+        # source-checkout job also exercises the standalone-consumer posture.
         working-directory: phase-loop-runtime
         run: |
           python -m pytest -m "not dotfiles_integration" \
