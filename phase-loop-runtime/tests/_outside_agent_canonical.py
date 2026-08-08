@@ -1486,7 +1486,7 @@ SEALED_RELEASE_CANDIDATE_PARENT_BLOBS = {
 }
 SEALED_RELEASE_CANDIDATE_PATHS = tuple(sorted(SEALED_RELEASE_CANDIDATE_PARENT_BLOBS))
 SEALED_RELEASE_FINAL_PARENT_BLOBS = {
-    "CHANGELOG.md": "d57713c07468aba942c31744d0a272dd73771f2f",
+    "CHANGELOG.md": "0da6158723da5324086ed064a83fce97b90a694b",
     "docs/outside-agent-conformance.md": "aed512fc04e32464c1426913089c6d524fa69272",
     "docs/releases/outside-agent-release-handoff.md": "29cd326cb95b7ef35b0e886446137a4e983c53c9",
     "specs/phase-plans-v7.md": "f79c82763618714f6dda1cfbf3ccd150bd2bcb54",
