@@ -10,7 +10,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     import tomli as tomllib
 
 import phase_loop_runtime
-from _outside_agent_canonical import sealed_release_evidence
+from _outside_agent_canonical import (
+    assert_candidate_identity_only_document,
+    sealed_release_evidence,
+)
 from phase_loop_runtime.conformance import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
     build_outside_agent_advisory_evidence,
@@ -48,6 +51,28 @@ def _submission():
             {"ref": "evidence/oa-release-1.json", "digest": "c" * 64},
         ],
     }
+
+
+def _assert_candidate_identity_only_document(
+    document: str, evidence: dict[str, object], anchor: str
+) -> None:
+    candidate_commit = evidence["candidate_commit"]
+    candidate_tree = evidence["candidate_tree"]
+    final_commit = evidence["final_commit"]
+    final_tree = evidence["final_tree"]
+    assert isinstance(candidate_commit, str) and isinstance(candidate_tree, str)
+    assert isinstance(final_commit, str) and isinstance(final_tree, str)
+    assert_candidate_identity_only_document(
+        document,
+        candidate_commit=candidate_commit,
+        candidate_tree=candidate_tree,
+        forbidden_identity_values={
+            "final_commit": final_commit,
+            "final_tree": final_tree,
+        },
+        anchor=anchor,
+        require_candidate_identity=True,
+    )
 
 
 def test_package_version_matches_runtime_version():
@@ -249,16 +274,45 @@ def test_v7_disposition_records_merged_contract_and_final_installed_behavior(tmp
     )
 
     # Do not rebuild ambient HEAD or infer the last source-only commit.  The
-    # release statement is bound to a runner-sealed exact candidate/final tree
-    # and package archive evidence produced before this consumer runs.
+    # disposition can bind only the pushed pre-document candidate; the runner
+    # owns final identities after the document bytes have been sealed.
     evidence = sealed_release_evidence()
-    anchor = "CONFORM_RED::v7_disposition_records_merged_contract_and_final_installed_behavior"
+    anchor = "CONFORM_RED::v7_disposition_candidate_identity_only"
     assert evidence["candidate_commit"] != evidence["candidate_tree"], anchor
     assert evidence["final_commit"] != evidence["final_tree"], anchor
-    assert evidence["candidate_commit"] in disposition, anchor
-    assert evidence["candidate_tree"] in disposition, anchor
-    assert evidence["final_commit"] in disposition, anchor
-    assert evidence["final_tree"] in disposition, anchor
+    _assert_candidate_identity_only_document(disposition, evidence, anchor)
     for label, archive in evidence["archives"].items():
         assert archive["sha256"] in disposition, (anchor, label)
         assert "phase_loop_runtime/conformance/_contract/VENDOR.json" in archive["members"], (anchor, label)
+
+    candidate_document = tmp_path / "candidate-v7-disposition.md"
+    candidate_document.write_text(
+        "\n".join(
+            (
+                f"candidate implementation commit: `{evidence['candidate_commit']}`",
+                f"candidate implementation tree: `{evidence['candidate_tree']}`",
+                "Pre-doc A2 package evidence sha256: "
+                + evidence["a2_package_evidence_sha256"],
+                *(
+                    f"{label} sha256: {archive['sha256']}"
+                    for label, archive in evidence["archives"].items()
+                ),
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    candidate_document_text = candidate_document.read_text(encoding="utf-8")
+    _assert_candidate_identity_only_document(candidate_document_text, evidence, anchor)
+    for forged in (
+        candidate_document_text.replace(
+            f"candidate implementation commit: `{evidence['candidate_commit']}`",
+            f"final implementation commit: `{evidence['final_commit']}`",
+        ),
+        candidate_document_text.replace(
+            evidence["candidate_tree"], evidence["final_tree"],
+        ),
+    ):
+        assert forged != candidate_document_text
+        with pytest.raises(AssertionError, match=anchor):
+            _assert_candidate_identity_only_document(forged, evidence, anchor)

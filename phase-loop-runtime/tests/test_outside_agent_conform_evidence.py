@@ -62,6 +62,7 @@ from _outside_agent_canonical import (
     SEALED_RELEASE_CANDIDATE_PATHS,
     SEALED_RELEASE_FINAL_PARENT_BLOBS,
     SEALED_RELEASE_FINAL_PATHS,
+    assert_candidate_identity_only_document,
     assert_named_safety_mutations_rejected,
     assert_status_code_only_replacement_is_rejected,
     evidence_verifier_argv,
@@ -75,6 +76,8 @@ from _outside_agent_canonical import (
     sealed_release_parent_bytes,
     submission_entries,
     _member_digests,
+    _build_a2_package_evidence,
+    _a2_package_evidence_sha256,
     _sealed_manifest_sha256,
     _normalized_archive_member_digests,
     node_source_path,
@@ -103,6 +106,228 @@ PACKAGE_EXECUTION_VARIANTS = (
     "direct-sdist",
     "sdist-derived-wheel",
 )
+B1_ACCEPTED_DOCUMENT_COMMIT = "80d9a14c94785f81044d67b60e05d61242838a1b"
+B1_ACCEPTED_DOCUMENT_PARENT = B1_ACCEPTED_DOCUMENT_COMMIT + "^"
+B1_CANDIDATE_IDENTITY_PATHS = {
+    "docs/releases/outside-agent-release-handoff.md",
+    "specs/phase-plans-v7.md",
+}
+B1_REQUIRED_DOCUMENT_TERMS = {
+    "CHANGELOG.md": (
+        "outside-agent conformance runtime (oarelease)",
+        "release handoff",
+        "governed-pipeline pinning instructions",
+        "maintainer-owned publish/tag/workflow-dispatch",
+        "consiliency/spec@v0.2.1",
+        "digest-enumerated",
+        "0.5.0",
+        "clean-room conform repository evidence",
+    ),
+    "docs/outside-agent-conformance.md": (
+        "consiliency/spec@v0.2.1",
+        "digest-enumerated",
+        "test-only oracle",
+        "source/mirror",
+        "raw-byte",
+        "no copied canonical",
+        "not a production parser",
+        "consiliency/spec remains",
+    ),
+    "docs/releases/outside-agent-release-handoff.md": (
+        "phase-loop-runtime",
+        "validator version",
+        "governed_pipeline_validator",
+        "outside-agent-preflight",
+        "outside-agent-validate",
+        "digest-enumerated",
+        "direct-wheel",
+        "sdist-derived-wheel",
+        "maintainer",
+        "not published",
+        "not dispatched",
+    ),
+    "specs/phase-plans-v7.md": (
+        "oacore-3",
+        "oareal-2",
+        "consiliency/spec@v0.2.1",
+        "installed-package",
+        "direct-wheel",
+        "sdist-derived-wheel",
+        "outside-agent-preflight",
+        "outside-agent-validate",
+        "three valid submissions",
+        "route-verdict",
+        "metadata_only",
+        "not published",
+        "not dispatched",
+    ),
+}
+
+
+def _accepted_b1_document_addition(path: str) -> str:
+    """Extract the accepted 80d9a14 documentation delta, never stale prose."""
+    def document_at(revision: str) -> str:
+        completed = subprocess.run(
+            ["git", "show", f"{revision}:{path}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=True,
+        )
+        return completed.stdout.decode("utf-8")
+
+    accepted_parent = document_at(B1_ACCEPTED_DOCUMENT_PARENT)
+    accepted_document = document_at(B1_ACCEPTED_DOCUMENT_COMMIT)
+    boundaries = {
+        "CHANGELOG.md": (
+            "### Outside-Agent Conformance Runtime (OARELEASE)",
+            "### CI: run the frozen LEGIBLE files",
+        ),
+        "docs/outside-agent-conformance.md": ("## Consumer Mirror Policy", None),
+        "docs/releases/outside-agent-release-handoff.md": (
+            "## Sealed Implementation Evidence",
+            "## Package Surface Inventory",
+        ),
+        "specs/phase-plans-v7.md": (
+            "## CONFORM Final Disposition & Installed Behavior",
+            None,
+        ),
+    }
+    start, end = boundaries[path]
+    assert start not in accepted_parent and start in accepted_document
+    addition = accepted_document.split(start, 1)[1]
+    if end is not None:
+        assert end in addition
+        addition = addition.split(end, 1)[0]
+    return start + addition
+
+
+def _transform_accepted_b1_addition(
+    path: str,
+    addition: str,
+    *,
+    candidate_commit: str,
+    candidate_tree: str,
+    a2_package_evidence: dict[str, object],
+) -> str:
+    """Replace only runner-only 80d9a14 values with candidate/A2 evidence."""
+    archives = a2_package_evidence["archives"]
+    a2_package_evidence_sha256 = a2_package_evidence[
+        "a2_package_evidence_sha256"
+    ]
+    assert isinstance(archives, dict) and set(archives) == set(PACKAGE_EXECUTION_VARIANTS)
+    assert isinstance(a2_package_evidence_sha256, str)
+    if path == "docs/releases/outside-agent-release-handoff.md":
+        original_identity_block = (
+            "- candidate implementation commit: 6e333653a16de5f50c17e7649aa678898b6f0f48\n"
+            "- candidate implementation tree: fe41dc8c31483b378c06155be6b07e8a091c8c8b\n"
+            "- final implementation commit: 84a2095a56c20fe8aac198e60bc181709d31bb91\n"
+            "- final implementation tree: 521c5a96c9ac8f60b6e8fa29cc3f0d35d5940980\n"
+        )
+        candidate_identity_block = (
+            f"- candidate implementation commit: {candidate_commit}\n"
+            f"- candidate implementation tree: {candidate_tree}\n"
+        )
+        assert original_identity_block in addition
+        assert original_identity_block != candidate_identity_block
+        addition = addition.replace(original_identity_block, candidate_identity_block)
+        original_evidence_line = (
+            "- sealed package evidence sha256: "
+            "0740416fd7b434cd78420ec9321dbb7e5b59a743b3f12a8d094ad5ebe84e9c20"
+        )
+        candidate_evidence_line = (
+            "- pre-doc A2 package evidence sha256: " + a2_package_evidence_sha256
+        )
+        assert addition.count(original_evidence_line) == 1
+        assert original_evidence_line != candidate_evidence_line
+        addition = addition.replace(original_evidence_line, candidate_evidence_line)
+    elif path == "specs/phase-plans-v7.md":
+        original_identity_block = (
+            "- candidate implementation commit: `6e333653a16de5f50c17e7649aa678898b6f0f48`\n"
+            "- candidate implementation tree: `fe41dc8c31483b378c06155be6b07e8a091c8c8b`\n"
+            "- final implementation commit: `84a2095a56c20fe8aac198e60bc181709d31bb91`\n"
+            "- final implementation tree: `521c5a96c9ac8f60b6e8fa29cc3f0d35d5940980`\n"
+        )
+        candidate_identity_block = (
+            f"- candidate implementation commit: `{candidate_commit}`\n"
+            f"- candidate implementation tree: `{candidate_tree}`\n"
+        )
+        assert original_identity_block in addition
+        assert original_identity_block != candidate_identity_block
+        addition = addition.replace(original_identity_block, candidate_identity_block)
+    if path in B1_CANDIDATE_IDENTITY_PATHS:
+        for label in PACKAGE_EXECUTION_VARIANTS:
+            archive = archives[label]
+            assert isinstance(archive, dict)
+            archive_sha256 = archive["sha256"]
+            assert isinstance(archive_sha256, str) and len(archive_sha256) == 64
+            old_sha256 = {
+                "direct-wheel": "17168b69109ecd032ab1c1230509b0c72c130d04fa4bdd79caaa913a0cc5d2cc",
+                "direct-sdist": "c7e409c132e9a35965c0c80fc192c40c9646188183f18c8102e97445ad9f2acb",
+                "sdist-derived-wheel": "17168b69109ecd032ab1c1230509b0c72c130d04fa4bdd79caaa913a0cc5d2cc",
+            }[label]
+            original_lines = (
+                f"- {label} sha256: {old_sha256}",
+                f"- `{label}` sha256: `{old_sha256}`",
+            )
+            original_line = next(
+                (line for line in original_lines if line in addition), None
+            )
+            assert original_line is not None
+            assert addition.count(original_line) == 1
+            candidate_line = original_line.replace(old_sha256, archive_sha256)
+            addition = addition.replace(original_line, candidate_line)
+            assert candidate_line in addition
+    return addition
+
+
+def _render_b1_document_bytes(
+    path: str,
+    candidate_document: bytes,
+    *,
+    candidate_commit: str,
+    candidate_tree: str,
+    sealed_package_evidence: dict[str, object],
+) -> bytes:
+    """Replay the accepted B1 documentation content from candidate/A2 inputs."""
+    assert path in SEALED_RELEASE_FINAL_PATHS
+    assert candidate_document.endswith(b"\n") and b"\r" not in candidate_document
+    candidate_text = candidate_document.decode("utf-8")
+    assert set(sealed_package_evidence) == {
+        "candidate_commit",
+        "candidate_tree",
+        "candidate_members",
+        "archives",
+        "a2_package_evidence_sha256",
+    }
+    assert sealed_package_evidence == _build_a2_package_evidence(
+        candidate_commit=candidate_commit,
+        candidate_tree=candidate_tree,
+        candidate_members=sealed_package_evidence["candidate_members"],
+        archives=sealed_package_evidence["archives"],
+    )
+    addition = _transform_accepted_b1_addition(
+        path,
+        _accepted_b1_document_addition(path),
+        candidate_commit=candidate_commit,
+        candidate_tree=candidate_tree,
+        a2_package_evidence=sealed_package_evidence,
+    ).rstrip("\n")
+    if path == "CHANGELOG.md":
+        anchor = "## [Unreleased]\n\n"
+        assert anchor in candidate_text
+        assert "### Clean-room CONFORM repository evidence" in candidate_text
+        rendered = candidate_text.replace(anchor, anchor + addition + "\n\n", 1)
+    elif path == "docs/releases/outside-agent-release-handoff.md":
+        anchor = "## Package Surface Inventory\n"
+        assert anchor in candidate_text
+        rendered = candidate_text.replace(anchor, addition + "\n\n" + anchor, 1)
+    else:
+        rendered = candidate_text.rstrip("\n") + "\n\n" + addition + "\n"
+    lowered = rendered.lower()
+    assert all(term in lowered for term in B1_REQUIRED_DOCUMENT_TERMS[path])
+    return rendered.rstrip("\n").encode("utf-8") + b"\n"
+
+
 B2_COMMAND = (
     "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest "
     "phase-loop-runtime/tests -q -k outside_agent"
@@ -494,6 +719,7 @@ _EC_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
     """
     import hashlib, json, os, re, subprocess, sys
     from pathlib import Path
+    from xml.etree import ElementTree as element_tree
 
     payload = json.load(sys.stdin)
     probes = json.loads(payload["probe_nodes"])
@@ -505,13 +731,29 @@ _EC_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
     execution_root = Path(payload["execution_root"]).resolve()
     assert execution_root == repo_root
     runtime = repo_root / "phase-loop-runtime"
+    junit_path = Path(payload["criterion_junit_path"]).resolve()
+    assert junit_path.parent.is_dir()
     environment = {
         "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": str(runtime / "src") + os.pathsep + str(runtime / "tests"),
     }
-    argv = [sys.executable, "-m", "pytest", "-q", *("tests/" + nodeid for nodeid in nodeids)]
+    argv = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--junitxml=" + str(junit_path),
+        *("tests/" + nodeid for nodeid in nodeids),
+    ]
     completed = subprocess.run(argv, cwd=runtime, capture_output=True, text=True, check=False, env=environment)
+    junit_root = element_tree.parse(junit_path).getroot()
+    for node in junit_root.iter():
+        node.attrib.pop("time", None)
+        node.attrib.pop("timestamp", None)
+    element_tree.ElementTree(junit_root).write(
+        junit_path, encoding="utf-8", xml_declaration=True
+    )
     if completed.returncode != 0:
         classification = "failed"
     elif "skipped" in completed.stdout.lower():
@@ -532,6 +774,8 @@ _EC_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
             "exit_code": completed.returncode,
             "stdout_sha256": hashlib.sha256(normalize_mutation_output(completed.stdout).encode("utf-8")).hexdigest(),
             "stderr_sha256": hashlib.sha256(normalize_mutation_output(completed.stderr).encode("utf-8")).hexdigest(),
+            "junit_path": str(junit_path),
+            "junit_sha256": hashlib.sha256(junit_path.read_bytes()).hexdigest(),
             "classification": classification,
         },
     }
@@ -854,13 +1098,17 @@ def _assert_captured_observable(
     if expected_observable.get("kind") == "criterion-execution":
         cap_out = rendered["observable"]["execution"]["stdout_sha256"]
         cap_err = rendered["observable"]["execution"]["stderr_sha256"]
+        cap_junit = rendered["observable"]["execution"]["junit_sha256"]
         rerun_out = rerun_rendered["observable"]["execution"]["stdout_sha256"]
         rerun_err = rerun_rendered["observable"]["execution"]["stderr_sha256"]
+        rerun_junit = rerun_rendered["observable"]["execution"]["junit_sha256"]
 
         assert isinstance(cap_out, str) and len(cap_out) == 64 and all(c in "0123456789abcdef" for c in cap_out) and cap_out != "0" * 64
         assert isinstance(cap_err, str) and len(cap_err) == 64 and all(c in "0123456789abcdef" for c in cap_err) and cap_err != "0" * 64
+        assert isinstance(cap_junit, str) and len(cap_junit) == 64 and all(c in "0123456789abcdef" for c in cap_junit) and cap_junit != "0" * 64
         assert isinstance(rerun_out, str) and len(rerun_out) == 64 and all(c in "0123456789abcdef" for c in rerun_out) and rerun_out != "0" * 64
         assert isinstance(rerun_err, str) and len(rerun_err) == 64 and all(c in "0123456789abcdef" for c in rerun_err) and rerun_err != "0" * 64
+        assert isinstance(rerun_junit, str) and len(rerun_junit) == 64 and all(c in "0123456789abcdef" for c in rerun_junit) and rerun_junit != "0" * 64
 
         rendered_obs = copy.deepcopy(rendered["observable"])
         record_obs = copy.deepcopy(record["observable"])
@@ -869,15 +1117,20 @@ def _assert_captured_observable(
 
         sentinel_stdout = "FIXED_STDOUT_SHA256"
         sentinel_stderr = "FIXED_STDERR_SHA256"
+        sentinel_junit = "FIXED_JUNIT_SHA256"
 
         rendered_obs["execution"]["stdout_sha256"] = sentinel_stdout
         rendered_obs["execution"]["stderr_sha256"] = sentinel_stderr
+        rendered_obs["execution"]["junit_sha256"] = sentinel_junit
         record_obs["execution"]["stdout_sha256"] = sentinel_stdout
         record_obs["execution"]["stderr_sha256"] = sentinel_stderr
+        record_obs["execution"]["junit_sha256"] = sentinel_junit
         expected_obs["execution"]["stdout_sha256"] = sentinel_stdout
         expected_obs["execution"]["stderr_sha256"] = sentinel_stderr
+        expected_obs["execution"]["junit_sha256"] = sentinel_junit
         rerun_obs["execution"]["stdout_sha256"] = sentinel_stdout
         rerun_obs["execution"]["stderr_sha256"] = sentinel_stderr
+        rerun_obs["execution"]["junit_sha256"] = sentinel_junit
 
         assert rendered_obs == record_obs == expected_obs
         assert rerun_obs == expected_obs
@@ -1229,6 +1482,8 @@ def _assert_ec_criterion_execution(ec_id: str, criterion: str, observable: objec
         "exit_code",
         "stdout_sha256",
         "stderr_sha256",
+        "junit_path",
+        "junit_sha256",
         "classification",
     }
     runtime = Path(execution["cwd"])
@@ -1237,6 +1492,7 @@ def _assert_ec_criterion_execution(ec_id: str, criterion: str, observable: objec
         "-m",
         "pytest",
         "-q",
+        "--junitxml=" + execution["junit_path"],
         *("tests/" + nodeid for nodeid in _EC_PROBE_NODEIDS[ec_id]),
     ]
     assert execution["environment"] == {
@@ -1246,8 +1502,28 @@ def _assert_ec_criterion_execution(ec_id: str, criterion: str, observable: objec
         + os.pathsep
         + str(runtime / "tests"),
     }
+    junit_path = Path(execution["junit_path"])
+    assert junit_path.is_file()
+    junit_bytes = junit_path.read_bytes()
+    assert execution["junit_sha256"] == hashlib.sha256(junit_bytes).hexdigest()
+    junit_root = element_tree.parse(junit_path).getroot()
+    junit_cases = list(junit_root.iter("testcase"))
+    assert junit_cases
+    if any(
+        case.find("failure") is not None or case.find("error") is not None
+        for case in junit_cases
+    ):
+        primary_classification = "failed"
+    elif any(case.find("skipped") is not None for case in junit_cases):
+        primary_classification = "skipped"
+    else:
+        primary_classification = "passed"
     assert observable["classification"] in {"passed", "skipped", "failed", "inconclusive"}
-    assert execution["classification"] == observable["classification"]
+    assert (
+        execution["classification"]
+        == observable["classification"]
+        == primary_classification
+    )
     if observable["classification"] == "passed":
         assert execution["exit_code"] == 0
     elif observable["classification"] == "skipped":
@@ -1258,7 +1534,7 @@ def _assert_ec_criterion_execution(ec_id: str, criterion: str, observable: objec
         isinstance(execution[key], str)
         and len(execution[key]) == 64
         and execution[key] != "0" * 64
-        for key in ("stdout_sha256", "stderr_sha256")
+        for key in ("stdout_sha256", "stderr_sha256", "junit_sha256")
     )
 
 
@@ -1340,6 +1616,7 @@ def _capture_ec_matrix_entries(root: Path) -> list[dict[str, object]]:
             "probe_nodes": json.dumps(_EC_PROBE_NODEIDS, sort_keys=True),
             "repo_root": str(REPO_ROOT),
             "execution_root": str(REPO_ROOT),
+            "criterion_junit_path": str(root / f"{ec_id}.criterion.junit.xml"),
         }
         observable = _capture_subprocess_observable(
             root,
@@ -1373,6 +1650,9 @@ def _assert_bound_ec_observables(entries: list[dict[str, object]]) -> None:
             "execution_root": observable["observable"]["execution"]["cwd"].removesuffix(
                 "/phase-loop-runtime"
             ),
+            "criterion_junit_path": observable["observable"]["execution"][
+                "junit_path"
+            ],
         }
         _assert_captured_observable(
             observable,
@@ -1398,6 +1678,25 @@ def _assert_complete_ec_observables(entries: list[dict[str, object]]) -> None:
         entry["observable"]["observable"]["classification"] == "passed"
         for entry in entries
     )
+
+
+def _assert_f17ab557_label_trusting_compatibility_accepts(
+    entries: list[dict[str, object]],
+) -> None:
+    """Freeze the shallow f17 acceptance predicate for the forged-pass control."""
+    assert [entry.get("id") for entry in entries] == list(EC_CONFORM_IDS)
+    assert [entry.get("ordinal") for entry in entries] == list(range(len(entries)))
+    for entry in entries:
+        captured = entry.get("observable")
+        observable = captured.get("observable") if isinstance(captured, dict) else None
+        assert isinstance(observable, dict)
+        assert observable.get("classification") == "passed"
+        assert captured.get("status") == "accepted"
+        result_path = Path(captured["result_path"])
+        assert result_path.is_file()
+        assert captured.get("result_sha256") == hashlib.sha256(
+            result_path.read_bytes()
+        ).hexdigest()
 
 
 def _assert_complete_package_executions(
@@ -1481,6 +1780,8 @@ def _assert_complete_package_executions(
             assert raw["environment"]["PHASE_LOOP_TDD_EXPECT_CONFORM"] == "0"
             row = next(row for row in (*submission_entries(), route_verdict_entry()) if row["case_id"] == case["case_id"])
             result = case["result"]
+            assert raw["exit_code"] == 0
+            assert json.loads(raw["stdout"]) == result
             assert result["status"] == ("pass" if row["expected_valid"] else "blocked")
             assert case["oracle_blocker_class"] == row["expected_blocker_class"]
             assert case["oracle_blocker_class"] == oracle.blocker_class_of(
@@ -2248,6 +2549,12 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
             ("sdist-derived-wheel", derived_wheel),
         )
     }
+    a2_package_evidence = _build_a2_package_evidence(
+        candidate_commit=candidate_commit,
+        candidate_tree=candidate_tree,
+        candidate_members=_member_digests(candidate_bytes),
+        archives=archives,
+    )
     sealed = {
         "owner": "phase-loop-runner",
         "source_date_epoch": "315532800",
@@ -2264,6 +2571,14 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
         ),
         "final_parent_blobs": SEALED_RELEASE_FINAL_PARENT_BLOBS,
         "archives": archives,
+        "a2_package_evidence": {
+            key: value
+            for key, value in a2_package_evidence.items()
+            if key != "a2_package_evidence_sha256"
+        },
+        "a2_package_evidence_sha256": a2_package_evidence[
+            "a2_package_evidence_sha256"
+        ],
     }
     sealed["manifest_sha256"] = _sealed_manifest_sha256(sealed)
     sealed_path = tmp_path / "sealed-release-evidence.json"
@@ -2473,6 +2788,81 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
             mutation.apply(source.replace(mutation.anchor, "missing-anchor"))
         target_source = node_source_path(mutation.expected_nodeid).read_text(encoding="utf-8")
         assert mutation.expected_observable in target_source
+
+    # Candidate-only identity controls must remain executable while SL-0 has no
+    # verifier and the real B1 documents are deliberately stale.  These
+    # synthetic documents use only candidate and sealed-package-shaped values.
+    candidate_identity_anchor = "CONFORM_RED::candidate_only_identity_control"
+    synthetic_candidate_commit = "1" * 40
+    synthetic_candidate_tree = "2" * 40
+    synthetic_forbidden_identity_values = {
+        "final_commit": "3" * 40,
+        "final_tree": "4" * 40,
+        "final_candidate": "5" * 40,
+        "final_candidate_tree": "6" * 40,
+        "implementation_landing": "7" * 40,
+        "implementation_landing_tree": "8" * 40,
+        "canonical_main_head": "9" * 40,
+        "canonical_main_head_tree": "a" * 40,
+    }
+    synthetic_archive_sha256 = {
+        "direct-wheel": "b" * 64,
+        "direct-sdist": "c" * 64,
+        "sdist-derived-wheel": "d" * 64,
+    }
+    synthetic_candidate_documents = {
+        path: "\n".join(
+            (
+                f"# Candidate-only evidence for {path}",
+                *(
+                    (
+                        (
+                            f"Candidate implementation commit: `{synthetic_candidate_commit}`",
+                            f"Candidate implementation tree: `{synthetic_candidate_tree}`",
+                        )
+                        if path == "specs/phase-plans-v7.md"
+                        else (
+                            f"Candidate implementation commit: {synthetic_candidate_commit}",
+                            f"Candidate implementation tree: {synthetic_candidate_tree}",
+                        )
+                    )
+                    if path in B1_CANDIDATE_IDENTITY_PATHS
+                    else ()
+                ),
+                "Sealed package evidence SHA256: " + "e" * 64,
+                *(f"{label} SHA256: {digest}" for label, digest in synthetic_archive_sha256.items()),
+                "",
+            )
+        )
+        for path in SEALED_RELEASE_FINAL_PATHS
+    }
+    assert set(synthetic_candidate_documents) == set(SEALED_RELEASE_FINAL_PATHS)
+    for path, document in synthetic_candidate_documents.items():
+        assert_candidate_identity_only_document(
+            document,
+            candidate_commit=synthetic_candidate_commit,
+            candidate_tree=synthetic_candidate_tree,
+            forbidden_identity_values=synthetic_forbidden_identity_values,
+            anchor=candidate_identity_anchor,
+            require_candidate_identity=path in B1_CANDIDATE_IDENTITY_PATHS,
+        )
+        for forged_label, forged_value in (
+            ("final implementation commit", synthetic_forbidden_identity_values["final_commit"]),
+            ("final-candidate", synthetic_forbidden_identity_values["final_candidate"]),
+            ("implementation-landing", synthetic_forbidden_identity_values["implementation_landing"]),
+            ("canonical-main-head", synthetic_forbidden_identity_values["canonical_main_head"]),
+        ):
+            forged_document = document + f"{forged_label}: {forged_value}\n"
+            assert forged_document != document
+            with pytest.raises(AssertionError, match=candidate_identity_anchor):
+                assert_candidate_identity_only_document(
+                    forged_document,
+                    candidate_commit=synthetic_candidate_commit,
+                    candidate_tree=synthetic_candidate_tree,
+                    forbidden_identity_values=synthetic_forbidden_identity_values,
+                    anchor=candidate_identity_anchor,
+                    require_candidate_identity=path in B1_CANDIDATE_IDENTITY_PATHS,
+                )
     verifier_spec = importlib.util.find_spec(
         "phase_loop_runtime.conformance.outside_agent_conform_evidence"
     )
@@ -3049,8 +3439,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "test_candidate": parent,
                             "implementation_candidate": candidate,
                             "final_candidate": final_candidate,
-                            "canonical_main_head": (
-                                head_commit if chronology_scope == "exact_main" else None
+                            **(
+                                {"canonical_main_head": head_commit}
+                                if chronology_scope in {"a2_candidate", "exact_main"}
+                                else {}
                             ),
                             "candidate_descends_from_test_candidate": True,
                             "final_descends_from_candidate": True,
@@ -3154,19 +3546,30 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
 
                     test_landing, test_candidate, test_parent = None, None, None
                     repair_landing, repair_candidate, repair_parent = None, None, None
+                    contract_bug_landing, contract_bug_candidate, contract_bug_parent = None, None, None
                     impl_landing, impl_candidate, impl_parent = None, None, None
+                    repair_paths = {
+                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                        "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
+                        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+                    }
+                    contract_bug_paths = {
+                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                        "phase-loop-runtime/tests/test_outside_agent_release_surface.py",
+                        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+                    }
 
                     for m, parents in merges:
                         p1, p2 = parents[0], parents[1]
                         files_changed = set(git("diff", "--name-only", p1, p2).splitlines())
-                        if files_changed == {
-                            "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
-                            "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
-                            "phase-loop-runtime/tests/_outside_agent_canonical.py",
-                        }:
+                        if files_changed == repair_paths:
                             repair_landing = m
                             repair_candidate = p2
                             repair_parent = p1
+                        elif files_changed == contract_bug_paths:
+                            contract_bug_landing = m
+                            contract_bug_candidate = p2
+                            contract_bug_parent = p1
                         elif "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py" in files_changed:
                             impl_landing = m
                             impl_candidate = p2
@@ -3181,53 +3584,91 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         raise ValueError("Missing required test landing/candidate/parent")
                     if repair_landing is None or repair_candidate is None or repair_parent is None:
                         raise ValueError("Missing required repair landing/candidate/parent")
-                    if compatibility_due:
+                    if contract_bug_landing is None or contract_bug_candidate is None or contract_bug_parent is None:
+                        raise ValueError("Missing required contract-bug test landing/candidate/parent")
+                    if chronology_scope == "exact_main":
                         if impl_landing is None or impl_candidate is None or impl_parent is None:
                             raise ValueError("Missing required implementation landing/candidate/parent")
                     else:
                         impl_landing, impl_candidate, impl_parent = None, None, None
 
                     actual_repair_landing = repair_candidate if force_forgery else repair_landing
+                    actual_repair_parent = git(
+                        "rev-parse", f"{actual_repair_landing}^"
+                    )
+                    if force_forgery:
+                        assert actual_repair_landing == repair_candidate
+                        assert actual_repair_parent == repair_parent
 
-                    repair_paths_dict = {}
-                    for path in [
-                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
-                        "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
-                        "phase-loop-runtime/tests/_outside_agent_canonical.py",
-                    ]:
-                        before_blob = git("rev-parse", f"{repair_parent}:{path}")
-                        after_blob = git("rev-parse", f"{repair_candidate}:{path}")
-                        patch = git("diff", "--no-color", "-U0", repair_parent, repair_candidate, "--", path)
-                        patch_digest = hashlib.sha256(patch.encode("utf-8")).hexdigest()
-                        repair_paths_dict[path] = {
-                            "before_blob": before_blob,
-                            "after_blob": after_blob,
-                            "patch": patch,
-                            "patch_digest": patch_digest,
-                        }
+                    def capture_paths(parent: str, candidate: str, paths: set[str]) -> dict[str, dict[str, str]]:
+                        result = {}
+                        for path in sorted(paths):
+                            before_blob = git("rev-parse", f"{parent}:{path}")
+                            after_blob = git("rev-parse", f"{candidate}:{path}")
+                            patch = git("diff", "--no-color", "-U0", parent, candidate, "--", path)
+                            result[path] = {
+                                "before_blob": before_blob,
+                                "after_blob": after_blob,
+                                "patch": patch,
+                                "patch_digest": hashlib.sha256(patch.encode("utf-8")).hexdigest(),
+                            }
+                        return result
+
+                    repair_paths_dict = capture_paths(repair_parent, repair_candidate, repair_paths)
+                    contract_bug_paths_dict = capture_paths(
+                        contract_bug_parent, contract_bug_candidate, contract_bug_paths
+                    )
 
                     original_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
-                    orig_head = "80d9a14c94785f81044d67b60e05d61242838a1b" if compatibility_due else "974593899bbecfbe092ba0aec369e69eee1aabdd"
+                    original_implementation_commits = [
+                        "59cbf5a167bfc8bde4e5841fd977e542158aff3d",
+                        "00dec41aa950f4d1affead3a9c7fdfea4e91099e",
+                        "7df3cc74ec1ba2cb3e3216624f611009dbae2eca",
+                        "974593899bbecfbe092ba0aec369e69eee1aabdd",
+                    ]
+                    reviewed_f17ab557 = "f17ab557c46acdaf748f0b46412a99062d98c3bf"
+                    reviewed_f17ab557_commits = [
+                        git("rev-parse", commit).lower()
+                        for commit in git(
+                            "rev-list",
+                            "--reverse",
+                            f"{actual_repair_landing}..{reviewed_f17ab557}",
+                        ).splitlines()
+                    ]
+                    if len(original_implementation_commits) != 4:
+                        raise ValueError(
+                            "original implementation equals count mismatch: "
+                            f"{len(original_implementation_commits)}"
+                        )
+                    if not force_forgery and len(reviewed_f17ab557_commits) != 5:
+                        raise ValueError(
+                            "reviewed f17ab557 vector count mismatch: "
+                            f"{len(reviewed_f17ab557_commits)}"
+                        )
+                    historical_repair_range_diff = git(
+                        "range-diff",
+                        "--no-color",
+                        f"{original_base}..{original_implementation_commits[-1]}",
+                        f"{actual_repair_landing}..{reviewed_f17ab557}",
+                    )
+                    orig_head = "80d9a14c94785f81044d67b60e05d61242838a1b" if compatibility_due else original_implementation_commits[-1]
                     reb_head = final_candidate if compatibility_due else candidate
-                    range_diff_output = git("range-diff", f"{original_base}..{orig_head}", f"{repair_landing}..{reb_head}")
+                    range_diff_output = git(
+                        "range-diff", "--no-color", f"{original_base}..{orig_head}",
+                        f"{contract_bug_landing}..{reb_head}",
+                    )
 
                     if compatibility_due:
                         original_commits = [
-                            "59cbf5a167bfc8bde4e5841fd977e542158aff3d",
-                            "00dec41aa950f4d1affead3a9c7fdfea4e91099e",
-                            "7df3cc74ec1ba2cb3e3216624f611009dbae2eca",
-                            "974593899bbecfbe092ba0aec369e69eee1aabdd",
+                            *original_implementation_commits,
                             "80d9a14c94785f81044d67b60e05d61242838a1b",
                         ]
                     else:
-                        original_commits = [
-                            "59cbf5a167bfc8bde4e5841fd977e542158aff3d",
-                            "00dec41aa950f4d1affead3a9c7fdfea4e91099e",
-                            "7df3cc74ec1ba2cb3e3216624f611009dbae2eca",
-                            "974593899bbecfbe092ba0aec369e69eee1aabdd",
-                        ]
+                        original_commits = list(original_implementation_commits)
 
-                    rebased_commits = git("rev-list", "--reverse", f"{repair_landing}..{reb_head}").splitlines()
+                    rebased_commits = git(
+                        "rev-list", "--reverse", f"{contract_bug_landing}..{reb_head}"
+                    ).splitlines()
                     rebased_commits = [git("rev-parse", c).lower() for c in rebased_commits]
 
                     if compatibility_due:
@@ -3283,8 +3724,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     else:
                         implementation_patch_slot = None
 
-                    transition = {
+                    historical_repair_transition = {
+                        "base_commit": actual_repair_landing,
+                        "original_commits": original_implementation_commits,
+                        "rebased_commits": reviewed_f17ab557_commits,
+                        "range_diff": historical_repair_range_diff,
+                    }
+                    contract_bug_rebase_transition = {
+                        "base_commit": contract_bug_landing,
                         "original_commits": original_commits,
+                        "reviewed_f17ab557_commits": reviewed_f17ab557_commits,
                         "rebased_commits": rebased_commits,
                         "range_diff": range_diff_output,
                     }
@@ -3311,43 +3760,326 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "sha256": hashlib.sha256(Path(green_raw_log_path).read_bytes()).hexdigest(),
                     }
 
-                    git_proof = {
-                        "identities": {
-                            "test_parent": test_parent,
-                            "test_parent_tree": git("rev-parse", f"{test_parent}^{{tree}}"),
-                            "test_candidate": test_candidate,
-                            "test_candidate_tree": git("rev-parse", f"{test_candidate}^{{tree}}"),
-                            "test_landing": test_landing,
-                            "test_landing_tree": git("rev-parse", f"{test_landing}^{{tree}}"),
-                            "repair_parent": repair_parent,
-                            "repair_parent_tree": git("rev-parse", f"{repair_parent}^{{tree}}"),
-                            "repair_candidate": repair_candidate,
-                            "repair_candidate_tree": git("rev-parse", f"{repair_candidate}^{{tree}}"),
-                            "repair_landing": actual_repair_landing,
-                            "repair_landing_tree": git("rev-parse", f"{actual_repair_landing}^{{tree}}"),
-                            "candidate_commit": candidate,
-                            "candidate_tree": candidate_tree,
+                    merge_inputs = {
+                        "test_landing": (test_landing, test_parent, test_candidate),
+                        "repair_landing": (
+                            actual_repair_landing,
+                            actual_repair_parent,
+                            repair_candidate,
+                        ),
+                        "contract_bug_test_landing": (
+                            contract_bug_landing,
+                            contract_bug_parent,
+                            contract_bug_candidate,
+                        ),
+                    }
+                    if chronology_scope == "exact_main":
+                        assert (
+                            impl_landing is not None
+                            and impl_candidate is not None
+                            and impl_parent is not None
+                        )
+                        assert impl_candidate == final_candidate
+                        merge_inputs["implementation_landing"] = (
+                            impl_landing,
+                            impl_parent,
+                            impl_candidate,
+                        )
+                    merge_result_trees = {}
+                    for label, (landing, first_parent, candidate_parent) in merge_inputs.items():
+                        recomputed_tree = git("merge-tree", "--write-tree", first_parent, candidate_parent)
+                        assert recomputed_tree == git("rev-parse", f"{landing}^{{tree}}")
+                        merge_result_trees[label] = recomputed_tree
+
+                    b1_content = {
+                        "paths": list(SEALED_RELEASE_FINAL_PATHS),
+                        "members": {
+                            path: {
+                                "blob_oid": git("rev-parse", f"{final_candidate}:{path}"),
+                                "sha256": hashlib.sha256(
+                                    subprocess.run(
+                                        ["git", "show", f"{final_candidate}:{path}"],
+                                        cwd=REPO_ROOT,
+                                        capture_output=True,
+                                        check=True,
+                                    ).stdout
+                                ).hexdigest(),
+                            }
+                            for path in SEALED_RELEASE_FINAL_PATHS
+                        },
+                    }
+                    if compatibility_due:
+                        candidate_a2_members = {
+                            path: hashlib.sha256(
+                                subprocess.run(
+                                    ["git", "show", f"{candidate}:{path}"],
+                                    cwd=REPO_ROOT,
+                                    capture_output=True,
+                                    check=True,
+                                ).stdout
+                            ).hexdigest()
+                            for path in SEALED_RELEASE_CANDIDATE_PATHS
+                        }
+                        canonical_a2_package_evidence = _build_a2_package_evidence(
+                            candidate_commit=candidate,
+                            candidate_tree=candidate_tree,
+                            candidate_members=candidate_a2_members,
+                            archives={
+                                label: {
+                                    "sha256": hashlib.sha256(
+                                        mode_archives[label].read_bytes()
+                                    ).hexdigest(),
+                                    "members": SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS,
+                                }
+                                for label in PACKAGE_EXECUTION_VARIANTS
+                            },
+                        )
+
+                        full_member_a2_package_evidence = _build_a2_package_evidence(
+                            candidate_commit=candidate,
+                            candidate_tree=candidate_tree,
+                            candidate_members=candidate_a2_members,
+                            archives={
+                                label: {
+                                    "sha256": hashlib.sha256(
+                                        mode_archives[label].read_bytes()
+                                    ).hexdigest(),
+                                    "members": _normalized_archive_member_digests(
+                                        mode_archives[label]
+                                    ),
+                                }
+                                for label in PACKAGE_EXECUTION_VARIANTS
+                            },
+                        )
+                        assert all(
+                            set(
+                                full_member_a2_package_evidence["archives"][label][
+                                    "members"
+                                ]
+                            )
+                            > set(SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS)
+                            for label in PACKAGE_EXECUTION_VARIANTS
+                        )
+                        assert (
+                            full_member_a2_package_evidence
+                            != canonical_a2_package_evidence
+                        )
+                        assert (
+                            full_member_a2_package_evidence[
+                                "a2_package_evidence_sha256"
+                            ]
+                            != canonical_a2_package_evidence[
+                                "a2_package_evidence_sha256"
+                            ]
+                        )
+
+                        def sealed_b1_package_evidence() -> dict[str, object]:
+                            return _build_a2_package_evidence(
+                                candidate_commit=candidate,
+                                candidate_tree=candidate_tree,
+                                candidate_members=candidate_a2_members,
+                                archives={
+                                    label: {
+                                        "sha256": hashlib.sha256(
+                                            mode_archives[label].read_bytes()
+                                        ).hexdigest(),
+                                        "members": SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS,
+                                    }
+                                    for label in PACKAGE_EXECUTION_VARIANTS
+                                },
+                            )
+
+                        b1_sealed_package_evidence = sealed_b1_package_evidence()
+                        b1_sealed_package_evidence_again = sealed_b1_package_evidence()
+                        assert (
+                            b1_sealed_package_evidence
+                            == b1_sealed_package_evidence_again
+                        )
+                        assert b1_sealed_package_evidence == canonical_a2_package_evidence
+                        assert (
+                            b1_sealed_package_evidence["a2_package_evidence_sha256"]
+                            == canonical_a2_package_evidence[
+                                "a2_package_evidence_sha256"
+                            ]
+                        )
+                        b1_candidate_documents = {
+                            path: subprocess.run(
+                                ["git", "show", f"{candidate}:{path}"],
+                                cwd=REPO_ROOT,
+                                capture_output=True,
+                                check=True,
+                            ).stdout
+                            for path in SEALED_RELEASE_FINAL_PATHS
+                        }
+                        b1_candidate_documents_again = {
+                            path: subprocess.run(
+                                ["git", "show", f"{candidate}:{path}"],
+                                cwd=REPO_ROOT,
+                                capture_output=True,
+                                check=True,
+                            ).stdout
+                            for path in SEALED_RELEASE_FINAL_PATHS
+                        }
+                        assert b1_candidate_documents == b1_candidate_documents_again
+                        b1_rendered_documents = {
+                            path: _render_b1_document_bytes(
+                                path,
+                                b1_candidate_documents[path],
+                                candidate_commit=candidate,
+                                candidate_tree=candidate_tree,
+                                sealed_package_evidence=b1_sealed_package_evidence,
+                            )
+                            for path in SEALED_RELEASE_FINAL_PATHS
+                        }
+                        b1_rendered_documents_again = {
+                            path: _render_b1_document_bytes(
+                                path,
+                                b1_candidate_documents_again[path],
+                                candidate_commit=candidate,
+                                candidate_tree=candidate_tree,
+                                sealed_package_evidence=b1_sealed_package_evidence_again,
+                            )
+                            for path in SEALED_RELEASE_FINAL_PATHS
+                        }
+                        assert b1_rendered_documents == b1_rendered_documents_again
+                        candidate_only_values = {
+                            "final_commit": final_candidate,
+                            "final_tree": final_candidate_tree,
                             "final_candidate": final_candidate,
                             "final_candidate_tree": final_candidate_tree,
-                            "implementation_parent": impl_parent,
-                            "implementation_parent_tree": git("rev-parse", f"{impl_parent}^{{tree}}") if impl_parent else None,
-                            "implementation_landing": impl_landing,
-                            "implementation_landing_tree": git("rev-parse", f"{impl_landing}^{{tree}}") if impl_landing else None,
-                            "canonical_main_head": head_commit,
-                            "canonical_main_head_tree": head_tree,
-                        },
-                        "parent_vectors": {
-                            "test_landing": git("rev-list", "--parents", "-n", "1", test_landing).split()[1:],
-                            "repair_landing": git("rev-list", "--parents", "-n", "1", actual_repair_landing).split()[1:],
-                            "implementation_landing": git("rev-list", "--parents", "-n", "1", impl_landing).split()[1:] if impl_landing else [],
-                        },
+                        }
+                        if chronology_scope == "exact_main":
+                            assert impl_landing is not None and impl_parent is not None
+                            candidate_only_values.update(
+                                {
+                                    "implementation_landing": impl_landing,
+                                    "implementation_landing_tree": git(
+                                        "rev-parse", f"{impl_landing}^{{tree}}"
+                                    ),
+                                    "implementation_parent": impl_parent,
+                                    "canonical_main_head": head_commit,
+                                    "canonical_main_head_tree": head_tree,
+                                }
+                            )
+                        assert all(value != candidate for value in candidate_only_values.values())
+                        assert all(
+                            value != candidate_tree
+                            for value in candidate_only_values.values()
+                        )
+                        candidate_only_documents = {}
+                        for path in SEALED_RELEASE_FINAL_PATHS:
+                            actual_document = subprocess.run(
+                                ["git", "show", f"{final_candidate}:{path}"],
+                                cwd=REPO_ROOT,
+                                capture_output=True,
+                                check=True,
+                            ).stdout
+                            expected_document = b1_rendered_documents[path]
+                            assert actual_document == expected_document
+                            assert_candidate_identity_only_document(
+                                expected_document.decode("utf-8"),
+                                candidate_commit=candidate,
+                                candidate_tree=candidate_tree,
+                                forbidden_identity_values=candidate_only_values,
+                                anchor="CONFORM_RED::b1_candidate_identity_only",
+                                require_candidate_identity=(
+                                    path in B1_CANDIDATE_IDENTITY_PATHS
+                                ),
+                            )
+                            candidate_only_documents[path] = {
+                                "candidate_commit": candidate,
+                                "candidate_tree": candidate_tree,
+                                "forbidden_identity_values": candidate_only_values,
+                            }
+                        assert set(candidate_only_documents) == set(
+                            SEALED_RELEASE_FINAL_PATHS
+                        )
+                        b1_content["rendering"] = {
+                            "template": "accepted-80d9a14-candidate-only-b2",
+                            "accepted_document_commit": B1_ACCEPTED_DOCUMENT_COMMIT,
+                            "candidate_commit": candidate,
+                            "candidate_tree": candidate_tree,
+                            "package_evidence": b1_sealed_package_evidence,
+                            "documents": {
+                                path: {
+                                    "candidate_sha256": hashlib.sha256(
+                                        b1_candidate_documents[path]
+                                    ).hexdigest(),
+                                    "body": b1_rendered_documents[path].decode("utf-8"),
+                                    "sha256": hashlib.sha256(
+                                        b1_rendered_documents[path]
+                                    ).hexdigest(),
+                                }
+                                for path in SEALED_RELEASE_FINAL_PATHS
+                            },
+                        }
+                        b1_content["candidate_only_documents"] = candidate_only_documents
+
+                    identities = {
+                        "test_parent": test_parent,
+                        "test_parent_tree": git("rev-parse", f"{test_parent}^{{tree}}"),
+                        "test_candidate": test_candidate,
+                        "test_candidate_tree": git("rev-parse", f"{test_candidate}^{{tree}}"),
+                        "test_landing": test_landing,
+                        "test_landing_tree": git("rev-parse", f"{test_landing}^{{tree}}"),
+                        "repair_parent": actual_repair_parent,
+                        "repair_parent_tree": git("rev-parse", f"{actual_repair_parent}^{{tree}}"),
+                        "repair_candidate": repair_candidate,
+                        "repair_candidate_tree": git("rev-parse", f"{repair_candidate}^{{tree}}"),
+                        "repair_landing": actual_repair_landing,
+                        "repair_landing_tree": git("rev-parse", f"{actual_repair_landing}^{{tree}}"),
+                        "contract_bug_test_parent": contract_bug_parent,
+                        "contract_bug_test_parent_tree": git("rev-parse", f"{contract_bug_parent}^{{tree}}"),
+                        "contract_bug_test_candidate": contract_bug_candidate,
+                        "contract_bug_test_candidate_tree": git("rev-parse", f"{contract_bug_candidate}^{{tree}}"),
+                        "contract_bug_test_landing": contract_bug_landing,
+                        "contract_bug_test_landing_tree": git("rev-parse", f"{contract_bug_landing}^{{tree}}"),
+                        "candidate_commit": candidate,
+                        "candidate_tree": candidate_tree,
+                        "final_candidate": final_candidate,
+                        "final_candidate_tree": final_candidate_tree,
+                    }
+                    parent_vectors = {
+                        "test_landing": git("rev-list", "--parents", "-n", "1", test_landing).split()[1:],
+                        "repair_landing": git("rev-list", "--parents", "-n", "1", actual_repair_landing).split()[1:],
+                        "contract_bug_test_landing": git("rev-list", "--parents", "-n", "1", contract_bug_landing).split()[1:],
+                    }
+                    if chronology_scope in {"a2_candidate", "exact_main"}:
+                        identities.update(
+                            {
+                                "canonical_main_head": head_commit,
+                                "canonical_main_head_tree": head_tree,
+                            }
+                        )
+                    if chronology_scope == "exact_main":
+                        assert impl_parent is not None and impl_landing is not None
+                        identities.update(
+                            {
+                                "implementation_parent": impl_parent,
+                                "implementation_parent_tree": git("rev-parse", f"{impl_parent}^{{tree}}"),
+                                "implementation_landing": impl_landing,
+                                "implementation_landing_tree": git("rev-parse", f"{impl_landing}^{{tree}}"),
+                            }
+                        )
+                        parent_vectors["implementation_landing"] = git(
+                            "rev-list", "--parents", "-n", "1", impl_landing
+                        ).split()[1:]
+
+                    git_proof = {
+                        "identities": identities,
+                        "parent_vectors": parent_vectors,
+                        "merge_result_trees": merge_result_trees,
                         "repair_landing_two_parent": True,
                         "repair_diff_exact": True,
                         "single_rebase": True,
                         "range_diff_equivalent": True,
                         "repair_paths": repair_paths_dict,
+                        "contract_bug_paths": contract_bug_paths_dict,
                         "implementation_patch_slot": implementation_patch_slot,
-                        "transition": transition,
+                        "b1_content": b1_content,
+                        "transition": contract_bug_rebase_transition,
+                        "historical_repair_transition": historical_repair_transition,
+                        "contract_bug_rebase_transition": contract_bug_rebase_transition,
                         "red_references": {
                             "junit": red_junit,
                             "raw_log": red_raw_log,
@@ -3628,6 +4360,181 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                                 and set(ref["sha256"]) <= set("0123456789abcdef")
                                 and ref["sha256"] != "0" * 64
                             )
+                    identities = git_proof["identities"]
+                    parent_vectors = git_proof["parent_vectors"]
+                    merge_result_trees = git_proof["merge_result_trees"]
+                    assert set(parent_vectors) == {
+                        "test_landing",
+                        "repair_landing",
+                        "contract_bug_test_landing",
+                        *(
+                            {"implementation_landing"}
+                            if chronology_scope == "exact_main"
+                            else set()
+                        ),
+                    }
+                    assert set(merge_result_trees) == set(parent_vectors)
+                    assert all(
+                        isinstance(tree, str)
+                        and len(tree) == 40
+                        and set(tree) <= set("0123456789abcdef")
+                        for tree in merge_result_trees.values()
+                    )
+                    historical_transition = git_proof["historical_repair_transition"]
+                    contract_bug_transition = git_proof[
+                        "contract_bug_rebase_transition"
+                    ]
+                    assert git_proof["transition"] == contract_bug_transition
+                    assert historical_transition["base_commit"] == identities[
+                        "repair_landing"
+                    ]
+                    assert contract_bug_transition["base_commit"] == identities[
+                        "contract_bug_test_landing"
+                    ]
+                    assert len(historical_transition["original_commits"]) == 4
+                    assert len(contract_bug_transition["original_commits"][:4]) == 4
+                    assert (
+                        contract_bug_transition["reviewed_f17ab557_commits"]
+                        == historical_transition["rebased_commits"]
+                    )
+                    assert len(contract_bug_transition["rebased_commits"]) == (
+                        6 if compatibility_due else 4
+                    ) or (
+                        not compatibility_due
+                        and len(contract_bug_transition["rebased_commits"]) == 5
+                    )
+                    if compatibility_due:
+                        b1_content = git_proof["b1_content"]
+                        candidate_only_documents = b1_content[
+                            "candidate_only_documents"
+                        ]
+                        assert set(candidate_only_documents) == set(
+                            SEALED_RELEASE_FINAL_PATHS
+                        )
+                        b1_rendering = b1_content["rendering"]
+                        assert set(b1_rendering) == {
+                            "template",
+                            "accepted_document_commit",
+                            "candidate_commit",
+                            "candidate_tree",
+                            "package_evidence",
+                            "documents",
+                        }
+                        assert (
+                            b1_rendering["template"]
+                            == "accepted-80d9a14-candidate-only-b2"
+                        )
+                        assert (
+                            b1_rendering["accepted_document_commit"]
+                            == B1_ACCEPTED_DOCUMENT_COMMIT
+                        )
+                        assert b1_rendering["candidate_commit"] == candidate
+                        assert b1_rendering["candidate_tree"] == candidate_tree
+                        package_evidence = b1_rendering["package_evidence"]
+                        assert isinstance(package_evidence, dict)
+                        assert package_evidence[
+                            "a2_package_evidence_sha256"
+                        ] == _a2_package_evidence_sha256(
+                            package_evidence
+                        )
+                        rendered_documents = b1_rendering["documents"]
+                        assert set(rendered_documents) == set(SEALED_RELEASE_FINAL_PATHS)
+                        for path in SEALED_RELEASE_FINAL_PATHS:
+                            document = candidate_only_documents[path]
+                            assert set(document) == {
+                                "candidate_commit",
+                                "candidate_tree",
+                                "forbidden_identity_values",
+                            }
+                            assert document["candidate_commit"] == candidate
+                            assert document["candidate_tree"] == candidate_tree
+                            assert isinstance(
+                                document["forbidden_identity_values"], dict
+                            )
+                            rendered = rendered_documents[path]
+                            assert set(rendered) == {
+                                "candidate_sha256",
+                                "body",
+                                "sha256",
+                            }
+                            candidate_document = subprocess.run(
+                                ["git", "show", f"{candidate}:{path}"],
+                                cwd=REPO_ROOT,
+                                capture_output=True,
+                                check=True,
+                            ).stdout
+                            expected_document = _render_b1_document_bytes(
+                                path,
+                                candidate_document,
+                                candidate_commit=candidate,
+                                candidate_tree=candidate_tree,
+                                sealed_package_evidence=package_evidence,
+                            )
+                            assert rendered["candidate_sha256"] == hashlib.sha256(
+                                candidate_document
+                            ).hexdigest()
+                            assert rendered["body"].encode("utf-8") == expected_document
+                            assert rendered["sha256"] == hashlib.sha256(
+                                expected_document
+                            ).hexdigest()
+                            assert subprocess.run(
+                                ["git", "show", f"{final_candidate}:{path}"],
+                                cwd=REPO_ROOT,
+                                capture_output=True,
+                                check=True,
+                            ).stdout == expected_document
+                            assert_candidate_identity_only_document(
+                                rendered["body"],
+                                candidate_commit=candidate,
+                                candidate_tree=candidate_tree,
+                                forbidden_identity_values=document[
+                                    "forbidden_identity_values"
+                                ],
+                                anchor="CONFORM_RED::b1_candidate_identity_only",
+                                require_candidate_identity=(
+                                    path in B1_CANDIDATE_IDENTITY_PATHS
+                                ),
+                            )
+                    implementation_identity_keys = {
+                        "implementation_parent",
+                        "implementation_parent_tree",
+                        "implementation_landing",
+                        "implementation_landing_tree",
+                        "canonical_main_head",
+                        "canonical_main_head_tree",
+                    }
+                    legacy_a2_identity_keys = {
+                        "canonical_main_head",
+                        "canonical_main_head_tree",
+                    }
+                    if chronology_scope == "b2_premerge":
+                        assert not implementation_identity_keys & set(identities)
+                        final_doc_topology = verified["evidence"]["chronology"][
+                            "stages"
+                        ][-1]["topology"]
+                        assert not {
+                            "canonical_main_head",
+                            "canonical_main_head_tree",
+                            "implementation_parent",
+                            "implementation_parent_tree",
+                            "implementation_landing",
+                            "implementation_landing_tree",
+                        } & set(final_doc_topology)
+                    elif chronology_scope == "a2_candidate":
+                        assert legacy_a2_identity_keys <= set(identities)
+                        assert identities["canonical_main_head"] == head_commit
+                        assert identities["canonical_main_head_tree"] == head_tree
+                    elif chronology_scope == "exact_main":
+                        assert implementation_identity_keys <= set(identities)
+                        assert all(
+                            isinstance(identities[key], str) and identities[key]
+                            for key in implementation_identity_keys
+                        )
+                        final_doc_topology = verified["evidence"]["chronology"][
+                            "stages"
+                        ][-1]["topology"]
+                        assert isinstance(final_doc_topology["canonical_main_head"], str)
+                        assert final_doc_topology["canonical_main_head"] == head_commit
                 else:
                     assert "raw_log" not in json.dumps(
                         verified["evidence"], sort_keys=True
@@ -3716,6 +4623,27 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 )
                 refresh_mode_records(mode_records, artifacts)
                 if mode == "chronology":
+                    verifier_source = Path(verifier_spec.origin).read_text(encoding="utf-8")
+                    range_diff_calls = [
+                        call
+                        for call in ast.walk(ast.parse(verifier_source))
+                        if isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Name)
+                        and call.func.id == "_run_git"
+                        and call.args
+                        and isinstance(call.args[0], ast.List)
+                        and call.args[0].elts
+                        and isinstance(call.args[0].elts[0], ast.Constant)
+                        and call.args[0].elts[0].value == "range-diff"
+                    ]
+                    assert any(
+                        any(
+                            isinstance(argument, ast.Constant)
+                            and argument.value == "--no-color"
+                            for argument in call.args[0].elts
+                        )
+                        for call in range_diff_calls
+                    ), "CONFORM_RED::range_diff_requires_no_color"
                     chronology_mutations = []
                     missing_review = copy.deepcopy(mode_facts)
                     missing_review["chronology"]["stages"][0].pop("review")
@@ -3752,6 +4680,124 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "before_commit"
                         ] = final_candidate
                         chronology_mutations.append(forged_b1_transition)
+                        missing_contract_bug_repair = copy.deepcopy(mode_facts)
+                        missing_contract_bug_repair["chronology"]["git_proof"].pop(
+                            "contract_bug_paths"
+                        )
+                        chronology_mutations.append(missing_contract_bug_repair)
+                        missing_contract_bug_landing = copy.deepcopy(mode_facts)
+                        missing_contract_bug_landing["chronology"]["git_proof"][
+                            "identities"
+                        ].pop("contract_bug_test_landing")
+                        missing_contract_bug_landing["chronology"]["git_proof"][
+                            "parent_vectors"
+                        ].pop("contract_bug_test_landing")
+                        chronology_mutations.append(missing_contract_bug_landing)
+                        forged_merge_result = copy.deepcopy(mode_facts)
+                        forged_merge_result["chronology"]["git_proof"][
+                            "merge_result_trees"
+                        ]["repair_landing"] = candidate_tree
+                        chronology_mutations.append(forged_merge_result)
+                        forged_b1_content = copy.deepcopy(mode_facts)
+                        b1_members = forged_b1_content["chronology"]["git_proof"][
+                            "b1_content"
+                        ]["members"]
+                        forged_b1_path = SEALED_RELEASE_FINAL_PATHS[0]
+                        alternate_b1_blob_oid = git(
+                            "rev-parse",
+                            f"{candidate}:phase-loop-runtime/tests/_outside_agent_canonical.py",
+                        )
+                        alternate_b1_sha256 = hashlib.sha256(
+                            subprocess.run(
+                                [
+                                    "git",
+                                    "show",
+                                    f"{candidate}:phase-loop-runtime/tests/_outside_agent_canonical.py",
+                                ],
+                                cwd=REPO_ROOT,
+                                capture_output=True,
+                                check=True,
+                            ).stdout
+                        ).hexdigest()
+                        assert alternate_b1_blob_oid != b1_members[forged_b1_path][
+                            "blob_oid"
+                        ]
+                        assert alternate_b1_sha256 != b1_members[forged_b1_path][
+                            "sha256"
+                        ]
+                        assert alternate_b1_blob_oid != "0" * 40
+                        assert alternate_b1_sha256 != "0" * 64
+                        b1_members[forged_b1_path]["blob_oid"] = alternate_b1_blob_oid
+                        b1_members[forged_b1_path]["sha256"] = alternate_b1_sha256
+                        chronology_mutations.append(forged_b1_content)
+                        forged_b1_body = copy.deepcopy(mode_facts)
+                        rendered_b1_document = forged_b1_body["chronology"][
+                            "git_proof"
+                        ]["b1_content"]["rendering"]["documents"][forged_b1_path]
+                        original_b1_body = rendered_b1_document["body"]
+                        wrong_b1_body = (
+                            original_b1_body
+                            + "\n<!-- candidate-only prose variant -->\n"
+                        )
+                        assert wrong_b1_body != original_b1_body
+                        assert_candidate_identity_only_document(
+                            wrong_b1_body,
+                            candidate_commit=candidate,
+                            candidate_tree=candidate_tree,
+                            forbidden_identity_values=forged_b1_body["chronology"][
+                                "git_proof"
+                            ]["b1_content"]["candidate_only_documents"][
+                                forged_b1_path
+                            ]["forbidden_identity_values"],
+                            anchor="CONFORM_RED::b1_candidate_identity_only",
+                            require_candidate_identity=(
+                                forged_b1_path in B1_CANDIDATE_IDENTITY_PATHS
+                            ),
+                        )
+                        actual_b1_body = subprocess.run(
+                            ["git", "show", f"{final_candidate}:{forged_b1_path}"],
+                            cwd=REPO_ROOT,
+                            capture_output=True,
+                            check=True,
+                        ).stdout
+                        assert actual_b1_body == original_b1_body.encode("utf-8")
+                        assert actual_b1_body != wrong_b1_body.encode("utf-8")
+                        rendered_b1_document["body"] = wrong_b1_body
+                        rendered_b1_document["sha256"] = hashlib.sha256(
+                            wrong_b1_body.encode("utf-8")
+                        ).hexdigest()
+                        chronology_mutations.append(forged_b1_body)
+                        if chronology_scope == "b2_premerge":
+                            forged_premerge_exact_main = copy.deepcopy(mode_facts)
+                            forged_premerge_exact_main["chronology"]["stages"][2][
+                                "topology"
+                            ]["canonical_main_head"] = head_commit
+                            chronology_mutations.append(forged_premerge_exact_main)
+                        if chronology_scope == "exact_main":
+                            missing_exact_main_identity = copy.deepcopy(mode_facts)
+                            missing_exact_main_identity["chronology"]["git_proof"][
+                                "identities"
+                            ]["implementation_landing"] = None
+                            chronology_mutations.append(missing_exact_main_identity)
+                            null_exact_main_topology = copy.deepcopy(mode_facts)
+                            null_exact_main_topology["chronology"]["stages"][2][
+                                "topology"
+                            ]["canonical_main_head"] = None
+                            chronology_mutations.append(null_exact_main_topology)
+                            forged_exact_main_identity = copy.deepcopy(mode_facts)
+                            forged_exact_main_identity["chronology"]["git_proof"][
+                                "identities"
+                            ]["canonical_main_head"] = forged_exact_main_identity[
+                                "chronology"
+                            ]["git_proof"]["identities"]["contract_bug_test_landing"]
+                            chronology_mutations.append(forged_exact_main_identity)
+                            forged_exact_main_vector = copy.deepcopy(mode_facts)
+                            forged_exact_main_vector["chronology"]["git_proof"][
+                                "parent_vectors"
+                            ]["implementation_landing"] = forged_exact_main_vector[
+                                "chronology"
+                            ]["git_proof"]["parent_vectors"]["contract_bug_test_landing"]
+                            chronology_mutations.append(forged_exact_main_vector)
                     for forged_facts in chronology_mutations:
                         Path(mode_records[0]["artifact_path"]).write_text(
                             json.dumps(forged_facts, sort_keys=True), encoding="utf-8"
@@ -3764,6 +4810,475 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
                     )
                     refresh_mode_records(mode_records, artifacts)
+                if mode == "corpus":
+                    forged_facts = copy.deepcopy(mode_facts)
+                    forged_rows = copy.deepcopy(forged_facts["corpus"]["rows"])
+                    forged_row = next(
+                        row
+                        for row in forged_rows
+                        if row["case_id"] == "negative-missing-digest"
+                    )
+                    assert forged_row["expected_valid"] is False
+                    canonical_blocker_classes = {
+                        row["expected_blocker_class"] for row in corpus_rows
+                    }
+                    replacement_blocker_class = next(
+                        row["expected_blocker_class"]
+                        for row in corpus_rows
+                        if row["expected_valid"] is False
+                        and row["expected_blocker_class"]
+                        != forged_row["expected_blocker_class"]
+                    )
+                    assert replacement_blocker_class in canonical_blocker_classes
+                    forged_row["expected_blocker_class"] = replacement_blocker_class
+                    forged_facts["corpus"]["rows"] = forged_rows
+                    fixture_reference = forged_facts["fixture_manifest"]
+                    fixture_path = Path(fixture_reference["path"])
+                    installed_reference = forged_facts["installed_package"]
+                    installed_path = Path(installed_reference["path"])
+                    runner_reference = forged_facts["runner_manifest"]
+                    runner_path = Path(runner_reference["path"])
+                    mode_manifest_path = Path(mode_records[0]["artifact_path"])
+                    original_fixture = fixture_path.read_bytes()
+                    original_installed_package = installed_path.read_bytes()
+                    original_runner_manifest = runner_path.read_bytes()
+                    original_mode_manifest = mode_manifest_path.read_bytes()
+                    fixture_payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+                    try:
+                        fixture_payload["rows"] = forged_rows
+                        fixture_path.write_text(
+                            json.dumps(fixture_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        fixture_reference["sha256"] = hashlib.sha256(
+                            fixture_path.read_bytes()
+                        ).hexdigest()
+                        installed_payload = json.loads(
+                            installed_path.read_text(encoding="utf-8")
+                        )
+                        for execution in installed_payload["executions"]:
+                            case = next(
+                                case
+                                for case in execution["cases"]
+                                if case["case_id"] == forged_row["case_id"]
+                            )
+                            assert case["oracle_blocker_class"] != replacement_blocker_class
+                            case["oracle_blocker_class"] = replacement_blocker_class
+                        installed_path.write_text(
+                            json.dumps(installed_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        installed_reference["sha256"] = hashlib.sha256(
+                            installed_path.read_bytes()
+                        ).hexdigest()
+                        runner_payload = json.loads(
+                            runner_path.read_text(encoding="utf-8")
+                        )
+                        runner_payload["corpus"]["rows"] = forged_rows
+                        runner_payload["installed_package"] = installed_payload
+                        runner_path.write_text(
+                            json.dumps(runner_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        runner_reference["sha256"] = hashlib.sha256(
+                            runner_path.read_bytes()
+                        ).hexdigest()
+                        mode_manifest_path.write_text(
+                            json.dumps(forged_facts, sort_keys=True), encoding="utf-8"
+                        )
+                        refresh_mode_records(mode_records, artifacts)
+                        # A self-consistent canonical-class substitution cannot
+                        # replace the immutable canonical rows or executions.
+                        with pytest.raises((ValueError, AssertionError)):
+                            verifier(mode, mode_records)
+                        assert_production_cli_rejects(mode_records)
+                    finally:
+                        fixture_path.write_bytes(original_fixture)
+                        installed_path.write_bytes(original_installed_package)
+                        runner_path.write_bytes(original_runner_manifest)
+                        mode_manifest_path.write_bytes(original_mode_manifest)
+                        refresh_mode_records(mode_records, artifacts)
+                if mode == "package":
+                    forged_facts = copy.deepcopy(mode_facts)
+                    original_archives = {
+                        name: path.read_bytes()
+                        for name, path in artifacts.items()
+                        if name in {"direct-wheel", "direct-sdist", "sdist-derived-wheel"}
+                    }
+                    installed_reference = forged_facts["installed_package"]
+                    installed_path = Path(installed_reference["path"])
+                    runner_reference = forged_facts["runner_manifest"]
+                    runner_path = Path(runner_reference["path"])
+                    mode_manifest_path = Path(mode_records[0]["artifact_path"])
+                    original_installed_package = installed_path.read_bytes()
+                    original_runner_manifest = runner_path.read_bytes()
+                    original_mode_manifest = mode_manifest_path.read_bytes()
+                    extra_member = (
+                        "phase_loop_runtime/conformance/_contract/forged-member.json"
+                    )
+                    try:
+                        for archive_name in ("direct-wheel", "sdist-derived-wheel"):
+                            with zipfile.ZipFile(artifacts[archive_name], "a") as archive:
+                                archive.writestr(extra_member, "{}")
+                        sdist_members = []
+                        with tarfile.open(artifacts["direct-sdist"]) as archive:
+                            for member in archive.getmembers():
+                                if member.isfile():
+                                    contents = archive.extractfile(member)
+                                    assert contents is not None
+                                    sdist_members.append((member.name, contents.read()))
+                        with tarfile.open(artifacts["direct-sdist"], "w:gz") as archive:
+                            for name, contents in sdist_members:
+                                member = tarfile.TarInfo(name)
+                                member.size = len(contents)
+                                archive.addfile(member, io.BytesIO(contents))
+                            member = tarfile.TarInfo(
+                                "phase-loop-runtime/src/" + extra_member
+                            )
+                            member.size = 2
+                            archive.addfile(member, io.BytesIO(b"{}"))
+                        assert all(
+                            extra_member in _normalized_archive_member_digests(path)
+                            for path in (
+                                artifacts["direct-wheel"],
+                                artifacts["sdist-derived-wheel"],
+                            )
+                        )
+                        assert (
+                            extra_member in _normalized_archive_member_digests(
+                                artifacts["direct-sdist"]
+                            )
+                        )
+                        installed_payload = json.loads(
+                            installed_path.read_text(encoding="utf-8")
+                        )
+                        for execution in installed_payload["executions"]:
+                            execution["archive_sha256"] = hashlib.sha256(
+                                artifacts[execution["variant"]].read_bytes()
+                            ).hexdigest()
+                        installed_path.write_text(
+                            json.dumps(installed_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        installed_reference["sha256"] = hashlib.sha256(
+                            installed_path.read_bytes()
+                        ).hexdigest()
+                        runner_payload = json.loads(
+                            runner_path.read_text(encoding="utf-8")
+                        )
+                        runner_payload["installed_package"] = installed_payload
+                        runner_path.write_text(
+                            json.dumps(runner_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        runner_reference["sha256"] = hashlib.sha256(
+                            runner_path.read_bytes()
+                        ).hexdigest()
+                        mode_manifest_path.write_text(
+                            json.dumps(forged_facts, sort_keys=True), encoding="utf-8"
+                        )
+                        refresh_mode_records(mode_records, artifacts)
+                        refreshed_facts = json.loads(
+                            mode_manifest_path.read_text(encoding="utf-8")
+                        )
+                        refreshed_installed = json.loads(
+                            installed_path.read_text(encoding="utf-8")
+                        )
+                        refreshed_runner = json.loads(
+                            runner_path.read_text(encoding="utf-8")
+                        )
+                        assert all(
+                            refreshed_facts["archives"][archive_name]["sha256"]
+                            == hashlib.sha256(archive_path.read_bytes()).hexdigest()
+                            for archive_name, archive_path in artifacts.items()
+                            if archive_name
+                            in {
+                                "direct-wheel",
+                                "direct-sdist",
+                                "sdist-derived-wheel",
+                            }
+                        )
+                        assert refreshed_facts["installed_package"]["sha256"] == hashlib.sha256(
+                            installed_path.read_bytes()
+                        ).hexdigest()
+                        assert refreshed_facts["runner_manifest"]["sha256"] == hashlib.sha256(
+                            runner_path.read_bytes()
+                        ).hexdigest()
+                        assert refreshed_runner["installed_package"] == refreshed_installed
+                        assert all(
+                            execution["archive_sha256"]
+                            == refreshed_facts["archives"][execution["variant"]][
+                                "sha256"
+                            ]
+                            for execution in refreshed_installed["executions"]
+                        )
+                        # Archive-member equality alone must reject this valid
+                        # archive set; all caller-controlled digest references
+                        # and installed outcomes remain self-consistent.
+                        with pytest.raises((ValueError, AssertionError)):
+                            verifier(mode, mode_records)
+                        assert_production_cli_rejects(mode_records)
+                    finally:
+                        for archive_name, contents in original_archives.items():
+                            artifacts[archive_name].write_bytes(contents)
+                        installed_path.write_bytes(original_installed_package)
+                        runner_path.write_bytes(original_runner_manifest)
+                        mode_manifest_path.write_bytes(original_mode_manifest)
+                        refresh_mode_records(mode_records, artifacts)
+
+                    forged_facts = copy.deepcopy(mode_facts)
+                    installed_reference = forged_facts["installed_package"]
+                    installed_path = Path(installed_reference["path"])
+                    runner_reference = forged_facts["runner_manifest"]
+                    runner_path = Path(runner_reference["path"])
+                    mode_manifest_path = Path(mode_records[0]["artifact_path"])
+                    original_installed_package = installed_path.read_bytes()
+                    original_runner_manifest = runner_path.read_bytes()
+                    original_mode_manifest = mode_manifest_path.read_bytes()
+                    raw_case_artifacts = {}
+                    try:
+                        assert all(
+                            hashlib.sha256(path.read_bytes()).hexdigest()
+                            == forged_facts["archives"][archive_name]["sha256"]
+                            for archive_name, path in artifacts.items()
+                            if archive_name
+                            in {"direct-wheel", "direct-sdist", "sdist-derived-wheel"}
+                        )
+                        installed_payload = json.loads(
+                            installed_path.read_text(encoding="utf-8")
+                        )
+                        for execution in installed_payload["executions"]:
+                            case = next(
+                                case
+                                for case in execution["cases"]
+                                if (
+                                    case["case_id"],
+                                    case["surface"],
+                                ) == ("positive-work-request", "api")
+                            )
+                            assert case["oracle_blocker_class"] == "none"
+                            assert case["result"]["status"] == "pass"
+                            raw_path = Path(case["raw_path"])
+                            raw_case_artifacts[raw_path] = raw_path.read_bytes()
+                            raw_payload = json.loads(raw_path.read_text(encoding="utf-8"))
+                            replay_result = json.loads(raw_payload["stdout"])
+                            assert replay_result == case["result"]
+                            replay_result["status"] = "blocked"
+                            replay_result["blocker_codes"] = [
+                                "schema_validation_failed"
+                            ]
+                            assert replay_result != case["result"]
+                            raw_payload["stdout"] = (
+                                json.dumps(replay_result, sort_keys=True) + "\n"
+                            )
+                            raw_path.write_text(
+                                json.dumps(raw_payload, sort_keys=True),
+                                encoding="utf-8",
+                            )
+                            case["raw_sha256"] = hashlib.sha256(
+                                raw_path.read_bytes()
+                            ).hexdigest()
+                        installed_path.write_text(
+                            json.dumps(installed_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        installed_reference["sha256"] = hashlib.sha256(
+                            installed_path.read_bytes()
+                        ).hexdigest()
+                        runner_payload = json.loads(
+                            runner_path.read_text(encoding="utf-8")
+                        )
+                        runner_payload["installed_package"] = installed_payload
+                        runner_path.write_text(
+                            json.dumps(runner_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        runner_reference["sha256"] = hashlib.sha256(
+                            runner_path.read_bytes()
+                        ).hexdigest()
+                        mode_manifest_path.write_text(
+                            json.dumps(forged_facts, sort_keys=True), encoding="utf-8"
+                        )
+                        refresh_mode_records(mode_records, artifacts)
+                        # Valid submitted labels and refreshed digests cannot
+                        # replace replay of this known canonical positive case.
+                        with pytest.raises(AssertionError):
+                            _assert_complete_package_executions(
+                                installed_payload["executions"],
+                                forged_facts["archives"],
+                            )
+                        with pytest.raises((ValueError, AssertionError)):
+                            verifier(mode, mode_records)
+                        assert_production_cli_rejects(mode_records)
+                    finally:
+                        for raw_path, contents in raw_case_artifacts.items():
+                            raw_path.write_bytes(contents)
+                        installed_path.write_bytes(original_installed_package)
+                        runner_path.write_bytes(original_runner_manifest)
+                        mode_manifest_path.write_bytes(original_mode_manifest)
+                        refresh_mode_records(mode_records, artifacts)
+                if mode == "compatibility":
+                    forged_facts = copy.deepcopy(mode_facts)
+                    matrix_reference = forged_facts["ec_matrix"]
+                    matrix_path = Path(matrix_reference["path"])
+                    matrix_payload = json.loads(matrix_path.read_text(encoding="utf-8"))
+                    runner_reference = forged_facts["runner_manifest"]
+                    runner_path = Path(runner_reference["path"])
+                    mode_manifest_path = Path(mode_records[0]["artifact_path"])
+                    entry = matrix_payload["entries"][0]
+                    ec_id = entry["id"]
+                    assert ec_id in EC_CONFORM_PROBES
+                    assert entry["ordinal"] == EC_CONFORM_PROBES[ec_id]["ordinal"]
+                    observable_record = entry["observable"]
+                    observable = observable_record["observable"]
+                    assert observable["criterion"] == EC_CONFORM_PROBES[ec_id][
+                        "criterion"
+                    ]
+                    assert observable["classification"] == "passed"
+                    assert observable_record["status"] == "accepted"
+                    accepted_observable = copy.deepcopy(observable)
+                    accepted_output_sha256 = observable_record["output_sha256"]
+                    result_path = Path(observable_record["result_path"])
+                    original_matrix = matrix_path.read_bytes()
+                    original_runner_manifest = runner_path.read_bytes()
+                    original_mode_manifest = mode_manifest_path.read_bytes()
+                    original_result = result_path.read_bytes()
+                    junit_path = Path(accepted_observable["execution"]["junit_path"])
+                    original_junit = junit_path.read_bytes()
+                    try:
+                        result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+                        rendered = json.loads(result_payload["stdout"])
+                        primary_observable = rendered["observable"]
+                        assert primary_observable == observable
+                        assert rendered["status"] == "accepted"
+                        primary_execution = primary_observable["execution"]
+                        assert primary_execution["junit_path"] == str(junit_path)
+                        junit_root = element_tree.parse(junit_path).getroot()
+                        junit_cases = list(junit_root.iter("testcase"))
+                        assert junit_cases
+                        assert not any(
+                            case.find("failure") is not None
+                            or case.find("error") is not None
+                            for case in junit_cases
+                        )
+                        failure = element_tree.SubElement(
+                            junit_cases[0],
+                            "failure",
+                            {"message": "forged criterion primary failure"},
+                        )
+                        failure.text = "EC-CONFORM primary criterion replay failed"
+                        for suite in junit_root.iter("testsuite"):
+                            suite.attrib["failures"] = str(
+                                sum(
+                                    case.find("failure") is not None
+                                    or case.find("error") is not None
+                                    for case in suite.iter("testcase")
+                                )
+                            )
+                        junit_root.attrib["failures"] = "1"
+                        element_tree.ElementTree(junit_root).write(
+                            junit_path, encoding="utf-8", xml_declaration=True
+                        )
+                        primary_execution["junit_sha256"] = hashlib.sha256(
+                            junit_path.read_bytes()
+                        ).hexdigest()
+                        assert primary_execution["junit_sha256"] != accepted_observable[
+                            "execution"
+                        ]["junit_sha256"]
+                        expected_submitted_observable = copy.deepcopy(
+                            accepted_observable
+                        )
+                        expected_submitted_observable["execution"][
+                            "junit_sha256"
+                        ] = primary_execution["junit_sha256"]
+                        assert primary_observable == expected_submitted_observable
+                        result_payload["stdout"] = (
+                            json.dumps(rendered, sort_keys=True) + "\n"
+                        )
+                        result_path.write_text(
+                            json.dumps(result_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        observable_record["output_sha256"] = hashlib.sha256(
+                            result_payload["stdout"].encode("utf-8")
+                        ).hexdigest()
+                        observable_record["result_sha256"] = hashlib.sha256(
+                            result_path.read_bytes()
+                        ).hexdigest()
+                        observable_record["observable"] = primary_observable
+                        assert observable_record["exit_code"] == 0
+                        assert observable_record["status"] == "accepted"
+                        assert observable_record["observable"] == primary_observable
+                        assert (
+                            observable_record["output_sha256"]
+                            != accepted_output_sha256
+                        )
+                        submitted_result = json.loads(result_payload["stdout"])
+                        assert submitted_result["status"] == observable_record["status"]
+                        assert submitted_result["observable"] == observable_record[
+                            "observable"
+                        ]
+                        assert result_payload["exit_code"] == observable_record[
+                            "exit_code"
+                        ] == 0
+                        assert observable_record["output_sha256"] == hashlib.sha256(
+                            result_payload["stdout"].encode("utf-8")
+                        ).hexdigest()
+                        assert observable_record["result_sha256"] == hashlib.sha256(
+                            result_path.read_bytes()
+                        ).hexdigest()
+                        assert primary_observable["classification"] == "passed"
+                        assert primary_execution["classification"] == "passed"
+                        assert primary_execution["exit_code"] == 0
+                        assert primary_execution["junit_sha256"] == hashlib.sha256(
+                            junit_path.read_bytes()
+                        ).hexdigest()
+                        assert any(
+                            case.find("failure") is not None
+                            or case.find("error") is not None
+                            for case in element_tree.parse(junit_path)
+                            .getroot()
+                            .iter("testcase")
+                        )
+                        assert entry["id"] == ec_id
+                        assert observable_record["observable"]["criterion"] == (
+                            EC_CONFORM_PROBES[ec_id]["criterion"]
+                        )
+                        matrix_path.write_text(
+                            json.dumps(matrix_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        matrix_reference["sha256"] = hashlib.sha256(
+                            matrix_path.read_bytes()
+                        ).hexdigest()
+                        runner_payload = json.loads(
+                            runner_path.read_text(encoding="utf-8")
+                        )
+                        runner_payload["ec_matrix"] = {
+                            "entries": matrix_payload["entries"]
+                        }
+                        runner_path.write_text(
+                            json.dumps(runner_payload, sort_keys=True), encoding="utf-8"
+                        )
+                        runner_reference["sha256"] = hashlib.sha256(
+                            runner_path.read_bytes()
+                        ).hexdigest()
+                        assert runner_payload["ec_matrix"] == {
+                            "entries": matrix_payload["entries"]
+                        }
+                        mode_manifest_path.write_text(
+                            json.dumps(forged_facts, sort_keys=True), encoding="utf-8"
+                        )
+                        refresh_mode_records(mode_records, artifacts)
+                        _assert_f17ab557_label_trusting_compatibility_accepts(
+                            matrix_payload["entries"]
+                        )
+                        # The full result artifact and all submitted summaries
+                        # remain a self-consistent pass.  Only replaying the
+                        # bound primary JUnit proves this criterion failed.
+                        with pytest.raises(AssertionError):
+                            _assert_complete_ec_observables(matrix_payload["entries"])
+                        with pytest.raises((ValueError, AssertionError)):
+                            verifier(mode, mode_records)
+                        assert_production_cli_rejects(mode_records)
+                    finally:
+                        junit_path.write_bytes(original_junit)
+                        result_path.write_bytes(original_result)
+                        matrix_path.write_bytes(original_matrix)
+                        runner_path.write_bytes(original_runner_manifest)
+                        mode_manifest_path.write_bytes(original_mode_manifest)
+                        refresh_mode_records(mode_records, artifacts)
                 original_junit = artifacts["junit"].read_bytes()
                 element_tree.ElementTree(
                     element_tree.fromstring(

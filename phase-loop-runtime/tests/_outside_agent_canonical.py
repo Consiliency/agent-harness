@@ -24,6 +24,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Mapping
 
+import pytest
+
 CAPABILITY_MARKER = "spec@v0.2.1:b862f977897a7b87c4419680a3e83735d4ff07b0"
 TDD_ENV = "PHASE_LOOP_TDD_EXPECT_CONFORM"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -75,6 +77,78 @@ EXPECTED_VENDOR_RECORD = {
     ],
 }
 EXPECTED_VENDOR_BYTES = json.dumps(EXPECTED_VENDOR_RECORD, sort_keys=True).encode("utf-8")
+
+
+_CANDIDATE_ONLY_FORBIDDEN_IDENTITY_LABELS = (
+    "final implementation commit",
+    "final implementation tree",
+    "final_commit",
+    "final_tree",
+    "final-candidate",
+    "final_candidate",
+    "final-candidate-tree",
+    "final_candidate_tree",
+    "final candidate",
+    "implementation-landing",
+    "implementation_landing",
+    "implementation-landing-tree",
+    "implementation_landing_tree",
+    "implementation landing",
+    "canonical-main",
+    "canonical_main",
+    "canonical-main-head",
+    "canonical_main_head",
+    "canonical-main-head-tree",
+    "canonical_main_head_tree",
+    "canonical main",
+    "exact-main",
+    "exact_main",
+    "exact main",
+)
+
+
+def assert_candidate_identity_only_document(
+    document: str,
+    *,
+    candidate_commit: str,
+    candidate_tree: str,
+    forbidden_identity_values: Mapping[str, str],
+    anchor: str,
+    require_candidate_identity: bool = False,
+) -> None:
+    """Assert that a candidate-owned document carries no final identities."""
+    assert isinstance(document, str), anchor
+    assert isinstance(candidate_commit, str) and candidate_commit, anchor
+    assert isinstance(candidate_tree, str) and candidate_tree, anchor
+    assert candidate_commit != candidate_tree, anchor
+    assert all(
+        isinstance(value, str)
+        and value
+        and value not in {candidate_commit, candidate_tree}
+        for value in forbidden_identity_values.values()
+    ), anchor
+    lowered_document = document.lower()
+    if require_candidate_identity:
+        assert any(
+            candidate_identity in lowered_document
+            for candidate_identity in (
+                f"candidate implementation commit: {candidate_commit}",
+                f"candidate implementation commit: `{candidate_commit}`",
+            )
+        ), anchor
+        assert any(
+            candidate_identity in lowered_document
+            for candidate_identity in (
+                f"candidate implementation tree: {candidate_tree}",
+                f"candidate implementation tree: `{candidate_tree}`",
+            )
+        ), anchor
+    assert not any(
+        label in lowered_document for label in _CANDIDATE_ONLY_FORBIDDEN_IDENTITY_LABELS
+    ), anchor
+    assert not any(
+        value in document for value in forbidden_identity_values.values()
+    ), anchor
 
 
 def _extract_tar_archive(archive: tarfile.TarFile, destination: Path) -> None:
@@ -1530,6 +1604,46 @@ def _sealed_manifest_sha256(evidence: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def _a2_package_evidence_sha256(evidence: Mapping[str, Any]) -> str:
+    """Hash only pre-document package inputs, never a final document or identity."""
+    payload = dict(evidence)
+    payload.pop("a2_package_evidence_sha256", None)
+    assert not {
+        "final_commit",
+        "final_tree",
+        "final_members",
+        "final_paths",
+        "final_parent_blobs",
+    } & set(payload)
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _build_a2_package_evidence(
+    *,
+    candidate_commit: str,
+    candidate_tree: str,
+    candidate_members: Mapping[str, str],
+    archives: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Normalize the only digestable pre-document A2 package-evidence schema."""
+    evidence: dict[str, Any] = {
+        "candidate_commit": candidate_commit,
+        "candidate_tree": candidate_tree,
+        "candidate_members": dict(candidate_members),
+        "archives": {
+            label: {
+                "sha256": archive["sha256"],
+                "members": dict(archive["members"]),
+            }
+            for label, archive in sorted(archives.items())
+        },
+    }
+    evidence["a2_package_evidence_sha256"] = _a2_package_evidence_sha256(evidence)
+    return evidence
+
+
 def _git_output(repository: Path, *argv: str) -> str:
     completed = subprocess.run(
         ["git", *argv],
@@ -2004,6 +2118,26 @@ def sealed_release_evidence(
             "CONFORM_RED::sealed_release_evidence_archive_provenance",
             label,
         )
+    a2_package_evidence = evidence.get("a2_package_evidence")
+    assert isinstance(a2_package_evidence, Mapping), (
+        "CONFORM_RED::sealed_release_evidence_a2_package_missing"
+    )
+    expected_a2_package_evidence = _build_a2_package_evidence(
+        candidate_commit=evidence["candidate_commit"],
+        candidate_tree=evidence["candidate_tree"],
+        candidate_members=candidate_members,
+        archives=archives,
+    )
+    assert dict(a2_package_evidence) == {
+        key: value
+        for key, value in expected_a2_package_evidence.items()
+        if key != "a2_package_evidence_sha256"
+    }, (
+        "CONFORM_RED::sealed_release_evidence_a2_package_mismatch"
+    )
+    assert evidence.get("a2_package_evidence_sha256") == expected_a2_package_evidence[
+        "a2_package_evidence_sha256"
+    ], "CONFORM_RED::sealed_release_evidence_a2_package_digest_mismatch"
     return evidence
 
 
@@ -2679,13 +2813,57 @@ def _assert_release_handoff_surface(nodeid: str) -> None:
     }
     assert all(term.lower() in handoff for term in required), _red_anchor(nodeid)
     evidence = sealed_release_evidence()
-    assert f"final implementation commit: {evidence['final_commit']}" in handoff, _red_anchor(nodeid)
-    assert f"final implementation tree: {evidence['final_tree']}" in handoff, _red_anchor(nodeid)
-    assert f"candidate implementation commit: {evidence['candidate_commit']}" in handoff, _red_anchor(nodeid)
-    assert f"candidate implementation tree: {evidence['candidate_tree']}" in handoff, _red_anchor(nodeid)
-    assert f"sealed package evidence sha256: {evidence['manifest_sha256']}" in handoff, _red_anchor(nodeid)
+    candidate_anchor = "CONFORM_RED::release_handoff_candidate_identity_only"
+    candidate_commit = evidence["candidate_commit"]
+    candidate_tree = evidence["candidate_tree"]
+    final_commit = evidence["final_commit"]
+    final_tree = evidence["final_tree"]
+    assert all(
+        isinstance(value, str)
+        for value in (candidate_commit, candidate_tree, final_commit, final_tree)
+    )
+    forbidden_identity_values = {
+        "final_commit": final_commit,
+        "final_tree": final_tree,
+    }
+
+    def assert_candidate_only(document: str) -> None:
+        assert_candidate_identity_only_document(
+            document,
+            candidate_commit=candidate_commit,
+            candidate_tree=candidate_tree,
+            forbidden_identity_values=forbidden_identity_values,
+            anchor=candidate_anchor,
+            require_candidate_identity=True,
+        )
+
+    assert_candidate_only(handoff)
+    assert (
+        f"pre-doc a2 package evidence sha256: {evidence['a2_package_evidence_sha256']}"
+        in handoff
+    ), _red_anchor(nodeid)
     for label, archive in evidence["archives"].items():
         assert f"{label} sha256: {archive['sha256']}" in handoff, _red_anchor(nodeid)
+    candidate_handoff = "\n".join(
+        (
+            f"candidate implementation commit: {evidence['candidate_commit']}",
+            f"candidate implementation tree: {evidence['candidate_tree']}",
+            "pre-doc A2 package evidence sha256: "
+            + evidence["a2_package_evidence_sha256"],
+            *(f"{label} sha256: {archive['sha256']}" for label, archive in evidence["archives"].items()),
+        )
+    )
+    assert_candidate_only(candidate_handoff)
+    for forged in (
+        candidate_handoff.replace(
+            f"candidate implementation commit: {evidence['candidate_commit']}",
+            f"final implementation commit: {evidence['final_commit']}",
+        ),
+        candidate_handoff.replace(evidence["candidate_tree"], evidence["final_tree"]),
+    ):
+        assert forged != candidate_handoff
+        with pytest.raises(AssertionError, match=candidate_anchor):
+            assert_candidate_only(forged)
     assert not any(
         term in handoff
         for term in {
