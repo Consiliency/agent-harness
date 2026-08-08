@@ -297,6 +297,370 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
             raise ValueError("exact-main chronology is not bound to HEAD")
     elif chronology.get("scope") != "a2_candidate":
         raise ValueError("pre-document chronology must use a2_candidate scope")
+
+    if facts.get("evidence_mode") != "chronology":
+        return chronology
+
+    import os
+    import re
+    import shutil
+    import subprocess
+
+    if any(k.startswith("GIT_") and k != "GIT_PAGER" for k in os.environ):
+        raise ValueError("GIT_* environment variables forbidden")
+
+    module_file = Path(__file__).resolve()
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    clean_env.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "HOME": os.devnull,
+            "PATH": os.defpath,
+            "XDG_CONFIG_HOME": os.devnull,
+        }
+    )
+    git_executable = shutil.which("git", path=os.defpath)
+    if git_executable is None:
+        raise ValueError("trusted git executable unavailable")
+    git_executable = str(Path(git_executable).resolve())
+
+    def _run_git(args: list[str], cwd: Path | str | None = None) -> str:
+        try:
+            proc = subprocess.run(
+                [git_executable, "-c", "core.attributesFile=/dev/null", "-c", "diff.external="] + args,
+                cwd=cwd or repo_root,
+                capture_output=True,
+                text=True,
+                env=clean_env,
+                check=True,
+            )
+            return proc.stdout.strip()
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as err:
+            raise ValueError(f"git command failed: {git_executable} {' '.join(args)}") from err
+
+    try:
+        toplevel_str = _run_git(["rev-parse", "--show-toplevel"], cwd=module_file.parent)
+        repo_root = Path(toplevel_str).resolve()
+    except ValueError as err:
+        raise ValueError("installed-wheel or no git repository available") from err
+
+    if not module_file.is_relative_to(repo_root):
+        raise ValueError("module file is not within git repository root")
+
+    if _run_git(["rev-parse", "--is-shallow-repository"]) != "false":
+        raise ValueError("shallow repository forbidden")
+
+    common_dir = Path(_run_git(["rev-parse", "--git-common-dir"]))
+    if not common_dir.is_absolute():
+        common_dir = (repo_root / common_dir).resolve()
+    grafts_path = common_dir / "info" / "grafts"
+    if grafts_path.exists() and grafts_path.stat().st_size > 0:
+        raise ValueError("git grafts forbidden")
+
+    if _run_git(["replace", "-l"]):
+        raise ValueError("git replacement objects forbidden")
+
+    if _run_git(["status", "--porcelain"]):
+        raise ValueError("git worktree is not clean")
+
+    head_commit = _run_git(["rev-parse", "HEAD"]).lower()
+    head_tree = _run_git(["rev-parse", "HEAD^{tree}"]).lower()
+    if head_commit != bindings["head_commit"] or head_tree != bindings["head_tree"]:
+        raise ValueError("HEAD commit or tree binding mismatch")
+
+    git_proof = chronology.get("git_proof")
+    if not isinstance(git_proof, dict):
+        raise ValueError("git_proof missing or invalid")
+
+    if (
+        git_proof.get("repair_landing_two_parent") is not True
+        or git_proof.get("repair_diff_exact") is not True
+        or git_proof.get("single_rebase") is not True
+        or git_proof.get("range_diff_equivalent") is not True
+    ):
+        raise ValueError("git_proof booleans invalid")
+
+    identities = git_proof.get("identities")
+    if not isinstance(identities, dict):
+        raise ValueError("git_proof identities missing")
+
+    def _val_oid(oid: Any, kind: str) -> str:
+        if not isinstance(oid, str) or len(oid) != 40 or oid != oid.lower() or any(c not in "0123456789abcdef" for c in oid):
+            raise ValueError(f"invalid OID format: {oid}")
+        try:
+            actual_kind = _run_git(["cat-file", "-t", oid])
+        except ValueError as err:
+            raise ValueError(f"git object missing: {oid}") from err
+        if actual_kind != kind:
+            raise ValueError(f"git object type mismatch for {oid}: expected {kind}, got {actual_kind}")
+        return oid
+
+    required_commit_keys = [
+        "test_parent",
+        "test_candidate",
+        "test_landing",
+        "repair_parent",
+        "repair_candidate",
+        "repair_landing",
+        "candidate_commit",
+        "final_candidate",
+        "canonical_main_head",
+    ]
+    if len(stages) == 3:
+        required_commit_keys.extend(["implementation_parent", "implementation_landing"])
+
+    for key in ("implementation_parent", "implementation_landing"):
+        if identities.get(key) is not None:
+            _val_oid(identities[key], "commit")
+        elif identities.get("implementation_parent") is not None or identities.get("implementation_landing") is not None:
+            raise ValueError("implementation landing identities must be provided together")
+
+    for key in required_commit_keys:
+        val = identities.get(key)
+        if val is None and key.startswith("implementation_"):
+            continue
+        _val_oid(val, "commit")
+        if key == "candidate_commit":
+            tree_key = "candidate_tree"
+        elif key == "canonical_main_head":
+            tree_key = "canonical_main_head_tree"
+        elif key.endswith("_commit"):
+            tree_key = key.replace("_commit", "_tree")
+        else:
+            tree_key = f"{key}_tree"
+        tree_val = identities.get(tree_key)
+        _val_oid(tree_val, "tree")
+        actual_tree = _run_git(["rev-parse", f"{val}^{{tree}}"]).lower()
+        if actual_tree != tree_val:
+            raise ValueError(f"commit tree mismatch for {key}")
+
+    if identities["candidate_commit"] != bindings["candidate_commit"] or identities["candidate_tree"] != bindings["candidate_tree"]:
+        raise ValueError("identities candidate binding mismatch")
+    if identities["canonical_main_head"] != bindings["head_commit"] or identities["canonical_main_head_tree"] != bindings["head_tree"]:
+        raise ValueError("identities HEAD binding mismatch")
+    parent_vectors = git_proof.get("parent_vectors")
+    if not isinstance(parent_vectors, dict):
+        raise ValueError("parent_vectors missing")
+
+    test_landing_pv = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", identities["test_landing"]]).split()[1:]]
+    if test_landing_pv != [identities["test_parent"], identities["test_candidate"]] or parent_vectors.get("test_landing") != test_landing_pv:
+        raise ValueError("test_landing parent vector mismatch")
+
+    repair_landing_pv = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", identities["repair_landing"]]).split()[1:]]
+    if repair_landing_pv != [identities["repair_parent"], identities["repair_candidate"]] or parent_vectors.get("repair_landing") != repair_landing_pv:
+        raise ValueError("repair_landing parent vector mismatch")
+
+    repair_cand_pv = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", identities["repair_candidate"]]).split()[1:]]
+    if repair_cand_pv != [identities["repair_parent"]]:
+        raise ValueError("repair_candidate must have exactly one parent")
+
+    impl_landing = identities.get("implementation_landing")
+    if impl_landing is not None:
+        impl_landing_pv = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", impl_landing]).split()[1:]]
+        if impl_landing_pv != [identities["implementation_parent"], identities["final_candidate"]] or parent_vectors.get("implementation_landing") != impl_landing_pv:
+            raise ValueError("implementation_landing parent vector mismatch")
+    elif parent_vectors.get("implementation_landing") != []:
+        raise ValueError("implementation_landing parent vector must be empty when unset")
+
+    def _check_ancestor(a: str, b: str) -> None:
+        try:
+            _run_git(["merge-base", "--is-ancestor", a, b])
+        except ValueError as err:
+            raise ValueError(f"ancestry check failed: {a} is not ancestor of {b}") from err
+
+    _check_ancestor(identities["test_parent"], identities["test_candidate"])
+    _check_ancestor(identities["test_landing"], identities["repair_parent"])
+    _check_ancestor(identities["repair_landing"], identities["candidate_commit"])
+    if identities["final_candidate"] != identities["candidate_commit"]:
+        _check_ancestor(identities["candidate_commit"], identities["final_candidate"])
+    if chronology.get("scope") == "exact_main":
+        _check_ancestor(identities["final_candidate"], identities["canonical_main_head"])
+
+    repair_paths = git_proof.get("repair_paths")
+    expected_repair_paths = {
+        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+        "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
+        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+    }
+    if not isinstance(repair_paths, dict) or set(repair_paths.keys()) != expected_repair_paths:
+        raise ValueError("repair_paths inventory mismatch")
+
+    changed_repair_files = set(_run_git(["diff", "--name-only", identities["repair_parent"], identities["repair_candidate"]]).splitlines())
+    if changed_repair_files != expected_repair_paths:
+        raise ValueError("repair commit changed files mismatch")
+
+    for path, info in repair_paths.items():
+        if not isinstance(info, dict) or set(info.keys()) != {"before_blob", "after_blob", "patch", "patch_digest"}:
+            raise ValueError(f"repair_paths info shape mismatch for {path}")
+        before_blob = _val_oid(info["before_blob"], "blob")
+        after_blob = _val_oid(info["after_blob"], "blob")
+        actual_before = _run_git(["rev-parse", f"{identities['repair_parent']}:{path}"]).lower()
+        actual_after = _run_git(["rev-parse", f"{identities['repair_candidate']}:{path}"]).lower()
+        if before_blob != actual_before or after_blob != actual_after:
+            raise ValueError(f"repair blob mismatch for {path}")
+        patch = _run_git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "-U0", identities["repair_parent"], identities["repair_candidate"], "--", path])
+        if info["patch"] != patch:
+            raise ValueError(f"repair patch mismatch for {path}")
+        patch_digest = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+        if info["patch_digest"] != patch_digest or patch_digest == "0" * 64 or not patch_digest:
+            raise ValueError(f"repair patch digest mismatch for {path}")
+
+    impl_slot = git_proof.get("implementation_patch_slot")
+    if impl_slot is not None:
+        if not isinstance(impl_slot, dict) or set(impl_slot.keys()) != {"path", "patch", "patch_digest"}:
+            raise ValueError("implementation_patch_slot shape mismatch")
+        if impl_slot["path"] != "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py":
+            raise ValueError("implementation_patch_slot path mismatch")
+        impl_patch_digest = hashlib.sha256(impl_slot["patch"].encode("utf-8")).hexdigest()
+        if impl_slot["patch_digest"] != impl_patch_digest or impl_patch_digest == "0" * 64 or not impl_patch_digest:
+            raise ValueError("implementation_patch_slot digest mismatch")
+
+    red_refs = git_proof.get("red_references")
+    green_refs = git_proof.get("green_references")
+    if not isinstance(red_refs, dict) or set(red_refs.keys()) != {"junit", "raw_log"}:
+        raise ValueError("red_references shape mismatch")
+    if not isinstance(green_refs, dict) or set(green_refs.keys()) != {"junit", "raw_log"}:
+        raise ValueError("green_references shape mismatch")
+
+    for ref in (red_refs["junit"], red_refs["raw_log"], green_refs["junit"], green_refs["raw_log"]):
+        if not isinstance(ref, dict) or set(ref.keys()) != {"path", "sha256"}:
+            raise ValueError("reference shape mismatch")
+        _read_verified(ref["path"], ref["sha256"])
+
+    activated_lc = facts["lifecycle"]["activated"]
+    default_lc = facts["lifecycle"]["default"]
+    if red_refs["junit"]["path"] != activated_lc["junit_path"] or red_refs["junit"]["sha256"] != activated_lc["junit_sha256"]:
+        raise ValueError("RED junit reference mismatch")
+    if red_refs["raw_log"]["path"] != activated_lc["raw_log_path"] or red_refs["raw_log"]["sha256"] != activated_lc["raw_log_sha256"]:
+        raise ValueError("RED raw_log reference mismatch")
+    if green_refs["junit"]["path"] != default_lc["junit_path"] or green_refs["junit"]["sha256"] != default_lc["junit_sha256"]:
+        raise ValueError("GREEN junit reference mismatch")
+    if green_refs["raw_log"]["path"] != default_lc["raw_log_path"] or green_refs["raw_log"]["sha256"] != default_lc["raw_log_sha256"]:
+        raise ValueError("GREEN raw_log reference mismatch")
+
+    transition = git_proof.get("transition")
+    if not isinstance(transition, dict) or set(transition.keys()) != {"original_commits", "rebased_commits", "range_diff"}:
+        raise ValueError("transition shape mismatch")
+
+    if len(stages) == 3:
+        expected_original = [
+            "59cbf5a167bfc8bde4e5841fd977e542158aff3d",
+            "00dec41aa950f4d1affead3a9c7fdfea4e91099e",
+            "7df3cc74ec1ba2cb3e3216624f611009dbae2eca",
+            "974593899bbecfbe092ba0aec369e69eee1aabdd",
+            "80d9a14c94785f81044d67b60e05d61242838a1b",
+        ]
+    else:
+        expected_original = [
+            "59cbf5a167bfc8bde4e5841fd977e542158aff3d",
+            "00dec41aa950f4d1affead3a9c7fdfea4e91099e",
+            "7df3cc74ec1ba2cb3e3216624f611009dbae2eca",
+            "974593899bbecfbe092ba0aec369e69eee1aabdd",
+        ]
+
+    if transition.get("original_commits") != expected_original:
+        raise ValueError("transition original_commits mismatch")
+
+    orig_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
+    orig_head = expected_original[-1]
+    reb_head = identities["final_candidate"] if len(stages) == 3 else identities["candidate_commit"]
+    repair_landing = identities["repair_landing"]
+
+    actual_rebased = [c.lower() for c in _run_git(["rev-list", "--reverse", f"{repair_landing}..{reb_head}"]).splitlines()]
+    if transition.get("rebased_commits") != actual_rebased:
+        raise ValueError("transition rebased_commits mismatch")
+
+    if len(stages) == 3:
+        if len(actual_rebased) != 6:
+            raise ValueError(f"unexpected rebased_commits count for final scope: {len(actual_rebased)}")
+    else:
+        if len(actual_rebased) not in (4, 5):
+            raise ValueError(f"unexpected rebased_commits count for pre-doc scope: {len(actual_rebased)}")
+
+    if len(actual_rebased) in (5, 6):
+        inserted_commit = actual_rebased[4]
+        inserted_parents = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", inserted_commit]).split()[1:]]
+        if inserted_parents != [actual_rebased[3]]:
+            raise ValueError("inserted verifier commit parent mismatch")
+        inserted_files = set(_run_git(["diff", "--name-only", actual_rebased[3], inserted_commit]).splitlines())
+        if inserted_files != {"phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"}:
+            raise ValueError("inserted verifier commit modified unexpected files")
+        inserted_patch = _run_git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "-U0", actual_rebased[3], inserted_commit, "--", "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"])
+        inserted_digest = hashlib.sha256(inserted_patch.encode("utf-8")).hexdigest()
+        if impl_slot is None or impl_slot.get("patch") != inserted_patch or impl_slot.get("patch_digest") != inserted_digest:
+            raise ValueError("inserted verifier commit patch slot mismatch")
+    elif impl_slot is not None:
+        raise ValueError("implementation_patch_slot present when no inserted commit exists")
+
+    actual_range_diff = _run_git(["range-diff", "--no-ext-diff", "--no-textconv", f"{orig_base}..{orig_head}", f"{repair_landing}..{reb_head}"])
+    if transition.get("range_diff") != actual_range_diff:
+        raise ValueError("transition range_diff mismatch")
+
+    eq_matches = set()
+    diff_matches = set()
+    add_matches = set()
+    authorized_diff_body = False
+    for line in actual_range_diff.splitlines():
+        line_str = line.strip()
+        if not line_str:
+            continue
+        if authorized_diff_body:
+            if not re.match(r"^(?:\d+:|-\s+:)", line):
+                continue
+            authorized_diff_body = False
+        m_del = re.search(r"^\s*\d+:\s+[0-9a-fA-F]+\s+<\s+-\s*:\s*-+", line_str)
+        if m_del:
+            raise ValueError("range-diff contains dropped commit (<)")
+        m_eq = re.search(r"^\s*(\d+):\s+([0-9a-fA-F]+)\s+=\s+(\d+):\s+([0-9a-fA-F]+)", line_str)
+        if m_eq:
+            old_idx, old_sha, new_idx, new_sha = int(m_eq.group(1)), m_eq.group(2).lower(), int(m_eq.group(3)), m_eq.group(4).lower()
+            if old_idx != new_idx or old_idx < 1 or old_idx > 4:
+                raise ValueError(f"range-diff equality out of bounds: {line_str}")
+            if not expected_original[old_idx - 1].startswith(old_sha) or not actual_rebased[new_idx - 1].startswith(new_sha):
+                raise ValueError(f"range-diff equality commit SHA mismatch: {line_str}")
+            eq_matches.add(old_idx)
+            authorized_diff_body = False
+            continue
+        m_diff = re.search(r"^\s*(\d+):\s+([0-9a-fA-F]+)\s+!\s+(\d+):\s+([0-9a-fA-F]+)", line_str)
+        if m_diff:
+            old_idx, old_sha, new_idx, new_sha = int(m_diff.group(1)), m_diff.group(2).lower(), int(m_diff.group(3)), m_diff.group(4).lower()
+            if len(stages) != 3 or old_idx != 5 or new_idx != 6:
+                raise ValueError(f"unauthorized range-diff patch modification (!): {line_str}")
+            if not expected_original[4].startswith(old_sha) or not actual_rebased[5].startswith(new_sha):
+                raise ValueError(f"range-diff doc commit SHA mismatch: {line_str}")
+            diff_matches.add((old_idx, new_idx))
+            authorized_diff_body = True
+            continue
+        m_add = re.search(r"^\s*-\s*:\s*-+\s+>\s+(\d+):\s+([0-9a-fA-F]+)", line_str)
+        if m_add:
+            new_idx, new_sha = int(m_add.group(1)), m_add.group(2).lower()
+            if new_idx != 5 or len(actual_rebased) not in (5, 6):
+                raise ValueError(f"unauthorized range-diff added commit (>): {line_str}")
+            if not actual_rebased[4].startswith(new_sha):
+                raise ValueError(f"range-diff added commit SHA mismatch: {line_str}")
+            add_matches.add(new_idx)
+            authorized_diff_body = False
+            continue
+        raise ValueError(f"unrecognized range-diff line: {line_str}")
+
+    if eq_matches != {1, 2, 3, 4}:
+        raise ValueError("first four original implementation commits must map with = in order")
+
+    if len(stages) == 3:
+        if len(diff_matches) != 1:
+            raise ValueError("final scope requires exactly one ! mapping for docs commit")
+    elif diff_matches:
+        raise ValueError("pre-doc scope forbids ! mappings in range-diff")
+
+    if len(actual_rebased) in (5, 6):
+        if len(add_matches) != 1:
+            raise ValueError("inserted verifier commit must map with > in range-diff")
+    elif add_matches:
+        raise ValueError("no added commits allowed when verifier commit is absent")
+
     return chronology
 
 
