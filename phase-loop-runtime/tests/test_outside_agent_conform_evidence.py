@@ -2313,6 +2313,22 @@ def test_frozen_command_literals_and_selector_partition(
     assert calls == ["called"]
     assert _source_execution_environment()[RUNNER_B2_EVIDENCE_ENV] == "1"
 
+    transitioned_blobs = {
+        path: ("0" * 40 if parent_blob != "0" * 40 else "1" * 40)
+        for path, parent_blob in SEALED_RELEASE_FINAL_PARENT_BLOBS.items()
+    }
+
+    def transitioned_rev_parse(argv, **_kwargs):
+        path = argv[-1].removeprefix("HEAD:")
+        return subprocess.CompletedProcess(argv, 0, transitioned_blobs[path] + "\n", "")
+
+    monkeypatch.setattr(
+        sys.modules[__name__], "_run_bound_child", transitioned_rev_parse
+    )
+    monkeypatch.delenv(RUNNER_B2_EVIDENCE_ENV, raising=False)
+    assert _sl2_compatibility_transitioned() is True
+    assert _b2_compatibility_evidence_due() is False
+
     conform_source = Path(__file__).read_text(encoding="utf-8")
     release_source = (
         Path(__file__).with_name("test_outside_agent_release_surface.py")
@@ -2320,7 +2336,8 @@ def test_frozen_command_literals_and_selector_partition(
     canonical_source = (
         Path(__file__).with_name("_outside_agent_canonical.py")
     ).read_text(encoding="utf-8")
-    assert "if not runner_b2_evidence_enabled():\n        return False" in conform_source
+    assert "def _sl2_compatibility_transitioned() -> bool:" in conform_source
+    assert "return runner_b2_evidence_enabled() and _sl2_compatibility_transitioned()" in conform_source
     assert "evidence = runner_b2_evidence()\n    if evidence is None:\n        return" in release_source
     assert "evidence = runner_b2_evidence()\n    if evidence is None:\n        return" in canonical_source
     assert 'RUNNER_B2_EVIDENCE_ENV = "PHASE_LOOP_CONFORM_B2_EVIDENCE"' in canonical_source
