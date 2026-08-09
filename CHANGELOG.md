@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Outside-Agent Conformance Runtime (OARELEASE) for phase-loop-runtime 0.5.0
+
+- Prepared the release handoff at [`docs/releases/outside-agent-release-handoff.md`](docs/releases/outside-agent-release-handoff.md) for the outside-agent conformance runtime (OARELEASE) tracking phase-loop-runtime 0.5.0 and `Consiliency/spec@v0.2.1`.
+- Includes governed-pipeline pinning instructions, a digest-enumerated packaged contract mirror, and explicit maintainer-owned publish/tag/workflow-dispatch boundaries.
+
 ### CI: allow the post-CONFORM suite to finish (Consiliency/agent-harness#488)
 
 - The `pytest` matrix and `clean-room` jobs in `.github/workflows/test.yml` now allow
