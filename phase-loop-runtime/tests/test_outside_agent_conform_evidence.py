@@ -480,9 +480,7 @@ def _repo_candidate_identity() -> dict[str, object]:
     }
 
 
-def _b2_compatibility_evidence_due() -> bool:
-    if not runner_b2_evidence_enabled():
-        return False
+def _sl2_compatibility_transitioned() -> bool:
     changed = []
     for path, parent_blob in SEALED_RELEASE_FINAL_PARENT_BLOBS.items():
         result = _run_bound_child(
@@ -498,6 +496,10 @@ def _b2_compatibility_evidence_due() -> bool:
         "CONFORM_RED::partial_sl2_compatibility_transition"
     )
     return all(changed)
+
+
+def _b2_compatibility_evidence_due() -> bool:
+    return runner_b2_evidence_enabled() and _sl2_compatibility_transitioned()
 
 
 def _candidate_mutation_source(definition) -> str:
@@ -3175,9 +3177,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     # The absent verifier identifies SL-0, where test-owned EC controls run
     # only as frozen definitions. Once SL-1 installs the verifier, only B2 may
     # execute and capture the complete EC matrix.
-    compatibility_due = (
-        verifier_spec is not None and _b2_compatibility_evidence_due()
+    sl2_transitioned = (
+        verifier_spec is not None and _sl2_compatibility_transitioned()
     )
+    compatibility_due = sl2_transitioned and runner_b2_evidence_enabled()
     direct_ec_entries = None
     if compatibility_due:
         direct_ec_entries = _capture_ec_matrix_entries(direct_root)
@@ -3345,7 +3348,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
             assert isinstance(head_commit, str) and isinstance(head_tree, str)
             final_candidate = head_commit
             chronology_scope = "a2_candidate"
-            if compatibility_due:
+            if sl2_transitioned:
                 head_line = git("rev-list", "--parents", "-n", "1", head_commit).split()
                 if len(head_line) == 3:
                     final_candidate = head_line[2]
@@ -3503,7 +3506,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         },
                     },
                 ]
-            if compatibility_due:
+            if sl2_transitioned:
                 chronology_stages.append(
                     {
                         "stage": "final_doc_chronology",
@@ -3794,14 +3797,14 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         f"{original_base}..{original_implementation_commits[-1]}",
                         f"{actual_repair_landing}..{reviewed_f17ab557}",
                     )
-                    orig_head = "80d9a14c94785f81044d67b60e05d61242838a1b" if compatibility_due else original_implementation_commits[-1]
-                    reb_head = final_candidate if compatibility_due else candidate
+                    orig_head = "80d9a14c94785f81044d67b60e05d61242838a1b" if sl2_transitioned else original_implementation_commits[-1]
+                    reb_head = final_candidate if sl2_transitioned else candidate
                     range_diff_output = git(
                         "range-diff", "--no-color", f"{original_base}..{orig_head}",
                         f"{ci_evidence_landing}..{reb_head}",
                     )
 
-                    if compatibility_due:
+                    if sl2_transitioned:
                         original_commits = [
                             *original_implementation_commits,
                             "80d9a14c94785f81044d67b60e05d61242838a1b",
@@ -3814,7 +3817,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     ).splitlines()
                     rebased_commits = [git("rev-parse", c).lower() for c in rebased_commits]
 
-                    if compatibility_due:
+                    if sl2_transitioned:
                         if len(original_commits) != 5:
                             raise ValueError(f"original_commits count mismatch: {len(original_commits)}")
                         if len(rebased_commits) != 6:
@@ -3961,7 +3964,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             for path in SEALED_RELEASE_FINAL_PATHS
                         },
                     }
-                    if compatibility_due:
+                    if sl2_transitioned:
                         candidate_a2_members = {
                             path: hashlib.sha256(
                                 subprocess.run(
@@ -4569,12 +4572,12 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         == historical_transition["rebased_commits"]
                     )
                     assert len(contract_bug_transition["rebased_commits"]) == (
-                        6 if compatibility_due else 4
+                        6 if sl2_transitioned else 4
                     ) or (
-                        not compatibility_due
+                        not sl2_transitioned
                         and len(contract_bug_transition["rebased_commits"]) == 5
                     )
-                    if compatibility_due:
+                    if sl2_transitioned:
                         b1_content = git_proof["b1_content"]
                         candidate_only_documents = b1_content[
                             "candidate_only_documents"
@@ -4725,7 +4728,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     "preimplementation_red",
                     "postimplementation_pre_doc",
                 ]
-                if compatibility_due:
+                if sl2_transitioned:
                     expected_chronology_stages.append("final_doc_chronology")
                 assert evidence["chronology"]["scope"] == chronology_scope
                 assert [stage["stage"] for stage in evidence["chronology"]["stages"]] == expected_chronology_stages
@@ -4824,7 +4827,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "candidate_descends_from_test_candidate"
                     ] = False
                     chronology_mutations.append(forged_topology)
-                    if compatibility_due:
+                    if sl2_transitioned:
                         missing_final = copy.deepcopy(mode_facts)
                         missing_final["chronology"]["stages"].pop()
                         chronology_mutations.append(missing_final)
