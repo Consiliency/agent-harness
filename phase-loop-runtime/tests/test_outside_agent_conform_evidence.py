@@ -3610,6 +3610,15 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         raise ValueError("Missing required contract-bug test landing/candidate/parent")
                     if seal_repair_landing is None or seal_repair_candidate is None or seal_repair_parent is None:
                         raise ValueError("Missing required seal-repair test landing/candidate/parent")
+                    seal_repair_parent_vector = git(
+                        "rev-list", "--parents", "-n", "1", seal_repair_landing
+                    ).split()
+                    if seal_repair_parent_vector != [
+                        seal_repair_landing,
+                        seal_repair_parent,
+                        seal_repair_candidate,
+                    ]:
+                        raise ValueError("Seal-repair landing must have exactly two ordered parents")
                     if chronology_scope == "exact_main":
                         if impl_landing is None or impl_candidate is None or impl_parent is None:
                             raise ValueError("Missing required implementation landing/candidate/parent")
@@ -4081,7 +4090,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "test_landing": git("rev-list", "--parents", "-n", "1", test_landing).split()[1:],
                         "repair_landing": git("rev-list", "--parents", "-n", "1", actual_repair_landing).split()[1:],
                         "contract_bug_test_landing": git("rev-list", "--parents", "-n", "1", contract_bug_landing).split()[1:],
-                        "seal_repair_landing": git("rev-list", "--parents", "-n", "1", seal_repair_landing).split()[1:],
+                        "seal_repair_landing": seal_repair_parent_vector[1:],
                     }
                     if chronology_scope in {"a2_candidate", "exact_main"}:
                         identities.update(
