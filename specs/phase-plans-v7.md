@@ -344,3 +344,34 @@ phase-loop validate-roadmap specs/phase-plans-v7.md
 python -m pytest phase-loop-runtime/tests/test_*conformance*.py
 # phase-level plans should add the repo-local tests once file names are finalized
 ```
+
+## CONFORM Final Disposition & Installed Behavior
+
+This disposition records the merged contract and final installed behavior for OACORE-3 and OAREAL-2 against Consiliency/spec@v0.2.1.
+
+### Merged Contract Pin
+
+- `contract_git_tag`: `v0.2.1`
+- `contract_git_sha`: `b862f977897a7b87c4419680a3e83735d4ff07b0`
+- `submission_schema_sha256`: `5670b5001ced0f25010b153fe602db5761f92d69707cf670b6f530a7d689ef4a`
+- `verdict_schema_sha256`: `86169277d3a0823db1a6c9fa4d20a838b0bc2820818ad00ebd53dcdd03c2b1c2`
+- `vector_manifest_hash`: `78858828e9eace93eaf31d90717666ddce54ccb3666113df9d033d67c20cfca0`
+- `redaction_posture`: `metadata_only`
+
+### Implementation & Evidence Candidates
+
+- candidate implementation commit: `4b698bc20a74aa31cf87e4468e9dc680e9678aec`
+- candidate implementation tree: `9daa616129ab0caa2ce03396a248b11e12a62911`
+
+### Package & Installed Behavior
+
+Package archives verified under `installed-package` testing with `direct-wheel`, `direct-sdist`, and `sdist-derived-wheel` variants:
+- `direct-wheel` sha256: `d4d8ef59f8b464a257b8bab5d3282f896aa1046d07f6ab625b9be22b45e42906`
+- `direct-sdist` sha256: `b748d2574a05fbf5c955a4726ed64c9b1b238d6fddef6d129712a4cae7df7dfd`
+- `sdist-derived-wheel` sha256: `d4d8ef59f8b464a257b8bab5d3282f896aa1046d07f6ab625b9be22b45e42906`
+
+All package archives contain the contract mirror at `phase_loop_runtime/conformance/_contract/VENDOR.json`.
+
+CLI entrypoints `outside-agent-preflight` and `outside-agent-validate` were verified against three valid submissions (`work_request`, `implementation_submission`, `ambiguity_report`) and route-verdict cases.
+
+Note: The package is not published; the workflow is not dispatched.
