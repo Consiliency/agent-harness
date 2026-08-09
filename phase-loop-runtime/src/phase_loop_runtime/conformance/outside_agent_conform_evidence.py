@@ -39,6 +39,7 @@ _RECORD_KEYS = {"record_id", "ordinal", "artifact_path", "artifact_sha256", "raw
 _EXCLUSIVE_INPUTS = {"chronology": ("chronology",), "corpus": ("fixture_manifest",), "package": ("direct_wheel", "direct_sdist", "sdist_derived_wheel"), "compatibility": ("ec_matrix", "installed_package")}
 _PACKAGE_VARIANTS = ("direct-wheel", "direct-sdist", "sdist-derived-wheel")
 _EXPECTED_PROBE_ARGV = ["python3", "-m", "pytest", "-q", "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_canonical_vector_runner_consumes_schema_target_partition"]
+_B2_COMMAND = "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest phase-loop-runtime/tests -q -k outside_agent"
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -268,9 +269,12 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
     stages = chronology.get("stages")
     if not isinstance(stages, list):
         raise ValueError("chronology stages missing")
+    scope = chronology.get("scope")
     expected_names = ["preimplementation_red", "postimplementation_pre_doc"]
-    if len(stages) == 3:
+    if scope in {"b2_premerge", "exact_main"}:
         expected_names.append("final_doc_chronology")
+    elif scope != "a2_candidate":
+        raise ValueError("chronology scope invalid")
     if [stage.get("stage") for stage in stages] != expected_names:
         raise ValueError("chronology stage ordering mismatch")
     pre, implementation = stages[:2]
@@ -289,7 +293,7 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
             raise ValueError("final chronology B0 evidence invalid")
         if b1.get("before_commit") != bindings["candidate_commit"] or b1.get("after_commit") != final.get("commit") or b1.get("test_paths_unchanged") is not True:
             raise ValueError("final chronology B1 transition invalid")
-        if b2.get("commit") != final.get("commit") or b2.get("exit_code") != 0 or b2.get("skipped_node_ids") or b2.get("failed_node_ids"):
+        if b2.get("commit") != final.get("commit") or b2.get("argv") != _B2_COMMAND or b2.get("exit_code") != 0 or b2.get("skipped_node_ids") or b2.get("failed_node_ids"):
             raise ValueError("final chronology B2 evidence invalid")
         if topology.get("implementation_candidate") != bindings["candidate_commit"] or topology.get("final_candidate") != final.get("commit") or topology.get("final_descends_from_candidate") is not True:
             raise ValueError("final chronology topology invalid")
@@ -307,10 +311,14 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
     import shutil
     import subprocess
 
-    if any(k.startswith("GIT_") and k != "GIT_PAGER" for k in os.environ):
+    if any(k.startswith("GIT_") for k in os.environ):
         raise ValueError("GIT_* environment variables forbidden")
 
     module_file = Path(__file__).resolve()
+    git_proof = chronology.get("git_proof")
+    if not isinstance(git_proof, dict):
+        raise ValueError("git_proof missing or invalid")
+    repository_anchor = git_proof.get("repository_anchor")
     clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     clean_env.update(
         {
@@ -343,13 +351,29 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
             raise ValueError(f"git command failed: {git_executable} {' '.join(args)}") from err
 
     try:
-        toplevel_str = _run_git(["rev-parse", "--show-toplevel"], cwd=module_file.parent)
-        repo_root = Path(toplevel_str).resolve()
-    except ValueError as err:
-        raise ValueError("installed-wheel or no git repository available") from err
-
-    if not module_file.is_relative_to(repo_root):
-        raise ValueError("module file is not within git repository root")
+        source_toplevel = _run_git(["rev-parse", "--show-toplevel"], cwd=module_file.parent)
+    except ValueError:
+        source_toplevel = None
+    if source_toplevel is not None:
+        repo_root = Path(source_toplevel).resolve()
+        if not module_file.is_relative_to(repo_root) or repository_anchor is not None:
+            raise ValueError("source verifier repository anchor mismatch")
+    else:
+        if not isinstance(repository_anchor, dict) or set(repository_anchor) != {
+            "root", "head_commit", "head_tree", "module_path", "module_sha256"
+        }:
+            raise ValueError("installed-wheel repository_anchor missing or malformed")
+        root_value = repository_anchor["root"]
+        if not isinstance(root_value, str):
+            raise ValueError("repository_anchor root must be absolute")
+        raw_root = Path(root_value)
+        if not raw_root.is_absolute() or raw_root != raw_root.resolve():
+            raise ValueError("repository_anchor root must be absolute and resolved")
+        repo_root = raw_root
+        if not module_file.is_file() or module_file.is_symlink() or module_file.is_relative_to(repo_root):
+            raise ValueError("loaded module must be an outside-root regular file")
+        if Path(_run_git(["rev-parse", "--show-toplevel"], cwd=repo_root)).resolve() != repo_root:
+            raise ValueError("repository_anchor root does not match git top-level")
 
     if _run_git(["rev-parse", "--is-shallow-repository"]) != "false":
         raise ValueError("shallow repository forbidden")
@@ -364,6 +388,10 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
     if _run_git(["replace", "-l"]):
         raise ValueError("git replacement objects forbidden")
 
+    alternates_path = common_dir / "objects" / "info" / "alternates"
+    if alternates_path.exists() and alternates_path.stat().st_size > 0:
+        raise ValueError("git object alternates forbidden")
+
     if _run_git(["status", "--porcelain"]):
         raise ValueError("git worktree is not clean")
 
@@ -371,10 +399,33 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
     head_tree = _run_git(["rev-parse", "HEAD^{tree}"]).lower()
     if head_commit != bindings["head_commit"] or head_tree != bindings["head_tree"]:
         raise ValueError("HEAD commit or tree binding mismatch")
-
-    git_proof = chronology.get("git_proof")
-    if not isinstance(git_proof, dict):
-        raise ValueError("git_proof missing or invalid")
+    if repository_anchor is not None:
+        expected_module_path = (
+            "phase-loop-runtime/src/phase_loop_runtime/conformance/"
+            "outside_agent_conform_evidence.py"
+        )
+        if (
+            repository_anchor["head_commit"] != head_commit
+            or repository_anchor["head_tree"] != head_tree
+            or repository_anchor["module_path"] != expected_module_path
+            or not isinstance(repository_anchor["module_sha256"], str)
+            or repository_anchor["module_sha256"] != _sha256_bytes(module_file.read_bytes())
+        ):
+            raise ValueError("repository_anchor binding mismatch")
+        if _run_git(["cat-file", "-t", f"HEAD:{expected_module_path}"]) != "blob":
+            raise ValueError("repository_anchor module path is not a tracked blob")
+        try:
+            tracked_module = subprocess.run(
+                [git_executable, "cat-file", "blob", f"HEAD:{expected_module_path}"],
+                cwd=repo_root,
+                capture_output=True,
+                env=clean_env,
+                check=True,
+            ).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as err:
+            raise ValueError("repository_anchor module blob unreadable") from err
+        if tracked_module != module_file.read_bytes():
+            raise ValueError("repository_anchor loaded module bytes differ from HEAD")
 
     if (
         git_proof.get("repair_landing_two_parent") is not True
@@ -415,6 +466,15 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
         "ci_evidence_parent",
         "ci_evidence_candidate",
         "ci_evidence_landing",
+        "reproducible_sdist_parent",
+        "reproducible_sdist_candidate",
+        "reproducible_sdist_landing",
+        "final_parent_repair_parent",
+        "final_parent_repair_candidate",
+        "final_parent_repair_landing",
+        "history_retention_parent",
+        "history_retention_candidate",
+        "history_retention_landing",
         "candidate_commit",
         "final_candidate",
     ]
@@ -454,6 +514,36 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
 
     if identities["candidate_commit"] != bindings["candidate_commit"] or identities["candidate_tree"] != bindings["candidate_tree"]:
         raise ValueError("identities candidate binding mismatch")
+    expected_support_identities = {
+        "seal_repair_landing": (
+            "20dd5693be0d71c6bb4a6804c8707d642a8bd1d6",
+            "d4ee8615f3aa4e1ae0cd4e356df1bbf8c01b6453",
+            "67977406a5726d7d80dc69990849b4708b065924",
+        ),
+        "reproducible_sdist_landing": (
+            "ceb0556352b9626d35eacfbbf45faf831b80acfb",
+            "b99e52630b2df3cc1e2445dd3ace5a80528bf729",
+            "8c620f17ce8c3fce5e6122dde10ac67d8c980ad2",
+        ),
+        "final_parent_repair_landing": (
+            "bd6b13fb3a6a847111a060ad62cccb3f4b7c0318",
+            "bcfaf87aa71bd36e6fd40679cb1d4b0c586ea3df",
+            "23a1458fb44d746a833c5957212beff9f1e99840",
+        ),
+        "history_retention_landing": (
+            "6d1ef6e030087af56120cf4806b878370323164b",
+            "702161f5ccd519fe9080100d5b5a976cf25af9ad",
+            "21a9a8c4ee1d881b92e049746259418ffcdb2bf2",
+        ),
+    }
+    for landing_key, (landing, parent, candidate) in expected_support_identities.items():
+        stem = landing_key.removesuffix("_landing")
+        if (
+            identities[landing_key],
+            identities[f"{stem}_parent"],
+            identities[f"{stem}_candidate"],
+        ) != (landing, parent, candidate):
+            raise ValueError(f"{landing_key} identity mismatch")
     if scope in {"a2_candidate", "exact_main"} and (identities["canonical_main_head"] != bindings["head_commit"] or identities["canonical_main_head_tree"] != bindings["head_tree"]):
         raise ValueError("identities HEAD binding mismatch")
     parent_vectors = git_proof.get("parent_vectors")
@@ -489,18 +579,39 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
         raise ValueError("seal_repair_landing parent vector mismatch")
 
     seal_repair_candidate_pv = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", identities["seal_repair_candidate"]]).split()[1:]]
-    if seal_repair_candidate_pv != [identities["seal_repair_parent"]]:
-        raise ValueError("seal_repair_candidate must have exactly one parent")
+    if seal_repair_candidate_pv != ["4e0a24196ba3cac16b037744272f79f62275a9c9"]:
+        raise ValueError("seal_repair_candidate parent mismatch")
 
     ci_evidence_landing_pv = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", identities["ci_evidence_landing"]]).split()[1:]]
     if ci_evidence_landing_pv != [identities["ci_evidence_parent"], identities["ci_evidence_candidate"]] or parent_vectors.get("ci_evidence_landing") != ci_evidence_landing_pv:
         raise ValueError("ci_evidence_landing parent vector mismatch")
 
     ci_evidence_candidate_pv = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", identities["ci_evidence_candidate"]]).split()[1:]]
-    if ci_evidence_candidate_pv != [identities["ci_evidence_parent"]]:
-        raise ValueError("ci_evidence_candidate must have exactly one parent")
+    if ci_evidence_candidate_pv != ["c9b3a0dc56755b92c94f8f1055b39edd0fde4484"]:
+        raise ValueError("ci_evidence_candidate parent mismatch")
 
-    expected_parent_vectors = {"test_landing", "repair_landing", "contract_bug_test_landing", "seal_repair_landing", "ci_evidence_landing"}
+    for landing_key in (
+        "reproducible_sdist_landing",
+        "final_parent_repair_landing",
+        "history_retention_landing",
+    ):
+        stem = landing_key.removesuffix("_landing")
+        landing_pv = [
+            p.lower()
+            for p in _run_git(
+                ["rev-list", "--parents", "-n", "1", identities[landing_key]]
+            ).split()[1:]
+        ]
+        expected_pv = [identities[f"{stem}_parent"], identities[f"{stem}_candidate"]]
+        if landing_pv != expected_pv or parent_vectors.get(landing_key) != landing_pv:
+            raise ValueError(f"{landing_key} parent vector mismatch")
+
+    expected_parent_vectors = {
+        "test_landing", "repair_landing", "contract_bug_test_landing",
+        "seal_repair_landing", "ci_evidence_landing",
+        "reproducible_sdist_landing", "final_parent_repair_landing",
+        "history_retention_landing",
+    }
     if scope == "exact_main":
         expected_parent_vectors.add("implementation_landing")
     if set(parent_vectors) != expected_parent_vectors:
@@ -525,7 +636,10 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
     _check_ancestor(identities["repair_landing"], identities["contract_bug_test_parent"])
     _check_ancestor(identities["contract_bug_test_landing"], identities["seal_repair_parent"])
     _check_ancestor(identities["seal_repair_landing"], identities["ci_evidence_parent"])
-    _check_ancestor(identities["ci_evidence_landing"], identities["candidate_commit"])
+    _check_ancestor(identities["ci_evidence_landing"], identities["reproducible_sdist_parent"])
+    _check_ancestor(identities["reproducible_sdist_landing"], identities["final_parent_repair_parent"])
+    _check_ancestor(identities["final_parent_repair_landing"], identities["history_retention_parent"])
+    _check_ancestor(identities["history_retention_landing"], identities["candidate_commit"])
     if identities["final_candidate"] != identities["candidate_commit"]:
         _check_ancestor(identities["candidate_commit"], identities["final_candidate"])
     if scope == "exact_main":
@@ -545,10 +659,25 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
         "phase-loop-runtime/tests/_outside_agent_canonical.py",
     }
+    expected_seal_repair_candidate_paths = {
+        *expected_seal_repair_paths,
+        "plans/phase-plan-v10-CONFORM.md",
+    }
     expected_ci_evidence_paths = {
         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
         "phase-loop-runtime/tests/test_outside_agent_release_surface.py",
         "phase-loop-runtime/tests/_outside_agent_canonical.py",
+    }
+    expected_reproducible_sdist_paths = {
+        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+        "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
+    }
+    expected_final_parent_repair_paths = {
+        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+    }
+    expected_history_retention_paths = {
+        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
     }
 
     def _validate_exact_patch(
@@ -556,13 +685,14 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
         parent_key: str,
         candidate_key: str,
         expected_paths: set[str],
+        changed_paths_expected: set[str] | None = None,
     ) -> None:
         path_proofs = git_proof.get(proof_key)
         if not isinstance(path_proofs, dict) or set(path_proofs) != expected_paths:
             raise ValueError(f"{proof_key} inventory mismatch")
         parent, candidate = identities[parent_key], identities[candidate_key]
         changed_paths = set(_run_git(["diff", "--name-only", parent, candidate]).splitlines())
-        if changed_paths != expected_paths:
+        if changed_paths != (changed_paths_expected or expected_paths):
             raise ValueError(f"{proof_key} changed files mismatch")
         for path, info in path_proofs.items():
             if not isinstance(info, dict) or set(info) != {"before_blob", "after_blob", "patch", "patch_digest"}:
@@ -593,12 +723,37 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
         "seal_repair_parent",
         "seal_repair_candidate",
         expected_seal_repair_paths,
+        expected_seal_repair_candidate_paths,
+    )
+    _validate_exact_patch(
+        "seal_repair_candidate_paths",
+        "seal_repair_parent",
+        "seal_repair_candidate",
+        expected_seal_repair_candidate_paths,
     )
     _validate_exact_patch(
         "ci_evidence_paths",
         "ci_evidence_parent",
         "ci_evidence_candidate",
         expected_ci_evidence_paths,
+    )
+    _validate_exact_patch(
+        "reproducible_sdist_paths",
+        "reproducible_sdist_parent",
+        "reproducible_sdist_candidate",
+        expected_reproducible_sdist_paths,
+    )
+    _validate_exact_patch(
+        "final_parent_repair_paths",
+        "final_parent_repair_parent",
+        "final_parent_repair_candidate",
+        expected_final_parent_repair_paths,
+    )
+    _validate_exact_patch(
+        "history_retention_paths",
+        "history_retention_parent",
+        "history_retention_candidate",
+        expected_history_retention_paths,
     )
 
     impl_slot = git_proof.get("implementation_patch_slot")
@@ -769,7 +924,7 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
     }
     if not isinstance(transition, dict) or set(transition) != transition_keys:
         raise ValueError("transition shape mismatch")
-    if transition.get("base_commit") != identities["ci_evidence_landing"]:
+    if transition.get("base_commit") != identities["history_retention_landing"]:
         raise ValueError("transition base mismatch")
 
     historical = git_proof.get("historical_repair_transition")
@@ -827,7 +982,7 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
     orig_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
     orig_head = expected_original[-1]
     reb_head = identities["final_candidate"] if len(stages) == 3 else identities["candidate_commit"]
-    transition_base = identities["ci_evidence_landing"]
+    transition_base = identities["history_retention_landing"]
 
     actual_rebased = [c.lower() for c in _run_git(["rev-list", "--reverse", f"{transition_base}..{reb_head}"]).splitlines()]
     if transition.get("rebased_commits") != actual_rebased:
@@ -924,11 +1079,60 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
     return chronology
 
 
+def _canonical_corpus_rows() -> list[dict[str, Any]]:
+    contract_root = Path(__file__).with_name("_contract")
+    manifest = json.loads(
+        (contract_root / "test-vectors/outside-agent/manifest.json").read_bytes()
+    )
+    if not isinstance(manifest, dict) or manifest.get("manifest_schema_version") != "outside_agent_vector_manifest.v0.1" or not isinstance(manifest.get("vectors"), list):
+        raise ValueError("canonical vector manifest malformed")
+    required = {
+        "case_id",
+        "schema_target",
+        "submission_kind",
+        "expected_valid",
+        "expected_blocker_class",
+    }
+    rows: list[dict[str, Any]] = []
+    from .outside_agent_core import validate_outside_agent_submission
+    from .outside_agent_schema import validate_outside_agent_route_verdict_schema
+
+    for vector in manifest["vectors"]:
+        if not isinstance(vector, dict) or not required <= set(vector):
+            raise ValueError("canonical vector row malformed")
+        vector_path = vector.get("path")
+        if not isinstance(vector_path, str) or vector_path.startswith("/") or ".." in Path(vector_path).parts:
+            raise ValueError("canonical vector path malformed")
+        payload = json.loads((contract_root / vector_path).read_bytes())
+        if not isinstance(payload, dict):
+            raise ValueError("canonical vector payload malformed")
+        target = vector["schema_target"]
+        if target == "outside_agent_submission.v0.1":
+            valid = validate_outside_agent_submission(payload).status.value == "pass"
+        elif target == "outside_agent_route_verdict.v0.1":
+            valid = (
+                validate_outside_agent_route_verdict_schema(
+                    payload, schema_target=target
+                ).status.value
+                == "pass"
+            )
+        else:
+            raise ValueError("canonical vector schema target unsupported")
+        if valid is not vector["expected_valid"]:
+            raise ValueError("canonical vector validity semantics mismatch")
+        rows.append({key: vector[key] for key in required})
+    if len({row["case_id"] for row in rows}) != len(rows):
+        raise ValueError("canonical vector case IDs duplicated")
+    return rows
+
+
 def _validate_corpus(facts: dict[str, Any]) -> dict[str, Any]:
     corpus = facts.get("corpus")
     if not isinstance(corpus, dict) or set(corpus) != {"rows", "partitions"} or not isinstance(corpus["rows"], list) or not isinstance(corpus["partitions"], dict):
         raise ValueError("corpus evidence missing")
     rows, partitions = corpus["rows"], corpus["partitions"]
+    if rows != _canonical_corpus_rows():
+        raise ValueError("corpus rows differ from canonical primary bytes")
     expected = {"valid_submissions": sorted(row["case_id"] for row in rows if row["expected_valid"] and row["schema_target"] == "outside_agent_submission.v0.1"), "invalid_submissions": sorted(row["case_id"] for row in rows if not row["expected_valid"] and row["schema_target"] == "outside_agent_submission.v0.1"), "invalid_route_verdicts": sorted(row["case_id"] for row in rows if not row["expected_valid"] and row["schema_target"] == "outside_agent_route_verdict.v0.1")}
     if partitions != expected or tuple(map(len, expected.values())) != (3, 7, 1):
         raise ValueError("corpus partition mismatch")
@@ -961,7 +1165,12 @@ def _validate_packages(facts: dict[str, Any], bindings: dict[str, Any], corpus: 
             raise ValueError("archive reference malformed")
         _read_verified(reference["path"], reference["sha256"])
         members = _archive_member_digests(Path(reference["path"]))
-        if any(members.get(member) != digest for member, digest in expected_contract.items()):
+        contract_members = {
+            member: digest
+            for member, digest in members.items()
+            if member.startswith("phase_loop_runtime/conformance/_contract/")
+        }
+        if contract_members != expected_contract:
             raise ValueError("archive contract mirror differs from packaged contract")
         archive_members[name] = members
     direct_payload = _wheel_payload_members(archive_members["direct-wheel"])
@@ -974,20 +1183,50 @@ def _validate_packages(facts: dict[str, Any], bindings: dict[str, Any], corpus: 
     executions = installed["executions"]
     if not isinstance(executions, list) or [item.get("variant") for item in executions] != list(_PACKAGE_VARIANTS):
         raise ValueError("installed-package variants incomplete")
+    canonical_rows = _canonical_corpus_rows()
+    rows_by_case = {row["case_id"]: row for row in canonical_rows}
+    expected_cases = {
+        (row["case_id"], surface)
+        for row in canonical_rows
+        for surface in (
+            ("route-schema", "vector")
+            if row["schema_target"] == "outside_agent_route_verdict.v0.1"
+            else ("api", "cli", "vector")
+        )
+    }
     for execution in executions:
         variant = execution["variant"]
-        if execution.get("archive_sha256") != archives[variant]["sha256"] or execution.get("installation_posture") != "pip-target-no-deps-no-build-isolation":
+        if set(execution) != {"variant", "archive_sha256", "installation_posture", "installation", "cases"} or execution.get("archive_sha256") != archives[variant]["sha256"] or execution.get("installation_posture") != "pip-target-no-deps-no-build-isolation":
             raise ValueError("installed-package archive binding mismatch")
         installation = execution.get("installation")
-        if not isinstance(installation, dict) or installation.get("exit_code") != 0:
+        if not isinstance(installation, dict) or set(installation) != {"argv", "exit_code", "target", "raw_path", "raw_sha256"} or installation.get("exit_code") != 0:
             raise ValueError("package installation did not succeed")
-        _read_verified(installation.get("raw_path"), installation.get("raw_sha256"))
+        installation_raw = json.loads(
+            _read_verified(installation.get("raw_path"), installation.get("raw_sha256"))
+        )
+        if not isinstance(installation_raw, dict) or installation_raw.get("exit_code") != 0 or installation_raw.get("argv") != installation.get("argv"):
+            raise ValueError("package installation primary bytes mismatch")
         cases = execution.get("cases")
-        if not isinstance(cases, list) or not cases:
+        if not isinstance(cases, list) or {
+            (case.get("case_id"), case.get("surface"))
+            for case in cases
+            if isinstance(case, dict)
+        } != expected_cases:
             raise ValueError("installed package cases missing")
         for case in cases:
-            _read_verified(case.get("raw_path"), case.get("raw_sha256"))
-            if not isinstance(case.get("result"), dict) or case["result"].get("status") not in {"pass", "blocked"}:
+            if not isinstance(case, dict) or set(case) != {"case_id", "surface", "oracle_blocker_class", "raw_path", "raw_sha256", "result"}:
+                raise ValueError("installed package case shape mismatch")
+            row = rows_by_case.get(case["case_id"])
+            if row is None or case["oracle_blocker_class"] != row["expected_blocker_class"]:
+                raise ValueError("installed package canonical case class mismatch")
+            raw = json.loads(_read_verified(case.get("raw_path"), case.get("raw_sha256")))
+            result = case.get("result")
+            if not isinstance(raw, dict) or raw.get("exit_code") != 0 or not isinstance(raw.get("stdout"), str) or not isinstance(result, dict):
+                raise ValueError("installed package primary result malformed")
+            if json.loads(raw["stdout"]) != result or result.get("status") != ("pass" if row["expected_valid"] else "blocked"):
+                raise ValueError("installed package primary result mismatch")
+            blocker_codes = result.get("blocker_codes")
+            if not isinstance(blocker_codes, list) or (row["expected_valid"] and blocker_codes) or (not row["expected_valid"] and not blocker_codes):
                 raise ValueError("installed package case inconclusive")
     return package, installed, archive_members
 
@@ -1015,14 +1254,43 @@ def _validate_mode_specific(mode: str, facts: dict[str, Any], bindings: dict[str
     if set(matrix) != {"candidate_commit", "candidate_tree", "entries"} or matrix["candidate_commit"] != bindings["candidate_commit"] or matrix["candidate_tree"] != bindings["candidate_tree"]:
         raise ValueError("EC matrix binding mismatch")
     entries = matrix["entries"]
+    criteria = (
+        "chronology_identity_equations",
+        "corpus_valid_submissions_allowlist_falsifier",
+        "redaction_seven_class_inventory",
+        "redaction_posture_enforcement_guards",
+        "contract_mirror_provenance_and_mutations",
+        "per_schema_digest_mismatch_falsifiers",
+        "v7_disposition_merged_spec_provenance",
+        "package_release_handoff_and_no_copy",
+        "adversarial_vectors_fail_closed_dispatch",
+    )
     if not isinstance(entries, list) or [entry.get("id") for entry in entries] != [f"EC-CONFORM-{i}" for i in range(9)] or [entry.get("ordinal") for entry in entries] != list(range(9)):
         raise ValueError("EC matrix is incomplete")
-    for entry in entries:
+    for ordinal, entry in enumerate(entries):
+        if not isinstance(entry, dict) or set(entry) != {"id", "ordinal", "observable"}:
+            raise ValueError("EC entry shape mismatch")
         captured = entry.get("observable")
         observable = captured.get("observable") if isinstance(captured, dict) else None
-        if not isinstance(observable, dict) or observable.get("classification") != "passed" or captured.get("status") != "accepted":
+        if not isinstance(captured, dict) or not isinstance(observable, dict):
+            raise ValueError("EC observable malformed")
+        result_bytes = _read_verified(captured.get("result_path"), captured.get("result_sha256"))
+        primary = json.loads(result_bytes)
+        if not isinstance(primary, dict) or primary.get("exit_code") != 0 or not isinstance(primary.get("stdout"), str):
+            raise ValueError("EC primary result malformed")
+        rendered = json.loads(primary["stdout"])
+        if not isinstance(rendered, dict) or rendered.get("status") != "accepted" or rendered.get("observable") != observable or captured.get("status") != "accepted" or captured.get("exit_code") != 0 or captured.get("output_sha256") != _sha256_bytes(primary["stdout"].encode("utf-8")):
             raise ValueError("EC probe did not pass")
-        _read_verified(captured.get("result_path"), captured.get("result_sha256"))
+        execution = observable.get("execution")
+        if observable.get("kind") != "criterion-execution" or observable.get("criterion") != criteria[ordinal] or not isinstance(execution, dict):
+            raise ValueError("EC semantic criterion mismatch")
+        junit_bytes = _read_verified(execution.get("junit_path"), execution.get("junit_sha256"))
+        junit_root = element_tree.fromstring(junit_bytes)
+        cases = list(junit_root.iter("testcase"))
+        if not cases or any(case.find("failure") is not None or case.find("error") is not None or case.find("skipped") is not None for case in cases):
+            raise ValueError("EC primary JUnit did not pass")
+        if observable.get("classification") != "passed" or execution.get("classification") != "passed" or execution.get("exit_code") != 0:
+            raise ValueError("EC submitted classification disagrees with primary JUnit")
     if runner_manifest.get("ec_matrix") != {"entries": entries}:
         raise ValueError("runner manifest EC matrix mismatch")
     return {"entries": entries}
