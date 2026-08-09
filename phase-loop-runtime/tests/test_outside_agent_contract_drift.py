@@ -352,6 +352,10 @@ def test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror(tmp_path
         "phase_loop_runtime/conformance/_contract/VENDOR.json"
     )
     sdist_path = next(dist_root.glob("*.tar.gz"))
+    normalize_sdist(
+        sdist_path,
+        source_date_epoch=os.environ.get("SOURCE_DATE_EPOCH", "315532800"),
+    )
     with tarfile.open(sdist_path) as archive:
         sdist_bytes = {
             member.name.split("/src/", 1)[1]: archive.extractfile(member).read()

@@ -80,6 +80,7 @@ from _outside_agent_canonical import (
     sealed_release_parent_bytes,
     submission_entries,
     _member_digests,
+    _normalize_sdist_gzip,
     _build_a2_package_evidence,
     _a2_package_evidence_sha256,
     _sealed_manifest_sha256,
@@ -967,6 +968,10 @@ def _build_candidate_package_archives(
         assert completed.returncode == 0, completed.stdout + completed.stderr
     direct_wheel = next(direct_wheel_dist.glob("*.whl"))
     direct_sdist = next(direct_sdist_dist.glob("*.tar.gz"))
+    _normalize_sdist_gzip(
+        direct_sdist,
+        source_date_epoch=source_date_epoch.stdout.strip(),
+    )
     sdist_export = root / "sdist-export"
     sdist_export.mkdir()
     with tarfile.open(direct_sdist) as archive:
