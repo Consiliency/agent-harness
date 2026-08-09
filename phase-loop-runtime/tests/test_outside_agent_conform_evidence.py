@@ -2253,6 +2253,35 @@ def test_frozen_command_literals_and_selector_partition(tmp_path: Path) -> None:
     assert normalized_nodeid(standalone_path) == standalone_nodeid
     assert normalized_nodeid(standalone_nodeid) == standalone_nodeid
 
+    namespace: dict[str, object] = {}
+    exec(_MUTATION_OUTPUT_NORMALIZER_SOURCE, namespace)
+    normalize_junit_tree = namespace["normalize_junit_tree"]
+    first = element_tree.fromstring(
+        '<testsuite time="1.0"><testcase><failure>'
+        'monkeypatch=&lt;MonkeyPatch object at 0xabc123&gt; pytest-41 in 0.42s'
+        "</failure></testcase></testsuite>"
+    )
+    second = element_tree.fromstring(
+        '<testsuite time="9.0"><testcase><failure>'
+        'monkeypatch=&lt;MonkeyPatch object at 0xdef456&gt; pytest-99 in 8.75s'
+        "</failure></testcase></testsuite>"
+    )
+    normalize_junit_tree(first)
+    normalize_junit_tree(second)
+    assert element_tree.tostring(first) == element_tree.tostring(second)
+
+    conform_source = Path(__file__).read_text(encoding="utf-8")
+    release_source = (
+        Path(__file__).with_name("test_outside_agent_release_surface.py")
+    ).read_text(encoding="utf-8")
+    canonical_source = (
+        Path(__file__).with_name("_outside_agent_canonical.py")
+    ).read_text(encoding="utf-8")
+    assert "if not runner_b2_evidence_enabled():\n        return False" in conform_source
+    assert "if runner_b2_evidence_enabled():\n        evidence = sealed_release_evidence()" in release_source
+    assert "if runner_b2_evidence_enabled():\n        evidence = sealed_release_evidence()" in canonical_source
+    assert 'RUNNER_B2_EVIDENCE_ENV = "PHASE_LOOP_CONFORM_B2_EVIDENCE"' in canonical_source
+
 
 def test_planted_non_enumerated_copy_reports_its_exact_path(tmp_path) -> None:
     planted = (
