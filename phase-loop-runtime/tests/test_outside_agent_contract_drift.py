@@ -1,5 +1,7 @@
 import hashlib
+import gzip
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -9,6 +11,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 import pytest
+
+import _outside_agent_canonical as canonical
 
 from _outside_agent_canonical import (
     IMMUTABLE_SPEC_V0_2_1_DIGESTS,
@@ -255,6 +259,28 @@ def test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes():
 
 
 def test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror(tmp_path):
+    first = tmp_path / "first.tar.gz"
+    second = tmp_path / "second.tar.gz"
+    tar_bytes = io.BytesIO()
+    with tarfile.open(fileobj=tar_bytes, mode="w:") as archive:
+        member = tarfile.TarInfo("stable.txt")
+        member.size = len(b"stable tar bytes")
+        archive.addfile(member, io.BytesIO(b"stable tar bytes"))
+    first.write_bytes(gzip.compress(tar_bytes.getvalue(), mtime=1))
+    second.write_bytes(gzip.compress(tar_bytes.getvalue(), mtime=2))
+    for archive_path in (first, second):
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            assert archive.extractfile("stable.txt").read() == b"stable tar bytes"
+    normalize_sdist = getattr(canonical, "_normalize_sdist_gzip", None)
+    assert callable(normalize_sdist), "CONFORM_RED::sdist_gzip_timestamp_nondeterministic"
+    normalize_sdist(first, source_date_epoch="315532800")
+    normalize_sdist(second, source_date_epoch="315532800")
+    assert first.read_bytes() == second.read_bytes(), (
+        "CONFORM_RED::sdist_gzip_timestamp_nondeterministic"
+    )
+    with tarfile.open(first, mode="r:gz") as archive:
+        assert archive.extractfile("stable.txt").read() == b"stable tar bytes"
+
     repo = Path(__file__).resolve().parents[2]
     runtime_root = repo / "phase-loop-runtime"
     expected = {
@@ -326,6 +352,10 @@ def test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror(tmp_path
         "phase_loop_runtime/conformance/_contract/VENDOR.json"
     )
     sdist_path = next(dist_root.glob("*.tar.gz"))
+    normalize_sdist(
+        sdist_path,
+        source_date_epoch=os.environ.get("SOURCE_DATE_EPOCH", "315532800"),
+    )
     with tarfile.open(sdist_path) as archive:
         sdist_bytes = {
             member.name.split("/src/", 1)[1]: archive.extractfile(member).read()

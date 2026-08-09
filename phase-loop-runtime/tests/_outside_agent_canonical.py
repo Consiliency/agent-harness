@@ -6,6 +6,7 @@ provides a production parser, schema dispatcher, or redaction implementation.
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
 import io
 import importlib.util
@@ -38,6 +39,40 @@ PRODUCTION_SCAN_ROOT = REPO_ROOT / "phase-loop-runtime" / "src" / "phase_loop_ru
 PRODUCTION_SCAN_ROOT_LITERAL = "phase-loop-runtime/src/phase_loop_runtime"
 PRODUCER_TAG = "v0.2.1"
 PRODUCER_COMMIT = "b862f977897a7b87c4419680a3e83735d4ff07b0"
+
+
+def _normalize_sdist_gzip(path: Path, *, source_date_epoch: str) -> None:
+    """Canonicalize sdist tar metadata and its gzip timestamp."""
+    epoch = int(source_date_epoch)
+    members: list[tuple[tarfile.TarInfo, bytes | None]] = []
+    with tarfile.open(path, mode="r:gz") as source:
+        for original in source.getmembers():
+            member = copy.copy(original)
+            extracted = source.extractfile(original) if original.isfile() else None
+            members.append((member, extracted.read() if extracted is not None else None))
+
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:", format=tarfile.PAX_FORMAT) as archive:
+        for member, contents in members:
+            member.mtime = epoch
+            member.uid = 0
+            member.gid = 0
+            member.uname = ""
+            member.gname = ""
+            member.pax_headers = {}
+            archive.addfile(
+                member,
+                io.BytesIO(contents) if contents is not None else None,
+            )
+
+    with path.open("wb") as destination:
+        with gzip.GzipFile(
+            filename="",
+            mode="wb",
+            fileobj=destination,
+            mtime=epoch,
+        ) as archive:
+            archive.write(payload.getvalue())
 
 # This is deliberately not generated from PROVENANCE.json.  The fixture is a
 # consumer copy and its provenance file is itself mutable test data; the literal
