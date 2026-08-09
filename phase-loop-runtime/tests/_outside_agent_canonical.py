@@ -28,6 +28,7 @@ import pytest
 
 CAPABILITY_MARKER = "spec@v0.2.1:b862f977897a7b87c4419680a3e83735d4ff07b0"
 TDD_ENV = "PHASE_LOOP_TDD_EXPECT_CONFORM"
+RUNNER_B2_EVIDENCE_ENV = "PHASE_LOOP_CONFORM_B2_EVIDENCE"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOT = REPO_ROOT / "phase-loop-runtime"
 FIXTURE_ROOT = RUNTIME_ROOT / "tests" / "fixtures" / "outside_agent_contract_v0_2_1"
@@ -1358,6 +1359,16 @@ def canonical_mode_enabled() -> bool:
     except ImportError:
         return False
     return getattr(outside_agent_schema, "CONFORM_V10_CAPABILITY_MARKER", None) == CAPABILITY_MARKER
+
+
+def runner_b2_evidence_enabled() -> bool:
+    return os.environ.get(RUNNER_B2_EVIDENCE_ENV) == "1"
+
+
+def runner_b2_evidence() -> dict[str, Any] | None:
+    if not runner_b2_evidence_enabled():
+        return None
+    return sealed_release_evidence()
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -2850,7 +2861,22 @@ def _assert_release_handoff_surface(nodeid: str) -> None:
         "not dispatched",
     }
     assert all(term.lower() in handoff for term in required), _red_anchor(nodeid)
-    evidence = sealed_release_evidence()
+    assert not any(
+        term in handoff
+        for term in {
+            "accepted_for_merge",
+            "merge_verdict",
+            "provider payload",
+            "local env",
+            "tbd",
+            "todo",
+            "/home/",
+            "/mnt/",
+        }
+    ), _red_anchor(nodeid)
+    evidence = runner_b2_evidence()
+    if evidence is None:
+        return
     candidate_anchor = "CONFORM_RED::release_handoff_candidate_identity_only"
     candidate_commit = evidence["candidate_commit"]
     candidate_tree = evidence["candidate_tree"]
@@ -2902,19 +2928,6 @@ def _assert_release_handoff_surface(nodeid: str) -> None:
         assert forged != candidate_handoff
         with pytest.raises(AssertionError, match=candidate_anchor):
             assert_candidate_only(forged)
-    assert not any(
-        term in handoff
-        for term in {
-            "accepted_for_merge",
-            "merge_verdict",
-            "provider payload",
-            "local env",
-            "tbd",
-            "todo",
-            "/home/",
-            "/mnt/",
-        }
-    ), _red_anchor(nodeid)
 
 
 def _assert_public_docs_surface(nodeid: str) -> None:

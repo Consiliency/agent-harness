@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+import _outside_agent_canonical as outside_agent_canonical
+
 from _outside_agent_canonical import (
     A2_COMMAND,
     A2_COLLECT_COMMAND,
@@ -56,6 +58,7 @@ from _outside_agent_canonical import (
     FIXTURE_ROOT,
     LIVE_BLOCKER_CODE_BY_INVALID_CASE,
     REPO_ROOT,
+    RUNNER_B2_EVIDENCE_ENV,
     SEALED_RELEASE_ARCHIVE_MEMBER_DIGESTS,
     SEALED_RELEASE_ARCHIVE_MEMBERS,
     SEALED_RELEASE_CANDIDATE_PARENT_BLOBS,
@@ -69,6 +72,7 @@ from _outside_agent_canonical import (
     find_non_enumerated_canonical_copies,
     fixture_paths,
     normalized_nodeid,
+    runner_b2_evidence_enabled,
     route_verdict_entry,
     sealed_release_candidate_bytes,
     sealed_release_evidence,
@@ -371,14 +375,22 @@ CONFORM_IMMUTABLE_LIFECYCLE_PATHS = (
 )
 
 
-def _source_execution_environment() -> dict[str, str]:
-    return {
+def _expected_execution_environment(execution_root: Path | str) -> dict[str, str]:
+    execution_root = Path(execution_root)
+    environment = {
         "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": str(REPO_ROOT / "phase-loop-runtime" / "src")
+        "PYTHONPATH": str(execution_root / "phase-loop-runtime" / "src")
         + os.pathsep
-        + str(REPO_ROOT / "phase-loop-runtime" / "tests"),
+        + str(execution_root / "phase-loop-runtime" / "tests"),
     }
+    if runner_b2_evidence_enabled():
+        environment[RUNNER_B2_EVIDENCE_ENV] = "1"
+    return environment
+
+
+def _source_execution_environment() -> dict[str, str]:
+    return _expected_execution_environment(REPO_ROOT)
 
 
 def _run_bound_child(
@@ -468,7 +480,7 @@ def _repo_candidate_identity() -> dict[str, object]:
     }
 
 
-def _b2_compatibility_evidence_due() -> bool:
+def _sl2_compatibility_transitioned() -> bool:
     changed = []
     for path, parent_blob in SEALED_RELEASE_FINAL_PARENT_BLOBS.items():
         result = _run_bound_child(
@@ -484,6 +496,10 @@ def _b2_compatibility_evidence_due() -> bool:
         "CONFORM_RED::partial_sl2_compatibility_transition"
     )
     return all(changed)
+
+
+def _b2_compatibility_evidence_due() -> bool:
+    return runner_b2_evidence_enabled() and _sl2_compatibility_transitioned()
 
 
 def _candidate_mutation_source(definition) -> str:
@@ -549,6 +565,15 @@ _MUTATION_OUTPUT_NORMALIZER_SOURCE = textwrap.dedent(
         text = re.sub(r"object at 0x[0-9a-fA-F]+", "object at <address>", text)
         text = re.sub(r"pytest-[0-9]+", "pytest-<run>", text)
         return re.sub(r" in [0-9.]+s(?: \\([0-9:]+\\))?", " in <duration>", text)
+
+    def normalize_junit_tree(root):
+        for node in root.iter():
+            node.attrib.pop("time", None)
+            node.attrib.pop("timestamp", None)
+            if node.text:
+                node.text = normalize_mutation_output(node.text)
+            if node.tail:
+                node.tail = normalize_mutation_output(node.tail)
     """
 )
 _MUTATION_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
@@ -619,6 +644,8 @@ _MUTATION_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": str(runtime / "src") + os.pathsep + str(runtime / "tests"),
     }
+    if os.environ.get("PHASE_LOOP_CONFORM_B2_EVIDENCE") == "1":
+        environment["PHASE_LOOP_CONFORM_B2_EVIDENCE"] = "1"
     def execute(argv):
         completed = subprocess.run(argv, cwd=execution_root, capture_output=True, text=True, check=False, env=environment)
         if completed.returncode != 0:
@@ -738,6 +765,8 @@ _EC_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": str(runtime / "src") + os.pathsep + str(runtime / "tests"),
     }
+    if os.environ.get("PHASE_LOOP_CONFORM_B2_EVIDENCE") == "1":
+        environment["PHASE_LOOP_CONFORM_B2_EVIDENCE"] = "1"
     argv = [
         sys.executable,
         "-m",
@@ -748,9 +777,7 @@ _EC_PROBE_RUNNER = _MUTATION_OUTPUT_NORMALIZER_SOURCE + textwrap.dedent(
     ]
     completed = subprocess.run(argv, cwd=runtime, capture_output=True, text=True, check=False, env=environment)
     junit_root = element_tree.parse(junit_path).getroot()
-    for node in junit_root.iter():
-        node.attrib.pop("time", None)
-        node.attrib.pop("timestamp", None)
+    normalize_junit_tree(junit_root)
     element_tree.ElementTree(junit_root).write(
         junit_path, encoding="utf-8", xml_declaration=True
     )
@@ -1365,13 +1392,7 @@ def _assert_mutation_execution(observable: object, definition) -> None:
         assert isinstance(result["cwd"], str)
         execution_root = execution_root or result["cwd"]
         assert result["cwd"] == execution_root
-        assert result["environment"] == {
-            "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(Path(execution_root) / "phase-loop-runtime" / "src")
-            + os.pathsep
-            + str(Path(execution_root) / "phase-loop-runtime" / "tests"),
-        }
+        assert result["environment"] == _expected_execution_environment(execution_root)
         assert all(
             isinstance(result[key], str)
             and len(result[key]) == 64
@@ -1495,13 +1516,7 @@ def _assert_ec_criterion_execution(ec_id: str, criterion: str, observable: objec
         "--junitxml=" + execution["junit_path"],
         *("tests/" + nodeid for nodeid in _EC_PROBE_NODEIDS[ec_id]),
     ]
-    assert execution["environment"] == {
-        "PHASE_LOOP_TDD_EXPECT_CONFORM": "0",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": str(runtime / "src")
-        + os.pathsep
-        + str(runtime / "tests"),
-    }
+    assert execution["environment"] == _expected_execution_environment(runtime.parent)
     junit_path = Path(execution["junit_path"])
     assert junit_path.is_file()
     junit_bytes = junit_path.read_bytes()
@@ -2235,7 +2250,9 @@ def test_frozen_inventory_counts_and_set_equations() -> None:
     )
 
 
-def test_frozen_command_literals_and_selector_partition(tmp_path: Path) -> None:
+def test_frozen_command_literals_and_selector_partition(
+    tmp_path: Path, monkeypatch
+) -> None:
     assert BROAD_COLLECT_COMMAND == (
         "PYTHONPATH=phase-loop-runtime/src python3 -m pytest "
         "phase-loop-runtime/tests -q --collect-only -k outside_agent"
@@ -2252,6 +2269,80 @@ def test_frozen_command_literals_and_selector_partition(tmp_path: Path) -> None:
     standalone_path = "/tmp/standalone/" + standalone_nodeid
     assert normalized_nodeid(standalone_path) == standalone_nodeid
     assert normalized_nodeid(standalone_nodeid) == standalone_nodeid
+
+    namespace: dict[str, object] = {}
+    exec(_MUTATION_OUTPUT_NORMALIZER_SOURCE, namespace)
+    normalize_junit_tree = namespace["normalize_junit_tree"]
+    first = element_tree.fromstring(
+        '<testsuite time="1.0"><testcase><failure>'
+        'monkeypatch=&lt;MonkeyPatch object at 0xabc123&gt; pytest-41 in 0.42s'
+        "</failure></testcase></testsuite>"
+    )
+    second = element_tree.fromstring(
+        '<testsuite time="9.0"><testcase><failure>'
+        'monkeypatch=&lt;MonkeyPatch object at 0xdef456&gt; pytest-99 in 8.75s'
+        "</failure></testcase></testsuite>"
+    )
+    normalize_junit_tree(first)
+    normalize_junit_tree(second)
+    assert element_tree.tostring(first) == element_tree.tostring(second)
+    first_junit_digest = hashlib.sha256(element_tree.tostring(first)).hexdigest()
+    second_junit_digest = hashlib.sha256(element_tree.tostring(second)).hexdigest()
+    assert first_junit_digest == second_junit_digest
+    first_outer = json.dumps({"junit_sha256": first_junit_digest}, sort_keys=True)
+    second_outer = json.dumps({"junit_sha256": second_junit_digest}, sort_keys=True)
+    assert hashlib.sha256(first_outer.encode()).hexdigest() == hashlib.sha256(
+        second_outer.encode()
+    ).hexdigest()
+
+    calls = []
+
+    def planted_failing_seal_reader():
+        calls.append("called")
+        raise AssertionError("planted seal reader")
+
+    monkeypatch.setattr(
+        outside_agent_canonical,
+        "sealed_release_evidence",
+        planted_failing_seal_reader,
+    )
+    monkeypatch.delenv(RUNNER_B2_EVIDENCE_ENV, raising=False)
+    assert outside_agent_canonical.runner_b2_evidence() is None
+    assert calls == []
+    monkeypatch.setenv(RUNNER_B2_EVIDENCE_ENV, "1")
+    with pytest.raises(AssertionError, match="planted seal reader"):
+        outside_agent_canonical.runner_b2_evidence()
+    assert calls == ["called"]
+    assert _source_execution_environment()[RUNNER_B2_EVIDENCE_ENV] == "1"
+
+    transitioned_blobs = {
+        path: ("0" * 40 if parent_blob != "0" * 40 else "1" * 40)
+        for path, parent_blob in SEALED_RELEASE_FINAL_PARENT_BLOBS.items()
+    }
+
+    def transitioned_rev_parse(argv, **_kwargs):
+        path = argv[-1].removeprefix("HEAD:")
+        return subprocess.CompletedProcess(argv, 0, transitioned_blobs[path] + "\n", "")
+
+    monkeypatch.setattr(
+        sys.modules[__name__], "_run_bound_child", transitioned_rev_parse
+    )
+    monkeypatch.delenv(RUNNER_B2_EVIDENCE_ENV, raising=False)
+    assert _sl2_compatibility_transitioned() is True
+    assert _b2_compatibility_evidence_due() is False
+
+    conform_source = Path(__file__).read_text(encoding="utf-8")
+    release_source = (
+        Path(__file__).with_name("test_outside_agent_release_surface.py")
+    ).read_text(encoding="utf-8")
+    canonical_source = (
+        Path(__file__).with_name("_outside_agent_canonical.py")
+    ).read_text(encoding="utf-8")
+    assert "def _sl2_compatibility_transitioned() -> bool:" in conform_source
+    assert "return runner_b2_evidence_enabled() and _sl2_compatibility_transitioned()" in conform_source
+    assert "evidence = runner_b2_evidence()\n    if evidence is None:\n        return" in release_source
+    assert "evidence = runner_b2_evidence()\n    if evidence is None:\n        return" in canonical_source
+    assert 'RUNNER_B2_EVIDENCE_ENV = "PHASE_LOOP_CONFORM_B2_EVIDENCE"' in canonical_source
 
 
 def test_planted_non_enumerated_copy_reports_its_exact_path(tmp_path) -> None:
@@ -3086,9 +3177,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     # The absent verifier identifies SL-0, where test-owned EC controls run
     # only as frozen definitions. Once SL-1 installs the verifier, only B2 may
     # execute and capture the complete EC matrix.
-    compatibility_due = (
-        verifier_spec is not None and _b2_compatibility_evidence_due()
+    sl2_transitioned = (
+        verifier_spec is not None and _sl2_compatibility_transitioned()
     )
+    compatibility_due = sl2_transitioned and runner_b2_evidence_enabled()
     direct_ec_entries = None
     if compatibility_due:
         direct_ec_entries = _capture_ec_matrix_entries(direct_root)
@@ -3256,7 +3348,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
             assert isinstance(head_commit, str) and isinstance(head_tree, str)
             final_candidate = head_commit
             chronology_scope = "a2_candidate"
-            if compatibility_due:
+            if sl2_transitioned:
                 head_line = git("rev-list", "--parents", "-n", "1", head_commit).split()
                 if len(head_line) == 3:
                     final_candidate = head_line[2]
@@ -3414,7 +3506,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         },
                     },
                 ]
-            if compatibility_due:
+            if sl2_transitioned:
                 chronology_stages.append(
                     {
                         "stage": "final_doc_chronology",
@@ -3559,7 +3651,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
 
                     test_landing, test_candidate, test_parent = None, None, None
                     repair_landing, repair_candidate, repair_parent = None, None, None
+                    contract_bug_matches = []
                     contract_bug_landing, contract_bug_candidate, contract_bug_parent = None, None, None
+                    ci_evidence_landing, ci_evidence_candidate, ci_evidence_parent = None, None, None
                     seal_repair_landing, seal_repair_candidate, seal_repair_parent = None, None, None
                     impl_landing, impl_candidate, impl_parent = None, None, None
                     repair_paths = {
@@ -3585,9 +3679,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             repair_candidate = p2
                             repair_parent = p1
                         elif files_changed == contract_bug_paths:
-                            contract_bug_landing = m
-                            contract_bug_candidate = p2
-                            contract_bug_parent = p1
+                            contract_bug_matches.append((m, p2, p1))
                         elif files_changed == seal_repair_paths:
                             seal_repair_landing = m
                             seal_repair_candidate = p2
@@ -3606,8 +3698,23 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         raise ValueError("Missing required test landing/candidate/parent")
                     if repair_landing is None or repair_candidate is None or repair_parent is None:
                         raise ValueError("Missing required repair landing/candidate/parent")
+                    if len(contract_bug_matches) != 2:
+                        raise ValueError("Expected distinct contract-bug and CI-evidence landings")
+                    (
+                        (ci_evidence_landing, ci_evidence_candidate, ci_evidence_parent),
+                        (contract_bug_landing, contract_bug_candidate, contract_bug_parent),
+                    ) = contract_bug_matches
                     if contract_bug_landing is None or contract_bug_candidate is None or contract_bug_parent is None:
                         raise ValueError("Missing required contract-bug test landing/candidate/parent")
+                    ci_evidence_parent_vector = git(
+                        "rev-list", "--parents", "-n", "1", ci_evidence_landing
+                    ).split()
+                    if ci_evidence_parent_vector != [
+                        ci_evidence_landing,
+                        ci_evidence_parent,
+                        ci_evidence_candidate,
+                    ]:
+                        raise ValueError("CI-evidence landing must have exactly two ordered parents")
                     if seal_repair_landing is None or seal_repair_candidate is None or seal_repair_parent is None:
                         raise ValueError("Missing required seal-repair test landing/candidate/parent")
                     seal_repair_parent_vector = git(
@@ -3654,6 +3761,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     seal_repair_paths_dict = capture_paths(
                         seal_repair_parent, seal_repair_candidate, seal_repair_paths
                     )
+                    ci_evidence_paths_dict = capture_paths(
+                        ci_evidence_parent, ci_evidence_candidate, contract_bug_paths
+                    )
 
                     original_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
                     original_implementation_commits = [
@@ -3687,14 +3797,14 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         f"{original_base}..{original_implementation_commits[-1]}",
                         f"{actual_repair_landing}..{reviewed_f17ab557}",
                     )
-                    orig_head = "80d9a14c94785f81044d67b60e05d61242838a1b" if compatibility_due else original_implementation_commits[-1]
-                    reb_head = final_candidate if compatibility_due else candidate
+                    orig_head = "80d9a14c94785f81044d67b60e05d61242838a1b" if sl2_transitioned else original_implementation_commits[-1]
+                    reb_head = final_candidate if sl2_transitioned else candidate
                     range_diff_output = git(
                         "range-diff", "--no-color", f"{original_base}..{orig_head}",
-                        f"{seal_repair_landing}..{reb_head}",
+                        f"{ci_evidence_landing}..{reb_head}",
                     )
 
-                    if compatibility_due:
+                    if sl2_transitioned:
                         original_commits = [
                             *original_implementation_commits,
                             "80d9a14c94785f81044d67b60e05d61242838a1b",
@@ -3703,11 +3813,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         original_commits = list(original_implementation_commits)
 
                     rebased_commits = git(
-                        "rev-list", "--reverse", f"{seal_repair_landing}..{reb_head}"
+                        "rev-list", "--reverse", f"{ci_evidence_landing}..{reb_head}"
                     ).splitlines()
                     rebased_commits = [git("rev-parse", c).lower() for c in rebased_commits]
 
-                    if compatibility_due:
+                    if sl2_transitioned:
                         if len(original_commits) != 5:
                             raise ValueError(f"original_commits count mismatch: {len(original_commits)}")
                         if len(rebased_commits) != 6:
@@ -3767,7 +3877,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "range_diff": historical_repair_range_diff,
                     }
                     contract_bug_rebase_transition = {
-                        "base_commit": seal_repair_landing,
+                        "base_commit": ci_evidence_landing,
                         "original_commits": original_commits,
                         "reviewed_f17ab557_commits": reviewed_f17ab557_commits,
                         "rebased_commits": rebased_commits,
@@ -3813,6 +3923,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             seal_repair_parent,
                             seal_repair_candidate,
                         ),
+                        "ci_evidence_landing": (
+                            ci_evidence_landing,
+                            ci_evidence_parent,
+                            ci_evidence_candidate,
+                        ),
                     }
                     if chronology_scope == "exact_main":
                         assert (
@@ -3849,7 +3964,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             for path in SEALED_RELEASE_FINAL_PATHS
                         },
                     }
-                    if compatibility_due:
+                    if sl2_transitioned:
                         candidate_a2_members = {
                             path: hashlib.sha256(
                                 subprocess.run(
@@ -4081,6 +4196,12 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "seal_repair_candidate_tree": git("rev-parse", f"{seal_repair_candidate}^{{tree}}"),
                         "seal_repair_landing": seal_repair_landing,
                         "seal_repair_landing_tree": git("rev-parse", f"{seal_repair_landing}^{{tree}}"),
+                        "ci_evidence_parent": ci_evidence_parent,
+                        "ci_evidence_parent_tree": git("rev-parse", f"{ci_evidence_parent}^{{tree}}"),
+                        "ci_evidence_candidate": ci_evidence_candidate,
+                        "ci_evidence_candidate_tree": git("rev-parse", f"{ci_evidence_candidate}^{{tree}}"),
+                        "ci_evidence_landing": ci_evidence_landing,
+                        "ci_evidence_landing_tree": git("rev-parse", f"{ci_evidence_landing}^{{tree}}"),
                         "candidate_commit": candidate,
                         "candidate_tree": candidate_tree,
                         "final_candidate": final_candidate,
@@ -4091,6 +4212,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_landing": git("rev-list", "--parents", "-n", "1", actual_repair_landing).split()[1:],
                         "contract_bug_test_landing": git("rev-list", "--parents", "-n", "1", contract_bug_landing).split()[1:],
                         "seal_repair_landing": seal_repair_parent_vector[1:],
+                        "ci_evidence_landing": ci_evidence_parent_vector[1:],
                     }
                     if chronology_scope in {"a2_candidate", "exact_main"}:
                         identities.update(
@@ -4124,6 +4246,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_paths": repair_paths_dict,
                         "contract_bug_paths": contract_bug_paths_dict,
                         "seal_repair_paths": seal_repair_paths_dict,
+                        "ci_evidence_paths": ci_evidence_paths_dict,
                         "implementation_patch_slot": implementation_patch_slot,
                         "b1_content": b1_content,
                         "transition": contract_bug_rebase_transition,
@@ -4417,6 +4540,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_landing",
                         "contract_bug_test_landing",
                         "seal_repair_landing",
+                        "ci_evidence_landing",
                         *(
                             {"implementation_landing"}
                             if chronology_scope == "exact_main"
@@ -4439,7 +4563,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_landing"
                     ]
                     assert contract_bug_transition["base_commit"] == identities[
-                        "seal_repair_landing"
+                        "ci_evidence_landing"
                     ]
                     assert len(historical_transition["original_commits"]) == 4
                     assert len(contract_bug_transition["original_commits"][:4]) == 4
@@ -4448,12 +4572,12 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         == historical_transition["rebased_commits"]
                     )
                     assert len(contract_bug_transition["rebased_commits"]) == (
-                        6 if compatibility_due else 4
+                        6 if sl2_transitioned else 4
                     ) or (
-                        not compatibility_due
+                        not sl2_transitioned
                         and len(contract_bug_transition["rebased_commits"]) == 5
                     )
-                    if compatibility_due:
+                    if sl2_transitioned:
                         b1_content = git_proof["b1_content"]
                         candidate_only_documents = b1_content[
                             "candidate_only_documents"
@@ -4604,7 +4728,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     "preimplementation_red",
                     "postimplementation_pre_doc",
                 ]
-                if compatibility_due:
+                if sl2_transitioned:
                     expected_chronology_stages.append("final_doc_chronology")
                 assert evidence["chronology"]["scope"] == chronology_scope
                 assert [stage["stage"] for stage in evidence["chronology"]["stages"]] == expected_chronology_stages
@@ -4703,7 +4827,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "candidate_descends_from_test_candidate"
                     ] = False
                     chronology_mutations.append(forged_topology)
-                    if compatibility_due:
+                    if sl2_transitioned:
                         missing_final = copy.deepcopy(mode_facts)
                         missing_final["chronology"]["stages"].pop()
                         chronology_mutations.append(missing_final)
@@ -4756,6 +4880,19 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "parent_vectors"
                         ].pop("seal_repair_landing")
                         chronology_mutations.append(missing_seal_repair_landing)
+                        missing_ci_evidence = copy.deepcopy(mode_facts)
+                        missing_ci_evidence["chronology"]["git_proof"].pop(
+                            "ci_evidence_paths"
+                        )
+                        chronology_mutations.append(missing_ci_evidence)
+                        missing_ci_evidence_landing = copy.deepcopy(mode_facts)
+                        missing_ci_evidence_landing["chronology"]["git_proof"][
+                            "identities"
+                        ].pop("ci_evidence_landing")
+                        missing_ci_evidence_landing["chronology"]["git_proof"][
+                            "parent_vectors"
+                        ].pop("ci_evidence_landing")
+                        chronology_mutations.append(missing_ci_evidence_landing)
                         forged_merge_result = copy.deepcopy(mode_facts)
                         forged_merge_result["chronology"]["git_proof"][
                             "merge_result_trees"
@@ -4766,6 +4903,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "merge_result_trees"
                         ]["seal_repair_landing"] = candidate_tree
                         chronology_mutations.append(forged_seal_merge_result)
+                        forged_ci_evidence_merge_result = copy.deepcopy(mode_facts)
+                        forged_ci_evidence_merge_result["chronology"]["git_proof"][
+                            "merge_result_trees"
+                        ]["ci_evidence_landing"] = candidate_tree
+                        chronology_mutations.append(forged_ci_evidence_merge_result)
                         forged_b1_content = copy.deepcopy(mode_facts)
                         b1_members = forged_b1_content["chronology"]["git_proof"][
                             "b1_content"

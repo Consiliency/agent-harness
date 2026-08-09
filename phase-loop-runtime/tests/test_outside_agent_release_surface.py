@@ -12,7 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
 import phase_loop_runtime
 from _outside_agent_canonical import (
     assert_candidate_identity_only_document,
-    sealed_release_evidence,
+    runner_b2_evidence,
 )
 from phase_loop_runtime.conformance import (
     EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN,
@@ -276,7 +276,9 @@ def test_v7_disposition_records_merged_contract_and_final_installed_behavior(tmp
     # Do not rebuild ambient HEAD or infer the last source-only commit.  The
     # disposition can bind only the pushed pre-document candidate; the runner
     # owns final identities after the document bytes have been sealed.
-    evidence = sealed_release_evidence()
+    evidence = runner_b2_evidence()
+    if evidence is None:
+        return
     anchor = "CONFORM_RED::v7_disposition_candidate_identity_only"
     assert evidence["candidate_commit"] != evidence["candidate_tree"], anchor
     assert evidence["final_commit"] != evidence["final_tree"], anchor
