@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: allow the post-CONFORM suite to finish (Consiliency/agent-harness#488)
+
+- The `pytest` matrix and `clean-room` jobs in `.github/workflows/test.yml` now allow
+  45 minutes instead of 20. Run `31338571615` cancelled all four long jobs at the
+  20-minute boundary with no test failure: the CONFORM verifier alone needs roughly
+  13 minutes once the capability marker activates its A2 evidence replay. Every test,
+  evidence mode, and the 5-minute lint bound are unchanged; this is a CI-execution
+  change only, with no shipped runtime behaviour change.
+
 ### Clean-room CONFORM repository evidence
 
 - CI now checks out full history for source and clean-room test lanes. When the
