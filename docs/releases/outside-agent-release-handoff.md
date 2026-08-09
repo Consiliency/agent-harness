@@ -55,6 +55,20 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `python -m build --sdist --wheel --outdir /tmp/phase-loop-runtime-oarelease-dist phase-loop-runtime` succeeded.
 - `git status --short` after the release-check lane showed the new release-surface test file as the only tracked dirty path at that point.
 
+## Sealed Implementation Evidence
+
+This release handoff covers phase-loop-runtime 0.5.0 (and package version 0.7.13) with a digest-enumerated contract mirror. Publication, tag creation, and workflow dispatch remain maintainer-owned and are not published or not dispatched here.
+
+- candidate implementation commit: 9f8d6c60f562fbceb4bd09a20211b046255b373f
+- candidate implementation tree: 75228b3296b4727d81b20ff378ea9d4c1d4ab5aa
+- pre-doc A2 package evidence sha256: 17b47d6cc7b860fd74956646594fc2430522364a860c227cefa87c71b73cf46d
+
+### Package Archive Digests
+
+- direct-wheel sha256: 0f52d153afd6d5357a042a63b13e2bb1cd75f86e9d59b1242492fe3e614ecf0f
+- direct-sdist sha256: f995a3cc0679125035668e96f0f7f9f9fa18fe5773adcad3af79e24b6617dd09
+- sdist-derived-wheel sha256: 0f52d153afd6d5357a042a63b13e2bb1cd75f86e9d59b1242492fe3e614ecf0f
+
 ## Package Surface Inventory
 
 - Wheel artifact: `phase_loop_runtime-0.7.13-py3-none-any.whl`
