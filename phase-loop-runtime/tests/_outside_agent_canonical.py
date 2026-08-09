@@ -1667,6 +1667,45 @@ def _git_bytes(repository: Path, object_id: str) -> bytes:
     return completed.stdout
 
 
+def _sealed_candidate_parent(repository: Path, candidate_commit: str) -> str:
+    """Derive the unique reviewed parent of a potentially stacked candidate."""
+    commits = _git_output(repository, "rev-list", "--parents", candidate_commit).splitlines()
+    parent_vectors = {
+        fields[0]: fields[1:]
+        for line in commits
+        if (fields := line.split())
+    }
+    matches: dict[str, bool] = {}
+
+    def matches_parent_blobs(commit: str) -> bool:
+        if commit not in matches:
+            matched = True
+            for path, expected_blob in SEALED_RELEASE_CANDIDATE_PARENT_BLOBS.items():
+                actual = subprocess.run(
+                    ["git", "rev-parse", f"{commit}:{path}"],
+                    cwd=repository,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if expected_blob is None:
+                    matched = matched and actual.returncode != 0
+                else:
+                    matched = matched and actual.returncode == 0 and actual.stdout.strip() == expected_blob
+            matches[commit] = matched
+        return matches[commit]
+
+    boundaries = [
+        parent
+        for commit, parents in parent_vectors.items()
+        if not matches_parent_blobs(commit)
+        for parent in parents
+        if matches_parent_blobs(parent)
+    ]
+    assert len(boundaries) == 1, "CONFORM_RED::sealed_release_evidence_candidate_transition"
+    return boundaries[0]
+
+
 def sealed_release_parent_bytes(
     repository: Path = REPO_ROOT,
 ) -> dict[str, bytes | None]:
@@ -1943,13 +1982,12 @@ def sealed_release_evidence(
         and len(digest) == 64
         for path, digest in candidate_members.items()
     ), "CONFORM_RED::sealed_release_evidence_candidate_inventory"
-    parent = _git_output(repository, "rev-parse", f"{evidence['candidate_commit']}^")
+    parent = _sealed_candidate_parent(repository, evidence["candidate_commit"])
     changed_paths = _git_output(
         repository,
-        "diff-tree",
-        "--no-commit-id",
+        "diff",
         "--name-only",
-        "-r",
+        parent,
         evidence["candidate_commit"],
     ).splitlines()
     assert tuple(sorted(changed_paths)) == SEALED_RELEASE_CANDIDATE_PATHS, (
