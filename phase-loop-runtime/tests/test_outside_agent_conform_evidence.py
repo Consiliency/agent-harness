@@ -4743,11 +4743,29 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "parent_vectors"
                         ].pop("contract_bug_test_landing")
                         chronology_mutations.append(missing_contract_bug_landing)
+                        missing_seal_repair = copy.deepcopy(mode_facts)
+                        missing_seal_repair["chronology"]["git_proof"].pop(
+                            "seal_repair_paths"
+                        )
+                        chronology_mutations.append(missing_seal_repair)
+                        missing_seal_repair_landing = copy.deepcopy(mode_facts)
+                        missing_seal_repair_landing["chronology"]["git_proof"][
+                            "identities"
+                        ].pop("seal_repair_landing")
+                        missing_seal_repair_landing["chronology"]["git_proof"][
+                            "parent_vectors"
+                        ].pop("seal_repair_landing")
+                        chronology_mutations.append(missing_seal_repair_landing)
                         forged_merge_result = copy.deepcopy(mode_facts)
                         forged_merge_result["chronology"]["git_proof"][
                             "merge_result_trees"
                         ]["repair_landing"] = candidate_tree
                         chronology_mutations.append(forged_merge_result)
+                        forged_seal_merge_result = copy.deepcopy(mode_facts)
+                        forged_seal_merge_result["chronology"]["git_proof"][
+                            "merge_result_trees"
+                        ]["seal_repair_landing"] = candidate_tree
+                        chronology_mutations.append(forged_seal_merge_result)
                         forged_b1_content = copy.deepcopy(mode_facts)
                         b1_members = forged_b1_content["chronology"]["git_proof"][
                             "b1_content"
