@@ -2456,9 +2456,22 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
         materialized.parent.mkdir(parents=True, exist_ok=True)
         materialized.write_bytes(contents)
     git("add", "-A")
-    git("commit", "-m", "full SL-1 candidate")
+    git("commit", "-m", "full SL-1 transition")
+
+    verifier_path = (
+        release_repo
+        / "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"
+    )
+    verifier_path.write_bytes(
+        verifier_path.read_bytes() + b"\n# CONFORM_SL1_VERIFIER_REPAIR: recompute-sealed-semantics\n"
+    )
+    git("add", str(verifier_path.relative_to(release_repo)))
+    git("commit", "-m", "repair SL-1 verifier semantics")
     candidate_commit = git("rev-parse", "HEAD")
     candidate_tree = git("rev-parse", "HEAD^{tree}")
+    candidate_bytes[
+        "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"
+    ] = verifier_path.read_bytes()
 
     for path in SEALED_RELEASE_FINAL_PATHS:
         (release_repo / path).write_bytes(final_bytes[path])
