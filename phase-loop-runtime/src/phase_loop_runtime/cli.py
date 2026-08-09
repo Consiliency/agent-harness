@@ -931,13 +931,13 @@ def build_parser() -> argparse.ArgumentParser:
         "outside-agent-preflight",
         help="Emit advisory metadata-only outside-agent preflight evidence.",
     )
-    outside_agent_sub.add_argument("submission_file", metavar="submission-file", nargs="+")
+    outside_agent_sub.add_argument("submission_file", metavar="submission-file")
     outside_agent_sub.add_argument("--output", help="Path to write advisory evidence JSON.")
     outside_agent_validate_sub = subparsers.add_parser(
         "outside-agent-validate",
         help="Emit governed-pipeline outside-agent validation verdict JSON.",
     )
-    outside_agent_validate_sub.add_argument("submission_file", metavar="submission-file", nargs="+")
+    outside_agent_validate_sub.add_argument("submission_file", metavar="submission-file")
     outside_agent_validate_sub.add_argument(
         "--output",
         required=True,
@@ -1783,7 +1783,7 @@ def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
         serialize_outside_agent_advisory_evidence,
     )
 
-    submission_file = _outside_agent_submission_file(args.submission_file)
+    submission_file = args.submission_file
     submission_path = Path(submission_file)
     try:
         raw = submission_path.read_bytes()
@@ -1828,7 +1828,7 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
         serialize_outside_agent_validation_verdict,
     )
 
-    submission_file = _outside_agent_submission_file(args.submission_file)
+    submission_file = args.submission_file
     submission_path = Path(submission_file)
     try:
         raw = submission_path.read_bytes()
@@ -1865,13 +1865,6 @@ def _outside_agent_validate_command(args: argparse.Namespace) -> int:
     Path(args.output).write_text(text, encoding="utf-8")
     print(text, end="")
     return int(validation.exit_code)
-
-
-def _outside_agent_submission_file(value: str | list[str]) -> str:
-    """Consume only the first locator; repeated identical locators stay read-only."""
-    if isinstance(value, str):
-        return value
-    return value[0]
 
 
 def _digest_captured_submission_bytes(
