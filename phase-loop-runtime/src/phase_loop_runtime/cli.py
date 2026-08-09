@@ -931,13 +931,13 @@ def build_parser() -> argparse.ArgumentParser:
         "outside-agent-preflight",
         help="Emit advisory metadata-only outside-agent preflight evidence.",
     )
-    outside_agent_sub.add_argument("submission_file", metavar="submission-file", nargs="+")
+    outside_agent_sub.add_argument("submission_file", metavar="submission-file")
     outside_agent_sub.add_argument("--output", help="Path to write advisory evidence JSON.")
     outside_agent_validate_sub = subparsers.add_parser(
         "outside-agent-validate",
         help="Emit governed-pipeline outside-agent validation verdict JSON.",
     )
-    outside_agent_validate_sub.add_argument("submission_file", metavar="submission-file", nargs="+")
+    outside_agent_validate_sub.add_argument("submission_file", metavar="submission-file")
     outside_agent_validate_sub.add_argument(
         "--output",
         required=True,
