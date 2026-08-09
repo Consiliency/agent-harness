@@ -3560,6 +3560,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     test_landing, test_candidate, test_parent = None, None, None
                     repair_landing, repair_candidate, repair_parent = None, None, None
                     contract_bug_landing, contract_bug_candidate, contract_bug_parent = None, None, None
+                    seal_repair_landing, seal_repair_candidate, seal_repair_parent = None, None, None
                     impl_landing, impl_candidate, impl_parent = None, None, None
                     repair_paths = {
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
@@ -3569,6 +3570,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     contract_bug_paths = {
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
                         "phase-loop-runtime/tests/test_outside_agent_release_surface.py",
+                        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+                    }
+                    seal_repair_paths = {
+                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
                         "phase-loop-runtime/tests/_outside_agent_canonical.py",
                     }
 
@@ -3583,6 +3588,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             contract_bug_landing = m
                             contract_bug_candidate = p2
                             contract_bug_parent = p1
+                        elif files_changed == seal_repair_paths:
+                            seal_repair_landing = m
+                            seal_repair_candidate = p2
+                            seal_repair_parent = p1
                         elif "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py" in files_changed:
                             impl_landing = m
                             impl_candidate = p2
@@ -3599,6 +3608,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         raise ValueError("Missing required repair landing/candidate/parent")
                     if contract_bug_landing is None or contract_bug_candidate is None or contract_bug_parent is None:
                         raise ValueError("Missing required contract-bug test landing/candidate/parent")
+                    if seal_repair_landing is None or seal_repair_candidate is None or seal_repair_parent is None:
+                        raise ValueError("Missing required seal-repair test landing/candidate/parent")
                     if chronology_scope == "exact_main":
                         if impl_landing is None or impl_candidate is None or impl_parent is None:
                             raise ValueError("Missing required implementation landing/candidate/parent")
@@ -3630,6 +3641,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     repair_paths_dict = capture_paths(repair_parent, repair_candidate, repair_paths)
                     contract_bug_paths_dict = capture_paths(
                         contract_bug_parent, contract_bug_candidate, contract_bug_paths
+                    )
+                    seal_repair_paths_dict = capture_paths(
+                        seal_repair_parent, seal_repair_candidate, seal_repair_paths
                     )
 
                     original_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
@@ -3668,7 +3682,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     reb_head = final_candidate if compatibility_due else candidate
                     range_diff_output = git(
                         "range-diff", "--no-color", f"{original_base}..{orig_head}",
-                        f"{contract_bug_landing}..{reb_head}",
+                        f"{seal_repair_landing}..{reb_head}",
                     )
 
                     if compatibility_due:
@@ -3680,7 +3694,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         original_commits = list(original_implementation_commits)
 
                     rebased_commits = git(
-                        "rev-list", "--reverse", f"{contract_bug_landing}..{reb_head}"
+                        "rev-list", "--reverse", f"{seal_repair_landing}..{reb_head}"
                     ).splitlines()
                     rebased_commits = [git("rev-parse", c).lower() for c in rebased_commits]
 
@@ -3744,7 +3758,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "range_diff": historical_repair_range_diff,
                     }
                     contract_bug_rebase_transition = {
-                        "base_commit": contract_bug_landing,
+                        "base_commit": seal_repair_landing,
                         "original_commits": original_commits,
                         "reviewed_f17ab557_commits": reviewed_f17ab557_commits,
                         "rebased_commits": rebased_commits,
@@ -3784,6 +3798,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             contract_bug_landing,
                             contract_bug_parent,
                             contract_bug_candidate,
+                        ),
+                        "seal_repair_landing": (
+                            seal_repair_landing,
+                            seal_repair_parent,
+                            seal_repair_candidate,
                         ),
                     }
                     if chronology_scope == "exact_main":
@@ -4047,6 +4066,12 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "contract_bug_test_candidate_tree": git("rev-parse", f"{contract_bug_candidate}^{{tree}}"),
                         "contract_bug_test_landing": contract_bug_landing,
                         "contract_bug_test_landing_tree": git("rev-parse", f"{contract_bug_landing}^{{tree}}"),
+                        "seal_repair_parent": seal_repair_parent,
+                        "seal_repair_parent_tree": git("rev-parse", f"{seal_repair_parent}^{{tree}}"),
+                        "seal_repair_candidate": seal_repair_candidate,
+                        "seal_repair_candidate_tree": git("rev-parse", f"{seal_repair_candidate}^{{tree}}"),
+                        "seal_repair_landing": seal_repair_landing,
+                        "seal_repair_landing_tree": git("rev-parse", f"{seal_repair_landing}^{{tree}}"),
                         "candidate_commit": candidate,
                         "candidate_tree": candidate_tree,
                         "final_candidate": final_candidate,
@@ -4056,6 +4081,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "test_landing": git("rev-list", "--parents", "-n", "1", test_landing).split()[1:],
                         "repair_landing": git("rev-list", "--parents", "-n", "1", actual_repair_landing).split()[1:],
                         "contract_bug_test_landing": git("rev-list", "--parents", "-n", "1", contract_bug_landing).split()[1:],
+                        "seal_repair_landing": git("rev-list", "--parents", "-n", "1", seal_repair_landing).split()[1:],
                     }
                     if chronology_scope in {"a2_candidate", "exact_main"}:
                         identities.update(
@@ -4088,6 +4114,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "range_diff_equivalent": True,
                         "repair_paths": repair_paths_dict,
                         "contract_bug_paths": contract_bug_paths_dict,
+                        "seal_repair_paths": seal_repair_paths_dict,
                         "implementation_patch_slot": implementation_patch_slot,
                         "b1_content": b1_content,
                         "transition": contract_bug_rebase_transition,
@@ -4380,6 +4407,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "test_landing",
                         "repair_landing",
                         "contract_bug_test_landing",
+                        "seal_repair_landing",
                         *(
                             {"implementation_landing"}
                             if chronology_scope == "exact_main"
@@ -4402,7 +4430,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_landing"
                     ]
                     assert contract_bug_transition["base_commit"] == identities[
-                        "contract_bug_test_landing"
+                        "seal_repair_landing"
                     ]
                     assert len(historical_transition["original_commits"]) == 4
                     assert len(contract_bug_transition["original_commits"][:4]) == 4
