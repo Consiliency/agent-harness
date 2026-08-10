@@ -3320,6 +3320,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     # its three allowed modes. Compatibility joins after all four pinned SL-2
     # documentation paths transition, so this immutable test cannot run it early.
     if os.environ.get("PHASE_LOOP_CONFORM_CHRONOLOGY_PROOF") == "1":
+        history_retention_markers = (
+            "reproducible_sdist_landing",
+            "final_parent_repair_landing",
+            "history_retention_landing",
+            "20dd5693be0d71c6bb4a6804c8707d642a8bd1d6",
+            "d4ee8615f3aa4e1ae0cd4e356df1bbf8c01b6453",
+            "67977406a5726d7d80dc69990849b4708b065924",
+        )
+        if not all(marker in _EC_PROBE_RUNNER for marker in history_retention_markers):
+            raise AssertionError("CONFORM_RED::history_retention_chronology_missing")
         if verifier_spec is None:
             raise AssertionError("CONFORM_RED::chronology_accepts_forged_git_topology")
     if verifier_spec is not None:
