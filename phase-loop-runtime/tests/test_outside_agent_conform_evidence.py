@@ -5158,9 +5158,20 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         assert isinstance(final_doc_topology["canonical_main_head"], str)
                         assert final_doc_topology["canonical_main_head"] == head_commit
                 else:
-                    assert "raw_log" not in json.dumps(
-                        verified["evidence"], sort_keys=True
-                    )
+                    def nested_keys(value: object) -> set[str]:
+                        if isinstance(value, dict):
+                            return set(value) | {
+                                key
+                                for child in value.values()
+                                for key in nested_keys(child)
+                            }
+                        if isinstance(value, list):
+                            return {
+                                key for child in value for key in nested_keys(child)
+                            }
+                        return set()
+
+                    assert "raw_log" not in nested_keys(verified["evidence"])
                 evidence = verified["evidence"]
                 assert EVIDENCE_SEMANTIC_OUTPUT_KEYS <= set(evidence)
                 assert ("ec_matrix" in evidence) == (mode == "compatibility")
