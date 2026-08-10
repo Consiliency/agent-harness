@@ -8,6 +8,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2809,6 +2810,73 @@ def test_conform_red_assertion_catalog_is_literal(tmp_path) -> None:
         sealed_release_evidence(sealed_path, release_repo)
 
 
+CONFORM_HISTORY_RETENTION_CLASSIFIER = {
+    "seal_repair_landing": (
+        "20dd5693be0d71c6bb4a6804c8707d642a8bd1d6",
+        "d4ee8615f3aa4e1ae0cd4e356df1bbf8c01b6453",
+        "67977406a5726d7d80dc69990849b4708b065924",
+    ),
+    "reproducible_sdist_landing": (
+        "ceb0556352b9626d35eacfbbf45faf831b80acfb",
+        "b99e52630b2df3cc1e2445dd3ace5a80528bf729",
+        "8c620f17ce8c3fce5e6122dde10ac67d8c980ad2",
+    ),
+    "final_parent_repair_landing": (
+        "bd6b13fb3a6a847111a060ad62cccb3f4b7c0318",
+        "bcfaf87aa71bd36e6fd40679cb1d4b0c586ea3df",
+        "23a1458fb44d746a833c5957212beff9f1e99840",
+    ),
+}
+CONFORM_HISTORY_RETENTION_PARENT = "702161f5ccd519fe9080100d5b5a976cf25af9ad"
+CONFORM_REPRODUCIBLE_SDIST_TDD = {
+    "base": "b99e52630b2df3cc1e2445dd3ace5a80528bf729",
+    "red_commit": "6efe6c8c10201484fee2e838d57091b926e9ea30",
+    "green_commit": "8c620f17ce8c3fce5e6122dde10ac67d8c980ad2",
+    "red": {
+        "raw_log": {
+            "artifact_name": "conform-sdist-red-r3.log",
+            "sha256": "ad0eb568d8b752e1a4be6cfff1f83e5bd4b8993218f99d4adb349c0380295288",
+        },
+        "junit": {
+            "artifact_name": "conform-sdist-red-r3.junit.xml",
+            "sha256": "10ecef63141ba46a55ca28cec5f85c519aad4b49448e2afd9f3b95b5945eb18a",
+        },
+    },
+    "green": {
+        "raw_log": {
+            "artifact_name": "conform-sdist-green-r3.log",
+            "sha256": "f04fa4d8da33dac2a33389b7901b49ad81880029e0062f65ae00203562b5e929",
+        },
+        "junit": {
+            "artifact_name": "conform-sdist-green-r3.junit.xml",
+            "sha256": "471c07100f5bfe4df5d1829693e5e5907d4469fb9e094503e7a0633155118011",
+        },
+    },
+}
+
+
+def _select_history_retention_landing(
+    matches: list[tuple[str, str, str]],
+) -> tuple[str, str, str]:
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected one history-retention landing, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def _assert_history_retention_commit_vectors(
+    *,
+    base: str,
+    red_commit: str,
+    green_commit: str,
+    red_vector: list[str],
+    green_vector: list[str],
+) -> None:
+    if red_vector != [red_commit, base] or green_vector != [green_commit, red_commit]:
+        raise ValueError("History-retention RED/GREEN commits must be single-parent")
+
+
 def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     tmp_path, monkeypatch
 ) -> None:
@@ -2837,6 +2905,145 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         "hashlib.sha256(normalize_mutation_output(completed.stderr).encode(\"utf-8\")).hexdigest()"
         in _EC_PROBE_RUNNER
     )
+    history_patch_markers = {
+        "seal_repair_landing": "CONFORM_SL1_VERIFIER_REPAIR",
+        "reproducible_sdist_landing": "_normalize_sdist_gzip",
+        "final_parent_repair_landing": "SEALED_RELEASE_FINAL_PARENT_BLOBS",
+    }
+    history_path_sets = {
+        "seal_repair_landing": {
+            "phase-loop-runtime/tests/_outside_agent_canonical.py",
+            "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+            "plans/phase-plan-v10-CONFORM.md",
+        },
+        "reproducible_sdist_landing": {
+            "phase-loop-runtime/tests/_outside_agent_canonical.py",
+            "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+            "phase-loop-runtime/tests/test_outside_agent_contract_drift.py",
+        },
+        "final_parent_repair_landing": {
+            "phase-loop-runtime/tests/_outside_agent_canonical.py",
+        },
+    }
+    history_objects_present = {
+        label: subprocess.run(
+            ["git", "cat-file", "-e", f"{landing}^{{commit}}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+        for label, (landing, _, _) in CONFORM_HISTORY_RETENTION_CLASSIFIER.items()
+    }
+    assert len(set(history_objects_present.values())) == 1
+    if all(history_objects_present.values()):
+        for label, (landing, parent, candidate) in CONFORM_HISTORY_RETENTION_CLASSIFIER.items():
+            vector = subprocess.run(
+                ["git", "rev-list", "--parents", "-n", "1", landing],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.split()
+            assert vector == [landing, parent, candidate]
+            changed_paths = set(
+                subprocess.run(
+                    ["git", "diff", "--name-only", parent, candidate],
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.splitlines()
+            )
+            assert changed_paths == history_path_sets[label]
+            patch = subprocess.run(
+                ["git", "diff", "--no-color", "-U0", parent, candidate],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            assert history_patch_markers[label] in patch
+        reproducible_tdd = CONFORM_REPRODUCIBLE_SDIST_TDD
+        _assert_history_retention_commit_vectors(
+            base=reproducible_tdd["base"],
+            red_commit=reproducible_tdd["red_commit"],
+            green_commit=reproducible_tdd["green_commit"],
+            red_vector=subprocess.run(
+                ["git", "rev-list", "--parents", "-n", "1", reproducible_tdd["red_commit"]],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.split(),
+            green_vector=subprocess.run(
+                ["git", "rev-list", "--parents", "-n", "1", reproducible_tdd["green_commit"]],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.split(),
+        )
+        assert set(
+            subprocess.run(
+                ["git", "diff", "--name-only", reproducible_tdd["base"], reproducible_tdd["red_commit"]],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.splitlines()
+        ) == {"phase-loop-runtime/tests/test_outside_agent_contract_drift.py"}
+        assert set(
+            subprocess.run(
+                ["git", "diff", "--name-only", reproducible_tdd["red_commit"], reproducible_tdd["green_commit"]],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.splitlines()
+        ) == history_path_sets["reproducible_sdist_landing"]
+    for posture in ("red", "green"):
+        for artifact_kind in ("raw_log", "junit"):
+            reference = CONFORM_REPRODUCIBLE_SDIST_TDD[posture][artifact_kind]
+            assert reference["artifact_name"].startswith("conform-sdist-")
+            assert re.fullmatch(r"[0-9a-f]{64}", reference["sha256"])
+    assert CONFORM_HISTORY_RETENTION_CLASSIFIER["seal_repair_landing"][0] != (
+        "2c2bfe2bb318ad50abde7d8653944032bc67acae"
+    )
+    synthetic_history_match = ("1" * 40, CONFORM_HISTORY_RETENTION_PARENT, "2" * 40)
+    assert _select_history_retention_landing([synthetic_history_match]) == (
+        synthetic_history_match
+    )
+    for ambiguous_matches in ([], [synthetic_history_match, synthetic_history_match]):
+        with pytest.raises(ValueError, match="history-retention landing"):
+            _select_history_retention_landing(ambiguous_matches)
+    synthetic_red = "3" * 40
+    synthetic_green = "4" * 40
+    _assert_history_retention_commit_vectors(
+        base=CONFORM_HISTORY_RETENTION_PARENT,
+        red_commit=synthetic_red,
+        green_commit=synthetic_green,
+        red_vector=[synthetic_red, CONFORM_HISTORY_RETENTION_PARENT],
+        green_vector=[synthetic_green, synthetic_red],
+    )
+    for forged_red_vector, forged_green_vector in (
+        (
+            [synthetic_red, CONFORM_HISTORY_RETENTION_PARENT, "5" * 40],
+            [synthetic_green, synthetic_red],
+        ),
+        (
+            [synthetic_red, CONFORM_HISTORY_RETENTION_PARENT],
+            [synthetic_green, synthetic_red, CONFORM_HISTORY_RETENTION_PARENT],
+        ),
+    ):
+        with pytest.raises(ValueError, match="single-parent"):
+            _assert_history_retention_commit_vectors(
+                base=CONFORM_HISTORY_RETENTION_PARENT,
+                red_commit=synthetic_red,
+                green_commit=synthetic_green,
+                red_vector=forged_red_vector,
+                green_vector=forged_green_vector,
+            )
     assert set(CONFORM_MUTATION_DEFINITIONS) == {
         "M-CONFORM-1-RESTORE-ALLOWLIST",
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
@@ -3320,6 +3527,12 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     # its three allowed modes. Compatibility joins after all four pinned SL-2
     # documentation paths transition, so this immutable test cannot run it early.
     if os.environ.get("PHASE_LOOP_CONFORM_CHRONOLOGY_PROOF") == "1":
+        if set(CONFORM_HISTORY_RETENTION_CLASSIFIER) != {
+            "seal_repair_landing",
+            "reproducible_sdist_landing",
+            "final_parent_repair_landing",
+        }:
+            raise AssertionError("CONFORM_RED::history_retention_chronology_missing")
         if verifier_spec is None:
             raise AssertionError("CONFORM_RED::chronology_accepts_forged_git_topology")
     if verifier_spec is not None:
@@ -3437,6 +3650,23 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     "outside_agent_schema.py"
                 ),
             }
+            loaded_module_path = Path(module.__file__).resolve()
+            try:
+                loaded_module_path.relative_to(REPO_ROOT.resolve())
+                repository_anchor = None
+            except ValueError:
+                repository_anchor = {
+                    "root": str(REPO_ROOT.resolve()),
+                    "head_commit": head_commit,
+                    "head_tree": head_tree,
+                    "module_path": (
+                        "phase-loop-runtime/src/phase_loop_runtime/conformance/"
+                        "outside_agent_conform_evidence.py"
+                    ),
+                    "module_sha256": hashlib.sha256(
+                        loaded_module_path.read_bytes()
+                    ).hexdigest(),
+                }
             observable_root = root / "captured-observables"
             observable_root.mkdir()
             mutation_records = [
@@ -3660,6 +3890,10 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     contract_bug_landing, contract_bug_candidate, contract_bug_parent = None, None, None
                     ci_evidence_landing, ci_evidence_candidate, ci_evidence_parent = None, None, None
                     seal_repair_landing, seal_repair_candidate, seal_repair_parent = None, None, None
+                    reproducible_sdist_landing, reproducible_sdist_candidate, reproducible_sdist_parent = None, None, None
+                    final_parent_repair_landing, final_parent_repair_candidate, final_parent_repair_parent = None, None, None
+                    history_retention_landing, history_retention_candidate, history_retention_parent = None, None, None
+                    history_retention_matches = []
                     impl_landing, impl_candidate, impl_parent = None, None, None
                     repair_paths = {
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
@@ -3671,24 +3905,113 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "phase-loop-runtime/tests/test_outside_agent_release_surface.py",
                         "phase-loop-runtime/tests/_outside_agent_canonical.py",
                     }
-                    seal_repair_paths = {
+                    false_seal_repair_paths = {
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
                         "phase-loop-runtime/tests/_outside_agent_canonical.py",
                     }
+                    seal_repair_candidate_paths = {
+                        *false_seal_repair_paths,
+                        "plans/phase-plan-v10-CONFORM.md",
+                    }
+                    final_parent_repair_paths = {
+                        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+                    }
+                    history_retention_paths = {
+                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                    }
+                    seal_repair_topology = CONFORM_HISTORY_RETENTION_CLASSIFIER[
+                        "seal_repair_landing"
+                    ]
+                    reproducible_sdist_topology = CONFORM_HISTORY_RETENTION_CLASSIFIER[
+                        "reproducible_sdist_landing"
+                    ]
+                    final_parent_repair_topology = CONFORM_HISTORY_RETENTION_CLASSIFIER[
+                        "final_parent_repair_landing"
+                    ]
 
                     for m, parents in merges:
                         p1, p2 = parents[0], parents[1]
                         files_changed = set(git("diff", "--name-only", p1, p2).splitlines())
-                        if files_changed == repair_paths:
+                        candidate_patch = git("diff", "--no-color", "-U0", p1, p2)
+                        topology = (m, p1, p2)
+                        if topology == seal_repair_topology:
+                            if files_changed != seal_repair_candidate_paths or "CONFORM_SL1_VERIFIER_REPAIR" not in candidate_patch:
+                                raise ValueError("Seal-repair landing topology has unexpected patch semantics")
+                            seal_repair_landing, seal_repair_parent, seal_repair_candidate = topology
+                        elif topology == reproducible_sdist_topology:
+                            if files_changed != repair_paths or "_normalize_sdist_gzip" not in candidate_patch:
+                                raise ValueError("Reproducible-sdist landing topology has unexpected patch semantics")
+                            reproducible_sdist_landing, reproducible_sdist_parent, reproducible_sdist_candidate = topology
+                        elif topology == final_parent_repair_topology:
+                            if files_changed != final_parent_repair_paths or "SEALED_RELEASE_FINAL_PARENT_BLOBS" not in candidate_patch:
+                                raise ValueError("Final-parent-repair landing topology has unexpected patch semantics")
+                            final_parent_repair_landing, final_parent_repair_parent, final_parent_repair_candidate = topology
+                        elif (
+                            p1 == CONFORM_HISTORY_RETENTION_PARENT
+                            and files_changed == history_retention_paths
+                        ):
+                            candidate_commits = git(
+                                "rev-list", "--reverse", f"{p1}..{p2}"
+                            ).splitlines()
+                            if len(candidate_commits) != 2:
+                                raise ValueError(
+                                    "History-retention candidate must contain exact RED/GREEN commits"
+                                )
+                            red_commit, green_commit = candidate_commits
+                            red_vector = git(
+                                "rev-list", "--parents", "-n", "1", red_commit
+                            ).split()
+                            green_vector = git(
+                                "rev-list", "--parents", "-n", "1", green_commit
+                            ).split()
+                            _assert_history_retention_commit_vectors(
+                                base=p1,
+                                red_commit=red_commit,
+                                green_commit=green_commit,
+                                red_vector=red_vector,
+                                green_vector=green_vector,
+                            )
+                            red_parent = red_vector[1]
+                            green_parent = green_vector[1]
+                            red_paths = set(
+                                git("diff", "--name-only", red_parent, red_commit).splitlines()
+                            )
+                            green_paths = set(
+                                git("diff", "--name-only", green_parent, green_commit).splitlines()
+                            )
+                            red_patch = git(
+                                "diff", "--no-color", "-U0", red_parent, red_commit
+                            )
+                            green_patch = git(
+                                "diff", "--no-color", "-U0", green_parent, green_commit
+                            )
+                            if (
+                                red_parent != p1
+                                or green_parent != red_commit
+                                or red_paths != history_retention_paths
+                                or green_paths != history_retention_paths
+                                or "CONFORM_RED::history_retention_chronology_missing" not in red_patch
+                                or "CONFORM_HISTORY_RETENTION_CLASSIFIER" in red_patch
+                                or "CONFORM_HISTORY_RETENTION_CLASSIFIER" not in green_patch
+                                or "history_retention_landing" not in green_patch
+                                or "_select_history_retention_landing" not in green_patch
+                                or "_assert_history_retention_commit_vectors" not in green_patch
+                            ):
+                                raise ValueError(
+                                    "History-retention candidate has unexpected RED/GREEN semantics"
+                                )
+                            history_retention_matches.append(topology)
+                        elif files_changed == repair_paths:
                             repair_landing = m
                             repair_candidate = p2
                             repair_parent = p1
                         elif files_changed == contract_bug_paths:
                             contract_bug_matches.append((m, p2, p1))
-                        elif files_changed == seal_repair_paths:
-                            seal_repair_landing = m
-                            seal_repair_candidate = p2
-                            seal_repair_parent = p1
+                        elif (
+                            m == "2c2bfe2bb318ad50abde7d8653944032bc67acae"
+                            and files_changed == false_seal_repair_paths
+                        ):
+                            continue
                         elif "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py" in files_changed:
                             impl_landing = m
                             impl_candidate = p2
@@ -3731,6 +4054,36 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         seal_repair_candidate,
                     ]:
                         raise ValueError("Seal-repair landing must have exactly two ordered parents")
+                    (
+                        history_retention_landing,
+                        history_retention_parent,
+                        history_retention_candidate,
+                    ) = _select_history_retention_landing(history_retention_matches)
+                    support_landings = {
+                        "reproducible_sdist_landing": (
+                            reproducible_sdist_landing,
+                            reproducible_sdist_parent,
+                            reproducible_sdist_candidate,
+                        ),
+                        "final_parent_repair_landing": (
+                            final_parent_repair_landing,
+                            final_parent_repair_parent,
+                            final_parent_repair_candidate,
+                        ),
+                        "history_retention_landing": (
+                            history_retention_landing,
+                            history_retention_parent,
+                            history_retention_candidate,
+                        ),
+                    }
+                    support_parent_vectors = {}
+                    for label, (landing, parent, candidate_parent) in support_landings.items():
+                        if landing is None or parent is None or candidate_parent is None:
+                            raise ValueError(f"Missing required {label} candidate topology")
+                        vector = git("rev-list", "--parents", "-n", "1", landing).split()
+                        if vector != [landing, parent, candidate_parent]:
+                            raise ValueError(f"{label} must have exactly two ordered parents")
+                        support_parent_vectors[label] = vector
                     if chronology_scope == "exact_main":
                         if impl_landing is None or impl_candidate is None or impl_parent is None:
                             raise ValueError("Missing required implementation landing/candidate/parent")
@@ -3764,10 +4117,32 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         contract_bug_parent, contract_bug_candidate, contract_bug_paths
                     )
                     seal_repair_paths_dict = capture_paths(
-                        seal_repair_parent, seal_repair_candidate, seal_repair_paths
+                        seal_repair_parent,
+                        seal_repair_candidate,
+                        false_seal_repair_paths,
+                    )
+                    seal_repair_candidate_paths_dict = capture_paths(
+                        seal_repair_parent,
+                        seal_repair_candidate,
+                        seal_repair_candidate_paths,
                     )
                     ci_evidence_paths_dict = capture_paths(
                         ci_evidence_parent, ci_evidence_candidate, contract_bug_paths
+                    )
+                    reproducible_sdist_paths_dict = capture_paths(
+                        reproducible_sdist_parent,
+                        reproducible_sdist_candidate,
+                        repair_paths,
+                    )
+                    final_parent_repair_paths_dict = capture_paths(
+                        final_parent_repair_parent,
+                        final_parent_repair_candidate,
+                        final_parent_repair_paths,
+                    )
+                    history_retention_paths_dict = capture_paths(
+                        history_retention_parent,
+                        history_retention_candidate,
+                        history_retention_paths,
                     )
 
                     original_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
@@ -3806,7 +4181,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     reb_head = final_candidate if sl2_transitioned else candidate
                     range_diff_output = git(
                         "range-diff", "--no-color", f"{original_base}..{orig_head}",
-                        f"{ci_evidence_landing}..{reb_head}",
+                        f"{history_retention_landing}..{reb_head}",
                     )
 
                     if sl2_transitioned:
@@ -3818,7 +4193,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         original_commits = list(original_implementation_commits)
 
                     rebased_commits = git(
-                        "rev-list", "--reverse", f"{ci_evidence_landing}..{reb_head}"
+                        "rev-list", "--reverse", f"{history_retention_landing}..{reb_head}"
                     ).splitlines()
                     rebased_commits = [git("rev-parse", c).lower() for c in rebased_commits]
 
@@ -3882,7 +4257,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "range_diff": historical_repair_range_diff,
                     }
                     contract_bug_rebase_transition = {
-                        "base_commit": ci_evidence_landing,
+                        "base_commit": history_retention_landing,
                         "original_commits": original_commits,
                         "reviewed_f17ab557_commits": reviewed_f17ab557_commits,
                         "rebased_commits": rebased_commits,
@@ -3932,6 +4307,21 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             ci_evidence_landing,
                             ci_evidence_parent,
                             ci_evidence_candidate,
+                        ),
+                        "reproducible_sdist_landing": (
+                            reproducible_sdist_landing,
+                            reproducible_sdist_parent,
+                            reproducible_sdist_candidate,
+                        ),
+                        "final_parent_repair_landing": (
+                            final_parent_repair_landing,
+                            final_parent_repair_parent,
+                            final_parent_repair_candidate,
+                        ),
+                        "history_retention_landing": (
+                            history_retention_landing,
+                            history_retention_parent,
+                            history_retention_candidate,
                         ),
                     }
                     if chronology_scope == "exact_main":
@@ -4207,6 +4597,24 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "ci_evidence_candidate_tree": git("rev-parse", f"{ci_evidence_candidate}^{{tree}}"),
                         "ci_evidence_landing": ci_evidence_landing,
                         "ci_evidence_landing_tree": git("rev-parse", f"{ci_evidence_landing}^{{tree}}"),
+                        "reproducible_sdist_parent": reproducible_sdist_parent,
+                        "reproducible_sdist_parent_tree": git("rev-parse", f"{reproducible_sdist_parent}^{{tree}}"),
+                        "reproducible_sdist_candidate": reproducible_sdist_candidate,
+                        "reproducible_sdist_candidate_tree": git("rev-parse", f"{reproducible_sdist_candidate}^{{tree}}"),
+                        "reproducible_sdist_landing": reproducible_sdist_landing,
+                        "reproducible_sdist_landing_tree": git("rev-parse", f"{reproducible_sdist_landing}^{{tree}}"),
+                        "final_parent_repair_parent": final_parent_repair_parent,
+                        "final_parent_repair_parent_tree": git("rev-parse", f"{final_parent_repair_parent}^{{tree}}"),
+                        "final_parent_repair_candidate": final_parent_repair_candidate,
+                        "final_parent_repair_candidate_tree": git("rev-parse", f"{final_parent_repair_candidate}^{{tree}}"),
+                        "final_parent_repair_landing": final_parent_repair_landing,
+                        "final_parent_repair_landing_tree": git("rev-parse", f"{final_parent_repair_landing}^{{tree}}"),
+                        "history_retention_parent": history_retention_parent,
+                        "history_retention_parent_tree": git("rev-parse", f"{history_retention_parent}^{{tree}}"),
+                        "history_retention_candidate": history_retention_candidate,
+                        "history_retention_candidate_tree": git("rev-parse", f"{history_retention_candidate}^{{tree}}"),
+                        "history_retention_landing": history_retention_landing,
+                        "history_retention_landing_tree": git("rev-parse", f"{history_retention_landing}^{{tree}}"),
                         "candidate_commit": candidate,
                         "candidate_tree": candidate_tree,
                         "final_candidate": final_candidate,
@@ -4218,6 +4626,15 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "contract_bug_test_landing": git("rev-list", "--parents", "-n", "1", contract_bug_landing).split()[1:],
                         "seal_repair_landing": seal_repair_parent_vector[1:],
                         "ci_evidence_landing": ci_evidence_parent_vector[1:],
+                        "reproducible_sdist_landing": support_parent_vectors[
+                            "reproducible_sdist_landing"
+                        ][1:],
+                        "final_parent_repair_landing": support_parent_vectors[
+                            "final_parent_repair_landing"
+                        ][1:],
+                        "history_retention_landing": support_parent_vectors[
+                            "history_retention_landing"
+                        ][1:],
                     }
                     if chronology_scope in {"a2_candidate", "exact_main"}:
                         identities.update(
@@ -4251,12 +4668,33 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_paths": repair_paths_dict,
                         "contract_bug_paths": contract_bug_paths_dict,
                         "seal_repair_paths": seal_repair_paths_dict,
+                        "seal_repair_candidate_paths": seal_repair_candidate_paths_dict,
                         "ci_evidence_paths": ci_evidence_paths_dict,
+                        "reproducible_sdist_paths": reproducible_sdist_paths_dict,
+                        "final_parent_repair_paths": final_parent_repair_paths_dict,
+                        "history_retention_paths": history_retention_paths_dict,
                         "implementation_patch_slot": implementation_patch_slot,
                         "b1_content": b1_content,
                         "transition": contract_bug_rebase_transition,
                         "historical_repair_transition": historical_repair_transition,
                         "contract_bug_rebase_transition": contract_bug_rebase_transition,
+                        "reproducible_sdist_tdd": {
+                            **CONFORM_REPRODUCIBLE_SDIST_TDD,
+                            "red_vector": git(
+                                "rev-list",
+                                "--parents",
+                                "-n",
+                                "1",
+                                CONFORM_REPRODUCIBLE_SDIST_TDD["red_commit"],
+                            ).split(),
+                            "green_vector": git(
+                                "rev-list",
+                                "--parents",
+                                "-n",
+                                "1",
+                                CONFORM_REPRODUCIBLE_SDIST_TDD["green_commit"],
+                            ).split(),
+                        },
                         "red_references": {
                             "junit": red_junit,
                             "raw_log": red_raw_log,
@@ -4266,6 +4704,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "raw_log": green_raw_log,
                         },
                     }
+                    if repository_anchor is not None:
+                        git_proof["repository_anchor"] = repository_anchor
                     mode_chronology["git_proof"] = git_proof
 
                 mode_exclusive_facts: dict[str, dict[str, object]] = {
@@ -4546,6 +4986,9 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "contract_bug_test_landing",
                         "seal_repair_landing",
                         "ci_evidence_landing",
+                        "reproducible_sdist_landing",
+                        "final_parent_repair_landing",
+                        "history_retention_landing",
                         *(
                             {"implementation_landing"}
                             if chronology_scope == "exact_main"
@@ -4568,7 +5011,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_landing"
                     ]
                     assert contract_bug_transition["base_commit"] == identities[
-                        "ci_evidence_landing"
+                        "history_retention_landing"
                     ]
                     assert len(historical_transition["original_commits"]) == 4
                     assert len(contract_bug_transition["original_commits"][:4]) == 4
@@ -4877,6 +5320,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "seal_repair_paths"
                         )
                         chronology_mutations.append(missing_seal_repair)
+                        missing_seal_candidate = copy.deepcopy(mode_facts)
+                        missing_seal_candidate["chronology"]["git_proof"].pop(
+                            "seal_repair_candidate_paths"
+                        )
+                        chronology_mutations.append(missing_seal_candidate)
                         missing_seal_repair_landing = copy.deepcopy(mode_facts)
                         missing_seal_repair_landing["chronology"]["git_proof"][
                             "identities"
@@ -4898,6 +5346,55 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "parent_vectors"
                         ].pop("ci_evidence_landing")
                         chronology_mutations.append(missing_ci_evidence_landing)
+                        for support_label in (
+                            "reproducible_sdist_landing",
+                            "final_parent_repair_landing",
+                            "history_retention_landing",
+                        ):
+                            support_paths_key = (
+                                support_label.removesuffix("_landing") + "_paths"
+                            )
+                            missing_support_paths = copy.deepcopy(mode_facts)
+                            missing_support_paths["chronology"]["git_proof"].pop(
+                                support_paths_key
+                            )
+                            chronology_mutations.append(missing_support_paths)
+                            support_path_facts = mode_facts["chronology"]["git_proof"][
+                                support_paths_key
+                            ]
+                            for support_path in sorted(support_path_facts):
+                                assert support_path_facts[support_path]["before_blob"] != (
+                                    support_path_facts[support_path]["after_blob"]
+                                )
+                                for field in ("before_blob", "after_blob", "patch_digest"):
+                                    forged_support_path = copy.deepcopy(mode_facts)
+                                    if field == "before_blob":
+                                        forged_value = support_path_facts[support_path][
+                                            "after_blob"
+                                        ]
+                                    elif field == "after_blob":
+                                        forged_value = support_path_facts[support_path][
+                                            "before_blob"
+                                        ]
+                                    else:
+                                        forged_value = hashlib.sha256(
+                                            (
+                                                "valid-looking-forged-support-path:"
+                                                f"{support_label}:{support_path}:{field}"
+                                            ).encode()
+                                        ).hexdigest()
+                                    forged_support_path["chronology"]["git_proof"][
+                                        support_paths_key
+                                    ][support_path][field] = forged_value
+                                    chronology_mutations.append(forged_support_path)
+                            missing_support_landing = copy.deepcopy(mode_facts)
+                            missing_support_landing["chronology"]["git_proof"][
+                                "identities"
+                            ].pop(support_label)
+                            missing_support_landing["chronology"]["git_proof"][
+                                "parent_vectors"
+                            ].pop(support_label)
+                            chronology_mutations.append(missing_support_landing)
                         forged_merge_result = copy.deepcopy(mode_facts)
                         forged_merge_result["chronology"]["git_proof"][
                             "merge_result_trees"
@@ -4913,6 +5410,102 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "merge_result_trees"
                         ]["ci_evidence_landing"] = candidate_tree
                         chronology_mutations.append(forged_ci_evidence_merge_result)
+                        for support_label in (
+                            "reproducible_sdist_landing",
+                            "final_parent_repair_landing",
+                            "history_retention_landing",
+                        ):
+                            forged_support_merge_result = copy.deepcopy(mode_facts)
+                            forged_support_merge_result["chronology"]["git_proof"][
+                                "merge_result_trees"
+                            ][support_label] = candidate_tree
+                            chronology_mutations.append(forged_support_merge_result)
+                        missing_sdist_tdd = copy.deepcopy(mode_facts)
+                        missing_sdist_tdd["chronology"]["git_proof"].pop(
+                            "reproducible_sdist_tdd"
+                        )
+                        chronology_mutations.append(missing_sdist_tdd)
+                        forged_sdist_red_parent = copy.deepcopy(mode_facts)
+                        forged_sdist_red_parent["chronology"]["git_proof"][
+                            "reproducible_sdist_tdd"
+                        ]["red_vector"].append(CONFORM_REPRODUCIBLE_SDIST_TDD["green_commit"])
+                        chronology_mutations.append(forged_sdist_red_parent)
+                        forged_sdist_green_parent = copy.deepcopy(mode_facts)
+                        forged_sdist_green_parent["chronology"]["git_proof"][
+                            "reproducible_sdist_tdd"
+                        ]["green_vector"] = [
+                            CONFORM_REPRODUCIBLE_SDIST_TDD["green_commit"],
+                            CONFORM_REPRODUCIBLE_SDIST_TDD["base"],
+                        ]
+                        chronology_mutations.append(forged_sdist_green_parent)
+                        for posture in ("red", "green"):
+                            alternate_posture = "green" if posture == "red" else "red"
+                            for artifact_kind in ("raw_log", "junit"):
+                                forged_sdist_name = copy.deepcopy(mode_facts)
+                                forged_sdist_name["chronology"]["git_proof"][
+                                    "reproducible_sdist_tdd"
+                                ][posture][artifact_kind]["artifact_name"] = (
+                                    f"conform-sdist-{posture}-forged-r3."
+                                    + ("log" if artifact_kind == "raw_log" else "junit.xml")
+                                )
+                                chronology_mutations.append(forged_sdist_name)
+                                forged_sdist_digest = copy.deepcopy(mode_facts)
+                                forged_sdist_digest["chronology"]["git_proof"][
+                                    "reproducible_sdist_tdd"
+                                ][posture][artifact_kind]["sha256"] = (
+                                    CONFORM_REPRODUCIBLE_SDIST_TDD[alternate_posture][
+                                        artifact_kind
+                                    ]["sha256"]
+                                )
+                                chronology_mutations.append(forged_sdist_digest)
+                        sdist_path_facts = mode_facts["chronology"]["git_proof"][
+                            "reproducible_sdist_paths"
+                        ]
+                        for sdist_path in sorted(sdist_path_facts):
+                            forged_sdist_path_blob = copy.deepcopy(mode_facts)
+                            forged_sdist_path_blob["chronology"]["git_proof"][
+                                "reproducible_sdist_paths"
+                            ][sdist_path]["before_blob"] = sdist_path_facts[sdist_path][
+                                "after_blob"
+                            ]
+                            chronology_mutations.append(forged_sdist_path_blob)
+                            forged_sdist_path_digest = copy.deepcopy(mode_facts)
+                            forged_sdist_path_digest["chronology"]["git_proof"][
+                                "reproducible_sdist_paths"
+                            ][sdist_path]["patch_digest"] = hashlib.sha256(
+                                f"valid-looking-forged-sdist-patch:{sdist_path}".encode()
+                            ).hexdigest()
+                            chronology_mutations.append(forged_sdist_path_digest)
+                        if "repository_anchor" in mode_facts["chronology"]["git_proof"]:
+                            for field, forged_value in (
+                                ("root", str(REPO_ROOT.resolve().parent)),
+                                ("head_commit", parent),
+                                ("head_tree", "0" * 40),
+                                ("module_path", "phase-loop-runtime/pyproject.toml"),
+                                ("module_sha256", "0" * 64),
+                            ):
+                                forged_anchor = copy.deepcopy(mode_facts)
+                                forged_anchor["chronology"]["git_proof"][
+                                    "repository_anchor"
+                                ][field] = forged_value
+                                chronology_mutations.append(forged_anchor)
+                        else:
+                            inside_root_anchor = copy.deepcopy(mode_facts)
+                            inside_root_anchor["chronology"]["git_proof"][
+                                "repository_anchor"
+                            ] = {
+                                "root": str(REPO_ROOT.resolve()),
+                                "head_commit": head_commit,
+                                "head_tree": head_tree,
+                                "module_path": (
+                                    "phase-loop-runtime/src/phase_loop_runtime/conformance/"
+                                    "outside_agent_conform_evidence.py"
+                                ),
+                                "module_sha256": hashlib.sha256(
+                                    loaded_module_path.read_bytes()
+                                ).hexdigest(),
+                            }
+                            chronology_mutations.append(inside_root_anchor)
                         forged_b1_content = copy.deepcopy(mode_facts)
                         b1_members = forged_b1_content["chronology"]["git_proof"][
                             "b1_content"
@@ -5025,6 +5618,151 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
                     )
                     refresh_mode_records(mode_records, artifacts)
+                    if repository_anchor is not None:
+                        with monkeypatch.context() as git_environment:
+                            git_environment.setenv("GIT_PAGER", "cat")
+                            with pytest.raises(
+                                (ValueError, AssertionError), match="GIT_|environment"
+                            ):
+                                verifier(mode, mode_records)
+                            assert_production_cli_rejects(mode_records)
+
+                        anchor_repo = root / "repository-anchor-controls"
+                        subprocess.run(
+                            [
+                                "git",
+                                "clone",
+                                "--quiet",
+                                "--no-hardlinks",
+                                str(REPO_ROOT.resolve()),
+                                str(anchor_repo),
+                            ],
+                            check=True,
+                        )
+                        subprocess.run(
+                            ["git", "checkout", "--quiet", "--detach", head_commit],
+                            cwd=anchor_repo,
+                            check=True,
+                        )
+                        anchored_facts = copy.deepcopy(mode_facts)
+                        anchored_facts["chronology"]["git_proof"]["repository_anchor"][
+                            "root"
+                        ] = str(anchor_repo.resolve())
+                        Path(mode_records[0]["artifact_path"]).write_text(
+                            json.dumps(anchored_facts, sort_keys=True), encoding="utf-8"
+                        )
+                        refresh_mode_records(mode_records, artifacts)
+                        verifier(mode, mode_records)
+                        records_path.write_text(
+                            json.dumps(mode_records, sort_keys=True), encoding="utf-8"
+                        )
+                        accepted_anchor = subprocess.run(
+                            evidence_verifier_argv(mode, records_path),
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        assert accepted_anchor.returncode == 0, (
+                            accepted_anchor.stdout + accepted_anchor.stderr
+                        )
+
+                        def assert_contaminated_anchor_rejected() -> None:
+                            Path(mode_records[0]["artifact_path"]).write_text(
+                                json.dumps(anchored_facts, sort_keys=True), encoding="utf-8"
+                            )
+                            refresh_mode_records(mode_records, artifacts)
+                            with pytest.raises((ValueError, AssertionError)):
+                                verifier(mode, mode_records)
+                            assert_production_cli_rejects(mode_records)
+
+                        dirty_path = anchor_repo / "README.md"
+                        original_readme = dirty_path.read_bytes()
+                        dirty_path.write_bytes(original_readme + b"\nanchor dirty control\n")
+                        assert_contaminated_anchor_rejected()
+                        dirty_path.write_bytes(original_readme)
+
+                        git_dir = Path(
+                            subprocess.run(
+                                ["git", "rev-parse", "--absolute-git-dir"],
+                                cwd=anchor_repo,
+                                capture_output=True,
+                                text=True,
+                                check=True,
+                            ).stdout.strip()
+                        )
+                        shallow_path = git_dir / "shallow"
+                        shallow_path.write_text(head_commit + "\n", encoding="ascii")
+                        assert_contaminated_anchor_rejected()
+                        shallow_path.unlink()
+
+                        grafts_path = git_dir / "info" / "grafts"
+                        grafts_path.write_text(head_commit + "\n", encoding="ascii")
+                        assert_contaminated_anchor_rejected()
+                        grafts_path.unlink()
+
+                        subprocess.run(
+                            ["git", "replace", head_commit, parent],
+                            cwd=anchor_repo,
+                            check=True,
+                        )
+                        assert_contaminated_anchor_rejected()
+                        subprocess.run(
+                            ["git", "replace", "-d", head_commit],
+                            cwd=anchor_repo,
+                            check=True,
+                        )
+
+                        alternates_path = git_dir / "objects" / "info" / "alternates"
+                        source_objects = Path(
+                            subprocess.run(
+                                ["git", "rev-parse", "--git-path", "objects"],
+                                cwd=REPO_ROOT,
+                                capture_output=True,
+                                text=True,
+                                check=True,
+                            ).stdout.strip()
+                        ).resolve()
+                        alternates_path.write_text(
+                            str(source_objects) + "\n",
+                            encoding="utf-8",
+                        )
+                        assert_contaminated_anchor_rejected()
+                        alternates_path.unlink()
+
+                        Path(mode_records[0]["artifact_path"]).write_text(
+                            json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
+                        )
+                        refresh_mode_records(mode_records, artifacts)
+                        divergent_module = root / "outside_agent_conform_evidence.py"
+                        divergent_module.write_bytes(
+                            loaded_module_path.read_bytes()
+                            + b"\n# divergent installed verifier bytes\n"
+                        )
+                        divergent_name = (
+                            "phase_loop_runtime.conformance."
+                            "_outside_agent_conform_evidence_divergent"
+                        )
+                        divergent_spec = importlib.util.spec_from_file_location(
+                            divergent_name, divergent_module
+                        )
+                        assert divergent_spec is not None and divergent_spec.loader is not None
+                        divergent_loaded = importlib.util.module_from_spec(divergent_spec)
+                        sys.modules[divergent_name] = divergent_loaded
+                        try:
+                            divergent_spec.loader.exec_module(divergent_loaded)
+                            assert Path(divergent_loaded.__file__).resolve() == (
+                                divergent_module.resolve()
+                            )
+                            divergent_verifier = getattr(
+                                divergent_loaded, "verify_conform_evidence_records"
+                            )
+                            with pytest.raises(
+                                (ValueError, AssertionError),
+                                match="repository_anchor|loaded module|module bytes|byte",
+                            ):
+                                divergent_verifier(mode, mode_records)
+                        finally:
+                            sys.modules.pop(divergent_name, None)
                 if mode == "corpus":
                     forged_facts = copy.deepcopy(mode_facts)
                     forged_rows = copy.deepcopy(forged_facts["corpus"]["rows"])
