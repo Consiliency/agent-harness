@@ -284,6 +284,39 @@ def test_tool_only_transcript_growth_keeps_active_tui_leg_alive(tmp_path, monkey
     assert status != "claude_tui_stalled"
 
 
+def test_pending_tool_gets_one_bounded_stall_extension(tmp_path, monkeypatch):
+    """A flat transcript while a tool is in flight is not turn extinction.
+
+    The exact pending tool receives one extra stall window, then still fails closed
+    if neither its result nor any other genuine progress arrives.
+    """
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 999)
+    monkeypatch.setattr(pi, "_latest_claude_transcript_text", _NO_TRANSCRIPT)
+    monkeypatch.setattr(pi, "_latest_claude_transcript_activity", lambda *a, **k: 1)
+    monkeypatch.setattr(
+        pi, "_latest_claude_pending_tool_uses", lambda *a, **k: ("toolu-long-read",)
+    )
+
+    started = time.monotonic()
+    rc, _text, status, _tail = _run_claude_tui_session(
+        command=["sh", "-c", _WEDGE_SCRIPT],
+        cwd=tmp_path,
+        prompt="review this",
+        output_file=tmp_path / "panel-claude.txt",
+        timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"},
+        backstop_s=10,
+        stall_threshold_s=0.3,
+    )
+    elapsed = time.monotonic() - started
+
+    assert status == "claude_tui_stalled"
+    assert rc != 0
+    assert 0.55 <= elapsed < 3, (
+        f"the pending tool should receive exactly one extra 0.3s window; got {elapsed:.2f}s"
+    )
+
+
 def test_transcript_activity_changes_when_tool_events_append(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
@@ -311,6 +344,51 @@ def test_transcript_activity_changes_when_tool_events_append(tmp_path, monkeypat
     after = pi._latest_claude_transcript_activity(str(tmp_path), since=0)
     assert pi._latest_claude_transcript_text(str(tmp_path), since=0) == text_before
     assert after > before
+
+
+def test_pending_tool_detection_distinguishes_in_flight_from_completed(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    transcript = project / "session.jsonl"
+    monkeypatch.setattr(pi, "_claude_project_dir_for_cwd", lambda _cwd: project)
+
+    tool_use = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu-read-1",
+                    "name": "Read",
+                    "input": {"file_path": "/tmp/x"},
+                }
+            ],
+        },
+    }
+    transcript.write_text(json.dumps(tool_use) + "\n", encoding="utf-8")
+    assert pi._latest_claude_pending_tool_uses(str(tmp_path), since=0) == (
+        "toolu-read-1",
+    )
+
+    tool_result = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu-read-1",
+                    "content": "done",
+                }
+            ],
+        },
+    }
+    with transcript.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(tool_result) + "\n")
+    assert pi._latest_claude_pending_tool_uses(str(tmp_path), since=0) == ()
 
 
 def test_novel_line_split_across_read_boundaries_is_detected_whole():

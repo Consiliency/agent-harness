@@ -1622,6 +1622,56 @@ def _latest_claude_transcript_activity(cwd: str, *, since: float) -> int:
     return total
 
 
+def _latest_claude_pending_tool_uses(cwd: str, *, since: float) -> tuple[str, ...]:
+    """Return unmatched tool-use ids from the newest fresh Claude transcript.
+
+    A long-running tool can leave the JSONL byte count flat for longer than the
+    generic TUI stall window.  That is a legitimate in-flight state, unlike a
+    completed turn whose cosmetic spinner is the only remaining activity.
+    """
+    project_dir = _claude_project_dir_for_cwd(cwd)
+    try:
+        candidates = list(project_dir.glob("*.jsonl"))
+    except OSError:
+        return ()
+    fresh: list[Path] = []
+    for path in candidates:
+        try:
+            if path.stat().st_mtime >= since - 2.0:
+                fresh.append(path)
+        except OSError:
+            continue
+    for path in sorted(fresh, key=lambda p: p.stat().st_mtime, reverse=True):
+        pending: set[str] = set()
+        saw_tool_event = False
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            message = payload.get("message") if isinstance(payload, dict) else None
+            if not isinstance(message, dict):
+                continue
+            for item in message.get("content") or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "tool_use" and isinstance(item.get("id"), str):
+                    pending.add(item["id"])
+                    saw_tool_event = True
+                elif item.get("type") == "tool_result" and isinstance(
+                    item.get("tool_use_id"), str
+                ):
+                    pending.discard(item["tool_use_id"])
+                    saw_tool_event = True
+        if saw_tool_event:
+            return tuple(sorted(pending))
+    return ()
+
+
 def _read_review_output(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace").strip()
@@ -1982,6 +2032,7 @@ def _run_claude_tui_session(
     env: Mapping[str, str],
     mode: str = "review",
     backstop_s: int | None = None,
+    stall_threshold_s: float | None = None,
 ) -> tuple[int, str, str, str]:
     if fcntl is None or pty is None or termios is None:
         return 1, "", "claude_tui_unsupported_platform", ""
@@ -1998,6 +2049,10 @@ def _run_claude_tui_session(
         backstop_s = max(1, int(timeout_s), _MAX_LEG_TIMEOUT_S)
     else:
         backstop_s = max(1, int(backstop_s))
+    if stall_threshold_s is None:
+        stall_threshold_s = _LEG_STALL_THRESHOLD_S
+    else:
+        stall_threshold_s = max(0.01, float(stall_threshold_s))
     deadline = start_monotonic + backstop_s
     master_fd: int | None = None
     proc: subprocess.Popen[bytes] | None = None
@@ -2017,6 +2072,7 @@ def _run_claude_tui_session(
     last_review_len = 0
     last_transcript_len = 0
     last_transcript_activity = 0
+    extended_pending_tool_uses: set[tuple[str, ...]] = set()
     # ah#196/#223 startup state machine: STARTING -> (TRUST_MODAL answered) ->
     # WAITING_FOR_EDITOR (quiescent) -> SUBMITTED. Answer the trust modal at most
     # once, strictly PRE-SUBMIT; gate the paste on editor quiescence AFTER real
@@ -2261,10 +2317,25 @@ def _run_claude_tui_session(
             # stall: no GENUINE progress for the threshold while still running. The
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
             # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
-            if now - last_heartbeat >= _LEG_STALL_THRESHOLD_S:
+            if now - last_heartbeat >= stall_threshold_s:
                 review_text = _read_review_output(output_file)
                 if _completion_ok(review_text, mode):
                     return _finish(0, review_text, "claude_tui_file_output")
+                # agent-harness#343: an unmatched tool_use means the reviewer is
+                # legitimately blocked inside a tool whose transcript cannot grow
+                # until its tool_result arrives. Grant one bounded extra stall window
+                # for this exact pending set. An unchanged tool that outlives that
+                # extension still fails closed, so a wedged tool cannot run forever.
+                pending_tool_uses = _latest_claude_pending_tool_uses(
+                    str(cwd), since=start_wall
+                )
+                if (
+                    pending_tool_uses
+                    and pending_tool_uses not in extended_pending_tool_uses
+                ):
+                    extended_pending_tool_uses.add(pending_tool_uses)
+                    last_heartbeat = now
+                    continue
                 transcript_text = transcript_salvage or _latest_claude_transcript_text(
                     str(cwd), since=start_wall
                 )
