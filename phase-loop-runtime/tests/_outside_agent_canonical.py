@@ -5,6 +5,7 @@ provides a production parser, schema dispatcher, or redaction implementation.
 """
 from __future__ import annotations
 
+import base64
 import copy
 import gzip
 import hashlib
@@ -76,11 +77,65 @@ def _normalize_sdist_gzip(path: Path, *, source_date_epoch: str) -> None:
             archive.write(payload.getvalue())
 
 
+def _normalized_wheel_external_attr(external_attr: int) -> int:
+    """Restore the regular-file type bit newer setuptools omits on ``RECORD``."""
+    mode = (external_attr >> 16) & 0xFFFF
+    if mode and not mode & 0o170000:
+        mode |= 0o100000
+    return (mode << 16) | (external_attr & 0xFFFF)
+
+
+def _normalize_wheel_producer_stamp(members: list[tuple[str, bytes]]) -> dict[str, bytes]:
+    """Erase the producer version stamp the unpinned setuptools floor lets float.
+
+    ``setuptools`` writes its own version into the ``Generator:`` line of
+    ``.dist-info/WHEEL``, so the sealed wheel digest floats with whatever
+    version the unpinned ``setuptools>=68`` floor resolves. Canonicalize that
+    one line to a producer-independent literal, then restore the ``RECORD``
+    entry that hashes the rewritten member. This is the wheel-side equivalent
+    of the sdist guarantee ``_normalize_sdist_gzip()`` already provides.
+    """
+    normalized = {name: contents for name, contents in members}
+    wheel_name = next(
+        (name for name in normalized if name.endswith(".dist-info/WHEEL")), None
+    )
+    if wheel_name is None:
+        return normalized
+    normalized[wheel_name] = b"".join(
+        b"Generator: setuptools\n"
+        if line.startswith(b"Generator: setuptools ")
+        else line
+        for line in normalized[wheel_name].splitlines(keepends=True)
+    )
+    record_name = next(
+        (name for name in normalized if name.endswith(".dist-info/RECORD")), None
+    )
+    if record_name is None:
+        return normalized
+    digest = base64.urlsafe_b64encode(
+        hashlib.sha256(normalized[wheel_name]).digest()
+    ).rstrip(b"=")
+    entry = b"%s,sha256=%s,%d\n" % (
+        wheel_name.encode("utf-8"),
+        digest,
+        len(normalized[wheel_name]),
+    )
+    normalized[record_name] = b"".join(
+        entry if line.startswith(wheel_name.encode("utf-8") + b",") else line
+        for line in normalized[record_name].splitlines(keepends=True)
+    )
+    return normalized
+
+
 def _normalize_wheel_zip(path: Path, *, source_date_epoch: str) -> None:
-    """Canonicalize wheel member order and ZIP metadata."""
+    """Canonicalize wheel member order, ZIP metadata, and the producer stamp."""
     timestamp = time.gmtime(max(int(source_date_epoch), 315532800))[:6]
     with zipfile.ZipFile(path) as source:
-        members = [(info, source.read(info.filename)) for info in source.infolist()]
+        infos = source.infolist()
+        contents = _normalize_wheel_producer_stamp(
+            [(info.filename, source.read(info.filename)) for info in infos]
+        )
+        members = [(info, contents[info.filename]) for info in infos]
 
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w") as archive:
@@ -88,7 +143,7 @@ def _normalize_wheel_zip(path: Path, *, source_date_epoch: str) -> None:
             member = zipfile.ZipInfo(original.filename, date_time=timestamp)
             member.compress_type = zipfile.ZIP_STORED
             member.create_system = original.create_system
-            member.external_attr = original.external_attr
+            member.external_attr = _normalized_wheel_external_attr(original.external_attr)
             member.internal_attr = original.internal_attr
             member.flag_bits = original.flag_bits
             archive.writestr(member, contents)
