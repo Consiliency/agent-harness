@@ -3219,15 +3219,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
         module_path = installed_root / "outside_agent_conform_evidence.py"
         module_path.write_text("", encoding="utf-8")
         bytecode_cache = contract_root / "consiliency_spec" / "__pycache__"
-        bytecode_cache.mkdir()
+        bytecode_cache.mkdir(exist_ok=True)
         cached_bytecode = bytecode_cache / "outside_agent.cpython-312.pyc"
         cached_bytecode.write_bytes(b"cache")
         cached_non_bytecode = bytecode_cache / "unexpected.json"
         cached_non_bytecode.write_text("{}", encoding="utf-8")
         out_of_cache_bytecode = contract_root / "consiliency_spec" / "unexpected.pyc"
         out_of_cache_bytecode.write_bytes(b"not-cache")
-        monkeypatch.setattr(verifier_module, "__file__", str(module_path))
-        installed_members, _ = verifier_module._expected_contract_members()
+        with monkeypatch.context() as cache_patch:
+            cache_patch.setattr(verifier_module, "__file__", str(module_path))
+            installed_members, _ = verifier_module._expected_contract_members()
         member_prefix = "phase_loop_runtime/conformance/_contract/"
         assert member_prefix + "consiliency_spec/__pycache__/outside_agent.cpython-312.pyc" not in installed_members
         assert member_prefix + "consiliency_spec/__pycache__/unexpected.json" in installed_members
@@ -3944,6 +3945,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     final_parent_repair_landing, final_parent_repair_candidate, final_parent_repair_parent = None, None, None
                     history_retention_landing, history_retention_candidate, history_retention_parent = None, None, None
                     history_retention_matches = []
+                    post_review_test_landing, post_review_test_candidate, post_review_plan_candidate, post_review_test_parent = None, None, None, None
+                    post_review_chronology_landing, post_review_chronology_candidate, post_review_chronology_plan_candidate, post_review_chronology_parent = None, None, None, None
                     impl_landing, impl_candidate, impl_parent = None, None, None
                     repair_paths = {
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
@@ -3967,6 +3970,15 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "phase-loop-runtime/tests/_outside_agent_canonical.py",
                     }
                     history_retention_paths = {
+                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                    }
+                    post_review_test_paths = {
+                        "plans/phase-plan-v10-CONFORM.md",
+                        "phase-loop-runtime/tests/test_outside_agent_redaction_separation.py",
+                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                    }
+                    post_review_chronology_paths = {
+                        "plans/phase-plan-v10-CONFORM.md",
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
                     }
                     seal_repair_topology = CONFORM_HISTORY_RETENTION_CLASSIFIER[
@@ -4051,6 +4063,97 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                                     "History-retention candidate has unexpected RED/GREEN semantics"
                                 )
                             history_retention_matches.append(topology)
+                        elif files_changed == post_review_test_paths:
+                            candidate_commits = git(
+                                "rev-list", "--reverse", f"{p1}..{p2}"
+                            ).splitlines()
+                            if len(candidate_commits) != 2:
+                                raise ValueError(
+                                    "Post-review test candidate must contain exact plan/test commits"
+                                )
+                            plan_candidate, test_candidate = candidate_commits
+                            plan_vector = git(
+                                "rev-list", "--parents", "-n", "1", plan_candidate
+                            ).split()
+                            test_vector = git(
+                                "rev-list", "--parents", "-n", "1", test_candidate
+                            ).split()
+                            plan_paths = set(
+                                git("diff", "--name-only", p1, plan_candidate).splitlines()
+                            )
+                            test_paths = set(
+                                git(
+                                    "diff",
+                                    "--name-only",
+                                    plan_candidate,
+                                    test_candidate,
+                                ).splitlines()
+                            )
+                            if (
+                                plan_vector != [plan_candidate, p1]
+                                or test_vector != [test_candidate, plan_candidate]
+                                or plan_paths != {"plans/phase-plan-v10-CONFORM.md"}
+                                or test_paths
+                                != {
+                                    "phase-loop-runtime/tests/test_outside_agent_redaction_separation.py",
+                                    "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                                }
+                                or "Post-review scalar-locator and installed-cache repair"
+                                not in candidate_patch
+                                or "additional_submission_paths" not in candidate_patch
+                                or "consiliency_spec/__pycache__" not in candidate_patch
+                            ):
+                                raise ValueError(
+                                    "Post-review test candidate has unexpected semantics"
+                                )
+                            if post_review_test_landing is not None:
+                                raise ValueError("Ambiguous post-review test landing")
+                            post_review_test_landing = m
+                            post_review_test_parent = p1
+                            post_review_plan_candidate = plan_candidate
+                            post_review_test_candidate = test_candidate
+                        elif files_changed == post_review_chronology_paths:
+                            candidate_commits = git(
+                                "rev-list", "--reverse", f"{p1}..{p2}"
+                            ).splitlines()
+                            if len(candidate_commits) != 2:
+                                raise ValueError(
+                                    "Post-review chronology candidate must contain exact plan/test commits"
+                                )
+                            plan_candidate, test_candidate = candidate_commits
+                            plan_paths = set(
+                                git("diff", "--name-only", p1, plan_candidate).splitlines()
+                            )
+                            test_paths = set(
+                                git(
+                                    "diff",
+                                    "--name-only",
+                                    plan_candidate,
+                                    test_candidate,
+                                ).splitlines()
+                            )
+                            if (
+                                git("rev-list", "--parents", "-n", "1", plan_candidate).split()
+                                != [plan_candidate, p1]
+                                or git("rev-list", "--parents", "-n", "1", test_candidate).split()
+                                != [test_candidate, plan_candidate]
+                                or plan_paths != {"plans/phase-plan-v10-CONFORM.md"}
+                                or test_paths
+                                != {
+                                    "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py"
+                                }
+                                or "post_review_chronology_landing" not in candidate_patch
+                                or "post_review_chronology_paths" not in candidate_patch
+                            ):
+                                raise ValueError(
+                                    "Post-review chronology candidate has unexpected semantics"
+                                )
+                            if post_review_chronology_landing is not None:
+                                raise ValueError("Ambiguous post-review chronology landing")
+                            post_review_chronology_landing = m
+                            post_review_chronology_parent = p1
+                            post_review_chronology_plan_candidate = plan_candidate
+                            post_review_chronology_candidate = test_candidate
                         elif files_changed == repair_paths:
                             repair_landing = m
                             repair_candidate = p2
@@ -4109,6 +4212,42 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         history_retention_parent,
                         history_retention_candidate,
                     ) = _select_history_retention_landing(history_retention_matches)
+                    if None in (
+                        post_review_test_landing,
+                        post_review_test_parent,
+                        post_review_plan_candidate,
+                        post_review_test_candidate,
+                    ):
+                        raise ValueError("Missing required post-review test landing topology")
+                    post_review_parent_vector = git(
+                        "rev-list", "--parents", "-n", "1", post_review_test_landing
+                    ).split()
+                    if post_review_parent_vector != [
+                        post_review_test_landing,
+                        post_review_test_parent,
+                        post_review_test_candidate,
+                    ]:
+                        raise ValueError(
+                            "Post-review test landing must have exactly two ordered parents"
+                        )
+                    if None in (
+                        post_review_chronology_landing,
+                        post_review_chronology_parent,
+                        post_review_chronology_plan_candidate,
+                        post_review_chronology_candidate,
+                    ):
+                        raise ValueError("Missing required post-review chronology landing topology")
+                    post_review_chronology_parent_vector = git(
+                        "rev-list", "--parents", "-n", "1", post_review_chronology_landing
+                    ).split()
+                    if post_review_chronology_parent_vector != [
+                        post_review_chronology_landing,
+                        post_review_chronology_parent,
+                        post_review_chronology_candidate,
+                    ] or post_review_chronology_parent != post_review_test_landing:
+                        raise ValueError(
+                            "Post-review chronology landing must descend from the post-review test landing"
+                        )
                     support_landings = {
                         "reproducible_sdist_landing": (
                             reproducible_sdist_landing,
@@ -4124,6 +4263,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             history_retention_landing,
                             history_retention_parent,
                             history_retention_candidate,
+                        ),
+                        "post_review_test_landing": (
+                            post_review_test_landing,
+                            post_review_test_parent,
+                            post_review_test_candidate,
+                        ),
+                        "post_review_chronology_landing": (
+                            post_review_chronology_landing,
+                            post_review_chronology_parent,
+                            post_review_chronology_candidate,
                         ),
                     }
                     support_parent_vectors = {}
@@ -4194,6 +4343,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         history_retention_candidate,
                         history_retention_paths,
                     )
+                    post_review_test_paths_dict = capture_paths(
+                        post_review_test_parent,
+                        post_review_test_candidate,
+                        post_review_test_paths,
+                    )
+                    post_review_chronology_paths_dict = capture_paths(
+                        post_review_chronology_parent,
+                        post_review_chronology_candidate,
+                        post_review_chronology_paths,
+                    )
 
                     original_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
                     original_implementation_commits = [
@@ -4231,7 +4390,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     reb_head = final_candidate if sl2_transitioned else candidate
                     range_diff_output = git(
                         "range-diff", "--no-color", f"{original_base}..{orig_head}",
-                        f"{history_retention_landing}..{reb_head}",
+                        f"{post_review_chronology_landing}..{reb_head}",
                     )
 
                     if sl2_transitioned:
@@ -4243,22 +4402,25 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         original_commits = list(original_implementation_commits)
 
                     rebased_commits = git(
-                        "rev-list", "--reverse", f"{history_retention_landing}..{reb_head}"
+                        "rev-list", "--reverse", f"{post_review_chronology_landing}..{reb_head}"
                     ).splitlines()
                     rebased_commits = [git("rev-parse", c).lower() for c in rebased_commits]
 
                     if sl2_transitioned:
                         if len(original_commits) != 5:
                             raise ValueError(f"original_commits count mismatch: {len(original_commits)}")
-                        if len(rebased_commits) < 6:
+                        if len(rebased_commits) != 6:
                             raise ValueError(f"rebased_commits count mismatch: {len(rebased_commits)}")
                     else:
                         if len(original_commits) != 4:
                             raise ValueError(f"original_commits count mismatch: {len(original_commits)}")
-                        if len(rebased_commits) < 4:
+                        if len(rebased_commits) != 5:
                             raise ValueError(f"rebased_commits count mismatch: {len(rebased_commits)}")
 
-                    verifier_path = "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"
+                    verifier_paths = {
+                        "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                        "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py",
+                    }
                     inserted_matches = []
                     for rebased_commit in rebased_commits:
                         trailers = git("show", "-s", "--format=%(trailers:key=Conformance-Verifier,valueonly)", rebased_commit).splitlines()
@@ -4279,17 +4441,20 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         inserted_parent = inserted_parents[1]
 
                         inserted_files = set(git("diff", "--name-only", inserted_parent, inserted_commit).splitlines())
-                        if inserted_files != {verifier_path}:
+                        if inserted_files != verifier_paths:
                             raise ValueError(f"Chronology verifier commit {inserted_commit} changed unexpected files: {inserted_files}")
 
-                        impl_patch = git("diff", "--no-color", "-U0", inserted_parent, inserted_commit, "--", verifier_path)
+                        impl_patch = git(
+                            "diff", "--no-color", "-U0", inserted_parent, inserted_commit,
+                            "--", *sorted(verifier_paths)
+                        )
                         if not impl_patch:
                             raise ValueError(f"Chronology verifier commit {inserted_commit} has an empty patch")
                         impl_patch_digest = hashlib.sha256(impl_patch.encode("utf-8")).hexdigest()
                         if impl_patch_digest == "0" * 64 or impl_patch_digest == hashlib.sha256(b"").hexdigest() or not impl_patch_digest:
                             raise ValueError(f"Chronology verifier commit {inserted_commit} has a zero or invalid digest")
                         implementation_patch_slot = {
-                            "path": verifier_path,
+                            "paths": sorted(verifier_paths),
                             "patch": impl_patch,
                             "patch_digest": impl_patch_digest,
                         }
@@ -4303,7 +4468,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "range_diff": historical_repair_range_diff,
                     }
                     contract_bug_rebase_transition = {
-                        "base_commit": history_retention_landing,
+                        "base_commit": post_review_chronology_landing,
                         "original_commits": original_commits,
                         "reviewed_f17ab557_commits": reviewed_f17ab557_commits,
                         "rebased_commits": rebased_commits,
@@ -4368,6 +4533,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             history_retention_landing,
                             history_retention_parent,
                             history_retention_candidate,
+                        ),
+                        "post_review_test_landing": (
+                            post_review_test_landing,
+                            post_review_test_parent,
+                            post_review_test_candidate,
+                        ),
+                        "post_review_chronology_landing": (
+                            post_review_chronology_landing,
+                            post_review_chronology_parent,
+                            post_review_chronology_candidate,
                         ),
                     }
                     if chronology_scope == "exact_main":
@@ -4661,6 +4836,22 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "history_retention_candidate_tree": git("rev-parse", f"{history_retention_candidate}^{{tree}}"),
                         "history_retention_landing": history_retention_landing,
                         "history_retention_landing_tree": git("rev-parse", f"{history_retention_landing}^{{tree}}"),
+                        "post_review_test_parent": post_review_test_parent,
+                        "post_review_test_parent_tree": git("rev-parse", f"{post_review_test_parent}^{{tree}}"),
+                        "post_review_plan_candidate": post_review_plan_candidate,
+                        "post_review_plan_candidate_tree": git("rev-parse", f"{post_review_plan_candidate}^{{tree}}"),
+                        "post_review_test_candidate": post_review_test_candidate,
+                        "post_review_test_candidate_tree": git("rev-parse", f"{post_review_test_candidate}^{{tree}}"),
+                        "post_review_test_landing": post_review_test_landing,
+                        "post_review_test_landing_tree": git("rev-parse", f"{post_review_test_landing}^{{tree}}"),
+                        "post_review_chronology_parent": post_review_chronology_parent,
+                        "post_review_chronology_parent_tree": git("rev-parse", f"{post_review_chronology_parent}^{{tree}}"),
+                        "post_review_chronology_plan_candidate": post_review_chronology_plan_candidate,
+                        "post_review_chronology_plan_candidate_tree": git("rev-parse", f"{post_review_chronology_plan_candidate}^{{tree}}"),
+                        "post_review_chronology_candidate": post_review_chronology_candidate,
+                        "post_review_chronology_candidate_tree": git("rev-parse", f"{post_review_chronology_candidate}^{{tree}}"),
+                        "post_review_chronology_landing": post_review_chronology_landing,
+                        "post_review_chronology_landing_tree": git("rev-parse", f"{post_review_chronology_landing}^{{tree}}"),
                         "candidate_commit": candidate,
                         "candidate_tree": candidate_tree,
                         "final_candidate": final_candidate,
@@ -4681,6 +4872,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "history_retention_landing": support_parent_vectors[
                             "history_retention_landing"
                         ][1:],
+                        "post_review_test_landing": post_review_parent_vector[1:],
+                        "post_review_chronology_landing": post_review_chronology_parent_vector[1:],
                     }
                     if chronology_scope in {"a2_candidate", "exact_main"}:
                         identities.update(
@@ -4719,6 +4912,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "reproducible_sdist_paths": reproducible_sdist_paths_dict,
                         "final_parent_repair_paths": final_parent_repair_paths_dict,
                         "history_retention_paths": history_retention_paths_dict,
+                        "post_review_test_paths": post_review_test_paths_dict,
+                        "post_review_chronology_paths": post_review_chronology_paths_dict,
                         "implementation_patch_slot": implementation_patch_slot,
                         "b1_content": b1_content,
                         "transition": contract_bug_rebase_transition,
@@ -5035,6 +5230,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "reproducible_sdist_landing",
                         "final_parent_repair_landing",
                         "history_retention_landing",
+                        "post_review_test_landing",
+                        "post_review_chronology_landing",
                         *(
                             {"implementation_landing"}
                             if chronology_scope == "exact_main"
@@ -5057,7 +5254,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_landing"
                     ]
                     assert contract_bug_transition["base_commit"] == identities[
-                        "history_retention_landing"
+                        "post_review_chronology_landing"
                     ]
                     assert len(historical_transition["original_commits"]) == 4
                     assert len(contract_bug_transition["original_commits"][:4]) == 4
@@ -5401,6 +5598,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "reproducible_sdist_landing",
                             "final_parent_repair_landing",
                             "history_retention_landing",
+                            "post_review_test_landing",
+                            "post_review_chronology_landing",
                         ):
                             support_paths_key = (
                                 support_label.removesuffix("_landing") + "_paths"
@@ -5446,6 +5645,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                                 "parent_vectors"
                             ].pop(support_label)
                             chronology_mutations.append(missing_support_landing)
+                            if support_label == "post_review_chronology_landing":
+                                forged_chronology_parent = copy.deepcopy(mode_facts)
+                                forged_chronology_parent["chronology"]["git_proof"][
+                                    "parent_vectors"
+                                ][support_label][0] = forged_chronology_parent[
+                                    "chronology"
+                                ]["git_proof"]["parent_vectors"][
+                                    "post_review_test_landing"
+                                ][0]
+                                chronology_mutations.append(forged_chronology_parent)
                         forged_merge_result = copy.deepcopy(mode_facts)
                         forged_merge_result["chronology"]["git_proof"][
                             "merge_result_trees"
@@ -5465,6 +5674,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "reproducible_sdist_landing",
                             "final_parent_repair_landing",
                             "history_retention_landing",
+                            "post_review_test_landing",
+                            "post_review_chronology_landing",
                         ):
                             forged_support_merge_result = copy.deepcopy(mode_facts)
                             forged_support_merge_result["chronology"]["git_proof"][
