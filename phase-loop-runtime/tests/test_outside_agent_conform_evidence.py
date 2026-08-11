@@ -82,6 +82,7 @@ from _outside_agent_canonical import (
     submission_entries,
     _member_digests,
     _normalize_sdist_gzip,
+    _normalize_wheel_zip,
     _build_a2_package_evidence,
     _a2_package_evidence_sha256,
     _sealed_manifest_sha256,
@@ -997,11 +998,32 @@ def _build_candidate_package_archives(
         env=environment,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+    derived_wheel = next(derived_wheel_dist.glob("*.whl"))
+    _normalize_wheel_zip(
+        direct_wheel, source_date_epoch=source_date_epoch.stdout.strip()
+    )
+    _normalize_wheel_zip(
+        derived_wheel, source_date_epoch=source_date_epoch.stdout.strip()
+    )
     return {
         "direct-wheel": direct_wheel,
         "direct-sdist": direct_sdist,
-        "sdist-derived-wheel": next(derived_wheel_dist.glob("*.whl")),
+        "sdist-derived-wheel": derived_wheel,
     }
+
+
+def test_wheel_normalization_removes_zip_timestamp_nondeterminism(tmp_path: Path) -> None:
+    wheels = [tmp_path / "first.whl", tmp_path / "second.whl"]
+    timestamps = ((2020, 1, 1, 0, 0, 0), (2026, 8, 11, 0, 0, 0))
+    for wheel, timestamp in zip(wheels, timestamps):
+        with zipfile.ZipFile(wheel, "w") as archive:
+            member = zipfile.ZipInfo("package/module.py", date_time=timestamp)
+            archive.writestr(member, b"VALUE = 1\n")
+
+    for wheel in wheels:
+        _normalize_wheel_zip(wheel, source_date_epoch="315532800")
+
+    assert wheels[0].read_bytes() == wheels[1].read_bytes()
 
 
 def _capture_subprocess_observable(
