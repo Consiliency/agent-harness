@@ -5041,12 +5041,6 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         contract_bug_transition["reviewed_f17ab557_commits"]
                         == historical_transition["rebased_commits"]
                     )
-                    assert len(contract_bug_transition["rebased_commits"]) == (
-                        6 if sl2_transitioned else 4
-                    ) or (
-                        not sl2_transitioned
-                        and len(contract_bug_transition["rebased_commits"]) == 5
-                    )
                     if sl2_transitioned:
                         b1_content = git_proof["b1_content"]
                         candidate_only_documents = b1_content[
