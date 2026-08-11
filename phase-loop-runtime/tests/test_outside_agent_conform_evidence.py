@@ -3947,6 +3947,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     history_retention_matches = []
                     post_review_test_landing, post_review_test_candidate, post_review_plan_candidate, post_review_test_parent = None, None, None, None
                     post_review_chronology_landing, post_review_chronology_candidate, post_review_chronology_plan_candidate, post_review_chronology_parent = None, None, None, None
+                    post_review_wheel_normalization_landing, post_review_wheel_normalization_candidate, post_review_wheel_normalization_plan_candidate, post_review_wheel_normalization_parent = None, None, None, None
+                    post_review_producer_landing, post_review_producer_candidate, post_review_producer_plan_candidate, post_review_producer_parent = None, None, None, None
                     impl_landing, impl_candidate, impl_parent = None, None, None
                     repair_paths = {
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
@@ -3978,6 +3980,14 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
                     }
                     post_review_chronology_paths = {
+                        "plans/phase-plan-v10-CONFORM.md",
+                        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+                    }
+                    post_review_wheel_normalization_paths = {
+                        "plans/phase-plan-v10-CONFORM.md",
+                        "phase-loop-runtime/tests/_outside_agent_canonical.py",
+                    }
+                    post_review_producer_paths = {
                         "plans/phase-plan-v10-CONFORM.md",
                         "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
                     }
@@ -4112,6 +4122,93 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             post_review_test_parent = p1
                             post_review_plan_candidate = plan_candidate
                             post_review_test_candidate = test_candidate
+                        elif (
+                            files_changed == post_review_producer_paths
+                            and "post_review_producer_landing" in candidate_patch
+                        ):
+                            candidate_commits = git(
+                                "rev-list", "--reverse", f"{p1}..{p2}"
+                            ).splitlines()
+                            if len(candidate_commits) != 2:
+                                raise ValueError(
+                                    "Post-review producer candidate must contain exact plan/test commits"
+                                )
+                            plan_candidate, test_candidate = candidate_commits
+                            plan_paths = set(
+                                git("diff", "--name-only", p1, plan_candidate).splitlines()
+                            )
+                            test_paths = set(
+                                git(
+                                    "diff",
+                                    "--name-only",
+                                    plan_candidate,
+                                    test_candidate,
+                                ).splitlines()
+                            )
+                            if (
+                                git("rev-list", "--parents", "-n", "1", plan_candidate).split()
+                                != [plan_candidate, p1]
+                                or git("rev-list", "--parents", "-n", "1", test_candidate).split()
+                                != [test_candidate, plan_candidate]
+                                or plan_paths != {"plans/phase-plan-v10-CONFORM.md"}
+                                or test_paths
+                                != {
+                                    "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py"
+                                }
+                                or "post_review_producer_paths" not in candidate_patch
+                                or "post_review_wheel_normalization_paths" not in candidate_patch
+                            ):
+                                raise ValueError(
+                                    "Post-review producer candidate has unexpected semantics"
+                                )
+                            if post_review_producer_landing is not None:
+                                raise ValueError("Ambiguous post-review producer landing")
+                            post_review_producer_landing = m
+                            post_review_producer_parent = p1
+                            post_review_producer_plan_candidate = plan_candidate
+                            post_review_producer_candidate = test_candidate
+                        elif files_changed == post_review_wheel_normalization_paths:
+                            candidate_commits = git(
+                                "rev-list", "--reverse", f"{p1}..{p2}"
+                            ).splitlines()
+                            if len(candidate_commits) != 2:
+                                raise ValueError(
+                                    "Post-review wheel-normalization candidate must contain exact plan/test commits"
+                                )
+                            plan_candidate, test_candidate = candidate_commits
+                            plan_paths = set(
+                                git("diff", "--name-only", p1, plan_candidate).splitlines()
+                            )
+                            test_paths = set(
+                                git(
+                                    "diff",
+                                    "--name-only",
+                                    plan_candidate,
+                                    test_candidate,
+                                ).splitlines()
+                            )
+                            if (
+                                git("rev-list", "--parents", "-n", "1", plan_candidate).split()
+                                != [plan_candidate, p1]
+                                or git("rev-list", "--parents", "-n", "1", test_candidate).split()
+                                != [test_candidate, plan_candidate]
+                                or plan_paths != {"plans/phase-plan-v10-CONFORM.md"}
+                                or test_paths
+                                != {
+                                    "phase-loop-runtime/tests/_outside_agent_canonical.py"
+                                }
+                                or "_normalize_wheel_producer_stamp" not in candidate_patch
+                                or "Generator: setuptools" not in candidate_patch
+                            ):
+                                raise ValueError(
+                                    "Post-review wheel-normalization candidate has unexpected semantics"
+                                )
+                            if post_review_wheel_normalization_landing is not None:
+                                raise ValueError("Ambiguous post-review wheel-normalization landing")
+                            post_review_wheel_normalization_landing = m
+                            post_review_wheel_normalization_parent = p1
+                            post_review_wheel_normalization_plan_candidate = plan_candidate
+                            post_review_wheel_normalization_candidate = test_candidate
                         elif files_changed == post_review_chronology_paths:
                             candidate_commits = git(
                                 "rev-list", "--reverse", f"{p1}..{p2}"
@@ -4248,6 +4345,42 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         raise ValueError(
                             "Post-review chronology landing must descend from the post-review test landing"
                         )
+                    if None in (
+                        post_review_wheel_normalization_landing,
+                        post_review_wheel_normalization_parent,
+                        post_review_wheel_normalization_plan_candidate,
+                        post_review_wheel_normalization_candidate,
+                    ):
+                        raise ValueError("Missing required post-review wheel-normalization landing topology")
+                    post_review_wheel_normalization_parent_vector = git(
+                        "rev-list", "--parents", "-n", "1", post_review_wheel_normalization_landing
+                    ).split()
+                    if post_review_wheel_normalization_parent_vector != [
+                        post_review_wheel_normalization_landing,
+                        post_review_wheel_normalization_parent,
+                        post_review_wheel_normalization_candidate,
+                    ] or post_review_wheel_normalization_parent != post_review_chronology_landing:
+                        raise ValueError(
+                            "Post-review wheel-normalization landing must descend from the post-review chronology landing"
+                        )
+                    if None in (
+                        post_review_producer_landing,
+                        post_review_producer_parent,
+                        post_review_producer_plan_candidate,
+                        post_review_producer_candidate,
+                    ):
+                        raise ValueError("Missing required post-review producer landing topology")
+                    post_review_producer_parent_vector = git(
+                        "rev-list", "--parents", "-n", "1", post_review_producer_landing
+                    ).split()
+                    if post_review_producer_parent_vector != [
+                        post_review_producer_landing,
+                        post_review_producer_parent,
+                        post_review_producer_candidate,
+                    ] or post_review_producer_parent != post_review_wheel_normalization_landing:
+                        raise ValueError(
+                            "Post-review producer landing must descend from the post-review wheel-normalization landing"
+                        )
                     support_landings = {
                         "reproducible_sdist_landing": (
                             reproducible_sdist_landing,
@@ -4273,6 +4406,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             post_review_chronology_landing,
                             post_review_chronology_parent,
                             post_review_chronology_candidate,
+                        ),
+                        "post_review_wheel_normalization_landing": (
+                            post_review_wheel_normalization_landing,
+                            post_review_wheel_normalization_parent,
+                            post_review_wheel_normalization_candidate,
+                        ),
+                        "post_review_producer_landing": (
+                            post_review_producer_landing,
+                            post_review_producer_parent,
+                            post_review_producer_candidate,
                         ),
                     }
                     support_parent_vectors = {}
@@ -4353,6 +4496,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         post_review_chronology_candidate,
                         post_review_chronology_paths,
                     )
+                    post_review_wheel_normalization_paths_dict = capture_paths(
+                        post_review_wheel_normalization_parent,
+                        post_review_wheel_normalization_candidate,
+                        post_review_wheel_normalization_paths,
+                    )
+                    post_review_producer_paths_dict = capture_paths(
+                        post_review_producer_parent,
+                        post_review_producer_candidate,
+                        post_review_producer_paths,
+                    )
 
                     original_base = "287d447c37ce51b0ab5a7498e32d6c0c78c69027"
                     original_implementation_commits = [
@@ -4390,7 +4543,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     reb_head = final_candidate if sl2_transitioned else candidate
                     range_diff_output = git(
                         "range-diff", "--no-color", f"{original_base}..{orig_head}",
-                        f"{post_review_chronology_landing}..{reb_head}",
+                        f"{post_review_producer_landing}..{reb_head}",
                     )
 
                     if sl2_transitioned:
@@ -4402,7 +4555,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         original_commits = list(original_implementation_commits)
 
                     rebased_commits = git(
-                        "rev-list", "--reverse", f"{post_review_chronology_landing}..{reb_head}"
+                        "rev-list", "--reverse", f"{post_review_producer_landing}..{reb_head}"
                     ).splitlines()
                     rebased_commits = [git("rev-parse", c).lower() for c in rebased_commits]
 
@@ -4468,7 +4621,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "range_diff": historical_repair_range_diff,
                     }
                     contract_bug_rebase_transition = {
-                        "base_commit": post_review_chronology_landing,
+                        "base_commit": post_review_producer_landing,
                         "original_commits": original_commits,
                         "reviewed_f17ab557_commits": reviewed_f17ab557_commits,
                         "rebased_commits": rebased_commits,
@@ -4543,6 +4696,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             post_review_chronology_landing,
                             post_review_chronology_parent,
                             post_review_chronology_candidate,
+                        ),
+                        "post_review_wheel_normalization_landing": (
+                            post_review_wheel_normalization_landing,
+                            post_review_wheel_normalization_parent,
+                            post_review_wheel_normalization_candidate,
+                        ),
+                        "post_review_producer_landing": (
+                            post_review_producer_landing,
+                            post_review_producer_parent,
+                            post_review_producer_candidate,
                         ),
                     }
                     if chronology_scope == "exact_main":
@@ -4852,6 +5015,22 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "post_review_chronology_candidate_tree": git("rev-parse", f"{post_review_chronology_candidate}^{{tree}}"),
                         "post_review_chronology_landing": post_review_chronology_landing,
                         "post_review_chronology_landing_tree": git("rev-parse", f"{post_review_chronology_landing}^{{tree}}"),
+                        "post_review_wheel_normalization_parent": post_review_wheel_normalization_parent,
+                        "post_review_wheel_normalization_parent_tree": git("rev-parse", f"{post_review_wheel_normalization_parent}^{{tree}}"),
+                        "post_review_wheel_normalization_plan_candidate": post_review_wheel_normalization_plan_candidate,
+                        "post_review_wheel_normalization_plan_candidate_tree": git("rev-parse", f"{post_review_wheel_normalization_plan_candidate}^{{tree}}"),
+                        "post_review_wheel_normalization_candidate": post_review_wheel_normalization_candidate,
+                        "post_review_wheel_normalization_candidate_tree": git("rev-parse", f"{post_review_wheel_normalization_candidate}^{{tree}}"),
+                        "post_review_wheel_normalization_landing": post_review_wheel_normalization_landing,
+                        "post_review_wheel_normalization_landing_tree": git("rev-parse", f"{post_review_wheel_normalization_landing}^{{tree}}"),
+                        "post_review_producer_parent": post_review_producer_parent,
+                        "post_review_producer_parent_tree": git("rev-parse", f"{post_review_producer_parent}^{{tree}}"),
+                        "post_review_producer_plan_candidate": post_review_producer_plan_candidate,
+                        "post_review_producer_plan_candidate_tree": git("rev-parse", f"{post_review_producer_plan_candidate}^{{tree}}"),
+                        "post_review_producer_candidate": post_review_producer_candidate,
+                        "post_review_producer_candidate_tree": git("rev-parse", f"{post_review_producer_candidate}^{{tree}}"),
+                        "post_review_producer_landing": post_review_producer_landing,
+                        "post_review_producer_landing_tree": git("rev-parse", f"{post_review_producer_landing}^{{tree}}"),
                         "candidate_commit": candidate,
                         "candidate_tree": candidate_tree,
                         "final_candidate": final_candidate,
@@ -4874,6 +5053,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         ][1:],
                         "post_review_test_landing": post_review_parent_vector[1:],
                         "post_review_chronology_landing": post_review_chronology_parent_vector[1:],
+                        "post_review_wheel_normalization_landing": post_review_wheel_normalization_parent_vector[1:],
+                        "post_review_producer_landing": post_review_producer_parent_vector[1:],
                     }
                     if chronology_scope in {"a2_candidate", "exact_main"}:
                         identities.update(
@@ -4914,6 +5095,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "history_retention_paths": history_retention_paths_dict,
                         "post_review_test_paths": post_review_test_paths_dict,
                         "post_review_chronology_paths": post_review_chronology_paths_dict,
+                        "post_review_wheel_normalization_paths": post_review_wheel_normalization_paths_dict,
+                        "post_review_producer_paths": post_review_producer_paths_dict,
                         "implementation_patch_slot": implementation_patch_slot,
                         "b1_content": b1_content,
                         "transition": contract_bug_rebase_transition,
@@ -5232,6 +5415,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "history_retention_landing",
                         "post_review_test_landing",
                         "post_review_chronology_landing",
+                        "post_review_wheel_normalization_landing",
+                        "post_review_producer_landing",
                         *(
                             {"implementation_landing"}
                             if chronology_scope == "exact_main"
@@ -5254,7 +5439,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         "repair_landing"
                     ]
                     assert contract_bug_transition["base_commit"] == identities[
-                        "post_review_chronology_landing"
+                        "post_review_producer_landing"
                     ]
                     assert len(historical_transition["original_commits"]) == 4
                     assert len(contract_bug_transition["original_commits"][:4]) == 4
@@ -5600,6 +5785,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "history_retention_landing",
                             "post_review_test_landing",
                             "post_review_chronology_landing",
+                            "post_review_wheel_normalization_landing",
+                            "post_review_producer_landing",
                         ):
                             support_paths_key = (
                                 support_label.removesuffix("_landing") + "_paths"
@@ -5676,6 +5863,8 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             "history_retention_landing",
                             "post_review_test_landing",
                             "post_review_chronology_landing",
+                            "post_review_wheel_normalization_landing",
+                            "post_review_producer_landing",
                         ):
                             forged_support_merge_result = copy.deepcopy(mode_facts)
                             forged_support_merge_result["chronology"]["git_proof"][
