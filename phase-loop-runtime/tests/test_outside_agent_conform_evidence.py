@@ -1014,10 +1014,14 @@ def _build_candidate_package_archives(
 
 def test_wheel_normalization_removes_zip_timestamp_nondeterminism(tmp_path: Path) -> None:
     wheels = [tmp_path / "first.whl", tmp_path / "second.whl"]
-    timestamps = ((2020, 1, 1, 0, 0, 0), (2026, 8, 11, 0, 0, 0))
-    for wheel, timestamp in zip(wheels, timestamps):
+    metadata = (
+        ((2020, 1, 1, 0, 0, 0), zipfile.ZIP_STORED),
+        ((2026, 8, 11, 0, 0, 0), zipfile.ZIP_DEFLATED),
+    )
+    for wheel, (timestamp, compression) in zip(wheels, metadata):
         with zipfile.ZipFile(wheel, "w") as archive:
             member = zipfile.ZipInfo("package/module.py", date_time=timestamp)
+            member.compress_type = compression
             archive.writestr(member, b"VALUE = 1\n")
 
     for wheel in wheels:
