@@ -327,6 +327,7 @@ CONFORM_PREEXISTING_NODE_IDS = (
     "phase-loop-runtime/tests/test_outside_agent_vectors.py::test_manifest_digest_drift_fails_closed",
 )
 CONFORM_TEST_ONLY_INTEGRITY_NODE_IDS = (
+    "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_wheel_normalization_removes_zip_timestamp_nondeterminism",
     "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_canonical_fixture_provenance_and_digest_inventory",
     "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_canonical_manifest_partition_and_oracle_rows",
     "phase-loop-runtime/tests/test_outside_agent_canonical_corpus.py::test_canonical_oracle_is_importable_and_matches_manifest",
@@ -540,6 +541,7 @@ CONFORM_SL2_STALE_DOC_NODE_IDS = (
     "phase-loop-runtime/tests/test_outside_agent_release_surface.py::test_public_docs_point_to_handoff_without_claiming_release_dispatch",
 )
 A2_GREEN_NODE_IDS = (
+    "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_wheel_normalization_removes_zip_timestamp_nondeterminism",
     "phase-loop-runtime/tests/test_outside_agent_advisory.py::test_builds_clean_advisory_evidence_without_external_access",
     "phase-loop-runtime/tests/test_outside_agent_advisory.py::test_serialized_advisory_evidence_is_deterministic_and_metadata_only",
     "phase-loop-runtime/tests/test_outside_agent_advisory.py::test_malformed_submission_maps_to_exit_code_2",
@@ -631,6 +633,7 @@ A2_GREEN_NODE_IDS = (
     "phase-loop-runtime/tests/test_outside_agent_redaction_separation.py::test_submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest",
 )
 ALL_OUTSIDE_AGENT_NODE_IDS = (
+    "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_wheel_normalization_removes_zip_timestamp_nondeterminism",
     "phase-loop-runtime/tests/test_outside_agent_advisory.py::test_builds_clean_advisory_evidence_without_external_access",
     "phase-loop-runtime/tests/test_outside_agent_advisory.py::test_serialized_advisory_evidence_is_deterministic_and_metadata_only",
     "phase-loop-runtime/tests/test_outside_agent_advisory.py::test_malformed_submission_maps_to_exit_code_2",
@@ -776,15 +779,15 @@ CONFORM_ACTIVATED_RED_ANCHORS = {
     "phase-loop-runtime/tests/test_outside_agent_release_surface.py::test_public_docs_point_to_handoff_without_claiming_release_dispatch": "CONFORM_RED::public_docs_point_to_handoff_without_claiming_release_dispatch",
 }
 CONFORM_PREEXISTING_NODE_COUNT = 71
-CONFORM_TEST_ONLY_INTEGRITY_NODE_COUNT = 12
+CONFORM_TEST_ONLY_INTEGRITY_NODE_COUNT = 13
 CONFORM_NEW_PRODUCTION_NODE_COUNT = 10
 CONFORM_DIALECT_MIGRATED_NODE_COUNT = 42
 CONFORM_MIGRATED_EXISTING_NODE_COUNT = 45
 CONFORM_MIGRATED_RED_NODE_COUNT = 38
 CONFORM_ACTIVATED_RED_NODE_COUNT = 48
 CONFORM_SL2_STALE_DOC_NODE_COUNT = 4
-A2_GREEN_NODE_COUNT = 89
-ALL_OUTSIDE_AGENT_NODE_COUNT = 93
+A2_GREEN_NODE_COUNT = 90
+ALL_OUTSIDE_AGENT_NODE_COUNT = 94
 
 A2_COMMAND = (
     "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest "
