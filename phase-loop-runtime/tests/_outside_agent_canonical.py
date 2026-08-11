@@ -86,7 +86,7 @@ def _normalize_wheel_zip(path: Path, *, source_date_epoch: str) -> None:
     with zipfile.ZipFile(payload, "w") as archive:
         for original, contents in sorted(members, key=lambda item: item[0].filename):
             member = zipfile.ZipInfo(original.filename, date_time=timestamp)
-            member.compress_type = original.compress_type
+            member.compress_type = zipfile.ZIP_STORED
             member.create_system = original.create_system
             member.external_attr = original.external_attr
             member.internal_attr = original.internal_attr
