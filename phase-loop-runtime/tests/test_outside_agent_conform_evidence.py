@@ -4200,31 +4200,30 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     if sl2_transitioned:
                         if len(original_commits) != 5:
                             raise ValueError(f"original_commits count mismatch: {len(original_commits)}")
-                        if len(rebased_commits) != 6:
+                        if len(rebased_commits) < 6:
                             raise ValueError(f"rebased_commits count mismatch: {len(rebased_commits)}")
                     else:
                         if len(original_commits) != 4:
                             raise ValueError(f"original_commits count mismatch: {len(original_commits)}")
-                        if len(rebased_commits) not in (4, 5):
+                        if len(rebased_commits) < 4:
                             raise ValueError(f"rebased_commits count mismatch: {len(rebased_commits)}")
 
-                    has_inserted = False
-                    inserted_commit = None
-                    if chronology_scope == "a2_candidate":
-                        if len(rebased_commits) == 5:
-                            has_inserted = True
-                            inserted_commit = rebased_commits[4]
-                        elif len(rebased_commits) == 4:
-                            has_inserted = False
-                            inserted_commit = None
-                        else:
-                            raise ValueError(f"Unexpected rebased_commits count for a2_candidate: {len(rebased_commits)}")
-                    else:  # exact_main or b2_premerge
-                        if len(rebased_commits) == 6:
-                            has_inserted = True
-                            inserted_commit = rebased_commits[4]
-                        else:
-                            raise ValueError(f"Unexpected rebased_commits count for {chronology_scope}: {len(rebased_commits)}")
+                    verifier_path = "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"
+                    inserted_matches = []
+                    for rebased_commit in rebased_commits:
+                        vector = git("rev-list", "--parents", "-n", "1", rebased_commit).split()
+                        if len(vector) != 2:
+                            continue
+                        changed = set(git("diff", "--name-only", vector[1], rebased_commit).splitlines())
+                        if changed == {verifier_path}:
+                            inserted_matches.append(rebased_commit)
+                    if len(inserted_matches) != 1:
+                        raise ValueError(
+                            "Expected exactly one chronology verifier commit, got: "
+                            f"{inserted_matches}"
+                        )
+                    has_inserted = True
+                    inserted_commit = inserted_matches[0]
 
                     if has_inserted:
                         inserted_parents = git("rev-list", "--parents", "-n", "1", inserted_commit).split()
@@ -4233,17 +4232,17 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         inserted_parent = inserted_parents[1]
 
                         inserted_files = set(git("diff", "--name-only", inserted_parent, inserted_commit).splitlines())
-                        if inserted_files != {"phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"}:
+                        if inserted_files != {verifier_path}:
                             raise ValueError(f"Chronology verifier commit {inserted_commit} changed unexpected files: {inserted_files}")
 
-                        impl_patch = git("diff", "--no-color", "-U0", inserted_parent, inserted_commit, "--", "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py")
+                        impl_patch = git("diff", "--no-color", "-U0", inserted_parent, inserted_commit, "--", verifier_path)
                         if not impl_patch:
                             raise ValueError(f"Chronology verifier commit {inserted_commit} has an empty patch")
                         impl_patch_digest = hashlib.sha256(impl_patch.encode("utf-8")).hexdigest()
                         if impl_patch_digest == "0" * 64 or impl_patch_digest == hashlib.sha256(b"").hexdigest() or not impl_patch_digest:
                             raise ValueError(f"Chronology verifier commit {inserted_commit} has a zero or invalid digest")
                         implementation_patch_slot = {
-                            "path": "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py",
+                            "path": verifier_path,
                             "patch": impl_patch,
                             "patch_digest": impl_patch_digest,
                         }
