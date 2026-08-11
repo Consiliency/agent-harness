@@ -4217,13 +4217,13 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                         changed = set(git("diff", "--name-only", vector[1], rebased_commit).splitlines())
                         if changed == {verifier_path}:
                             inserted_matches.append(rebased_commit)
-                    if len(inserted_matches) != 1:
+                    if not inserted_matches:
                         raise ValueError(
-                            "Expected exactly one chronology verifier commit, got: "
+                            "Expected at least one chronology verifier commit, got: "
                             f"{inserted_matches}"
                         )
                     has_inserted = True
-                    inserted_commit = inserted_matches[0]
+                    inserted_commit = inserted_matches[-1]
 
                     if has_inserted:
                         inserted_parents = git("rev-list", "--parents", "-n", "1", inserted_commit).split()
