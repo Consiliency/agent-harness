@@ -3208,6 +3208,30 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
     verifier_spec = importlib.util.find_spec(
         "phase_loop_runtime.conformance.outside_agent_conform_evidence"
     )
+    if verifier_spec is not None:
+        verifier_module = importlib.import_module(
+            "phase_loop_runtime.conformance.outside_agent_conform_evidence"
+        )
+        installed_root = tmp_path / "installed-conformance"
+        contract_root = installed_root / "_contract"
+        shutil.copytree(FIXTURE_ROOT, contract_root)
+        (contract_root / "VENDOR.json").write_bytes(EXPECTED_VENDOR_BYTES)
+        module_path = installed_root / "outside_agent_conform_evidence.py"
+        module_path.write_text("", encoding="utf-8")
+        bytecode_cache = contract_root / "consiliency_spec" / "__pycache__"
+        bytecode_cache.mkdir()
+        cached_bytecode = bytecode_cache / "outside_agent.cpython-312.pyc"
+        cached_bytecode.write_bytes(b"cache")
+        cached_non_bytecode = bytecode_cache / "unexpected.json"
+        cached_non_bytecode.write_text("{}", encoding="utf-8")
+        out_of_cache_bytecode = contract_root / "consiliency_spec" / "unexpected.pyc"
+        out_of_cache_bytecode.write_bytes(b"not-cache")
+        monkeypatch.setattr(verifier_module, "__file__", str(module_path))
+        installed_members, _ = verifier_module._expected_contract_members()
+        member_prefix = "phase_loop_runtime/conformance/_contract/"
+        assert member_prefix + "consiliency_spec/__pycache__/outside_agent.cpython-312.pyc" not in installed_members
+        assert member_prefix + "consiliency_spec/__pycache__/unexpected.json" in installed_members
+        assert member_prefix + "consiliency_spec/unexpected.pyc" in installed_members
     for mutation_id in (
         "M-CONFORM-2-RAW-CONSTRUCTION-GUARD",
         "M-CONFORM-3-FINAL-SERIALIZER-GUARD",

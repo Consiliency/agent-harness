@@ -490,7 +490,7 @@ def test_redaction_mutation_definitions_are_independent() -> None:
     assert construction.expected_nodeid != serializer.expected_nodeid
 
 
-def _run(command: str, submission_path, output_path):
+def _run(command: str, submission_path, output_path, *additional_submission_paths):
     return subprocess.run(
         [
             sys.executable,
@@ -498,6 +498,7 @@ def _run(command: str, submission_path, output_path):
             "phase_loop_runtime.cli",
             command,
             str(submission_path),
+            *(str(path) for path in additional_submission_paths),
             "--output",
             str(output_path),
         ],
@@ -931,6 +932,13 @@ def test_submission_file_locator_never_serializes_and_digest_tracks_only_capture
     expected_digest = hashlib.sha256(raw).hexdigest()
 
     for command in ("outside-agent-preflight", "outside-agent-validate"):
+        duplicate_output = tmp_path / f"{command}-duplicate-output.json"
+        duplicate_result = _run(
+            command, relative, duplicate_output, absolute
+        )
+        assert duplicate_result.returncode != 0, (
+            "CONFORM_RED::submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes"
+        )
         relative_output = tmp_path / f"{command}-relative.json"
         absolute_output = tmp_path / f"{command}-absolute.json"
         relative_result = _run(command, relative, relative_output)
@@ -958,11 +966,19 @@ def test_submission_file_locator_never_serializes_and_digest_tracks_only_capture
 
 def test_submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest(tmp_path) -> None:
     _assert_final_serializer_guard()
+    valid = Path("phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/valid-work-request.json")
     missing = tmp_path / "missing-SL0-secret-sentinel.json"
     unreadable = tmp_path / "unreadable-SL0-secret-sentinel.json"
     unreadable.mkdir()
     empty_digest = hashlib.sha256(b"").hexdigest()
     for command in ("outside-agent-preflight", "outside-agent-validate"):
+        second_locator_output = tmp_path / f"{command}-second-locator.json"
+        second_locator_result = _run(
+            command, valid, second_locator_output, missing
+        )
+        assert second_locator_result.returncode != 0, (
+            "CONFORM_RED::submission_file_missing_unreadable_paths_fail_closed_without_path_derived_digest"
+        )
         for label, locator in (
             ("traversal", Path("../SL0-secret-sentinel.json")),
             ("free-text", Path("SL0-secret-sentinel-not-a-locator")),
