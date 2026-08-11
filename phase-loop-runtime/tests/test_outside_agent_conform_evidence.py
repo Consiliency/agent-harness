@@ -998,10 +998,17 @@ def _build_candidate_package_archives(
         env=environment,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+    derived_wheel = next(derived_wheel_dist.glob("*.whl"))
+    _normalize_wheel_zip(
+        direct_wheel, source_date_epoch=source_date_epoch.stdout.strip()
+    )
+    _normalize_wheel_zip(
+        derived_wheel, source_date_epoch=source_date_epoch.stdout.strip()
+    )
     return {
         "direct-wheel": direct_wheel,
         "direct-sdist": direct_sdist,
-        "sdist-derived-wheel": next(derived_wheel_dist.glob("*.whl")),
+        "sdist-derived-wheel": derived_wheel,
     }
 
 

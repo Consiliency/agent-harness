@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from unittest import mock
 from urllib import request as urllib_request
 import zipfile
@@ -73,6 +74,25 @@ def _normalize_sdist_gzip(path: Path, *, source_date_epoch: str) -> None:
             mtime=epoch,
         ) as archive:
             archive.write(payload.getvalue())
+
+
+def _normalize_wheel_zip(path: Path, *, source_date_epoch: str) -> None:
+    """Canonicalize wheel member order and ZIP metadata."""
+    timestamp = time.gmtime(max(int(source_date_epoch), 315532800))[:6]
+    with zipfile.ZipFile(path) as source:
+        members = [(info, source.read(info.filename)) for info in source.infolist()]
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        for original, contents in sorted(members, key=lambda item: item[0].filename):
+            member = zipfile.ZipInfo(original.filename, date_time=timestamp)
+            member.compress_type = original.compress_type
+            member.create_system = original.create_system
+            member.external_attr = original.external_attr
+            member.internal_attr = original.internal_attr
+            member.flag_bits = original.flag_bits
+            archive.writestr(member, contents)
+    path.write_bytes(payload.getvalue())
 
 # This is deliberately not generated from PROVENANCE.json.  The fixture is a
 # consumer copy and its provenance file is itself mutable test data; the literal
@@ -1973,6 +1993,12 @@ def _rebuilt_release_archive_digests(
         )
         assert completed.returncode == 0, completed.stdout + completed.stderr
         rebuilt_derived_wheel = next(derived_wheel_dist.glob("*.whl"))
+        _normalize_wheel_zip(
+            rebuilt_direct_wheel, source_date_epoch=source_date_epoch
+        )
+        _normalize_wheel_zip(
+            rebuilt_derived_wheel, source_date_epoch=source_date_epoch
+        )
         return (
             {
                 "direct-wheel": hashlib.sha256(rebuilt_direct_wheel.read_bytes()).hexdigest(),
