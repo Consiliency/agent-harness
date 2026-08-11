@@ -5649,7 +5649,11 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                                 forged_chronology_parent = copy.deepcopy(mode_facts)
                                 forged_chronology_parent["chronology"]["git_proof"][
                                     "parent_vectors"
-                                ][support_label][0] = post_review_test_parent
+                                ][support_label][0] = forged_chronology_parent[
+                                    "chronology"
+                                ]["git_proof"]["parent_vectors"][
+                                    "post_review_test_landing"
+                                ][0]
                                 chronology_mutations.append(forged_chronology_parent)
                         forged_merge_result = copy.deepcopy(mode_facts)
                         forged_merge_result["chronology"]["git_proof"][
