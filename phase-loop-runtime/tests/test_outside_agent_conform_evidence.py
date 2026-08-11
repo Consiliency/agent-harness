@@ -4211,19 +4211,16 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                     verifier_path = "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py"
                     inserted_matches = []
                     for rebased_commit in rebased_commits:
-                        vector = git("rev-list", "--parents", "-n", "1", rebased_commit).split()
-                        if len(vector) != 2:
-                            continue
-                        changed = set(git("diff", "--name-only", vector[1], rebased_commit).splitlines())
-                        if changed == {verifier_path}:
+                        trailers = git("show", "-s", "--format=%(trailers:key=Conformance-Verifier,valueonly)", rebased_commit).splitlines()
+                        if trailers == ["true"]:
                             inserted_matches.append(rebased_commit)
-                    if not inserted_matches:
+                    if len(inserted_matches) != 1:
                         raise ValueError(
-                            "Expected at least one chronology verifier commit, got: "
+                            "Expected exactly one Conformance-Verifier: true commit, got: "
                             f"{inserted_matches}"
                         )
                     has_inserted = True
-                    inserted_commit = inserted_matches[-1]
+                    inserted_commit = inserted_matches[0]
 
                     if has_inserted:
                         inserted_parents = git("rev-list", "--parents", "-n", "1", inserted_commit).split()
