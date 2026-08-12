@@ -6184,7 +6184,19 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                             json.dumps(mode_facts, sort_keys=True), encoding="utf-8"
                         )
                         refresh_mode_records(mode_records, artifacts)
-                        divergent_module = root / "outside_agent_conform_evidence.py"
+                        # The divergent copy must resolve its packaged contract as a
+                        # sibling (_expected_contract_members runs before the anchor
+                        # comparison), so stage it beside the loaded module's own
+                        # _contract tree instead of in a bare directory.
+                        divergent_root = root / "divergent-installed-verifier"
+                        divergent_root.mkdir()
+                        shutil.copytree(
+                            loaded_module_path.with_name("_contract"),
+                            divergent_root / "_contract",
+                        )
+                        divergent_module = (
+                            divergent_root / "outside_agent_conform_evidence.py"
+                        )
                         divergent_module.write_bytes(
                             loaded_module_path.read_bytes()
                             + b"\n# divergent installed verifier bytes\n"
