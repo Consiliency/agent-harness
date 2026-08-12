@@ -171,6 +171,10 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   top-level fields, final-log seal/reseal protocol, the closed extension registry, and the
   initial `phase_loop_runtime.legible_evidence` namespace. LEGIBLE owns this shared producer;
   downstream phases own only their registered namespace payloads.
+- **IF-0-GOVLEAN-1** — the evidence-primitives API: content-bound TDD receipt record/verify,
+  commit-trailer identity select/verify, and content-keyed stage-receipt cache — signatures frozen
+  when GOVLEAN lane A publishes them, so the PROOFGATE plan can reference the primitives before
+  their implementation completes.
 - **IF-0-REVIEWTRUTH-1** — the typed per-seat outcome (`reviewed | unavailable | errored | timed_out | refused | capped | empty`)
   carried on `PanelLegResult`, distinct from its `text` payload, plus the reviewed-seat count exposed
   to ratification. This shape carries every per-seat OUTCOME state the lifecycle criteria require —
@@ -367,63 +371,6 @@ schema: `spec_delta_closeout.v1`; expected decision: `roadmap_amendment`; target
 `redaction_posture: metadata_only`; missing or malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
-### Phase 1 — Falsifier Gate (PROOFGATE)
-
-**Objective**
-Extend the existing plan grammar so an acceptance criterion binds to a falsifier, not only a proof
-command — and so the three vacuity forms observed on 2026-07-28/29 are mechanically rejected.
-
-**Exit criteria**
-- [ ] EC-PROOFGATE-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
-- [ ] EC-PROOFGATE-1 — An acceptance item lacking a `falsified by` clause is REJECTED by the plan validator; falsified by removing the clause check, after which a falsifier-less plan validates
-- [ ] EC-PROOFGATE-2 — Recorded mutation evidence whose injection anchor did NOT match is reported as `mutation_not_applied`, never as a pass; falsified by recording evidence whose `assert <anchor> in <source>` fails and finding the run reported PASS — the observable is the `mutation_not_applied` state, not a green result. Positive control: an anchor that DOES match still records a real kill, proving the state is anchor-driven, not always-emitted
-- [ ] EC-PROOFGATE-3 — Re-running the validator against agent-harness#358's ORIGINAL acceptance criteria rejects them, since they could not have fired on any motivating incident; falsified by the validator ACCEPTING the agent-harness#358 originals — the observable is a rejection verdict naming the vacuous clause; a green pass on the known-bad corpus is the failure
-- [ ] EC-PROOFGATE-4 — A falsifier for a guard must target the PRODUCTION CONSTRUCTION SITE, not only the helper; falsified by unwiring `epoch_blocked` and finding every test still passes
-- [ ] EC-PROOFGATE-5 — A parametrized falsifier must be shown to kill EVERY parameter; a surviving parameter is reported; falsified by a parametrized mutation that survives for one parameter while the run reports all-killed — the observable is a per-parameter kill table with a non-empty survivor set, not a file-level pass that hides it
-- [ ] EC-PROOFGATE-6 — An acceptance item asserting "X did not happen" must declare its path-entered control; falsified by an "X did not happen" item with no path-entered control validating green — the observable is the validator rejecting the item for a missing positive control, not accepting it
-- [ ] EC-PROOFGATE-7 — Legacy plans predating this grammar are grandfathered explicitly, not silently failed; falsified by exact same-ID complete raw criterion bytes proven at the trusted cutoff being hard-failed with no grandfather record — the sole grandfather observable is a warn-level disposition carrying the server-attested pre-grammar date for those exact bytes; changed/new bytes, missing cutoff proof, or invalid non-grandfathered structure/vacuity remain hard errors
-
-**Scope notes**
-Decompose into 3 lanes: lane A owns the grammar and validator check (extends check P alongside the
-existing check E test-before-impl); lane B owns the mutation-evidence record shape and its
-`mutation_not_applied` state, publishing IF-0-PROOFGATE-1 day 1; lane C owns the grandfathering
-rule and the regression corpus of known-bad criteria (agent-harness#358 originals, agent-harness#288 AC-1/AC-4).
-Invalid non-grandfathered structural or vacuity contracts satisfying the rejection cases in
-EC-PROOFGATE-1/-3/-6 are hard validator, intake, and closeout errors. The sole warn-level
-grandfather disposition is for exact same-ID complete raw bytes proven at the trusted cutoff and
-carries their server-attested pre-grammar date. Other advisory Check P findings may remain
-warning-level under the standing autonomy-first guardrail only when they do not satisfy an
-invalid/rejection case; checks G and K remain the advisory precedent. Before PROOFGATE authors
-tests, the coordinator fetches and checks the exact two-parent LEGIBLE landing and freezes the
-semantic `LEGIBLE_PREDECESSOR_INTERFACE_ANCHOR_V1`: schema v3 is supported; the generic extension
-registry, generic reader, and final seal/reseal protocol are present; the registry contains
-`phase_loop_runtime.legible_evidence`; and `phase_loop_runtime.proofgate_evidence` is absent.
-PROOFGATE registers only that latter namespace. Current-head source text and the pre-LEGIBLE
-`frozenset({1, 2})` reader are neither anchors nor fallbacks; mutation RED maps target the landed
-registry/reader seam and must fail with their intended `PROOFGATE_RED` assertions rather than
-missing or stale source text.
-
-**Non-goals**
-Granting review legs execution capability. Review bundles are attacker-controlled by construction;
-that boundary stays closed and panels audit mutation ADEQUACY instead.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-plan-phase/scripts/validate_plan_doc.py`
-- `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`
-- `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
-
-**Depends on**
-- LEGIBLE
-
-**Produces**
-- IF-0-PROOFGATE-1
-
-**Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `dotfiles_skill_source_update`; target
-surfaces: `skills-src/**`, the regenerated skills bundle; evidence paths: metadata-only refs to
-the amended grammar; `redaction_posture: metadata_only`; malformed evidence routes non-human
-`blocker_class=contract_bug`.
-
 ### Phase 2 — Canonical Contract Conformance (CONFORM)
 
 **Objective**
@@ -478,6 +425,163 @@ the vendored `_contract/` surface and the pin; evidence paths: metadata-only dig
 `redaction_posture: metadata_only`; missing evidence routes non-human
 `blocker_class=contract_bug`. Downstream `mirror_cutover_required` is a metadata-only deferral,
 never write authorization.
+
+### Phase 13 — Lean Governance and Evidence Primitives (GOVLEAN)
+
+**Objective**
+Make the governed pipeline converge at tooling speed: ban self-referential history pins, ship
+reusable content-bound evidence primitives in the runtime, price proof cost in review, and encode
+the ratified agent-harness#442 corrections in tooling instead of hand-enforcement — for this repo
+and every downstream consumer of the harness.
+
+**Exit criteria**
+- [ ] EC-GOVLEAN-0 — **TEST LANE LANDED FIRST (content-bound form).** Lane A's runtime modules
+  (lint, primitives, invocation-layer governance) have tests written, reviewed per the tier rules
+  this phase itself ratifies, and observed RED against the pre-implementation base, with RED
+  output retained; the implementation does not modify them, proven by byte-equality of the test
+  files' blob hashes recorded at freeze time and re-verified at merge time — no commit-topology
+  assertion is used or permitted. Lane B (skills/templates/closeout prose) records the non-code
+  exception the Execution Notes allow. Falsified by a frozen test whose merge-time bytes differ
+  from its freeze-time record, or by absent RED output for any lane-A module.
+- [ ] EC-GOVLEAN-1 — **Plan-pin lint.** Plan validation rejects, in new or amended plan docs:
+  exact SHAs of not-yet-merged commits; blob-hash pins of mutable tracked files; commit-count or
+  commit-index literals; and topology-shape obligations on future work — outside a declared
+  `## Pinned inputs` section restricted to external inputs. Falsified by the lint accepting
+  `plans/phase-plan-v10-CONFORM.md` unmodified (positive control: it must flag violations there),
+  or by a clean lean plan drawing any violation.
+- [ ] EC-GOVLEAN-2 — **Content-bound TDD receipts.** The runtime exports a primitive that records
+  test-file blob hashes plus RED-run output digests at freeze time and verifies byte-equality at
+  merge time, proving "tests first, unmodified" with zero commit-topology assertions. Falsified by
+  a mutated frozen test passing verification, or by the receipt failing on an untouched test after
+  an unrelated rebase (the invariance the primitive exists to provide).
+- [ ] EC-GOVLEAN-3 — **Declared-identity markers.** The runtime exports the commit-trailer
+  identity pattern (declare-then-verify) as a primitive replacing history-shape selectors.
+  Falsified by adding unrelated commits (before, between, after) and observing the selected
+  identity change, or by two trailer-carrying commits failing to fail closed.
+- [ ] EC-GOVLEAN-4 — **Proof-cost primitives.** The runtime exports stage receipts keyed on input
+  content digests (cache hit returns the recorded receipt; cache miss recomputes; a stale receipt
+  fails closed) and parallel execution helpers for independent proof stages (mutations,
+  per-criterion replays). The primitives work with a local cache directory on a single machine
+  with no CI, no network, and no container runtime; CI-artifact and remote-cache layers are
+  optional accelerators only. Falsified by a receipt honored despite a changed input digest, or by
+  the primitives requiring network, Dagger, or CI to function.
+- [ ] EC-GOVLEAN-5 — **Governance corrections in tooling.** The invocation layer implements the
+  agent-harness#442 corrections of 2026-08-11: a president-specific prompt template whose terminal
+  contract is the per-finding BLOCKING/DEFERRED ledger plus one FORCING DECISION line; typed
+  `president_ruling_format_missing` with one bounded same-session re-ask; the availability ladder
+  Fable → Sol → Grok 4.5 → Gemini 3.6 with descent only on a typed availability failure and the
+  degraded read-only rung ruling fail-closed; and tiered review — full board plus president for
+  production-code and plan landings, a single grounded reviewer for tests-only and docs-only
+  landings. Falsified by a president round launched with the critic template; a format-missing
+  round consuming the 3-round cap; a merge blocked on president-unavailability with an untried
+  lower rung; or a docs-only landing demanding a full board.
+- [ ] EC-GOVLEAN-6 — **Issue-closure gate.** Phase closeout requires triage of the phase's open
+  issues (close, fold into a successor plan, or carry with a named owner), and the current backlog
+  has received one batch triage. Falsified by a phase transitioning to `completed` with an
+  untriaged phase-tagged issue, or by the backlog audit finding an issue with none of the three
+  dispositions recorded.
+- [ ] EC-GOVLEAN-7 — **Fleet templates.** The planner and roadmap skills (all four harness
+  variants, regenerated from `skills-src/`) instruct: falsifiers phrased over content and
+  behavior, never commit topology; pins limited to declared external inputs; a plan-size budget
+  with justification required above it; a mandatory cross-vendor ablation pass for Sol-authored
+  plans; and proof cost as a reviewable dimension — a single test node exceeding roughly five
+  minutes, or a proof unable to report multiple failures per run, is a finding. Falsified by
+  regenerated skill output missing any of these instructions, or by the four variants disagreeing.
+
+- [ ] EC-GOVLEAN-8 — **Roadmap reseal primitive.** Amending the roadmap is a first-class
+  operation: a runtime command recomputes the roadmap digest and updates every seal
+  representation (the `CANONICAL_ROADMAP_SHA256` src constants, the assumption-probe sidecar,
+  and the test fixture copy) in one mechanical step, with the literal reduced to one
+  authoritative site the others consume. Falsified by a roadmap amendment requiring hand-edits
+  in more than one file to restore the seal, or by any seal representation disagreeing after
+  the command runs.
+
+**Scope notes**
+Decompose into 2 lanes. Lane A owns runtime code: the lint (EC-GOVLEAN-1), the evidence
+primitives (EC-GOVLEAN-2/-3/-4/-8), and the invocation-layer governance (EC-GOVLEAN-5) — new modules
+plus bounded edits in `panel_invoker.py`. Lane B owns process surfaces: the closeout gate
+(EC-GOVLEAN-6) and the skills templates (EC-GOVLEAN-7) — `skills-src/` plus regeneration. The
+lanes share no files. This phase's own plan must pass the EC-GOVLEAN-1 lint and stay under the
+EC-GOVLEAN-7 budget: it is the first subject of its own rules, and its convergence cost is the
+baseline measurement for the PROOFGATE experiment recorded in the Execution Notes.
+
+**Non-goals**
+Retro-fitting the landed CONFORM chronology test (it may be simplified later under these
+primitives; not required here). Full REVIEWTRUTH implementation (typed board states beyond
+EC-GOVLEAN-5 remain that phase's scope). CI-provider work — the single-lane and Dagger-offload
+changes are separate maintainer plan items, deliberately excluded so client-facing primitives are
+never coupled to fleet infrastructure.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/` (new evidence, lint, and governance modules)
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (EC-GOVLEAN-5 bounded edits)
+- `phase-loop-runtime/tests/` (new primitive tests; no frozen-surface edits)
+- `skills-src/` planner and roadmap skills plus regeneration outputs
+- `plans/` closeout gate surface
+
+**Depends on**
+- CONFORM
+
+**Produces**
+- IF-0-GOVLEAN-1
+
+### Phase 1 — Falsifier Gate (PROOFGATE)
+
+**Objective**
+Extend the existing plan grammar so an acceptance criterion binds to a falsifier, not only a proof
+command — and so the three vacuity forms observed on 2026-07-28/29 are mechanically rejected.
+
+**Exit criteria**
+- [ ] EC-PROOFGATE-0 — **TEST LANE LANDED FIRST.** This phase's tests were written, PANELED, and observed RED against the pre-implementation base before any production change; each names a falsifier that was RUN with its injection anchor asserted; and the implementation PR does not modify them. Falsified by an implementation commit predating the test commit, or a test diff inside the implementation PR.
+- [ ] EC-PROOFGATE-1 — An acceptance item lacking a `falsified by` clause is REJECTED by the plan validator; falsified by removing the clause check, after which a falsifier-less plan validates
+- [ ] EC-PROOFGATE-2 — Recorded mutation evidence whose injection anchor did NOT match is reported as `mutation_not_applied`, never as a pass; falsified by recording evidence whose `assert <anchor> in <source>` fails and finding the run reported PASS — the observable is the `mutation_not_applied` state, not a green result. Positive control: an anchor that DOES match still records a real kill, proving the state is anchor-driven, not always-emitted
+- [ ] EC-PROOFGATE-3 — Re-running the validator against agent-harness#358's ORIGINAL acceptance criteria rejects them, since they could not have fired on any motivating incident; falsified by the validator ACCEPTING the agent-harness#358 originals — the observable is a rejection verdict naming the vacuous clause; a green pass on the known-bad corpus is the failure
+- [ ] EC-PROOFGATE-4 — A falsifier for a guard must target the PRODUCTION CONSTRUCTION SITE, not only the helper; falsified by unwiring `epoch_blocked` and finding every test still passes
+- [ ] EC-PROOFGATE-5 — A parametrized falsifier must be shown to kill EVERY parameter; a surviving parameter is reported; falsified by a parametrized mutation that survives for one parameter while the run reports all-killed — the observable is a per-parameter kill table with a non-empty survivor set, not a file-level pass that hides it
+- [ ] EC-PROOFGATE-6 — An acceptance item asserting "X did not happen" must declare its path-entered control; falsified by an "X did not happen" item with no path-entered control validating green — the observable is the validator rejecting the item for a missing positive control, not accepting it
+- [ ] EC-PROOFGATE-7 — Legacy plans predating this grammar are grandfathered explicitly, not silently failed; falsified by exact same-ID complete raw criterion bytes proven at the trusted cutoff being hard-failed with no grandfather record — the sole grandfather observable is a warn-level disposition carrying the server-attested pre-grammar date for those exact bytes; changed/new bytes, missing cutoff proof, or invalid non-grandfathered structure/vacuity remain hard errors
+
+**Scope notes**
+Decompose into 3 lanes: lane A owns the grammar and validator check (extends check P alongside the
+existing check E test-before-impl); lane B owns the mutation-evidence record shape and its
+`mutation_not_applied` state, publishing IF-0-PROOFGATE-1 day 1; lane C owns the grandfathering
+rule and the regression corpus of known-bad criteria (agent-harness#358 originals, agent-harness#288 AC-1/AC-4).
+Invalid non-grandfathered structural or vacuity contracts satisfying the rejection cases in
+EC-PROOFGATE-1/-3/-6 are hard validator, intake, and closeout errors. The sole warn-level
+grandfather disposition is for exact same-ID complete raw bytes proven at the trusted cutoff and
+carries their server-attested pre-grammar date. Other advisory Check P findings may remain
+warning-level under the standing autonomy-first guardrail only when they do not satisfy an
+invalid/rejection case; checks G and K remain the advisory precedent. Before PROOFGATE authors
+tests, the coordinator fetches and checks the exact two-parent LEGIBLE landing and freezes the
+semantic `LEGIBLE_PREDECESSOR_INTERFACE_ANCHOR_V1`: schema v3 is supported; the generic extension
+registry, generic reader, and final seal/reseal protocol are present; the registry contains
+`phase_loop_runtime.legible_evidence`; and `phase_loop_runtime.proofgate_evidence` is absent.
+PROOFGATE registers only that latter namespace. Current-head source text and the pre-LEGIBLE
+`frozenset({1, 2})` reader are neither anchors nor fallbacks; mutation RED maps target the landed
+registry/reader seam and must fail with their intended `PROOFGATE_RED` assertions rather than
+missing or stale source text.
+
+**Non-goals**
+Granting review legs execution capability. Review bundles are attacker-controlled by construction;
+that boundary stays closed and panels audit mutation ADEQUACY instead.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-plan-phase/scripts/validate_plan_doc.py`
+- `phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`
+- `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py`
+
+**Depends on**
+- LEGIBLE
+- GOVLEAN
+
+**Produces**
+- IF-0-PROOFGATE-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `dotfiles_skill_source_update`; target
+surfaces: `skills-src/**`, the regenerated skills bundle; evidence paths: metadata-only refs to
+the amended grammar; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
 
 ### Phase 3 — Shared Epoch Allocator: Publish Identity (FABPUB)
 
@@ -1058,6 +1162,8 @@ outside this repo; `redaction_posture: metadata_only`; malformed evidence routes
 ```
 LEGIBLE ──→ PROOFGATE
 LEGIBLE ──→ CONFORM
+CONFORM ──→ GOVLEAN
+GOVLEAN ──→ PROOFGATE
 PROOFGATE ──→ SCHED
 PROOFGATE ──→ RUNTIME
 PROOFGATE ──→ FABPUB
@@ -1079,11 +1185,12 @@ Parallel roots:
 Writer-safe root-plan frontier:
   wave 1: LEGIBLE
   wave 2: PROOFGATE ∥ CONFORM
+  wave 2b: GOVLEAN (amendment 2026-08-12 — Phase 13; PROOFGATE execution re-gated on GOVLEAN delivery)
   wave 3: FABPUB
   wave 4: HARDEN
   wave 5: REVIEWTRUTH
 
-Serial edges (eight, required root-plan serialization):
+Serial edges (nine, required root-plan serialization):
   LEGIBLE     → PROOFGATE    (generic verification-evidence v3 producer/registry)
   LEGIBLE     → CONFORM      (shared cli.py writer)
   PROOFGATE   → FABPUB       (train_runner.py and revocation-race test writers)
@@ -1092,8 +1199,10 @@ Serial edges (eight, required root-plan serialization):
   HARDEN      → REVIEWTRUTH  (composition.py, panel_invoker.py, cli.py, runner.py, and three public-board test writers)
   CONFORM     → REVIEWTRUTH  (tests/conftest.py and cli.py writers; explicit even though transitive)
   SCHED       → REVIEWTRUTH  (phase_worktree_executor.py, runner.py, and test_phase_worktree_executor.py writers)
+  GOVLEAN     → PROOFGATE    (panel_invoker.py writers; amendment 2026-08-12)
 
 Downstream semantic edges:
+  CONFORM     → GOVLEAN     (primitives and lint derive from CONFORM's recorded pin/seal incidents)
   REVIEWTRUTH → LEGLIFE     (lens must be load-bearing before custom lenses mean anything)
   FABPUB      → FABREADMIT  (merge boundary enforces the mixed-allocation interlock)
   FABPUB      → RESIDUAL    (RESIDUAL lane A rewrites the verbs.py/train_runner.py publish identity FABPUB owns)
@@ -1106,14 +1215,12 @@ Absorbed convergence-v1 chain:
   LEGIBLE → PROOFGATE → RUNTIME ─┐
   FABPUB → FABREADMIT ───────────┴→ INTEG → RELEASE
 
-Critical paths (depth 6):
-  LEGIBLE → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE
-  LEGIBLE → CONFORM → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE
-  LEGIBLE → PROOFGATE → FABPUB → FABREADMIT → INTEG → RELEASE
-  LEGIBLE → CONFORM → FABPUB → FABREADMIT → INTEG → RELEASE
+Critical paths (depth 8, amended 2026-08-12 — GOVLEAN inserted between CONFORM and PROOFGATE):
+  LEGIBLE → CONFORM → GOVLEAN → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE
+  LEGIBLE → CONFORM → GOVLEAN → PROOFGATE → FABPUB → FABREADMIT → INTEG → RELEASE
 ```
 
-The six detailed root plans own a conflict graph that is complete except for the
+The seven detailed root plans (GOVLEAN added by the 2026-08-12 amendment) own a conflict graph that is complete except for the
 PROOFGATE/CONFORM pair. The exhaustive pattern-expanded intersections are:
 
 | pair | shared owned paths or patterns | ordering |
@@ -1132,6 +1239,9 @@ PROOFGATE/CONFORM pair. The exhaustive pattern-expanded intersections are:
 | PROOFGATE / SCHED | `runner.py` | PROOFGATE → SCHED |
 | HARDEN / SCHED | `runner.py` | SCHED lane B → HARDEN |
 | PROOFGATE / CONFORM | none | parallel-safe |
+| GOVLEAN / PROOFGATE | `panel_invoker.py` | GOVLEAN → PROOFGATE |
+| GOVLEAN / HARDEN | `panel_invoker.py` | GOVLEAN before HARDEN (transitive) |
+| GOVLEAN / REVIEWTRUTH | `panel_invoker.py`, `composition.py` | GOVLEAN before REVIEWTRUTH (transitive) |
 | PROOFGATE / FABPUB | `train_runner.py`, `test_convergence_broker_revocation_race.py` | PROOFGATE → FABPUB |
 | PROOFGATE / HARDEN | `launcher.py`, `panel_invoker.py`, `goal_coverage.py`, `runner.py`, `verification_evidence.py`, `test_goal_coverage.py`, `test_review_leg_sandbox.py` | PROOFGATE before HARDEN (transitive) |
 | CONFORM / FABPUB | `cli.py`, `CHANGELOG.md` | CONFORM → FABPUB |
@@ -1273,6 +1383,17 @@ allow same-vendor native workers only where a plan declares disjoint parallel-sa
 cross-vendor work-unit rotation until author-scoped work-unit closeout can preserve the non-author
 review quorum. Record the selected executor, model, effort, reviewed digest, reviewing seat count,
 and RED-test evidence in the phase ledger.
+
+### PROOFGATE convergence experiment (pre-registered, amendment 2026-08-12)
+
+PROOFGATE executes under the GOVLEAN rules and primitives, and its convergence is measured
+against targets recorded here BEFORE the run so the outcome cannot be graded on impression:
+phase completion in at most 12 merged PRs; support-share (test/docs/plans/ci) under 40%; a plan
+of at most ~3,000 words with zero future-history pins (EC-GOVLEAN-1 lint green); zero plan
+amendments forced by unrelated landings; issues closed ≥ issues opened during the phase; wall
+clock at most 4 days. Abort criterion: three support PRs landing before any implementation PR
+stops the phase for diagnosis. Baselines: LEGIBLE 19 PRs / ~4 days; CONFORM 31+ PRs / 6+ days
+(pre-amendment rules).
 
 ## Verification
 
