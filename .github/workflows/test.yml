@@ -53,6 +53,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # For pull_request events, check out the ACTUAL PR head commit rather
+          # than GitHub's synthetic merge commit. The CONFORM proof machinery
+          # inspects the live checkout's HEAD/history (introduction-boundary
+          # walk, installed-wheel repository anchor) and requires it to BE the
+          # candidate; a synthetic merge satisfies neither. On push events this
+          # expression is empty and the default ref is used.
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -114,6 +121,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # For pull_request events, check out the ACTUAL PR head commit rather
+          # than GitHub's synthetic merge commit. The CONFORM proof machinery
+          # inspects the live checkout's HEAD/history (introduction-boundary
+          # walk, installed-wheel repository anchor) and requires it to BE the
+          # candidate; a synthetic merge satisfies neither. On push events this
+          # expression is empty and the default ref is used.
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
