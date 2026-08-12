@@ -9,8 +9,13 @@ The advisory path is not acceptance authority. It can catch cheap mistakes and
 explain readiness before review, but governed-pipeline remains the real
 acceptance fence and reruns validation against the same pinned contract.
 
-Agent-harness must not copy canonical outside-agent schemas, raw vector bodies,
-provider payloads, secrets, or local environment values. During the pre-release
+Agent-harness ships canonical outside-agent schemas and vector bodies only as
+the digest-enumerated packaged contract mirror under
+`phase_loop_runtime/conformance/_contract/`, whose every member is pinned by
+raw-byte SHA-256 in `VENDOR.json`; Consiliency/spec remains the sole authority
+for their content. Outside that enumerated mirror it must not copy canonical
+schemas or raw vector bodies, and it must never copy submitter or provider
+payloads, secrets, or local environment values. During the pre-release
 train it may validate a Consiliency/spec checkout by immutable git SHA and
 vector manifest hash. Once Consiliency/spec is published, production consumers
 should pin the published `consiliency-spec` package version and the same
@@ -40,8 +45,9 @@ repo-relative refs, typed failure information, contract pin metadata, and
 metadata-only vector result evidence.
 
 `outside_agent_vectors.run_outside_agent_vectors()` runs metadata-only vector
-manifests through the same core and compares expected outcomes without copying
-canonical Consiliency/spec vector bodies into this repository. This runner is CI
+manifests through the same core and compares expected outcomes against the
+digest-enumerated packaged mirror of the canonical Consiliency/spec vectors,
+never against submitter or provider payloads. This runner is CI
 and release evidence for the pinned contract and vector manifest; it is not run
 for every live governed-pipeline submission.
 
