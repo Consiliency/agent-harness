@@ -233,7 +233,7 @@ def test_public_docs_point_to_handoff_without_claiming_release_dispatch():
     assert "release handoff" in changelog
     assert "governed-pipeline pinning instructions" in changelog
     assert "maintainer-owned publish/tag/workflow-dispatch" in changelog
-    assert "0.5.0" in changelog
+    assert "0.7.13" in changelog
 
 
 def test_v7_disposition_records_merged_contract_and_final_installed_behavior(tmp_path):

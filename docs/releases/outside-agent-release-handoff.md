@@ -57,7 +57,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-This release handoff covers phase-loop-runtime 0.5.0 (and package version 0.7.13) with a digest-enumerated contract mirror. Publication, tag creation, and workflow dispatch remain maintainer-owned and are not published or not dispatched here.
+This release handoff covers phase-loop-runtime 0.7.13 with a digest-enumerated contract mirror. Publication, tag creation, and workflow dispatch remain maintainer-owned and are not published or not dispatched here.
 
 - candidate implementation commit: 9f8d6c60f562fbceb4bd09a20211b046255b373f
 - candidate implementation tree: 75228b3296b4727d81b20ff378ea9d4c1d4ab5aa
