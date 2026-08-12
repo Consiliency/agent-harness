@@ -447,13 +447,18 @@ and every downstream consumer of the harness.
   exact SHAs of not-yet-merged commits; blob-hash pins of mutable tracked files; commit-count or
   commit-index literals; and topology-shape obligations on future work — outside a declared
   `## Pinned inputs` section restricted to external inputs. Falsified by the lint accepting
-  `plans/phase-plan-v10-CONFORM.md` unmodified (positive control: it must flag violations there),
-  or by a clean lean plan drawing any violation.
+  `plans/phase-plan-v10-CONFORM.md` unmodified, by any ONE of the four prohibited classes having
+  no firing positive control in that document (per-class controls, so a lint detecting one class
+  cannot vacuously pass the rest), or by a clean lean plan drawing any violation. "External
+  input" means content not produced by this repository's own future work.
 - [ ] EC-GOVLEAN-2 — **Content-bound TDD receipts.** The runtime exports a primitive that records
   test-file blob hashes plus RED-run output digests at freeze time and verifies byte-equality at
-  merge time, proving "tests first, unmodified" with zero commit-topology assertions. Falsified by
-  a mutated frozen test passing verification, or by the receipt failing on an untouched test after
-  an unrelated rebase (the invariance the primitive exists to provide).
+  merge time, proving "tests first, unmodified" with zero commit-topology assertions. The receipt binds the
+  RED run to an authoritative base snapshot (tree digest), the exact command and node inventory,
+  exit status, and raw output digests, so a receipt cannot be fabricated after implementation or
+  bound to an unrelated run. Falsified by a mutated frozen test passing verification; by the
+  receipt failing on an untouched test after an unrelated rebase; or by verification accepting a
+  receipt whose base-snapshot digest does not contain the pre-implementation tree.
 - [ ] EC-GOVLEAN-3 — **Declared-identity markers.** The runtime exports the commit-trailer
   identity pattern (declare-then-verify) as a primitive replacing history-shape selectors.
   Falsified by adding unrelated commits (before, between, after) and observing the selected
@@ -474,12 +479,17 @@ and every downstream consumer of the harness.
   production-code and plan landings, a single grounded reviewer for tests-only and docs-only
   landings. Falsified by a president round launched with the critic template; a format-missing
   round consuming the 3-round cap; a merge blocked on president-unavailability with an untried
-  lower rung; or a docs-only landing demanding a full board.
+  lower rung; a rung descent on an unfavorable ruling rather than a typed availability failure;
+  a skipped rung with no typed failure record; a degraded-rung DEFERRED on a finding it flagged
+  as needing validation; or a production-code landing merged without the full board while a
+  docs-only landing demanded one (both tiering directions).
 - [ ] EC-GOVLEAN-6 — **Issue-closure gate.** Phase closeout requires triage of the phase's open
   issues (close, fold into a successor plan, or carry with a named owner), and the current backlog
-  has received one batch triage. Falsified by a phase transitioning to `completed` with an
-  untriaged phase-tagged issue, or by the backlog audit finding an issue with none of the three
-  dispositions recorded.
+  has received one batch triage. Dispositions are TYPED ledger records (a closed schema carrying issue id, disposition, owner,
+  and phase), not prose; "phase-tagged" is defined by that ledger, and the `completed` transition
+  in `plan_manifest` enforces the gate. Falsified by a phase transitioning to `completed` with an
+  issue in its ledger lacking a disposition record, or by a disposition expressible only as
+  free-form prose.
 - [ ] EC-GOVLEAN-7 — **Fleet templates.** The planner and roadmap skills (all four harness
   variants, regenerated from `skills-src/`) instruct: falsifiers phrased over content and
   behavior, never commit topology; pins limited to declared external inputs; a plan-size budget
@@ -496,9 +506,18 @@ and every downstream consumer of the harness.
   in more than one file to restore the seal, or by any seal representation disagreeing after
   the command runs.
 
+- [ ] EC-GOVLEAN-9 — **Sealed-evidence producer manifest.** Any primitive that seals a digest
+  over BUILT artifacts records a complete manifest of output-affecting toolchain and environment
+  inputs (at minimum: build backend and setuptools versions, umask, SOURCE_DATE_EPOCH posture,
+  archive tool identities) and either pins or normalizes each; a seal whose recomputation
+  environment differs on any manifest input fails closed as `producer_drift`, never as a content
+  mismatch. Falsified by mutating one manifest input (setuptools version; umask) and observing
+  the same tree seal a different digest without a `producer_drift` failure — the exact incident
+  class recorded on agent-harness#477 (three setuptools digests; umask 002-vs-022).
+
 **Scope notes**
 Decompose into 2 lanes. Lane A owns runtime code: the lint (EC-GOVLEAN-1), the evidence
-primitives (EC-GOVLEAN-2/-3/-4/-8), and the invocation-layer governance (EC-GOVLEAN-5) — new modules
+primitives (EC-GOVLEAN-2/-3/-4/-8/-9), and the invocation-layer governance (EC-GOVLEAN-5) — new modules
 plus bounded edits in `panel_invoker.py`. Lane B owns process surfaces: the closeout gate
 (EC-GOVLEAN-6) and the skills templates (EC-GOVLEAN-7) — `skills-src/` plus regeneration. The
 lanes share no files. This phase's own plan must pass the EC-GOVLEAN-1 lint and stay under the
@@ -1184,8 +1203,9 @@ Parallel roots:
 
 Writer-safe root-plan frontier:
   wave 1: LEGIBLE
-  wave 2: PROOFGATE ∥ CONFORM
-  wave 2b: GOVLEAN (amendment 2026-08-12 — Phase 13; PROOFGATE execution re-gated on GOVLEAN delivery)
+  wave 2: CONFORM (PROOFGATE root-plan authored here historically; its EXECUTION is re-gated)
+  wave 2b: GOVLEAN (amendment 2026-08-12 — Phase 13)
+  wave 2c: PROOFGATE (executes only after GOVLEAN delivers; plan may be refreshed against IF-0-GOVLEAN-1)
   wave 3: FABPUB
   wave 4: HARDEN
   wave 5: REVIEWTRUTH
@@ -1341,8 +1361,10 @@ that later make the same controls machine-enforceable:
    called convergence and never authorizes this coordinated run to proceed. The coordinator keeps
    this bootstrap interlock until REVIEWTRUTH lands the equivalent runtime enforcement.
 
-The writer-safe root-plan frontier is exactly the five-wave sequence in the DAG above. PROOFGATE
-and CONFORM are the sole concurrent detailed root-plan authors. LEGIBLE lands first; after
+The writer-safe root-plan frontier is exactly the wave sequence in the DAG above (amended
+2026-08-12: GOVLEAN sits between CONFORM and PROOFGATE execution). Historically PROOFGATE and
+CONFORM were the sole concurrent detailed root-plan authors; under the amendment, PROOFGATE
+EXECUTION additionally consumes GOVLEAN's delivery (IF-0-GOVLEAN-1). LEGIBLE lands first; after
 PROOFGATE, SCHED lane B may run alongside the remaining CONFORM/FABPUB path and must land before
 HARDEN touches `runner.py`. SCHED lane A may proceed independently after its recorded design
 decision. FABPUB consumes both wave-2 root-plan landings; HARDEN consumes FABPUB plus the landed
@@ -1356,8 +1378,10 @@ Recommended start order when capacity is limited, and why:
 
 1. **LEGIBLE first.** It makes this roadmap's progress reportable and publishes the generic
    verification-evidence v3 envelope and registry.
-2. **PROOFGATE and CONFORM together after LEGIBLE.** This is the only maximally parallel
-   writer-safe frontier among the six detailed root plans.
+2. **CONFORM after LEGIBLE; then GOVLEAN; then PROOFGATE execution** (amended 2026-08-12).
+   PROOFGATE's root plan may be authored in parallel with CONFORM as before, but its execution
+   waits for GOVLEAN's primitives and governs itself by them — it is the pre-registered
+   convergence experiment recorded above.
 3. **SCHED lane B after PROOFGATE.** Land its `lane_scheduler.py`/`runner.py` cluster while CONFORM
    and then FABPUB advance; this clears HARDEN's only SCHED writer collision without waiting for
    the agent-harness#354 lane-A decision.
@@ -1383,6 +1407,15 @@ allow same-vendor native workers only where a plan declares disjoint parallel-sa
 cross-vendor work-unit rotation until author-scoped work-unit closeout can preserve the non-author
 review quorum. Record the selected executor, model, effort, reviewed digest, reviewing seat count,
 and RED-test evidence in the phase ledger.
+
+### Governance supersession on GOVLEAN delivery (amendment 2026-08-12)
+
+Gates 1–2 above (Sol-planner default; Fable/Sol availability blocking dispatch; Fable-chair-only
+rulings) remain in force ONLY until GOVLEAN's EC-GOVLEAN-5 tooling lands; from that landing, the
+agent-harness#442 corrections of 2026-08-11 govern (president availability ladder Fable → Sol →
+Grok 4.5 → Gemini 3.6 with typed-failure descent; tiered review; typed ruling capture). This
+paragraph is the reconciliation the amendment panel required: without it, gate 2 and EC-GOVLEAN-5
+would contradict each other while both claimed authority.
 
 ### PROOFGATE convergence experiment (pre-registered, amendment 2026-08-12)
 

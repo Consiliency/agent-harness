@@ -1,4 +1,13 @@
-# Detailed plan: run the heavy chronology proof in one authoritative CI lane
+# Detailed plan: run the heavy chronology proof in two lanes, not four (r2, panel-reconciled)
+
+**r2 (2026-08-12): reconciled against board findings.** codex: Gate A is py3.12-only, and the
+node executes version-sensitive subprocess machinery (the py3.10-vs-3.12 egg-info class is a
+recorded incident, agent-harness#382) — full deselection loses real interpreter coverage. r2
+keeps the node in the OLDEST matrix lane (py3.10) plus Gate A (3.12 clean-room): version spread
+preserved at half the r1 target's... at 2 of 4 executions instead of 4. Both seats: Gate A's
+45-minute timeout cannot absorb a ~40-minute node plus wheel build and suite — raised to 100.
+codex: `-q` prints no per-node ids, so r1's grep verification could not work — replaced with
+junitxml evidence.
 
 **Status: DRAFT — do not land before agent-harness#477 merges (frozen count-of-6 depends on main holding still).**
 
@@ -11,7 +20,14 @@ Stop executing `test_outside_agent_conform_evidence.py::test_mutation_definition
 ## Changes
 
 ### `.github/workflows/test.yml` (modify)
-- matrix `Run standalone test suite` step — add `--deselect tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation` to the first pytest invocation — reason: remove 3 of 4 duplicate executions; Gate A retains the authoritative run
+- matrix `Run standalone test suite` step — add the `--deselect` for the chronology node to the
+  py3.11 and py3.12 matrix lanes ONLY (condition on `matrix.python-version`); py3.10 keeps it —
+  reason: remove 2 duplicate executions while preserving oldest-interpreter coverage of the
+  node's subprocess machinery
+- Gate A job — raise `timeout-minutes` from 45 to 100 — reason: post-#477 the node (~40 min)
+  plus wheel build and full suite exceeds 45
+- Gate A / py3.10 lanes — add `--junitxml` for the suite run — reason: durable per-node evidence
+  that the chronology node executed and passed (`-q` prints no node ids)
 - comment above the step — state the single-authoritative-lane rule and name Gate A as the owner — reason: prevent a future tidy-up from "fixing" the asymmetry
 
 ### `phase-loop-runtime/scripts/gate_a_cleanroom.sh` (verify, no change expected)
@@ -25,13 +41,17 @@ Stop executing `test_outside_agent_conform_evidence.py::test_mutation_definition
 2. This plan (single commit)
 
 ## Verification
-- Push a trivial branch: matrix lanes complete in pre-#477 times (~4 min); Gate A still executes the node (grep its log for the node id)
-- `gh pr checks`: 8 checks, Gate A green including the node
+- Push a trivial branch: py3.11/py3.12 lanes complete in pre-#477 times; py3.10 and Gate A still
+  execute the node — proven from the junitxml artifact containing the node id with a pass
+- `gh pr checks`: 8 checks green
 
 ## Acceptance criteria
-- [ ] Matrix lanes no longer collect the chronology node (`--collect-only` shows it deselected)
-- [ ] Gate A's log contains the node id and passes
-- [ ] No other test selection changed (`--collect-only` diff vs pre-change shows exactly one node delta per matrix lane)
+- [ ] py3.11/py3.12 lanes no longer collect the chronology node; py3.10 still does
+      (`--collect-only` per lane)
+- [ ] junitxml from Gate A and py3.10 contains the node id with a pass
+- [ ] Gate A `timeout-minutes` = 100
+- [ ] No other test selection changed (`--collect-only` diff shows exactly one node delta in
+      exactly two lanes)
 
 ## Execution policy
 - execute: effort=low, reason=two-line workflow change with mechanical verification
