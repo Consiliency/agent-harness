@@ -1964,8 +1964,14 @@ def _assert_exact_frozen_activated_junit(path: Path, raw_log_path: Path) -> None
 def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str, object]:
     """Run the committed frozen test blobs in clean, non-Git candidate exports."""
     test_paths = CONFORM_IMMUTABLE_LIFECYCLE_PATHS
+    # Root the blobs at the candidate, not at HEAD. The walk below searches the
+    # candidate's own history for the single commit that introduced these bytes,
+    # and the postcondition requires that boundary to be an ancestor of the
+    # candidate. Reading HEAD instead only coincided while HEAD == candidate: once
+    # main advanced a frozen test path after the candidate forked, no commit in the
+    # candidate's history could match and the boundary set went empty.
     head_blobs = {
-        path: _run_bound_child(["git", "rev-parse", f"HEAD:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")}).stdout.strip()
+        path: _run_bound_child(["git", "rev-parse", f"{candidate_commit}:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")}).stdout.strip()
         for path in test_paths
     }
     walk_res = _run_bound_child(["git", "rev-list", candidate_commit], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")})
