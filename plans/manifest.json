@@ -380,6 +380,42 @@
       "updated_at": "2026-07-28T22:28:34Z"
     },
     {
+      "acceptance_criteria_count": 3,
+      "created_at": "2026-08-12T01:16:48.855553+00:00",
+      "file": "plans/detailed-ci-single-lane-chronology-20260812.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-ci-single-lane-chronology-20260812",
+      "status": "committed",
+      "task_summary": "Run the heavy chronology proof only in Gate A; deselect from pytest matrix lanes",
+      "type": "detailed",
+      "updated_at": "2026-08-12T01:16:48.855553+00:00"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-08-12T01:16:48.855553+00:00",
+      "file": "plans/detailed-dagger-offload-ci-20260812.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-dagger-offload-ci-20260812",
+      "status": "committed",
+      "task_summary": "Offload agent-harness heavy CI to tailnet host ai via the dagger-offload composite",
+      "type": "detailed",
+      "updated_at": "2026-08-12T01:16:48.855553+00:00"
+    },
+    {
       "acceptance_criteria_count": 6,
       "created_at": "2026-06-30T20:35:00Z",
       "file": "plans/detailed-fix-issue-33-background-subprocess-liveness-20260630-2035.md",
@@ -674,13 +710,6 @@
               "completion_identity": "exact_two_parent_implementation_landing_and_exact_main_audit",
               "phase_alias": "CONFORM",
               "plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
-              "repaired_digest_review_status": "exact_digest_ratified",
-              "required_agree_seats": [
-                "grok-4.5",
-                "gpt-5.6-sol",
-                "gemini-3.6-flash",
-                "claude-fable-5"
-              ],
               "ratification_policy": {
                 "current_v10_unbound_completion_requires_all_agree": true,
                 "on_shortfall": "escalate",
@@ -690,17 +719,24 @@
                 "required_prover_source": "procedural_until_REVIEWTRUTH",
                 "required_vendors": 3
               },
+              "repaired_digest_review_status": "exact_digest_ratified",
+              "required_agree_seats": [
+                "grok-4.5",
+                "gpt-5.6-sol",
+                "gemini-3.6-flash",
+                "claude-fable-5"
+              ],
               "review_evidence": "runner_owned_by_reference_artifacts",
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
               "runtime_support": "procedural_until_REVIEWTRUTH"
             },
-          "conform_plan_contract": {
-            "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
-            "archive_inclusion_nodeid_sha256": "ccb295db192a045c224dc7f74819f8b83adb6db348d8d8b2d155a5c4f73005c0",
-            "dialect_migrated_existing_nodeids_count": 42,
-            "migrated_existing_no_copy_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
-            "migrated_existing_no_copy_nodeid_sha256": "7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe",
-            "migrated_existing_nodeids_count": 45,
+            "conform_plan_contract": {
+              "archive_inclusion_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror",
+              "archive_inclusion_nodeid_sha256": "ccb295db192a045c224dc7f74819f8b83adb6db348d8d8b2d155a5c4f73005c0",
+              "dialect_migrated_existing_nodeids_count": 42,
+              "migrated_existing_no_copy_nodeid": "phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_no_copied_canonical_outside_agent_schema_or_vectors",
+              "migrated_existing_no_copy_nodeid_sha256": "7755a4d356a9f285e8dd621e74dc14297901b1b5a44bd60198028809eecd73fe",
+              "migrated_existing_nodeids_count": 45,
               "owned_path_patterns_count": 22,
               "owned_path_patterns_sha256": "285e9ddb9d6f1996e3746f809cbe240053b6efe81504fc8e8c2913fd2660e427",
               "package_inclusion_owned_paths": [
@@ -715,44 +751,44 @@
               "test_path_patterns_count": 6,
               "test_path_patterns_sha256": "d6c401cf4c8ba48b51df434c463abba3278a4ecac892a418f977bc15367fc145"
             },
-          "current_review": {
-            "artifact_path": ".phase-loop/reviews/v10-conform-plan-20260804T132206Z/panel.json",
-            "artifact_semantics": "exact_plan_digest_round_1_president_ratification_retained_by_reference",
-            "artifact_sha256": "e2c9854beff77ddea4eff589cd3e21776e80388c02d58c99195e0c05c4d1eef3",
-            "authorized": true,
-            "brief_sha256": "d11d572d50ae35006a60019cf08107f598f88eb392961153150903ebfffd16e7",
-            "early_prover_receipt_sha256": "c521fd4b7113e0c2e06d9a5755fa8f0bf24778d4a374b535ca3db322623010a7",
-            "early_prover_sha256": "a4c54b90f58a2bcc7380a0d6c20dc5e08f125e05b20ebddea46704fe1981e037",
-            "fable_outcome": "AGREE",
-            "gemini_verdict": "PARTIALLY_AGREE",
-            "governance_ref": "Consiliency/agent-harness#442",
-            "grok_verdict": "AGREE",
-            "must_clear_test_candidate_findings": [
-              "live_blocker_code_assertions_use_membership_not_singleton_equality",
-              "cli_controlled_input_inventory_is_derived_from_the_actual_parser"
-            ],
-            "opus_verdict": "AGREE",
-            "president_round": 1,
-            "references_sha256": "4af0154fe7796c5c829172b57058a77965614961ff2eb391799057ceff2bef13",
-            "repaired_plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
-            "repaired_review_status": "exact_digest_ratified",
-            "reviewed_plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
-            "reviewed_roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-            "sol_verdict": "DISAGREE",
-            "topology": "terra_early_prober_then_four_leg_board_with_opus_prover_then_fable_president",
-            "verdict": "FABLE_PRESIDENT_AGREE_PLAN_RATIFIED_TEST_CANDIDATE_FINDINGS_BLOCKING"
-          },
-          "digest_rebind": {
-            "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_PARTIALLY_AGREE",
-            "plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
-            "predecessor_plan_sha256": "9d7f2a7250def6814ec351ae7ffe5810109c18494fee8d221bb6636640de9254",
-            "reason": "procedural_early_prover_ordering_and_nonvacuous_no_copy_falsifier_repair",
-            "repaired_digest_review_status": "exact_digest_ratified",
-            "reviewed_brief_sha256": "d11d572d50ae35006a60019cf08107f598f88eb392961153150903ebfffd16e7",
-            "reviewed_panel_sha256": "e2c9854beff77ddea4eff589cd3e21776e80388c02d58c99195e0c05c4d1eef3",
-            "reviewed_plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
-            "reviewed_roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
-            "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+            "current_review": {
+              "artifact_path": ".phase-loop/reviews/v10-conform-plan-20260804T132206Z/panel.json",
+              "artifact_semantics": "exact_plan_digest_round_1_president_ratification_retained_by_reference",
+              "artifact_sha256": "e2c9854beff77ddea4eff589cd3e21776e80388c02d58c99195e0c05c4d1eef3",
+              "authorized": true,
+              "brief_sha256": "d11d572d50ae35006a60019cf08107f598f88eb392961153150903ebfffd16e7",
+              "early_prover_receipt_sha256": "c521fd4b7113e0c2e06d9a5755fa8f0bf24778d4a374b535ca3db322623010a7",
+              "early_prover_sha256": "a4c54b90f58a2bcc7380a0d6c20dc5e08f125e05b20ebddea46704fe1981e037",
+              "fable_outcome": "AGREE",
+              "gemini_verdict": "PARTIALLY_AGREE",
+              "governance_ref": "Consiliency/agent-harness#442",
+              "grok_verdict": "AGREE",
+              "must_clear_test_candidate_findings": [
+                "live_blocker_code_assertions_use_membership_not_singleton_equality",
+                "cli_controlled_input_inventory_is_derived_from_the_actual_parser"
+              ],
+              "opus_verdict": "AGREE",
+              "president_round": 1,
+              "references_sha256": "4af0154fe7796c5c829172b57058a77965614961ff2eb391799057ceff2bef13",
+              "repaired_plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
+              "repaired_review_status": "exact_digest_ratified",
+              "reviewed_plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
+              "reviewed_roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "sol_verdict": "DISAGREE",
+              "topology": "terra_early_prober_then_four_leg_board_with_opus_prover_then_fable_president",
+              "verdict": "FABLE_PRESIDENT_AGREE_PLAN_RATIFIED_TEST_CANDIDATE_FINDINGS_BLOCKING"
+            },
+            "digest_rebind": {
+              "historical_dissent_verdict": "GROK_AGREE_GPT_5_6_SOL_DISAGREE_GEMINI_AGREE_FABLE_PARTIALLY_AGREE",
+              "plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
+              "predecessor_plan_sha256": "9d7f2a7250def6814ec351ae7ffe5810109c18494fee8d221bb6636640de9254",
+              "reason": "procedural_early_prover_ordering_and_nonvacuous_no_copy_falsifier_repair",
+              "repaired_digest_review_status": "exact_digest_ratified",
+              "reviewed_brief_sha256": "d11d572d50ae35006a60019cf08107f598f88eb392961153150903ebfffd16e7",
+              "reviewed_panel_sha256": "e2c9854beff77ddea4eff589cd3e21776e80388c02d58c99195e0c05c4d1eef3",
+              "reviewed_plan_sha256": "13018029d8e3b381cba87c69b627c34bfd3063d610a389e7336eaf0354b5da78",
+              "reviewed_roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
             }
           },
           "transition": "committed"
@@ -835,6 +871,7 @@
                 "allowed_count": 1,
                 "destination": "canonical_main_containing_repair_landing",
                 "forbidden": "squash_reorder_repair_fold_in_further_rebase_or_semantic_drift",
+                "inserted_commit_position": "after_rebased_9745938_equivalent_before_rebased_80d9a14_equivalent",
                 "original_sequence": [
                   "59cbf5a",
                   "00dec41",
@@ -842,19 +879,25 @@
                   "9745938",
                   "80d9a14"
                 ],
-                "inserted_commit_position": "after_rebased_9745938_equivalent_before_rebased_80d9a14_equivalent",
                 "proof": "internally_generated_git_range_diff_plus_exact_two_test_path_five_hunk_test_blobs_plus_one_verifier_path_hunk_and_production_semantic_equivalence"
               },
               "issue": "Consiliency/agent-harness#470",
               "landing_topology": "amendment_two_parent_then_one_commit_two_test_path_five_hunk_repair_candidate_then_separate_two_parent_repair_landing_then_single_implementation_rebase_with_one_verifier_commit",
               "pre_repair": {
-                  "commit": "974593899bbecfbe092ba0aec369e69eee1aabdd",
+                "commit": "974593899bbecfbe092ba0aec369e69eee1aabdd",
                 "contract_drift_blob": "2c52aea5952662775d3ad2296b930362c0ecee88",
                 "contract_drift_sha256": "4ccc4df8063d9de639da63094cd7b39723add91e26ba2b32a1ef4e3d01921486",
                 "helper_blob": "e5044f381c556226d76586c6fa824f2485590dc3",
                 "helper_sha256": "903ab2a0138bffc5a3d534194822476bd3bb3dcb046a5905d06750d0bbe7554a",
                 "test_tree": "f8907dfdc182ac18c3928d58cab0af24604e2663",
                 "tree": "f58958d6b85983f9b7b4e337dd801be5fa64fcca"
+              },
+              "predecessor_review": {
+                "artifact_sha256": "fac9b4015a47b3fdc41e67a90f2c5246b5ab8610aeee1648c72ab6b24bd56da9",
+                "reviewed_plan_sha256": "d6fd6946718c154ab4eed2667dbd9e9d6761878f358c07c86673ee0751484f12",
+                "sol_blocker": "chronology_acceptance_impossible_within_two_test_path_four_hunk_scope_because_verifier_trusts_caller_supplied_topology_booleans",
+                "sol_correction_sha256": "e910f3df067bc065192b532db1ab9fd5d1e24ad74eaea8ac808505f8c4109ff1",
+                "status": "superseded_by_material_plan_correction_requires_fresh_full_wave"
               },
               "red_evidence": {
                 "candidate_gate_a_v6": {
@@ -869,19 +912,19 @@
                   "sol_addendum_sha256": "eb5f99d314d8dc1304055647bf61d081bce495743b7a4f8132ac779106d475d8",
                   "status": "complete_red_replay_digest_and_sdist_source_directory_fixture_defects"
                 },
-                "isolated_directory_collision": {
-                  "junit_path": "/mnt/workspace/conform-evidence/974593899bbecfbe092ba0aec369e69eee1aabdd/repair-red/isolated-exact-node.junit.xml",
-                  "junit_sha256": "cd36c380277f2c334a8465f2ace2a457eb351ab09f126f63f05770bfb735cbf8",
-                  "raw_log_path": "/mnt/workspace/conform-evidence/974593899bbecfbe092ba0aec369e69eee1aabdd/repair-red/isolated-exact-node.raw.log",
-                  "raw_log_sha256": "dec743413d847f63b230cb25e5a71c6ae858d55c582d80bc32458f1b45853e61",
-                  "status": "complete_red_directory_collision_file_exists_error"
-                },
                 "chronology_forgery": {
                   "command": "PHASE_LOOP_CONFORM_CHRONOLOGY_PROOF=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation",
                   "expected_failure": "CONFORM_RED::chronology_accepts_forged_git_topology",
                   "forgery": "repair_landing_aliases_single_parent_repair_candidate_while_boolean_claims_report_two_parent_exact_diff_single_rebase_and_range_diff_equivalence",
                   "landing_order": "test_hunk_lands_with_repair_then_red_runs_at_rebased_9745938_equivalent_before_one_path_verifier_commit",
                   "status": "planned_tdd_red_not_yet_executed"
+                },
+                "isolated_directory_collision": {
+                  "junit_path": "/mnt/workspace/conform-evidence/974593899bbecfbe092ba0aec369e69eee1aabdd/repair-red/isolated-exact-node.junit.xml",
+                  "junit_sha256": "cd36c380277f2c334a8465f2ace2a457eb351ab09f126f63f05770bfb735cbf8",
+                  "raw_log_path": "/mnt/workspace/conform-evidence/974593899bbecfbe092ba0aec369e69eee1aabdd/repair-red/isolated-exact-node.raw.log",
+                  "raw_log_sha256": "dec743413d847f63b230cb25e5a71c6ae858d55c582d80bc32458f1b45853e61",
+                  "status": "complete_red_directory_collision_file_exists_error"
                 },
                 "node_id": "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation",
                 "shared_refs_ancestry": {
@@ -902,16 +945,10 @@
                 "claude_opus_5_read_write_prover",
                 "claude_fable_5_president"
               ],
-              "predecessor_review": {
-                "artifact_sha256": "fac9b4015a47b3fdc41e67a90f2c5246b5ab8610aeee1648c72ab6b24bd56da9",
-                "reviewed_plan_sha256": "d6fd6946718c154ab4eed2667dbd9e9d6761878f358c07c86673ee0751484f12",
-                "sol_blocker": "chronology_acceptance_impossible_within_two_test_path_four_hunk_scope_because_verifier_trusts_caller_supplied_topology_booleans",
-                "sol_correction_sha256": "e910f3df067bc065192b532db1ab9fd5d1e24ad74eaea8ac808505f8c4109ff1",
-                "status": "superseded_by_material_plan_correction_requires_fresh_full_wave"
-              },
               "review_status": "unreviewed_not_approved",
               "review_topology": "terra_then_grok_sol_gemini_then_opus_then_fable_all_usable_substantive_digest_bound_AGREE",
               "schema": "v10.conform-post-freeze-fixture-repair.v4",
+              "test_immutability_after_repair": "zero_test_path_changes_through_rebased_candidate_final_candidate_implementation_landing_and_exact_main",
               "trusted_chronology_proof": {
                 "fact_object": "chronology.git_proof.closed_v1",
                 "git_environment": "module_derived_clean_exact_head_repo_root_full_lowercase_oids_no_refs_no_replacements_no_grafts_no_shallow_no_ambient_git_overrides_no_lazy_fetch",
@@ -919,8 +956,7 @@
                 "proofs": "commit_tree_existence_ordered_ancestry_exact_merge_parents_exact_repair_patch_exact_verifier_patch_bound_red_green_and_internal_range_diff",
                 "test_delta": "two_paths_five_localized_hunks",
                 "total_exception": "three_paths_six_localized_logical_hunks"
-              },
-              "test_immutability_after_repair": "zero_test_path_changes_through_rebased_candidate_final_candidate_implementation_landing_and_exact_main"
+              }
             }
           },
           "transition": "committed"
@@ -1537,9 +1573,9 @@
             },
             "digest_rebind": {
               "historical_dissent_verdict": "DISAGREE",
-          "plan_sha256": "27bd1b556d8d3110d33f11780b84fac4c09c95c3e8389ada4d62d084f5a4a3ae",
-          "predecessor_plan_sha256": "474ad4debaedd43c4b38ee864c719350808a6d54e3a96cca2826a56bf1e02746",
-          "reason": "fable_c4_scope_and_early_prover_binding_correction",
+              "plan_sha256": "27bd1b556d8d3110d33f11780b84fac4c09c95c3e8389ada4d62d084f5a4a3ae",
+              "predecessor_plan_sha256": "474ad4debaedd43c4b38ee864c719350808a6d54e3a96cca2826a56bf1e02746",
+              "reason": "fable_c4_scope_and_early_prover_binding_correction",
               "reviewed_bundle_bytes": 140117,
               "reviewed_bundle_sha256": "0a2ecfbeb2fecc6afade833d9c24ab1f3d05caae66541e79a66283715dbb0f05",
               "reviewed_instructions_sha256": "4b166729c4352ac8c086b19b5c68d279258ffd08068c176122dee2533a3c5160",
@@ -1581,7 +1617,7 @@
               "owned_paths_count": 18,
               "owned_paths_sha256": "ad11f462c732dabae8a7f51e61a3b229dbb1a8f45954c266d14cb9547cfdd240",
               "phase_dependencies": [],
-          "plan_sha256": "27bd1b556d8d3110d33f11780b84fac4c09c95c3e8389ada4d62d084f5a4a3ae",
+              "plan_sha256": "27bd1b556d8d3110d33f11780b84fac4c09c95c3e8389ada4d62d084f5a4a3ae",
               "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
               "selector_common_return_contract": "parse_candidate_lifecycle_then_reject_recognized_non_active_with_or_without_registry",
               "test_paths": [
@@ -1599,8 +1635,8 @@
             "president_amendment": {
               "decision": "REVISE_PHASE_CONTRACT",
               "evidence_sha256": "ea6ad231ac54ba4d2c778a472bbe6198a72f86098d3085475d291975c50340e5",
-          "predecessor_plan_sha256": "1f9bb643a9650b01c600c4862391a74df9af3d911ba7158c5570276fd8b0b2e0",
-          "reason": "implement_attestation_before_C3_then_execute_merge_bound_stages_in_C4_C5_C7"
+              "predecessor_plan_sha256": "1f9bb643a9650b01c600c4862391a74df9af3d911ba7158c5570276fd8b0b2e0",
+              "reason": "implement_attestation_before_C3_then_execute_merge_bound_stages_in_C4_C5_C7"
             },
             "run_id": "20260730T040717Z-01-legible-plan"
           },
@@ -1916,26 +1952,26 @@
                 "direct_contract_failure_posture": "binding_import_collection_accounting_and_direct_contract_fail_closed",
                 "mode_scope": "test_owned_non_production_additive_exception",
                 "ordinary_activation_outside_candidate": "unchanged_env_or_exact_final_capability_marker",
-                "provider_sentinel_count": 4,
                 "provider_sentinel_cases": [
                   "fable_subscription_transport_reachable",
                   "sol_terra_subscription_transport_reachable",
                   "gemini_subscription_transport_reachable",
                   "grok_subscription_transport_reachable"
                 ],
+                "provider_sentinel_count": 4,
                 "provider_sentinel_value": "not_executed_in_ordinary_mode",
-                "selector_modules": [
-                  "phase-loop-runtime/tests/test_proofgate_receipts.py",
-                  "phase-loop-runtime/tests/test_proofgate_isolation.py",
-                  "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py",
-                  "phase-loop-runtime/tests/test_review_leg_sandbox.py"
-                ],
                 "selector_module_file_sha256": {
                   "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py": "82a47cd5df4dc7fe35fce4f1cf25ef56f6dd46bfd431c912b6b04c577213618c",
                   "phase-loop-runtime/tests/test_proofgate_isolation.py": "04e3ceadbce5985e9ee3f537bfaa0bca6ee9a594b846a6b16e6e420d268761f1",
                   "phase-loop-runtime/tests/test_proofgate_receipts.py": "0d69a53506a7723de7456a958fc3d23b5779bd96533f37542f295c88f303c0e1",
                   "phase-loop-runtime/tests/test_review_leg_sandbox.py": "657676e2b00c4531fb86e120ebd5ed90e827842d566576c1cb0e36b0f6bb7fc9"
                 },
+                "selector_modules": [
+                  "phase-loop-runtime/tests/test_proofgate_receipts.py",
+                  "phase-loop-runtime/tests/test_proofgate_isolation.py",
+                  "phase-loop-runtime/tests/test_proofgate_attestation_workflow.py",
+                  "phase-loop-runtime/tests/test_review_leg_sandbox.py"
+                ],
                 "selector_modules_count": 4,
                 "selector_modules_digest_serialization": "compact_json_exact_displayed_order_plus_lf",
                 "selector_modules_sha256": "6d72046058d5b186bc50817c298f919806a09bd3826b10dec51cd000600cfe2d",
@@ -1998,11 +2034,6 @@
                   "canonical-main"
                 ]
               },
-              "historical_blocking_evidence": {
-                "authorization_posture": "blocking_evidence_only_authorizes_nothing",
-                "complete_ratified_review_artifact_sha256": "0f7145b9cfb5ceccb2fac9097e6c2ddc99fbd00c8d87061d9c0ad6e0fb6d6382",
-                "reviewed_sol_plan_sha256": "2bbf7c51b57e0e8361391877c1f190773b24d40c60b2e6681ba404277b7be567"
-              },
               "historic_phase_profiles": {
                 "attended_candidate": {
                   "passed": 39,
@@ -2026,6 +2057,11 @@
                   "passed": 2
                 },
                 "phase_nodeids": 39
+              },
+              "historical_blocking_evidence": {
+                "authorization_posture": "blocking_evidence_only_authorizes_nothing",
+                "complete_ratified_review_artifact_sha256": "0f7145b9cfb5ceccb2fac9097e6c2ddc99fbd00c8d87061d9c0ad6e0fb6d6382",
+                "reviewed_sol_plan_sha256": "2bbf7c51b57e0e8361391877c1f190773b24d40c60b2e6681ba404277b7be567"
               },
               "issue": "Consiliency/agent-harness#456",
               "mandatory_prerequisite": "plan_and_manifest_amendment_then_renewed_exact_digest_plan_gate_before_PR_R",
@@ -2137,6 +2173,12 @@
                 "schema": "proofgate_admin_identity_binding.v1"
               },
               "decisive_boundary": "fixed_read_only_ProofgateAdminControlPlaneBoundary",
+              "derived_receipt_evidence_fields": [
+                "run_id",
+                "run_attempt",
+                "subject",
+                "workflow_sha256"
+              ],
               "dynamic_assignment_fields": [
                 "dedicated_app_integration_id",
                 "dedicated_app_installation_id",
@@ -2144,16 +2186,19 @@
                 "required_reviewer_id",
                 "ruleset_id"
               ],
-              "derived_receipt_evidence_fields": [
-                "run_id",
-                "run_attempt",
-                "subject",
-                "workflow_sha256"
-              ],
               "evaluation_partition": {
                 "admin_preflight": "admin_relations_only",
                 "receipt_and_pilot": "dynamic_receipt_and_workflow_evidence"
               },
+              "falsifier_classes": [
+                "artifact_substitution",
+                "caller_authorization",
+                "stale_ids",
+                "repo_owner_permission_or_bypass_mismatch",
+                "reviewer_mismatch",
+                "broker_self_attestation",
+                "chronology_drift"
+              ],
               "forbidden_authority_inputs": [
                 "caller_mapping_or_file_or_signature",
                 "stdin_or_environment_or_cli_identity",
@@ -2209,15 +2254,6 @@
                 "administrator_provisioning_after_PR_R",
                 "fresh_binding_at_PR_B_review_and_pre_merge",
                 "post_PR_B_pilot_rebinds_and_separates_reviewer_dispatcher_app_actor"
-              ],
-              "falsifier_classes": [
-                "artifact_substitution",
-                "caller_authorization",
-                "stale_ids",
-                "repo_owner_permission_or_bypass_mismatch",
-                "reviewer_mismatch",
-                "broker_self_attestation",
-                "chronology_drift"
               ]
             }
           },
