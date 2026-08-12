@@ -43,6 +43,16 @@ pass without a real suite verdict.
   green" is convention, not enforcement. Configuration change is part of this plan's acceptance,
   performed by the maintainer (admin) alongside the workflow landing.
 
+## Workflow integrity (new in r3.2 — codex r3 blocker)
+Required checks run from the PR's OWN workflow definition, so a fork PR that edits
+`.github/workflows/test.yml` (or the Dagger module) can make `gate` succeed without running any
+suite — the aggregate check is self-certifiable unless the workflow surface is protected.
+Mitigation, in-scope: `CODEOWNERS` entries for `.github/workflows/**` and `ci/dagger/**` owned by
+the maintainer, with the ruleset requiring **code-owner review** for changes to those paths
+(advisory CODEOWNERS is insufficient — enforcement is the ruleset flag). Negative control: a
+scratch fork-simulation PR that rewrites `gate` to a no-op must be unmergeable without
+code-owner approval.
+
 ## Host exposure (replaces r2's environment-protection clause — Fable N3)
 Environment protection with required reviewers would put a manual approval on EVERY eligible run
 (CI stops being automatic) or be toothless without reviewers. Dropped. Actual mechanisms:
@@ -96,6 +106,8 @@ other offloaded repos.
       artifacts exported and uploaded
 - [ ] Billed Blacksmith minutes for a representative eligible push ≤ the sub-minute jobs
 - [ ] `uses:` pinned to full SHA
+- [ ] Workflow surface protected: code-owner review enforced on `.github/workflows/**` and
+      `ci/dagger/**`, proven by the self-certifying-workflow negative control
 
 ## Generalizability note (unchanged)
 Fleet-internal. Client-facing proof-cost primitives land in `phase_loop_runtime` via GOVLEAN and

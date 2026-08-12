@@ -380,7 +380,7 @@
       "updated_at": "2026-07-28T22:28:34Z"
     },
     {
-      "acceptance_criteria_count": 3,
+      "acceptance_criteria_count": 5,
       "created_at": "2026-08-12T01:16:48.855553+00:00",
       "file": "plans/detailed-ci-single-lane-chronology-20260812.md",
       "handoff_ref": null,
@@ -393,12 +393,12 @@
       "roadmap_ref": null,
       "slug": "detailed-ci-single-lane-chronology-20260812",
       "status": "committed",
-      "task_summary": "Run the heavy chronology proof only in Gate A; deselect from pytest matrix lanes",
+      "task_summary": "Run the heavy chronology proof in two lanes (py3.10 matrix + Gate A); deselect from py3.11/py3.12",
       "type": "detailed",
-      "updated_at": "2026-08-12T01:16:48.855553+00:00"
+      "updated_at": "2026-08-12T04:30:00+00:00"
     },
     {
-      "acceptance_criteria_count": 4,
+      "acceptance_criteria_count": 5,
       "created_at": "2026-08-12T01:16:48.855553+00:00",
       "file": "plans/detailed-dagger-offload-ci-20260812.md",
       "handoff_ref": null,
@@ -411,9 +411,9 @@
       "roadmap_ref": null,
       "slug": "detailed-dagger-offload-ci-20260812",
       "status": "committed",
-      "task_summary": "Offload agent-harness heavy CI to tailnet host ai via the dagger-offload composite",
+      "task_summary": "Offload heavy CI to ai via explicit elig/offload/hosted/gate job graph with enforced merge-gate",
       "type": "detailed",
-      "updated_at": "2026-08-12T01:16:48.855553+00:00"
+      "updated_at": "2026-08-12T04:30:00+00:00"
     },
     {
       "acceptance_criteria_count": 6,
