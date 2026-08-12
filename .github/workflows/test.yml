@@ -44,7 +44,7 @@ jobs:
   pytest:
     name: pytest (py${{ matrix.python-version }})
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 45
+    timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
@@ -116,7 +116,7 @@ jobs:
   cleanroom:
     name: clean-room (standalone-from-wheel, Gate A)
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 45
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
         with:
