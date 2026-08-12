@@ -36,8 +36,10 @@ one layer up (codex/gemini/Fable convergent). The aggregate check cannot be skip
 pass without a real suite verdict.
 
 ## Merge-gate configuration (new in r3 — in-scope, not assumed)
-- Configure branch protection / a ruleset on `main` requiring the `gate` check (plus the
-  existing sub-minute checks). **Main currently has neither** — until this lands, "merge only on
+- Configure branch protection / a ruleset on `main` requiring the `gate` check plus the
+  existing ALWAYS-REPORTING sub-minute checks. Path-filtered workflows (skills-parity) are
+  EXCLUDED from the required set: a path-filtered workflow never reports on non-matching PRs,
+  and an unreported required check blocks such PRs indefinitely. **Main currently has neither** — until this lands, "merge only on
   green" is convention, not enforcement. Configuration change is part of this plan's acceptance,
   performed by the maintainer (admin) alongside the workflow landing.
 

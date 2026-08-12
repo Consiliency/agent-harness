@@ -53,8 +53,10 @@ executions saves ~80 billed minutes per push while keeping both interpreter endp
 - [ ] py3.11/py3.12 lanes no longer collect the chronology node; py3.10 still does
 - [ ] Both junitxml artifacts (py3.10 lane, Gate A) uploaded and contain the node id with a pass
 - [ ] `timeout-minutes` = 100 on BOTH the matrix pytest job and Gate A
-- [ ] Collection-guard fails when no lane retains the node (proven once by a deliberate
-      mutation on a scratch branch)
+- [ ] Collection-guard fails when no lane retains the node — proven once by a deliberate
+      LANE-REMOVAL mutation (drop py3.10 from the matrix) on a scratch branch; a deselect-only
+      mutation is insufficient, since an in-matrix guard vanishes with the lane (the
+      test.yml:30-32 hazard the guard exists for)
 - [ ] No other test selection changed (`--collect-only` diff shows exactly one node delta in
       exactly two lanes)
 

@@ -458,7 +458,10 @@ and every downstream consumer of the harness.
   exit status, and raw output digests; TEMPORAL authority comes from the tests-only landing on
   main (the merged landing is the trusted append-only commitment the receipt must reference) —
   content binding alone proves what-fails-on-which-tree under the honest-agent sequencing threat
-  model (the EC-REVIEWTRUTH-15 posture; write-access forgery is out of model). Falsified by a
+  model (the EC-REVIEWTRUTH-15 posture; write-access forgery is out of model). Referencing the
+  landing's ancestry is not a topology-SHAPE assertion — the ban is on inferring identity from
+  history shape, not on verifying membership in a declared landing (the EC-REVIEWTRUTH-15
+  distinction). Falsified by a
   mutated frozen test passing verification; by the receipt failing on an untouched test after an
   unrelated rebase; or by verification accepting a receipt whose base-snapshot digest does not
   equal a tree contained in the referenced landing's history.
@@ -1429,7 +1432,9 @@ as applied to support-tier landings) remain in force ONLY until the authority-sw
 that event, the agent-harness#442 corrections of 2026-08-11 govern (president availability ladder
 Fable → Sol → Grok 4.5 → Gemini 3.6 with typed-failure descent; tiered review — full board plus
 president for production-code and plan landings, a single grounded reviewer for tests-only and
-docs-only; typed ruling capture). THE SWITCH IS ONE TYPED EVENT, not a gradual transfer:
+docs-only; typed ruling capture). The Assumptions section's coordinated-run procedure description is historical-descriptive from
+the switch onward, not a competing authority. THE SWITCH IS ONE TYPED EVENT, not a gradual
+transfer:
 EC-GOVLEAN-5 verified complete on main (its full falsifier set green), recorded in the phase
 ledger — during any partial lane-A window the old gates keep exclusive authority, so no
 dual-authority state exists. Post-switch planner boundary (gate 1's successor): any vendor may
