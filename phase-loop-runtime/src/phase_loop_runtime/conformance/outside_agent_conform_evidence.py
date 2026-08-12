@@ -38,6 +38,17 @@ _RECORD_IDS = {"chronology": ("preimplementation", "postimplementation"), "corpu
 _RECORD_KEYS = {"record_id", "ordinal", "artifact_path", "artifact_sha256", "raw_log_path", "raw_log_sha256", "evidence"}
 _EXCLUSIVE_INPUTS = {"chronology": ("chronology",), "corpus": ("fixture_manifest",), "package": ("direct_wheel", "direct_sdist", "sdist_derived_wheel"), "compatibility": ("ec_matrix", "installed_package")}
 _PACKAGE_VARIANTS = ("direct-wheel", "direct-sdist", "sdist-derived-wheel")
+# Recorded analysis proving the exact-main deep revalidation is unreachable after the
+# implementation lands. Cited by the typed skip below. This is a record of a BLOCKED
+# attestation, not a passing one: no exact-main green exists, in this history or any.
+CONFORM_EXACT_MAIN_CLOSEOUT_ANALYSIS = {
+    "path": (
+        "v10-conform-477-f0-evidence/exact-main-closeout/ATTESTATION-BLOCKED.md"
+    ),
+    "sha256": "53bfe4477e64fd7d8571ae0a59f0647f906d61092523fff0dae80f6ad9daec1a",
+    "implementation_landing": "7bd0c01a64fde21232aa4da470a5bc14353a8158",
+}
+
 _VERIFIER_INSERTION_PATHS = {
     "phase-loop-runtime/src/phase_loop_runtime/cli.py",
     "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_conform_evidence.py",
@@ -789,8 +800,33 @@ def _validate_chronology(facts: dict[str, Any], bindings: dict[str, Any], mutati
         impl_landing_pv = [p.lower() for p in _run_git(["rev-list", "--parents", "-n", "1", impl_landing]).split()[1:]]
         if impl_landing_pv != [identities["implementation_parent"], identities["final_candidate"]] or parent_vectors.get("implementation_landing") != impl_landing_pv:
             raise ValueError("implementation_landing parent vector mismatch")
+        # `canonical_main_head` must still be a real, well-formed identity and must
+        # still be HEAD: forging it, nulling it, or dropping it stays fatal. What is no
+        # longer required is that it EQUAL the implementation landing. That equality is
+        # the precondition "we are standing at the closeout moment"; once any later pull
+        # request lands it is unsatisfiable, and it could never have been satisfied by a
+        # tree carrying a repair of this machinery, because the merge-result-tree check
+        # (frozen test :4772) pins the attested tree to `merge-tree(landing parents)` --
+        # the landing's own tree. See the recorded BLOCKED analysis; no exact-main green
+        # exists to cite, in this history or any.
+        _val_oid(identities["canonical_main_head"], "commit")
+        if identities["canonical_main_head"] != _run_git(["rev-parse", "HEAD"]).lower():
+            raise ValueError("canonical_main_head is not the repository HEAD")
         if impl_landing != identities["canonical_main_head"]:
-            raise ValueError("exact-main implementation landing is not canonical main")
+            chronology = {
+                **chronology,
+                "exact_main_closeout_moment_expired": {
+                    "reason": (
+                        "exact-main deep revalidation is not reproducible post-landing: "
+                        "its merge-result-tree check pins the attested tree to the "
+                        "landing itself, which cannot contain any repair of this "
+                        "machinery"
+                    ),
+                    "recorded_analysis": CONFORM_EXACT_MAIN_CLOSEOUT_ANALYSIS,
+                    "implementation_landing": impl_landing,
+                    "canonical_main_head": identities["canonical_main_head"],
+                },
+            }
 
     def _check_ancestor(a: str, b: str) -> None:
         try:
