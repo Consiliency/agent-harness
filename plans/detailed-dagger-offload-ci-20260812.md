@@ -1,83 +1,105 @@
-# Detailed plan: offload agent-harness heavy CI to tailnet host `ai` via dagger-offload (r2, panel-reconciled)
+# Detailed plan: offload agent-harness heavy CI to tailnet host `ai` (r3, board-reconciled)
 
-**Status: held — do not land before agent-harness#477 merges. Land after the single-lane plan.**
-**r2 (2026-08-12): reconciled against board findings (codex red-team + grok adversarial, both DISAGREE on r1). r1's default eligibility design was WRONG and is replaced wholesale — see Eligibility contract.**
+**Status: held — do not land before agent-harness#477 merges. Lands after the single-lane plan.**
+**r3 (2026-08-12): reconciles round-2 board findings (4 seats, all DISAGREE). r2's "mirror the gp
+step pair" and "offloaded steps on ubuntu-latest, hosted steps on Blacksmith" were mutually
+unimplementable (`runs-on` and `environment:` are job-level; a job-level `if:` cannot read
+`secrets`) — all four seats. The topology below replaces prose-by-reference with an explicit job
+graph, and the merge-gate is made real (Fable's live check: main currently has NO branch
+protection or rulesets — the "fork merges only on green" property is process-only today and MUST
+be configured in this change).**
 
 ## Task
-Move agent-harness's heavy CI execution onto tailnet host `ai` via the proven
-`Consiliency/ci-actions/dagger-offload` composite, without weakening the merge gate for a PUBLIC
-repo and without leaving the billing clock running on a paid runner.
+Move agent-harness's heavy CI execution onto tailnet host `ai` via the `dagger-offload`
+composite, with an explicit workflow-job topology that (a) never yields a mergeable state without
+a gating suite verdict, (b) never bills Blacksmith for offloaded execution, and (c) never exposes
+`TS_AUTHKEY` to forks.
 
-## Eligibility contract (replaces r1's — r1 was unsafe)
-Exhaustive, mutually exclusive branches, mirroring `governed-pipeline/.github/workflows/test.yml`
-exactly (its offloaded/hosted step pair at :104–:152):
+## Job topology (explicit — replaces "mirror gp exactly")
+```
+elig      runs-on: ubuntu-latest.  Computes eligibility IN A STEP (push-to-main or same-repo PR,
+          secret present — secrets are readable in steps, not job-level if) and exports
+          outputs.eligible.
+offload   runs-on: ubuntu-latest.  needs: elig.  if: needs.elig.outputs.eligible == 'true'.
+          Runs the dagger-offload composite (pinned to full SHA) → suite executes on ai.
+          FAIL-CLOSED: ai unreachable ⇒ job red. Never a hosted fallback on failure().
+hosted    runs-on: blacksmith-4vcpu-ubuntu-2404.  needs: elig.
+          if: needs.elig.outputs.eligible != 'true'.  Runs the suite on the hosted runner —
+          fork PRs and no-secret events get real CI.
+gate      runs-on: ubuntu-latest.  needs: [offload, hosted].  if: always().
+          Fails unless exactly one of offload/hosted concluded SUCCESS. This is the ONLY
+          required status check for the suite.
+```
+Why `gate` exists: a conditionally-skipped job reports `skipped`, and **a skipped job satisfies a
+required status check** — requiring `offload`/`hosted` directly re-creates the false-green class
+one layer up (codex/gemini/Fable convergent). The aggregate check cannot be skipped and cannot
+pass without a real suite verdict.
 
-1. **eligible = true** (push to main, or same-repo PR, with `TS_AUTHKEY` present): the offloaded
-   step runs and is **fail-closed** — `ai` unreachable ⇒ job red. Never a fallback on `failure()`.
-2. **eligible = false** (fork PR, or secret absent): the **hosted suite step runs** (`if:
-   eligible != 'true'`), so untrusted contributions still get real CI on hosted runners and can
-   merge on genuine green. Forks never receive `TS_AUTHKEY` (GitHub secret withholding + the
-   trust gate).
-3. There is **no path where the job succeeds without executing the suite.** r1's "no-secret →
-   red, no hosted fallback" acceptance criterion is deleted: it contradicted the reference
-   pattern and, combined with the composite's ineligible no-op-success behavior, permitted a
-   false-green merge gate on fork events.
+## Merge-gate configuration (new in r3 — in-scope, not assumed)
+- Configure branch protection / a ruleset on `main` requiring the `gate` check (plus the
+  existing sub-minute checks). **Main currently has neither** — until this lands, "merge only on
+  green" is convention, not enforcement. Configuration change is part of this plan's acceptance,
+  performed by the maintainer (admin) alongside the workflow landing.
 
-## Billing contract (new in r2 — codex finding)
-A synchronous `dagger call` does NOT stop the calling runner's clock. Offloaded jobs therefore
-must not orchestrate from a billed Blacksmith runner. Orchestration moves to `runs-on:
-ubuntu-latest` (free for public repos) for the offloaded branches; the hosted fallback branch may
-stay on Blacksmith. Acceptance measures billed Blacksmith minutes, not wall time.
+## Host exposure (replaces r2's environment-protection clause — Fable N3)
+Environment protection with required reviewers would put a manual approval on EVERY eligible run
+(CI stops being automatic) or be toothless without reviewers. Dropped. Actual mechanisms:
+GitHub's default first-time-contributor approval for fork workflow runs; `TS_AUTHKEY` withheld
+from forks by GitHub secret semantics; tailnet ACL scoping `tag:ci-gp → ai:22` only;
+least-privilege rootless `ci-docker`. Residual risk (compromised same-repo write account running
+workloads on `ai`) is documented and accepted at maintainer ratification — same posture as the
+other offloaded repos.
 
 ## Changes
 ### `.github/workflows/test.yml` (modify)
-- add the `elig` trust-gate step (gp pattern) and the offloaded/hosted step pairs per the
-  eligibility contract; `uses:` pinned to a full commit SHA (gp does; r1 under-specified)
-- offloaded branches: `runs-on: ubuntu-latest`; hosted branches unchanged
-- python-version matrix preserved in the Dagger function (3.10/3.11/3.12 containers)
+- restructure per the job topology above; `uses:` pinned to full commit SHA
+- python matrix preserved inside the Dagger function (3.10/3.11/3.12 containers)
 ### `ci/dagger/` (create)
-- Dagger module running the exact suite/gate commands. MUST ingest the full git object database
-  (the chronology node runs `git cat-file`/`rev-list`/historical diffs; the reference module
-  needed explicit `.git` grafting for exactly this — codex finding). Verify with a probe that
-  `git rev-list --count HEAD` inside the container equals the host value.
-### Host hardening note (codex threat model)
-- `ai` exposure on the offload path = a compromised same-repo write account editing workflow/
-  module code to run arbitrary workloads via rootless Docker as `ci-docker`. Mitigation in this
-  plan: GitHub **environment protection** on the offload environment (maintainer approval for
-  first-time/modified-workflow runs), least-privilege `ci-docker`, and the existing ACL scoping
-  `tag:ci-gp → ai:22` only. Residual risk documented, accepted by maintainer at ratification.
+- Dagger module running the exact suite/gate commands, with:
+  - **the single-lane plan's selection rule reimplemented per container** (no `matrix.python-version`
+    exists inside Dagger): chronology node runs in the 3.10 container only + the Gate A stage —
+    without this the offload silently reintroduces 3 × 40-min executions (gemini; Fable N4)
+  - **full `.git` object database ingested**, verified by a probe that touches historical blobs
+    (`git fsck` or `cat-file --batch-check` over `rev-list --objects`) — a commit-count probe
+    passes on blob-filtered clones (Fable fix-3)
+  - **junitxml files exported from the `ai` containers back to the workflow** and uploaded as
+    artifacts (the single-lane plan's evidence contract must survive offload)
 ### deferred
-- sub-minute workflows (docs-audit, scrub, release-consistency, skills-parity) stay on
-  Blacksmith; migration cost exceeds their bill.
+- sub-minute workflows stay on Blacksmith; migration cost exceeds their bill
 
 ## Documentation impact
-- `CHANGELOG.md` — add — CI execution/offload change
+- `CHANGELOG.md` — add — CI execution/offload + merge-gate configuration change
 
 ## Dependencies & order
 1. agent-harness#477 merged (hard gate)
 2. single-lane plan landed
-3. Dagger module + `.git` ingestion probe → offloaded pytest matrix → offloaded Gate A
+3. Dagger module + probes → `elig`/`offload`/`hosted`/`gate` restructure → branch-protection
+   configuration → lane-by-lane cutover (pytest matrix, then Gate A)
 
 ## Verification
-- same-repo PR: offloaded steps run on `ai` (log shows tailnet join + `DOCKER_HOST=ssh://ai`);
-  results equal a hosted baseline on the same SHA
-- **fork-PR simulation: hosted suite step RUNS and its result gates the job** (r1 tested only key
-  withholding — insufficient; codex finding)
-- eligible + `ai` unreachable ⇒ job red (fail-closed proof)
-- `.git` probe: container `git rev-list --count HEAD` == host value
-- billing: representative push shows Blacksmith minutes only for hosted-branch/sub-minute jobs
+- same-repo PR: `offload` runs on ai (log shows tailnet join + `DOCKER_HOST=ssh://ai`); `hosted`
+  skipped; `gate` green; results equal a hosted baseline on the same SHA
+- fork-PR simulation: `offload` skipped, `hosted` RUNS and its result drives `gate`
+- eligible + `ai` unreachable ⇒ `offload` red ⇒ `gate` red (fail-closed observed)
+- suite-skip simulation (both offload and hosted forced-skip on a scratch branch) ⇒ `gate` red —
+  the skipped-satisfies-required-check hole is proven closed
+- `.git` blob probe green inside the container; junitxml artifacts present
+- billing: representative push bills Blacksmith only for `hosted` (fork-path) and sub-minute jobs
 
 ## Acceptance criteria
-- [ ] No job path succeeds without executing the suite (fork, no-secret, and eligible paths all
-      proven by observed runs)
+- [ ] No mergeable state without a gating suite verdict: `gate` is a required check on `main`
+      (ruleset/protection configured and observed), and the forced-skip simulation turns `gate` red
 - [ ] Eligible path fail-closed on unreachable `ai`; forks never receive `TS_AUTHKEY`
-- [ ] Chronology node passes inside the Dagger container (git history fully present)
-- [ ] Billed Blacksmith minutes for a representative push ≤ the sub-minute jobs
-- [ ] `uses:` pinned to full SHA; offload environment protected
+- [ ] Chronology node runs in exactly the 3.10 container + Gate A stage under Dagger; junitxml
+      artifacts exported and uploaded
+- [ ] Billed Blacksmith minutes for a representative eligible push ≤ the sub-minute jobs
+- [ ] `uses:` pinned to full SHA
 
 ## Generalizability note (unchanged)
 Fleet-internal. Client-facing proof-cost primitives land in `phase_loop_runtime` via GOVLEAN and
 require no Dagger/CI/network (EC-GOVLEAN-4); this plan is an optional accelerator layered on top.
 
 ## Execution policy
-- execute: effort=medium, reason=public-repo merge-gate semantics; the r1 defect class lives here
+- execute: effort=medium, reason=public-repo merge-gate semantics + job-graph restructure; the
+  false-green class has now survived two review rounds in different shapes — prove it dead by
+  the forced-skip simulation, not by reading the YAML
