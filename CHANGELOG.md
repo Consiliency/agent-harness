@@ -6,17 +6,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### CI: export the frozen source-posture `PYTHONPATH` on the pytest lanes (Consiliency/agent-harness#520)
-
-- The source-checkout `pytest` step in `.github/workflows/test.yml` now exports
-  `PYTHONPATH=src:tests`. `tests/__init__.py` prepends the sibling `src` tree in the
-  test process only, and the CONFORM evidence-verifier child inherits the environment
-  rather than the parent's `sys.path`, so CI was the sole environment that violated the
-  frozen source-posture command literals and resolved production differently in the two
-  processes. The standalone-consumer leg still overrides `PYTHONPATH` deliberately to
-  exercise the installed-consumer posture. This is a CI-execution change only; no
-  shipped runtime behaviour changes.
-
 ### CI: allow the post-CONFORM suite to finish (Consiliency/agent-harness#488)
 
 - The `pytest` matrix and `clean-room` jobs in `.github/workflows/test.yml` now allow
