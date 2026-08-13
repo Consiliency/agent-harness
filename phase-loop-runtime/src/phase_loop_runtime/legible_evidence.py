@@ -293,10 +293,23 @@ def validate_chronology(
 
 
 def _resolve_pr_head(repo_slug: str, number: int) -> str:
-    proc = subprocess.run(
-        ["gh", "pr", "view", str(number), "--repo", repo_slug, "--json", "headRefOid"],
-        capture_output=True, text=True, timeout=20, check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", str(number), "--repo", repo_slug, "--json", "headRefOid"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # An absent or unusable `gh` is the SAME fail-closed condition as a
+        # non-zero exit: the PR head is unresolvable either way, so it must
+        # surface as this module's typed evidence error rather than a bare
+        # OSError from subprocess. Without this, `subprocess.run` raises
+        # FileNotFoundError *before* the returncode check below, so the
+        # fail-closed branch is unreachable whenever the CLI is missing --
+        # which is the normal posture of a consumer clean-room checkout and of
+        # any container that does not ship the GitHub CLI.
+        raise LegiblePrEvidenceError(
+            f"cannot resolve PR {repo_slug}#{number} head: gh CLI unavailable: {exc}"
+        ) from exc
     if proc.returncode != 0:
         raise LegiblePrEvidenceError(f"cannot resolve PR {repo_slug}#{number} head via gh: {proc.stderr.strip()}")
     try:

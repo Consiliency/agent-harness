@@ -14,8 +14,36 @@
 set -euo pipefail
 
 PKG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$PKG_ROOT/.." && pwd)"
+
 # The dotfiles checkout root (must NOT appear in any resolved runtime path).
-DOTFILES_ROOT="$(cd "$PKG_ROOT/../.." && pwd)"
+#
+# Found by searching UP for the dotfiles markers, never by assuming a depth. A
+# fleet checkout nests this repo two levels under the dotfiles tree, but that is
+# a coincidence of one layout: off a fleet checkout the fixed `$PKG_ROOT/../..`
+# guess names some unrelated ancestor, and in the containerised offload (repo
+# mounted at /src) it resolves to `/` -- at which point EVERY path is trivially
+# "under the dotfiles checkout", including the isolated venv, and the probe
+# fails a clean room that is in fact clean (agent-harness#536).
+#
+# With no dotfiles tree above the repo there is nothing to prove independence
+# *of* except the source checkout itself, so the sentinel degrades to the repo
+# root: strictly stronger than the old ancestor guess (which named a directory
+# that merely contained the repo), and never degenerate.
+is_dotfiles_root() {
+  [ -d "$1/claude-config" ] && [ -f "$1/bootstrap.sh" ]
+}
+
+DOTFILES_ROOT="$REPO_ROOT"
+_candidate="$REPO_ROOT"
+while [ "$_candidate" != "/" ]; do
+  if is_dotfiles_root "$_candidate"; then
+    DOTFILES_ROOT="$_candidate"
+    break
+  fi
+  _candidate="$(dirname "$_candidate")"
+done
+unset _candidate
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

@@ -562,6 +562,44 @@ def test_pr_evidence_rejects_non_ancestor_body_sha(tmp_path):
         collect(repo, repo_slug=repo_slug, number=number, body_shas=tuple(body_shas) + (intruder,))
 
 
+def test_pr_head_resolution_fails_closed_when_gh_is_absent(monkeypatch, tmp_path):
+    """An absent `gh` must raise the typed evidence error, not a bare OSError.
+
+    Deliberately SIMULATES absence rather than depending on the host. Hosted CI
+    runners ship the GitHub CLI preinstalled, so a test that relied on the
+    ambient posture would pass vacuously everywhere it normally runs and be
+    exercised only by the containerised offload -- recreating, one level up, the
+    very coverage gap this test exists to close (agent-harness#535). Simulating
+    keeps it meaningful in every posture: hosted, container, and consumer
+    clean-room alike.
+    """
+    try:
+        module = importlib.import_module("phase_loop_runtime.legible_evidence")
+        error_cls = _new_symbol("phase_loop_runtime.legible_evidence", "LegiblePrEvidenceError")
+    except (ImportError, AttributeError) as exc:
+        _red("pr-head-resolution-fails-closed-when-gh-is-absent", str(exc))
+        return
+
+    resolve = getattr(module, "_resolve_pr_head", None)
+    if resolve is None:
+        _red("pr-head-resolution-fails-closed-when-gh-is-absent", "_resolve_pr_head is absent")
+        return
+
+    real_run = subprocess.run
+
+    def gh_is_absent(argv, *args, **kwargs):
+        # Exactly what subprocess raises when the executable does not exist --
+        # BEFORE any returncode is available to inspect.
+        if argv and argv[0] == "gh":
+            raise FileNotFoundError(2, "No such file or directory: 'gh'")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", gh_is_absent)
+
+    with pytest.raises(error_cls):
+        resolve("Consiliency/agent-harness", 1)
+
+
 def test_pr_evidence_rejects_head_or_body_change_before_merge(tmp_path):
     _assert_plan_contains("Require the PR to be non-draft with required checks/reviews satisfied")
     if _canonical_repo_ready():
