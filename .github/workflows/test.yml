@@ -62,7 +62,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: elig
     if: needs.elig.outputs.eligible == 'true'
-    timeout-minutes: 100
+    # One job runs ALL the heavy stages, so this budget is not the per-lane 100
+    # the hosted jobs use. The Dagger module runs them concurrently, so the wall
+    # clock is max(py3.10, Gate A) -- ~60 min on a warm engine. 120 leaves room
+    # for a cold-image run and a Gate A slower than the ~58 min its hosted 86:36
+    # scales to. Run 4 timed out at 100 running them SEQUENTIALLY.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:

@@ -15,6 +15,8 @@ assumed, because each one has a recorded failure mode behind it:
   lanes emit junit; that contract has to survive the move off the hosted runner.
 """
 
+import asyncio
+
 import dagger
 from dagger import dag, function, object_type
 
@@ -69,16 +71,30 @@ PIN_INTERPRETER_VERSION = PIN_INTERPRETER_IMAGE.split(":")[1].split("-")[0]
 class AgentHarnessCi:
     """Containerised agent-harness CI stages."""
 
-    def _base(self, source: dagger.Directory, python_version: str) -> dagger.Container:
-        """A container with the repo mounted and the runtime installed."""
+    def _base(
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        cache_scope: str = "suite",
+    ) -> dagger.Container:
+        """A container with the repo mounted and the runtime installed.
+
+        ``cache_scope`` keys the pip cache. The stages run CONCURRENTLY (see
+        ``all``), and a Dagger cache volume is SHARED by default, so two stages on
+        the same interpreter would otherwise have two pips writing one cache
+        directory at once. Giving Gate A its own scope removes that class outright
+        rather than reasoning about pip's atomicity.
+        """
         container = (
             dag.container()
             .from_(f"python:{python_version}-bookworm")
             .with_exec(["apt-get", "update"])
             .with_exec(["apt-get", "install", "-y", "--no-install-recommends", *BASE_PACKAGES])
-            # Cache pip across runs, keyed per interpreter so wheels never cross versions.
+            # Cache pip across runs, keyed per interpreter so wheels never cross
+            # versions, and per scope so concurrent stages never share one volume.
             .with_mounted_cache(
-                "/root/.cache/pip", dag.cache_volume(f"pip-{python_version}")
+                "/root/.cache/pip",
+                dag.cache_volume(f"pip-{python_version}-{cache_scope}"),
             )
         )
         if python_version != PIN_INTERPRETER_VERSION:
@@ -198,7 +214,9 @@ mkdir -p /junit
 export GATE_A_JUNIT=/junit/junit-gate-a.xml
 bash scripts/gate_a_cleanroom.sh
 """
-        return self._base(source, "3.12").with_exec(["bash", "-c", script])
+        return self._base(source, "3.12", cache_scope="gate-a").with_exec(
+            ["bash", "-c", script]
+        )
 
     @function
     async def junit(self, source: dagger.Directory) -> dagger.Directory:
@@ -220,13 +238,49 @@ bash scripts/gate_a_cleanroom.sh
     async def all(self, source: dagger.Directory) -> str:
         """The full offloaded gate: object-database probe, three suites, Gate A.
 
-        Ordered cheapest-falsifier-first: the probe costs seconds and catches the
-        incomplete-clone class before an ~80-minute proof is spent on it.
+        The probe runs FIRST and alone: it costs seconds and catches the
+        incomplete-clone class before ~40 minutes of chronology proof is spent on
+        it, which is the whole reason it exists. Gate A reads history too, so it
+        must not start before the probe clears either.
+
+        The four heavy stages then run CONCURRENTLY. Run sequentially they cost
+        43:32 + 4:41 + 4:54 + Gate A -- over the 100-minute job budget, and slower
+        end-to-end than the hosted lanes, which run in parallel (hosted total is
+        ~87 min, with Gate A the long pole at 86:36). Concurrently the wall clock
+        is max(py3.10, Gate A), which is what makes the offload a win rather than
+        a rearrangement. The host has 32 cores.
+
+        Failures are AGGREGATED, not short-circuited. Sequential composition
+        aborted at the first red, so each of the first three offloaded runs cost
+        ~45 minutes to surface exactly ONE defect -- and Gate A was never reached
+        at all until run 4. Gathering with ``return_exceptions=True`` reports every
+        stage's verdict from a single run.
         """
         results = [await self.git_probe(source)]
-        for version in PYTHON_VERSIONS:
-            await self._suite(source, version).sync()
-            results.append(f"suite py{version}: ok")
-        await self.gate_a(source).sync()
-        results.append("gate-a: ok")
+
+        stages: list[tuple[str, dagger.Container]] = [
+            *((f"suite py{v}", self._suite(source, v)) for v in PYTHON_VERSIONS),
+            ("gate-a", self.gate_a(source)),
+        ]
+        outcomes = await asyncio.gather(
+            *(container.sync() for _, container in stages),
+            return_exceptions=True,
+        )
+
+        failures: list[str] = []
+        for (name, _), outcome in zip(stages, outcomes):
+            if isinstance(outcome, BaseException):
+                failures.append(f"{name}: FAILED")
+                results.append(f"{name}: FAILED -- {outcome}")
+            else:
+                results.append(f"{name}: ok")
+        if failures:
+            # Every verdict is already in `results`; surface the roll-up too, so a
+            # multi-stage red is legible from the exception line alone.
+            raise RuntimeError(
+                "offloaded stages failed: "
+                + ", ".join(failures)
+                + "\n"
+                + "\n".join(results)
+            )
         return "\n".join(results)
