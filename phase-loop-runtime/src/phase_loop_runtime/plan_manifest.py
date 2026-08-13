@@ -656,7 +656,7 @@ _LEGIBLE_TEST_PATHS = (
     "phase-loop-runtime/tests/test_legible_evidence.py",
     "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
 )
-_LEGIBLE_ROADMAP_SHA256 = "88a7a68692c261d963b60b315705550d99c9eae95f40fc7abe70aace46cd4aa2"
+_LEGIBLE_ROADMAP_SHA256 = "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1"
 _LEGIBLE_PLAN_CONTRACT_FIXED = {
     "absent_registry_selector_falsifier_nodeid": (
         "phase-loop-runtime/tests/test_legible_roadmap_contract.py::"
