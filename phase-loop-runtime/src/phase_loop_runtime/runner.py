@@ -6238,6 +6238,82 @@ def _runner_verification_fails_closed(runner_verification: dict[str, object] | N
     return _verification_enforcement_mode() == "hard"
 
 
+def _roadmap_dispatch_holds(roadmap_text: str) -> dict[str, list[str]]:
+    """GOVLEAN amendment (2026-08-13): parse ``**Dispatch holds**`` declarations.
+
+    A phase section may declare holds on OTHER phases — the new-phase-side encoding
+    of a ratified execution gate that the roadmap grammar cannot express as a
+    forward dependency (append-mode forbids editing existing phases). Returns a map
+    of held-phase alias -> holder aliases.
+    """
+    holds: dict[str, list[str]] = {}
+    for m in re.finditer(
+        r"(?ms)^### Phase \d+[^\n]*\(([A-Za-z0-9]+)\)\n(.*?)(?=^### Phase |\Z)",
+        roadmap_text,
+    ):
+        holder, body = m.group(1).upper(), m.group(2)
+        fm = re.search(r"(?ms)^\*\*Dispatch holds\*\*\n(.*?)(?=^\*\*|\Z)", body)
+        if not fm:
+            continue
+        for line in fm.group(1).splitlines():
+            lm = re.match(r"^- ([A-Za-z0-9]+)\b", line.strip())
+            if lm:
+                holds.setdefault(lm.group(1).upper(), []).append(holder)
+    return holds
+
+
+def _phase_recorded_completed(repo: Path, roadmap: Path, alias: str) -> bool:
+    """True iff plans/manifest.json records the phase entry (``<vN>-<ALIAS>``) completed.
+
+    Unreadable/absent manifest or entry counts as NOT completed — for a dispatch
+    hold that is the fail-closed direction.
+    """
+    ver = re.search(r"phase-plans-(v\d+)", roadmap.name)
+    slug = (f"{ver.group(1)}-{alias}" if ver else alias).upper()
+    try:
+        data = json.loads((repo / "plans" / "manifest.json").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    entries = data if isinstance(data, list) else (data.get("entries") or data.get("plans") or [])
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get("slug", "")).upper() == slug:
+            return str(entry.get("status", "")).lower() == "completed"
+    return False
+
+
+def _dispatch_hold_blocker(repo: Path, roadmap: Path, plan: Path) -> dict[str, object] | None:
+    """GOVLEAN amendment (2026-08-13, panel-ratified r2/r3): machine-enforced hold.
+
+    Fails plan dispatch closed BY DEFAULT — independent of
+    ``PHASE_LOOP_ACCEPTANCE_ENFORCE`` — when the live roadmap declares a
+    ``**Dispatch holds**`` on the plan's phase and the holding phase is not yet
+    recorded completed. Explicit recovery bypass: ``PHASE_LOOP_ALLOW_HELD_DISPATCH=1``.
+    """
+    if os.environ.get("PHASE_LOOP_ALLOW_HELD_DISPATCH", "").strip() == "1":
+        return None
+    from . import discovery as _discovery
+
+    alias = str(_discovery.plan_metadata(plan).get("phase", "")).upper()
+    if not alias:
+        return None
+    holds = _roadmap_dispatch_holds(roadmap.read_text(encoding="utf-8"))
+    for holder in holds.get(alias, ()):  # empty when the phase is not held
+        if not _phase_recorded_completed(repo, roadmap, holder):
+            return {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": (
+                    f"Dispatch-hold guard: the roadmap holds {alias} dispatch until "
+                    f"phase {holder} is recorded completed in plans/manifest.json; "
+                    f"complete {holder} first (or set PHASE_LOOP_ALLOW_HELD_DISPATCH=1 "
+                    "to bypass for recovery)."
+                ),
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+    return None
+
+
 def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> dict[str, object] | None:
     """agent-harness#211: warn-default goal-coverage preflight.
 
@@ -6249,6 +6325,18 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
     ``not_applicable`` (legacy, no gate). Guarded so it can never take down run_loop.
     An audit crash fails CLOSED under enforcement, open otherwise."""
     enforce_block = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE", "").strip().lower() == "block"
+    # GOVLEAN amendment (2026-08-13): machine-readable dispatch holds run FIRST — the
+    # hold is independent of goal coverage and must fire even for legacy plans. An
+    # audit crash here fails OPEN (blast-radius bound: a parser bug must not block
+    # every dispatch); a successfully parsed hold with an incomplete holder fails
+    # CLOSED, including when the manifest itself is unreadable.
+    try:
+        _hold = _dispatch_hold_blocker(repo, roadmap, plan)
+    except Exception as _hold_exc:  # pragma: no cover - defensive bound
+        print(f"phase-loop: dispatch-hold audit errored ({_hold_exc})", file=sys.stderr)
+        _hold = None
+    if _hold is not None:
+        return _hold
     try:
         from .goal_coverage import check_goal_coverage
 
