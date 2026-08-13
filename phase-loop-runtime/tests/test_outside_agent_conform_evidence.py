@@ -1961,6 +1961,30 @@ def _assert_exact_frozen_activated_junit(path: Path, raw_log_path: Path) -> None
         assert CONFORM_ACTIVATED_RED_ANCHORS[nodeid] in failure_text
 
 
+# The CONFORM implementation landing. Evidence of record: merged, immutable history.
+CONFORM_IMPLEMENTATION_LANDING = "7bd0c01a64fde21232aa4da470a5bc14353a8158"
+
+
+def _implementation_landing_in_ancestry(git) -> bool:
+    """True once the CONFORM implementation landing is reachable from HEAD.
+
+    Ancestry-scoped by construction -- `merge-base --is-ancestor` asks only about
+    HEAD's own history, never `--all`. That distinction is load-bearing: repo-wide
+    the trailer that identifies this phase appears on eleven commits (review spurs
+    and evidence twins), and exactly one within HEAD's ancestry.
+
+    Before the landing is reachable, pre-landing semantics must be preserved
+    exactly, so this returns False and every assertion fires as it always did.
+    """
+    completed = _run_bound_child(
+        ["git", "merge-base", "--is-ancestor", CONFORM_IMPLEMENTATION_LANDING, "HEAD"],
+        input_text="",
+        cwd=REPO_ROOT,
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    return completed.returncode == 0
+
+
 def _sealed_docs_candidate(git) -> str:
     """Resolve the sealed-docs commit from the declared verifier trailer.
 
@@ -3655,6 +3679,7 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
             assert isinstance(head_commit, str) and isinstance(head_tree, str)
             final_candidate = head_commit
             chronology_scope = "a2_candidate"
+            b2_premerge_moment_expired = None
             if sl2_transitioned:
                 head_line = git("rev-list", "--parents", "-n", "1", head_commit).split()
                 if len(head_line) == 3:
@@ -3671,11 +3696,36 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
                 else:
                     assert len(head_line) == 2
                     chronology_scope = "b2_premerge"
+                    if _implementation_landing_in_ancestry(git):
+                        # The b2 pre-merge tip-shape proof moment has EXPIRED. Before
+                        # the implementation landed, a single-parent HEAD in this scope
+                        # WAS the docs candidate, so asserting the tip's diff equals the
+                        # sealed paths proved the pre-merge shape. Once the landing is in
+                        # HEAD's ancestry that is no longer true of an ordinary branch --
+                        # every branch tip is some unrelated commit, and the assertion
+                        # reds on its files (agent-harness#532). The docs-tip chronology
+                        # is durably recorded by the candidate CI runs and by landing
+                        # 7bd0c01a itself. Retarget the sealed-docs identity to that
+                        # recorded commit -- which keeps every sealed-byte protection
+                        # below running against the real docs -- and skip only the
+                        # tip-shape assertion.
+                        final_candidate = _sealed_docs_candidate(git)
+                        b2_premerge_moment_expired = {
+                            "reason": (
+                                "b2_premerge tip-shape assertion is not reproducible "
+                                "post-landing: an ordinary branch tip is not the sealed-"
+                                "docs commit, and the docs-tip chronology is recorded by "
+                                "the implementation landing"
+                            ),
+                            "implementation_landing": CONFORM_IMPLEMENTATION_LANDING,
+                            "sealed_docs_candidate": final_candidate,
+                        }
                 candidate = git("rev-parse", f"{final_candidate}^")
                 assert candidate != final_candidate
-                assert set(git("diff", "--name-only", candidate, final_candidate).splitlines()) == set(
-                    SEALED_RELEASE_FINAL_PATHS
-                )
+                if b2_premerge_moment_expired is None:
+                    assert set(git("diff", "--name-only", candidate, final_candidate).splitlines()) == set(
+                        SEALED_RELEASE_FINAL_PATHS
+                    )
             else:
                 candidate = head_commit
             candidate_tree = git("rev-parse", f"{candidate}^{{tree}}")
