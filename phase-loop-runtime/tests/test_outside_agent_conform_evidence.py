@@ -1961,11 +1961,49 @@ def _assert_exact_frozen_activated_junit(path: Path, raw_log_path: Path) -> None
         assert CONFORM_ACTIVATED_RED_ANCHORS[nodeid] in failure_text
 
 
+def _sealed_docs_candidate(git) -> str:
+    """Resolve the sealed-docs commit from the declared verifier trailer.
+
+    At exact-main scope the sealed-docs commit is evidence of record, not a
+    function of where `main` happens to point: it is the unique child of the
+    unique commit declaring `Conformance-Verifier: true`. Deriving it this way
+    keeps the identity pinned to the implementation candidate no matter how many
+    later pull requests land on top.
+    """
+    # Scope every walk to HEAD's own ancestry. `--all` would sweep sibling
+    # branches -- unmerged evidence twins and review spurs each carry their own
+    # declared verifier commit, and the local clone sees eleven of them -- so the
+    # trailer is unique only within the history actually under proof.
+    verifier_commits = [
+        line.split()[0]
+        for line in git(
+            "log", "HEAD", "--format=%H %(trailers:key=Conformance-Verifier,valueonly)"
+        ).splitlines()
+        if line.split()[1:] == ["true"]
+    ]
+    assert len(verifier_commits) == 1, verifier_commits
+    verifier_commit = verifier_commits[0]
+    children = [
+        row.split()[1:]
+        for row in git("rev-list", "--children", "HEAD").splitlines()
+        if row.split()[0] == verifier_commit
+    ]
+    assert len(children) == 1, children
+    assert len(children[0]) == 1, children[0]
+    return children[0][0]
+
+
 def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str, object]:
     """Run the committed frozen test blobs in clean, non-Git candidate exports."""
     test_paths = CONFORM_IMMUTABLE_LIFECYCLE_PATHS
+    # Root the blobs at the candidate, not at HEAD. The walk below searches the
+    # candidate's own history for the single commit that introduced these bytes,
+    # and the postcondition requires that boundary to be an ancestor of the
+    # candidate. Reading HEAD instead only coincided while HEAD == candidate: once
+    # main advanced a frozen test path after the candidate forked, no commit in the
+    # candidate's history could match and the boundary set went empty.
     head_blobs = {
-        path: _run_bound_child(["git", "rev-parse", f"HEAD:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")}).stdout.strip()
+        path: _run_bound_child(["git", "rev-parse", f"{candidate_commit}:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")}).stdout.strip()
         for path in test_paths
     }
     walk_res = _run_bound_child(["git", "rev-list", candidate_commit], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")})
@@ -3620,7 +3658,15 @@ def test_mutation_definitions_are_frozen_but_not_executed_preimplementation(
             if sl2_transitioned:
                 head_line = git("rev-list", "--parents", "-n", "1", head_commit).split()
                 if len(head_line) == 3:
-                    final_candidate = head_line[2]
+                    # Derive the sealed-docs candidate from the declared verifier
+                    # trailer, not from HEAD's tip merge. Reading head_line[2]
+                    # only coincided while the implementation landing WAS main's
+                    # tip; any later merge repoints it at that PR and the
+                    # sealed-path assertion below fails on unrelated files. The
+                    # verifier commit is the unique commit carrying
+                    # `Conformance-Verifier: true`, and the sealed-docs commit is
+                    # its unique child.
+                    final_candidate = _sealed_docs_candidate(git)
                     chronology_scope = "exact_main"
                 else:
                     assert len(head_line) == 2

@@ -6,9 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Outside-Agent Conformance Runtime (OARELEASE) for phase-loop-runtime 0.5.0
+### CI: land the CONFORM proof lanes (Consiliency/agent-harness#520, #522, #523, #524)
 
-- Prepared the release handoff at [`docs/releases/outside-agent-release-handoff.md`](docs/releases/outside-agent-release-handoff.md) for the outside-agent conformance runtime (OARELEASE) tracking phase-loop-runtime 0.5.0 and `Consiliency/spec@v0.2.1`.
+- The source-checkout `pytest` step in `.github/workflows/test.yml` exports
+  `PYTHONPATH=src:tests`. `tests/__init__.py` prepends the sibling `src` tree in the test
+  process only, and the CONFORM evidence-verifier child inherits the environment rather
+  than the parent's `sys.path`, so CI was the sole environment resolving production
+  differently in the two processes. The standalone-consumer leg still overrides
+  `PYTHONPATH` deliberately to exercise the installed-consumer posture.
+- The installed-verifier negative control stages its byte-divergent copy beside a
+  `_contract` tree, so it reaches the `repository_anchor` comparison it exists to prove
+  instead of failing earlier on the absent packaged contract.
+- `actions/checkout` pins `github.event.pull_request.head.sha`, so a pull-request proof
+  runs against the commit actually proposed rather than a synthetic merge ref.
+- The `pytest` matrix and Gate A clean-room jobs raise `timeout-minutes` from 45 to 100,
+  so a lane that runs the CONFORM chronology node to completion is not cancelled.
+- CI-execution changes only; no shipped runtime behaviour changes.
+
+### Outside-Agent Conformance Runtime (OARELEASE) for phase-loop-runtime 0.7.13
+
+- Prepared the release handoff at [`docs/releases/outside-agent-release-handoff.md`](docs/releases/outside-agent-release-handoff.md) for the outside-agent conformance runtime (OARELEASE) tracking phase-loop-runtime 0.7.13 and `Consiliency/spec@v0.2.1`.
 - Includes governed-pipeline pinning instructions, a digest-enumerated packaged contract mirror, and explicit maintainer-owned publish/tag/workflow-dispatch boundaries.
 
 ### CI: allow the post-CONFORM suite to finish (Consiliency/agent-harness#488)
