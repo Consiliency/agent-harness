@@ -137,7 +137,7 @@ def test_detects_wrong_execution_notes_root_count():
 
 @_needs_v10
 def test_detects_serial_edge_count_mismatch():
-    mutated = _mutate("Serial edges (eight,", "Serial edges (seven,")
+    mutated = _mutate("Serial edges (nine,", "Serial edges (seven,")
     findings = check_representation_consistency(mutated)
     assert any(f.representation == "serial-edges" and "declares" in f.message for f in findings), findings
 
