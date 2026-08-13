@@ -119,7 +119,7 @@ LEGIBLE_LOADED_RUNTIME_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
     "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
 )
-LEGIBLE_ROADMAP_SHA256 = "58fbf95ca004cc9fcc54394c88d421f6ab6c0e8655882faf5fdb1431128d9c90"
+LEGIBLE_ROADMAP_SHA256 = "a4c4d2bd836948936541966a6f482693bfd2b6a7ed1b22b7fb453720367f9974"
 LEGIBLE_SKIP_REASON = (
     "LEGIBLE capability absent (set PHASE_LOOP_TDD_EXPECT_LEGIBLE=1, or install "
     "phase_loop_runtime.legible_evidence with LEGIBLE_CAPABILITY_VERSION == 'legible.v1')"

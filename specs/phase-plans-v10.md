@@ -1417,6 +1417,25 @@ cross-vendor work-unit rotation until author-scoped work-unit closeout can prese
 review quorum. Record the selected executor, model, effort, reviewed digest, reviewing seat count,
 and RED-test evidence in the phase ledger.
 
+### Governance supersession on GOVLEAN delivery (amendment 2026-08-12)
+
+Gates 1–2 AND every four-vendor-board mandate in these notes (including gate 5's "Fable and Sol
+are mandatory in every plan review, code review, and advisor panel" and gate 6's no-degraded rule
+as applied to support-tier landings) remain in force ONLY until the authority-switch event; from
+that event, the agent-harness#442 corrections of 2026-08-11 govern (president availability ladder
+Fable → Sol → Grok 4.5 → Gemini 3.6 with typed-failure descent; tiered review — full board plus
+president for production-code and plan landings, a single grounded reviewer for tests-only and
+docs-only; typed ruling capture). The Assumptions section's coordinated-run procedure description is historical-descriptive from
+the switch onward, not a competing authority. THE SWITCH IS ONE TYPED EVENT, not a gradual
+transfer:
+EC-GOVLEAN-5 verified complete on main (its full falsifier set green), recorded in the phase
+ledger — during any partial lane-A window the old gates keep exclusive authority, so no
+dual-authority state exists. Post-switch planner boundary (gate 1's successor): any vendor may
+author a plan at maximum reasoning; a Sol-authored plan requires the EC-GOVLEAN-7 cross-vendor
+ablation pass before ratification; the dispatch record names the planner either way. This
+paragraph is the reconciliation the amendment panel required: without it, gates 2 and 5 and
+EC-GOVLEAN-5 would contradict each other while all claimed authority.
+
 ### PROOFGATE convergence experiment (pre-registered, amendment 2026-08-12)
 
 PROOFGATE executes under the GOVLEAN rules and primitives. The committed PROOFGATE detailed plan
