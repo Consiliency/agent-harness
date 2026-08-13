@@ -10,3 +10,7 @@ __pycache__/
 .consiliency/leases/
 .dev-skills/handoffs/
 .pytest_cache/
+
+# Gate A clean-room junit evidence (CI overrides GATE_A_JUNIT to a runner path;
+# a local run defaults to this file, which must not dirty the worktree).
+phase-loop-runtime/gate-a-standalone.junit.xml

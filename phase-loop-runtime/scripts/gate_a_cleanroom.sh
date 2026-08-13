@@ -20,6 +20,14 @@ DOTFILES_ROOT="$(cd "$PKG_ROOT/../.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Gate A's per-node evidence. It must live OUTSIDE $WORK: the EXIT trap above wipes
+# that tree, and the suite runs under `env -i`, so the destination cannot travel as
+# an environment variable either -- it is passed positionally into the heredoc and
+# forwarded to pytest as --junitxml. Defaults beside the package so a local run also
+# leaves the artifact behind; CI overrides it to a runner path it can upload.
+GATE_A_JUNIT="${GATE_A_JUNIT:-$PKG_ROOT/gate-a-standalone.junit.xml}"
+mkdir -p "$(dirname "$GATE_A_JUNIT")"
+
 echo "== Gate A clean-room =="
 echo "package root : $PKG_ROOT"
 echo "dotfiles root: $DOTFILES_ROOT"
@@ -148,7 +156,9 @@ raise SystemExit(
 PYEOF
   CONFORM_CAPABILITY_STATUS=$?
   set -e
-  CONFORM_STANDALONE_DESELECTS=()
+  # Seeded unconditionally: the capability-absent branch below never repopulates
+  # this array, and the junit evidence must be emitted in either posture.
+  CONFORM_STANDALONE_DESELECTS=("--junitxml=$GATE_A_JUNIT")
   if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]; then
     # CONFORM's final mutation/lifecycle proof needs source and Git history as
     # immutable data. A sparse private clone supplies those bytes while scripts
@@ -219,6 +229,7 @@ PYEOF
     # standalone wheel gate cannot manufacture. CONFORM's frozen A2 selector
     # excludes the same exact identities; every other non-integration test runs.
     CONFORM_STANDALONE_DESELECTS=(
+      "${CONFORM_STANDALONE_DESELECTS[@]}"
       "--rootdir=$SUITE_TREE"
       "--deselect=tests/test_outside_agent_contract_drift.py::test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes"
       "--deselect=tests/test_outside_agent_release_surface.py::test_v7_disposition_records_merged_contract_and_final_installed_behavior"

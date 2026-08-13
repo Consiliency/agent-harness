@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: run the heavy CONFORM chronology proof in two lanes, not four (Consiliency/agent-harness#530, plan `detailed-ci-single-lane-chronology-20260812`)
+
+- The CONFORM chronology node (~40 min per execution) now runs in exactly two of the
+  four CI executions: the **py3.10** matrix lane (oldest supported interpreter, which
+  exercises the version-sensitive subprocess machinery behind the 3.10-vs-3.12 egg-info
+  divergence in `Consiliency/agent-harness#382`) and **Gate A** (py3.12 clean room). The
+  3.11 and 3.12 matrix lanes deselect it, saving ~80 billed minutes per push while
+  keeping both interpreter endpoints covered.
+- Both retaining lanes now emit JUnit XML and upload it as a build artifact, so the
+  node's per-run verdict is durable evidence rather than runner-local output.
+  `scripts/gate_a_cleanroom.sh` writes its JUnit outside the `$WORK` tree its `EXIT`
+  trap wipes, and receives the destination positionally because the suite runs under
+  `env -i`.
+- A dedicated `chronology retention guard` job reads the workflow as data and fails if
+  no matrix lane still runs the node — so narrowing two lanes to zero cannot happen
+  silently, including when a lane is removed from the matrix entirely.
+- CI-execution changes only; no shipped runtime behaviour changes.
+
 ### CI: land the CONFORM proof lanes (Consiliency/agent-harness#520, #522, #523, #524)
 
 - The source-checkout `pytest` step in `.github/workflows/test.yml` exports
