@@ -92,7 +92,27 @@ jobs:
           # the same PYTHONPATH the frozen command literals use so both processes
           # resolve production identically. The standalone leg below overrides it
           # deliberately to exercise the installed-consumer posture.
+          # Two-lane chronology rule: the heavy CONFORM chronology node (~40 min)
+          # runs in exactly two of the four CI executions -- this py3.10 lane
+          # (oldest supported interpreter; the node drives version-sensitive
+          # subprocess machinery, cf. the 3.10-vs-3.12 egg-info divergence in
+          # agent-harness#382) and Gate A (py3.12 clean room). The 3.11 and 3.12
+          # matrix lanes deselect it; 4 -> 2 executions saves ~80 billed minutes
+          # per push while keeping both interpreter endpoints covered.
+          CHRONOLOGY_NODE="tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
+          suite_args=()
+          if [ "${{ matrix.python-version }}" = "3.10" ]; then
+            suite_args+=("--junitxml=$RUNNER_TEMP/junit-py310.xml")
+          else
+            suite_args+=("--deselect=$CHRONOLOGY_NODE")
+          fi
+          # The deselect must never become a silent no-op: if the node is renamed
+          # or moved, `--deselect` matches nothing and pytest says nothing. Assert
+          # the node is still collectable in THIS lane before relying on either
+          # branch above.
+          PYTHONPATH=src:tests python -m pytest --collect-only -q "$CHRONOLOGY_NODE" >/dev/null
           PYTHONPATH=src:tests python -m pytest -m "not dotfiles_integration" \
+            "${suite_args[@]}" \
             --ignore tests/test_legible_roadmap_contract.py \
             --ignore tests/test_legible_evidence.py
           suite_root="$(mktemp -d)/phase-loop-runtime"
@@ -104,6 +124,17 @@ jobs:
             "$suite_root/tests/test_legible_evidence.py" \
             -m "not dotfiles_integration"
 
+      - name: Upload chronology junit (py3.10 lane)
+        # Durable per-node evidence: without the upload the xml dies with the
+        # runner. Only the py3.10 lane produces it (the other lanes deselect the
+        # node), and it must survive a red suite, hence if: always().
+        if: always() && matrix.python-version == '3.10'
+        uses: actions/upload-artifact@v4
+        with:
+          name: chronology-junit-py310
+          path: ${{ runner.temp }}/junit-py310.xml
+          if-no-files-found: error
+
       - name: WIRE-THE-DOCTOR — fail on a stale gating BOM target
         # A drift detector nobody invokes re-rots on day 1 (IF-0-AHADOPT-2). This
         # runs the INSTALLED `phase-loop doctor` against the live npm+PyPI
@@ -112,6 +143,48 @@ jobs:
         # It degrades to `unknown` (never fails) when a registry is unreachable,
         # so a network blip cannot red the build; only definitive drift gates.
         run: phase-loop doctor --fail-on-stale
+
+  chronology-retention:
+    name: chronology retention guard
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    # Its OWN job, not a step inside the pytest matrix. A matrix-conditional step
+    # silently vanishes if the matrix is ever bumped past that version, taking the
+    # guard with it and leaving CI fully green (the documented hazard recorded at
+    # the lint job above). This job reads the workflow as data and fails loudly if
+    # no lane still RUNS the heavy chronology node -- so narrowing the two-lane rule
+    # to zero lanes is impossible to do silently.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+      - name: Assert at least one matrix lane retains the chronology node
+        run: |
+          python3 - <<'PYEOF'
+          import sys, yaml
+          node = ("tests/test_outside_agent_conform_evidence.py::"
+                  "test_mutation_definitions_are_frozen_but_not_executed_preimplementation")
+          wf = yaml.safe_load(open(".github/workflows/test.yml"))
+          pytest_job = wf["jobs"]["pytest"]
+          versions = [str(v) for v in pytest_job["strategy"]["matrix"]["python-version"]]
+          suite = next(
+              step for step in pytest_job["steps"]
+              if step.get("name") == "Run standalone test suite"
+          )["run"]
+          # A lane retains the node when it is NOT the deselecting branch. The step
+          # deselects for every version except the one named in its equality test.
+          retaining = [v for v in versions if f'= "{v}" ]' in suite]
+          if not retaining:
+              sys.exit(
+                  "chronology retention guard: no matrix lane runs the heavy "
+                  f"chronology node. Versions present: {versions}. The two-lane "
+                  "rule requires one matrix lane plus Gate A; if a lane was "
+                  "removed, retarget the retained lane rather than dropping it."
+              )
+          if node not in suite:
+              sys.exit("chronology retention guard: the node id is absent from the suite step")
+          print(f"chronology node retained in matrix lane(s): {retaining}")
+          PYEOF
 
   cleanroom:
     name: clean-room (standalone-from-wheel, Gate A)
@@ -144,4 +217,18 @@ jobs:
         # sibling phase-loop-skills/ is absent (agent-harness#9); the runtime must
         # resolve only under site-packages, never a dotfiles checkout.
         working-directory: phase-loop-runtime
+        # GATE_A_JUNIT steers the script's junit output to a runner path OUTSIDE the
+        # script's own $WORK tree -- that tree is wiped by its `trap rm -rf EXIT`, and
+        # the suite runs under `env -i`, so the path travels positionally into the
+        # heredoc rather than through the environment.
+        env:
+          GATE_A_JUNIT: ${{ runner.temp }}/junit-gate-a.xml
         run: bash scripts/gate_a_cleanroom.sh
+
+      - name: Upload chronology junit (Gate A)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chronology-junit-gate-a
+          path: ${{ runner.temp }}/junit-gate-a.xml
+          if-no-files-found: error
