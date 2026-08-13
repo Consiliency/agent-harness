@@ -6264,6 +6264,30 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
                 "access_attempts": (),
             }
         return None
+    # GOVLEAN amendment (2026-08-13, panel-ratified r2): a plan whose pinned
+    # roadmap_sha256 no longer matches the live roadmap bytes was authored against
+    # DIFFERENT roadmap content and is un-auditable — dispatching it silently would
+    # let a pre-amendment plan execute under post-amendment rules (the PROOFGATE
+    # re-gate hole both r2 seats named). This ONE anchor mismatch fails closed by
+    # DEFAULT, independent of PHASE_LOOP_ACCEPTANCE_ENFORCE; recovery workflows may
+    # bypass explicitly with PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN=1.
+    stale_anchor = any(
+        d.startswith("plan_anchor:mismatched_roadmap_sha256")
+        for d in result.setup_diagnostics
+    )
+    if stale_anchor and os.environ.get("PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN", "").strip() != "1":
+        return {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": (
+                "Stale-roadmap dispatch guard: the plan pins a roadmap_sha256 for "
+                "different roadmap bytes than the live roadmap; refresh the plan "
+                "against the amended roadmap (or set "
+                "PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN=1 to bypass for recovery)."
+            ),
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
     # A legacy phase with no EC-IDs (and no setup error) is not gated. But a SETUP
     # ERROR (stale roadmap_sha256, unresolvable phase, un-auditable plan) is also
     # applicable=False — it must NOT silently pass the gate (CR codex/Fable): an

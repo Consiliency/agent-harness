@@ -1169,7 +1169,8 @@ EC-GOVLEAN-7 budget: it is the first subject of its own rules, and its convergen
 baseline measurement for the PROOFGATE experiment recorded in the Execution Notes.
 
 
-Encoding note (2026-08-13): this phase is appended as Phase 13 per append-mode discipline. The ratified execution order CONFORM → GOVLEAN → PROOFGATE is carried by this phase's Produces gates, the Phase Dependency DAG, and the Execution Notes; PROOFGATE's own **Depends on** field is deliberately unmodified because the roadmap grammar forbids both editing existing phases and forward dependencies. PROOFGATE execution MUST NOT dispatch until this phase completes.
+Encoding note (2026-08-13): this phase is appended as Phase 13 per append-mode discipline. The structured graph carries only the backed dependency CONFORM before GOVLEAN — NOT a GOVLEAN-before-PROOFGATE edge: the roadmap grammar forbids both editing existing phases and forward dependencies, so PROOFGATE's own **Depends on** field is deliberately unmodified. The ratified execution re-gate is carried by ruling and interface freeze instead: this phase's Produces gate (IF-0-GOVLEAN-1, which the refreshed PROOFGATE plan must consume), the governance ruling in the DAG notes, the Execution Notes start order, and the stale-roadmap fail-closed dispatch guard. PROOFGATE execution MUST NOT dispatch until this phase completes.
+
 **Non-goals**
 Retro-fitting the landed CONFORM chronology test (it may be simplified later under these
 primitives; not required here). Full REVIEWTRUTH implementation (typed board states beyond
@@ -1254,7 +1255,7 @@ Critical paths (depth 6):
   LEGIBLE → CONFORM → FABPUB → FABREADMIT → INTEG → RELEASE
 ```
 
-The six detailed root plans own a conflict graph that is complete except for the
+The seven detailed root plans (GOVLEAN added by the 2026-08-13 amendment) own a conflict graph that is complete except for the
 PROOFGATE/CONFORM pair. The exhaustive pattern-expanded intersections are:
 
 | pair | shared owned paths or patterns | ordering |
@@ -1273,6 +1274,9 @@ PROOFGATE/CONFORM pair. The exhaustive pattern-expanded intersections are:
 | PROOFGATE / SCHED | `runner.py` | PROOFGATE → SCHED |
 | HARDEN / SCHED | `runner.py` | SCHED lane B → HARDEN |
 | PROOFGATE / CONFORM | none | parallel-safe |
+| GOVLEAN / PROOFGATE | `panel_invoker.py` | shared path; serialized by the governance ruling (GOVLEAN completes before PROOFGATE executes) |
+| GOVLEAN / HARDEN | `panel_invoker.py` | shared path; GOVLEAN precedes HARDEN (ruling + wave order, transitive) |
+| GOVLEAN / REVIEWTRUTH | `panel_invoker.py`, `composition.py` | shared path; GOVLEAN precedes REVIEWTRUTH (ruling + wave order, transitive) |
 | PROOFGATE / FABPUB | `train_runner.py`, `test_convergence_broker_revocation_race.py` | PROOFGATE → FABPUB |
 | PROOFGATE / HARDEN | `launcher.py`, `panel_invoker.py`, `goal_coverage.py`, `runner.py`, `verification_evidence.py`, `test_goal_coverage.py`, `test_review_leg_sandbox.py` | PROOFGATE before HARDEN (transitive) |
 | CONFORM / FABPUB | `cli.py`, `CHANGELOG.md` | CONFORM → FABPUB |
@@ -1372,9 +1376,12 @@ that later make the same controls machine-enforceable:
    called convergence and never authorizes this coordinated run to proceed. The coordinator keeps
    this bootstrap interlock until REVIEWTRUTH lands the equivalent runtime enforcement.
 
-The writer-safe root-plan frontier is exactly the five-wave sequence in the DAG above. PROOFGATE Amendment 2026-08-13 (GOVLEAN): GOVLEAN sits between CONFORM's completion and PROOFGATE's execution; PROOFGATE execution additionally consumes GOVLEAN's delivery (IF-0-GOVLEAN-1), per the governance ruling above and the pre-registered experiment below.
-and CONFORM are the sole concurrent detailed root-plan authors. LEGIBLE lands first; after
-PROOFGATE, SCHED lane B may run alongside the remaining CONFORM/FABPUB path and must land before
+The writer-safe root-plan frontier is exactly the five-wave sequence in the DAG above. PROOFGATE
+and CONFORM are the sole concurrent detailed root-plan AUTHORS; amendment 2026-08-13 (GOVLEAN):
+PROOFGATE's EXECUTION additionally waits on GOVLEAN's delivery and consumes IF-0-GOVLEAN-1, per
+the governance ruling above and the pre-registered experiment below. LEGIBLE lands first; after
+PROOFGATE (which itself executes only after GOVLEAN delivers), SCHED lane B may run alongside
+the remaining CONFORM/FABPUB path and must land before
 HARDEN touches `runner.py`. SCHED lane A may proceed independently after its recorded design
 decision. FABPUB consumes both wave-2 root-plan landings; HARDEN consumes FABPUB plus the landed
 SCHED lane B; and full SCHED must land before REVIEWTRUTH. REVIEWTRUTH consumes SCHED, CONFORM, and

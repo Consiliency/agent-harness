@@ -301,9 +301,17 @@ class GoalCoveragePreflightTest(unittest.TestCase):
                 blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
                 self.assertIsNotNone(blocker)  # setup error -> blocked under enforce
                 self.assertFalse(blocker["human_required"])
-                # warn-default: the same setup error does NOT block
+                # GOVLEAN amendment (2026-08-13): the stale-sha anchor mismatch now
+                # fails closed even in warn-default mode (stale-roadmap dispatch
+                # guard; see test_stale_roadmap_dispatch_guard.py). Only the
+                # explicit recovery bypass restores the old advisory behaviour.
                 os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
-                self.assertIsNone(_execute_goal_coverage_preflight(repo, roadmap, plan))
+                self.assertIsNotNone(_execute_goal_coverage_preflight(repo, roadmap, plan))
+                os.environ["PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN"] = "1"
+                try:
+                    self.assertIsNone(_execute_goal_coverage_preflight(repo, roadmap, plan))
+                finally:
+                    os.environ.pop("PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN", None)
         finally:
             if old is None:
                 os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)

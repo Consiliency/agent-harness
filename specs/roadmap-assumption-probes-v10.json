@@ -453,6 +453,6 @@
     }
   ],
   "roadmap": "specs/phase-plans-v10.md",
-  "roadmap_sha256": "a4c4d2bd836948936541966a6f482693bfd2b6a7ed1b22b7fb453720367f9974",
+  "roadmap_sha256": "2299c3eda6b41ddeb230ac7f18f90ca4c65e361ecbf30e2a381672ef477546fd",
   "schema": "roadmap_assumption_probe.v1"
 }
