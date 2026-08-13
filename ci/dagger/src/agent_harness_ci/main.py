@@ -33,7 +33,24 @@ PYTHON_VERSIONS = ("3.10", "3.11", "3.12")
 
 # The suite needs a real git binary (the chronology proof shells out to it) and
 # `git merge-tree --write-tree`, which is git >= 2.38. Debian bookworm ships 2.39.
+#
 BASE_PACKAGES = ["git", "ca-certificates"]
+
+# A SECOND, higher interpreter must be on PATH. Several suite tests resolve an
+# interpreter PIN (`automation.python: python3.12`) and assert the runtime honours
+# it, so they need python3.12 present regardless of which interpreter runs pytest.
+# A hosted GitHub runner satisfies that incidentally -- it ships a system
+# python3.12 alongside whatever setup-python selected -- so the requirement is
+# invisible there. A single-version container does not:
+# `test_hotfix_threads_python_pin` failed on the first offloaded run with
+# `suite interpreter unavailable: automation.python pin 'python3.12' not found on
+# host` (exit 127).
+#
+# Debian bookworm has no python3.12 apt package (it ships 3.11), so this is taken
+# from the official image rather than installed -- the same interpreter bytes the
+# 3.12 lane itself runs, with no third-party PPA in the trust path.
+PIN_INTERPRETER_IMAGE = "python:3.12-bookworm"
+PIN_INTERPRETER_PATH = "/usr/local/bin/python3.12"
 
 
 @object_type
@@ -50,6 +67,14 @@ class AgentHarnessCi:
             # Cache pip across runs, keyed per interpreter so wheels never cross versions.
             .with_mounted_cache(
                 "/root/.cache/pip", dag.cache_volume(f"pip-{python_version}")
+            )
+            # The pinned second interpreter, copied from the official 3.12 image.
+            .with_directory(
+                "/opt/python3.12",
+                dag.container().from_(PIN_INTERPRETER_IMAGE).directory("/usr/local"),
+            )
+            .with_exec(
+                ["ln", "-sf", "/opt/python3.12/bin/python3.12", PIN_INTERPRETER_PATH]
             )
             .with_mounted_directory("/src", source)
             .with_workdir("/src")
