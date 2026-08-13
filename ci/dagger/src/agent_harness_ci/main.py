@@ -49,8 +49,20 @@ BASE_PACKAGES = ["git", "ca-certificates"]
 # Debian bookworm has no python3.12 apt package (it ships 3.11), so this is taken
 # from the official image rather than installed -- the same interpreter bytes the
 # 3.12 lane itself runs, with no third-party PPA in the trust path.
+#
+# It is grafted in ONLY for the lanes that lack it. Doing it unconditionally broke
+# the 3.12 lane on the third offloaded run: in the 3.12 base `/usr/local/bin/
+# python3.12` IS the container's own interpreter and `python` -> `python3` ->
+# `python3.12`, so the symlink hijacked `python` itself. `sys.prefix` flipped to
+# /opt/python3.12 and `python -m pip install` wrote the console scripts to
+# /opt/python3.12/bin, which is not on PATH -- pip said so in the run log, and
+# `codex-phase-loop` then failed to spawn. The 3.10 and 3.11 lanes ran the same
+# test green, which is what localises the fault to the graft.
 PIN_INTERPRETER_IMAGE = "python:3.12-bookworm"
 PIN_INTERPRETER_PATH = "/usr/local/bin/python3.12"
+# The version whose own interpreter already satisfies the pin, so it must be left
+# strictly alone. Derived from the image tag rather than restated.
+PIN_INTERPRETER_VERSION = PIN_INTERPRETER_IMAGE.split(":")[1].split("-")[0]
 
 
 @object_type
@@ -59,7 +71,7 @@ class AgentHarnessCi:
 
     def _base(self, source: dagger.Directory, python_version: str) -> dagger.Container:
         """A container with the repo mounted and the runtime installed."""
-        return (
+        container = (
             dag.container()
             .from_(f"python:{python_version}-bookworm")
             .with_exec(["apt-get", "update"])
@@ -68,14 +80,19 @@ class AgentHarnessCi:
             .with_mounted_cache(
                 "/root/.cache/pip", dag.cache_volume(f"pip-{python_version}")
             )
+        )
+        if python_version != PIN_INTERPRETER_VERSION:
             # The pinned second interpreter, copied from the official 3.12 image.
-            .with_directory(
+            # Skipped in the 3.12 lane, where the container's own interpreter
+            # already satisfies the pin and grafting over it hijacks `python`.
+            container = container.with_directory(
                 "/opt/python3.12",
                 dag.container().from_(PIN_INTERPRETER_IMAGE).directory("/usr/local"),
-            )
-            .with_exec(
+            ).with_exec(
                 ["ln", "-sf", "/opt/python3.12/bin/python3.12", PIN_INTERPRETER_PATH]
             )
+        return (
+            container
             .with_mounted_directory("/src", source)
             .with_workdir("/src")
             .with_exec(
