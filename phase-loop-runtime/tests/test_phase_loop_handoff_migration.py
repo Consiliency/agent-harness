@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -14,7 +15,9 @@ from phase_loop_runtime.discovery import repo_identity
 from phase_loop_runtime.migrate_handoffs import _quiesced, migrate_handoffs
 
 
-BIN = "phase-loop"
+# Interpreter-anchored, not PATH-anchored (agent-harness#542) -- see the note
+# on phase_loop_smoke_utils.BIN.
+BIN = (sys.executable, "-m", "phase_loop_runtime.cli")
 SKILL_FILES = tuple(
     ROOT / base / f"{harness}-{skill}" / "SKILL.md"
     for harness, base in (
@@ -198,9 +201,9 @@ class PhaseLoopHandoffMigrationTest(unittest.TestCase):
             from phase_loop_smoke_utils import isolated_home_env
             repo = make_repo(Path(td) / "repo")
             env = isolated_home_env(Path(td) / "home")
-            help_result = subprocess.run([str(BIN), "migrate-handoffs", "--help"], text=True, capture_output=True, check=True)
+            help_result = subprocess.run([*BIN, "migrate-handoffs", "--help"], text=True, capture_output=True, check=True)
             dry_run = subprocess.run(
-                [str(BIN), "migrate-handoffs", "--repo", str(repo), "--dry-run", "--json"],
+                [*BIN, "migrate-handoffs", "--repo", str(repo), "--dry-run", "--json"],
                 text=True,
                 capture_output=True,
                 env=env,
