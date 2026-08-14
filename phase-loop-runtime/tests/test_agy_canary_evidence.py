@@ -1095,6 +1095,8 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         (repo / "shared").mkdir()
         (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
         _git_repo(repo)
+        plan.chmod(0o640)
+        manifest.chmod(0o600)
         head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
         blobs = {
             name: subprocess.check_output(["git", "-C", str(repo), "rev-parse", f"HEAD:{name}"], text=True).strip()
@@ -1162,6 +1164,9 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         assert result["inputs_sha256"]
         assert "## Execution evidence" in plan.read_text()
         assert json.loads(manifest.read_text())["plans"][0]["updated_at"] != "old"
+        assert stat.S_IMODE(plan.stat().st_mode) == 0o640
+        assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
+        assert not [path for path in plans.iterdir() if path.name.startswith(".phase-loop-agy-finalize-")]
         assert (root / "agy_canary_inputs.json").is_file()
         _prefix, payload = evidence._parse_final_payload(plan.read_bytes())
         assert payload["proof"]["provider_results"] == proof["provider_results"]
@@ -1205,6 +1210,177 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                 manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/manifest.json"]),
             )
     finally:
+        shutil.rmtree(root)
+
+
+def _stub_finalizer(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    root = _private_root(tmp_path)
+    repo = tmp_path / "dotfiles"
+    plans = repo / "plans"
+    plans.mkdir(parents=True)
+    plan = plans / "canary.md"
+    manifest = plans / "manifest.json"
+    plan.write_bytes(b"# Plan\n")
+    manifest.write_bytes(b'{"plans":[{"slug":"agy-canary","updated_at":"old"}]}\n')
+    plan.chmod(0o640)
+    manifest.chmod(0o600)
+    proof = {"sealed": "proof"}
+    release: dict[str, object] = {}
+    prepare = {
+        "seat_key": "gemini-primary",
+        "release": release,
+        "release_sha256": evidence._sha256(evidence._canonical_json(release)),
+    }
+
+    monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
+    monkeypatch.setattr(
+        evidence,
+        "_attested_final_targets",
+        lambda **_kwargs: (
+            {"input_sha256": {
+                "plans/canary.md": evidence._sha256(plan.read_bytes()),
+                "plans/manifest.json": evidence._sha256(manifest.read_bytes()),
+            }},
+            "plans/canary.md",
+            "plans/manifest.json",
+        ),
+    )
+    monkeypatch.setattr(
+        evidence,
+        "_read_json_at",
+        lambda _fd, name: prepare if name == evidence._PREPARE_NAME else proof,
+    )
+    monkeypatch.setattr(evidence, "_proof_identity", lambda _proof: {"proof": "identity"})
+    monkeypatch.setattr(evidence, "_final_suffix", lambda _proof, _attestation: b"\nproof\n")
+    return root, repo, plan, manifest
+
+
+def _run_stub_finalizer(root: Path, repo: Path) -> dict[str, object]:
+    return evidence.finalize_canary(
+        evidence_root=root,
+        expected_seat_key="gemini-primary",
+        dotfiles_repo=repo,
+        plan_path=Path("plans/canary.md"),
+        manifest_path=Path("plans/manifest.json"),
+        plan_slug="agy-canary",
+    )
+
+
+def test_finalizer_preserves_concurrent_mutation_after_inputs_receipt(monkeypatch, tmp_path):
+    root, repo, plan, manifest = _stub_finalizer(monkeypatch, tmp_path)
+    manifest_before = manifest.read_bytes()
+    original_write = evidence._write_replace_at
+
+    def write_then_mutate(directory_fd, name, value):
+        original_write(directory_fd, name, value)
+        if name == evidence._INPUTS_NAME:
+            plan.write_bytes(b"concurrent plan edit\n")
+
+    monkeypatch.setattr(evidence, "_write_replace_at", write_then_mutate)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="drifted before staging"):
+            _run_stub_finalizer(root, repo)
+        assert plan.read_bytes() == b"concurrent plan edit\n"
+        assert manifest.read_bytes() == manifest_before
+        assert (root / evidence._INPUTS_NAME).is_file()
+    finally:
+        shutil.rmtree(root)
+
+
+def test_finalizer_rolls_back_plan_when_manifest_exchange_fails(monkeypatch, tmp_path):
+    root, repo, plan, manifest = _stub_finalizer(monkeypatch, tmp_path)
+    plan_before = plan.read_bytes()
+    manifest_before = manifest.read_bytes()
+    original_exchange = evidence._rename_exchange
+
+    def fail_manifest_exchange(directory_fd, left, right):
+        if left == manifest.name:
+            raise OSError("manifest exchange failed")
+        original_exchange(directory_fd, left, right)
+
+    monkeypatch.setattr(evidence, "_rename_exchange", fail_manifest_exchange)
+    try:
+        with pytest.raises(OSError, match="manifest exchange failed"):
+            _run_stub_finalizer(root, repo)
+        assert plan.read_bytes() == plan_before
+        assert manifest.read_bytes() == manifest_before
+        assert not [path for path in plan.parent.iterdir() if path.name.startswith(".phase-loop-agy-finalize-")]
+    finally:
+        shutil.rmtree(root)
+
+
+def test_finalizer_retains_recovery_evidence_when_plan_rollback_fails(monkeypatch, tmp_path):
+    root, repo, plan, manifest = _stub_finalizer(monkeypatch, tmp_path)
+    original_exchange = evidence._rename_exchange
+    plan_exchanges = 0
+
+    def fail_second_exchange_and_plan_rollback(directory_fd, left, right):
+        nonlocal plan_exchanges
+        if left == manifest.name:
+            raise OSError("manifest exchange failed")
+        if left == plan.name:
+            plan_exchanges += 1
+            if plan_exchanges == 2:
+                raise OSError("plan rollback failed")
+        original_exchange(directory_fd, left, right)
+
+    monkeypatch.setattr(evidence, "_rename_exchange", fail_second_exchange_and_plan_rollback)
+    try:
+        with pytest.raises(OSError, match="manifest exchange failed"):
+            _run_stub_finalizer(root, repo)
+        assert plan.read_bytes() == b"# Plan\n\nproof\n"
+        assert manifest.read_bytes().endswith(b'"updated_at":"old"}]}\n')
+        assert (root / evidence._INPUTS_NAME).is_file()
+        assert [path for path in plan.parent.iterdir() if path.name.startswith(".phase-loop-agy-finalize-")]
+    finally:
+        shutil.rmtree(root)
+
+
+def test_finalizer_reports_cleanup_residue_after_commit(monkeypatch, tmp_path):
+    root, repo, plan, manifest = _stub_finalizer(monkeypatch, tmp_path)
+    original_discard = evidence._discard_final_target_temporary
+
+    def retain_plan_temporary(target):
+        if target.name == plan.name:
+            raise OSError("cleanup unavailable")
+        original_discard(target)
+
+    monkeypatch.setattr(evidence, "_discard_final_target_temporary", retain_plan_temporary)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="committed with recovery residue"):
+            _run_stub_finalizer(root, repo)
+        assert plan.read_bytes() == b"# Plan\n\nproof\n"
+        assert b'"updated_at":"old"' not in manifest.read_bytes()
+        assert (root / evidence._INPUTS_NAME).is_file()
+        assert [path for path in plan.parent.iterdir() if path.name.startswith(".phase-loop-agy-finalize-")]
+    finally:
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize(
+    "basename",
+    [
+        *sorted(evidence._PRIVATE_BOARD_RESERVED_NAMES),
+        "agy-provider-launch-gemini-seat.json",
+        "agy-stream-gemini-1.jsonl",
+        "agy-diagnostic-gemini-1.log",
+        "agy-capability-command.jsonl",
+        "staged-review-bundle.md",
+        ".phase-loop-agy-finalize-plan.tmp",
+    ],
+)
+def test_private_board_rejects_reserved_evidence_names_without_overwrite(tmp_path, basename):
+    root = _private_root(tmp_path)
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    capture = evidence.AgyCanaryCapture(root=root, root_fd=root_fd)
+    (root / basename).write_bytes(b"sealed internal evidence")
+    before = {path.name: path.read_bytes() for path in root.iterdir()}
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="reserved evidence"):
+            evidence.write_private_board(capture=capture, basename=basename, payload={})
+        assert {path.name: path.read_bytes() for path in root.iterdir()} == before
+    finally:
+        capture.close()
         shutil.rmtree(root)
 
 
