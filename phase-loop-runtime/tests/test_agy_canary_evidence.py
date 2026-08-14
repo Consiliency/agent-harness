@@ -723,6 +723,15 @@ def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch
         resolver = tmp_path / "resolv.conf"
         resolver.write_text("nameserver 127.0.0.1\n")
         monkeypatch.setattr(evidence, "_resolver_snapshot", lambda: (resolver, evidence._sha256(resolver.read_bytes())))
+        path_resolve = evidence.Path.resolve
+        resolver_target_path = Path("/run") / f"phase-loop-resolver-{os.getpid()}-{tmp_path.name}" / "resolv.conf"
+
+        def resolver_target(path: Path, *, strict: bool = False) -> Path:
+            if path == Path("/etc/resolv.conf"):
+                return resolver_target_path
+            return path_resolve(path, strict=strict)
+
+        monkeypatch.setattr(evidence.Path, "resolve", resolver_target)
         stage = tmp_path / "launch-stage"
         stage.mkdir()
         namespace = evidence.capture_namespace(capture=capture, stage=stage)
@@ -730,6 +739,18 @@ def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch
         assert destination in command
         assert str(auth) in command
         assert str(resolver) in command
+        assert str(resolver_target_path) in command
+        malformed_resolver = tmp_path / "malformed-resolv.conf"
+        malformed_resolver.write_text("nameserver 127.0.0.1\n")
+
+        def malformed_resolver_target(path: Path, *, strict: bool = False) -> Path:
+            if path == Path("/etc/resolv.conf"):
+                return malformed_resolver
+            return path_resolve(path, strict=strict)
+
+        monkeypatch.setattr(evidence.Path, "resolve", malformed_resolver_target)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="expected /run target"):
+            namespace.command(["agy", "--version"])
     finally:
         capture.close()
         shutil.rmtree(root)
