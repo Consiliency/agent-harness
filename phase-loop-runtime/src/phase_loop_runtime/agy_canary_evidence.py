@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import ctypes
 import errno
@@ -14,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -577,7 +579,13 @@ def consume_capture_environment(env: dict[str, str] | None = None) -> AgyCanaryC
 def inventory_customizations(
     *, home: Path, env: dict[str, str] | None = None, project_dir: Path | None = None
 ) -> dict[str, list[str]]:
-    """Reject every known executable customization source before a child launch."""
+    """Inventory all supported executable customization sources.
+
+    This is deliberately an inventory of the *real* user/project environment,
+    not the generated minimal HOME used after masking.  Callers that need an
+    authorizing result must freeze the returned record and revalidate it before
+    launch with :func:`freeze_customization_inventory`.
+    """
     home = home.resolve(strict=True)
     sources = {
         "hooks": [home / ".gemini" / "antigravity-cli" / "hooks"],
@@ -585,8 +593,9 @@ def inventory_customizations(
         "mcp": [home / ".gemini" / "antigravity-cli" / "mcp.json"],
         "project": [home / ".gemini" / "antigravity-cli" / "project-settings.json"],
         "system": [
-            Path("/etc/antigravity"), Path("/etc/gemini"),
-            Path("/usr/share/antigravity"), Path("/usr/local/share/antigravity"),
+            Path("/etc/antigravity"), Path("/etc/gemini"), Path("/etc/xdg/antigravity"),
+            Path("/usr/share/antigravity"), Path("/usr/share/gemini"),
+            Path("/usr/local/share/antigravity"), Path("/usr/local/share/gemini"),
         ],
     }
     if project_dir is not None:
@@ -606,6 +615,38 @@ def inventory_customizations(
     if any(found.values()):
         raise AgyCanaryEvidenceError("active agy customization source detected")
     return found
+
+
+def freeze_customization_inventory(
+    *, home: Path, project_dir: Path, env: dict[str, str]
+) -> dict[str, Any]:
+    """Derive a complete, empty source inventory from real launch inputs."""
+    if not home.is_absolute() or not project_dir.is_absolute():
+        raise AgyCanaryEvidenceError("customization inventory requires absolute user and project roots")
+    inventory = inventory_customizations(home=home, project_dir=project_dir, env=env)
+    # Preserve candidates as path hashes only: their identities can be compared
+    # later without placing a home/project path into public canary output.
+    candidates = {
+        "home_sha256": _sha256(str(home.resolve(strict=True)).encode()),
+        "project_sha256": _sha256(str(project_dir.resolve(strict=True)).encode()),
+        "environment_names": sorted(
+            name for name in env
+            if name.startswith(_CUSTOMIZATION_ENV_PREFIXES)
+            and name not in {"AGY_CANARY_SETTINGS_PATH"}
+        ),
+        "inventory": inventory,
+    }
+    if candidates["environment_names"] or any(inventory.values()):
+        raise AgyCanaryEvidenceError("active agy customization source detected")
+    return {"schema": "agy_customization_inventory.v1", "sources_complete": True, **candidates}
+
+
+def revalidate_customization_inventory(
+    frozen: dict[str, Any], *, home: Path, project_dir: Path, env: dict[str, str]
+) -> None:
+    """Fail closed if any real source changed after the inventory was frozen."""
+    if frozen != freeze_customization_inventory(home=home, project_dir=project_dir, env=env):
+        raise AgyCanaryEvidenceError("customization-source inventory drifted")
 
 
 def _validated_auth_binds(auth_paths: tuple[Path, ...], minimal_home: Path) -> tuple[tuple[Path, str], ...]:
@@ -735,7 +776,7 @@ def _policy_facts(settings: dict[str, Any]) -> dict[str, bool]:
 
 
 def inventory_policy_sources(
-    *, settings_path: Path, customization_home: Path | None = None, env: dict[str, str] | None = None
+    *, settings_path: Path, source_inventory: dict[str, Any]
 ) -> dict[str, Any]:
     """Inventory the one supported settings source and derive policy facts.
 
@@ -751,11 +792,8 @@ def inventory_policy_sources(
     facts = _policy_facts(parsed)
     if not all(facts.values()):
         raise AgyCanaryEvidenceError("capture policy is not strict and empty")
-    customizations = (
-        inventory_customizations(home=customization_home, env=env)
-        if customization_home is not None
-        else {"hooks": [], "plugins": [], "mcp": [], "project": [], "environment_overrides": []}
-    )
+    if source_inventory.get("schema") != "agy_customization_inventory.v1" or source_inventory.get("sources_complete") is not True:
+        raise AgyCanaryEvidenceError("capture policy lacks a complete real customization inventory")
     return {
         "schema": "agy_policy_inventory.v1",
         "settings": {
@@ -764,20 +802,26 @@ def inventory_policy_sources(
             "sha256": _sha256(opened.data),
         },
         "sources_complete": True,
-        "customization_inventory": customizations,
+        "customization_inventory": source_inventory,
         **facts,
     }
 
 
 def create_capture(
-    *, capture: AgyCanaryCapture, settings_path: Path, seat_key: str, capture_mode: str = "stream_json"
+    *, capture: AgyCanaryCapture, settings_path: Path, seat_key: str,
+    source_inventory: dict[str, Any] | None = None, capture_mode: str = "stream_json"
 ) -> dict[str, Any]:
     """Start a single-seat capture ledger after strict policy inventory."""
     if not seat_key or "/" in seat_key or "\\" in seat_key:
         raise AgyCanaryEvidenceError("Gemini seat key must be a nonempty canonical key")
     if capture_mode not in _CAPTURE_MODES:
         raise AgyCanaryEvidenceError("capture mode is not supported")
-    policy = inventory_policy_sources(settings_path=settings_path)
+    if source_inventory is None:
+        # Compatibility for internal assembly tests only.  The reducer refuses
+        # to authorize this record because it makes no complete-source claim.
+        policy = {**inventory_policy_sources(settings_path=settings_path, source_inventory={"schema": "agy_customization_inventory.v1", "sources_complete": True, "inventory": {}, "environment_names": [], "home_sha256": "", "project_sha256": ""}), "sources_complete": False}
+    else:
+        policy = inventory_policy_sources(settings_path=settings_path, source_inventory=source_inventory)
     existing = None
     try:
         existing = _read_json_at(capture.root_fd, _LEDGER_NAME)
@@ -974,7 +1018,7 @@ def _parse_trajectory(data: bytes) -> tuple[str, list[dict[str, Any]], dict[str,
     return _parse_stream("\n".join(normalized).encode())
 
 
-def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, Any]:
+def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = True) -> dict[str, Any]:
     """Strictly reduce all sealed attempts and reject incomplete/forged evidence."""
     root, root_fd = _validate_private_root(evidence_root)
     try:
@@ -1072,7 +1116,8 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
             "accepted_review_sha256": _sha256(final_text.encode()),
             "private_board_sha256": private_board["sha256"],
         }
-        _write_replace_at(root_fd, "agy_canary_proof.json", proof)
+        if seal:
+            _write_replace_at(root_fd, "agy_canary_proof.json", proof)
         return proof
     finally:
         os.close(root_fd)
@@ -1211,8 +1256,51 @@ def _installed_phase_loop_identity() -> dict[str, str]:
     }
 
 
+def _git_text(repo: Path, *args: str) -> str:
+    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise AgyCanaryEvidenceError(f"git command failed: {' '.join(args)}")
+    return proc.stdout.strip()
+
+
+def _repo_relative_path(repo: Path, candidate: Path) -> str:
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+        raise AgyCanaryEvidenceError("attested repository input must be a canonical relative path")
+    path = (repo / candidate).resolve(strict=True)
+    if repo not in path.parents or not path.is_file() or path.is_symlink():
+        raise AgyCanaryEvidenceError("attested repository input is not a regular repository file")
+    return candidate.as_posix()
+
+
+def _worktree_blob(repo: Path, relative: str) -> tuple[str, bytes]:
+    blob = _git_text(repo, "rev-parse", f"HEAD:{relative}")
+    committed = subprocess.run(["git", "-C", str(repo), "show", f"HEAD:{relative}"], capture_output=True, check=False)
+    local = (repo / relative).read_bytes()
+    if committed.returncode != 0 or committed.stdout != local:
+        raise AgyCanaryEvidenceError(f"worktree input differs from committed HEAD: {relative}")
+    return blob, local
+
+
+def _clean_dotfiles_repo(repo: Path) -> str:
+    if not (repo / ".git").exists() or not (repo / "bootstrap.sh").is_file():
+        raise AgyCanaryEvidenceError("bootstrap attestation requires a dotfiles checkout")
+    if _git_text(repo, "status", "--porcelain"):
+        raise AgyCanaryEvidenceError("bootstrap attestation requires a clean dotfiles worktree")
+    return _git_text(repo, "rev-parse", "HEAD")
+
+
+def _bootstrap_environment(*, nonce: str) -> dict[str, str]:
+    """Use an explicit allowlist, never the caller's ambient environment."""
+    allowed = ("HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "TMPDIR")
+    env = {name: os.environ[name] for name in allowed if name in os.environ}
+    if not env.get("PATH"):
+        raise AgyCanaryEvidenceError("bootstrap attestation requires PATH")
+    env["PHASE_LOOP_AGY_CANARY_BOOTSTRAP_NONCE"] = nonce
+    return env
+
+
 def bootstrap_attest(
-    *, evidence_root: Path, dotfiles_repo: Path
+    *, evidence_root: Path, dotfiles_repo: Path, plan_path: Path
 ) -> dict[str, Any]:
     """Directly run committed bootstrap and attest its nonce-bound child result."""
     disallowed_overrides = sorted(
@@ -1227,27 +1315,20 @@ def bootstrap_attest(
             + ",".join(disallowed_overrides)
         )
     repo = dotfiles_repo.resolve(strict=True)
-    if not (repo / ".git").exists() or not (repo / "bootstrap.sh").is_file():
-        raise AgyCanaryEvidenceError("bootstrap attestation requires a dotfiles checkout")
-    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
-    if head.returncode != 0:
-        raise AgyCanaryEvidenceError("cannot resolve dotfiles HEAD")
+    head = _clean_dotfiles_repo(repo)
+    plan_relative = _repo_relative_path(repo, plan_path)
     identities: dict[str, str] = {}
-    for relative in ("bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json"):
-        proc = subprocess.run(["git", "-C", str(repo), "rev-parse", f"HEAD:{relative}"], capture_output=True, text=True, check=False)
-        if proc.returncode != 0:
-            raise AgyCanaryEvidenceError(f"required bootstrap input is not committed: {relative}")
-        identities[relative] = proc.stdout.strip()
+    inputs: dict[str, bytes] = {}
+    for relative in ("bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json", plan_relative):
+        blob, data = _worktree_blob(repo, relative)
+        identities[relative] = blob
+        inputs[relative] = data
     pin = (repo / "shared" / "agent-harness.pin").read_text(encoding="utf-8").strip()
     if pin != "v0.7.14":
         raise AgyCanaryEvidenceError("bootstrap attestation requires the v0.7.14 fleet pin")
-    child_env = dict(os.environ)
     nonce = secrets.token_hex(24)
-    child_env["PHASE_LOOP_AGY_CANARY_BOOTSTRAP_NONCE"] = nonce
-    script_bytes = (repo / "bootstrap.sh").read_bytes()
-    committed_script = subprocess.run(["git", "-C", str(repo), "show", "HEAD:bootstrap.sh"], capture_output=True, check=False)
-    if committed_script.returncode != 0 or committed_script.stdout != script_bytes:
-        raise AgyCanaryEvidenceError("bootstrap script bytes differ from committed HEAD")
+    child_env = _bootstrap_environment(nonce=nonce)
+    script_bytes = inputs["bootstrap.sh"]
     before = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
     bootstrap_argv = ("bash", "bootstrap.sh")
     child_process = subprocess.Popen(
@@ -1271,8 +1352,10 @@ def bootstrap_attest(
     try:
         value = {
             "schema": "agy_canary_bootstrap_attestation.v1",
-            "repo_head": head.stdout.strip(),
+            "repo_head": head,
             "blobs": identities,
+            "input_sha256": {name: _sha256(data) for name, data in inputs.items()},
+            "targets": {"plan": plan_relative, "manifest": "plans/manifest.json"},
             "nonce_sha256": _sha256(nonce.encode()),
             "bootstrap": {
                 "argv": list(bootstrap_argv),
@@ -1328,8 +1411,132 @@ def _rederive_cleanup_lineage(*, root_fd: int, settings_path: Path) -> dict[str,
     }
 
 
+def _fetch_json(url: str) -> dict[str, Any]:
+    with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310 - fixed PyPI URL below
+        value = json.load(response)
+    if not isinstance(value, dict):
+        raise AgyCanaryEvidenceError("release metadata is not an object")
+    return value
+
+
+def _download_bytes(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310 - verified handoff URL
+        return response.read()
+
+
+def _release_handoff_record(text: bytes) -> dict[str, Any]:
+    start = b"<!-- release_evidence.v1:start -->"
+    end = b"<!-- release_evidence.v1:end -->"
+    if text.count(start) != 1 or text.count(end) != 1:
+        raise AgyCanaryEvidenceError("merged handoff lacks one release evidence record")
+    try:
+        value = json.loads(text.split(start, 1)[1].split(end, 1)[0])
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("merged handoff release evidence is not JSON") from exc
+    if not isinstance(value, dict) or value.get("schema") != "release_evidence.v1":
+        raise AgyCanaryEvidenceError("merged handoff release evidence has the wrong schema")
+    return value
+
+
+def _reconcile_release_lineage(
+    *, repo: Path, handoff_commit: str,
+    fetch_json: Any = _fetch_json, download: Any = _download_bytes,
+) -> dict[str, Any]:
+    """Derive the release provenance exclusively from merged repository state.
+
+    The downloader and metadata fetcher are seams for synthetic fixtures.  The
+    production implementation always derives URLs and digests from the merged
+    handoff/PyPI record; callers cannot supply them.
+    """
+    if len(handoff_commit) != 40 or any(ch not in "0123456789abcdef" for ch in handoff_commit.lower()):
+        raise AgyCanaryEvidenceError("handoff selector must be an immutable commit OID")
+    if _git_text(repo, "status", "--porcelain"):
+        raise AgyCanaryEvidenceError("release lineage requires a clean agent-harness worktree")
+    resolved = _git_text(repo, "rev-parse", f"{handoff_commit}^{{commit}}")
+    if resolved != handoff_commit:
+        raise AgyCanaryEvidenceError("handoff selector must not be a movable ref")
+    if _git_text(repo, "diff", "--name-only", f"{resolved}^", resolved).splitlines() != ["docs/releases/outside-agent-release-handoff.md"]:
+        raise AgyCanaryEvidenceError("handoff commit changes paths outside the release handoff")
+    # A handoff is authoritative only after its commit is reachable from the
+    # fetched main branch, never merely present in an arbitrary local branch.
+    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", resolved, "origin/main"], capture_output=True, check=False).returncode != 0:
+        raise AgyCanaryEvidenceError("handoff commit is not merged into origin/main")
+    handoff = _release_handoff_record(subprocess.run(
+        ["git", "-C", str(repo), "show", f"{resolved}:docs/releases/outside-agent-release-handoff.md"],
+        capture_output=True, check=False,
+    ).stdout)
+    version = handoff.get("version")
+    release_commit = handoff.get("release_commit")
+    if not isinstance(version, str) or not isinstance(release_commit, str) or len(release_commit) != 40:
+        raise AgyCanaryEvidenceError("merged handoff lacks immutable release identity")
+    tag = f"v{version}"
+    tag_object = _git_text(repo, "rev-parse", f"refs/tags/{tag}")
+    tag_peel = _git_text(repo, "rev-parse", f"refs/tags/{tag}^{{}}")
+    if tag_peel != release_commit or handoff.get("tag_object") != tag_object or handoff.get("tag_peel") != tag_peel:
+        raise AgyCanaryEvidenceError("handoff tag identity does not match local signed tag")
+    if subprocess.run(["git", "-C", str(repo), "verify-tag", "--raw", f"refs/tags/{tag}"], capture_output=True, check=False).returncode != 0:
+        raise AgyCanaryEvidenceError("release tag signature verification failed")
+    release = subprocess.run(
+        ["gh", "release", "view", tag, "--repo", "Consiliency/agent-harness", "--json", "url,tagName"],
+        capture_output=True, text=True, check=False,
+    )
+    try:
+        release_value = json.loads(release.stdout)
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("GitHub Release lookup failed") from exc
+    if release.returncode != 0 or not isinstance(release_value, dict) or release_value.get("tagName") != tag or release_value.get("url") != handoff.get("release_url"):
+        raise AgyCanaryEvidenceError("GitHub Release does not match merged handoff")
+    workflow = subprocess.run(
+        ["gh", "run", "list", "--repo", "Consiliency/agent-harness", "--workflow", "publish-pypi.yml", "--commit", release_commit, "--limit", "20", "--json", "headSha,conclusion,event,url"],
+        capture_output=True, text=True, check=False,
+    )
+    try:
+        runs = json.loads(workflow.stdout)
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("publish workflow lookup failed") from exc
+    matching = [row for row in runs if isinstance(row, dict) and row.get("headSha") == release_commit and row.get("conclusion") == "success" and row.get("event") == "push"] if isinstance(runs, list) else []
+    if workflow.returncode != 0 or len(matching) != 1 or matching[0].get("url") != handoff.get("workflow_url"):
+        raise AgyCanaryEvidenceError("publish workflow does not match merged handoff")
+    metadata_url = f"https://pypi.org/pypi/phase-loop-runtime/{version}/json"
+    if handoff.get("pypi_metadata_url") != metadata_url:
+        raise AgyCanaryEvidenceError("handoff PyPI metadata endpoint is not canonical")
+    metadata = fetch_json(metadata_url)
+    rows = metadata.get("urls")
+    artifacts = handoff.get("artifacts")
+    if not isinstance(rows, list) or not isinstance(artifacts, list):
+        raise AgyCanaryEvidenceError("release artifact metadata is incomplete")
+    expected: dict[tuple[str, str, str], str] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not all(isinstance(row.get(key), str) for key in ("filename", "packagetype", "url")):
+            raise AgyCanaryEvidenceError("PyPI artifact row is malformed")
+        digest = row.get("digests", {}).get("sha256") if isinstance(row.get("digests"), dict) else None
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise AgyCanaryEvidenceError("PyPI artifact digest is malformed")
+        expected[(row["filename"], row["packagetype"], row["url"])] = digest
+    recorded: dict[tuple[str, str, str], str] = {}
+    for row in artifacts:
+        if not isinstance(row, dict) or not all(isinstance(row.get(key), str) for key in ("filename", "packagetype", "url", "sha256")):
+            raise AgyCanaryEvidenceError("handoff artifact row is malformed")
+        recorded[(row["filename"], row["packagetype"], row["url"])] = row["sha256"]
+    if expected != recorded or not any(name.endswith(".whl") for name, _kind, _url in expected) or not any(name.endswith(".tar.gz") for name, _kind, _url in expected):
+        raise AgyCanaryEvidenceError("handoff artifacts do not exactly match PyPI")
+    for (_filename, _kind, url), digest in expected.items():
+        if _sha256(download(url)) != digest:
+            raise AgyCanaryEvidenceError("downloaded release artifact digest mismatch")
+    return {
+        "version": version, "handoff_commit": resolved, "release_commit": release_commit,
+        "tag_object": tag_object, "tag_peel": tag_peel,
+        "artifacts": [
+            {"filename": name, "packagetype": kind, "sha256": digest, "url_sha256": _sha256(url.encode())}
+            for (name, kind, url), digest in sorted(expected.items())
+        ],
+    }
+
+
 def prepare_canary(
-    *, evidence_root: Path, settings_path: Path, seat_key: str, auth_paths: tuple[Path, ...] = ()
+    *, evidence_root: Path, settings_path: Path, seat_key: str, auth_paths: tuple[Path, ...] = (),
+    agent_harness_repo: Path, handoff_commit: str, customization_home: Path,
+    project_dir: Path, source_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Bind cleanup lineage and a positively complete capability probe before launch."""
     root, root_fd = _validate_private_root(evidence_root)
@@ -1348,17 +1555,48 @@ def prepare_canary(
         installation = bootstrap_result.get("installation")
         if not isinstance(installation, dict) or installation != _installed_phase_loop_identity():
             raise AgyCanaryEvidenceError("direct bootstrap installed identity no longer matches")
+        bootstrap_targets = bootstrap.get("targets")
+        bootstrap_blobs = bootstrap.get("blobs")
+        if not isinstance(bootstrap_targets, dict) or not isinstance(bootstrap_blobs, dict):
+            raise AgyCanaryEvidenceError("bootstrap attestation lacks target identities")
+        source_environment = dict(os.environ) if source_env is None else dict(source_env)
+        source_inventory = freeze_customization_inventory(
+            home=customization_home, project_dir=project_dir, env=source_environment
+        )
+        # Reopen immediately before the first capture ledger write; this makes a
+        # generated minimal HOME incapable of standing in for source discovery.
+        revalidate_customization_inventory(
+            source_inventory, home=customization_home, project_dir=project_dir, env=source_environment
+        )
+        release = _reconcile_release_lineage(
+            repo=agent_harness_repo.resolve(strict=True), handoff_commit=handoff_commit
+        )
+        revalidate_customization_inventory(
+            source_inventory, home=customization_home, project_dir=project_dir, env=source_environment
+        )
+        wheel_rows = [row for row in release["artifacts"] if str(row["filename"]).endswith(".whl")]
+        if len(wheel_rows) != 1:
+            raise AgyCanaryEvidenceError("release lineage has no unique wheel")
+        wheel = wheel_rows[0]
+        if installation.get("version") != release["version"] or installation.get("archive_hash") not in {f"sha256={wheel['sha256']}", wheel["sha256"]} or installation.get("archive_url_sha256") != wheel["url_sha256"]:
+            raise AgyCanaryEvidenceError("installed phase-loop provenance does not match verified wheel")
         capture = AgyCanaryCapture(root, root_fd)
         ledger = create_capture(
             capture=capture,
             settings_path=settings_path,
             seat_key=seat_key,
+            source_inventory=source_inventory,
             capture_mode=str(probe["mode"]),
         )
         minimal_home, auth_binds = build_minimal_home(
             evidence_root=capture.root, settings_path=settings_path, auth_paths=auth_paths
         )
         ledger["minimal_home"] = str(minimal_home)
+        ledger["customization_sources"] = {
+            "inventory": source_inventory,
+            "home": str(customization_home.resolve(strict=True)),
+            "project": str(project_dir.resolve(strict=True)),
+        }
         bind_records: list[dict[str, str]] = []
         for source, destination in auth_binds:
             parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -1369,7 +1607,7 @@ def prepare_canary(
             bind_records.append({"source": str(source), "destination": destination, "source_sha256": _sha256(data)})
         ledger["auth_binds"] = bind_records
         _write_replace_at(root_fd, _LEDGER_NAME, ledger)
-        value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "bootstrap_sha256": _sha256(_canonical_json(bootstrap)), "ledger_sha256": _sha256(_canonical_json(ledger)), "settings_sha256": cleanup_lineage["settings_sha256"], "settings_bytes": cleanup_lineage["settings_bytes"], "settings_mode": cleanup_lineage["settings_mode"], "seat_key": seat_key}
+        value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "bootstrap_sha256": _sha256(_canonical_json(bootstrap)), "ledger_sha256": _sha256(_canonical_json(ledger)), "settings_sha256": cleanup_lineage["settings_sha256"], "settings_bytes": cleanup_lineage["settings_bytes"], "settings_mode": cleanup_lineage["settings_mode"], "seat_key": seat_key, "release_sha256": _sha256(_canonical_json(release)), "source_inventory_sha256": _sha256(_canonical_json(source_inventory))}
         _exclusive_write_at(root_fd, _PREPARE_NAME, _canonical_json(value), 0o600)
         return value
     finally:
@@ -1389,6 +1627,14 @@ def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostna
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
         raise AgyCanaryEvidenceError("sealed minimal HOME is invalid")
     inventory_customizations(home=home, env={}, project_dir=stage)
+    source_record = ledger.get("customization_sources")
+    if source_record is not None:
+        if not isinstance(source_record, dict) or not isinstance(source_record.get("inventory"), dict) or not isinstance(source_record.get("home"), str) or not isinstance(source_record.get("project"), str):
+            raise AgyCanaryEvidenceError("prepare has malformed customization-source inventory")
+        revalidate_customization_inventory(
+            source_record["inventory"], home=Path(source_record["home"]),
+            project_dir=Path(source_record["project"]), env=dict(os.environ),
+        )
     auth_records = ledger.get("auth_binds", [])
     if not isinstance(auth_records, list):
         raise AgyCanaryEvidenceError("prepare has malformed authentication binds")
@@ -1424,6 +1670,129 @@ def _replace_regular_file(path: Path, data: bytes) -> None:
         os.close(parent_fd)
 
 
+def _final_suffix(proof: dict[str, Any]) -> bytes:
+    payload = {"proof": proof, "proof_sha256": _sha256(_canonical_json(proof)), "schema": "agy_canary_final.v1"}
+    return b"\n## Execution evidence\n\n```json\n" + _canonical_json(payload) + b"```\n"
+
+
+def _parse_final_payload(plan: bytes) -> tuple[bytes, dict[str, Any]]:
+    marker = b"\n## Execution evidence\n\n```json\n"
+    if plan.count(marker) != 1 or not plan.endswith(b"```\n"):
+        raise AgyCanaryEvidenceError("final plan does not contain one canonical execution suffix")
+    before, encoded = plan.split(marker, 1)
+    try:
+        payload = json.loads(encoded[:-4])
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("final execution payload is not JSON") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != "agy_canary_final.v1" or not isinstance(payload.get("proof"), dict):
+        raise AgyCanaryEvidenceError("final execution payload is invalid")
+    if payload.get("proof_sha256") != _sha256(_canonical_json(payload["proof"])) or _canonical_json(payload) != encoded[:-4]:
+        raise AgyCanaryEvidenceError("final execution payload is not canonical")
+    return before, payload
+
+
+def _attested_final_targets(
+    *, root_fd: int, repo: Path, plan_path: Path, manifest_path: Path, plan_slug: str,
+    require_preimages: bool = True,
+) -> tuple[dict[str, Any], str, str]:
+    bootstrap = _read_json_at(root_fd, "agy_canary_bootstrap_attestation.json")
+    current_head = _clean_dotfiles_repo(repo) if require_preimages else _git_text(repo, "rev-parse", "HEAD")
+    if bootstrap.get("repo_head") != current_head:
+        raise AgyCanaryEvidenceError("dotfiles worktree no longer matches bootstrap-attested HEAD")
+    targets = bootstrap.get("targets")
+    blobs = bootstrap.get("blobs")
+    input_sha256 = bootstrap.get("input_sha256")
+    if not isinstance(targets, dict) or not isinstance(blobs, dict) or not isinstance(input_sha256, dict):
+        raise AgyCanaryEvidenceError("bootstrap attestation lacks tracked finalizer targets")
+    plan_relative = _repo_relative_path(repo, plan_path)
+    manifest_relative = _repo_relative_path(repo, manifest_path)
+    if targets.get("plan") != plan_relative or targets.get("manifest") != manifest_relative:
+        raise AgyCanaryEvidenceError("finalizer targets differ from bootstrap attestation")
+    if require_preimages:
+        plan_blob, plan_bytes = _worktree_blob(repo, plan_relative)
+        manifest_blob, manifest_bytes = _worktree_blob(repo, manifest_relative)
+        if blobs.get(plan_relative) != plan_blob or blobs.get(manifest_relative) != manifest_blob or input_sha256.get(plan_relative) != _sha256(plan_bytes) or input_sha256.get(manifest_relative) != _sha256(manifest_bytes):
+            raise AgyCanaryEvidenceError("finalizer input blob differs from bootstrap attestation")
+    if not plan_slug:
+        raise AgyCanaryEvidenceError("finalizer requires a canonical plan slug")
+    return bootstrap, plan_relative, manifest_relative
+
+
+def check_private_final(
+    *, evidence_root: Path, expected_seat_key: str, dotfiles_repo: Path,
+    plan_path: Path, manifest_path: Path, plan_slug: str,
+) -> dict[str, Any]:
+    """Read-only reverse validator for the private reducer-sealed final state."""
+    proof = verify_capture(evidence_root=evidence_root, expected_seat_key=expected_seat_key, seal=False)
+    root, root_fd = _validate_private_root(evidence_root)
+    try:
+        repo = dotfiles_repo.resolve(strict=True)
+        _bootstrap, plan_relative, manifest_relative = _attested_final_targets(
+            root_fd=root_fd, repo=repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug,
+            require_preimages=False,
+        )
+        inputs = _read_json_at(root_fd, _INPUTS_NAME)
+        if inputs.get("proof") != proof or inputs.get("plan") != plan_relative or inputs.get("manifest") != manifest_relative or inputs.get("plan_slug") != plan_slug:
+            raise AgyCanaryEvidenceError("private finalizer receipt is not bound to current proof and targets")
+        plan_before = base64.b64decode(str(inputs.get("plan_before_b64", "")), validate=True)
+        manifest_before = base64.b64decode(str(inputs.get("manifest_before_b64", "")), validate=True)
+        completed_at = inputs.get("completed_at")
+        if not isinstance(completed_at, str):
+            raise AgyCanaryEvidenceError("private finalizer receipt lacks completion time")
+        plan_after = plan_before + _final_suffix(proof)
+        manifest_value = json.loads(manifest_before)
+        entries = manifest_value.get("plans") if isinstance(manifest_value, dict) else None
+        matches = [item for item in entries or [] if isinstance(item, dict) and item.get("slug") == plan_slug]
+        if len(matches) != 1:
+            raise AgyCanaryEvidenceError("private finalizer receipt has an invalid manifest preimage")
+        matches[0]["updated_at"] = completed_at
+        manifest_after = _canonical_json(manifest_value)
+        if (repo / plan_relative).read_bytes() != plan_after or (repo / manifest_relative).read_bytes() != manifest_after:
+            raise AgyCanaryEvidenceError("tracked finalizer output drifted from its sealed preimages")
+        return {**proof, "inputs_sha256": _sha256(_canonical_json(inputs))}
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise AgyCanaryEvidenceError("private finalizer receipt is malformed") from exc
+    finally:
+        os.close(root_fd)
+
+
+def check_committed_final(
+    *, dotfiles_repo: Path, commit: str, plan_path: Path, manifest_path: Path, plan_slug: str
+) -> dict[str, Any]:
+    """Reverse the fixed transform from immutable git objects without private files."""
+    repo = dotfiles_repo.resolve(strict=True)
+    plan_relative = _repo_relative_path(repo, plan_path)
+    manifest_relative = _repo_relative_path(repo, manifest_path)
+    resolved = _git_text(repo, "rev-parse", f"{commit}^{{commit}}")
+    parent = _git_text(repo, "rev-parse", f"{resolved}^")
+    changed = _git_text(repo, "diff", "--name-only", parent, resolved).splitlines()
+    if sorted(changed) != sorted([plan_relative, manifest_relative]):
+        raise AgyCanaryEvidenceError("committed finalizer transform changed unexpected paths")
+    after_plan = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{plan_relative}"], capture_output=True, check=False).stdout
+    before_plan = subprocess.run(["git", "-C", str(repo), "show", f"{parent}:{plan_relative}"], capture_output=True, check=False).stdout
+    after_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{manifest_relative}"], capture_output=True, check=False).stdout
+    before_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{parent}:{manifest_relative}"], capture_output=True, check=False).stdout
+    prefix, payload = _parse_final_payload(after_plan)
+    if prefix != before_plan:
+        raise AgyCanaryEvidenceError("committed plan prefix differs from parent preimage")
+    try:
+        before_value = json.loads(before_manifest)
+        after_value = json.loads(after_manifest)
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("committed manifest is not JSON") from exc
+    entries_before = before_value.get("plans") if isinstance(before_value, dict) else None
+    entries_after = after_value.get("plans") if isinstance(after_value, dict) else None
+    matches_before = [item for item in entries_before or [] if isinstance(item, dict) and item.get("slug") == plan_slug]
+    matches_after = [item for item in entries_after or [] if isinstance(item, dict) and item.get("slug") == plan_slug]
+    if len(matches_before) != 1 or len(matches_after) != 1:
+        raise AgyCanaryEvidenceError("committed finalizer transform lacks one target manifest entry")
+    completed_at = matches_after[0].get("updated_at")
+    matches_before[0]["updated_at"] = completed_at
+    if _canonical_json(before_value) != after_manifest:
+        raise AgyCanaryEvidenceError("committed manifest changed outside canonical updated_at transform")
+    return {"commit": resolved, "proof_sha256": payload["proof_sha256"], "plan_sha256": _sha256(after_plan), "manifest_sha256": _sha256(after_manifest)}
+
+
 def finalize_canary(
     *,
     evidence_root: Path,
@@ -1435,42 +1804,49 @@ def finalize_canary(
     plan_slug: str | None = None,
 ) -> dict[str, Any]:
     """Seal the proof and, when explicitly configured, apply its only tracked suffix."""
+    if check_only:
+        if dotfiles_repo is None or plan_path is None or manifest_path is None or not plan_slug:
+            raise AgyCanaryEvidenceError("private finalizer check requires repo, plan, manifest, and plan slug")
+        return check_private_final(evidence_root=evidence_root, expected_seat_key=expected_seat_key, dotfiles_repo=dotfiles_repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug)
     proof = verify_capture(evidence_root=evidence_root, expected_seat_key=expected_seat_key)
-    if check_only and dotfiles_repo is None:
-        return proof
     root, root_fd = _validate_private_root(evidence_root)
     try:
         completed_at = datetime.now(timezone.utc).isoformat()
-        inputs = {"schema": "agy_canary_inputs.v1", "proof_sha256": _sha256(_canonical_json(proof)), "completed_at": completed_at}
+        inputs = {"schema": "agy_canary_inputs.v1", "proof": proof, "proof_sha256": _sha256(_canonical_json(proof)), "completed_at": completed_at}
         if dotfiles_repo is not None:
-            repo = dotfiles_repo.resolve(strict=True)
             if plan_path is None or manifest_path is None or not plan_slug:
                 raise AgyCanaryEvidenceError("tracked finalization requires repo, plan, manifest, and plan slug")
-            plan = (repo / plan_path).resolve(strict=True)
-            manifest = (repo / manifest_path).resolve(strict=True)
-            if repo not in plan.parents or repo not in manifest.parents:
-                raise AgyCanaryEvidenceError("finalizer targets must remain under the validated repository")
+            repo = dotfiles_repo.resolve(strict=True)
+            _bootstrap, plan_relative, manifest_relative = _attested_final_targets(
+                root_fd=root_fd, repo=repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug
+            )
+            plan = repo / plan_relative
+            manifest = repo / manifest_relative
             plan_before = plan.read_bytes()
             if b"## Execution evidence" in plan_before:
                 raise AgyCanaryEvidenceError("plan already has execution evidence")
+            manifest_before = manifest.read_bytes()
             try:
-                manifest_value = json.loads(manifest.read_text(encoding="utf-8"))
+                manifest_value = json.loads(manifest_before)
             except json.JSONDecodeError as exc:
                 raise AgyCanaryEvidenceError("manifest is not JSON") from exc
             entries = manifest_value.get("plans") if isinstance(manifest_value, dict) else None
             matches = [entry for entry in entries or [] if isinstance(entry, dict) and entry.get("slug") == plan_slug]
             if len(matches) != 1:
                 raise AgyCanaryEvidenceError("finalizer could not identify one manifest plan")
-            canonical_proof = _canonical_json(proof).decode()
-            suffix = "\n## Execution evidence\n\n```json\n" + canonical_proof + "```\n"
-            plan_after = plan_before + suffix.encode()
+            plan_after = plan_before + _final_suffix(proof)
             matches[0]["updated_at"] = completed_at
             manifest_after = _canonical_json(manifest_value)
             inputs.update({
                 "plan_before_sha256": _sha256(plan_before),
                 "plan_after_sha256": _sha256(plan_after),
-                "manifest_before_sha256": _sha256(manifest.read_bytes()),
+                "manifest_before_sha256": _sha256(manifest_before),
                 "manifest_after_sha256": _sha256(manifest_after),
+                "plan": plan_relative,
+                "manifest": manifest_relative,
+                "plan_slug": plan_slug,
+                "plan_before_b64": base64.b64encode(plan_before).decode(),
+                "manifest_before_b64": base64.b64encode(manifest_before).decode(),
             })
             if not check_only:
                 _replace_regular_file(plan, plan_after)

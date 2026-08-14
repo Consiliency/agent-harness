@@ -395,11 +395,16 @@ def build_parser() -> argparse.ArgumentParser:
     agy_attest_sub = subparsers.add_parser("agy-canary-bootstrap-attest")
     agy_attest_sub.add_argument("--evidence-root", required=True)
     agy_attest_sub.add_argument("--dotfiles-repo", required=True)
+    agy_attest_sub.add_argument("--plan", required=True, help="Canonical target plan path relative to the clean dotfiles checkout.")
     agy_prepare_sub = subparsers.add_parser("agy-canary-prepare")
     agy_prepare_sub.add_argument("--evidence-root", required=True)
     agy_prepare_sub.add_argument("--settings-path", required=True)
     agy_prepare_sub.add_argument("--seat-key", required=True)
     agy_prepare_sub.add_argument("--auth-bind", action="append", default=[])
+    agy_prepare_sub.add_argument("--agent-harness-repo", required=True)
+    agy_prepare_sub.add_argument("--handoff-commit", required=True)
+    agy_prepare_sub.add_argument("--customization-home", required=True)
+    agy_prepare_sub.add_argument("--project-dir", required=True)
     agy_verify_sub = subparsers.add_parser("agy-canary-verify")
     agy_verify_sub.add_argument("--evidence-root", required=True)
     agy_verify_sub.add_argument("--seat-key", required=True)
@@ -411,6 +416,7 @@ def build_parser() -> argparse.ArgumentParser:
     agy_finalize_sub.add_argument("--plan")
     agy_finalize_sub.add_argument("--manifest")
     agy_finalize_sub.add_argument("--plan-slug")
+    agy_finalize_sub.add_argument("--check-committed", help="Read-only reverse validation against an immutable dotfiles commit.")
     # DECOUPLE SL-1: the dotfiles-domain commands (adoption-bundle, sync-skills,
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
@@ -1095,7 +1101,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             elif command == "agy-canary-bootstrap-attest":
                 result = bootstrap_attest(
-                    evidence_root=Path(args.evidence_root), dotfiles_repo=Path(args.dotfiles_repo)
+                    evidence_root=Path(args.evidence_root), dotfiles_repo=Path(args.dotfiles_repo),
+                    plan_path=Path(args.plan),
                 )
             elif command == "agy-canary-prepare":
                 result = prepare_canary(
@@ -1103,21 +1110,34 @@ def main(argv: list[str] | None = None) -> int:
                     settings_path=Path(args.settings_path),
                     seat_key=args.seat_key,
                     auth_paths=tuple(Path(path) for path in args.auth_bind),
+                    agent_harness_repo=Path(args.agent_harness_repo),
+                    handoff_commit=args.handoff_commit,
+                    customization_home=Path(args.customization_home),
+                    project_dir=Path(args.project_dir),
                 )
             elif command == "agy-canary-verify":
                 result = verify_capture(
                     evidence_root=Path(args.evidence_root), expected_seat_key=args.seat_key
                 )
             else:
-                result = finalize_canary(
-                    evidence_root=Path(args.evidence_root),
-                    expected_seat_key=args.seat_key,
-                    check_only=bool(args.check_private_final),
-                    dotfiles_repo=Path(args.dotfiles_repo) if args.dotfiles_repo else None,
-                    plan_path=Path(args.plan) if args.plan else None,
-                    manifest_path=Path(args.manifest) if args.manifest else None,
-                    plan_slug=args.plan_slug,
-                )
+                if args.check_committed:
+                    if not args.dotfiles_repo or not args.plan or not args.manifest or not args.plan_slug:
+                        raise AgyCanaryEvidenceError("--check-committed requires --dotfiles-repo, --plan, --manifest, and --plan-slug")
+                    from .agy_canary_evidence import check_committed_final
+                    result = check_committed_final(
+                        dotfiles_repo=Path(args.dotfiles_repo), commit=args.check_committed,
+                        plan_path=Path(args.plan), manifest_path=Path(args.manifest), plan_slug=args.plan_slug,
+                    )
+                else:
+                    result = finalize_canary(
+                        evidence_root=Path(args.evidence_root),
+                        expected_seat_key=args.seat_key,
+                        check_only=bool(args.check_private_final),
+                        dotfiles_repo=Path(args.dotfiles_repo) if args.dotfiles_repo else None,
+                        plan_path=Path(args.plan) if args.plan else None,
+                        manifest_path=Path(args.manifest) if args.manifest else None,
+                        plan_slug=args.plan_slug,
+                    )
         except AgyCanaryEvidenceError as exc:
             print(f"phase-loop {command}: {exc}", file=sys.stderr)
             return 1

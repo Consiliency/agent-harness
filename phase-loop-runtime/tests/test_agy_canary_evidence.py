@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,18 @@ def _settings(tmp_path: Path, allow: list[str]) -> Path:
     )
     path.chmod(0o600)
     return path
+
+
+def _source_inventory(tmp_path: Path) -> dict[str, object]:
+    return evidence.freeze_customization_inventory(home=tmp_path, project_dir=tmp_path, env={})
+
+
+def _git_repo(repo: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
 
 
 def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(tmp_path, capsys):
@@ -216,7 +229,7 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
         settings = _settings(tmp_path, [])
         capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             instructions = review / "review-instructions.md"
@@ -254,7 +267,7 @@ def test_capture_reducer_rejects_missing_or_swapped_private_board(tmp_path):
         settings = _settings(tmp_path, [])
         capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             for name in ("review-instructions.md", "review-bundle.md"):
@@ -303,7 +316,7 @@ def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch
     capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
     try:
         settings = _settings(tmp_path, [])
-        evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+        evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
         auth = tmp_path / "auth.json"
         auth.write_text('{"credential":"private"}')
         auth.chmod(0o600)
@@ -365,7 +378,7 @@ def test_capture_reducer_rejects_unpaired_tool_evidence(tmp_path):
         settings = _settings(tmp_path, [])
         capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             for name in ("review-instructions.md", "review-bundle.md"):
@@ -391,7 +404,7 @@ def test_capture_reducer_rejects_denied_command_and_alias_stage_read(tmp_path):
         settings = _settings(tmp_path, [])
         capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             for name in ("review-instructions.md", "review-bundle.md"):
@@ -423,7 +436,7 @@ def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(t
         settings = _settings(tmp_path, [])
         capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             for name in ("review-instructions.md", "review-bundle.md"):
@@ -618,12 +631,20 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
         installation = {
             "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
             "distribution_root": "/tool/site-packages", "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
-            "direct_url_sha256": "a" * 64, "archive_hash": "sha256:" + "b" * 64,
+            "direct_url_sha256": "a" * 64, "archive_hash": "sha256=" + "b" * 64,
             "archive_url_sha256": "c" * 64,
         }
         monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda: installation)
-        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({"bootstrap": {"returncode": 0, "installation": installation}}))
-        prepared = evidence.prepare_canary(evidence_root=root, settings_path=settings, seat_key="gemini-primary")
+        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({"bootstrap": {"returncode": 0, "installation": installation}, "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"}, "blobs": {"plans/canary.md": "a", "plans/manifest.json": "b"}}))
+        release = {"version": "0.7.14", "artifacts": [{"filename": "phase_loop_runtime.whl", "sha256": "b" * 64, "url_sha256": "c" * 64}]}
+        monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
+        harness = tmp_path / "agent-harness"
+        harness.mkdir()
+        prepared = evidence.prepare_canary(
+            evidence_root=root, settings_path=settings, seat_key="gemini-primary",
+            agent_harness_repo=harness, handoff_commit="d" * 40,
+            customization_home=tmp_path, project_dir=tmp_path, source_env={},
+        )
         assert prepared["seat_key"] == "gemini-primary"
         ledger = json.loads((root / "agy-launch-ledger.json").read_text())
         assert ledger["capture_mode"] == "stream_json"
@@ -654,6 +675,23 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         manifest = plans / "manifest.json"
         plan.write_text("# Plan\n")
         manifest.write_text(json.dumps({"plans": [{"slug": "agy-canary", "updated_at": "old"}]}))
+        (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+        (repo / "shared").mkdir()
+        (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
+        _git_repo(repo)
+        head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        blobs = {
+            name: subprocess.check_output(["git", "-C", str(repo), "rev-parse", f"HEAD:{name}"], text=True).strip()
+            for name in ("plans/canary.md", "plans/manifest.json")
+        }
+        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({
+            "repo_head": head, "blobs": blobs,
+            "input_sha256": {
+                name: evidence._sha256((repo / name).read_bytes())
+                for name in ("plans/canary.md", "plans/manifest.json")
+            },
+            "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
+        }))
         proof = {"schema": evidence.SCHEMA_VERSION, "seat_key": "gemini-primary", "attempt_ids": ["gemini-1"]}
         monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         result = evidence.finalize_canary(
@@ -668,5 +706,34 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         assert "## Execution evidence" in plan.read_text()
         assert json.loads(manifest.read_text())["plans"][0]["updated_at"] != "old"
         assert (root / "agy_canary_inputs.json").is_file()
+        checked = evidence.check_private_final(
+            evidence_root=root, expected_seat_key="gemini-primary", dotfiles_repo=repo,
+            plan_path=Path("plans/canary.md"), manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+        )
+        assert checked["inputs_sha256"] == result["inputs_sha256"]
+        subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "finalize"], check=True)
+        committed = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        assert evidence.check_committed_final(
+            dotfiles_repo=repo, commit=committed, plan_path=Path("plans/canary.md"),
+            manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+        )["commit"] == committed
+    finally:
+        shutil.rmtree(root)
+
+
+def test_real_source_inventory_rejects_environment_override_and_generated_capture_never_claims_complete(tmp_path):
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="customization source"):
+        evidence.freeze_customization_inventory(
+            home=tmp_path, project_dir=tmp_path, env={"AGY_PLUGIN_PATH": "ignored"}
+        )
+    root = _private_root(tmp_path)
+    try:
+        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        try:
+            ledger = evidence.create_capture(capture=capture, settings_path=_settings(tmp_path, []), seat_key="gemini-primary")
+            assert ledger["policy"]["sources_complete"] is False
+        finally:
+            capture.close()
     finally:
         shutil.rmtree(root)
