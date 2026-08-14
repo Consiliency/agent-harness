@@ -314,6 +314,20 @@ def test_stream_rejects_interleaved_or_post_terminal_events(events):
         evidence._parse_stream("\n".join(json.dumps(event) for event in events).encode())
 
 
+def test_stream_rejects_duplicate_staged_read_even_when_one_copy_has_right_content():
+    events = [
+        {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+        {"sequence": 1, "session_id": "s", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "wrong"},
+        {"sequence": 2, "session_id": "s", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+        {"sequence": 3, "session_id": "s", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "right"},
+        {"sequence": 4, "session_id": "s", "type": "tool_call", "call_id": "c", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+        {"sequence": 5, "session_id": "s", "type": "tool_result", "call_id": "c", "outcome": "success", "content": "bundle"},
+        {"sequence": 6, "session_id": "s", "type": "terminal", "text": "AGREE"},
+    ]
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="exactly two staged reads"):
+        evidence._parse_stream("\n".join(json.dumps(event) for event in events).encode(), require_staged_reads=True)
+
+
 def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
