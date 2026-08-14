@@ -19,6 +19,7 @@ import re
 import select
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -52,6 +53,7 @@ from .agy_canary_evidence import (
     AgyCanaryNamespace,
     capture_namespace,
     capture_summary,
+    namespace_self_test,
     record_launch,
     retain_staged_files,
 )
@@ -1688,6 +1690,76 @@ def _read_review_output(path: Path) -> str:
         return ""
 
 
+def _read_capture_output(out_dir: Path, expected_name: str) -> str:
+    """Read the one expected captured-provider output through a stable directory FD.
+
+    Capture output is a hostile child boundary even though its host directory is
+    private.  Do not follow links, accept a second filename, or trust a pathname
+    that changed between validation and read.  The caller owns the provider's PTY
+    or stdout semantics; this helper is the final parent-side ingestion boundary.
+    """
+    if not expected_name or Path(expected_name).name != expected_name:
+        raise AgyCanaryEvidenceError("capture output name is not a basename")
+    try:
+        directory_fd = os.open(
+            out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("capture output directory is unavailable") from exc
+    try:
+        directory_info = os.fstat(directory_fd)
+        if (
+            not stat.S_ISDIR(directory_info.st_mode)
+            or stat.S_IMODE(directory_info.st_mode) != 0o700
+            or directory_info.st_uid != os.getuid()
+        ):
+            raise AgyCanaryEvidenceError("capture output directory is not private")
+        names = set(os.listdir(directory_fd))
+        if names != {expected_name}:
+            raise AgyCanaryEvidenceError("capture output set is not exact")
+        before = os.lstat(expected_name, dir_fd=directory_fd)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid != os.getuid()
+        ):
+            raise AgyCanaryEvidenceError("capture output is not a private regular file")
+        output_fd = os.open(
+            expected_name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+        try:
+            opened = os.fstat(output_fd)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                raise AgyCanaryEvidenceError("capture output identity changed during open")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(output_fd, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after = os.fstat(output_fd)
+        finally:
+            os.close(output_fd)
+        current = os.lstat(expected_name, dir_fd=directory_fd)
+        if (
+            (after.st_dev, after.st_ino, after.st_nlink)
+            != (opened.st_dev, opened.st_ino, opened.st_nlink)
+            or (current.st_dev, current.st_ino, current.st_nlink)
+            != (opened.st_dev, opened.st_ino, opened.st_nlink)
+            or not stat.S_ISREG(current.st_mode)
+        ):
+            raise AgyCanaryEvidenceError("capture output drifted during read")
+        return b"".join(chunks).decode("utf-8", errors="replace")
+    finally:
+        os.close(directory_fd)
+
+
 def _terminate_process_group(
     proc: subprocess.Popen[bytes], *, force_group: bool = False
 ) -> None:
@@ -2750,6 +2822,10 @@ def _exec_claude_tui_leg(
         mode=mode,
         backstop_s=backstop_s,
     )
+    if agy_capture is not None:
+        # The TUI may read its canonical file repeatedly for liveness, but only this
+        # final descriptor-relative ingestion is accepted as captured-provider output.
+        review_text = _read_capture_output(out_dir, output_file.name)
     # #188 + ah#196/#223: a heartbeat-reclaimed wedge, an uncleared workspace-trust
     # gate, and a never-ready editor are all TYPED reviewer-liveness failures — surfaced
     # DEGRADED (not a bare ERROR). The diagnostic handling for these follows below (empty
@@ -3066,7 +3142,9 @@ def _exec_leg(
                 return 124, "", f"timeout after {deadline_s}s"
             _elapsed = time.monotonic() - _t0
             review_text = (
-                out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+                _read_capture_output(out_dir, out_file.name)
+                if agy_capture is not None and out_file.exists()
+                else (out_file.read_text(encoding="utf-8") if out_file.exists() else "")
             )
             rc = proc.returncode
             # ah#252: codex echoes BOTH the user prompt and its own final message
@@ -3085,6 +3163,8 @@ def _exec_leg(
                 break  # hard failure OR real output → stop (never hammer, never waste)
             if _elapsed >= timeout_s * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow empty turn (not transient) → don't re-run + double wall-clock
+        if agy_capture is not None:
+            review_text = _read_capture_output(out_dir, out_file.name)
         return rc, review_text, log_text
     if leg == "gemini":
         # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). The health
@@ -3225,6 +3305,8 @@ def _exec_leg(
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow stall (not fast/transient) → don't re-run + double wall-clock
         out_file.write_text(review_text, encoding="utf-8")
+        if agy_capture is not None:
+            review_text = _read_capture_output(out_dir, out_file.name)
         return rc, review_text, log_text
     if leg == "grok":
         out_file = out_dir / "panel-grok.txt"
@@ -3309,6 +3391,8 @@ def _exec_leg(
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break
         out_file.write_text(review_text, encoding="utf-8")
+        if agy_capture is not None:
+            review_text = _read_capture_output(out_dir, out_file.name)
         return rc, review_text, log_text
     # claude uses the TUI-backed subscription route, handled by `_exec_claude_tui_leg`.
     return 0, "", "unavailable"
@@ -3405,6 +3489,10 @@ def _default_spawn(
         if agy_capture is not None:
             extra["agy_capture"] = agy_capture
             extra["agy_namespace"] = capture_namespace_value
+            # A resolver/TLS/masking proof must precede each capture child, not
+            # merely the original Gemini seat.  The namespace is immutable after
+            # this point; any probe failure stops this provider before launch.
+            namespace_self_test(namespace=capture_namespace_value)
         if leg == "claude":
             return _exec_claude_tui_leg(
                 review_dir,
