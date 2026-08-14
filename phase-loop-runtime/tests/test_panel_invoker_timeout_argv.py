@@ -428,6 +428,67 @@ def test_capture_enabled_grok_uses_sibling_namespace_without_ledger_launch(monke
         shutil.rmtree(output)
 
 
+def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monkeypatch, tmp_path):
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    expected_capture = object()
+    bindings: list[tuple[bytes, bytes]] = []
+    prepared: dict[str, tuple[object, Path, tuple[bytes, bytes]]] = {}
+    spawned: list[str] = []
+
+    def bind_stage(**kwargs):
+        assert kwargs["capture"] is expected_capture
+        if bindings:
+            raise evidence.AgyCanaryEvidenceError("stage binding must be exclusive")
+        pair = (kwargs["bundle_bytes"], kwargs["instruction_bytes"])
+        assert (kwargs["review_dir"] / "review-bundle.md").read_bytes() == pair[0]
+        assert (kwargs["review_dir"] / "review-instructions.md").read_bytes() == pair[1]
+        bindings.append(pair)
+
+    def prepare_authority(*, capture: object, stage: Path, providers: tuple[str, ...]):
+        assert capture is expected_capture
+        assert len(providers) == 1
+        provider = providers[0]
+        authority = object()
+        prepared[provider] = (
+            authority,
+            stage,
+            ((stage / "review-bundle.md").read_bytes(),
+             (stage / "review-instructions.md").read_bytes()),
+        )
+        return {provider: authority}
+
+    def spawn_provider(leg, _artifact, **kwargs):
+        authority, stage, _bytes = prepared[leg]
+        assert kwargs["provider_authority"] is authority
+        assert kwargs["capture_stage"] == stage
+        shutil.rmtree(kwargs["capture_scratch"])
+        spawned.append(leg)
+        return "OK", "AGREE"
+
+    monkeypatch.setattr(pi, "bind_staged_review_inputs", bind_stage)
+    monkeypatch.setattr(pi, "prepare_provider_launch_authorities", prepare_authority)
+    monkeypatch.setattr(pi, "_default_spawn_via_provider", spawn_provider)
+    monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
+
+    result = pi.invoke_board(
+        DEFAULT_BOARD,
+        "review",
+        agy_canary_capture=expected_capture,
+        base_env={},
+        max_concurrency=1,
+    )
+
+    assert [leg.leg for leg in result.legs] == ["codex", "gemini", "claude", "grok"]
+    assert set(prepared) == {"codex", "gemini", "claude", "grok"}
+    assert spawned == ["codex", "gemini", "claude", "grok"]
+    assert len(bindings) == 1
+    assert all(
+        staged_bytes == bindings[0]
+        for _authority, _stage, staged_bytes in prepared.values()
+    )
+
+
 def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeypatch, tmp_path):
     capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     captured: dict[str, object] = {}

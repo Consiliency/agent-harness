@@ -4335,23 +4335,24 @@ def invoke_board(
         keys = [str(seat.seat_key) for seat in capture_seats]
         if len(providers) != len(set(providers)) or len(keys) != len(set(keys)):
             raise ValueError("capture-enabled board requires unique provider and seat identities")
-        for seat, provider in zip(capture_seats, providers):
+        bundle_bytes = artifact.encode("utf-8")
+        instruction_bytes = _resolve_brief(mode, brief_ref).encode("utf-8")
+        for index, (seat, provider) in enumerate(zip(capture_seats, providers)):
             scratch = Path(tempfile.mkdtemp(prefix="pl-panel-capture-"))
             stage = scratch / "review"
             stage.mkdir(mode=0o700)
-            bundle_bytes = artifact.encode("utf-8")
-            instruction_bytes = _resolve_brief(mode, brief_ref).encode("utf-8")
             (stage / "review-bundle.md").write_bytes(bundle_bytes)
             (stage / "review-instructions.md").write_bytes(instruction_bytes)
             for name in ("review-bundle.md", "review-instructions.md"):
                 (stage / name).chmod(0o600)
-            bind_staged_review_inputs(
-                capture=agy_canary_capture,
-                review_dir=stage,
-                bundle_bytes=bundle_bytes,
-                instruction_bytes=instruction_bytes,
-                generator_identity="phase_loop_runtime.panel_invoker._resolve_brief.v1",
-            )
+            if index == 0:
+                bind_staged_review_inputs(
+                    capture=agy_canary_capture,
+                    review_dir=stage,
+                    bundle_bytes=bundle_bytes,
+                    instruction_bytes=instruction_bytes,
+                    generator_identity="phase_loop_runtime.panel_invoker._resolve_brief.v1",
+                )
             authority = prepare_provider_launch_authorities(
                 capture=agy_canary_capture, stage=stage, providers=(provider,)
             )[provider]
