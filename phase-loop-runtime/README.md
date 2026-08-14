@@ -51,7 +51,12 @@ rule or use a permission-bypass flag. `agy-canary-clean-settings` is the sole
 writer for removing the historical `command(pwd)` rule; it requires a direct,
 mode-0700 child of `/tmp`, a quiescent settings tree, and an exclusive maintenance
 lock. The later probe, prepare, verify, and finalize steps fail closed until an
-attended version-specific trajectory probe has selected a complete authority.
+attended agy 1.1.13 `stream-json` schema probe has selected a complete authority.
+That probe and every capture-enabled Gemini launch use `/usr/bin/bwrap`, a fresh
+`/tmp`, `/run`, and `/proc`, the fixed `/run/phase-loop-review` stage mapping,
+and a reducer-generated minimal HOME. A missing effective namespace, active
+customization source, unsupported stream schema, or absent direct bootstrap
+attestation blocks the canary rather than falling back to the operator HOME.
 
 When `PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR` is set, `advisor-board --json` consumes
 that variable before spawning any seat. The complete board JSON must be written

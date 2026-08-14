@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 
@@ -239,9 +240,7 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
         assert proof["attempt_ids"] == ["gemini-1"]
         assert proof["attempts"][0]["counts"] == {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}
     finally:
-        for path in root.iterdir():
-            path.unlink()
-        root.rmdir()
+        shutil.rmtree(root)
 
 
 def test_capture_reducer_rejects_unpaired_tool_evidence(tmp_path):
@@ -268,3 +267,107 @@ def test_capture_reducer_rejects_unpaired_tool_evidence(tmp_path):
         for path in root.iterdir():
             path.unlink()
         root.rmdir()
+
+
+def test_namespace_masks_evidence_root_and_uses_fixed_stage(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        for name in ("review-instructions.md", "review-bundle.md"):
+            (stage / name).write_text(name)
+        home = tmp_path / "home"
+        home.mkdir()
+        namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
+        monkeypatch.setattr(evidence.shutil, "which", lambda _name: "/usr/bin/bwrap")
+        command = namespace.command(["agy", "--version"])
+        assert "--tmpfs" in command
+        assert "/run/phase-loop-review" in command
+        assert str(root) not in command
+    finally:
+        root.rmdir()
+
+
+def test_probe_selects_1_1_13_stream_json_only_after_strict_parse(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        for name in ("review-instructions.md", "review-bundle.md"):
+            (stage / name).write_text(name)
+        home = tmp_path / "home"
+        home.mkdir()
+        namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
+        events = "\n".join(json.dumps(item) for item in [
+            {"sequence": 0, "session_id": "p", "type": "terminal", "text": "READY"},
+        ])
+        calls = []
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if command == ["agy", "--version"]:
+                return Proc("1.1.13\n")
+            if command == ["agy", "--help"]:
+                return Proc("--output-format text, json, stream-json")
+            return Proc(events if "agy" in command else "")
+
+        monkeypatch.setattr(evidence.subprocess, "run", fake_run)
+        monkeypatch.setattr(evidence.shutil, "which", lambda _name: "/usr/bin/bwrap")
+        monkeypatch.setattr(evidence.socket, "getaddrinfo", lambda *_args, **_kwargs: [])
+        result = evidence.probe_capability(evidence_root=root, namespace=namespace)
+        assert result["complete"] is True
+        assert result["mode"] == "stream_json"
+        assert any("--output-format" in command for command in calls)
+    finally:
+        for path in root.iterdir():
+            path.unlink()
+        root.rmdir()
+
+
+def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        settings = _settings(tmp_path, [])
+        (root / "cleanup-state.json").write_text(json.dumps({"state": "committed"}))
+        (root / "agy_capability_probe.json").write_text(json.dumps({"complete": True, "mode": "stream_json"}))
+        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({"bootstrap": {"returncode": 0}}))
+        prepared = evidence.prepare_canary(evidence_root=root, settings_path=settings, seat_key="gemini-primary")
+        assert prepared["seat_key"] == "gemini-primary"
+        ledger = json.loads((root / "agy-launch-ledger.json").read_text())
+        assert ledger["capture_mode"] == "stream_json"
+    finally:
+        shutil.rmtree(root)
+
+
+def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tmp_path, monkeypatch):
+    root = _private_root(tmp_path)
+    try:
+        repo = tmp_path / "dotfiles"
+        plans = repo / "plans"
+        plans.mkdir(parents=True)
+        plan = plans / "canary.md"
+        manifest = plans / "manifest.json"
+        plan.write_text("# Plan\n")
+        manifest.write_text(json.dumps({"plans": [{"slug": "agy-canary", "updated_at": "old"}]}))
+        proof = {"schema": evidence.SCHEMA_VERSION, "seat_key": "gemini-primary", "attempt_ids": ["gemini-1"]}
+        monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
+        result = evidence.finalize_canary(
+            evidence_root=root,
+            expected_seat_key="gemini-primary",
+            dotfiles_repo=repo,
+            plan_path=Path("plans/canary.md"),
+            manifest_path=Path("plans/manifest.json"),
+            plan_slug="agy-canary",
+        )
+        assert result["inputs_sha256"]
+        assert "## Execution evidence" in plan.read_text()
+        assert json.loads(manifest.read_text())["plans"][0]["updated_at"] != "old"
+        assert (root / "agy_canary_inputs.json").is_file()
+    finally:
+        shutil.rmtree(root)

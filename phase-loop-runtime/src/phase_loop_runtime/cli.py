@@ -388,6 +388,9 @@ def build_parser() -> argparse.ArgumentParser:
     agy_probe_sub = subparsers.add_parser("agy-canary-probe")
     agy_probe_sub.add_argument("--evidence-root", required=True)
     agy_probe_sub.add_argument("--agy-executable", default="agy")
+    agy_probe_sub.add_argument("--stage", help="Private staged review directory for the attended probe.")
+    agy_probe_sub.add_argument("--minimal-home", help="Reducer-generated minimal HOME for the attended probe.")
+    agy_probe_sub.add_argument("--provider-host", default="antigravity.google")
     agy_attest_sub = subparsers.add_parser("agy-canary-bootstrap-attest")
     agy_attest_sub.add_argument("--evidence-root", required=True)
     agy_attest_sub.add_argument("--dotfiles-repo", required=True)
@@ -1069,8 +1072,20 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             if command == "agy-canary-probe":
+                namespace = None
+                if args.stage or args.minimal_home:
+                    if not args.stage or not args.minimal_home:
+                        raise AgyCanaryEvidenceError("--stage and --minimal-home must be supplied together")
+                    from .agy_canary_evidence import AgyCanaryNamespace
+                    namespace = AgyCanaryNamespace(
+                        stage=Path(args.stage),
+                        minimal_home=Path(args.minimal_home),
+                        evidence_root=Path(args.evidence_root),
+                        provider_hostname=args.provider_host,
+                    )
                 result = probe_capability(
-                    evidence_root=Path(args.evidence_root), agy_executable=args.agy_executable
+                    evidence_root=Path(args.evidence_root), agy_executable=args.agy_executable,
+                    namespace=namespace,
                 )
             elif command == "agy-canary-bootstrap-attest":
                 result = bootstrap_attest(

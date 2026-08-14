@@ -10,6 +10,8 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
+import socket
 import stat
 import subprocess
 from datetime import datetime, timezone
@@ -28,6 +30,8 @@ _PROBE_NAME = "agy_capability_probe.json"
 _PREPARE_NAME = "agy_canary_prepare.json"
 _INPUTS_NAME = "agy_canary_inputs.json"
 _SAFE_PRESETS = frozenset({"request-review", "strict"})
+_CAPTURE_MODES = frozenset({"stream_json", "trajectory_store"})
+_CUSTOMIZATION_ENV_PREFIXES = ("AGY_", "ANTIGRAVITY_", "GEMINI_")
 
 
 class AgyCanaryEvidenceError(RuntimeError):
@@ -57,6 +61,47 @@ class AgyCanaryCapture:
 
     def close(self) -> None:
         os.close(self.root_fd)
+
+
+@dataclass(frozen=True)
+class AgyCanaryNamespace:
+    """The production-equivalent child boundary for a capture-enabled seat."""
+
+    stage: Path
+    minimal_home: Path
+    evidence_root: Path
+    provider_hostname: str
+
+    def command(self, argv: list[str]) -> list[str]:
+        bwrap = shutil.which("bwrap")
+        if bwrap is None:
+            raise AgyCanaryEvidenceError("capture requires /usr/bin/bwrap")
+        if not self.stage.is_absolute() or not self.minimal_home.is_absolute():
+            raise AgyCanaryEvidenceError("namespace inputs must be absolute")
+        # `/tmp` and `/run` are fresh tmpfs mounts.  Thus the direct `/tmp` child
+        # holding evidence is absent even though the immutable host filesystem is
+        # mounted read-only for the provider executable and CA roots.
+        return [
+            bwrap,
+            "--die-with-parent",
+            "--new-session",
+            "--ro-bind", "/", "/",
+            "--tmpfs", "/tmp",
+            "--tmpfs", "/run",
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--dir", "/run/phase-loop-review",
+            "--ro-bind", str(self.stage), "/run/phase-loop-review",
+            "--tmpfs", "/home",
+            "--dir", "/home/phase-loop",
+            "--ro-bind", str(self.minimal_home), "/home/phase-loop",
+            "--setenv", "HOME", "/home/phase-loop",
+            "--setenv", "XDG_CONFIG_HOME", "/home/phase-loop/.config",
+            "--setenv", "XDG_DATA_HOME", "/home/phase-loop/.local/share",
+            "--chdir", "/run/phase-loop-review",
+            "--",
+            *argv,
+        ]
 
 
 def _sha256(data: bytes) -> str:
@@ -487,6 +532,73 @@ def consume_capture_environment(env: dict[str, str] | None = None) -> AgyCanaryC
     return AgyCanaryCapture(root=root, root_fd=root_fd)
 
 
+def inventory_customizations(*, home: Path, env: dict[str, str] | None = None) -> dict[str, list[str]]:
+    """Reject every known executable customization source before a child launch."""
+    home = home.resolve(strict=True)
+    sources = {
+        "hooks": [home / ".gemini" / "antigravity-cli" / "hooks"],
+        "plugins": [home / ".gemini" / "antigravity-cli" / "plugins"],
+        "mcp": [home / ".gemini" / "antigravity-cli" / "mcp.json"],
+        "project": [home / ".gemini" / "antigravity-cli" / "project-settings.json"],
+    }
+    found: dict[str, list[str]] = {key: [] for key in sources}
+    for kind, paths in sources.items():
+        for path in paths:
+            if path.exists() or path.is_symlink():
+                found[kind].append(str(path))
+    source_env = os.environ if env is None else env
+    found["environment_overrides"] = sorted(
+        name for name in source_env if name.startswith(_CUSTOMIZATION_ENV_PREFIXES)
+        and name not in {"AGY_CANARY_SETTINGS_PATH"}
+    )
+    if any(found.values()):
+        raise AgyCanaryEvidenceError("active agy customization source detected")
+    return found
+
+
+def build_minimal_home(*, capture: AgyCanaryCapture, settings_path: Path) -> Path:
+    """Create a private minimal HOME that exposes only reducer-validated settings.
+
+    Authentication material is intentionally not copied here.  An attended
+    operator may add an explicit read-only bind after proving its required path;
+    this helper otherwise fails closed rather than falling back to normal HOME.
+    """
+    name = f"minimal-home-{secrets.token_hex(8)}"
+    os.mkdir(name, 0o700, dir_fd=capture.root_fd)
+    root = capture.root / name
+    config = root / ".config"
+    config.mkdir(mode=0o700)
+    target = config / "agy-settings.json"
+    opened = _open_settings(settings_path)
+    try:
+        data = opened.data
+    finally:
+        os.close(opened.parent_fd)
+    target.write_bytes(data)
+    target.chmod(0o600)
+    inventory_customizations(home=root, env={})
+    return root
+
+
+def namespace_self_test(*, namespace: AgyCanaryNamespace) -> dict[str, Any]:
+    """Prove the fixed stage path and evidence-root masking before provider launch."""
+    test_argv = [
+        "/bin/sh", "-c",
+        "test -r /run/phase-loop-review/review-instructions.md && "
+        "test -r /run/phase-loop-review/review-bundle.md && "
+        "test ! -e \"$1\"",
+        "phase-loop-namespace-test", str(namespace.evidence_root),
+    ]
+    proc = subprocess.run(namespace.command(test_argv), capture_output=True, text=True, timeout=30, check=False)
+    if proc.returncode != 0:
+        raise AgyCanaryEvidenceError("bwrap namespace masking self-test failed")
+    try:
+        socket.getaddrinfo(namespace.provider_hostname, 443, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("provider DNS self-test failed") from exc
+    return {"schema": "agy_namespace_self_test.v1", "stage": "/run/phase-loop-review", "evidence_root_hidden": True, "provider_hostname": namespace.provider_hostname}
+
+
 def _policy_facts(settings: dict[str, Any]) -> dict[str, bool]:
     permissions = settings.get("permissions", {})
     allow = permissions.get("allow", []) if isinstance(permissions, dict) else None
@@ -498,7 +610,9 @@ def _policy_facts(settings: dict[str, Any]) -> dict[str, bool]:
     }
 
 
-def inventory_policy_sources(*, settings_path: Path) -> dict[str, Any]:
+def inventory_policy_sources(
+    *, settings_path: Path, customization_home: Path | None = None, env: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Inventory the one supported settings source and derive policy facts.
 
     A non-existent or symlinked source is not silently treated as safe.  The
@@ -513,6 +627,11 @@ def inventory_policy_sources(*, settings_path: Path) -> dict[str, Any]:
     facts = _policy_facts(parsed)
     if not all(facts.values()):
         raise AgyCanaryEvidenceError("capture policy is not strict and empty")
+    customizations = (
+        inventory_customizations(home=customization_home, env=env)
+        if customization_home is not None
+        else {"hooks": [], "plugins": [], "mcp": [], "project": [], "environment_overrides": []}
+    )
     return {
         "schema": "agy_policy_inventory.v1",
         "settings": {
@@ -521,17 +640,19 @@ def inventory_policy_sources(*, settings_path: Path) -> dict[str, Any]:
             "sha256": _sha256(opened.data),
         },
         "sources_complete": True,
-        "customization_inventory": {
-            "hooks": [], "plugins": [], "mcp": [], "environment_overrides": [],
-        },
+        "customization_inventory": customizations,
         **facts,
     }
 
 
-def create_capture(*, capture: AgyCanaryCapture, settings_path: Path, seat_key: str) -> dict[str, Any]:
+def create_capture(
+    *, capture: AgyCanaryCapture, settings_path: Path, seat_key: str, capture_mode: str = "stream_json"
+) -> dict[str, Any]:
     """Start a single-seat capture ledger after strict policy inventory."""
     if not seat_key or "/" in seat_key or "\\" in seat_key:
         raise AgyCanaryEvidenceError("Gemini seat key must be a nonempty canonical key")
+    if capture_mode not in _CAPTURE_MODES:
+        raise AgyCanaryEvidenceError("capture mode is not supported")
     policy = inventory_policy_sources(settings_path=settings_path)
     existing = None
     try:
@@ -543,6 +664,7 @@ def create_capture(*, capture: AgyCanaryCapture, settings_path: Path, seat_key: 
     ledger = {
         "schema": "agy_canary_launch_ledger.v1",
         "seat_key": seat_key,
+        "capture_mode": capture_mode,
         "policy": policy,
         "attempts": [],
     }
@@ -651,6 +773,30 @@ def _parse_stream(data: bytes) -> tuple[str, list[dict[str, Any]], dict[str, Any
     return session, list(calls.values()), terminal
 
 
+def _parse_trajectory(data: bytes) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Parse a sealed trajectory-store snapshot into the same strict event shape."""
+    try:
+        value = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("trajectory snapshot is not JSON") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("conversation_id"), str):
+        raise AgyCanaryEvidenceError("trajectory snapshot lacks a conversation identity")
+    events = value.get("events")
+    if not isinstance(events, list):
+        raise AgyCanaryEvidenceError("trajectory snapshot lacks events")
+    # Reuse stream validation after requiring that every stored event belongs to
+    # the sealed conversation.  This is intentionally not a heuristic DB scan.
+    normalized: list[str] = []
+    for index, event in enumerate(events):
+        if not isinstance(event, dict) or event.get("conversation_id") != value["conversation_id"]:
+            raise AgyCanaryEvidenceError("trajectory contains an unbound event")
+        copied = dict(event)
+        copied["sequence"] = index
+        copied["session_id"] = value["conversation_id"]
+        normalized.append(json.dumps(copied, sort_keys=True))
+    return _parse_stream("\n".join(normalized).encode())
+
+
 def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, Any]:
     """Strictly reduce all sealed attempts and reject incomplete/forged evidence."""
     root, root_fd = _validate_private_root(evidence_root)
@@ -658,6 +804,9 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
         ledger = _read_json_at(root_fd, _LEDGER_NAME)
         if ledger.get("seat_key") != expected_seat_key:
             raise AgyCanaryEvidenceError("sealed Gemini seat key does not match board")
+        mode = ledger.get("capture_mode")
+        if mode not in _CAPTURE_MODES:
+            raise AgyCanaryEvidenceError("capture mode is not sealed")
         policy = ledger.get("policy")
         if not isinstance(policy, dict) or not all(policy.get(name) is True for name in ("effective_allow_empty", "safe_preset", "non_workspace_access_disabled", "sources_complete")):
             raise AgyCanaryEvidenceError("capture policy facts are incomplete")
@@ -676,7 +825,9 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
             raw = _read_regular_at(root_fd, str(stream.get("name", "")))
             if len(raw) != stream.get("bytes") or _sha256(raw) != stream.get("sha256"):
                 raise AgyCanaryEvidenceError("sealed stream bytes drifted")
-            _session, calls, terminal = _parse_stream(raw)
+            _session, calls, terminal = (
+                _parse_stream(raw) if mode == "stream_json" else _parse_trajectory(raw)
+            )
             counts = {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}
             reads = {"review-instructions.md": [], "review-bundle.md": []}
             for call in calls:
@@ -711,6 +862,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
             "schema": SCHEMA_VERSION,
             "seat_key": expected_seat_key,
             "attempt_ids": [item["attempt_id"] for item in output_attempts],
+            "capture_mode": mode,
             "attempts": output_attempts,
             "accepted_review_sha256": _sha256(final_text.encode()),
         }
@@ -742,26 +894,62 @@ def capture_summary(capture: AgyCanaryCapture) -> dict[str, Any]:
     return {"gemini_seat_key": ledger.get("seat_key"), "gemini_seat_count": 1, "attempt_ids": ids, "ledger_bytes": len(data), "ledger_sha256": _sha256(data)}
 
 
-def probe_capability(*, evidence_root: Path, agy_executable: str = "agy") -> dict[str, Any]:
-    """Record a conservative capability result without executing a provider turn.
+def probe_capability(
+    *,
+    evidence_root: Path,
+    agy_executable: str = "agy",
+    namespace: AgyCanaryNamespace | None = None,
+) -> dict[str, Any]:
+    """Run the bounded 1.1.13 stream-json schema probe inside the live profile.
 
-    A live trajectory probe is an attended operation.  This producer therefore
-    refuses to claim a stream mode from a version string alone.
+    The 1.1.13 CLI advertises ``--output-format stream-json``.  Advertising a
+    flag alone is not evidence: this producer executes a no-command, staged-only
+    request through the same namespace wrapper, then accepts the mode only when
+    the returned bytes satisfy the strict parser.  It is intentionally attended
+    because it consumes the operator's authenticated subscription.
     """
     root, root_fd = _validate_private_root(evidence_root)
     try:
-        proc = subprocess.run([agy_executable, "--version"], capture_output=True, text=True, timeout=15, check=False)
-        if proc.returncode != 0:
+        version_proc = subprocess.run([agy_executable, "--version"], capture_output=True, text=True, timeout=15, check=False)
+        help_proc = subprocess.run([agy_executable, "--help"], capture_output=True, text=True, timeout=15, check=False)
+        version = (version_proc.stdout or version_proc.stderr).strip()
+        help_text = (help_proc.stdout or help_proc.stderr)
+        if version_proc.returncode != 0 or help_proc.returncode != 0:
             raise AgyCanaryEvidenceError("agy version probe failed")
-        value = {"schema": "agy_capability_probe.v1", "agy_version": (proc.stdout or proc.stderr).strip(), "mode": None, "complete": False, "reason": "attended_stream_schema_probe_required"}
+        if version != "1.1.13" or "stream-json" not in help_text:
+            value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "unsupported_agy_1_1_13_capture_surface"}
+            _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
+            return value
+        if namespace is None:
+            value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "production_namespace_required"}
+            _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
+            return value
+        namespace_self_test(namespace=namespace)
+        command = [
+            agy_executable, "--output-format", "stream-json", "--sandbox", "--add-dir",
+            "/run/phase-loop-review", "--print-timeout", "30s", "-p",
+            "Read review-instructions.md and review-bundle.md only. Do not use any other tool. Reply with READY.",
+        ]
+        proc = subprocess.run(namespace.command(command), capture_output=True, text=True, timeout=90, check=False)
+        stream = (proc.stdout or "").encode()
+        try:
+            _parse_stream(stream)
+        except AgyCanaryEvidenceError as exc:
+            value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": f"stream_json_schema_unproven:{type(exc).__name__}", "stream_sha256": _sha256(stream)}
+        else:
+            if proc.returncode != 0:
+                raise AgyCanaryEvidenceError("agy stream-json probe process failed")
+            value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": "stream_json", "complete": True, "stream_sha256": _sha256(stream), "stream_bytes": len(stream)}
         _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
         return value
     finally:
         os.close(root_fd)
 
 
-def bootstrap_attest(*, evidence_root: Path, dotfiles_repo: Path) -> dict[str, Any]:
-    """Seal only repository-derived bootstrap identities for the later attended gate."""
+def bootstrap_attest(
+    *, evidence_root: Path, dotfiles_repo: Path, bootstrap_command: tuple[str, ...] = ("bash", "bootstrap.sh")
+) -> dict[str, Any]:
+    """Directly run committed bootstrap and attest its nonce-bound child result."""
     repo = dotfiles_repo.resolve(strict=True)
     if not (repo / ".git").exists() or not (repo / "bootstrap.sh").is_file():
         raise AgyCanaryEvidenceError("bootstrap attestation requires a dotfiles checkout")
@@ -774,9 +962,35 @@ def bootstrap_attest(*, evidence_root: Path, dotfiles_repo: Path) -> dict[str, A
         if proc.returncode != 0:
             raise AgyCanaryEvidenceError(f"required bootstrap input is not committed: {relative}")
         identities[relative] = proc.stdout.strip()
+    pin = (repo / "shared" / "agent-harness.pin").read_text(encoding="utf-8").strip()
+    if pin != "v0.7.14":
+        raise AgyCanaryEvidenceError("bootstrap attestation requires the v0.7.14 fleet pin")
+    child_env = {
+        key: value for key, value in os.environ.items()
+        if key not in {"PHASE_LOOP_PIN", "PHASE_LOOP_DEFAULT_REF", "PHASE_LOOP_PACKAGE", "PYTHONPATH", "PYTHONHOME"}
+    }
+    nonce = secrets.token_hex(24)
+    child_env["PHASE_LOOP_AGY_CANARY_BOOTSTRAP_NONCE"] = nonce
+    before = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
+    child = subprocess.run(list(bootstrap_command), cwd=repo, env=child_env, capture_output=True, text=True, timeout=1800, check=False)
+    after = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
+    if child.returncode != 0:
+        raise AgyCanaryEvidenceError("direct bootstrap child failed")
     root, root_fd = _validate_private_root(evidence_root)
     try:
-        value = {"schema": "agy_canary_bootstrap_attestation.v1", "repo_head": head.stdout.strip(), "blobs": identities}
+        value = {
+            "schema": "agy_canary_bootstrap_attestation.v1",
+            "repo_head": head.stdout.strip(),
+            "blobs": identities,
+            "nonce_sha256": _sha256(nonce.encode()),
+            "bootstrap": {
+                "argv": list(bootstrap_command),
+                "returncode": child.returncode,
+                "before_uv_tools_sha256": _sha256((before.stdout or "").encode()),
+                "after_uv_tools_sha256": _sha256((after.stdout or "").encode()),
+                "environment_names": sorted(child_env),
+            },
+        }
         _exclusive_write_at(root_fd, "agy_canary_bootstrap_attestation.json", _canonical_json(value), 0o600)
         return value
     finally:
@@ -793,23 +1007,109 @@ def prepare_canary(*, evidence_root: Path, settings_path: Path, seat_key: str) -
         probe = _read_json_at(root_fd, _PROBE_NAME)
         if probe.get("complete") is not True or probe.get("mode") not in {"stream_json", "trajectory_store"}:
             raise AgyCanaryEvidenceError("capability probe has not selected a complete authority")
+        bootstrap = _read_json_at(root_fd, "agy_canary_bootstrap_attestation.json")
+        bootstrap_result = bootstrap.get("bootstrap")
+        if not isinstance(bootstrap_result, dict) or bootstrap_result.get("returncode") != 0:
+            raise AgyCanaryEvidenceError("direct bootstrap attestation is incomplete")
         capture = AgyCanaryCapture(root, root_fd)
-        ledger = create_capture(capture=capture, settings_path=settings_path, seat_key=seat_key)
-        value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "ledger_sha256": _sha256(_canonical_json(ledger)), "seat_key": seat_key}
+        ledger = create_capture(
+            capture=capture,
+            settings_path=settings_path,
+            seat_key=seat_key,
+            capture_mode=str(probe["mode"]),
+        )
+        minimal_home = build_minimal_home(capture=capture, settings_path=settings_path)
+        ledger["minimal_home"] = minimal_home.name
+        _write_replace_at(root_fd, _LEDGER_NAME, ledger)
+        value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "bootstrap_sha256": _sha256(_canonical_json(bootstrap)), "ledger_sha256": _sha256(_canonical_json(ledger)), "seat_key": seat_key}
         _exclusive_write_at(root_fd, _PREPARE_NAME, _canonical_json(value), 0o600)
         return value
     finally:
         os.close(root_fd)
 
 
-def finalize_canary(*, evidence_root: Path, expected_seat_key: str, check_only: bool = False) -> dict[str, Any]:
-    """Seal the final reducer payload; this does not modify any tracked file."""
+def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostname: str = "antigravity.google") -> AgyCanaryNamespace:
+    """Recover the prepare-sealed minimal HOME for one production child launch."""
+    ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
+    if ledger.get("capture_mode") != "stream_json":
+        raise AgyCanaryEvidenceError("production launch has no supported stream-json authority")
+    name = ledger.get("minimal_home")
+    if not isinstance(name, str) or Path(name).name != name:
+        raise AgyCanaryEvidenceError("prepare did not seal a minimal HOME")
+    home = capture.root / name
+    info = home.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
+        raise AgyCanaryEvidenceError("sealed minimal HOME is invalid")
+    inventory_customizations(home=home, env={})
+    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname)
+
+
+def _replace_regular_file(path: Path, data: bytes) -> None:
+    parent = path.parent.resolve(strict=True)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        current, info = _reopen_at(parent_fd, path.name)
+        if not stat.S_ISREG(info.st_mode):
+            raise AgyCanaryEvidenceError("finalizer target is not a regular file")
+        temporary = f".{path.name}.{secrets.token_hex(12)}"
+        _exclusive_write_at(parent_fd, temporary, data, stat.S_IMODE(info.st_mode))
+        os.rename(temporary, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def finalize_canary(
+    *,
+    evidence_root: Path,
+    expected_seat_key: str,
+    check_only: bool = False,
+    dotfiles_repo: Path | None = None,
+    plan_path: Path | None = None,
+    manifest_path: Path | None = None,
+    plan_slug: str | None = None,
+) -> dict[str, Any]:
+    """Seal the proof and, when explicitly configured, apply its only tracked suffix."""
     proof = verify_capture(evidence_root=evidence_root, expected_seat_key=expected_seat_key)
-    if check_only:
+    if check_only and dotfiles_repo is None:
         return proof
     root, root_fd = _validate_private_root(evidence_root)
     try:
-        inputs = {"schema": "agy_canary_inputs.v1", "proof_sha256": _sha256(_canonical_json(proof)), "completed_at": datetime.now(timezone.utc).isoformat()}
+        completed_at = datetime.now(timezone.utc).isoformat()
+        inputs = {"schema": "agy_canary_inputs.v1", "proof_sha256": _sha256(_canonical_json(proof)), "completed_at": completed_at}
+        if dotfiles_repo is not None:
+            repo = dotfiles_repo.resolve(strict=True)
+            if plan_path is None or manifest_path is None or not plan_slug:
+                raise AgyCanaryEvidenceError("tracked finalization requires repo, plan, manifest, and plan slug")
+            plan = (repo / plan_path).resolve(strict=True)
+            manifest = (repo / manifest_path).resolve(strict=True)
+            if repo not in plan.parents or repo not in manifest.parents:
+                raise AgyCanaryEvidenceError("finalizer targets must remain under the validated repository")
+            plan_before = plan.read_bytes()
+            if b"## Execution evidence" in plan_before:
+                raise AgyCanaryEvidenceError("plan already has execution evidence")
+            try:
+                manifest_value = json.loads(manifest.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise AgyCanaryEvidenceError("manifest is not JSON") from exc
+            entries = manifest_value.get("plans") if isinstance(manifest_value, dict) else None
+            matches = [entry for entry in entries or [] if isinstance(entry, dict) and entry.get("slug") == plan_slug]
+            if len(matches) != 1:
+                raise AgyCanaryEvidenceError("finalizer could not identify one manifest plan")
+            canonical_proof = _canonical_json(proof).decode()
+            suffix = "\n## Execution evidence\n\n```json\n" + canonical_proof + "```\n"
+            plan_after = plan_before + suffix.encode()
+            matches[0]["updated_at"] = completed_at
+            manifest_after = _canonical_json(manifest_value)
+            inputs.update({
+                "plan_before_sha256": _sha256(plan_before),
+                "plan_after_sha256": _sha256(plan_after),
+                "manifest_before_sha256": _sha256(manifest.read_bytes()),
+                "manifest_after_sha256": _sha256(manifest_after),
+            })
+            if not check_only:
+                _replace_regular_file(plan, plan_after)
+                _replace_regular_file(manifest, manifest_after)
         _write_replace_at(root_fd, _INPUTS_NAME, inputs)
         return {**proof, "inputs_sha256": _sha256(_canonical_json(inputs))}
     finally:

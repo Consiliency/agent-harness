@@ -49,6 +49,7 @@ from .agent_runtime_provider import (
 from .agy_canary_evidence import (
     AgyCanaryCapture,
     AgyCanaryEvidenceError,
+    capture_namespace,
     capture_summary,
     record_launch,
     retain_staged_files,
@@ -2917,6 +2918,7 @@ def _exec_leg(
     agy_capture: AgyCanaryCapture | None = None,
     capture_staged: dict[str, dict[str, object]] | None = None,
     seat_key: str | None = None,
+    agy_namespace: object | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -2931,6 +2933,13 @@ def _exec_leg(
     baked into the model string). ``env is None`` keeps ``_subscription_env()``.
     """
     env = _subscription_env() if env is None else dict(env)
+    if agy_capture is not None:
+        env.pop("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", None)
+        env = {
+            key: value
+            for key, value in env.items()
+            if not key.startswith(("AGY_", "ANTIGRAVITY_", "GEMINI_"))
+        }
     if research_seat is not None:
         env = scrub_research_env(env)
         if leg not in RESEARCH_CAPABLE_LANES:
@@ -3091,6 +3100,13 @@ def _exec_leg(
             "-p",
             _NO_COMMAND_PREAMBLE + prompt,
         ]
+        if agy_capture is not None:
+            if agy_namespace is None:
+                raise AgyCanaryEvidenceError("capture-enabled Gemini launch has no prepared namespace")
+            # 1.1.13's stream-json is the only supported production authority;
+            # text stdout is diagnostic-only and cannot satisfy the reducer.
+            cmd[1:1] = ["--output-format", "stream-json"]
+            cmd = agy_namespace.command(cmd)  # type: ignore[union-attr]
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
         # backend stall ("Error: timeout waiting for response", 0-byte) permanently
@@ -3115,7 +3131,8 @@ def _exec_leg(
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
             _elapsed = time.monotonic() - _t0
-            review_text = proc.stdout or ""
+            raw_stream = proc.stdout or ""
+            review_text = raw_stream
             rc = proc.returncode
             log_text = proc.stderr or ""
             if agy_capture is not None:
@@ -3127,10 +3144,13 @@ def _exec_leg(
                     attempt_id=f"gemini-{_attempt + 1}",
                     argv=cmd,
                     returncode=rc,
-                    stdout=review_text,
+                    stdout=raw_stream,
                     stderr=log_text,
                     staged=capture_staged,
                 )
+                from .agy_canary_evidence import _parse_stream
+                _session, _calls, terminal = _parse_stream(raw_stream.encode())
+                review_text = str(terminal["text"])
             # HEADLESS TOOL-DENIAL: rc==0 + empty body + the CLI's own auto-denied
             # marker. Retrying reproduces it exactly, and reporting it as an anonymous
             # EMPTY is what let this hide for a whole milestone. Return a NON-ZERO rc
@@ -3305,6 +3325,7 @@ def _default_spawn(
             for staged_name in ("review-bundle.md", "review-instructions.md"):
                 (review_dir / staged_name).chmod(0o600)
             capture_staged = retain_staged_files(capture=agy_capture, review_dir=review_dir)
+            capture_namespace_value = capture_namespace(capture=agy_capture, stage=review_dir)
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
         # explicit override bounds the leg. This is the ONE place that knows whether the
         # override was explicit, so resolve BOTH the retry reference and the hard deadline
@@ -3325,6 +3346,7 @@ def _default_spawn(
             extra["agy_capture"] = agy_capture
             extra["capture_staged"] = capture_staged
             extra["seat_key"] = seat_key
+            extra["agy_namespace"] = capture_namespace_value
         if leg == "claude":
             return _exec_claude_tui_leg(
                 review_dir,
