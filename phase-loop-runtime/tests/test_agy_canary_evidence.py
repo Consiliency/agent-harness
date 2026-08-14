@@ -812,6 +812,21 @@ def test_namespace_binds_trusted_home_agi_at_fixed_path_without_exposing_home(mo
         shutil.rmtree(root)
 
 
+def test_probe_revalidates_trusted_executable_before_host_exec(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    source = tmp_path / "agy"
+    source.write_bytes(b"trusted")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedAgyRuntime(source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))
+    monkeypatch.setattr(evidence, "_trusted_agy_runtime", lambda: runtime)
+    monkeypatch.setattr(evidence._TrustedAgyRuntime, "revalidate", lambda _self: (_ for _ in ()).throw(evidence.AgyCanaryEvidenceError("drift")))
+    monkeypatch.setattr(evidence.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host agy must not execute after drift"))
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="drift"):
+        evidence.probe_capability(evidence_root=root)
+    shutil.rmtree(root)
+
+
 def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_path):
     """The public command, not its sink helper, must bind the private payload."""
     from phase_loop_runtime.advisor_board.schema import Board, Seat

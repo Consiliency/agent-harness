@@ -1239,7 +1239,9 @@ def probe_capability(
         raise AgyCanaryEvidenceError("agy probe executable must be the trusted agy path")
     root, root_fd = _validate_private_root(evidence_root)
     try:
+        runtime.revalidate()
         version_proc = subprocess.run([str(runtime.source), "--version"], capture_output=True, text=True, timeout=15, check=False)
+        runtime.revalidate()
         help_proc = subprocess.run([str(runtime.source), "--help"], capture_output=True, text=True, timeout=15, check=False)
         version = (version_proc.stdout or version_proc.stderr).strip()
         help_text = (help_proc.stdout or help_proc.stderr)
