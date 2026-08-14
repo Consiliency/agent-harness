@@ -1833,6 +1833,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         return 2
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
+    usable_vendors = {leg.leg for leg in result.usable_legs}
     # A runnable review command must signal when the result is NOT a usable review.
     # Tie the exit code to the board's own contract: it targets 4 independent
     # reviewers with a HARD FLOOR of ``FLOOR_SEATS`` (3). If fewer than the floor of
@@ -1880,8 +1881,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             "shortfall": shortfall,
             "independence": {
                 "level": independence.level,
-                "distinct_vendors": independence.distinct_vendors,
-                "seats": independence.seats,
+                # The sealed evidence floor derives these from concrete leg
+                # records, never from composition's requested-seat counters.
+                "distinct_vendors": len(usable_vendors),
+                "seats": usable_count,
             },
             # ``text`` is the leg's actual review (findings + AGREE/PARTIALLY
             # AGREE/DISAGREE verdict) — the whole point of running a board — so it

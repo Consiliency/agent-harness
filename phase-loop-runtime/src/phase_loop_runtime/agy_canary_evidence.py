@@ -45,7 +45,9 @@ _PROBE_NAME = "agy_capability_probe.json"
 _PREPARE_NAME = "agy_canary_prepare.json"
 _LAUNCH_AUTHORITY_NAME = "agy_canary_launch_authority.json"
 _STAGE_AUTHORITY_NAME = "agy_canary_stage_authority.json"
+_STAGE_BINDING_NAME = "agy_canary_stage_binding.json"
 _INPUTS_NAME = "agy_canary_inputs.json"
+_REVIEW_INSTRUCTION_GENERATOR = "phase_loop_runtime.panel_invoker._resolve_brief.v1"
 _SAFE_PRESETS = frozenset({"request-review", "strict"})
 _CAPTURE_MODES = frozenset({"stream_json", "trajectory_store"})
 _CAPABILITY_PROBE_SCHEMA = "agy_capability_probe.v2"
@@ -606,6 +608,7 @@ class ProviderLaunchAuthority:
     runtime: _TrustedProviderRuntime
     namespace: AgyCanaryNamespace
     auth_records: tuple[dict[str, str], ...]
+    projected_auth: dict[str, Any] | None = None
 
     def _revalidate(self, *, full_assets: bool = False) -> None:
         self.runtime.revalidate(full_assets=full_assets)
@@ -616,7 +619,9 @@ class ProviderLaunchAuthority:
                 data, info = _reopen_at(parent_fd, source.name)
             finally:
                 os.close(parent_fd)
-            if not stat.S_ISREG(info.st_mode) or _sha256(data) != record["source_sha256"]:
+            if (not stat.S_ISREG(info.st_mode) or _sha256(data) != record["source_sha256"] or
+                    ("uid" in record and str(info.st_uid) != record["uid"]) or
+                    ("mode" in record and format(stat.S_IMODE(info.st_mode), "04o") != record["mode"])):
                 raise AgyCanaryEvidenceError(f"{self.provider} authentication bind drifted")
 
     def command(self, argv: list[str]) -> list[str]:
@@ -682,6 +687,60 @@ class ProviderLaunchAuthority:
         finally:
             os.close(directory_fd)
 
+    def projected_auth_proof(self) -> dict[str, Any]:
+        """Return the launch-time projected credential identity, not a login claim."""
+        if self.projected_auth is None:
+            return _projected_auth_proof(
+                provider=self.provider, runtime=self.runtime, records=self.auth_records
+            )
+        _validate_projected_auth_proof(
+            proof=self.projected_auth, provider=self.provider, runtime=self.runtime,
+            records=self.auth_records,
+        )
+        return self.projected_auth
+
+    def write_expected_output(self, name: str, data: bytes) -> bytes:
+        """Materialize exactly one parent-owned provider output without a path race.
+
+        This is for provider CLIs which can only emit their final response on
+        stdout.  The caller must supply bytes captured by the parent; the child
+        never receives a writable evidence path.  A pre-existing name, a link,
+        or any sibling makes the capture ambiguous and is rejected.
+        """
+        if (not name or Path(name).name != name or not isinstance(data, bytes) or
+                self.namespace.provider_output is None):
+            raise AgyCanaryEvidenceError("provider output write is invalid")
+        output = _validate_provider_output(
+            self.namespace.provider_output, evidence_root=self.namespace.evidence_root
+        )
+        directory_fd = os.open(output, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            if os.listdir(directory_fd):
+                raise AgyCanaryEvidenceError("provider output set is not empty")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+            try:
+                file_fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
+            except FileExistsError as exc:
+                raise AgyCanaryEvidenceError("provider output already exists") from exc
+            try:
+                view = memoryview(data)
+                while view:
+                    written = os.write(file_fd, view)
+                    if written <= 0:
+                        raise AgyCanaryEvidenceError("provider output short write")
+                    view = view[written:]
+                os.fsync(file_fd)
+                info = os.fstat(file_fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                        stat.S_IMODE(info.st_mode) != 0o600):
+                    raise AgyCanaryEvidenceError("provider output is not one private regular file")
+            finally:
+                os.close(file_fd)
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        return self.read_expected_output(name)
+
 
 def _provider_auth_records(provider: str, minimal_home: Path) -> tuple[dict[str, str], ...]:
     """Freeze only the provider's declared credential file and empty bind target."""
@@ -704,7 +763,60 @@ def _provider_auth_records(provider: str, minimal_home: Path) -> tuple[dict[str,
     target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     target.write_bytes(b"")  # Required bwrap target; credentials are never copied.
     target.chmod(0o600)
-    return ({"source": str(source), "destination": destination, "source_sha256": _sha256(data)},)
+    return ({
+        "source": str(source), "destination": destination, "source_sha256": _sha256(data),
+        "uid": str(info.st_uid), "mode": format(stat.S_IMODE(info.st_mode), "04o"),
+    },)
+
+
+def _projected_auth_proof(
+    *, provider: str, runtime: _TrustedProviderRuntime, records: tuple[dict[str, str], ...]
+) -> dict[str, Any]:
+    """Freeze projected credential file facts without asserting semantic login."""
+    rows: list[dict[str, str]] = []
+    for record in records:
+        source = Path(record["source"])
+        parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            data, info = _reopen_at(parent_fd, source.name)
+        finally:
+            os.close(parent_fd)
+        if (_sha256(data) != record["source_sha256"] or
+                ("uid" in record and str(info.st_uid) != record["uid"]) or
+                ("mode" in record and format(stat.S_IMODE(info.st_mode), "04o") != record["mode"])):
+            raise AgyCanaryEvidenceError("provider projected authentication source drifted")
+        rows.append({
+            "destination": record["destination"], "uid": str(info.st_uid),
+            "mode": format(stat.S_IMODE(info.st_mode), "04o"), "sha256": _sha256(data),
+        })
+    proof = {
+        "schema": "agy_provider_projected_auth.v1", "provider": provider,
+        "runtime_destination": runtime.destination, "runtime_sha256": runtime.sha256,
+        "records": rows,
+    }
+    _validate_projected_auth_proof(
+        proof=proof, provider=provider, runtime=runtime, records=records
+    )
+    return proof
+
+
+def _validate_projected_auth_proof(
+    *, proof: Any, provider: str, runtime: _TrustedProviderRuntime,
+    records: tuple[dict[str, str], ...],
+) -> None:
+    if (not isinstance(proof, dict) or
+            set(proof) != {"schema", "provider", "runtime_destination", "runtime_sha256", "records"} or
+            proof.get("schema") != "agy_provider_projected_auth.v1" or
+            proof.get("provider") != provider or proof.get("runtime_destination") != runtime.destination or
+            proof.get("runtime_sha256") != runtime.sha256 or not isinstance(proof.get("records"), list) or
+            len(proof["records"]) != len(records)):
+        raise AgyCanaryEvidenceError("provider projected authentication proof is malformed")
+    for row, record in zip(proof["records"], records, strict=True):
+        if (not isinstance(row, dict) or set(row) != {"destination", "uid", "mode", "sha256"} or
+                row.get("destination") != record.get("destination") or
+                not isinstance(row.get("uid"), str) or not row["uid"].isdigit() or
+                row.get("mode") != "0600" or not _is_digest(row.get("sha256"))):
+            raise AgyCanaryEvidenceError("provider projected authentication record is malformed")
 
 
 def prepare_provider_launch_authorities(
@@ -717,9 +829,8 @@ def prepare_provider_launch_authorities(
     """
     if not providers or len(set(providers)) != len(providers):
         raise AgyCanaryEvidenceError("provider authority set is missing or duplicated")
-    ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
-    authority = _read_json_at(capture.root_fd, _LAUNCH_AUTHORITY_NAME)
-    _validate_launch_authority(authority=authority, ledger=ledger, root_fd=capture.root_fd)
+    _ledger, _prepare, authority = _require_prepare_authority(capture=capture)
+    _validate_stage_binding(capture=capture, review_dir=stage, authority=authority)
     minimal_home = Path(str(authority["minimal_home"]["path"]))
     if _minimal_home_identity(minimal_home) != authority["minimal_home"]["identity"]:
         raise AgyCanaryEvidenceError("prepared minimal HOME settings drifted")
@@ -751,7 +862,11 @@ def prepare_provider_launch_authorities(
                 else ()
             ),
         )
-        result[provider] = ProviderLaunchAuthority(provider, runtime, namespace, tuple(auth_records))
+        frozen_records = tuple(auth_records)
+        result[provider] = ProviderLaunchAuthority(
+            provider, runtime, namespace, frozen_records,
+            _projected_auth_proof(provider=provider, runtime=runtime, records=frozen_records),
+        )
     return result
 
 
@@ -761,6 +876,135 @@ def _sha256(data: bytes) -> str:
 
 def _canonical_json(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def _require_prepare_authority(
+    *, capture: AgyCanaryCapture
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Reopen the one immutable prepare receipt required by every launch path."""
+    ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
+    authority = _read_json_at(capture.root_fd, _LAUNCH_AUTHORITY_NAME)
+    prepare = _read_json_at(capture.root_fd, _PREPARE_NAME)
+    required = {
+        "schema", "authority_name", "authority_sha256", "cleanup_sha256",
+        "probe_sha256", "bootstrap_sha256", "ledger_sha256", "settings_sha256",
+        "settings_bytes", "settings_mode", "seat_key", "release", "release_sha256",
+        "source_inventory_sha256",
+    }
+    if (not isinstance(prepare, dict) or set(prepare) != required or
+            prepare.get("schema") != "agy_canary_prepare.v1" or
+            prepare.get("authority_name") != _LAUNCH_AUTHORITY_NAME or
+            prepare.get("authority_sha256") != _sha256(_canonical_json(authority))):
+        raise AgyCanaryEvidenceError("capture requires the exact prepare receipt")
+    _validate_launch_authority(authority=authority, ledger=ledger, root_fd=capture.root_fd)
+    expected = {
+        "cleanup_sha256": authority["cleanup_sha256"],
+        "probe_sha256": authority["probe_sha256"],
+        "bootstrap_sha256": authority["bootstrap_sha256"],
+        "settings_sha256": authority["settings"]["sha256"],
+        "settings_bytes": authority["settings"]["bytes"],
+        "settings_mode": authority["settings"]["mode"],
+        "seat_key": authority["seat_key"],
+        "release": authority["release"],
+        "release_sha256": authority["release_sha256"],
+        "source_inventory_sha256": authority["source_inventory_sha256"],
+    }
+    if any(prepare.get(name) != value for name, value in expected.items()):
+        raise AgyCanaryEvidenceError("prepare receipt does not match immutable launch authority")
+    # The ledger subsequently receives attempts.  Its prepare-time hash is bound
+    # by the authority's immutable fields and can never be accepted as a mutable
+    # current-ledger claim.
+    if not _is_digest(prepare.get("ledger_sha256")):
+        raise AgyCanaryEvidenceError("prepare receipt ledger identity is malformed")
+    return ledger, prepare, authority
+
+
+def bind_staged_review_inputs(
+    *, capture: AgyCanaryCapture, review_dir: Path, bundle_bytes: bytes,
+    instruction_bytes: bytes, generator_identity: str,
+) -> dict[str, Any]:
+    """Seal the parent-rendered review files to the bootstrap-attested plan.
+
+    The board runner supplies the bytes it rendered, then this function
+    descriptor-reopens the staged files and rejects a substituted bundle, plan,
+    instruction text, or generator identity before any provider authority exists.
+    """
+    _ledger, prepare, authority = _require_prepare_authority(capture=capture)
+    if (not isinstance(bundle_bytes, bytes) or not bundle_bytes or
+            not isinstance(instruction_bytes, bytes) or not instruction_bytes or
+            generator_identity != _REVIEW_INSTRUCTION_GENERATOR):
+        raise AgyCanaryEvidenceError("staged review binding inputs are not canonical")
+    bootstrap = _read_json_at(capture.root_fd, "agy_canary_bootstrap_attestation.json")
+    if (not isinstance(bootstrap, dict) or
+            _sha256(_canonical_json(bootstrap)) != authority["bootstrap_sha256"]):
+        raise AgyCanaryEvidenceError("staged review binding bootstrap receipt drifted")
+    targets = bootstrap.get("targets")
+    inputs = bootstrap.get("input_sha256")
+    if (not isinstance(targets, dict) or not isinstance(inputs, dict) or
+            not isinstance(targets.get("plan"), str) or
+            not _is_digest(inputs.get(targets["plan"])) or
+            _sha256(bundle_bytes) != inputs[targets["plan"]]):
+        raise AgyCanaryEvidenceError("staged review bundle is not the bootstrap-attested plan")
+    review_fd = os.open(review_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        staged: dict[str, dict[str, Any]] = {}
+        for name, expected in (
+            ("review-bundle.md", bundle_bytes),
+            ("review-instructions.md", instruction_bytes),
+        ):
+            data, info = _reopen_at(review_fd, name)
+            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or
+                    data != expected):
+                raise AgyCanaryEvidenceError("staged review bytes differ from parent render")
+            staged[name] = {"bytes": len(data), "sha256": _sha256(data)}
+    finally:
+        os.close(review_fd)
+    binding = {
+        "schema": "agy_canary_stage_binding.v1",
+        "prepare_sha256": _sha256(_canonical_json(prepare)),
+        "launch_authority_sha256": _sha256(_canonical_json(authority)),
+        "plan_sha256": _sha256(bundle_bytes),
+        "instruction_generator": generator_identity,
+        "staged": staged,
+    }
+    _exclusive_write_at(capture.root_fd, _STAGE_BINDING_NAME, _canonical_json(binding), 0o600)
+    return binding
+
+
+def _validate_stage_binding(
+    *, capture: AgyCanaryCapture, review_dir: Path, authority: dict[str, Any]
+) -> dict[str, Any]:
+    """Revalidate the parent-sealed stage immediately before authority issuance."""
+    _ledger, prepare, _same_authority = _require_prepare_authority(capture=capture)
+    binding = _read_json_at(capture.root_fd, _STAGE_BINDING_NAME)
+    required = {
+        "schema", "prepare_sha256", "launch_authority_sha256", "plan_sha256",
+        "instruction_generator", "staged",
+    }
+    if (not isinstance(binding, dict) or set(binding) != required or
+            binding.get("schema") != "agy_canary_stage_binding.v1" or
+            binding.get("prepare_sha256") != _sha256(_canonical_json(prepare)) or
+            binding.get("launch_authority_sha256") != _sha256(_canonical_json(authority)) or
+            binding.get("instruction_generator") != _REVIEW_INSTRUCTION_GENERATOR or
+            not _is_digest(binding.get("plan_sha256")) or not isinstance(binding.get("staged"), dict) or
+            set(binding["staged"]) != {"review-bundle.md", "review-instructions.md"}):
+        raise AgyCanaryEvidenceError("staged review binding is not exact")
+    review_fd = os.open(review_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for name, record in binding["staged"].items():
+            if (not isinstance(record, dict) or set(record) != {"bytes", "sha256"} or
+                    not _is_plain_int(record.get("bytes")) or record["bytes"] < 1 or
+                    not _is_digest(record.get("sha256"))):
+                raise AgyCanaryEvidenceError("staged review binding schema is malformed")
+            data, info = _reopen_at(review_fd, name)
+            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or
+                    len(data) != record["bytes"] or _sha256(data) != record["sha256"]):
+                raise AgyCanaryEvidenceError("staged review binding bytes drifted")
+            if name == "review-bundle.md" and _sha256(data) != binding["plan_sha256"]:
+                raise AgyCanaryEvidenceError("staged review plan binding drifted")
+    finally:
+        os.close(review_fd)
+    return binding
 
 
 def _is_digest(value: Any) -> bool:
@@ -1490,6 +1734,8 @@ def retain_staged_files(*, capture: AgyCanaryCapture, review_dir: Path) -> dict[
     """Descriptor-read and retain the two only permitted staged inputs."""
     if "private_board" in _read_json_at(capture.root_fd, _LEDGER_NAME):
         raise AgyCanaryEvidenceError("cannot retain staged inputs after private board sealing")
+    ledger, _prepare, authority = _require_prepare_authority(capture=capture)
+    binding = _validate_stage_binding(capture=capture, review_dir=review_dir, authority=authority)
     records: dict[str, dict[str, Any]] = {}
     review_fd = os.open(review_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
@@ -1497,22 +1743,19 @@ def retain_staged_files(*, capture: AgyCanaryCapture, review_dir: Path) -> dict[
             data, info = _reopen_at(review_fd, name)
             if stat.S_IMODE(info.st_mode) & 0o077:
                 raise AgyCanaryEvidenceError(f"staged file is not private: {name}")
+            binding_record = binding["staged"][name]
+            if (len(data) != binding_record["bytes"] or
+                    _sha256(data) != binding_record["sha256"]):
+                raise AgyCanaryEvidenceError("retained staged file differs from sealed parent render")
             retained = f"staged-{name}"
             _exclusive_write_at(capture.root_fd, retained, data, 0o600)
             records[name] = {"retained": retained, "bytes": len(data), "sha256": _sha256(data)}
     finally:
         os.close(review_fd)
-    try:
-        authority = _read_json_at(capture.root_fd, _LAUNCH_AUTHORITY_NAME)
-    except AgyCanaryEvidenceError:
-        # Unit-level reducer construction is deliberately allowed without a
-        # production prepare chain; production launch rejects this absence.
-        return records
-    ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
-    _validate_launch_authority(authority=authority, ledger=ledger, root_fd=capture.root_fd)
     stage_authority = {
         "schema": "agy_canary_stage_authority.v1",
         "launch_authority_sha256": _sha256(_canonical_json(authority)),
+        "stage_binding_sha256": _sha256(_canonical_json(binding)),
         "staged": records,
     }
     _exclusive_write_at(capture.root_fd, _STAGE_AUTHORITY_NAME, _canonical_json(stage_authority), 0o600)
@@ -1536,20 +1779,17 @@ def record_launch(
         raise AgyCanaryEvidenceError("cannot record launch after private board sealing")
     if ledger.get("seat_key") != seat_key:
         raise AgyCanaryEvidenceError("capture launch seat does not match sealed singleton")
-    try:
-        authority = _read_json_at(capture.root_fd, _LAUNCH_AUTHORITY_NAME)
-    except AgyCanaryEvidenceError:
-        authority = None
-    if authority is not None:
-        _validate_launch_authority(authority=authority, ledger=ledger, root_fd=capture.root_fd)
-        if attempt_id not in authority["authorized_attempt_ids"]:
-            raise AgyCanaryEvidenceError("capture launch attempt is not prepare-authorized")
-        stage_authority = _read_json_at(capture.root_fd, _STAGE_AUTHORITY_NAME)
-        if (set(stage_authority) != {"schema", "launch_authority_sha256", "staged"} or
-                stage_authority.get("schema") != "agy_canary_stage_authority.v1" or
-                stage_authority.get("launch_authority_sha256") != _sha256(_canonical_json(authority)) or
-                stage_authority.get("staged") != staged):
-            raise AgyCanaryEvidenceError("capture staged input authority is not exact")
+    _prepared_ledger, _prepare, authority = _require_prepare_authority(capture=capture)
+    if attempt_id not in authority["authorized_attempt_ids"]:
+        raise AgyCanaryEvidenceError("capture launch attempt is not prepare-authorized")
+    stage_binding = _read_json_at(capture.root_fd, _STAGE_BINDING_NAME)
+    stage_authority = _read_json_at(capture.root_fd, _STAGE_AUTHORITY_NAME)
+    if (set(stage_authority) != {"schema", "launch_authority_sha256", "stage_binding_sha256", "staged"} or
+            stage_authority.get("schema") != "agy_canary_stage_authority.v1" or
+            stage_authority.get("launch_authority_sha256") != _sha256(_canonical_json(authority)) or
+            stage_authority.get("stage_binding_sha256") != _sha256(_canonical_json(stage_binding)) or
+            stage_authority.get("staged") != staged):
+        raise AgyCanaryEvidenceError("capture staged input authority is not exact")
     attempts = ledger.get("attempts")
     if (not isinstance(attempt_id, str) or not attempt_id or Path(attempt_id).name != attempt_id or
             not isinstance(attempts, list) or any(item.get("attempt_id") == attempt_id for item in attempts if isinstance(item, dict))):
@@ -1790,22 +2030,16 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
         attempts = ledger.get("attempts")
         if not isinstance(attempts, list) or not attempts:
             raise AgyCanaryEvidenceError("capture has no Gemini attempts")
-        authority: dict[str, Any] | None
-        try:
-            authority = _read_json_at(root_fd, _LAUNCH_AUTHORITY_NAME)
-        except AgyCanaryEvidenceError:
-            authority = None
-        if authority is not None:
-            _validate_launch_authority(authority=authority, ledger=ledger, root_fd=root_fd)
-            stage_authority = _read_json_at(root_fd, _STAGE_AUTHORITY_NAME)
-            if (set(stage_authority) != {"schema", "launch_authority_sha256", "staged"} or
-                    stage_authority.get("schema") != "agy_canary_stage_authority.v1" or
-                    stage_authority.get("launch_authority_sha256") != _sha256(_canonical_json(authority))):
-                raise AgyCanaryEvidenceError("capture stage authority is malformed")
-            authorized_attempts = authority["authorized_attempt_ids"]
-        else:
-            stage_authority = None
-            authorized_attempts = None
+        capture = AgyCanaryCapture(root, root_fd)
+        _prepared_ledger, _prepare, authority = _require_prepare_authority(capture=capture)
+        stage_binding = _read_json_at(root_fd, _STAGE_BINDING_NAME)
+        stage_authority = _read_json_at(root_fd, _STAGE_AUTHORITY_NAME)
+        if (set(stage_authority) != {"schema", "launch_authority_sha256", "stage_binding_sha256", "staged"} or
+                stage_authority.get("schema") != "agy_canary_stage_authority.v1" or
+                stage_authority.get("launch_authority_sha256") != _sha256(_canonical_json(authority)) or
+                stage_authority.get("stage_binding_sha256") != _sha256(_canonical_json(stage_binding))):
+            raise AgyCanaryEvidenceError("capture stage authority is malformed")
+        authorized_attempts = authority["authorized_attempt_ids"]
         output_attempts: list[dict[str, Any]] = []
         final_text = ""
         for item in attempts:
@@ -1818,7 +2052,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
             if (not isinstance(item.get("attempt_id"), str) or not _is_digest(item.get("argv_sha256")) or
                     not isinstance(item.get("completed_at"), str) or not item["completed_at"]):
                 raise AgyCanaryEvidenceError("capture attempt primitives are malformed")
-            if authorized_attempts is not None and item["attempt_id"] not in authorized_attempts:
+            if item["attempt_id"] not in authorized_attempts:
                 raise AgyCanaryEvidenceError("capture has an attempt outside prepare authority")
             stream = item.get("stream")
             staged = item.get("staged")
@@ -1826,7 +2060,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
                 raise AgyCanaryEvidenceError("capture launch record is incomplete")
             if set(staged) != {"review-instructions.md", "review-bundle.md"}:
                 raise AgyCanaryEvidenceError("capture staged input set is not exact")
-            if stage_authority is not None and stage_authority.get("staged") != staged:
+            if stage_authority.get("staged") != staged:
                 raise AgyCanaryEvidenceError("capture attempt staged inputs differ from launch authority")
             diagnostic = item.get("diagnostic")
             if not isinstance(diagnostic, dict) or set(diagnostic) != {"name", "bytes", "sha256"}:
@@ -1937,7 +2171,7 @@ def write_private_board(*, capture: AgyCanaryCapture, basename: str, payload: di
     summary = capture_summary(capture)
     if payload.get("agy_canary_capture") != summary:
         raise AgyCanaryEvidenceError("private board payload does not bind capture summary")
-    _validate_private_board_payload(payload, summary)
+    _validate_private_board_payload(payload, summary, require_usable=True)
     data = _canonical_json(payload)
     _exclusive_write_at(capture.root_fd, basename, data, 0o600)
     private = {"name": basename, "bytes": len(data), "sha256": _sha256(data), "capture": summary}
@@ -1956,6 +2190,8 @@ def _validate_private_board_payload(
     this exact floor before it can become canary evidence.
     """
     if "board" not in payload:
+        if require_usable:
+            raise AgyCanaryEvidenceError("private board payload lacks exact usable legs")
         return
     required = {"board", "usable", "requested_seats", "delivered_seats", "shortfall", "independence", "legs", "agy_canary_capture"}
     if set(payload) != required or payload.get("agy_canary_capture") != summary:
@@ -1973,16 +2209,60 @@ def _validate_private_board_payload(
             not isinstance(independence, dict) or set(independence) != {"level", "distinct_vendors", "seats"} or
             not isinstance(independence.get("level"), str) or not _is_plain_int(independence.get("distinct_vendors")) or not _is_plain_int(independence.get("seats"))):
         raise AgyCanaryEvidenceError("private board payload floor is malformed")
-    usable_legs = 0
+    usable_legs: list[dict[str, Any]] = []
+    unfilled: list[dict[str, Any]] = []
+    allowed_vendors = set(_PROVIDER_EXECUTABLES)
     for leg in payload["legs"]:
         if (not isinstance(leg, dict) or set(leg) != {"seat_key", "leg", "status", "detail", "text", "needs_native_agent"} or
                 not all(isinstance(leg.get(field), str) for field in ("seat_key", "leg", "status", "text")) or
-                (leg.get("detail") is not None and not isinstance(leg.get("detail"), str))):
+                leg.get("leg") not in allowed_vendors or leg.get("status") not in {"OK", "EMPTY", "ERROR", "TIMEOUT", "DEGRADED", "UNAVAILABLE"} or
+                (leg.get("detail") is not None and not isinstance(leg.get("detail"), str)) or
+                not _valid_native_agent_request(leg.get("needs_native_agent"))):
             raise AgyCanaryEvidenceError("private board leg schema is malformed")
-        usable_legs += int(leg["status"] == "OK" and bool(leg["text"].strip()))
-    if (payload["delivered_seats"] != usable_legs or payload["usable"] != (usable_legs >= 3) or
-            (require_usable and (not payload["usable"] or independence["distinct_vendors"] < 3))):
+        if leg["status"] == "OK" and leg["text"].strip():
+            usable_legs.append(leg)
+        else:
+            unfilled.append(leg)
+    usable_vendors = {leg["leg"] for leg in usable_legs}
+    gemini_legs = [
+        leg for leg in payload["legs"]
+        if leg["leg"] == "gemini" and leg["seat_key"] == summary["gemini_seat_key"]
+    ]
+    expected_shortfall = [
+        {
+            "seat_key": leg["seat_key"], "leg": leg["leg"], "status": leg["status"],
+            "needs_native_agent": leg["needs_native_agent"],
+        }
+        for leg in unfilled
+    ]
+    if (len(gemini_legs) != 1 or gemini_legs[0] not in usable_legs or
+            payload["delivered_seats"] != len(usable_legs) or
+            payload["usable"] != (len(usable_legs) >= 3) or
+            independence["seats"] != len(usable_legs) or
+            independence["distinct_vendors"] != len(usable_vendors) or
+            shortfall["unfilled_seats"] != expected_shortfall or
+            shortfall["natively_fillable_seats"] != sum(
+                leg["needs_native_agent"] is not None for leg in unfilled
+            ) or
+            (require_usable and (not payload["usable"] or len(usable_vendors) < 3))):
         raise AgyCanaryEvidenceError("private board is below the usable independence floor")
+
+
+def _valid_native_agent_request(value: Any) -> bool:
+    """Accept exactly the parent serializer's public native-fill request shape."""
+    if value is None:
+        return True
+    required = {
+        "leg", "model", "mode", "reason", "detail", "instructions",
+        "verdict_required", "verdict_contract",
+    }
+    optional = {"seat_key", "effort", "lens", "artifact_ref", "brief_ref"}
+    return (
+        isinstance(value, dict) and required <= set(value) <= required | optional and
+        all(isinstance(value.get(name), str) and value[name] for name in required - {"verdict_required"}) and
+        type(value.get("verdict_required")) is bool and
+        all(isinstance(value.get(name), str) and value[name] for name in optional if name in value)
+    )
 
 
 def capture_summary(capture: AgyCanaryCapture) -> dict[str, Any]:
@@ -2728,10 +3008,11 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
     if not isinstance(binds, list) or len({item.get("destination") for item in binds if isinstance(item, dict)}) != len(binds):
         raise AgyCanaryEvidenceError("prepare launch authority auth bindings are malformed")
     for bind in binds:
-        if (not isinstance(bind, dict) or set(bind) != {"source", "destination", "source_sha256"} or
+        if (not isinstance(bind, dict) or set(bind) != {"source", "destination", "source_sha256", "uid", "mode"} or
                 not isinstance(bind.get("source"), str) or not Path(bind["source"]).is_absolute() or
                 not isinstance(bind.get("destination"), str) or not bind["destination"].startswith("/home/phase-loop/") or
-                not _is_digest(bind.get("source_sha256"))):
+                not _is_digest(bind.get("source_sha256")) or not isinstance(bind.get("uid"), str) or
+                not bind["uid"].isdigit() or bind.get("mode") != "0600"):
             raise AgyCanaryEvidenceError("prepare launch authority auth binding is malformed")
     probe = _read_json_at(root_fd, _PROBE_NAME)
     if authority["probe_sha256"] != _sha256(_canonical_json(probe)):
@@ -2809,7 +3090,10 @@ def prepare_canary(
                 data, _info = _reopen_at(parent_fd, source.name)
             finally:
                 os.close(parent_fd)
-            bind_records.append({"source": str(source), "destination": destination, "source_sha256": _sha256(data)})
+            bind_records.append({
+                "source": str(source), "destination": destination, "source_sha256": _sha256(data),
+                "uid": str(_info.st_uid), "mode": format(stat.S_IMODE(_info.st_mode), "04o"),
+            })
         ledger["auth_binds"] = bind_records
         _write_replace_at(root_fd, _LEDGER_NAME, ledger)
         minimal_identity = _minimal_home_identity(minimal_home)
