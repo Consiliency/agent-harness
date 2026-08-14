@@ -14,6 +14,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -489,6 +490,49 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
         staged_bytes == bindings[0]
         for _authority, _stage, staged_bytes in prepared.values()
     )
+
+
+@pytest.mark.parametrize("failure", ["prepare", "seal", None])
+def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch, tmp_path, failure):
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    outputs: list[Path] = []
+    scratches: list[Path] = []
+    calls = 0
+
+    def bind_stage(**_kwargs):
+        return None
+
+    def prepare_authority(*, stage: Path, providers: tuple[str, ...], **_kwargs):
+        nonlocal calls
+        calls += 1
+        scratches.append(stage.parent)
+        if failure == "prepare" and calls == 2:
+            raise evidence.AgyCanaryEvidenceError("second authority failed")
+        output = tmp_path / f"output-{providers[0]}"
+        output.mkdir()
+        outputs.append(output)
+        return {providers[0]: SimpleNamespace(namespace=SimpleNamespace(provider_output=output))}
+
+    monkeypatch.setattr(pi, "bind_staged_review_inputs", bind_stage)
+    monkeypatch.setattr(pi, "prepare_provider_launch_authorities", prepare_authority)
+    monkeypatch.setattr(
+        pi, "seal_provider_launches",
+        (lambda **_kwargs: (_ for _ in ()).throw(evidence.AgyCanaryEvidenceError("seal failed")))
+        if failure == "seal" else lambda **_kwargs: {"synthetic": True},
+    )
+    monkeypatch.setattr(pi, "record_provider_result", lambda **_kwargs: {"synthetic": True})
+    monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
+    monkeypatch.setattr(pi, "_default_spawn_via_provider", lambda *_args, **_kwargs: ("OK", "AGREE"))
+
+    if failure is None:
+        pi.invoke_board(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
+    else:
+        with pytest.raises(evidence.AgyCanaryEvidenceError):
+            pi.invoke_board(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
+    assert outputs and scratches
+    assert all(not path.exists() for path in outputs)
+    assert all(not path.exists() for path in scratches)
 
 
 def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeypatch, tmp_path):
