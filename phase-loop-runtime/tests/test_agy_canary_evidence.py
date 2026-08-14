@@ -273,6 +273,11 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_
             registry = evidence._provider_registry(root_fd=root_fd)
             gemini = next(entry for entry in registry["entries"] if entry["provider"] == "gemini")
             result = evidence._read_json_at(root_fd, gemini["result_name"])
+            retry = json.loads(json.dumps(result))
+            retry["attempts"]["attempts"].append({"index": 1, **retry["attempts"]["launch"]})
+            retry["attempts"]["terminal_attempt"] = 1
+            evidence._write_replace_at(root_fd, gemini["result_name"], retry)
+            assert evidence._verified_provider_results(root_fd=root_fd)[("gemini", "gemini-primary")]["status"] == "OK"
             result["attempts"] = {"launch": None, "attempts": [], "terminal_attempt": None}
             evidence._write_replace_at(root_fd, gemini["result_name"], result)
             with pytest.raises(evidence.AgyCanaryEvidenceError, match="lacks an actual review attempt"):
