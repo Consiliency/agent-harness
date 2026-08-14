@@ -42,15 +42,12 @@ jobs:
         run: |
           python -m venv /tmp/phase-loop-release-wheel
           /tmp/phase-loop-release-wheel/bin/python -m pip install --upgrade pip
-          uv export \
+          VIRTUAL_ENV=/tmp/phase-loop-release-wheel uv sync \
             --project phase-loop-runtime \
             --group test \
             --locked \
             --no-install-project \
-            --no-hashes \
-            --output-file /tmp/phase-loop-release-requirements.txt
-          /tmp/phase-loop-release-wheel/bin/python -m pip install \
-            -r /tmp/phase-loop-release-requirements.txt
+            --active
           /tmp/phase-loop-release-wheel/bin/python -m pip install --force-reinstall \
             --no-deps dist/phase_loop_runtime-*.whl
           PYTHONPATH=phase-loop-runtime/tests \
