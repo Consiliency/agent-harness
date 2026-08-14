@@ -54,7 +54,9 @@ from .agy_canary_evidence import (
     ProviderLaunchAuthority,
     prepare_provider_launch_authorities,
     record_launch,
+    record_provider_result,
     retain_staged_files,
+    seal_provider_launches,
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .launcher import GROK_REVIEW_READONLY_TOOLS
@@ -2671,6 +2673,14 @@ def _tui_capable(
         return False
 
 
+def _record_capture_review_attempt(
+    authority: ProviderLaunchAuthority, command: list[str]
+) -> None:
+    """Record the actual invocation when using the production launch authority."""
+    if isinstance(authority, ProviderLaunchAuthority):
+        authority.record_review_attempt(command)
+
+
 def _exec_claude_tui_leg(
     review_dir: Path,
     out_dir: Path,
@@ -2759,6 +2769,7 @@ def _exec_claude_tui_leg(
     if agy_capture is not None:
         command = provider_authority.preflight(command)
         env = provider_authority.outer_environment()
+        _record_capture_review_attempt(provider_authority, command)
     tui_extra = (
         {"capture_output_reader": capture_output_reader}
         if capture_output_reader is not None
@@ -3088,6 +3099,8 @@ def _exec_leg(
         for _attempt in range(2):
             _t0 = time.monotonic()
             try:
+                if agy_capture is not None:
+                    _record_capture_review_attempt(provider_authority, cmd)
                 # codex streams its transcript to STDERR (stdout is empty until the
                 # final message), so the liveness heartbeat rides stderr. Prompt on
                 # stdin ("-").
@@ -3207,6 +3220,8 @@ def _exec_leg(
         for _attempt in range(2):
             _t0 = time.monotonic()
             try:
+                if agy_capture is not None:
+                    _record_capture_review_attempt(provider_authority, cmd)
                 # agy streams its review to STDOUT; the liveness heartbeat rides stdout
                 # (with a secondary CPU reset covering the ~20s silent "thinking" phase).
                 # Prompt is inline on argv (see the gemini cmd BUGFIX) — no stdin.
@@ -3339,6 +3354,8 @@ def _exec_leg(
         for _attempt in range(2):
             _t0 = time.monotonic()
             try:
+                if agy_capture is not None:
+                    _record_capture_review_attempt(provider_authority, cmd)
                 # grok streams its plain review to STDOUT; heartbeat rides stdout.
                 # Prompt is inline on argv (-p) — no stdin.
                 proc = _run_leg_with_liveness(
@@ -4324,6 +4341,7 @@ def invoke_board(
     # Gemini-ledger mutation therefore cannot invalidate a later Codex/Claude/Grok
     # sibling after an earlier thread has begun execution.
     capture_launches: dict[str, tuple[ProviderLaunchAuthority, Path, Path]] = {}
+    capture_seats: list[Seat] = []
     if agy_canary_capture is not None:
         if effective_research.enabled:
             raise ValueError("capture-enabled board does not permit research seats")
@@ -4331,6 +4349,8 @@ def invoke_board(
             seat for seat in board.seats
             if (seat.harness or "").lower() in _LEG_CLI
         ]
+        if len(capture_seats) != len(board.seats):
+            raise ValueError("capture-enabled board requires a provider authority for every seat")
         providers = [(seat.harness or "").lower() for seat in capture_seats]
         keys = [str(seat.seat_key) for seat in capture_seats]
         if len(providers) != len(set(providers)) or len(keys) != len(set(keys)):
@@ -4357,6 +4377,17 @@ def invoke_board(
                 capture=agy_canary_capture, stage=stage, providers=(provider,)
             )[provider]
             capture_launches[str(seat.seat_key)] = (authority, stage, scratch)
+        seal_provider_launches(
+            capture=agy_canary_capture,
+            launches=tuple(
+                (
+                    provider,
+                    str(seat.seat_key),
+                    capture_launches[str(seat.seat_key)][0],
+                )
+                for seat, provider in zip(capture_seats, providers, strict=True)
+            ),
+        )
 
     def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
         return PanelLegResult(
@@ -4619,6 +4650,23 @@ def invoke_board(
             on_leg_complete=on_leg_complete,
             review_dir=Path(stream_dir) if stream_dir is not None else None,
         )
+        if agy_canary_capture is not None:
+            if len(results) != len(capture_seats):
+                raise AgyCanaryEvidenceError("capture provider result set is incomplete")
+            for seat, result in zip(capture_seats, results, strict=True):
+                provider = (seat.harness or "").lower()
+                if (result.leg != provider or str(result.seat_key) != str(seat.seat_key)):
+                    raise AgyCanaryEvidenceError("capture provider result identity drifted")
+                authority, _stage, _scratch = capture_launches[str(seat.seat_key)]
+                record_provider_result(
+                    capture=agy_canary_capture,
+                    provider=provider,
+                    seat_key=str(seat.seat_key),
+                    authority=authority,
+                    status=result.status,
+                    text=result.text,
+                    detail=result.detail,
+                )
         # Observability emit is a SEPARATE pass over the (unchanged) run results, in
         # seat order — 1 result per seat — so the run control-flow above is untouched
         # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.
