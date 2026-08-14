@@ -742,6 +742,7 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                     "bootstrap": {name: bootstrap[name] for name in ("repo_head", "blobs", "input_sha256")},
                     "release": {"version": "0.7.14", "release_commit": "b" * 40, "artifacts": []},
                     "release_sha256": evidence._sha256(evidence._canonical_json({"version": "0.7.14", "release_commit": "b" * 40, "artifacts": []})),
+                    "proof": evidence._proof_identity(proof),
                 },
                 plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
                 plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),

@@ -1894,6 +1894,11 @@ def _validate_final_proof(proof: dict[str, Any]) -> None:
             raise AgyCanaryEvidenceError("final proof digest is malformed")
 
 
+def _proof_identity(proof: dict[str, Any]) -> dict[str, Any]:
+    _validate_final_proof(proof)
+    return {"seat_key": proof["seat_key"], "attempt_ids": proof["attempt_ids"], "private_board_sha256": proof["private_board_sha256"], "proof_sha256": _sha256(_canonical_json(proof))}
+
+
 def _attested_final_targets(
     *, root_fd: int, repo: Path, plan_path: Path, manifest_path: Path, plan_slug: str,
     require_preimages: bool = True,
@@ -1986,6 +1991,8 @@ def check_committed_final(
         repo=repo, attestation=payload["attestation"], plan_relative=plan_relative,
         manifest_relative=manifest_relative, plan_before=before_plan, manifest_before=before_manifest,
     )
+    if payload["attestation"].get("proof") != _proof_identity(payload["proof"]):
+        raise AgyCanaryEvidenceError("committed proof does not match attested reducer identity")
     release = payload["attestation"]["release"]
     if release != _reconcile_release_lineage(
         repo=agent_harness_repo.resolve(strict=True), handoff_commit=handoff_commit
@@ -2016,8 +2023,11 @@ def _validate_committed_attestation(
     """Validate every bootstrap/release identity embedded in a committed suffix."""
     bootstrap = attestation.get("bootstrap") if isinstance(attestation, dict) else None
     release = attestation.get("release") if isinstance(attestation, dict) else None
-    if not isinstance(attestation, dict) or set(attestation) != {"bootstrap", "release", "release_sha256"} or not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation["release_sha256"] != _sha256(_canonical_json(release)):
+    if not isinstance(attestation, dict) or set(attestation) != {"bootstrap", "release", "release_sha256", "proof"} or not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation["release_sha256"] != _sha256(_canonical_json(release)):
         raise AgyCanaryEvidenceError("committed finalizer payload lacks attested bootstrap/release identities")
+    proof_identity = attestation["proof"]
+    if not isinstance(proof_identity, dict) or set(proof_identity) != {"seat_key", "attempt_ids", "private_board_sha256", "proof_sha256"}:
+        raise AgyCanaryEvidenceError("committed finalizer proof identity is malformed")
     if set(bootstrap) != {"repo_head", "blobs", "input_sha256"}:
         raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
     repo_head = bootstrap["repo_head"]
@@ -2098,6 +2108,7 @@ def finalize_canary(
             "bootstrap": {name: _bootstrap.get(name) for name in ("repo_head", "blobs", "input_sha256")},
             "release": release,
             "release_sha256": prepare["release_sha256"],
+            "proof": _proof_identity(proof),
         }
         plan = repo / plan_relative
         manifest = repo / manifest_relative
