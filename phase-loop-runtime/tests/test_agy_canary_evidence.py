@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import stat
@@ -737,3 +738,54 @@ def test_real_source_inventory_rejects_environment_override_and_generated_captur
             capture.close()
     finally:
         shutil.rmtree(root)
+
+
+def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, monkeypatch):
+    repo = tmp_path / "agent-harness"
+    (repo / "docs" / "releases").mkdir(parents=True)
+    handoff = repo / "docs" / "releases" / "outside-agent-release-handoff.md"
+    handoff.write_text("pending\n")
+    _git_repo(repo)
+    release_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(["git", "-C", str(repo), "tag", "-am", "release", "v0.7.14", release_commit], check=True)
+    tag_object = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "refs/tags/v0.7.14"], text=True).strip()
+    wheel, sdist = b"synthetic wheel", b"synthetic sdist"
+    rows = [
+        {"filename": "phase_loop_runtime-0.7.14-py3-none-any.whl", "packagetype": "bdist_wheel", "url": "https://example.invalid/wheel", "digests": {"sha256": hashlib.sha256(wheel).hexdigest()}},
+        {"filename": "phase_loop_runtime-0.7.14.tar.gz", "packagetype": "sdist", "url": "https://example.invalid/sdist", "digests": {"sha256": hashlib.sha256(sdist).hexdigest()}},
+    ]
+    record = {
+        "schema": "release_evidence.v1", "version": "0.7.14", "release_commit": release_commit,
+        "tag_object": tag_object, "tag_peel": release_commit,
+        "release_url": "https://example.invalid/release", "workflow_url": "https://example.invalid/workflow",
+        "pypi_metadata_url": "https://pypi.org/pypi/phase-loop-runtime/0.7.14/json",
+        "artifacts": [{key: row[key] for key in ("filename", "packagetype", "url")} | {"sha256": row["digests"]["sha256"]} for row in rows],
+    }
+    handoff.write_text("<!-- release_evidence.v1:start -->" + json.dumps(record) + "<!-- release_evidence.v1:end -->")
+    subprocess.run(["git", "-C", str(repo), "add", "docs/releases/outside-agent-release-handoff.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "handoff"], check=True)
+    handoff_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", handoff_commit], check=True)
+    real_run = evidence.subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if argv[:3] == ["git", "-C", str(repo)] and argv[3:5] == ["verify-tag", "--raw"]:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:3] == ["gh", "release", "view"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"tagName": "v0.7.14", "url": record["release_url"]}), "")
+        if argv[:3] == ["gh", "run", "list"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps([{"headSha": release_commit, "conclusion": "success", "event": "push", "url": record["workflow_url"]}]), "")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(evidence.subprocess, "run", fake_run)
+    blobs = {row["url"]: wheel if row["url"].endswith("wheel") else sdist for row in rows}
+    result = evidence._reconcile_release_lineage(
+        repo=repo, handoff_commit=handoff_commit,
+        fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
+    )
+    assert result["release_commit"] == release_commit
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="downloaded release artifact digest mismatch"):
+        evidence._reconcile_release_lineage(
+            repo=repo, handoff_commit=handoff_commit,
+            fetch_json=lambda _url: {"urls": rows}, download=lambda _url: b"forged",
+        )
