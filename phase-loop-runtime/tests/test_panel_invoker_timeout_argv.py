@@ -15,6 +15,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from phase_loop_runtime import agy_canary_evidence as evidence
 from phase_loop_runtime import panel_invoker as pi
 
@@ -214,7 +216,7 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
         monkeypatch.setattr(pi, "_leg_auth_ok", lambda *args, **kwargs: (True, ""))
         monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
         out_dir = tmp_path / "out"
-        out_dir.mkdir()
+        out_dir.mkdir(mode=0o700)
         rc, review, _log = pi._exec_leg(
             "gemini", review_dir, out_dir, artifact="artifact",
             agy_capture=capture, capture_staged=staged, seat_key="gemini-primary",
@@ -356,6 +358,7 @@ def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeyp
             captured["prompt"] = prompt
             captured["output_file"] = output_file
             captured["env"] = dict(env)
+            output_file.write_text("AGREE\n", encoding="utf-8")
             return 0, "AGREE\n", "claude_tui_file_output", ""
 
         monkeypatch.setattr(pi, "_under_claude_code", lambda *_args, **_kwargs: False)
@@ -395,3 +398,62 @@ def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeyp
         capture.close()
         shutil.rmtree(root)
         shutil.rmtree(output)
+
+
+def test_capture_output_ingestion_rejects_extra_symlink_and_hardlink(tmp_path):
+    def private_output(name: str = "panel-codex.txt") -> Path:
+        output = tmp_path / f"output-{name.replace('.', '-')}-{len(list(tmp_path.iterdir()))}"
+        output.mkdir(mode=0o700)
+        (output / name).write_text("AGREE\n", encoding="utf-8")
+        return output
+
+    output = private_output()
+    assert pi._read_capture_output(output, "panel-codex.txt") == "AGREE\n"
+    (output / "unexpected.txt").write_text("nope", encoding="utf-8")
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="set is not exact"):
+        pi._read_capture_output(output, "panel-codex.txt")
+
+    output = private_output()
+    (output / "panel-codex.txt").unlink()
+    (output / "panel-codex.txt").symlink_to("/etc/passwd")
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="private regular"):
+        pi._read_capture_output(output, "panel-codex.txt")
+
+    output = private_output()
+    os.link(output / "panel-codex.txt", output / "linked.txt")
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="set is not exact"):
+        pi._read_capture_output(output, "panel-codex.txt")
+
+
+def test_capture_self_test_precedes_provider_launch(monkeypatch, tmp_path):
+    root = Path("/tmp") / f"phase-loop-panel-self-test-{os.getpid()}-{tmp_path.name}"
+    root.mkdir(mode=0o700)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    home = tmp_path / "minimal-home"
+    home.mkdir(mode=0o700)
+    calls: list[str] = []
+    try:
+        namespace = evidence.AgyCanaryNamespace(
+            stage=tmp_path,
+            minimal_home=home,
+            evidence_root=root,
+            provider_hostname="example.invalid",
+        )
+        monkeypatch.setattr(pi, "capture_namespace", lambda **_kwargs: namespace)
+        monkeypatch.setattr(
+            pi,
+            "namespace_self_test",
+            lambda **_kwargs: calls.append("self-test"),
+        )
+
+        def fake_exec(*_args, **_kwargs):
+            assert calls == ["self-test"]
+            calls.append("launch")
+            return 0, "AGREE", ""
+
+        monkeypatch.setattr(pi, "_exec_leg", fake_exec)
+        assert pi._default_spawn("grok", "artifact", agy_capture=capture) == ("OK", "AGREE")
+        assert calls == ["self-test", "launch"]
+    finally:
+        capture.close()
+        shutil.rmtree(root)
