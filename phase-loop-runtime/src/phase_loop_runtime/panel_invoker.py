@@ -2686,8 +2686,9 @@ def _cleanup_capture_launches(
 ) -> None:
     """Reclaim pre-thread capture resources after every preparation outcome."""
     for authority, _stage, scratch in launches.values():
-        if isinstance(authority, ProviderLaunchAuthority) and authority.namespace.provider_output is not None:
-            shutil.rmtree(authority.namespace.provider_output, ignore_errors=True)
+        output = getattr(getattr(authority, "namespace", None), "provider_output", None)
+        if isinstance(output, Path):
+            shutil.rmtree(output, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
 
 
