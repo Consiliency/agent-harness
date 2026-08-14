@@ -62,6 +62,11 @@ _CAPABILITY_CLASSES = (
     ("read_url", "read_url", "http://127.0.0.1:8765/constant", "success"),
     ("execute_url", "execute_url", "http://127.0.0.1:8765/constant", "success"),
 )
+_FINAL_GOVERNANCE_POSTURE = {
+    "external_attestation": "absent",
+    "human_required": True,
+    "blocker_class": "admin_approval",
+}
 _PRIVATE_BOARD_RESERVED_NAMES = frozenset({
     _CLEANUP_STATE_NAME,
     _SETTINGS_SNAPSHOT_NAME,
@@ -2525,6 +2530,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
             "accepted_review_sha256": _sha256(final_text.encode()),
             "private_board_sha256": private_board["sha256"],
             "provider_results": expected_summary["provider_results"],
+            **_FINAL_GOVERNANCE_POSTURE,
         }
         if seal:
             _write_replace_at(root_fd, "agy_canary_proof.json", proof)
@@ -3761,9 +3767,13 @@ def _parse_final_payload(plan: bytes) -> tuple[bytes, dict[str, Any]]:
 
 
 def _validate_final_proof(proof: dict[str, Any]) -> None:
-    required = {"schema", "seat_key", "attempt_ids", "capture_mode", "attempts", "accepted_review_sha256", "private_board_sha256", "provider_results"}
+    required = {"schema", "seat_key", "attempt_ids", "capture_mode", "attempts", "accepted_review_sha256", "private_board_sha256", "provider_results", *_FINAL_GOVERNANCE_POSTURE}
+    if any(name not in proof for name in _FINAL_GOVERNANCE_POSTURE):
+        raise AgyCanaryEvidenceError("final proof governance posture is malformed")
     if set(proof) != required or proof.get("schema") != SCHEMA_VERSION or proof.get("capture_mode") not in _CAPTURE_MODES:
         raise AgyCanaryEvidenceError("final proof schema is malformed")
+    if any(proof.get(name) != value for name, value in _FINAL_GOVERNANCE_POSTURE.items()):
+        raise AgyCanaryEvidenceError("final proof governance posture is malformed")
     if not isinstance(proof.get("seat_key"), str) or not proof["seat_key"] or not isinstance(proof.get("attempt_ids"), list) or not isinstance(proof.get("attempts"), list):
         raise AgyCanaryEvidenceError("final proof seat binding is malformed")
     attempt_ids = proof["attempt_ids"]
@@ -3813,6 +3823,7 @@ def _proof_identity(proof: dict[str, Any]) -> dict[str, Any]:
         "attempt_ids": proof["attempt_ids"],
         "private_board_sha256": proof["private_board_sha256"],
         "provider_results": proof["provider_results"],
+        **_FINAL_GOVERNANCE_POSTURE,
         "proof_sha256": _sha256(_canonical_json(proof)),
     }
 
@@ -3850,6 +3861,7 @@ def check_private_final(
 ) -> dict[str, Any]:
     """Read-only reverse validator for the private reducer-sealed final state."""
     proof = verify_capture(evidence_root=evidence_root, expected_seat_key=expected_seat_key, seal=False)
+    _validate_final_proof(proof)
     root, root_fd = _validate_private_root(evidence_root)
     try:
         repo = dotfiles_repo.resolve(strict=True)
@@ -3878,7 +3890,11 @@ def check_private_final(
         manifest_after = _canonical_json(manifest_value)
         if (repo / plan_relative).read_bytes() != plan_after or (repo / manifest_relative).read_bytes() != manifest_after:
             raise AgyCanaryEvidenceError("tracked finalizer output drifted from its sealed preimages")
-        return {**proof, "inputs_sha256": _sha256(_canonical_json(inputs))}
+        return {
+            **proof,
+            "canonical_proof_sha256": _sha256(_canonical_json(proof)),
+            "inputs_sha256": _sha256(_canonical_json(inputs)),
+        }
     except (ValueError, json.JSONDecodeError) as exc:
         raise AgyCanaryEvidenceError("private finalizer receipt is malformed") from exc
     finally:
@@ -3931,7 +3947,14 @@ def check_committed_final(
     matches_before[0]["updated_at"] = completed_at
     if _canonical_json(before_value) != after_manifest:
         raise AgyCanaryEvidenceError("committed manifest changed outside canonical updated_at transform")
-    return {"commit": resolved, "proof_sha256": payload["proof_sha256"], "plan_sha256": _sha256(after_plan), "manifest_sha256": _sha256(after_manifest)}
+    return {
+        "commit": resolved,
+        "proof_sha256": payload["proof_sha256"],
+        "canonical_proof_sha256": _sha256(_canonical_json(payload["proof"])),
+        **_FINAL_GOVERNANCE_POSTURE,
+        "plan_sha256": _sha256(after_plan),
+        "manifest_sha256": _sha256(after_manifest),
+    }
 
 
 def _validate_committed_attestation(
@@ -3944,8 +3967,10 @@ def _validate_committed_attestation(
     if not isinstance(attestation, dict) or set(attestation) != {"bootstrap", "release", "release_sha256", "proof", "reducer_proof_sha256"} or not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation["release_sha256"] != _sha256(_canonical_json(release)):
         raise AgyCanaryEvidenceError("committed finalizer payload lacks attested bootstrap/release identities")
     proof_identity = attestation["proof"]
-    if not isinstance(proof_identity, dict) or set(proof_identity) != {"seat_key", "attempt_ids", "private_board_sha256", "provider_results", "proof_sha256"}:
+    if not isinstance(proof_identity, dict) or set(proof_identity) != {"seat_key", "attempt_ids", "private_board_sha256", "provider_results", "proof_sha256", *_FINAL_GOVERNANCE_POSTURE}:
         raise AgyCanaryEvidenceError("committed finalizer proof identity is malformed")
+    if any(proof_identity.get(name) != value for name, value in _FINAL_GOVERNANCE_POSTURE.items()):
+        raise AgyCanaryEvidenceError("committed finalizer proof governance is malformed")
     _validate_provider_result_summary(proof_identity["provider_results"])
     if set(bootstrap) != {"repo_head", "blobs", "input_sha256"}:
         raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
@@ -4009,6 +4034,7 @@ def finalize_canary(
             raise AgyCanaryEvidenceError("private finalizer check requires repo, plan, manifest, and plan slug")
         return check_private_final(evidence_root=evidence_root, expected_seat_key=expected_seat_key, dotfiles_repo=dotfiles_repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug)
     proof = verify_capture(evidence_root=evidence_root, expected_seat_key=expected_seat_key)
+    _validate_final_proof(proof)
     root, root_fd = _validate_private_root(evidence_root)
     plan_target: _FinalTarget | None = None
     manifest_target: _FinalTarget | None = None
@@ -4077,7 +4103,11 @@ def finalize_canary(
         })
         _write_replace_at(root_fd, _INPUTS_NAME, inputs)
         _finalize_targets_transactionally(plan_target, manifest_target)
-        return {**proof, "inputs_sha256": _sha256(_canonical_json(inputs))}
+        return {
+            **proof,
+            "canonical_proof_sha256": _sha256(_canonical_json(proof)),
+            "inputs_sha256": _sha256(_canonical_json(inputs)),
+        }
     finally:
         if manifest_target is not None:
             os.close(manifest_target.parent_fd)
