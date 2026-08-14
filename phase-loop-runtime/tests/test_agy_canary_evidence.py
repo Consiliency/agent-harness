@@ -706,7 +706,7 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         (root / "agy_canary_prepare.json").write_text(json.dumps({
             "release": release, "release_sha256": evidence._sha256(evidence._canonical_json(release)),
         }))
-        proof = {"schema": evidence.SCHEMA_VERSION, "seat_key": "gemini-primary", "attempt_ids": ["gemini-1"]}
+        proof = {"schema": evidence.SCHEMA_VERSION, "seat_key": "gemini-primary", "attempt_ids": ["gemini-1"], "capture_mode": "stream_json", "attempts": [{"attempt_id": "gemini-1", "counts": {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}, "terminal_sha256": "1" * 64}], "accepted_review_sha256": "2" * 64, "private_board_sha256": "3" * 64}
         monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         result = evidence.finalize_canary(
             evidence_root=root,

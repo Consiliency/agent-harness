@@ -1854,6 +1854,7 @@ def _replace_regular_file(path: Path, data: bytes) -> None:
 
 
 def _final_suffix(proof: dict[str, Any], attestation: dict[str, Any]) -> bytes:
+    _validate_final_proof(proof)
     payload = {"attestation": attestation, "proof": proof, "proof_sha256": _sha256(_canonical_json(proof)), "schema": "agy_canary_final.v1"}
     return b"\n## Execution evidence\n\n```json\n" + _canonical_json(payload) + b"```\n"
 
@@ -1871,7 +1872,26 @@ def _parse_final_payload(plan: bytes) -> tuple[bytes, dict[str, Any]]:
         raise AgyCanaryEvidenceError("final execution payload is invalid")
     if payload.get("proof_sha256") != _sha256(_canonical_json(payload["proof"])) or _canonical_json(payload) != encoded[:-4]:
         raise AgyCanaryEvidenceError("final execution payload is not canonical")
+    _validate_final_proof(payload["proof"])
     return before, payload
+
+
+def _validate_final_proof(proof: dict[str, Any]) -> None:
+    required = {"schema", "seat_key", "attempt_ids", "capture_mode", "attempts", "accepted_review_sha256", "private_board_sha256"}
+    if set(proof) != required or proof.get("schema") != SCHEMA_VERSION or proof.get("capture_mode") not in _CAPTURE_MODES:
+        raise AgyCanaryEvidenceError("final proof schema is malformed")
+    if not isinstance(proof.get("seat_key"), str) or not proof["seat_key"] or not isinstance(proof.get("attempt_ids"), list) or not isinstance(proof.get("attempts"), list):
+        raise AgyCanaryEvidenceError("final proof seat binding is malformed")
+    attempt_ids = proof["attempt_ids"]
+    if (not attempt_ids or len(set(attempt_ids)) != len(attempt_ids) or any(not isinstance(item, str) or not item for item in attempt_ids) or
+            len(proof["attempts"]) != len(attempt_ids)):
+        raise AgyCanaryEvidenceError("final proof attempt binding is malformed")
+    if any(not isinstance(item, dict) or set(item) != {"attempt_id", "counts", "terminal_sha256"} or item.get("attempt_id") != attempt_ids[index] or not isinstance(item.get("counts"), dict) or set(item["counts"]) != {"command", "unsandboxed", "non_read_tool", "out_of_stage_read"} or any(item["counts"].get(name) != 0 for name in item["counts"]) for index, item in enumerate(proof["attempts"])):
+        raise AgyCanaryEvidenceError("final proof attempts are malformed")
+    for name in ("accepted_review_sha256", "private_board_sha256"):
+        value = proof.get(name)
+        if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value.lower()):
+            raise AgyCanaryEvidenceError("final proof digest is malformed")
 
 
 def _attested_final_targets(
