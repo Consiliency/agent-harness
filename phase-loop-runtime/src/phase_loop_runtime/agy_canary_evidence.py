@@ -2417,7 +2417,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
                 if tool == "read_file":
                     basename = Path(target).name
                     if basename in reads and target == f"/run/phase-loop-review/{basename}":
-                        if result.get("outcome") != "success":
+                        if final_attempt and result.get("outcome") != "success":
                             raise AgyCanaryEvidenceError("accepted staged read did not succeed")
                         reads[basename].append(result)
                     else:
@@ -2567,7 +2567,9 @@ def _validate_private_board_payload(
             unfilled.append(leg)
     if provider_results is not None:
         board_keys = [(leg["leg"], leg["seat_key"]) for leg in payload["legs"]]
-        if len(board_keys) != len(set(board_keys)) or set(board_keys) != set(provider_results):
+        if (len(board_keys) != len(set(board_keys)) or
+                len({seat_key for _provider, seat_key in board_keys}) != len(board_keys) or
+                set(board_keys) != set(provider_results)):
             raise AgyCanaryEvidenceError("private board provider result set is incomplete or substituted")
         for leg in payload["legs"]:
             expected = provider_results[(leg["leg"], leg["seat_key"])]
@@ -3612,6 +3614,7 @@ def _validate_provider_result_summary(value: Any) -> None:
         raise AgyCanaryEvidenceError("final proof provider results are malformed")
     identities: set[tuple[str, str]] = set()
     providers: set[str] = set()
+    seat_keys: set[str] = set()
     for item in value["providers"]:
         if (not isinstance(item, dict) or set(item) != {"provider", "seat_key"} or
                 item.get("provider") not in _PROVIDER_EXECUTABLES or
@@ -3619,10 +3622,11 @@ def _validate_provider_result_summary(value: Any) -> None:
                 Path(item["seat_key"]).name != item["seat_key"]):
             raise AgyCanaryEvidenceError("final proof provider result identity is malformed")
         identity = (item["provider"], item["seat_key"])
-        if identity in identities or item["provider"] in providers:
+        if identity in identities or item["provider"] in providers or item["seat_key"] in seat_keys:
             raise AgyCanaryEvidenceError("final proof provider results are duplicated")
         identities.add(identity)
         providers.add(item["provider"])
+        seat_keys.add(item["seat_key"])
     if providers != _CAPTURE_PROVIDERS:
         raise AgyCanaryEvidenceError("final proof provider results do not cover every provider")
 
