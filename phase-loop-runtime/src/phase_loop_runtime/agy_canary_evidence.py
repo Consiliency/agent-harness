@@ -876,36 +876,28 @@ def prepare_provider_launch_authorities(
     gemini_auth_records = tuple(authority["auth_binds"])
     resolver, resolver_sha256 = _resolver_snapshot()
     result: dict[str, ProviderLaunchAuthority] = {}
+    provider_outputs: list[Path] = []
     for provider in providers:
-        runtime = _trusted_provider_runtime(provider)
-        auth_records = (
-            gemini_auth_records
-            if provider == "gemini"
-            else _provider_auth_records(provider, minimal_home)
-        )
-        provider_output = Path(
-            tempfile.mkdtemp(prefix=f"phase-loop-provider-output-{provider}-", dir="/tmp")
-        )
-        provider_output.chmod(0o700)
-        namespace = AgyCanaryNamespace(
-            stage=stage, minimal_home=minimal_home, evidence_root=capture.root,
-            provider_hostname=_PROVIDER_TLS_HOSTS[provider], auth_binds=tuple(
-                (Path(item["source"]), item["destination"]) for item in auth_records
-            ), resolver_source=resolver, resolver_sha256=resolver_sha256,
-            provider_output=provider_output,
-            provider_env=(
-                (("CODEX_HOME", "/home/phase-loop/.codex"),)
-                if provider == "codex"
-                else (("GROK_HOME", "/home/phase-loop/.grok"),)
-                if provider == "grok"
-                else ()
-            ),
-        )
-        frozen_records = tuple(auth_records)
-        result[provider] = ProviderLaunchAuthority(
-            provider, runtime, namespace, frozen_records,
-            _projected_auth_proof(provider=provider, runtime=runtime, records=frozen_records),
-        )
+        try:
+            runtime = _trusted_provider_runtime(provider)
+            auth_records = gemini_auth_records if provider == "gemini" else _provider_auth_records(provider, minimal_home)
+            provider_output = Path(tempfile.mkdtemp(prefix=f"phase-loop-provider-output-{provider}-", dir="/tmp"))
+            provider_outputs.append(provider_output)
+            provider_output.chmod(0o700)
+            namespace = AgyCanaryNamespace(
+                stage=stage, minimal_home=minimal_home, evidence_root=capture.root,
+                provider_hostname=_PROVIDER_TLS_HOSTS[provider], auth_binds=tuple(
+                    (Path(item["source"]), item["destination"]) for item in auth_records
+                ), resolver_source=resolver, resolver_sha256=resolver_sha256,
+                provider_output=provider_output,
+                provider_env=(("CODEX_HOME", "/home/phase-loop/.codex"),) if provider == "codex" else (("GROK_HOME", "/home/phase-loop/.grok"),) if provider == "grok" else (),
+            )
+            frozen_records = tuple(auth_records)
+            result[provider] = ProviderLaunchAuthority(provider, runtime, namespace, frozen_records, _projected_auth_proof(provider=provider, runtime=runtime, records=frozen_records))
+        except Exception:
+            for output in provider_outputs:
+                shutil.rmtree(output, ignore_errors=True)
+            raise
     return result
 
 
