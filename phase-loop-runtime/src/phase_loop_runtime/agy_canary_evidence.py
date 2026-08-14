@@ -1179,12 +1179,12 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
             for name, expected in staged.items():
                 if not isinstance(expected, dict) or not reads.get(name):
                     raise AgyCanaryEvidenceError(f"accepted attempt did not read {name}")
-                if not any(
+                matching_reads = [result for result in reads[name] if (
                     isinstance(result.get("content"), str)
                     and _sha256(result["content"].encode()) == expected.get("sha256")
                     and len(result["content"].encode()) == expected.get("bytes")
-                    for result in reads[name]
-                ):
+                )]
+                if len(matching_reads) != 1:
                     raise AgyCanaryEvidenceError(f"read result does not cover sealed {name}")
             output_attempts.append({"attempt_id": item.get("attempt_id"), "counts": counts, "terminal_sha256": _sha256(str(terminal["text"]).encode())})
             final_text = str(terminal["text"])
