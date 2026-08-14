@@ -4309,7 +4309,17 @@ def invoke_board(
             leg == "claude"
             and not _claude_tui_policy_model(seat.model)
             and status == "UNAVAILABLE"
-            and not str(text).strip()
+            # ah#538: test text_value, NOT the raw `text`. The typed-detail branch
+            # above moves a typed token (`tui_adapter_required`, …) OUT of the body
+            # and into `detail`, leaving `text_value` empty — that IS the "UNAVAILABLE
+            # with EMPTY text" deferral signature this gate is documented to catch.
+            # Reading the pre-normalization `text` made the gate False for every
+            # typed deferral, i.e. unreachable for exactly the cases it exists for,
+            # so no claude seat ever received a fill request. A support-missing
+            # UNAVAILABLE still carries its reason in `text_value` (it is not in
+            # _TYPED_UNAVAILABLE_DETAILS, so the branch above leaves it alone) and
+            # correctly does NOT request a fill.
+            and not text_value.strip()
         ):
             try:
                 effective_instructions = _resolve_brief(mode, brief_ref)

@@ -318,5 +318,71 @@ class DefaultClaudeSeatNeverCarriesNativeFill(unittest.TestCase):
         self.assertIsNone(leg.needs_native_agent)
 
 
+class TypedDeferralReachesTheAttachGate(unittest.TestCase):
+    """ah#538 — the gate must test the NORMALIZED body, not the raw spawn text.
+
+    Regression shape matters here. The pre-existing tests in this module either use
+    a Fable seat (policy-excluded from native fill, so ``None`` is the correct
+    expectation either way) or construct ``PanelLegResult`` objects directly and
+    attach the request by hand. Neither drives a NON-policy seat through
+    ``_exec_leg``'s own result assembly, which is where the bug lived: the typed-
+    detail branch moves ``tui_adapter_required`` out of the body into ``detail`` and
+    blanks ``text_value``, but the gate re-read the pre-normalization ``text``, so it
+    was False for every typed deferral — unreachable for exactly the cases it exists
+    to catch, and no claude seat ever received a fill request.
+    """
+
+    @staticmethod
+    def _seat(model: str) -> Seat:
+        return Seat(model=model, effort="max", harness="claude", lens="correctness")
+
+    def _run(self, model: str):
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            scratch = Path(td) / "scratch"
+            scratch.mkdir()
+            board = Board(
+                name="claude-solo", purpose="premerge-review", seats=(self._seat(model),)
+            )
+            with unittest.mock.patch.object(
+                pi, "_claude_code_support_status", return_value=(True, "supported")
+            ):
+                result = pi.invoke_board(
+                    board,
+                    "",
+                    artifact_ref=str(artifact.resolve()),
+                    repo_dir=str(scratch),
+                    base_env={"CLAUDECODE": "1", "PATH": os.environ.get("PATH", "")},
+                )
+        (leg,) = result.legs
+        return result, leg
+
+    def test_non_policy_seat_typed_deferral_requests_a_native_fill(self):
+        result, leg = self._run("claude-sonnet-5")
+        # The deferral signature the gate documents: UNAVAILABLE, empty body, typed
+        # reason relocated into detail.
+        self.assertEqual(leg.status, "UNAVAILABLE")
+        self.assertEqual(leg.text, "")
+        self.assertEqual(leg.detail, "tui_adapter_required")
+        # ...and therefore a fill request, carrying this seat's cognition so a
+        # driving harness can honour it under the same acceptance contract.
+        self.assertIsNotNone(leg.needs_native_agent)
+        req = leg.needs_native_agent
+        self.assertEqual(req.model, "claude-sonnet-5")
+        self.assertEqual(req.effort, "max")
+        self.assertEqual(req.lens, "correctness")
+        self.assertEqual(len(result.native_fill_requests), 1)
+
+    def test_policy_seat_still_never_requests_a_native_fill(self):
+        # The other half of the gate is load-bearing SECURITY, not a nicety: a
+        # Fable/Opus seat is subscription-TUI only and must never be substituted by
+        # a native agent, even though its deferral has the identical typed shape.
+        _result, leg = self._run("claude-fable-5")
+        self.assertEqual(leg.status, "UNAVAILABLE")
+        self.assertEqual(leg.detail, "tui_adapter_required")
+        self.assertIsNone(leg.needs_native_agent)
+
+
 if __name__ == "__main__":
     unittest.main()
