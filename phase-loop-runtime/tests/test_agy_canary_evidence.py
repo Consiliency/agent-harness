@@ -905,6 +905,33 @@ def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_outpu
         shutil.rmtree(root)
 
 
+def test_provider_launch_authority_rejects_legacy_prepare_without_immutable_authority(tmp_path):
+    root = _private_root(tmp_path)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    home = None
+    try:
+        ledger = evidence.create_capture(
+            capture=capture, settings_path=_settings(tmp_path, []), seat_key="gemini-primary",
+            source_inventory=_source_inventory(tmp_path),
+        )
+        home, _binds = evidence.build_minimal_home(
+            evidence_root=root, settings_path=_settings(tmp_path, [])
+        )
+        ledger.update({"minimal_home": str(home), "auth_binds": []})
+        evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
+        stage = tmp_path / "legacy-stage"
+        stage.mkdir()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="invalid private evidence record"):
+            evidence.prepare_provider_launch_authorities(
+                capture=capture, stage=stage, providers=("gemini",)
+            )
+    finally:
+        capture.close()
+        if home is not None:
+            shutil.rmtree(home)
+        shutil.rmtree(root)
+
+
 def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_path):
     """The public command, not its sink helper, must bind the private payload."""
     from phase_loop_runtime.advisor_board.schema import Board, Seat
