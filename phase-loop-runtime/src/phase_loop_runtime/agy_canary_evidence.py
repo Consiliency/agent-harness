@@ -62,6 +62,28 @@ _CAPABILITY_CLASSES = (
     ("read_url", "read_url", "http://127.0.0.1:8765/constant", "success"),
     ("execute_url", "execute_url", "http://127.0.0.1:8765/constant", "success"),
 )
+_PRIVATE_BOARD_RESERVED_NAMES = frozenset({
+    _CLEANUP_STATE_NAME,
+    _SETTINGS_SNAPSHOT_NAME,
+    _LEDGER_NAME,
+    _PROBE_NAME,
+    _PREPARE_NAME,
+    _LAUNCH_AUTHORITY_NAME,
+    _STAGE_AUTHORITY_NAME,
+    _STAGE_BINDING_NAME,
+    _PROVIDER_REGISTRY_NAME,
+    _INPUTS_NAME,
+    "agy_canary_bootstrap_attestation.json",
+    "agy_canary_proof.json",
+})
+_PRIVATE_BOARD_RESERVED_PREFIXES = (
+    ".",
+    "agy-provider-",
+    "agy-stream-",
+    "agy-diagnostic-",
+    "agy-capability-",
+    "staged-",
+)
 _CUSTOMIZATION_ENV_PREFIXES = (
     "AGY_", "ANTIGRAVITY_", "GEMINI_", "XDG_CONFIG_", "XDG_DATA_", "XDG_STATE_", "XDG_CACHE_", "XDG_RUNTIME_",
 )
@@ -438,6 +460,19 @@ class _OpenedSettings:
     mode: int
     device: int
     inode: int
+
+
+@dataclass
+class _FinalTarget:
+    parent_fd: int
+    name: str
+    data: bytes
+    replacement: bytes
+    mode: int
+    device: int
+    inode: int
+    temporary: str | None = None
+    exchanged: bool = False
 
 
 @dataclass(frozen=True)
@@ -2500,10 +2535,16 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
         os.close(root_fd)
 
 
+def _is_reserved_private_board_name(basename: str) -> bool:
+    return basename in _PRIVATE_BOARD_RESERVED_NAMES or basename.startswith(_PRIVATE_BOARD_RESERVED_PREFIXES)
+
+
 def write_private_board(*, capture: AgyCanaryCapture, basename: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Create the full board payload only in the validated private root."""
     if not basename or Path(basename).name != basename:
         raise AgyCanaryEvidenceError("private board name must be a basename")
+    if _is_reserved_private_board_name(basename):
+        raise AgyCanaryEvidenceError("private board name collides with reserved evidence")
     ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
     if "private_board" in ledger:
         raise AgyCanaryEvidenceError("capture private board payload is already sealed")
@@ -3550,19 +3591,137 @@ def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostna
     return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname, auth_binds=tuple(auth_binds), resolver_source=resolver, resolver_sha256=resolver_sha256)
 
 
-def _replace_regular_file(path: Path, data: bytes) -> None:
+def _open_final_target(path: Path, replacement: bytes) -> _FinalTarget:
+    if not path.is_absolute() or path.name in {"", ".", ".."}:
+        raise AgyCanaryEvidenceError("finalizer target must be an absolute file path")
     parent = path.parent.resolve(strict=True)
+    parent_info = parent.lstat()
+    if not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode):
+        raise AgyCanaryEvidenceError("finalizer target parent must be a real directory")
     parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         current, info = _reopen_at(parent_fd, path.name)
         if not stat.S_ISREG(info.st_mode):
             raise AgyCanaryEvidenceError("finalizer target is not a regular file")
-        temporary = f".{path.name}.{secrets.token_hex(12)}"
-        _exclusive_write_at(parent_fd, temporary, data, stat.S_IMODE(info.st_mode))
-        os.rename(temporary, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-        os.fsync(parent_fd)
-    finally:
+        return _FinalTarget(
+            parent_fd=parent_fd,
+            name=path.name,
+            data=current,
+            replacement=replacement,
+            mode=stat.S_IMODE(info.st_mode),
+            device=info.st_dev,
+            inode=info.st_ino,
+        )
+    except Exception:
         os.close(parent_fd)
+        raise
+
+
+def _final_target_matches_preimage(target: _FinalTarget) -> bool:
+    current, info = _reopen_at(target.parent_fd, target.name)
+    return (
+        current == target.data
+        and (info.st_dev, info.st_ino) == (target.device, target.inode)
+        and stat.S_IMODE(info.st_mode) == target.mode
+    )
+
+
+def _verify_final_target_exchange(target: _FinalTarget) -> None:
+    if target.temporary is None:
+        raise AgyCanaryEvidenceError("finalizer exchange lacks a staged replacement")
+    destination, destination_info = _reopen_at(target.parent_fd, target.name)
+    swapped_original, swapped_info = _reopen_at(target.parent_fd, target.temporary)
+    if (
+        destination != target.replacement
+        or stat.S_IMODE(destination_info.st_mode) != target.mode
+        or swapped_original != target.data
+        or (swapped_info.st_dev, swapped_info.st_ino) != (target.device, target.inode)
+        or stat.S_IMODE(swapped_info.st_mode) != target.mode
+    ):
+        raise AgyCanaryEvidenceError("finalizer exchanged target failed identity, byte, or mode validation")
+
+
+def _restore_final_target(target: _FinalTarget) -> bool:
+    if target.temporary is None:
+        return False
+    _rename_exchange(target.parent_fd, target.name, target.temporary)
+    os.fsync(target.parent_fd)
+    restored, restored_info = _reopen_at(target.parent_fd, target.name)
+    replacement, replacement_info = _reopen_at(target.parent_fd, target.temporary)
+    if (
+        restored != target.data
+        or (restored_info.st_dev, restored_info.st_ino) != (target.device, target.inode)
+        or stat.S_IMODE(restored_info.st_mode) != target.mode
+        or replacement != target.replacement
+        or stat.S_IMODE(replacement_info.st_mode) != target.mode
+    ):
+        return False
+    target.exchanged = False
+    return True
+
+
+def _discard_final_target_temporary(target: _FinalTarget) -> None:
+    if target.temporary is None:
+        return
+    os.unlink(target.temporary, dir_fd=target.parent_fd)
+    os.fsync(target.parent_fd)
+    target.temporary = None
+
+
+def _finalize_targets_transactionally(plan_target: _FinalTarget, manifest_target: _FinalTarget) -> None:
+    targets = (plan_target, manifest_target)
+    recovery_required = False
+    committed = False
+    try:
+        plan_parent = os.fstat(plan_target.parent_fd)
+        manifest_parent = os.fstat(manifest_target.parent_fd)
+        if (
+            (plan_parent.st_dev, plan_parent.st_ino, plan_target.name)
+            == (manifest_parent.st_dev, manifest_parent.st_ino, manifest_target.name)
+        ):
+            raise AgyCanaryEvidenceError("finalizer targets must be distinct")
+        if not all(_final_target_matches_preimage(target) for target in targets):
+            raise AgyCanaryEvidenceError("finalizer target identity or bytes drifted before staging")
+        for target in targets:
+            target.temporary = f".phase-loop-agy-finalize-{target.name}.{secrets.token_hex(16)}.tmp"
+            _exclusive_write_at(target.parent_fd, target.temporary, target.replacement, target.mode)
+        for target in targets:
+            if not _final_target_matches_preimage(target):
+                raise AgyCanaryEvidenceError("finalizer target identity or bytes drifted before exchange")
+            if target.temporary is None:
+                raise AgyCanaryEvidenceError("finalizer replacement staging is incomplete")
+            _rename_exchange(target.parent_fd, target.name, target.temporary)
+            target.exchanged = True
+            os.fsync(target.parent_fd)
+            _verify_final_target_exchange(target)
+        committed = True
+        cleanup_errors: list[str] = []
+        for target in targets:
+            try:
+                _discard_final_target_temporary(target)
+            except OSError as exc:
+                cleanup_errors.append(f"{target.name}:{type(exc).__name__}")
+        if cleanup_errors:
+            raise AgyCanaryEvidenceError(
+                "finalizer committed with recovery residue: " + ", ".join(cleanup_errors)
+            )
+    except Exception:
+        if committed:
+            recovery_required = True
+        else:
+            rollback_proven = True
+            for target in reversed(targets):
+                if not target.exchanged:
+                    continue
+                try:
+                    rollback_proven = _restore_final_target(target) and rollback_proven
+                except Exception:
+                    rollback_proven = False
+            recovery_required = not rollback_proven
+        if not recovery_required:
+            for target in targets:
+                _discard_final_target_temporary(target)
+        raise
 
 
 def _final_suffix(proof: dict[str, Any], attestation: dict[str, Any]) -> bytes:
@@ -3838,6 +3997,8 @@ def finalize_canary(
         return check_private_final(evidence_root=evidence_root, expected_seat_key=expected_seat_key, dotfiles_repo=dotfiles_repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug)
     proof = verify_capture(evidence_root=evidence_root, expected_seat_key=expected_seat_key)
     root, root_fd = _validate_private_root(evidence_root)
+    plan_target: _FinalTarget | None = None
+    manifest_target: _FinalTarget | None = None
     try:
         completed_at = datetime.now(timezone.utc).isoformat()
         inputs = {"schema": "agy_canary_inputs.v1", "proof": proof, "proof_sha256": _sha256(_canonical_json(proof)), "completed_at": completed_at}
@@ -3864,10 +4025,19 @@ def finalize_canary(
         }
         plan = repo / plan_relative
         manifest = repo / manifest_relative
-        plan_before = plan.read_bytes()
+        plan_target = _open_final_target(plan, b"")
+        manifest_target = _open_final_target(manifest, b"")
+        plan_before = plan_target.data
+        input_sha256 = _bootstrap.get("input_sha256")
+        if (
+            not isinstance(input_sha256, dict)
+            or _sha256(plan_before) != input_sha256.get(plan_relative)
+            or _sha256(manifest_target.data) != input_sha256.get(manifest_relative)
+        ):
+            raise AgyCanaryEvidenceError("finalizer target preimages differ from bootstrap attestation")
         if b"## Execution evidence" in plan_before:
             raise AgyCanaryEvidenceError("plan already has execution evidence")
-        manifest_before = manifest.read_bytes()
+        manifest_before = manifest_target.data
         try:
             manifest_value = json.loads(manifest_before)
         except json.JSONDecodeError as exc:
@@ -3879,6 +4049,8 @@ def finalize_canary(
         plan_after = plan_before + _final_suffix(proof, inputs["attestation"])
         matches[0]["updated_at"] = completed_at
         manifest_after = _canonical_json(manifest_value)
+        plan_target.replacement = plan_after
+        manifest_target.replacement = manifest_after
         inputs.update({
                 "plan_before_sha256": _sha256(plan_before),
                 "plan_after_sha256": _sha256(plan_after),
@@ -3891,8 +4063,11 @@ def finalize_canary(
                 "manifest_before_b64": base64.b64encode(manifest_before).decode(),
         })
         _write_replace_at(root_fd, _INPUTS_NAME, inputs)
-        _replace_regular_file(plan, plan_after)
-        _replace_regular_file(manifest, manifest_after)
+        _finalize_targets_transactionally(plan_target, manifest_target)
         return {**proof, "inputs_sha256": _sha256(_canonical_json(inputs))}
     finally:
+        if manifest_target is not None:
+            os.close(manifest_target.parent_fd)
+        if plan_target is not None:
+            os.close(plan_target.parent_fd)
         os.close(root_fd)
