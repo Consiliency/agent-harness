@@ -468,6 +468,8 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
 
     monkeypatch.setattr(pi, "bind_staged_review_inputs", bind_stage)
     monkeypatch.setattr(pi, "prepare_provider_launch_authorities", prepare_authority)
+    monkeypatch.setattr(pi, "seal_provider_launches", lambda **_kwargs: {"synthetic": True})
+    monkeypatch.setattr(pi, "record_provider_result", lambda **_kwargs: {"synthetic": True})
     monkeypatch.setattr(pi, "_default_spawn_via_provider", spawn_provider)
     monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
 

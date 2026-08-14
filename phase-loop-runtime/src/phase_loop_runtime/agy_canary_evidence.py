@@ -20,7 +20,7 @@ import urllib.request
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,7 @@ _PREPARE_NAME = "agy_canary_prepare.json"
 _LAUNCH_AUTHORITY_NAME = "agy_canary_launch_authority.json"
 _STAGE_AUTHORITY_NAME = "agy_canary_stage_authority.json"
 _STAGE_BINDING_NAME = "agy_canary_stage_binding.json"
+_PROVIDER_REGISTRY_NAME = "agy_provider_launches.json"
 _INPUTS_NAME = "agy_canary_inputs.json"
 _REVIEW_INSTRUCTION_GENERATOR = "phase_loop_runtime.panel_invoker._resolve_brief.v1"
 _SAFE_PRESETS = frozenset({"request-review", "strict"})
@@ -609,6 +610,8 @@ class ProviderLaunchAuthority:
     namespace: AgyCanaryNamespace
     auth_records: tuple[dict[str, str], ...]
     projected_auth: dict[str, Any] | None = None
+    review_launch: dict[str, Any] | None = dataclass_field(default=None, compare=False)
+    review_attempts: list[dict[str, Any]] = dataclass_field(default_factory=list, compare=False)
 
     def _revalidate(self, *, full_assets: bool = False) -> None:
         self.runtime.revalidate(full_assets=full_assets)
@@ -668,7 +671,42 @@ class ProviderLaunchAuthority:
                 raise AgyCanaryEvidenceError(
                     f"{self.provider} {label} preflight failed inside capture namespace"
                 )
-        return self.command(argv)
+        command = self.command(argv)
+        launch = {
+            "argv_bytes": len("\0".join(command).encode()),
+            "argv_sha256": _sha256("\0".join(command).encode()),
+        }
+        if self.review_launch is None:
+            object.__setattr__(self, "review_launch", launch)
+        elif self.review_launch != launch:
+            raise AgyCanaryEvidenceError("provider authority review command drifted")
+        return command
+
+    def record_review_attempt(self, command: list[str]) -> None:
+        """Bind one actual preflight-wrapped review attempt in execution order."""
+        launch = {
+            "argv_bytes": len("\0".join(command).encode()),
+            "argv_sha256": _sha256("\0".join(command).encode()),
+        }
+        if self.review_launch != launch:
+            raise AgyCanaryEvidenceError("provider review attempt was not preflight-authorized")
+        self.review_attempts.append({"index": len(self.review_attempts), **launch})
+
+    def review_attempt_proof(self) -> dict[str, Any]:
+        """Return the exact preflight command and each actual invocation."""
+        if self.review_launch is None:
+            return {"launch": None, "attempts": [], "terminal_attempt": None}
+        attempts = [dict(item) for item in self.review_attempts]
+        if any(
+            item != {"index": index, **self.review_launch}
+            for index, item in enumerate(attempts)
+        ):
+            raise AgyCanaryEvidenceError("provider review attempt proof drifted")
+        return {
+            "launch": dict(self.review_launch),
+            "attempts": attempts,
+            "terminal_attempt": len(attempts) - 1 if attempts else None,
+        }
 
     def read_expected_output(self, name: str) -> bytes:
         """Read one exact nofollow regular output; reject sibling output artifacts."""
@@ -1814,6 +1852,260 @@ def record_launch(
     return record
 
 
+def _provider_token(provider: str, seat_key: str) -> str:
+    if provider not in _PROVIDER_EXECUTABLES or not seat_key or Path(seat_key).name != seat_key:
+        raise AgyCanaryEvidenceError("provider record identity is invalid")
+    return _sha256(f"{provider}\0{seat_key}".encode())[:24]
+
+
+def _provider_names(provider: str, seat_key: str) -> dict[str, str]:
+    token = _provider_token(provider, seat_key)
+    return {
+        "authority": f"agy-provider-launch-{provider}-{token}.json",
+        "result": f"agy-provider-result-{provider}-{token}.json",
+        "terminal": f"agy-provider-terminal-{provider}-{token}.txt",
+        "detail": f"agy-provider-detail-{provider}-{token}.txt",
+    }
+
+
+def seal_provider_launches(
+    *, capture: AgyCanaryCapture,
+    launches: tuple[tuple[str, str, ProviderLaunchAuthority], ...],
+) -> dict[str, Any]:
+    """Freeze every captured provider/seat authority before concurrent execution."""
+    if not launches:
+        raise AgyCanaryEvidenceError("provider launch registry is empty")
+    _ledger, _prepare, launch_authority = _require_prepare_authority(capture=capture)
+    stage_binding = _read_json_at(capture.root_fd, _STAGE_BINDING_NAME)
+    stage_binding_sha256 = _sha256(_canonical_json(stage_binding))
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    providers: set[str] = set()
+    for provider, seat_key, authority in launches:
+        key = (provider, seat_key)
+        if key in seen or provider in providers or authority.provider != provider:
+            raise AgyCanaryEvidenceError("provider launch registry has duplicate or mismatched authority")
+        seen.add(key)
+        providers.add(provider)
+        names = _provider_names(provider, seat_key)
+        projection = authority.projected_auth_proof()
+        launch = {
+            "schema": "agy_provider_launch.v1",
+            "provider": provider,
+            "seat_key": seat_key,
+            "launch_authority_sha256": _sha256(_canonical_json(launch_authority)),
+            "stage_binding_sha256": stage_binding_sha256,
+            "projected_auth": projection,
+        }
+        data = _canonical_json(launch)
+        _exclusive_write_at(capture.root_fd, names["authority"], data, 0o600)
+        entries.append({
+            "provider": provider,
+            "seat_key": seat_key,
+            "authority": {"name": names["authority"], "bytes": len(data), "sha256": _sha256(data)},
+            "result_name": names["result"],
+        })
+    registry = {
+        "schema": "agy_provider_launch_registry.v1",
+        "launch_authority_sha256": _sha256(_canonical_json(launch_authority)),
+        "stage_binding_sha256": stage_binding_sha256,
+        "entries": entries,
+    }
+    _exclusive_write_at(capture.root_fd, _PROVIDER_REGISTRY_NAME, _canonical_json(registry), 0o600)
+    return registry
+
+
+def _provider_registry(*, root_fd: int) -> dict[str, Any]:
+    registry = _read_json_at(root_fd, _PROVIDER_REGISTRY_NAME)
+    required = {"schema", "launch_authority_sha256", "stage_binding_sha256", "entries"}
+    if (not isinstance(registry, dict) or set(registry) != required or
+            registry.get("schema") != "agy_provider_launch_registry.v1" or
+            not _is_digest(registry.get("launch_authority_sha256")) or
+            not _is_digest(registry.get("stage_binding_sha256")) or
+            not isinstance(registry.get("entries"), list) or not registry["entries"]):
+        raise AgyCanaryEvidenceError("provider launch registry is malformed")
+    seen: set[tuple[str, str]] = set()
+    providers: set[str] = set()
+    for entry in registry["entries"]:
+        if (not isinstance(entry, dict) or set(entry) != {"provider", "seat_key", "authority", "result_name"} or
+                not isinstance(entry.get("provider"), str) or entry["provider"] not in _PROVIDER_EXECUTABLES or
+                not isinstance(entry.get("seat_key"), str) or not entry["seat_key"] or
+                not isinstance(entry.get("result_name"), str) or entry["result_name"] != _provider_names(entry["provider"], entry["seat_key"])["result"] or
+                not isinstance(entry.get("authority"), dict) or set(entry["authority"]) != {"name", "bytes", "sha256"}):
+            raise AgyCanaryEvidenceError("provider launch registry entry is malformed")
+        key = (entry["provider"], entry["seat_key"])
+        if key in seen:
+            raise AgyCanaryEvidenceError("provider launch registry entry is duplicated")
+        seen.add(key)
+        if entry["provider"] in providers:
+            raise AgyCanaryEvidenceError("provider launch registry provider is duplicated")
+        providers.add(entry["provider"])
+    return registry
+
+
+def record_provider_result(
+    *, capture: AgyCanaryCapture, provider: str, seat_key: str,
+    authority: ProviderLaunchAuthority, status: str, text: str, detail: str | None,
+) -> dict[str, Any]:
+    """Seal one terminal provider result after the panel workers have completed."""
+    if (authority.provider != provider or status not in {"OK", "EMPTY", "ERROR", "TIMEOUT", "DEGRADED", "UNAVAILABLE"} or
+            not isinstance(text, str) or (detail is not None and not isinstance(detail, str))):
+        raise AgyCanaryEvidenceError("provider terminal result is invalid")
+    registry = _provider_registry(root_fd=capture.root_fd)
+    entry = next((item for item in registry["entries"] if item["provider"] == provider and item["seat_key"] == seat_key), None)
+    if entry is None:
+        raise AgyCanaryEvidenceError("provider terminal result is not registered")
+    names = _provider_names(provider, seat_key)
+    launch_bytes = _read_regular_at(capture.root_fd, entry["authority"]["name"])
+    if len(launch_bytes) != entry["authority"]["bytes"] or _sha256(launch_bytes) != entry["authority"]["sha256"]:
+        raise AgyCanaryEvidenceError("provider launch authority bytes drifted")
+    try:
+        launch = json.loads(launch_bytes)
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("provider launch authority is not JSON") from exc
+    if (not isinstance(launch, dict) or launch.get("provider") != provider or launch.get("seat_key") != seat_key or
+            launch.get("projected_auth") != authority.projected_auth_proof()):
+        raise AgyCanaryEvidenceError("provider launch authority does not match terminal result")
+    terminal = text.encode()
+    _exclusive_write_at(capture.root_fd, names["terminal"], terminal, 0o600)
+    detail_record: dict[str, Any] | None = None
+    if detail is not None:
+        detail_bytes = detail.encode()
+        _exclusive_write_at(capture.root_fd, names["detail"], detail_bytes, 0o600)
+        detail_record = {"name": names["detail"], "bytes": len(detail_bytes), "sha256": _sha256(detail_bytes)}
+    attempts = authority.review_attempt_proof()
+    terminal_record = {"name": names["terminal"], "bytes": len(terminal), "sha256": _sha256(terminal)}
+    result = {
+        "schema": "agy_provider_result.v1", "provider": provider, "seat_key": seat_key,
+        "registry_sha256": _sha256(_canonical_json(registry)), "authority_sha256": entry["authority"]["sha256"],
+        "attempts": attempts, "status": status,
+        "terminal": terminal_record, "detail": detail_record,
+    }
+    _exclusive_write_at(capture.root_fd, entry["result_name"], _canonical_json(result), 0o600)
+    return result
+
+
+def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[str, Any]]:
+    """Read the exact sealed provider result set without accepting board claims."""
+    registry = _provider_registry(root_fd=root_fd)
+    authority = _read_json_at(root_fd, _LAUNCH_AUTHORITY_NAME)
+    stage_binding = _read_json_at(root_fd, _STAGE_BINDING_NAME)
+    if (registry["launch_authority_sha256"] != _sha256(_canonical_json(authority)) or
+            registry["stage_binding_sha256"] != _sha256(_canonical_json(stage_binding))):
+        raise AgyCanaryEvidenceError("provider launch registry authority binding drifted")
+    results: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in registry["entries"]:
+        provider = entry["provider"]
+        seat_key = entry["seat_key"]
+        names = _provider_names(provider, seat_key)
+        launch_bytes = _read_regular_at(root_fd, entry["authority"]["name"])
+        if (len(launch_bytes) != entry["authority"]["bytes"] or
+                _sha256(launch_bytes) != entry["authority"]["sha256"]):
+            raise AgyCanaryEvidenceError("provider authority record bytes drifted")
+        try:
+            launch = json.loads(launch_bytes)
+        except json.JSONDecodeError as exc:
+            raise AgyCanaryEvidenceError("provider authority record is not JSON") from exc
+        launch_required = {"schema", "provider", "seat_key", "launch_authority_sha256", "stage_binding_sha256", "projected_auth"}
+        projection = launch.get("projected_auth") if isinstance(launch, dict) else None
+        if (not isinstance(launch, dict) or set(launch) != launch_required or
+                launch.get("schema") != "agy_provider_launch.v1" or launch.get("provider") != provider or
+                launch.get("seat_key") != seat_key or launch.get("launch_authority_sha256") != registry["launch_authority_sha256"] or
+                launch.get("stage_binding_sha256") != registry["stage_binding_sha256"] or
+                not isinstance(projection, dict) or projection.get("provider") != provider or
+                projection.get("schema") != "agy_provider_projected_auth.v1"):
+            raise AgyCanaryEvidenceError("provider authority record is malformed")
+        if (set(projection) != {"schema", "provider", "runtime_destination", "runtime_sha256", "records"} or
+                not isinstance(projection.get("runtime_destination"), str) or not projection["runtime_destination"] or
+                not _is_digest(projection.get("runtime_sha256")) or not isinstance(projection.get("records"), list) or
+                any(not isinstance(row, dict) or set(row) != {"destination", "uid", "mode", "sha256"} or
+                    not isinstance(row.get("destination"), str) or not row["destination"] or
+                    not isinstance(row.get("uid"), str) or not row["uid"].isdigit() or
+                    row.get("mode") != "0600" or not _is_digest(row.get("sha256"))
+                    for row in projection["records"])):
+            raise AgyCanaryEvidenceError("provider projected authentication proof is malformed")
+        result = _read_json_at(root_fd, entry["result_name"])
+        required = {"schema", "provider", "seat_key", "registry_sha256", "authority_sha256", "attempts", "status", "terminal", "detail"}
+        if (not isinstance(result, dict) or set(result) != required or result.get("schema") != "agy_provider_result.v1" or
+                result.get("provider") != provider or result.get("seat_key") != seat_key or
+                result.get("registry_sha256") != _sha256(_canonical_json(registry)) or
+                result.get("authority_sha256") != entry["authority"]["sha256"] or
+                result.get("status") not in {"OK", "EMPTY", "ERROR", "TIMEOUT", "DEGRADED", "UNAVAILABLE"}):
+            raise AgyCanaryEvidenceError("provider terminal result is malformed")
+        attempts = result.get("attempts")
+        if (not isinstance(attempts, dict) or set(attempts) != {"launch", "attempts", "terminal_attempt"} or
+                (attempts["launch"] is not None and (
+                    not isinstance(attempts["launch"], dict) or set(attempts["launch"]) != {"argv_bytes", "argv_sha256"} or
+                    not _is_plain_int(attempts["launch"].get("argv_bytes")) or attempts["launch"]["argv_bytes"] < 1 or
+                    not _is_digest(attempts["launch"].get("argv_sha256"))
+                )) or not isinstance(attempts["attempts"], list)):
+            raise AgyCanaryEvidenceError("provider review attempt proof is malformed")
+        if attempts["launch"] is None:
+            if attempts["attempts"] or attempts["terminal_attempt"] is not None:
+                raise AgyCanaryEvidenceError("provider review attempt proof is inconsistent")
+        else:
+            expected_attempts = [
+                {"index": index, **attempts["launch"]}
+                for index in range(len(attempts["attempts"]))
+            ]
+            expected_terminal = len(expected_attempts) - 1 if expected_attempts else None
+            if (attempts["attempts"] != expected_attempts or
+                    attempts["terminal_attempt"] != expected_terminal):
+                raise AgyCanaryEvidenceError("provider review attempts are malformed")
+        terminal = result.get("terminal")
+        if (not isinstance(terminal, dict) or set(terminal) != {"name", "bytes", "sha256"} or
+                terminal.get("name") != names["terminal"] or not _is_plain_int(terminal.get("bytes")) or
+                terminal["bytes"] < 0 or not _is_digest(terminal.get("sha256"))):
+            raise AgyCanaryEvidenceError("provider terminal output is malformed")
+        terminal_bytes = _read_regular_at(root_fd, terminal["name"])
+        if len(terminal_bytes) != terminal["bytes"] or _sha256(terminal_bytes) != terminal["sha256"]:
+            raise AgyCanaryEvidenceError("provider terminal output bytes drifted")
+        detail = result.get("detail")
+        if detail is not None:
+            if (not isinstance(detail, dict) or set(detail) != {"name", "bytes", "sha256"} or
+                    detail.get("name") != names["detail"] or not _is_plain_int(detail.get("bytes")) or
+                    detail["bytes"] < 0 or not _is_digest(detail.get("sha256"))):
+                raise AgyCanaryEvidenceError("provider terminal detail is malformed")
+            detail_bytes = _read_regular_at(root_fd, detail["name"])
+            if len(detail_bytes) != detail["bytes"] or _sha256(detail_bytes) != detail["sha256"]:
+                raise AgyCanaryEvidenceError("provider terminal detail bytes drifted")
+            detail_text: str | None = detail_bytes.decode("utf-8")
+        else:
+            detail_text = None
+        try:
+            text = terminal_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AgyCanaryEvidenceError("provider terminal output is not UTF-8") from exc
+        if (result["status"] == "OK" and
+                (not attempts["attempts"] or not text.strip())):
+            raise AgyCanaryEvidenceError("usable provider result lacks an actual review attempt")
+        if result["status"] == "EMPTY" and text.strip():
+            raise AgyCanaryEvidenceError("empty provider result has terminal review text")
+        results[(provider, seat_key)] = {"status": result["status"], "text": text, "detail": detail_text}
+    return results
+
+
+def _provider_result_summary(*, root_fd: int) -> dict[str, Any]:
+    """Return the immutable provider-record identity carried by public evidence."""
+    registry = _provider_registry(root_fd=root_fd)
+    _verified_provider_results(root_fd=root_fd)
+    result_entries: list[dict[str, Any]] = []
+    identities: list[dict[str, str]] = []
+    for entry in registry["entries"]:
+        data = _read_regular_at(root_fd, entry["result_name"])
+        result_entries.append({
+            "name": entry["result_name"],
+            "bytes": len(data),
+            "sha256": _sha256(data),
+        })
+        identities.append({"provider": entry["provider"], "seat_key": entry["seat_key"]})
+    return {
+        "registry_sha256": _sha256(_canonical_json(registry)),
+        "result_set_sha256": _sha256(_canonical_json(result_entries)),
+        "providers": identities,
+    }
+
+
 def _parse_stream(
     data: bytes, *, require_staged_reads: bool = False
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
@@ -2141,10 +2433,22 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
         pre_board = dict(ledger)
         pre_board.pop("private_board")
         pre_board_data = _canonical_json(pre_board)
-        expected_summary = {"gemini_seat_key": pre_board.get("seat_key"), "gemini_seat_count": 1, "attempt_ids": [item.get("attempt_id") for item in attempts], "ledger_bytes": len(pre_board_data), "ledger_sha256": _sha256(pre_board_data)}
+        expected_summary = {
+            "gemini_seat_key": pre_board.get("seat_key"),
+            "gemini_seat_count": 1,
+            "attempt_ids": [item.get("attempt_id") for item in attempts],
+            "ledger_bytes": len(pre_board_data),
+            "ledger_sha256": _sha256(pre_board_data),
+            "provider_results": _provider_result_summary(root_fd=root_fd),
+        }
         if private_board.get("capture") != expected_summary or not isinstance(board_payload, dict) or board_payload.get("agy_canary_capture") != expected_summary:
             raise AgyCanaryEvidenceError("private board does not bind the sealed capture summary")
-        _validate_private_board_payload(board_payload, expected_summary, require_usable=True)
+        _validate_private_board_payload(
+            board_payload,
+            expected_summary,
+            require_usable=True,
+            provider_results=_verified_provider_results(root_fd=root_fd),
+        )
         proof = {
             "schema": SCHEMA_VERSION,
             "seat_key": expected_seat_key,
@@ -2153,6 +2457,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
             "attempts": output_attempts,
             "accepted_review_sha256": _sha256(final_text.encode()),
             "private_board_sha256": private_board["sha256"],
+            "provider_results": expected_summary["provider_results"],
         }
         if seal:
             _write_replace_at(root_fd, "agy_canary_proof.json", proof)
@@ -2171,7 +2476,12 @@ def write_private_board(*, capture: AgyCanaryCapture, basename: str, payload: di
     summary = capture_summary(capture)
     if payload.get("agy_canary_capture") != summary:
         raise AgyCanaryEvidenceError("private board payload does not bind capture summary")
-    _validate_private_board_payload(payload, summary, require_usable=True)
+    _validate_private_board_payload(
+        payload,
+        summary,
+        require_usable=True,
+        provider_results=_verified_provider_results(root_fd=capture.root_fd),
+    )
     data = _canonical_json(payload)
     _exclusive_write_at(capture.root_fd, basename, data, 0o600)
     private = {"name": basename, "bytes": len(data), "sha256": _sha256(data), "capture": summary}
@@ -2181,7 +2491,8 @@ def write_private_board(*, capture: AgyCanaryCapture, basename: str, payload: di
 
 
 def _validate_private_board_payload(
-    payload: dict[str, Any], summary: dict[str, Any], *, require_usable: bool = False
+    payload: dict[str, Any], summary: dict[str, Any], *, require_usable: bool = False,
+    provider_results: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> None:
     """Validate the usable board contract whenever a full board result is sealed.
 
@@ -2223,6 +2534,14 @@ def _validate_private_board_payload(
             usable_legs.append(leg)
         else:
             unfilled.append(leg)
+    if provider_results is not None:
+        board_keys = [(leg["leg"], leg["seat_key"]) for leg in payload["legs"]]
+        if len(board_keys) != len(set(board_keys)) or set(board_keys) != set(provider_results):
+            raise AgyCanaryEvidenceError("private board provider result set is incomplete or substituted")
+        for leg in payload["legs"]:
+            expected = provider_results[(leg["leg"], leg["seat_key"])]
+            if any(leg[name] != expected[name] for name in ("status", "text", "detail")):
+                raise AgyCanaryEvidenceError("private board leg does not match sealed provider result")
     usable_vendors = {leg["leg"] for leg in usable_legs}
     gemini_legs = [
         leg for leg in payload["legs"]
@@ -2268,14 +2587,23 @@ def _valid_native_agent_request(value: Any) -> bool:
 def capture_summary(capture: AgyCanaryCapture) -> dict[str, Any]:
     """Return redacted ledger binding information for the public board envelope."""
     ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
-    data = _canonical_json(ledger)
+    pre_board = dict(ledger)
+    pre_board.pop("private_board", None)
+    data = _canonical_json(pre_board)
     attempts = ledger.get("attempts")
     if not isinstance(attempts, list):
         raise AgyCanaryEvidenceError("capture ledger has invalid attempts")
     ids = [item.get("attempt_id") for item in attempts if isinstance(item, dict)]
     if len(ids) != len(attempts) or any(not isinstance(item, str) for item in ids):
         raise AgyCanaryEvidenceError("capture ledger has invalid attempt identifiers")
-    return {"gemini_seat_key": ledger.get("seat_key"), "gemini_seat_count": 1, "attempt_ids": ids, "ledger_bytes": len(data), "ledger_sha256": _sha256(data)}
+    return {
+        "gemini_seat_key": ledger.get("seat_key"),
+        "gemini_seat_count": 1,
+        "attempt_ids": ids,
+        "ledger_bytes": len(data),
+        "ledger_sha256": _sha256(data),
+        "provider_results": _provider_result_summary(root_fd=capture.root_fd),
+    }
 
 
 @dataclass

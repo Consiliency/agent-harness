@@ -254,6 +254,9 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_
                 {"sequence": 4, "session_id": "s1", "type": "terminal", "text": "Looks good\nAGREE"},
             ]
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret prompt"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
+            _seal_synthetic_provider_results(
+                capture, _usable_private_board({"gemini_seat_key": "gemini-primary"})
+            )
             evidence.write_private_board(
                 capture=capture,
                 basename="board.json",
@@ -265,6 +268,17 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_
         proof = evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
         assert proof["attempt_ids"] == ["gemini-1"]
         assert proof["attempts"][0]["counts"] == {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}
+        _root, root_fd = evidence._validate_private_root(root)
+        try:
+            registry = evidence._provider_registry(root_fd=root_fd)
+            gemini = next(entry for entry in registry["entries"] if entry["provider"] == "gemini")
+            result = evidence._read_json_at(root_fd, gemini["result_name"])
+            result["attempts"] = {"launch": None, "attempts": [], "terminal_attempt": None}
+            evidence._write_replace_at(root_fd, gemini["result_name"], result)
+            with pytest.raises(evidence.AgyCanaryEvidenceError, match="lacks an actual review attempt"):
+                evidence._verified_provider_results(root_fd=root_fd)
+        finally:
+            os.close(root_fd)
     finally:
         shutil.rmtree(root)
 
@@ -295,6 +309,9 @@ def test_capture_reducer_rejects_missing_or_swapped_private_board(monkeypatch, t
                 {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
             ]
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
+            _seal_synthetic_provider_results(
+                capture, _usable_private_board({"gemini_seat_key": "gemini-primary"})
+            )
             evidence.write_private_board(capture=capture, basename="board.json", payload=_usable_private_board(evidence.capture_summary(capture)))
             (root / "board.json").write_text('{"agy_canary_capture":"swapped"}')
         finally:
@@ -417,6 +434,86 @@ def _usable_private_board(summary: dict[str, object]) -> dict[str, object]:
         "independence": {"level": "synthetic", "distinct_vendors": 3, "seats": 3},
         "legs": legs, "agy_canary_capture": summary,
     }
+
+
+def _seal_synthetic_provider_results(
+    capture: evidence.AgyCanaryCapture, payload: dict[str, object]
+) -> None:
+    """Build exact provider records for reducers that do not launch a CLI."""
+    launch_authority = evidence._read_json_at(capture.root_fd, "agy_canary_launch_authority.json")
+    stage_binding = evidence._read_json_at(capture.root_fd, "agy_canary_stage_binding.json")
+    launch_digest = evidence._sha256(evidence._canonical_json(launch_authority))
+    stage_digest = evidence._sha256(evidence._canonical_json(stage_binding))
+    entries = []
+    for leg in payload["legs"]:
+        assert isinstance(leg, dict)
+        provider = str(leg["leg"])
+        seat_key = str(leg["seat_key"])
+        names = evidence._provider_names(provider, seat_key)
+        launch = {
+            "schema": "agy_provider_launch.v1",
+            "provider": provider,
+            "seat_key": seat_key,
+            "launch_authority_sha256": launch_digest,
+            "stage_binding_sha256": stage_digest,
+            "projected_auth": {
+                "schema": "agy_provider_projected_auth.v1",
+                "provider": provider,
+                "runtime_destination": f"/run/phase-loop-bin/{provider}",
+                "runtime_sha256": "b" * 64,
+                "records": [],
+            },
+        }
+        launch_bytes = evidence._canonical_json(launch)
+        evidence._exclusive_write_at(capture.root_fd, names["authority"], launch_bytes, 0o600)
+        terminal = str(leg["text"]).encode()
+        evidence._exclusive_write_at(capture.root_fd, names["terminal"], terminal, 0o600)
+        attempts = {
+            "launch": {"argv_bytes": 1, "argv_sha256": "a" * 64},
+            "attempts": [{"index": 0, "argv_bytes": 1, "argv_sha256": "a" * 64}],
+            "terminal_attempt": 0,
+        }
+        result = {
+            "schema": "agy_provider_result.v1",
+            "provider": provider,
+            "seat_key": seat_key,
+            "registry_sha256": "pending",
+            "authority_sha256": evidence._sha256(launch_bytes),
+            "attempts": attempts,
+            "status": leg["status"],
+            "terminal": {
+                "name": names["terminal"], "bytes": len(terminal),
+                "sha256": evidence._sha256(terminal),
+            },
+            "detail": None,
+        }
+        entries.append((leg, names, result, launch_bytes))
+    registry = {
+        "schema": "agy_provider_launch_registry.v1",
+        "launch_authority_sha256": launch_digest,
+        "stage_binding_sha256": stage_digest,
+        "entries": [
+            {
+                "provider": str(leg["leg"]), "seat_key": str(leg["seat_key"]),
+                "authority": {
+                    "name": names["authority"], "bytes": len(launch_bytes),
+                    "sha256": evidence._sha256(launch_bytes),
+                },
+                "result_name": names["result"],
+            }
+            for leg, names, _result, launch_bytes in entries
+        ],
+    }
+    registry_digest = evidence._sha256(evidence._canonical_json(registry))
+    for _leg, names, result, _launch_bytes in entries:
+        result["registry_sha256"] = registry_digest
+        evidence._exclusive_write_at(
+            capture.root_fd, names["result"], evidence._canonical_json(result), 0o600
+        )
+    evidence._exclusive_write_at(
+        capture.root_fd, evidence._PROVIDER_REGISTRY_NAME,
+        evidence._canonical_json(registry), 0o600,
+    )
 
 
 def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
@@ -1141,6 +1238,9 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
             {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
         ]
         evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(item) for item in events), stderr="", staged=staged)
+        _seal_synthetic_provider_results(
+            capture, _usable_private_board({"gemini_seat_key": "gemini-primary"})
+        )
         expected = evidence.capture_summary(capture)
     finally:
         if capture is not None:
@@ -1161,7 +1261,28 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
     board_bytes = (root / "board.json").read_bytes()
     assert ledger["private_board"]["sha256"] == evidence._sha256(board_bytes)
     assert json.loads(board_bytes)["agy_canary_capture"] == ledger["private_board"]["capture"]
-    assert evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary", seal=False)["attempt_ids"] == ["gemini-1"]
+    proof = evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary", seal=False)
+    assert proof["attempt_ids"] == ["gemini-1"]
+    assert proof["provider_results"] == expected["provider_results"]
+    _root, root_fd = evidence._validate_private_root(root)
+    try:
+        registry = evidence._provider_registry(root_fd=root_fd)
+        codex = next(entry for entry in registry["entries"] if entry["provider"] == "codex")
+        original_result = evidence._read_json_at(root_fd, codex["result_name"])
+        changed_result = dict(original_result)
+        changed_attempts = dict(original_result["attempts"])
+        changed_attempts["attempts"] = [
+            *changed_attempts["attempts"],
+            {"index": 1, **changed_attempts["launch"]},
+        ]
+        changed_attempts["terminal_attempt"] = 1
+        changed_result["attempts"] = changed_attempts
+        evidence._write_replace_at(root_fd, codex["result_name"], changed_result)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="does not bind the sealed capture summary"):
+            evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary", seal=False)
+        evidence._write_replace_at(root_fd, codex["result_name"], original_result)
+    finally:
+        os.close(root_fd)
     retained = root / "staged-review-instructions.md"
     retained.write_text("forged")
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="retained input bytes drifted"):
