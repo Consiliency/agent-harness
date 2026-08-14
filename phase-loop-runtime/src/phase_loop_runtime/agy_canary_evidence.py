@@ -2006,7 +2006,7 @@ def check_committed_final(
         repo=repo, attestation=payload["attestation"], plan_relative=plan_relative,
         manifest_relative=manifest_relative, plan_before=before_plan, manifest_before=before_manifest,
     )
-    if payload["attestation"].get("proof") != _proof_identity(payload["proof"]):
+    if payload["attestation"].get("proof") != _proof_identity(payload["proof"]) or payload["attestation"].get("reducer_proof_sha256") != _sha256(_canonical_json(payload["proof"])):
         raise AgyCanaryEvidenceError("committed proof does not match attested reducer identity")
     release = payload["attestation"]["release"]
     if release != _reconcile_release_lineage(
@@ -2038,7 +2038,7 @@ def _validate_committed_attestation(
     """Validate every bootstrap/release identity embedded in a committed suffix."""
     bootstrap = attestation.get("bootstrap") if isinstance(attestation, dict) else None
     release = attestation.get("release") if isinstance(attestation, dict) else None
-    if not isinstance(attestation, dict) or set(attestation) != {"bootstrap", "release", "release_sha256", "proof"} or not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation["release_sha256"] != _sha256(_canonical_json(release)):
+    if not isinstance(attestation, dict) or set(attestation) != {"bootstrap", "release", "release_sha256", "proof", "reducer_proof_sha256"} or not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation["release_sha256"] != _sha256(_canonical_json(release)):
         raise AgyCanaryEvidenceError("committed finalizer payload lacks attested bootstrap/release identities")
     proof_identity = attestation["proof"]
     if not isinstance(proof_identity, dict) or set(proof_identity) != {"seat_key", "attempt_ids", "private_board_sha256", "proof_sha256"}:
@@ -2116,6 +2116,10 @@ def finalize_canary(
             root_fd=root_fd, repo=repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug
         )
         prepare = _read_json_at(root_fd, _PREPARE_NAME)
+        if prepare.get("seat_key") != expected_seat_key:
+            raise AgyCanaryEvidenceError("finalizer seat does not match prepare authority")
+        if _read_json_at(root_fd, "agy_canary_proof.json") != proof:
+            raise AgyCanaryEvidenceError("finalizer proof does not match sealed reducer receipt")
         release = prepare.get("release")
         if not isinstance(release, dict) or prepare.get("release_sha256") != _sha256(_canonical_json(release)):
             raise AgyCanaryEvidenceError("finalizer requires release identities sealed by prepare")
@@ -2124,6 +2128,7 @@ def finalize_canary(
             "release": release,
             "release_sha256": prepare["release_sha256"],
             "proof": _proof_identity(proof),
+            "reducer_proof_sha256": _sha256(_canonical_json(proof)),
         }
         plan = repo / plan_relative
         manifest = repo / manifest_relative

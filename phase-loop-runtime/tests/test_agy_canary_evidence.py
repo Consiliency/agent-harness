@@ -706,9 +706,10 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             ],
         }
         (root / "agy_canary_prepare.json").write_text(json.dumps({
-            "release": release, "release_sha256": evidence._sha256(evidence._canonical_json(release)),
+            "release": release, "release_sha256": evidence._sha256(evidence._canonical_json(release)), "seat_key": "gemini-primary",
         }))
         proof = {"schema": evidence.SCHEMA_VERSION, "seat_key": "gemini-primary", "attempt_ids": ["gemini-1"], "capture_mode": "stream_json", "attempts": [{"attempt_id": "gemini-1", "counts": {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}, "terminal_sha256": "1" * 64}], "accepted_review_sha256": "2" * 64, "private_board_sha256": "3" * 64}
+        (root / "agy_canary_proof.json").write_bytes(evidence._canonical_json(proof))
         monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         result = evidence.finalize_canary(
             evidence_root=root,
@@ -745,6 +746,7 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                     "release": {"version": "0.7.14", "release_commit": "b" * 40, "artifacts": []},
                     "release_sha256": evidence._sha256(evidence._canonical_json({"version": "0.7.14", "release_commit": "b" * 40, "artifacts": []})),
                     "proof": evidence._proof_identity(proof),
+                    "reducer_proof_sha256": evidence._sha256(evidence._canonical_json(proof)),
                 },
                 plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
                 plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),
