@@ -1,0 +1,144 @@
+name: offload negative probes
+
+# Post-merge negative controls for the CI-offload graph (plan
+# detailed-dagger-offload-ci-20260812). These prove the two properties that the
+# happy path CANNOT prove about itself:
+#
+#   unreachable-host  the offload path is FAIL-CLOSED -- an unreachable `ai` is
+#                     red, never a silent hosted fallback, never a green skip.
+#   fork-simulation   an ineligible event takes the hosted path and its verdict
+#                     is what `gate` consumes.
+#
+# Deliberately `workflow_dispatch`-only. They are negative controls: they are
+# EXPECTED to fail their inner step, so they must never gate a PR or run on
+# push. Each job inverts its own expectation, so the JOB is green when the
+# property holds and red when it does not -- read the job result, not the step.
+on:
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: Which negative control to run
+        required: true
+        default: unreachable-host
+        type: choice
+        options:
+          - unreachable-host
+          - fork-simulation
+          - both
+
+permissions:
+  contents: read
+
+jobs:
+  unreachable-host:
+    name: probe — unreachable ai is fail-closed
+    if: inputs.probe == 'unreachable-host' || inputs.probe == 'both'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Point the composite at a host that cannot exist. `remote-host` is a
+      # composite input, so this needs no change to `ai` itself -- the probe
+      # never touches the real offload host.
+      - name: Offload to a deliberately unreachable host
+        id: offload
+        continue-on-error: true
+        uses: Consiliency/ci-actions/dagger-offload@ea4ba36ba29f18ae4f22e65ae4b8b63e7c7468ee
+        with:
+          command: "bash ci/offload-gate.sh"
+          eligible: "true"
+          remote-host: "offload-probe-nonexistent.invalid"
+          ts-authkey: ${{ secrets.TS_AUTHKEY }}
+
+      - name: Assert the offload FAILED (fail-closed)
+        env:
+          OUTCOME: ${{ steps.offload.outcome }}
+        run: |
+          set -euo pipefail
+          echo "offload step outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "" >&2
+            echo "FAIL-CLOSED PROPERTY VIOLATED: offloading to an unreachable host" >&2
+            echo "produced outcome='$OUTCOME', expected 'failure'." >&2
+            echo "An unreachable offload host must be RED. A success or a skip here" >&2
+            echo "means an unavailable host can yield a green suite verdict." >&2
+            exit 1
+          fi
+          echo "fail-closed confirmed: unreachable host ⇒ offload red"
+
+  fork-simulation:
+    name: probe — ineligible event takes the hosted path
+    if: inputs.probe == 'fork-simulation' || inputs.probe == 'both'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # A real fork PR cannot be manufactured from inside this repo, so the probe
+      # drives the DECISION the fork path depends on: the same eligibility rule
+      # the `elig` job runs, evaluated against fork-shaped inputs. If this logic
+      # ever admits a fork, the offload path would receive TS_AUTHKEY.
+      #
+      # LIMITATION, stated plainly: this is a COPY of the rule, not the rule
+      # itself, so it proves the logic is correct -- not that `elig` still
+      # contains this logic. The authoritative fork evidence is a real fork PR
+      # showing `offload` skipped and `hosted` running; this probe is what can be
+      # produced on demand from inside the repo. Keep the two in sync, or replace
+      # this with the real fork PR result once one exists.
+      - name: Evaluate the eligibility rule against fork-shaped inputs
+        run: |
+          set -euo pipefail
+
+          decide() {
+            EVENT_NAME="$1"; REF="$2"; PR_HEAD_REPO="$3"; REPO="$4"; TS_AUTHKEY_SET="$5"
+            trusted=false
+            if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+              trusted=true
+            fi
+            if [ "$EVENT_NAME" = "pull_request" ] && [ "$PR_HEAD_REPO" = "$REPO" ]; then
+              trusted=true
+            fi
+            eligible=false
+            if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ]; then
+              eligible=true
+            fi
+            echo "$eligible"
+          }
+
+          fail=0
+          check() { # label expected actual
+            if [ "$3" = "$2" ]; then
+              echo "  ok    $1 -> eligible=$3"
+            else
+              echo "  FAIL  $1 -> eligible=$3, expected $2" >&2
+              fail=1
+            fi
+          }
+
+          # Fork PR: head repo differs. GitHub also withholds the secret, so both
+          # reasons are exercised.
+          check "fork PR, secret withheld" false \
+            "$(decide pull_request refs/pull/1/merge forks/agent-harness Consiliency/agent-harness false)"
+          check "fork PR, secret somehow present" false \
+            "$(decide pull_request refs/pull/1/merge forks/agent-harness Consiliency/agent-harness true)"
+          # Same-repo PR without a secret (e.g. secret unset): hosted, not offload.
+          check "same-repo PR, no secret" false \
+            "$(decide pull_request refs/pull/1/merge Consiliency/agent-harness Consiliency/agent-harness false)"
+          # The two eligible cases, to prove the rule is not simply always-false.
+          check "same-repo PR, secret present" true \
+            "$(decide pull_request refs/pull/1/merge Consiliency/agent-harness Consiliency/agent-harness true)"
+          check "push to main, secret present" true \
+            "$(decide push refs/heads/main '' Consiliency/agent-harness true)"
+          # A push to a non-main branch is not trusted.
+          check "push to a topic branch" false \
+            "$(decide push refs/heads/topic '' Consiliency/agent-harness true)"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "" >&2
+            echo "ELIGIBILITY RULE VIOLATED: see the FAIL lines above." >&2
+            exit 1
+          fi
+          echo "eligibility rule holds: forks and unsecreted events take the hosted path"
