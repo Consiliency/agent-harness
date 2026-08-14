@@ -19,7 +19,6 @@ import re
 import select
 import shutil
 import signal
-import stat
 import struct
 import subprocess
 import sys
@@ -50,10 +49,9 @@ from .agent_runtime_provider import (
 from .agy_canary_evidence import (
     AgyCanaryCapture,
     AgyCanaryEvidenceError,
-    AgyCanaryNamespace,
-    capture_namespace,
     capture_summary,
-    namespace_self_test,
+    ProviderLaunchAuthority,
+    prepare_provider_launch_authorities,
     record_launch,
     retain_staged_files,
 )
@@ -1690,76 +1688,6 @@ def _read_review_output(path: Path) -> str:
         return ""
 
 
-def _read_capture_output(out_dir: Path, expected_name: str) -> str:
-    """Read the one expected captured-provider output through a stable directory FD.
-
-    Capture output is a hostile child boundary even though its host directory is
-    private.  Do not follow links, accept a second filename, or trust a pathname
-    that changed between validation and read.  The caller owns the provider's PTY
-    or stdout semantics; this helper is the final parent-side ingestion boundary.
-    """
-    if not expected_name or Path(expected_name).name != expected_name:
-        raise AgyCanaryEvidenceError("capture output name is not a basename")
-    try:
-        directory_fd = os.open(
-            out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        )
-    except OSError as exc:
-        raise AgyCanaryEvidenceError("capture output directory is unavailable") from exc
-    try:
-        directory_info = os.fstat(directory_fd)
-        if (
-            not stat.S_ISDIR(directory_info.st_mode)
-            or stat.S_IMODE(directory_info.st_mode) != 0o700
-            or directory_info.st_uid != os.getuid()
-        ):
-            raise AgyCanaryEvidenceError("capture output directory is not private")
-        names = set(os.listdir(directory_fd))
-        if names != {expected_name}:
-            raise AgyCanaryEvidenceError("capture output set is not exact")
-        before = os.lstat(expected_name, dir_fd=directory_fd)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_nlink != 1
-            or before.st_uid != os.getuid()
-        ):
-            raise AgyCanaryEvidenceError("capture output is not a private regular file")
-        output_fd = os.open(
-            expected_name,
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=directory_fd,
-        )
-        try:
-            opened = os.fstat(output_fd)
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or opened.st_nlink != 1
-                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
-            ):
-                raise AgyCanaryEvidenceError("capture output identity changed during open")
-            chunks: list[bytes] = []
-            while True:
-                chunk = os.read(output_fd, 65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            after = os.fstat(output_fd)
-        finally:
-            os.close(output_fd)
-        current = os.lstat(expected_name, dir_fd=directory_fd)
-        if (
-            (after.st_dev, after.st_ino, after.st_nlink)
-            != (opened.st_dev, opened.st_ino, opened.st_nlink)
-            or (current.st_dev, current.st_ino, current.st_nlink)
-            != (opened.st_dev, opened.st_ino, opened.st_nlink)
-            or not stat.S_ISREG(current.st_mode)
-        ):
-            raise AgyCanaryEvidenceError("capture output drifted during read")
-        return b"".join(chunks).decode("utf-8", errors="replace")
-    finally:
-        os.close(directory_fd)
-
-
 def _terminate_process_group(
     proc: subprocess.Popen[bytes], *, force_group: bool = False
 ) -> None:
@@ -2748,7 +2676,7 @@ def _exec_claude_tui_leg(
     backstop_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
     agy_capture: AgyCanaryCapture | None = None,
-    agy_namespace: AgyCanaryNamespace | None = None,
+    provider_authority: ProviderLaunchAuthority | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -2779,7 +2707,7 @@ def _exec_claude_tui_leg(
     child_review_dir = review_dir
     child_output_file = output_file
     if agy_capture is not None:
-        if agy_namespace is None:
+        if provider_authority is None:
             raise AgyCanaryEvidenceError(
                 "capture-enabled Claude launch has no prepared namespace"
             )
@@ -2788,7 +2716,7 @@ def _exec_claude_tui_leg(
         # the parent continues to consume the corresponding host file.
         child_review_dir = Path("/run/phase-loop-review")
         child_output_file = Path(
-            agy_namespace.rewrite_provider_output_path(output_file)
+            provider_authority.rewrite_provider_output_path(output_file)
         )
     else:
         supported, support_detail = _claude_code_support_status()
@@ -2810,8 +2738,8 @@ def _exec_claude_tui_leg(
         research_seat,
     )
     if agy_capture is not None:
-        command = agy_namespace.command(command)  # type: ignore[union-attr]
-        env = agy_namespace.outer_environment()  # type: ignore[union-attr]
+        command = provider_authority.preflight(command)
+        env = provider_authority.outer_environment()
     rc, review_text, log_text, pty_tail = _run_claude_tui_session(
         command=command,
         cwd=out_dir,
@@ -2825,7 +2753,9 @@ def _exec_claude_tui_leg(
     if agy_capture is not None:
         # The TUI may read its canonical file repeatedly for liveness, but only this
         # final descriptor-relative ingestion is accepted as captured-provider output.
-        review_text = _read_capture_output(out_dir, output_file.name)
+        review_text = provider_authority.read_expected_output(output_file.name).decode(
+            "utf-8", errors="replace"
+        )
     # #188 + ah#196/#223: a heartbeat-reclaimed wedge, an uncleared workspace-trust
     # gate, and a never-ready editor are all TYPED reviewer-liveness failures — surfaced
     # DEGRADED (not a bare ERROR). The diagnostic handling for these follows below (empty
@@ -3018,7 +2948,7 @@ def _exec_leg(
     agy_capture: AgyCanaryCapture | None = None,
     capture_staged: dict[str, dict[str, object]] | None = None,
     seat_key: str | None = None,
-    agy_namespace: AgyCanaryNamespace | None = None,
+    provider_authority: ProviderLaunchAuthority | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -3110,13 +3040,13 @@ def _exec_leg(
             "-",
         ]
         if agy_capture is not None:
-            if agy_namespace is None:
+            if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Codex launch has no prepared namespace")
-            child_output = agy_namespace.rewrite_provider_output_path(out_file)  # type: ignore[union-attr]
+            child_output = provider_authority.rewrite_provider_output_path(out_file)
             cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
             cmd[cmd.index(str(out_file))] = child_output
-            cmd = agy_namespace.command(cmd)  # type: ignore[union-attr]
-            env = agy_namespace.outer_environment()  # type: ignore[union-attr]
+            cmd = provider_authority.preflight(cmd)
+            env = provider_authority.outer_environment()
         # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
         # NOT retry a hard failure (rc!=0 = rate-limit/error) — that would hammer
         # a rate-limited backend; classification handles it downstream.
@@ -3142,7 +3072,9 @@ def _exec_leg(
                 return 124, "", f"timeout after {deadline_s}s"
             _elapsed = time.monotonic() - _t0
             review_text = (
-                _read_capture_output(out_dir, out_file.name)
+                provider_authority.read_expected_output(out_file.name).decode(
+                    "utf-8", errors="replace"
+                )
                 if agy_capture is not None and out_file.exists()
                 else (out_file.read_text(encoding="utf-8") if out_file.exists() else "")
             )
@@ -3164,7 +3096,9 @@ def _exec_leg(
             if _elapsed >= timeout_s * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow empty turn (not transient) → don't re-run + double wall-clock
         if agy_capture is not None:
-            review_text = _read_capture_output(out_dir, out_file.name)
+            review_text = provider_authority.read_expected_output(out_file.name).decode(
+                "utf-8", errors="replace"
+            )
         return rc, review_text, log_text
     if leg == "gemini":
         # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). The health
@@ -3220,13 +3154,13 @@ def _exec_leg(
             _NO_COMMAND_PREAMBLE + prompt,
         ]
         if agy_capture is not None:
-            if agy_namespace is None:
+            if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Gemini launch has no prepared namespace")
             # 1.1.13's stream-json is the only supported production authority;
             # text stdout is diagnostic-only and cannot satisfy the reducer.
             cmd[1:1] = ["--output-format", "stream-json"]
-            cmd = agy_namespace.agy_command(cmd)  # type: ignore[union-attr]
-            env = agy_namespace.outer_environment()  # type: ignore[union-attr]
+            cmd = provider_authority.preflight(cmd)
+            env = provider_authority.outer_environment()
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
         # backend stall ("Error: timeout waiting for response", 0-byte) permanently
@@ -3306,7 +3240,9 @@ def _exec_leg(
                 break  # slow stall (not fast/transient) → don't re-run + double wall-clock
         out_file.write_text(review_text, encoding="utf-8")
         if agy_capture is not None:
-            review_text = _read_capture_output(out_dir, out_file.name)
+            review_text = provider_authority.read_expected_output(out_file.name).decode(
+                "utf-8", errors="replace"
+            )
         return rc, review_text, log_text
     if leg == "grok":
         out_file = out_dir / "panel-grok.txt"
@@ -3351,11 +3287,11 @@ def _exec_leg(
             grok_tools,
         ]
         if agy_capture is not None:
-            if agy_namespace is None:
+            if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Grok launch has no prepared namespace")
             cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
-            cmd = agy_namespace.command(cmd)  # type: ignore[union-attr]
-            env = agy_namespace.outer_environment()  # type: ignore[union-attr]
+            cmd = provider_authority.preflight(cmd)
+            env = provider_authority.outer_environment()
         # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn
         # OR a transient-marker body, but NOT a hard subprocess timeout (124) and NOT
         # an attempt that already burned most of its budget (a slow leg, not a
@@ -3392,7 +3328,9 @@ def _exec_leg(
                 break
         out_file.write_text(review_text, encoding="utf-8")
         if agy_capture is not None:
-            review_text = _read_capture_output(out_dir, out_file.name)
+            review_text = provider_authority.read_expected_output(out_file.name).decode(
+                "utf-8", errors="replace"
+            )
         return rc, review_text, log_text
     # claude uses the TUI-backed subscription route, handled by `_exec_claude_tui_leg`.
     return 0, "", "unavailable"
@@ -3413,6 +3351,9 @@ def _default_spawn(
     brief_append: str | None = None,
     agy_capture: AgyCanaryCapture | None = None,
     seat_key: str | None = None,
+    provider_authority: ProviderLaunchAuthority | None = None,
+    capture_stage: Path | None = None,
+    capture_scratch: Path | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -3434,21 +3375,25 @@ def _default_spawn(
     """
     # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
     _gc_stale_panel_scratch()
-    base = Path(tempfile.mkdtemp(prefix="pl-panel-"))
+    if agy_capture is not None and (provider_authority is None or capture_stage is None):
+        raise AgyCanaryEvidenceError("capture launch requires a pre-frozen provider authority")
+    base = Path(tempfile.mkdtemp(prefix="pl-panel-")) if capture_stage is None else None
     resolved_repo_dir = Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
-    review_dir = base / "review"
-    out_dir = base / "out"
-    review_dir.mkdir()
-    out_dir.mkdir()
-    provider_output_dir: Path | None = None
+    review_dir = capture_stage if capture_stage is not None else base / "review"
+    out_dir = provider_authority.namespace.provider_output if provider_authority is not None else base / "out"
+    if capture_stage is None:
+        review_dir.mkdir()
+        out_dir.mkdir()
+    provider_output_dir: Path | None = out_dir if provider_authority is not None else None
     try:
-        (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
-        resolved_brief = _resolve_brief(mode, brief_ref)
-        if brief_append is not None:
-            resolved_brief += brief_append
-        (review_dir / "review-instructions.md").write_text(
-            resolved_brief, encoding="utf-8"
-        )
+        if capture_stage is None:
+            (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
+            resolved_brief = _resolve_brief(mode, brief_ref)
+            if brief_append is not None:
+                resolved_brief += brief_append
+            (review_dir / "review-instructions.md").write_text(
+                resolved_brief, encoding="utf-8"
+            )
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
             if leg == "gemini" and not seat_key:
@@ -3461,15 +3406,6 @@ def _default_spawn(
                 capture_staged = retain_staged_files(
                     capture=agy_capture, review_dir=review_dir
                 )
-            provider_output_dir = Path(
-                tempfile.mkdtemp(prefix="phase-loop-provider-output-", dir="/tmp")
-            )
-            provider_output_dir.chmod(0o700)
-            out_dir = provider_output_dir
-            capture_namespace_value = replace(
-                capture_namespace(capture=agy_capture, stage=review_dir),
-                provider_output=provider_output_dir,
-            )
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
         # explicit override bounds the leg. This is the ONE place that knows whether the
         # override was explicit, so resolve BOTH the retry reference and the hard deadline
@@ -3488,11 +3424,7 @@ def _default_spawn(
             extra["research_seat"] = research_seat
         if agy_capture is not None:
             extra["agy_capture"] = agy_capture
-            extra["agy_namespace"] = capture_namespace_value
-            # A resolver/TLS/masking proof must precede each capture child, not
-            # merely the original Gemini seat.  The namespace is immutable after
-            # this point; any probe failure stops this provider before launch.
-            namespace_self_test(namespace=capture_namespace_value)
+            extra["provider_authority"] = provider_authority
         if leg == "claude":
             return _exec_claude_tui_leg(
                 review_dir,
@@ -3542,8 +3474,11 @@ def _default_spawn(
         return "DEGRADED", str(exc)[:200]
     finally:
         if provider_output_dir is not None:
-            shutil.rmtree(provider_output_dir, ignore_errors=True)
-        shutil.rmtree(base, ignore_errors=True)
+            shutil.rmtree(provider_output_dir.parent, ignore_errors=True)
+        if base is not None:
+            shutil.rmtree(base, ignore_errors=True)
+        if capture_scratch is not None:
+            shutil.rmtree(capture_scratch, ignore_errors=True)
 
 
 # CS-0.8: routes the `_default_spawn` real-exec boundary through the
@@ -3570,6 +3505,9 @@ def _default_spawn_via_provider(
     brief_append: str | None = None,
     agy_capture: AgyCanaryCapture | None = None,
     seat_key: str | None = None,
+    provider_authority: ProviderLaunchAuthority | None = None,
+    capture_stage: Path | None = None,
+    capture_scratch: Path | None = None,
 ) -> tuple[str, str] | tuple[str, str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
@@ -3592,6 +3530,9 @@ def _default_spawn_via_provider(
     if agy_capture is not None:
         extra["agy_capture"] = agy_capture
         extra["seat_key"] = seat_key
+        extra["provider_authority"] = provider_authority
+        extra["capture_stage"] = capture_stage
+        extra["capture_scratch"] = capture_scratch
     # The provider seam's `send_turn` unpacks a 2-TUPLE (agent_runtime_provider.py).
     # `_default_spawn` may return a 3-tuple carrying a failure DIAGNOSTIC, so hand the
     # seam the 2-tuple it expects and carry the diagnostic around it in a closure cell.
@@ -4339,6 +4280,36 @@ def invoke_board(
         except ResearchUnavailable as exc:
             research_unavailable_detail = f"research_profile_unavailable:{exc}"
 
+    # Capture launches are fully materialized before the thread pool starts.  A
+    # Gemini-ledger mutation therefore cannot invalidate a later Codex/Claude/Grok
+    # sibling after an earlier thread has begun execution.
+    capture_launches: dict[str, tuple[ProviderLaunchAuthority, Path, Path]] = {}
+    if agy_canary_capture is not None:
+        if effective_research.enabled:
+            raise ValueError("capture-enabled board does not permit research seats")
+        capture_seats = [
+            seat for seat in board.seats
+            if seat.backing == BACKING_HOMEBREW and (seat.harness or "").lower() in _LEG_CLI
+        ]
+        providers = [(seat.harness or "").lower() for seat in capture_seats]
+        keys = [str(seat.seat_key) for seat in capture_seats]
+        if len(providers) != len(set(providers)) or len(keys) != len(set(keys)):
+            raise ValueError("capture-enabled board requires unique provider and seat identities")
+        for seat, provider in zip(capture_seats, providers):
+            scratch = Path(tempfile.mkdtemp(prefix="pl-panel-capture-"))
+            stage = scratch / "review"
+            stage.mkdir(mode=0o700)
+            (stage / "review-bundle.md").write_text(artifact, encoding="utf-8")
+            (stage / "review-instructions.md").write_text(
+                _resolve_brief(mode, brief_ref), encoding="utf-8"
+            )
+            for name in ("review-bundle.md", "review-instructions.md"):
+                (stage / name).chmod(0o600)
+            authority = prepare_provider_launch_authorities(
+                capture=agy_canary_capture, stage=stage, providers=(provider,)
+            )[provider]
+            capture_launches[str(seat.seat_key)] = (authority, stage, scratch)
+
     def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
         return PanelLegResult(
             leg=leg,
@@ -4470,6 +4441,13 @@ def invoke_board(
                 if agy_canary_capture is not None:
                     research_extra["agy_capture"] = agy_canary_capture
                     research_extra["seat_key"] = seat.seat_key
+                    try:
+                        authority, stage, scratch = capture_launches[str(seat.seat_key)]
+                    except KeyError as exc:
+                        raise AgyCanaryEvidenceError("capture seat has no frozen authority") from exc
+                    research_extra["provider_authority"] = authority
+                    research_extra["capture_stage"] = stage
+                    research_extra["capture_scratch"] = scratch
                 spawned = _default_spawn_via_provider(
                     leg,
                     artifact,

@@ -15,8 +15,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from phase_loop_runtime import agy_canary_evidence as evidence
 from phase_loop_runtime import panel_invoker as pi
 
@@ -217,10 +215,23 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
         monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
         out_dir = tmp_path / "out"
         out_dir.mkdir(mode=0o700)
+        class TestAuthority:
+            def preflight(self, argv):
+                return namespace.agy_command(list(argv))
+
+            def outer_environment(self):
+                return namespace.outer_environment()
+
+            def rewrite_provider_output_path(self, path):
+                return namespace.rewrite_provider_output_path(path)
+
+            def read_expected_output(self, name):
+                return (out_dir / name).read_bytes()
+
         rc, review, _log = pi._exec_leg(
             "gemini", review_dir, out_dir, artifact="artifact",
             agy_capture=capture, capture_staged=staged, seat_key="gemini-primary",
-            agy_namespace=namespace,
+            provider_authority=TestAuthority(),
         )
         command = captured["cmd"]
         assert rc == 0 and review == "AGREE"
@@ -262,7 +273,25 @@ def _sibling_namespace(tmp_path: Path):
         provider_hostname="example.invalid",
         provider_output=output,
     )
-    return capture, namespace, stage, root, output
+    class TestAuthority:
+        def __init__(self):
+            self.namespace = namespace
+            self.preflights: list[list[str]] = []
+
+        def preflight(self, argv):
+            self.preflights.append(list(argv))
+            return namespace.command(list(argv))
+
+        def outer_environment(self):
+            return namespace.outer_environment()
+
+        def rewrite_provider_output_path(self, path):
+            return namespace.rewrite_provider_output_path(path)
+
+        def read_expected_output(self, name):
+            return (output / name).read_bytes()
+
+    return capture, TestAuthority(), stage, root, output
 
 
 def _assert_sibling_command_is_private(command, env, prompt, *, stage, root, output):
@@ -284,7 +313,7 @@ def _assert_sibling_command_is_private(command, env, prompt, *, stage, root, out
 
 
 def test_capture_enabled_codex_uses_sibling_namespace_and_output_mapping(monkeypatch, tmp_path):
-    capture, namespace, stage, root, output = _sibling_namespace(tmp_path)
+    capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     captured: dict[str, object] = {}
     try:
         def fake_liveness(command, **kwargs):
@@ -302,7 +331,7 @@ def test_capture_enabled_codex_uses_sibling_namespace_and_output_mapping(monkeyp
             artifact="artifact",
             env={"HOME": "/host-home", "AGY_SENTINEL": "leak"},
             agy_capture=capture,
-            agy_namespace=namespace,
+            provider_authority=authority,
         )
         assert rc == 0 and review == "AGREE\n"
         command = captured["command"]
@@ -319,7 +348,7 @@ def test_capture_enabled_codex_uses_sibling_namespace_and_output_mapping(monkeyp
 
 
 def test_capture_enabled_grok_uses_sibling_namespace_without_ledger_launch(monkeypatch, tmp_path):
-    capture, namespace, stage, root, output = _sibling_namespace(tmp_path)
+    capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     captured: dict[str, object] = {}
     try:
         def fake_liveness(command, **kwargs):
@@ -331,7 +360,7 @@ def test_capture_enabled_grok_uses_sibling_namespace_without_ledger_launch(monke
         rc, review, _log = pi._exec_leg(
             "grok", stage, output, artifact="artifact",
             env={"HOME": "/host-home", "XDG_CONFIG_HOME": "/host-config"},
-            agy_capture=capture, agy_namespace=namespace,
+            agy_capture=capture, provider_authority=authority,
         )
         assert rc == 0 and review == "AGREE\n"
         command = captured["command"]
@@ -349,7 +378,7 @@ def test_capture_enabled_grok_uses_sibling_namespace_without_ledger_launch(monke
 
 
 def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeypatch, tmp_path):
-    capture, namespace, stage, root, output = _sibling_namespace(tmp_path)
+    capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     captured: dict[str, object] = {}
     try:
         def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, **_kwargs):
@@ -381,7 +410,7 @@ def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeyp
             repo_dir=tmp_path / "host-repo",
             env={"HOME": "/host-home", "XDG_CONFIG_HOME": "/host-config"},
             agy_capture=capture,
-            agy_namespace=namespace,
+            provider_authority=authority,
         )
         assert status == "OK" and review == "AGREE\n"
         command = captured["command"]
@@ -398,62 +427,3 @@ def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeyp
         capture.close()
         shutil.rmtree(root)
         shutil.rmtree(output)
-
-
-def test_capture_output_ingestion_rejects_extra_symlink_and_hardlink(tmp_path):
-    def private_output(name: str = "panel-codex.txt") -> Path:
-        output = tmp_path / f"output-{name.replace('.', '-')}-{len(list(tmp_path.iterdir()))}"
-        output.mkdir(mode=0o700)
-        (output / name).write_text("AGREE\n", encoding="utf-8")
-        return output
-
-    output = private_output()
-    assert pi._read_capture_output(output, "panel-codex.txt") == "AGREE\n"
-    (output / "unexpected.txt").write_text("nope", encoding="utf-8")
-    with pytest.raises(evidence.AgyCanaryEvidenceError, match="set is not exact"):
-        pi._read_capture_output(output, "panel-codex.txt")
-
-    output = private_output()
-    (output / "panel-codex.txt").unlink()
-    (output / "panel-codex.txt").symlink_to("/etc/passwd")
-    with pytest.raises(evidence.AgyCanaryEvidenceError, match="private regular"):
-        pi._read_capture_output(output, "panel-codex.txt")
-
-    output = private_output()
-    os.link(output / "panel-codex.txt", output / "linked.txt")
-    with pytest.raises(evidence.AgyCanaryEvidenceError, match="set is not exact"):
-        pi._read_capture_output(output, "panel-codex.txt")
-
-
-def test_capture_self_test_precedes_provider_launch(monkeypatch, tmp_path):
-    root = Path("/tmp") / f"phase-loop-panel-self-test-{os.getpid()}-{tmp_path.name}"
-    root.mkdir(mode=0o700)
-    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
-    home = tmp_path / "minimal-home"
-    home.mkdir(mode=0o700)
-    calls: list[str] = []
-    try:
-        namespace = evidence.AgyCanaryNamespace(
-            stage=tmp_path,
-            minimal_home=home,
-            evidence_root=root,
-            provider_hostname="example.invalid",
-        )
-        monkeypatch.setattr(pi, "capture_namespace", lambda **_kwargs: namespace)
-        monkeypatch.setattr(
-            pi,
-            "namespace_self_test",
-            lambda **_kwargs: calls.append("self-test"),
-        )
-
-        def fake_exec(*_args, **_kwargs):
-            assert calls == ["self-test"]
-            calls.append("launch")
-            return 0, "AGREE", ""
-
-        monkeypatch.setattr(pi, "_exec_leg", fake_exec)
-        assert pi._default_spawn("grok", "artifact", agy_capture=capture) == ("OK", "AGREE")
-        assert calls == ["self-test", "launch"]
-    finally:
-        capture.close()
-        shutil.rmtree(root)
