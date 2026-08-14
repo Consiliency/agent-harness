@@ -425,13 +425,14 @@ def _usable_private_board(summary: dict[str, object]) -> dict[str, object]:
     legs = [
         {"seat_key": summary["gemini_seat_key"], "leg": "gemini", "status": "OK", "detail": None, "text": "AGREE", "needs_native_agent": None},
         {"seat_key": "codex", "leg": "codex", "status": "OK", "detail": None, "text": "AGREE", "needs_native_agent": None},
+        {"seat_key": "claude", "leg": "claude", "status": "OK", "detail": None, "text": "AGREE", "needs_native_agent": None},
         {"seat_key": "grok", "leg": "grok", "status": "OK", "detail": None, "text": "AGREE", "needs_native_agent": None},
     ]
     return {
-        "board": "synthetic", "usable": True, "requested_seats": 3,
-        "delivered_seats": 3,
-        "shortfall": {"requested_seats": 3, "delivered_seats": 3, "unfilled_seats": [], "natively_fillable_seats": 0},
-        "independence": {"level": "synthetic", "distinct_vendors": 3, "seats": 3},
+        "board": "synthetic", "usable": True, "requested_seats": 4,
+        "delivered_seats": 4,
+        "shortfall": {"requested_seats": 4, "delivered_seats": 4, "unfilled_seats": [], "natively_fillable_seats": 0},
+        "independence": {"level": "synthetic", "distinct_vendors": 4, "seats": 4},
         "legs": legs, "agy_canary_capture": summary,
     }
 
@@ -450,6 +451,10 @@ def _seal_synthetic_provider_results(
         provider = str(leg["leg"])
         seat_key = str(leg["seat_key"])
         names = evidence._provider_names(provider, seat_key)
+        destinations = (
+            [item["destination"] for item in launch_authority["auth_binds"]]
+            if provider == "gemini" else [evidence._PROVIDER_AUTH_PATHS[provider][1]]
+        )
         launch = {
             "schema": "agy_provider_launch.v1",
             "provider": provider,
@@ -459,9 +464,9 @@ def _seal_synthetic_provider_results(
             "projected_auth": {
                 "schema": "agy_provider_projected_auth.v1",
                 "provider": provider,
-                "runtime_destination": f"/run/phase-loop-bin/{provider}",
+                "runtime_destination": f"/run/phase-loop-bin/{evidence._PROVIDER_EXECUTABLES[provider]}",
                 "runtime_sha256": "b" * 64,
-                "records": [],
+                "records": [{"destination": destination, "uid": str(os.getuid()), "mode": "0600", "sha256": "c" * 64} for destination in destinations],
             },
         }
         launch_bytes = evidence._canonical_json(launch)
@@ -967,10 +972,15 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                 "providers": [
                     {"provider": "gemini", "seat_key": "gemini-primary"},
                     {"provider": "codex", "seat_key": "codex-primary"},
+                    {"provider": "claude", "seat_key": "claude-primary"},
                     {"provider": "grok", "seat_key": "grok-primary"},
                 ],
             },
         }
+        missing_provider = json.loads(json.dumps(proof))
+        missing_provider["provider_results"]["providers"].pop()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="provider results"):
+            evidence._validate_final_proof(missing_provider)
         (root / "agy_canary_proof.json").write_bytes(evidence._canonical_json(proof))
         monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         result = evidence.finalize_canary(
@@ -1028,6 +1038,33 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             )
     finally:
         shutil.rmtree(root)
+
+
+def test_projected_auth_proof_rejects_row_substitution(tmp_path):
+    source = tmp_path / "provider"
+    source.write_bytes(b"runtime")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedProviderRuntime(
+        "codex", source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+        evidence._sha256(source.read_bytes()),
+    )
+    records = ({
+        "source": str(source), "destination": "/home/phase-loop/.codex/auth.json",
+        "source_sha256": "a" * 64, "uid": str(os.getuid()), "mode": "0600",
+    },)
+    proof = {
+        "schema": "agy_provider_projected_auth.v1", "provider": "codex",
+        "runtime_destination": runtime.destination, "runtime_sha256": runtime.sha256,
+        "records": [{"destination": records[0]["destination"], "uid": records[0]["uid"], "mode": "0600", "sha256": "a" * 64}],
+    }
+    for field, value in (("uid", "9999"), ("sha256", "b" * 64), ("destination", "/home/phase-loop/.grok/auth.json")):
+        changed = json.loads(json.dumps(proof))
+        changed["records"][0][field] = value
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="authentication record"):
+            evidence._validate_projected_auth_proof(proof=changed, provider="codex", runtime=runtime, records=records)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="authentication proof"):
+        evidence._validate_projected_auth_proof(proof={**proof, "records": []}, provider="codex", runtime=runtime, records=records)
 
 
 def test_real_source_inventory_rejects_environment_override_and_generated_capture_never_claims_complete(tmp_path):
@@ -1273,7 +1310,7 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
         if capture is not None:
             capture.close()
     board = Board("synthetic", "test", (
-        Seat("gemini-3.6-flash", "high", harness="gemini"), Seat("gpt-5.6-sol", "high", harness="codex"), Seat("grok-4.5", "high", harness="grok"),
+        Seat("gemini-3.6-flash", "high", harness="gemini"), Seat("gpt-5.6-sol", "high", harness="codex"), Seat("claude-opus", "high", harness="claude"), Seat("grok-4.5", "high", harness="grok"),
     ))
     result = PanelResult(tuple(PanelLegResult(leg=seat.harness or "x", seat_key="gemini-primary" if seat.harness == "gemini" else seat.harness, status="OK", text="AGREE") for seat in board.seats))
     object.__setattr__(result, "_agy_canary_capture", expected)
@@ -1365,10 +1402,7 @@ def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(m
     artifact = tmp_path / "artifact.md"; artifact.write_text("review")
     monkeypatch.setenv("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", str(root))
     assert cli._advisor_board_command(args=argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="real.json")) == 2
-    assert seen and self_tests
-    binding = json.loads((root / "agy_canary_stage_binding.json").read_text())
-    assert binding["plan_sha256"] == evidence._sha256(b"review")
-    assert binding["instruction_generator"] == "phase_loop_runtime.panel_invoker._resolve_brief.v1"
+    assert not seen and not self_tests
     shutil.rmtree(root)
 
 
