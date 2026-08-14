@@ -240,3 +240,158 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
     finally:
         capture.close()
         shutil.rmtree(root)
+
+
+def _sibling_namespace(tmp_path: Path):
+    """Build a real bwrap namespace without preparing a Gemini ledger entry."""
+    root = Path("/tmp") / f"phase-loop-sibling-root-{os.getpid()}-{tmp_path.name}"
+    output = Path("/tmp") / f"phase-loop-sibling-output-{os.getpid()}-{tmp_path.name}"
+    root.mkdir(mode=0o700)
+    output.mkdir(mode=0o700)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    stage = tmp_path / "host-stage"
+    home = tmp_path / "minimal-home"
+    stage.mkdir()
+    home.mkdir(mode=0o700)
+    namespace = evidence.AgyCanaryNamespace(
+        stage=stage,
+        minimal_home=home,
+        evidence_root=root,
+        provider_hostname="example.invalid",
+        provider_output=output,
+    )
+    return capture, namespace, stage, root, output
+
+
+def _assert_sibling_command_is_private(command, env, prompt, *, stage, root, output):
+    assert command[0] == "/usr/bin/bwrap"
+    assert "--unshare-pid" in command
+    assert command.index("--unshare-pid") < command.index("--clearenv")
+    assert "/run/phase-loop-review" in command
+    assert "/run/phase-loop-output" in command
+    assert str(root) not in command
+    assert str(root) not in prompt
+    assert str(root) not in "\n".join(f"{key}={value}" for key, value in env.items())
+    assert command.count(str(stage)) == 1
+    assert command.count(str(output)) == 1
+    assert str(stage) not in prompt
+    assert str(output) not in prompt
+    assert env["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    assert "HOME" not in env
+    assert not any(key.startswith(("AGY_", "ANTIGRAVITY_", "GEMINI_", "XDG_")) for key in env)
+
+
+def test_capture_enabled_codex_uses_sibling_namespace_and_output_mapping(monkeypatch, tmp_path):
+    capture, namespace, stage, root, output = _sibling_namespace(tmp_path)
+    captured: dict[str, object] = {}
+    try:
+        def fake_liveness(command, **kwargs):
+            captured["command"] = list(command)
+            captured["env"] = dict(kwargs["env"])
+            captured["prompt"] = str(kwargs["input_text"])
+            (output / "panel-codex.txt").write_text("AGREE\n")
+            return pi._LegRun(0, "", "")
+
+        monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
+        rc, review, _log = pi._exec_leg(
+            "codex",
+            stage,
+            output,
+            artifact="artifact",
+            env={"HOME": "/host-home", "AGY_SENTINEL": "leak"},
+            agy_capture=capture,
+            agy_namespace=namespace,
+        )
+        assert rc == 0 and review == "AGREE\n"
+        command = captured["command"]
+        assert isinstance(command, list)
+        assert "/run/phase-loop-output/panel-codex.txt" in command
+        _assert_sibling_command_is_private(
+            command, captured["env"], captured["prompt"],
+            stage=stage, root=root, output=output,
+        )
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+        shutil.rmtree(output)
+
+
+def test_capture_enabled_grok_uses_sibling_namespace_without_ledger_launch(monkeypatch, tmp_path):
+    capture, namespace, stage, root, output = _sibling_namespace(tmp_path)
+    captured: dict[str, object] = {}
+    try:
+        def fake_liveness(command, **kwargs):
+            captured["command"] = list(command)
+            captured["env"] = dict(kwargs["env"])
+            return pi._LegRun(0, "AGREE\n", "")
+
+        monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
+        rc, review, _log = pi._exec_leg(
+            "grok", stage, output, artifact="artifact",
+            env={"HOME": "/host-home", "XDG_CONFIG_HOME": "/host-config"},
+            agy_capture=capture, agy_namespace=namespace,
+        )
+        assert rc == 0 and review == "AGREE\n"
+        command = captured["command"]
+        assert isinstance(command, list)
+        prompt = command[command.index("-p") + 1]
+        assert "grok" in command
+        _assert_sibling_command_is_private(
+            command, captured["env"], prompt,
+            stage=stage, root=root, output=output,
+        )
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+        shutil.rmtree(output)
+
+
+def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeypatch, tmp_path):
+    capture, namespace, stage, root, output = _sibling_namespace(tmp_path)
+    captured: dict[str, object] = {}
+    try:
+        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, **_kwargs):
+            captured["command"] = list(command)
+            captured["cwd"] = cwd
+            captured["prompt"] = prompt
+            captured["output_file"] = output_file
+            captured["env"] = dict(env)
+            return 0, "AGREE\n", "claude_tui_file_output", ""
+
+        monkeypatch.setattr(pi, "_under_claude_code", lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(pi, "_run_claude_tui_session", fake_tui)
+        monkeypatch.setattr(
+            pi,
+            "_claude_code_support_status",
+            lambda: (_ for _ in ()).throw(AssertionError("capture must not probe Claude")),
+        )
+        monkeypatch.setattr(
+            pi,
+            "_claude_subscription_auth_ok",
+            lambda *_args: (_ for _ in ()).throw(AssertionError("capture must not probe Claude auth")),
+        )
+        status, review = pi._exec_claude_tui_leg(
+            stage,
+            output,
+            30,
+            "artifact",
+            repo_dir=tmp_path / "host-repo",
+            env={"HOME": "/host-home", "XDG_CONFIG_HOME": "/host-config"},
+            agy_capture=capture,
+            agy_namespace=namespace,
+        )
+        assert status == "OK" and review == "AGREE\n"
+        command = captured["command"]
+        assert isinstance(command, list)
+        assert "/run/phase-loop-output/panel-claude.txt" in captured["prompt"]
+        assert str(output / "panel-claude.txt") not in captured["prompt"]
+        _assert_sibling_command_is_private(
+            command, captured["env"], captured["prompt"],
+            stage=stage, root=root, output=output,
+        )
+        assert captured["cwd"] == output
+        assert captured["output_file"] == output / "panel-claude.txt"
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+        shutil.rmtree(output)

@@ -49,6 +49,7 @@ from .agent_runtime_provider import (
 from .agy_canary_evidence import (
     AgyCanaryCapture,
     AgyCanaryEvidenceError,
+    AgyCanaryNamespace,
     capture_namespace,
     capture_summary,
     record_launch,
@@ -2674,6 +2675,8 @@ def _exec_claude_tui_leg(
     env: Mapping[str, str] | None = None,
     backstop_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    agy_capture: AgyCanaryCapture | None = None,
+    agy_namespace: AgyCanaryNamespace | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -2700,24 +2703,45 @@ def _exec_claude_tui_leg(
         )
         return "UNAVAILABLE", "tui_adapter_required"
 
-    supported, support_detail = _claude_code_support_status()
-    if not supported:
-        return "UNAVAILABLE", support_detail
-
-    authed, auth_detail = _claude_subscription_auth_ok(env)
-    if not authed:
-        return "UNAVAILABLE", auth_detail
-
     output_file = out_dir / "panel-claude.txt"
-    prompt = _render_claude_tui_prompt(artifact, review_dir, output_file, mode)
+    child_review_dir = review_dir
+    child_output_file = output_file
+    if agy_capture is not None:
+        if agy_namespace is None:
+            raise AgyCanaryEvidenceError(
+                "capture-enabled Claude launch has no prepared namespace"
+            )
+        # The capture child sees neither the host staging path nor its private
+        # output directory.  Claude writes through the fixed bwrap output mount;
+        # the parent continues to consume the corresponding host file.
+        child_review_dir = Path("/run/phase-loop-review")
+        child_output_file = Path(
+            agy_namespace.rewrite_provider_output_path(output_file)
+        )
+    else:
+        supported, support_detail = _claude_code_support_status()
+        if not supported:
+            return "UNAVAILABLE", support_detail
+
+        authed, auth_detail = _claude_subscription_auth_ok(env)
+        if not authed:
+            return "UNAVAILABLE", auth_detail
+
+    prompt = _render_claude_tui_prompt(
+        artifact, child_review_dir, child_output_file, mode
+    )
+    command = _claude_tui_command(
+        child_review_dir,
+        child_review_dir if agy_capture is not None else (repo_dir or Path.cwd()),
+        model,
+        effort,
+        research_seat,
+    )
+    if agy_capture is not None:
+        command = agy_namespace.command(command)  # type: ignore[union-attr]
+        env = agy_namespace.outer_environment()  # type: ignore[union-attr]
     rc, review_text, log_text, pty_tail = _run_claude_tui_session(
-        command=_claude_tui_command(
-            review_dir,
-            repo_dir or Path.cwd(),
-            model,
-            effort,
-            research_seat,
-        ),
+        command=command,
         cwd=out_dir,
         prompt=prompt,
         output_file=output_file,
@@ -2918,7 +2942,7 @@ def _exec_leg(
     agy_capture: AgyCanaryCapture | None = None,
     capture_staged: dict[str, dict[str, object]] | None = None,
     seat_key: str | None = None,
-    agy_namespace: object | None = None,
+    agy_namespace: AgyCanaryNamespace | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -2948,9 +2972,10 @@ def _exec_leg(
     # fails obliquely (empty-turn, then rate-limit errors) and the panel silently
     # degrades. Fail fast + fail-closed as DEGRADED (the detail carries an auth
     # signature), never a silent empty leg.
-    authed, auth_detail = _leg_auth_ok(leg, env)
-    if not authed:
-        return 1, "", auth_detail
+    if agy_capture is None:
+        authed, auth_detail = _leg_auth_ok(leg, env)
+        if not authed:
+            return 1, "", auth_detail
     # Leg-liveness: ``timeout_s`` stays the fast-vs-slow retry-fraction reference; the
     # real kill is stall detection inside ``_run_leg_with_liveness``. The wall-clock
     # DEADLINE honors an EXPLICIT caller override as-is and only raises the input-scaled
@@ -3008,6 +3033,14 @@ def _exec_leg(
             str(out_file),
             "-",
         ]
+        if agy_capture is not None:
+            if agy_namespace is None:
+                raise AgyCanaryEvidenceError("capture-enabled Codex launch has no prepared namespace")
+            child_output = agy_namespace.rewrite_provider_output_path(out_file)  # type: ignore[union-attr]
+            cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
+            cmd[cmd.index(str(out_file))] = child_output
+            cmd = agy_namespace.command(cmd)  # type: ignore[union-attr]
+            env = agy_namespace.outer_environment()  # type: ignore[union-attr]
         # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
         # NOT retry a hard failure (rc!=0 = rate-limit/error) — that would hammer
         # a rate-limited backend; classification handles it downstream.
@@ -3235,6 +3268,12 @@ def _exec_leg(
             "--tools",
             grok_tools,
         ]
+        if agy_capture is not None:
+            if agy_namespace is None:
+                raise AgyCanaryEvidenceError("capture-enabled Grok launch has no prepared namespace")
+            cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
+            cmd = agy_namespace.command(cmd)  # type: ignore[union-attr]
+            env = agy_namespace.outer_environment()  # type: ignore[union-attr]
         # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn
         # OR a transient-marker body, but NOT a hard subprocess timeout (124) and NOT
         # an attempt that already burned most of its budget (a slow leg, not a
@@ -3317,6 +3356,7 @@ def _default_spawn(
     out_dir = base / "out"
     review_dir.mkdir()
     out_dir.mkdir()
+    provider_output_dir: Path | None = None
     try:
         (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
         resolved_brief = _resolve_brief(mode, brief_ref)
@@ -3327,12 +3367,25 @@ def _default_spawn(
         )
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
-            if leg != "gemini" or not seat_key:
-                raise AgyCanaryEvidenceError("capture may be attached only to the singleton Gemini seat")
+            if leg == "gemini" and not seat_key:
+                raise AgyCanaryEvidenceError(
+                    "capture-enabled Gemini launch is missing its singleton seat"
+                )
             for staged_name in ("review-bundle.md", "review-instructions.md"):
                 (review_dir / staged_name).chmod(0o600)
-            capture_staged = retain_staged_files(capture=agy_capture, review_dir=review_dir)
-            capture_namespace_value = capture_namespace(capture=agy_capture, stage=review_dir)
+            if leg == "gemini":
+                capture_staged = retain_staged_files(
+                    capture=agy_capture, review_dir=review_dir
+                )
+            provider_output_dir = Path(
+                tempfile.mkdtemp(prefix="phase-loop-provider-output-", dir="/tmp")
+            )
+            provider_output_dir.chmod(0o700)
+            out_dir = provider_output_dir
+            capture_namespace_value = replace(
+                capture_namespace(capture=agy_capture, stage=review_dir),
+                provider_output=provider_output_dir,
+            )
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
         # explicit override bounds the leg. This is the ONE place that knows whether the
         # override was explicit, so resolve BOTH the retry reference and the hard deadline
@@ -3351,8 +3404,6 @@ def _default_spawn(
             extra["research_seat"] = research_seat
         if agy_capture is not None:
             extra["agy_capture"] = agy_capture
-            extra["capture_staged"] = capture_staged
-            extra["seat_key"] = seat_key
             extra["agy_namespace"] = capture_namespace_value
         if leg == "claude":
             return _exec_claude_tui_leg(
@@ -3375,6 +3426,11 @@ def _default_spawn(
             mode,
             model,
             deadline_s=leg_deadline,
+            **(
+                {"capture_staged": capture_staged, "seat_key": seat_key}
+                if capture_staged is not None
+                else {}
+            ),
             **extra,
         )
         status = _classify_leg(rc, review_text, log_text, mode)
@@ -3397,6 +3453,8 @@ def _default_spawn(
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
     finally:
+        if provider_output_dir is not None:
+            shutil.rmtree(provider_output_dir, ignore_errors=True)
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -4321,7 +4379,7 @@ def invoke_board(
                     research_extra["brief_append"] = research_instructions(
                         research_seat
                     )
-                if agy_canary_capture is not None and leg == "gemini":
+                if agy_canary_capture is not None:
                     research_extra["agy_capture"] = agy_canary_capture
                     research_extra["seat_key"] = seat.seat_key
                 spawned = _default_spawn_via_provider(
