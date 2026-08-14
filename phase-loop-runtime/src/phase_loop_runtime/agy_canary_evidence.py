@@ -131,6 +131,134 @@ _PROVIDER_EXECUTABLES = {
     "grok": "grok",
 }
 
+# Account-local npm shims are intentionally *not* executable authorities: the
+# capture namespace masks /home, and a shim can be repointed between discovery
+# and launch.  These are the only accepted package roots for the locally
+# installed subscription CLIs.  Each package is rebound at a fixed child path;
+# neither ~/.npm-global/bin nor any other part of HOME is exposed to a child.
+_NPM_PROVIDER_RUNTIMES = {
+    "codex": (
+        ".npm-global/bin/codex",
+        ".npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+        ".npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl",
+        "bin/codex",
+    ),
+    "claude": (
+        ".npm-global/bin/claude",
+        ".npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+        None,
+        "",
+    ),
+    "grok": (".grok/bin/grok", ".grok/bin/grok-1.0.3", None, ""),
+}
+_PROVIDER_AUTH_PATHS = {
+    "codex": (".codex/auth.json", "/home/phase-loop/.codex/auth.json"),
+    "claude": (".claude/.credentials.json", "/home/phase-loop/.claude/.credentials.json"),
+    "grok": (".grok/auth.json", "/home/phase-loop/.grok/auth.json"),
+}
+_PROVIDER_STATUS_COMMANDS = {
+    "codex": ("login", "status"),
+    "claude": ("auth", "status"),
+}
+_PROVIDER_TLS_HOSTS = {
+    "gemini": "antigravity.google",
+    "codex": "chatgpt.com",
+    "claude": "api.anthropic.com",
+    "grok": "api.x.ai",
+}
+_PROVIDER_LAUNCHER_TARGETS = {
+    "codex": "../lib/node_modules/@openai/codex/bin/codex.js",
+    "grok": "grok-1.0.3",
+}
+_NATIVE_PROVIDER_ASSETS = {
+    "codex": (
+        "bin/codex",
+        "bin/codex-code-mode-host",
+        "codex-path/rg",
+        "codex-resources/bwrap",
+        "codex-package.json",
+    ),
+}
+
+
+def _read_regular_path(path: Path) -> tuple[bytes, os.stat_result]:
+    """Descriptor-read one absolute regular file without following a link."""
+    if not path.is_absolute() or path.is_symlink():
+        raise AgyCanaryEvidenceError("trusted runtime path is not a direct regular file")
+    parent_fd = os.open(
+        path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        return _reopen_at(parent_fd, path.name)
+    finally:
+        os.close(parent_fd)
+
+
+def _stat_regular_path(path: Path) -> os.stat_result:
+    """Nofollow metadata check for a regular file without re-reading its bytes."""
+    if not path.is_absolute() or path.is_symlink():
+        raise AgyCanaryEvidenceError("trusted runtime path is not a direct regular file")
+    parent_fd = os.open(
+        path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise AgyCanaryEvidenceError("trusted runtime path is not regular")
+            return info
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _runtime_tree_sha256(root: Path) -> str:
+    """Hash the exact runnable package tree and reject links/special files."""
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError as exc:
+        raise AgyCanaryEvidenceError("trusted provider package is unavailable") from exc
+    if (stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode) or
+            root_info.st_uid != os.getuid() or stat.S_IMODE(root_info.st_mode) & 0o002):
+        raise AgyCanaryEvidenceError("trusted provider package root is unsafe")
+    digest = hashlib.sha256()
+    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        directories.sort()
+        files.sort()
+        for name in [*directories, *files]:
+            path = current_path / name
+            relative = path.relative_to(root).as_posix().encode()
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise AgyCanaryEvidenceError("trusted provider package contains a symlink")
+            digest.update(relative + b"\0" + format(stat.S_IMODE(info.st_mode), "04o").encode() + b"\0")
+            if stat.S_ISDIR(info.st_mode):
+                if stat.S_IMODE(info.st_mode) & 0o002:
+                    raise AgyCanaryEvidenceError("trusted provider package directory is unsafe")
+                continue
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o002:
+                raise AgyCanaryEvidenceError("trusted provider package contains an unsafe file")
+            data, reopened = _read_regular_path(path)
+            if (reopened.st_dev, reopened.st_ino) != (info.st_dev, info.st_ino):
+                raise AgyCanaryEvidenceError("trusted provider package changed while hashing")
+            digest.update(data)
+    return digest.hexdigest()
+
+
+def _trusted_node_runtime() -> tuple[Path, int, int, int, str]:
+    node = Path("/usr/bin/node")
+    try:
+        data, info = _read_regular_path(node)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("trusted node runtime is unavailable") from exc
+    if (not os.access(node, os.X_OK) or stat.S_IMODE(info.st_mode) & 0o022 or
+            info.st_uid != 0):
+        raise AgyCanaryEvidenceError("trusted node runtime is unsafe")
+    return node, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), _sha256(data)
+
 
 @dataclass(frozen=True)
 class _TrustedProviderRuntime:
@@ -142,17 +270,76 @@ class _TrustedProviderRuntime:
     inode: int
     mode: int
     sha256: str
+    support_source: Path | None = None
+    support_device: int | None = None
+    support_inode: int | None = None
+    support_mode: int | None = None
+    support_sha256: str | None = None
+    entry_relative: str = ""
+    node_source: Path | None = None
+    node_device: int | None = None
+    node_inode: int | None = None
+    node_mode: int | None = None
+    node_sha256: str | None = None
+    launcher: Path | None = None
+    launcher_target: str | None = None
 
     @property
     def destination(self) -> str:
         return f"/run/phase-loop-bin/{_PROVIDER_EXECUTABLES[self.provider]}"
 
-    def revalidate(self) -> None:
-        info = self.source.lstat()
-        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or
-                (info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)) != (self.device, self.inode, self.mode) or
-                _sha256(self.source.read_bytes()) != self.sha256):
+    def revalidate(self, *, full_assets: bool = False) -> None:
+        try:
+            info = _stat_regular_path(self.source)
+        except (FileNotFoundError, OSError) as exc:
+            raise AgyCanaryEvidenceError(
+                f"trusted {self.provider} executable drifted before namespace launch"
+            ) from exc
+        if ((info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)) !=
+                (self.device, self.inode, self.mode) or
+                (full_assets and _sha256(_read_regular_path(self.source)[0]) != self.sha256) or
+                (self.launcher is None and self.support_source is None and
+                 _sha256(_read_regular_path(self.source)[0]) != self.sha256)):
             raise AgyCanaryEvidenceError(f"trusted {self.provider} executable drifted before namespace launch")
+        if self.launcher is not None:
+            try:
+                launcher_info = self.launcher.lstat()
+            except FileNotFoundError as exc:
+                raise AgyCanaryEvidenceError(
+                    f"trusted {self.provider} launcher drifted before namespace launch"
+                ) from exc
+            if (not stat.S_ISLNK(launcher_info.st_mode) or
+                    os.readlink(self.launcher) != self.launcher_target or
+                    (self.support_source is None and
+                     self.launcher.resolve(strict=True) != self.source)):
+                raise AgyCanaryEvidenceError(
+                    f"trusted {self.provider} launcher drifted before namespace launch"
+                )
+        if self.support_source is not None:
+            info = self.support_source.lstat()
+            if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
+                    (info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)) !=
+                    (self.support_device, self.support_inode, self.support_mode) or
+                    (full_assets and _runtime_tree_sha256(self.support_source) != self.support_sha256)):
+                raise AgyCanaryEvidenceError(
+                    f"trusted {self.provider} package drifted before namespace launch"
+                )
+        if self.node_source is not None:
+            info = _stat_regular_path(self.node_source)
+            if ((info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)) !=
+                    (self.node_device, self.node_inode, self.node_mode) or
+                    (full_assets and
+                     _sha256(_read_regular_path(self.node_source)[0]) != self.node_sha256)):
+                raise AgyCanaryEvidenceError("trusted node runtime drifted before namespace launch")
+
+    def runtime_binds(self) -> tuple[tuple[Path, str], ...]:
+        return ((self.support_source, self.destination),) if self.support_source else ((self.source, self.destination),)
+
+    def child_argv(self, arguments: list[str]) -> list[str]:
+        target = str(Path(self.destination) / self.entry_relative) if self.entry_relative else self.destination
+        if self.node_source is not None:
+            return [str(self.node_source), target, *arguments]
+        return [target, *arguments]
 
 
 def _trusted_provider_runtime(provider: str) -> _TrustedProviderRuntime:
@@ -160,6 +347,63 @@ def _trusted_provider_runtime(provider: str) -> _TrustedProviderRuntime:
     executable = _PROVIDER_EXECUTABLES.get(provider)
     if executable is None:
         raise AgyCanaryEvidenceError("provider launch authority is unsupported")
+    npm_spec = _NPM_PROVIDER_RUNTIMES.get(provider)
+    if npm_spec is not None:
+        launcher_relative, source_relative, support_relative, entry_relative = npm_spec
+        home = _account_home()
+        launcher = home / launcher_relative
+        source = home / source_relative
+        support = home / support_relative if support_relative is not None else None
+        try:
+            launcher_info = launcher.lstat()
+            data, info = _read_regular_path(source)
+            support_info = support.lstat() if support is not None else None
+        except (FileNotFoundError, OSError) as exc:
+            raise AgyCanaryEvidenceError(f"trusted {provider} native runtime is unavailable") from exc
+        launcher_target = os.readlink(launcher) if stat.S_ISLNK(launcher_info.st_mode) else None
+        if (not stat.S_ISLNK(launcher_info.st_mode) or not launcher_target or
+                (provider in _PROVIDER_LAUNCHER_TARGETS and
+                 launcher_target != _PROVIDER_LAUNCHER_TARGETS[provider]) or
+                not os.access(source, os.X_OK) or
+                stat.S_IMODE(info.st_mode) & 0o002 or info.st_uid != os.getuid() or
+                (support_info is not None and
+                 (stat.S_ISLNK(support_info.st_mode) or not stat.S_ISDIR(support_info.st_mode)))):
+            raise AgyCanaryEvidenceError(f"trusted {provider} native runtime is unsafe")
+        if support is not None:
+            for relative in _NATIVE_PROVIDER_ASSETS.get(provider, ()):
+                try:
+                    _asset_data, asset_info = _read_regular_path(support / relative)
+                except (FileNotFoundError, OSError) as exc:
+                    raise AgyCanaryEvidenceError(
+                        f"trusted {provider} native asset is unavailable"
+                    ) from exc
+                if stat.S_IMODE(asset_info.st_mode) & 0o002 or asset_info.st_uid != os.getuid():
+                    raise AgyCanaryEvidenceError(f"trusted {provider} native asset is unsafe")
+            try:
+                package = json.loads(_read_regular_path(support.parent.parent / "package.json")[0])
+                native_package = json.loads(_read_regular_path(support / "codex-package.json")[0])
+            except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+                raise AgyCanaryEvidenceError("trusted Codex package provenance is unavailable") from exc
+            if (package.get("name") != "@openai/codex" or
+                    not isinstance(package.get("version"), str) or
+                    package["version"] != f"{native_package.get('version')}-linux-x64"):
+                raise AgyCanaryEvidenceError("trusted Codex package provenance drifted")
+        if provider == "grok":
+            try:
+                version = json.loads(_read_regular_path(home / ".grok" / "version.json")[0])
+            except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+                raise AgyCanaryEvidenceError("trusted Grok version provenance is unavailable") from exc
+            if version.get("version") != source.name.removeprefix("grok-"):
+                raise AgyCanaryEvidenceError("trusted Grok version provenance drifted")
+        return _TrustedProviderRuntime(
+            provider, source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+            _sha256(data), support,
+            support_info.st_dev if support_info is not None else None,
+            support_info.st_ino if support_info is not None else None,
+            stat.S_IMODE(support_info.st_mode) if support_info is not None else None,
+            _runtime_tree_sha256(support) if support is not None else None,
+            entry_relative, None, None, None, None, None, launcher, launcher_target,
+        )
     candidates = (
         _account_home() / ".local" / "bin" / executable,
         Path("/usr/local/bin") / executable,
@@ -220,6 +464,7 @@ class AgyCanaryNamespace:
     provider_output: Path | None = None
     writable_stage: bool = False
     fixture_binds: tuple[tuple[Path, str], ...] = ()
+    provider_env: tuple[tuple[str, str], ...] = ()
 
     def outer_environment(self) -> dict[str, str]:
         """Minimal host environment for bwrap itself; never carry loader/runtime overrides."""
@@ -248,7 +493,13 @@ class AgyCanaryNamespace:
             raise AgyCanaryEvidenceError("provider output path is not a file descendant")
         return str(Path("/run/phase-loop-output") / relative)
 
-    def command(self, argv: list[str], *, agy_runtime: _TrustedAgyRuntime | None = None) -> list[str]:
+    def command(
+        self,
+        argv: list[str],
+        *,
+        agy_runtime: _TrustedAgyRuntime | None = None,
+        runtime_binds: tuple[tuple[Path, str], ...] = (),
+    ) -> list[str]:
         bwrap = Path("/usr/bin/bwrap")
         if not bwrap.is_file() or not os.access(bwrap, os.X_OK):
             raise AgyCanaryEvidenceError("capture requires /usr/bin/bwrap")
@@ -285,6 +536,10 @@ class AgyCanaryNamespace:
             "--setenv", "XDG_RUNTIME_DIR", "/run/user/phase-loop",
             "--chdir", "/run/phase-loop-review",
         ]
+        for name, value in self.provider_env:
+            if name not in {"CODEX_HOME", "GROK_HOME"} or not value.startswith("/home/phase-loop/"):
+                raise AgyCanaryEvidenceError("provider namespace environment is invalid")
+            command.extend(["--setenv", name, value])
         if self.provider_output is not None:
             output = _validate_provider_output(self.provider_output, evidence_root=self.evidence_root)
             command.extend(["--dir", "/run/phase-loop-output", "--bind", str(output), "/run/phase-loop-output"])
@@ -296,6 +551,12 @@ class AgyCanaryNamespace:
         if agy_runtime is not None:
             agy_runtime.revalidate()
             command.extend(["--dir", "/run/phase-loop-bin", "--ro-bind", str(agy_runtime.source), agy_runtime.destination])
+        for source, destination in runtime_binds:
+            if (not source.is_absolute() or source.is_symlink() or
+                    not destination.startswith("/run/phase-loop-bin/") or
+                    Path(destination).parent != Path("/run/phase-loop-bin")):
+                raise AgyCanaryEvidenceError("provider runtime bind is invalid")
+            command.extend(["--dir", "/run/phase-loop-bin", "--ro-bind", str(source), destination])
         # `/etc/resolv.conf` is often a symlink into `/run`; the fresh `/run`
         # otherwise leaves the child unable to resolve the provider.  Bind only
         # the resolved regular source back at its expected target.
@@ -346,8 +607,8 @@ class ProviderLaunchAuthority:
     namespace: AgyCanaryNamespace
     auth_records: tuple[dict[str, str], ...]
 
-    def _revalidate(self) -> None:
-        self.runtime.revalidate()
+    def _revalidate(self, *, full_assets: bool = False) -> None:
+        self.runtime.revalidate(full_assets=full_assets)
         for record in self.auth_records:
             source = Path(record["source"])
             parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -363,12 +624,7 @@ class ProviderLaunchAuthority:
             raise AgyCanaryEvidenceError("provider authority command has the wrong executable")
         self._revalidate()
         return self.namespace.command(
-            [self.runtime.destination, *argv[1:]],
-            agy_runtime=_TrustedAgyRuntime(
-                source=self.runtime.source, device=self.runtime.device, inode=self.runtime.inode,
-                mode=self.runtime.mode, sha256=self.runtime.sha256,
-                destination=self.runtime.destination,
-            ),
+            self.runtime.child_argv(argv[1:]), runtime_binds=self.runtime.runtime_binds()
         )
 
     def outer_environment(self) -> dict[str, str]:
@@ -383,7 +639,30 @@ class ProviderLaunchAuthority:
 
     def preflight(self, argv: list[str]) -> list[str]:
         """Run the namespace visibility check immediately before returning argv."""
-        self.self_test()
+        # A full runtime/asset digest is expensive for native CLI payloads, so do
+        # it once at the preflight boundary.  Internal status/version probes and
+        # the final argv still revalidate entry, launcher, node, and auth identity
+        # without repeatedly hashing hundreds of MiB.  A same-UID host mutation
+        # after this check remains an unavoidable path-bind TOCTOU limit; all
+        # runtime mounts are read-only to the child and no HOME tree is exposed.
+        self._revalidate(full_assets=True)
+        namespace_self_test(namespace=self.namespace)
+        checks = [("version", ["--version"])]
+        if self.provider in _PROVIDER_STATUS_COMMANDS:
+            checks.append(("authentication", list(_PROVIDER_STATUS_COMMANDS[self.provider])))
+        for label, arguments in checks:
+            proc = subprocess.run(
+                self.command([_PROVIDER_EXECUTABLES[self.provider], *arguments]),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                env=self.outer_environment(),
+            )
+            if proc.returncode != 0:
+                raise AgyCanaryEvidenceError(
+                    f"{self.provider} {label} preflight failed inside capture namespace"
+                )
         return self.command(argv)
 
     def read_expected_output(self, name: str) -> bytes:
@@ -404,6 +683,30 @@ class ProviderLaunchAuthority:
             os.close(directory_fd)
 
 
+def _provider_auth_records(provider: str, minimal_home: Path) -> tuple[dict[str, str], ...]:
+    """Freeze only the provider's declared credential file and empty bind target."""
+    if provider == "gemini":
+        return ()
+    source_relative, destination = _PROVIDER_AUTH_PATHS[provider]
+    source = _account_home() / source_relative
+    try:
+        data, info = _read_regular_path(source)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError(
+            f"{provider} authentication source is unavailable"
+        ) from exc
+    if stat.S_IMODE(info.st_mode) & 0o077 or info.st_uid != os.getuid():
+        raise AgyCanaryEvidenceError(f"{provider} authentication source is unsafe")
+    child_relative = Path(destination).relative_to("/home/phase-loop")
+    target = minimal_home / child_relative
+    if target.exists() or target.is_symlink():
+        raise AgyCanaryEvidenceError(f"{provider} authentication bind target already exists")
+    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    target.write_bytes(b"")  # Required bwrap target; credentials are never copied.
+    target.chmod(0o600)
+    return ({"source": str(source), "destination": destination, "source_sha256": _sha256(data)},)
+
+
 def prepare_provider_launch_authorities(
     *, capture: AgyCanaryCapture, stage: Path, providers: tuple[str, ...]
 ) -> dict[str, ProviderLaunchAuthority]:
@@ -420,21 +723,33 @@ def prepare_provider_launch_authorities(
     minimal_home = Path(str(authority["minimal_home"]["path"]))
     if _minimal_home_identity(minimal_home) != authority["minimal_home"]["identity"]:
         raise AgyCanaryEvidenceError("prepared minimal HOME settings drifted")
-    auth_records = authority["auth_binds"]
+    gemini_auth_records = tuple(authority["auth_binds"])
     resolver, resolver_sha256 = _resolver_snapshot()
     result: dict[str, ProviderLaunchAuthority] = {}
     for provider in providers:
         runtime = _trusted_provider_runtime(provider)
+        auth_records = (
+            gemini_auth_records
+            if provider == "gemini"
+            else _provider_auth_records(provider, minimal_home)
+        )
         provider_output = Path(
             tempfile.mkdtemp(prefix=f"phase-loop-provider-output-{provider}-", dir="/tmp")
         )
         provider_output.chmod(0o700)
         namespace = AgyCanaryNamespace(
             stage=stage, minimal_home=minimal_home, evidence_root=capture.root,
-            provider_hostname="antigravity.google", auth_binds=tuple(
+            provider_hostname=_PROVIDER_TLS_HOSTS[provider], auth_binds=tuple(
                 (Path(item["source"]), item["destination"]) for item in auth_records
             ), resolver_source=resolver, resolver_sha256=resolver_sha256,
             provider_output=provider_output,
+            provider_env=(
+                (("CODEX_HOME", "/home/phase-loop/.codex"),)
+                if provider == "codex"
+                else (("GROK_HOME", "/home/phase-loop/.grok"),)
+                if provider == "grok"
+                else ()
+            ),
         )
         result[provider] = ProviderLaunchAuthority(provider, runtime, namespace, tuple(auth_records))
     return result
@@ -1069,19 +1384,26 @@ def build_probe_namespace(
 
 def namespace_self_test(*, namespace: AgyCanaryNamespace) -> dict[str, Any]:
     """Prove the fixed stage path and evidence-root masking before provider launch."""
+    namespace_python = Path("/usr/bin/python3").resolve(strict=True)
+    try:
+        python_info = _stat_regular_path(namespace_python)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("namespace self-test Python is unavailable") from exc
+    if python_info.st_uid != 0 or not os.access(namespace_python, os.X_OK):
+        raise AgyCanaryEvidenceError("namespace self-test Python is unsafe")
     test_program = (
         "import socket, ssl, pathlib, os; "
         "assert pathlib.Path('/run/phase-loop-review/review-instructions.md').is_file(); "
         "assert pathlib.Path('/run/phase-loop-review/review-bundle.md').is_file(); "
-        "assert not pathlib.Path('/tmp/' + os.environ['PL_EVIDENCE_BASENAME']).exists(); "
+        f"assert not pathlib.Path('/tmp/' + {namespace.evidence_root.name!r}).exists(); "
         f"socket.getaddrinfo({namespace.provider_hostname!r}, 443, type=socket.SOCK_STREAM); "
         f"s=socket.create_connection(({namespace.provider_hostname!r}, 443), timeout=10); "
         f"ssl.create_default_context().wrap_socket(s, server_hostname={namespace.provider_hostname!r}).close()"
     )
-    child_env = namespace.outer_environment() | {"PL_EVIDENCE_BASENAME": namespace.evidence_root.name}
     proc = subprocess.run(
-        namespace.command([sys.executable, "-I", "-c", test_program]),
-        capture_output=True, text=True, timeout=30, check=False, env=child_env,
+        namespace.command([str(namespace_python), "-I", "-c", test_program]),
+        capture_output=True, text=True, timeout=30, check=False,
+        env=namespace.outer_environment(),
     )
     if proc.returncode != 0:
         raise AgyCanaryEvidenceError("bwrap namespace masking self-test failed")

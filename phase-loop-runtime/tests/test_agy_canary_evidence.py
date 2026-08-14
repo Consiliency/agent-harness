@@ -871,6 +871,32 @@ def test_probe_revalidates_trusted_executable_before_host_exec(monkeypatch, tmp_
     shutil.rmtree(root)
 
 
+def test_native_codex_runtime_requires_fixed_launcher_assets_and_provenance(monkeypatch, tmp_path):
+    home = tmp_path / "account-home"
+    vendor = home / ".npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
+    for relative in ("bin/codex", "bin/codex-code-mode-host", "codex-path/rg", "codex-resources/bwrap", "codex-package.json"):
+        path = vendor / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}" if relative.endswith(".json") else "native", encoding="utf-8")
+        path.chmod(0o700)
+    (vendor / "codex-package.json").write_text(json.dumps({"version": "0.147.0"}))
+    package = vendor.parent.parent / "package.json"
+    package.write_text(json.dumps({"name": "@openai/codex", "version": "0.147.0-linux-x64"}))
+    launcher = home / ".npm-global/bin/codex"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to("../lib/node_modules/@openai/codex/bin/codex.js")
+    monkeypatch.setattr(evidence, "_account_home", lambda: home)
+    runtime = evidence._trusted_provider_runtime("codex")
+    assert runtime.child_argv(["--version"]) == [
+        "/run/phase-loop-bin/codex/bin/codex", "--version"
+    ]
+    assert runtime.runtime_binds() == ((vendor, "/run/phase-loop-bin/codex"),)
+    launcher.unlink()
+    launcher.symlink_to("../unsafe")
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="launcher drifted"):
+        runtime.revalidate()
+
+
 def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_output(tmp_path):
     root = _private_root(tmp_path)
     output = Path("/tmp") / f"phase-loop-provider-output.test-{os.getpid()}-{tmp_path.name}"
@@ -996,19 +1022,51 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
     from phase_loop_runtime.advisor_board import composition
     from phase_loop_runtime import panel_invoker
     root = _private_root(tmp_path)
-    home = tmp_path / "minimal-home"; home.mkdir(mode=0o700)
-    (home / ".gemini" / "antigravity-cli").mkdir(parents=True, mode=0o700)
-    settings = home / ".gemini" / "antigravity-cli" / "settings.json"
-    settings.write_bytes(_settings(tmp_path, []).read_bytes())
-    settings.chmod(0o600)
-    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
-    try:
-        ledger = evidence.create_capture(capture=capture, settings_path=_settings(tmp_path, []), seat_key="gemini:gemini-3.6-flash:high", source_inventory=_source_inventory(tmp_path))
-        ledger.update({"minimal_home": str(home), "auth_binds": []})
-        evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
-        evidence._exclusive_write_at(capture.root_fd, "agy_canary_prepare.json", evidence._canonical_json({"schema": "agy_canary_prepare.v1", "seat_key": ledger["seat_key"], "ledger_sha256": evidence._sha256(evidence._canonical_json(ledger))}), 0o600)
-    finally:
-        capture.close()
+    settings = _settings(tmp_path, [])
+    evidence.clean_settings(
+        evidence_root=root, settings_path=settings, maintenance_lock=tmp_path / "maintenance.lock"
+    )
+    staged: dict[str, dict[str, object]] = {}
+    for name in ("review-instructions.md", "review-bundle.md"):
+        retained = f"agy-capability-stage-{name}"
+        raw = name.encode()
+        (root / retained).write_bytes(raw)
+        staged[name] = {"name": retained, "bytes": len(raw), "sha256": evidence._sha256(raw)}
+    rows = []
+    for class_name, tool, target, outcome in evidence._CAPABILITY_CLASSES:
+        name = f"agy-capability-{class_name}.jsonl"
+        raw = _capability_stream(class_name).encode()
+        (root / name).write_bytes(raw)
+        rows.append({
+            "class": class_name, "tool": tool, "target": target, "attempt": True,
+            "execution": True, "result": "text", "outcome": outcome,
+            "stream": {"name": name, "bytes": len(raw), "sha256": evidence._sha256(raw)},
+        })
+    (root / "agy_capability_probe.json").write_text(json.dumps({
+        "schema": "agy_capability_probe.v2", "agy_version": "1.1.13",
+        "help_sha256": "a" * 64, "mode": "stream_json", "complete": True,
+        "classes": rows, "staged": staged,
+    }))
+    installation = {
+        "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
+        "distribution_root": "/tool/site-packages", "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
+        "direct_url_sha256": "a" * 64, "archive_hash": "sha256=" + "b" * 64,
+        "archive_url_sha256": "c" * 64,
+    }
+    monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda: installation)
+    (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({
+        "bootstrap": {"returncode": 0, "installation": installation},
+        "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
+        "blobs": {"plans/canary.md": "a", "plans/manifest.json": "b"},
+    }))
+    release = {"version": "0.7.14", "artifacts": [{"filename": "phase_loop_runtime.whl", "sha256": "b" * 64, "url_sha256": "c" * 64}]}
+    monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
+    harness = tmp_path / "agent-harness"; harness.mkdir()
+    evidence.prepare_canary(
+        evidence_root=root, settings_path=settings, seat_key="gemini:gemini-3.6-flash:high",
+        agent_harness_repo=harness, handoff_commit="d" * 40,
+        customization_home=tmp_path, project_dir=tmp_path, source_env={},
+    )
     source = tmp_path / "agy"; source.write_bytes(b"agy"); source.chmod(0o700)
     info = source.stat()
     runtime = evidence._TrustedAgyRuntime(source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))
@@ -1023,6 +1081,11 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
         evidence,
         "namespace_self_test",
         lambda **kwargs: self_tests.append(kwargs["namespace"]) or {"synthetic": True},
+    )
+    monkeypatch.setattr(
+        evidence.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Preflight", (), {"returncode": 0})(),
     )
     monkeypatch.setattr(composition, "compose_review_board", lambda: Board("one", "review", (Seat("gemini-3.6-flash", "high", harness="gemini"),)))
     seen = []
