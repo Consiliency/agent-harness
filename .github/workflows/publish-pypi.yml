@@ -42,15 +42,12 @@ jobs:
         run: |
           python -m venv /tmp/phase-loop-release-wheel
           /tmp/phase-loop-release-wheel/bin/python -m pip install --upgrade pip
-          uv export \
+          VIRTUAL_ENV=/tmp/phase-loop-release-wheel uv sync \
             --project phase-loop-runtime \
             --group test \
             --locked \
             --no-install-project \
-            --no-hashes \
-            --output-file /tmp/phase-loop-release-requirements.txt
-          /tmp/phase-loop-release-wheel/bin/python -m pip install \
-            -r /tmp/phase-loop-release-requirements.txt
+            --active
           /tmp/phase-loop-release-wheel/bin/python -m pip install --force-reinstall \
             --no-deps dist/phase_loop_runtime-*.whl
           PYTHONPATH=phase-loop-runtime/tests \
@@ -66,21 +63,26 @@ jobs:
           spec = importlib.util.find_spec("phase_loop_runtime.agy_canary_evidence")
           assert spec is not None and spec.origin is not None
           assert pathlib.Path(spec.origin).resolve().is_relative_to(root)
-          commands = {
-              "agy-canary-cleanup",
-              "agy-canary-probe",
-              "agy-canary-bootstrap-attest",
-              "agy-canary-prepare",
-              "agy-canary-verify",
-              "agy-canary-finalize",
-          }
+          expected_scripts = {"phase-loop", "codex-phase-loop"}
           entry_points = {
               entry.name
               for entry in importlib.metadata.entry_points(group="console_scripts")
               if entry.dist and entry.dist.name == "phase-loop-runtime"
           }
-          assert commands <= entry_points, commands - entry_points
+          assert entry_points == expected_scripts, entry_points
           PY
+          for script in phase-loop codex-phase-loop; do
+            "/tmp/phase-loop-release-wheel/bin/$script" --help >/dev/null
+          done
+          for subcommand in \
+            agy-canary-clean-settings \
+            agy-canary-probe \
+            agy-canary-bootstrap-attest \
+            agy-canary-prepare \
+            agy-canary-verify \
+            agy-canary-finalize; do
+            /tmp/phase-loop-release-wheel/bin/phase-loop "$subcommand" --help >/dev/null
+          done
       - name: Record exact artifact SHA-256 tuples
         run: |
           mkdir -p release

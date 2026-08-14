@@ -12,6 +12,23 @@ enforcement is live.
 - Runtime `phase_loop_runtime.__version__`: `0.7.14`
 - Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.14`
 - Console scripts: `phase-loop`, `codex-phase-loop`
+- Installed agy evidence commands are six `phase-loop` subcommands, not
+  standalone console scripts: `agy-canary-clean-settings`, `agy-canary-probe`,
+  `agy-canary-bootstrap-attest`, `agy-canary-prepare`, `agy-canary-verify`, and
+  `agy-canary-finalize`.
+
+## v0.7.14 Source Boundary
+
+- Source implementation authority: the exact merged
+  `Consiliency/agent-harness#545` commit, to be recorded after that PR merges.
+- Release authority: the exact reviewed `Consiliency/agent-harness#546` head
+  rebased onto that source commit.
+- The release delta may change packaging, release metadata, the dedicated PyPI
+  workflow, and its release-surface regression. It must leave every
+  `Consiliency/agent-harness#545` source and test blob byte-identical.
+- The agy evidence path remains opt-in and fail-closed. This handoff does not
+  assert a live provider canary, approve a downstream pin, or claim fleet
+  convergence.
 
 ## Validator Identity
 
@@ -54,6 +71,9 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   artifact digests after they are produced from its final clean head.
 - Tag, workflow, GitHub Release, and PyPI evidence are recorded only after the
   reviewed release PR merges; none is claimed by this preparation record.
+- Final tag/workflow/GitHub-Release/PyPI facts belong to a separate
+  post-publication handoff-only evidence commit after those facts are live and
+  independently revalidated.
 
 ## Sealed Implementation Evidence
 

@@ -165,7 +165,20 @@ def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
     assert "--locked" in publish
     assert "--no-install-project" in publish
     assert "phase_loop_runtime.agy_canary_evidence" in publish
-    assert "agy-canary-finalize" in publish
+    assert 'expected_scripts = {"phase-loop", "codex-phase-loop"}' in publish
+    assert "assert entry_points == expected_scripts" in publish
+    assert "for script in phase-loop codex-phase-loop" in publish
+    assert '/tmp/phase-loop-release-wheel/bin/phase-loop "$subcommand" --help' in publish
+    for subcommand in (
+        "agy-canary-clean-settings",
+        "agy-canary-probe",
+        "agy-canary-bootstrap-attest",
+        "agy-canary-prepare",
+        "agy-canary-verify",
+        "agy-canary-finalize",
+    ):
+        assert publish.count(subcommand) == 1
+    assert "agy-canary-cleanup" not in publish
     assert "sha256sum dist/* | tee release/SHA256SUMS" in publish
     assert "sha256sum --check release/SHA256SUMS" in publish
     assert "if: startsWith(github.ref, 'refs/tags/v')" in publish
