@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 import secrets
-import shutil
 import stat
 import subprocess
 import sys
@@ -21,6 +20,11 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+try:  # Windows imports this module but does not support POSIX account lookups.
+    import pwd
+except ImportError:  # pragma: no cover - Windows import coverage exercises this path.
+    pwd = None  # type: ignore[assignment]
 
 try:  # Windows imports the panel module but cannot perform this POSIX operation.
     import fcntl
@@ -46,6 +50,13 @@ _CUSTOMIZATION_ENV_PREFIXES = (
 
 class AgyCanaryEvidenceError(RuntimeError):
     """Raised when evidence cannot be produced without weakening a gate."""
+
+
+def _account_home() -> Path:
+    """Return the kernel account home, never the caller-controlled HOME value."""
+    if pwd is None:
+        return Path.home().resolve(strict=True)
+    return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
 
 
 @dataclass(frozen=True)
@@ -409,7 +420,7 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
         before = _parse_policy(settings.data)
         after, result = _derive_replacement(before)
         canonical_settings = (
-            Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+            _account_home() / ".gemini" / "antigravity-cli" / "settings.json"
         ).resolve(strict=False)
         _assert_quiescent(
             settings,
@@ -1227,7 +1238,7 @@ def _canonical_bash() -> Path:
 
 def _canonical_uv() -> Path:
     """Resolve uv from a fixed trusted location, never an ambient PATH search."""
-    candidates = (Path.home() / ".local" / "bin" / "uv", Path("/usr/local/bin/uv"), Path("/usr/bin/uv"))
+    candidates = (_account_home() / ".local" / "bin" / "uv", Path("/usr/local/bin/uv"), Path("/usr/bin/uv"))
     for candidate in candidates:
         try:
             executable = candidate.resolve(strict=True)
@@ -1328,10 +1339,14 @@ def _clean_dotfiles_repo(repo: Path) -> str:
     return _git_text(repo, "rev-parse", "HEAD")
 
 
-def _bootstrap_environment(*, nonce: str, uv_executable: Path) -> dict[str, str]:
+def _bootstrap_environment(*, nonce: str, uv_executable: Path, account_home: Path) -> dict[str, str]:
     """Use an explicit allowlist, never the caller's ambient environment."""
-    allowed = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "TMPDIR")
+    supplied_home = os.environ.get("HOME")
+    if supplied_home is not None and Path(supplied_home).resolve(strict=False) != account_home:
+        raise AgyCanaryEvidenceError("bootstrap attestation rejects HOME drift")
+    allowed = ("LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "TMPDIR")
     env = {name: os.environ[name] for name in allowed if name in os.environ}
+    env["HOME"] = str(account_home)
     env["PATH"] = str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     env["PHASE_LOOP_AGY_CANARY_BOOTSTRAP_NONCE"] = nonce
     return env
@@ -1367,7 +1382,7 @@ def bootstrap_attest(
     nonce = secrets.token_hex(24)
     bash = _canonical_bash()
     uv = _canonical_uv()
-    child_env = _bootstrap_environment(nonce=nonce, uv_executable=uv)
+    child_env = _bootstrap_environment(nonce=nonce, uv_executable=uv, account_home=_account_home())
     script_bytes = inputs["bootstrap.sh"]
     before = subprocess.run([str(uv), "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
     bootstrap_argv = (str(bash), "bootstrap.sh")
@@ -1845,23 +1860,10 @@ def check_committed_final(
     prefix, payload = _parse_final_payload(after_plan)
     if prefix != before_plan:
         raise AgyCanaryEvidenceError("committed plan prefix differs from parent preimage")
-    attestation = payload["attestation"]
-    bootstrap = attestation.get("bootstrap") if isinstance(attestation, dict) else None
-    release = attestation.get("release") if isinstance(attestation, dict) else None
-    if not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation.get("release_sha256") != _sha256(_canonical_json(release)):
-        raise AgyCanaryEvidenceError("committed finalizer payload lacks attested bootstrap/release identities")
-    repo_head = bootstrap.get("repo_head")
-    blobs = bootstrap.get("blobs")
-    input_sha256 = bootstrap.get("input_sha256")
-    if not isinstance(repo_head, str) or not isinstance(blobs, dict) or not isinstance(input_sha256, dict):
-        raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
-    if _git_text(repo, "rev-parse", f"{repo_head}^{{commit}}") != repo_head:
-        raise AgyCanaryEvidenceError("committed finalizer bootstrap HEAD is not immutable")
-    for relative, expected in ((plan_relative, before_plan), (manifest_relative, before_manifest)):
-        if blobs.get(relative) != _git_text(repo, "rev-parse", f"{repo_head}:{relative}") or input_sha256.get(relative) != _sha256(expected):
-            raise AgyCanaryEvidenceError("committed finalizer bootstrap blob identity drifted")
-    if not isinstance(release.get("version"), str) or not isinstance(release.get("release_commit"), str) or not isinstance(release.get("artifacts"), list):
-        raise AgyCanaryEvidenceError("committed finalizer release identity is malformed")
+    _validate_committed_attestation(
+        repo=repo, attestation=payload["attestation"], plan_relative=plan_relative,
+        manifest_relative=manifest_relative, plan_before=before_plan, manifest_before=before_manifest,
+    )
     try:
         before_value = json.loads(before_manifest)
         after_value = json.loads(after_manifest)
@@ -1878,6 +1880,59 @@ def check_committed_final(
     if _canonical_json(before_value) != after_manifest:
         raise AgyCanaryEvidenceError("committed manifest changed outside canonical updated_at transform")
     return {"commit": resolved, "proof_sha256": payload["proof_sha256"], "plan_sha256": _sha256(after_plan), "manifest_sha256": _sha256(after_manifest)}
+
+
+def _validate_committed_attestation(
+    *, repo: Path, attestation: Any, plan_relative: str, manifest_relative: str,
+    plan_before: bytes, manifest_before: bytes,
+) -> None:
+    """Validate every bootstrap/release identity embedded in a committed suffix."""
+    bootstrap = attestation.get("bootstrap") if isinstance(attestation, dict) else None
+    release = attestation.get("release") if isinstance(attestation, dict) else None
+    if not isinstance(attestation, dict) or set(attestation) != {"bootstrap", "release", "release_sha256"} or not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation["release_sha256"] != _sha256(_canonical_json(release)):
+        raise AgyCanaryEvidenceError("committed finalizer payload lacks attested bootstrap/release identities")
+    if set(bootstrap) != {"repo_head", "blobs", "input_sha256"}:
+        raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
+    repo_head = bootstrap["repo_head"]
+    blobs = bootstrap["blobs"]
+    input_sha256 = bootstrap["input_sha256"]
+    expected_paths = {"bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json", plan_relative}
+    if not isinstance(repo_head, str) or len(repo_head) != 40 or not isinstance(blobs, dict) or not isinstance(input_sha256, dict) or set(blobs) != expected_paths or set(input_sha256) != expected_paths:
+        raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
+    if _git_text(repo, "rev-parse", f"{repo_head}^{{commit}}") != repo_head:
+        raise AgyCanaryEvidenceError("committed finalizer bootstrap HEAD is not immutable")
+    base_bytes: dict[str, bytes] = {}
+    for relative in expected_paths:
+        actual = subprocess.run(["git", "-C", str(repo), "show", f"{repo_head}:{relative}"], capture_output=True, check=False)
+        if actual.returncode != 0 or blobs[relative] != _git_text(repo, "rev-parse", f"{repo_head}:{relative}") or input_sha256[relative] != _sha256(actual.stdout):
+            raise AgyCanaryEvidenceError("committed finalizer bootstrap blob identity drifted")
+        base_bytes[relative] = actual.stdout
+    if base_bytes[plan_relative] != plan_before or base_bytes[manifest_relative] != manifest_before:
+        raise AgyCanaryEvidenceError("committed finalizer preimages differ from bootstrap identity")
+    if set(release) != {"version", "handoff_commit", "release_commit", "tag_object", "tag_peel", "artifacts"} or release.get("version") != "0.7.14" or release.get("tag_peel") != release.get("release_commit"):
+        raise AgyCanaryEvidenceError("committed finalizer release identity is malformed")
+    for name in ("handoff_commit", "release_commit", "tag_object", "tag_peel"):
+        value = release.get(name)
+        if not isinstance(value, str) or len(value) != 40 or any(char not in "0123456789abcdef" for char in value.lower()):
+            raise AgyCanaryEvidenceError("committed finalizer release identity is malformed")
+    artifacts = release.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise AgyCanaryEvidenceError("committed finalizer release artifacts are malformed")
+    identities: set[tuple[str, str]] = set()
+    wheel_count = sdist_count = 0
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or set(artifact) != {"filename", "packagetype", "sha256", "url_sha256"} or not all(isinstance(artifact.get(name), str) for name in ("filename", "packagetype", "sha256", "url_sha256")):
+            raise AgyCanaryEvidenceError("committed finalizer release artifact is malformed")
+        if any(len(artifact[name]) != 64 or any(char not in "0123456789abcdef" for char in artifact[name].lower()) for name in ("sha256", "url_sha256")):
+            raise AgyCanaryEvidenceError("committed finalizer release artifact digest is malformed")
+        identity = (artifact["filename"], artifact["packagetype"])
+        if identity in identities:
+            raise AgyCanaryEvidenceError("committed finalizer release artifacts are duplicated")
+        identities.add(identity)
+        wheel_count += artifact["filename"].endswith(".whl")
+        sdist_count += artifact["filename"].endswith(".tar.gz")
+    if wheel_count != 1 or sdist_count != 1:
+        raise AgyCanaryEvidenceError("committed finalizer release requires one wheel and one sdist")
 
 
 def finalize_canary(

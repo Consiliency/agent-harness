@@ -683,17 +683,24 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
         blobs = {
             name: subprocess.check_output(["git", "-C", str(repo), "rev-parse", f"HEAD:{name}"], text=True).strip()
-            for name in ("plans/canary.md", "plans/manifest.json")
+            for name in ("bootstrap.sh", "shared/agent-harness.pin", "plans/canary.md", "plans/manifest.json")
         }
         (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({
             "repo_head": head, "blobs": blobs,
             "input_sha256": {
                 name: evidence._sha256((repo / name).read_bytes())
-                for name in ("plans/canary.md", "plans/manifest.json")
+                for name in ("bootstrap.sh", "shared/agent-harness.pin", "plans/canary.md", "plans/manifest.json")
             },
             "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
         }))
-        release = {"version": "0.7.14", "release_commit": "d" * 40, "artifacts": []}
+        release = {
+            "version": "0.7.14", "handoff_commit": "a" * 40, "release_commit": "b" * 40,
+            "tag_object": "c" * 40, "tag_peel": "b" * 40,
+            "artifacts": [
+                {"filename": "phase-loop-runtime-0.7.14-py3-none-any.whl", "packagetype": "bdist_wheel", "sha256": "d" * 64, "url_sha256": "e" * 64},
+                {"filename": "phase-loop-runtime-0.7.14.tar.gz", "packagetype": "sdist", "sha256": "f" * 64, "url_sha256": "0" * 64},
+            ],
+        }
         (root / "agy_canary_prepare.json").write_text(json.dumps({
             "release": release, "release_sha256": evidence._sha256(evidence._canonical_json(release)),
         }))
@@ -723,6 +730,28 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             dotfiles_repo=repo, commit=committed, plan_path=Path("plans/canary.md"),
             manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
         )["commit"] == committed
+        bootstrap = json.loads((root / "agy_canary_bootstrap_attestation.json").read_text())
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="release"):
+            evidence._validate_committed_attestation(
+                repo=repo,
+                attestation={
+                    "bootstrap": {name: bootstrap[name] for name in ("repo_head", "blobs", "input_sha256")},
+                    "release": {"version": "0.7.14", "release_commit": "b" * 40, "artifacts": []},
+                    "release_sha256": evidence._sha256(evidence._canonical_json({"version": "0.7.14", "release_commit": "b" * 40, "artifacts": []})),
+                },
+                plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/manifest.json"]),
+            )
+        _prefix, payload = evidence._parse_final_payload(plan.read_bytes())
+        tampered = json.loads(json.dumps(payload["attestation"]))
+        tampered["bootstrap"]["input_sha256"]["bootstrap.sh"] = "0" * 64
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap blob"):
+            evidence._validate_committed_attestation(
+                repo=repo, attestation=tampered, plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/manifest.json"]),
+            )
     finally:
         shutil.rmtree(root)
 
@@ -759,13 +788,22 @@ def test_namespace_masks_all_xdg_sources_and_finalizer_requires_tracked_repo(tmp
         shutil.rmtree(root)
 
 
-def test_bootstrap_environment_never_uses_attacker_path(monkeypatch):
+def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", "/tmp/fake-bin:/usr/bin")
-    environment = evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"))
+    account_home = evidence._account_home()
+    monkeypatch.setenv("HOME", str(account_home))
+    environment = evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"), account_home=account_home)
     assert environment["PATH"].startswith("/trusted:")
     assert "/tmp/fake-bin" not in environment["PATH"]
     assert evidence._canonical_bash() != Path("/tmp/fake-bin/bash")
     assert evidence._canonical_uv() != Path("/tmp/fake-bin/uv")
+    fake_home = tmp_path / "attacker-home"
+    (fake_home / ".local" / "bin").mkdir(parents=True)
+    (fake_home / ".local" / "bin" / "uv").write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setenv("HOME", str(fake_home))
+    assert evidence._canonical_uv() != fake_home / ".local" / "bin" / "uv"
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="HOME drift"):
+        evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"), account_home=account_home)
 
 
 def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, monkeypatch):
