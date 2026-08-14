@@ -1481,15 +1481,16 @@ def bootstrap_attest(
                 raise AgyCanaryEvidenceError("bootstrap input bytes drifted from attested blobs")
     revalidate_inputs()
     before = subprocess.run([str(uv), "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
-    with tempfile.NamedTemporaryFile(prefix="phase-loop-bootstrap-", dir="/tmp", delete=False) as snapshot:
-        snapshot.write(script_bytes)
-        snapshot.flush()
-        os.fchmod(snapshot.fileno(), 0o700)
-        bootstrap_argv = (str(bash), snapshot.name)
+    if not sys.platform.startswith("linux") or not hasattr(os, "memfd_create"):
+        raise AgyCanaryEvidenceError("bootstrap attestation requires Linux memfd support")
+    snapshot_fd = os.memfd_create("phase-loop-bootstrap", os.MFD_CLOEXEC)
+    os.write(snapshot_fd, script_bytes)
+    os.lseek(snapshot_fd, 0, os.SEEK_SET)
+    bootstrap_argv = (str(bash), f"/proc/self/fd/{snapshot_fd}")
     try:
         child_process = subprocess.Popen(
             list(bootstrap_argv), cwd=repo, env=child_env,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, pass_fds=(snapshot_fd,),
         )
         try:
             _stdout, _stderr = child_process.communicate(timeout=1800)
@@ -1498,7 +1499,7 @@ def bootstrap_attest(
             child_process.communicate()
             raise AgyCanaryEvidenceError("direct bootstrap child timed out") from exc
     finally:
-        os.unlink(bootstrap_argv[1])
+        os.close(snapshot_fd)
     child_rc = child_process.returncode
     revalidate_inputs()
     after = subprocess.run([str(uv), "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
