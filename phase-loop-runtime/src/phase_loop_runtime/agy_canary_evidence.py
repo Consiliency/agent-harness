@@ -540,9 +540,7 @@ class AgyCanaryNamespace:
         agy_runtime: _TrustedAgyRuntime | None = None,
         runtime_binds: tuple[tuple[Path, str], ...] = (),
     ) -> list[str]:
-        bwrap = Path("/usr/bin/bwrap")
-        if not bwrap.is_file() or not os.access(bwrap, os.X_OK):
-            raise AgyCanaryEvidenceError("capture requires /usr/bin/bwrap")
+        bwrap = _canonical_bwrap()
         if not self.stage.is_absolute() or not self.minimal_home.is_absolute():
             raise AgyCanaryEvidenceError("namespace inputs must be absolute")
         # `/tmp` and `/run` are fresh tmpfs mounts.  Thus the direct `/tmp` child
@@ -2876,6 +2874,19 @@ def _canonical_bash() -> Path:
     if not bash.is_file() or not os.access(bash, os.X_OK):
         raise AgyCanaryEvidenceError("bootstrap attestation requires canonical /usr/bin/bash")
     return bash
+
+
+def _canonical_bwrap() -> Path:
+    """Resolve only the fixed Bubblewrap authority used by capture namespaces."""
+    bwrap = Path("/usr/bin/bwrap")
+    try:
+        info = bwrap.lstat()
+    except FileNotFoundError as exc:
+        raise AgyCanaryEvidenceError("capture requires canonical /usr/bin/bwrap") from exc
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or
+            not os.access(bwrap, os.X_OK)):
+        raise AgyCanaryEvidenceError("capture requires canonical /usr/bin/bwrap")
+    return bwrap
 
 
 def _canonical_uv() -> Path:
