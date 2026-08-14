@@ -2042,6 +2042,7 @@ def _run_claude_tui_session(
     mode: str = "review",
     backstop_s: int | None = None,
     stall_threshold_s: float | None = None,
+    capture_output_reader: Callable[[], str] | None = None,
 ) -> tuple[int, str, str, str]:
     if fcntl is None or pty is None or termios is None:
         return 1, "", "claude_tui_unsupported_platform", ""
@@ -2094,6 +2095,13 @@ def _run_claude_tui_session(
     cwd_tokens = _cwd_trust_tokens(
         cwd
     )  # run-unique FULL-path tokens (not the bare basename)
+
+    def _current_output() -> str:
+        return (
+            capture_output_reader()
+            if capture_output_reader is not None
+            else _read_review_output(output_file)
+        )
 
     def _finish(rc: int, text: str, log: str) -> tuple[int, str, str, str]:
         # Attach a bounded, redacted, control-stripped PTY tail to every NON-OK
@@ -2185,7 +2193,7 @@ def _run_claude_tui_session(
                         # (`proc.poll() or 1`) so _classify_leg fails closed — matching
                         # the proc.poll()/deadline sibling paths. Promoting a transcript
                         # verdict to OK here would be a race-dependent false-green.
-                        review_text = _read_review_output(output_file)
+                        review_text = _current_output()
                         if _completion_ok(review_text, mode):
                             return _finish(0, review_text, "claude_tui_file_output")
                         transcript_text = (
@@ -2279,7 +2287,7 @@ def _run_claude_tui_session(
                         prompt_sent = True
                     except OSError:
                         return _finish(1, "", "claude_tui_submit_failed")
-            review_text = _read_review_output(output_file)
+            review_text = _current_output()
             # #188: canonical review OUTPUT growing is unambiguous reviewer progress.
             if len(review_text) > last_review_len:
                 last_review_len = len(review_text)
@@ -2307,7 +2315,7 @@ def _run_claude_tui_session(
                 if _completion_ok(transcript_text, mode):
                     transcript_salvage = transcript_text
             if proc.poll() is not None:
-                review_text = _read_review_output(output_file)
+                review_text = _current_output()
                 transcript_text = transcript_salvage or _latest_claude_transcript_text(
                     str(cwd), since=start_wall
                 )
@@ -2327,7 +2335,7 @@ def _run_claude_tui_session(
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
             # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
             if now - last_heartbeat >= stall_threshold_s:
-                review_text = _read_review_output(output_file)
+                review_text = _current_output()
                 if _completion_ok(review_text, mode):
                     return _finish(0, review_text, "claude_tui_file_output")
                 # agent-harness#343: an unmatched tool_use means the reviewer is
@@ -2353,7 +2361,7 @@ def _run_claude_tui_session(
                     review_text or transcript_text,
                     "claude_tui_stalled",
                 )
-        review_text = _read_review_output(output_file)
+        review_text = _current_output()
         transcript_text = transcript_salvage or _latest_claude_transcript_text(
             str(cwd), since=start_wall
         )
@@ -2706,11 +2714,18 @@ def _exec_claude_tui_leg(
     output_file = out_dir / "panel-claude.txt"
     child_review_dir = review_dir
     child_output_file = output_file
+    capture_output_reader: Callable[[], str] | None = None
     if agy_capture is not None:
         if provider_authority is None:
             raise AgyCanaryEvidenceError(
                 "capture-enabled Claude launch has no prepared namespace"
             )
+        try:
+            output_file.touch(mode=0o600, exist_ok=False)
+        except FileExistsError as exc:
+            raise AgyCanaryEvidenceError(
+                "capture-enabled Claude output already exists before launch"
+            ) from exc
         # The capture child sees neither the host staging path nor its private
         # output directory.  Claude writes through the fixed bwrap output mount;
         # the parent continues to consume the corresponding host file.
@@ -2718,6 +2733,9 @@ def _exec_claude_tui_leg(
         child_output_file = Path(
             provider_authority.rewrite_provider_output_path(output_file)
         )
+        capture_output_reader = lambda: provider_authority.read_expected_output(
+            output_file.name
+        ).decode("utf-8", errors="replace")
     else:
         supported, support_detail = _claude_code_support_status()
         if not supported:
@@ -2740,6 +2758,11 @@ def _exec_claude_tui_leg(
     if agy_capture is not None:
         command = provider_authority.preflight(command)
         env = provider_authority.outer_environment()
+    tui_extra = (
+        {"capture_output_reader": capture_output_reader}
+        if capture_output_reader is not None
+        else {}
+    )
     rc, review_text, log_text, pty_tail = _run_claude_tui_session(
         command=command,
         cwd=out_dir,
@@ -2749,6 +2772,7 @@ def _exec_claude_tui_leg(
         env=env,
         mode=mode,
         backstop_s=backstop_s,
+        **tui_extra,
     )
     if agy_capture is not None:
         # The TUI may read its canonical file repeatedly for liveness, but only this
@@ -3042,6 +3066,11 @@ def _exec_leg(
         if agy_capture is not None:
             if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Codex launch has no prepared namespace")
+            cmd[cmd.index("exec") + 1:cmd.index("exec") + 1] = [
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--ephemeral",
+            ]
             child_output = provider_authority.rewrite_provider_output_path(out_file)
             cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
             cmd[cmd.index(str(out_file))] = child_output
@@ -3290,6 +3319,7 @@ def _exec_leg(
             if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Grok launch has no prepared namespace")
             cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
+            cmd[1:1] = ["--disable-web-search", "--no-memory", "--no-subagents"]
             cmd = provider_authority.preflight(cmd)
             env = provider_authority.outer_environment()
         # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn

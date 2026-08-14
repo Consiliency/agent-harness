@@ -15,6 +15,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from phase_loop_runtime import agy_canary_evidence as evidence
 from phase_loop_runtime import panel_invoker as pi
 
@@ -216,7 +218,14 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
         out_dir = tmp_path / "out"
         out_dir.mkdir(mode=0o700)
         class TestAuthority:
+            def __init__(self):
+                self.preflights: list[list[str]] = []
+                self.self_tests: list[list[str]] = []
+                self.output_reads: list[str] = []
+
             def preflight(self, argv):
+                self.preflights.append(list(argv))
+                self.self_tests.append(list(argv))
                 return namespace.agy_command(list(argv))
 
             def outer_environment(self):
@@ -226,12 +235,14 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
                 return namespace.rewrite_provider_output_path(path)
 
             def read_expected_output(self, name):
+                self.output_reads.append(name)
                 return (out_dir / name).read_bytes()
 
+        authority = TestAuthority()
         rc, review, _log = pi._exec_leg(
             "gemini", review_dir, out_dir, artifact="artifact",
             agy_capture=capture, capture_staged=staged, seat_key="gemini-primary",
-            provider_authority=TestAuthority(),
+            provider_authority=authority,
         )
         command = captured["cmd"]
         assert rc == 0 and review == "AGREE"
@@ -250,6 +261,9 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
         )
         assert command[bind + 1] == str(review_dir)
         assert command[bind + 2] == "/run/phase-loop-review"
+        assert authority.preflights and authority.self_tests
+        assert authority.preflights[0][0] == "agy"
+        assert authority.output_reads == ["panel-gemini.txt"]
     finally:
         capture.close()
         shutil.rmtree(root)
@@ -277,9 +291,12 @@ def _sibling_namespace(tmp_path: Path):
         def __init__(self):
             self.namespace = namespace
             self.preflights: list[list[str]] = []
+            self.self_tests: list[list[str]] = []
+            self.output_reads: list[str] = []
 
         def preflight(self, argv):
             self.preflights.append(list(argv))
+            self.self_tests.append(list(argv))
             return namespace.command(list(argv))
 
         def outer_environment(self):
@@ -289,6 +306,10 @@ def _sibling_namespace(tmp_path: Path):
             return namespace.rewrite_provider_output_path(path)
 
         def read_expected_output(self, name):
+            self.output_reads.append(name)
+            entries = sorted(output.iterdir())
+            if entries != [output / name] or (output / name).is_symlink():
+                raise evidence.AgyCanaryEvidenceError("unsafe captured output set")
             return (output / name).read_bytes()
 
     return capture, TestAuthority(), stage, root, output
@@ -334,6 +355,9 @@ def test_capture_enabled_codex_uses_sibling_namespace_and_output_mapping(monkeyp
             provider_authority=authority,
         )
         assert rc == 0 and review == "AGREE\n"
+        assert authority.preflights and authority.self_tests
+        assert authority.preflights[0][0] == "codex"
+        assert authority.output_reads == ["panel-codex.txt"] * 2
         command = captured["command"]
         assert isinstance(command, list)
         assert "/run/phase-loop-output/panel-codex.txt" in command
@@ -363,6 +387,9 @@ def test_capture_enabled_grok_uses_sibling_namespace_without_ledger_launch(monke
             agy_capture=capture, provider_authority=authority,
         )
         assert rc == 0 and review == "AGREE\n"
+        assert authority.preflights and authority.self_tests
+        assert authority.preflights[0][0] == "grok"
+        assert authority.output_reads == ["panel-grok.txt"]
         command = captured["command"]
         assert isinstance(command, list)
         prompt = command[command.index("-p") + 1]
@@ -381,13 +408,15 @@ def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeyp
     capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     captured: dict[str, object] = {}
     try:
-        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, **_kwargs):
+        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, capture_output_reader, **_kwargs):
             captured["command"] = list(command)
             captured["cwd"] = cwd
             captured["prompt"] = prompt
             captured["output_file"] = output_file
             captured["env"] = dict(env)
+            assert capture_output_reader() == ""
             output_file.write_text("AGREE\n", encoding="utf-8")
+            assert capture_output_reader() == "AGREE\n"
             return 0, "AGREE\n", "claude_tui_file_output", ""
 
         monkeypatch.setattr(pi, "_under_claude_code", lambda *_args, **_kwargs: False)
@@ -413,6 +442,10 @@ def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeyp
             provider_authority=authority,
         )
         assert status == "OK" and review == "AGREE\n"
+        assert authority.preflights and authority.self_tests
+        assert authority.preflights[0][0] == "claude"
+        # Every capture read, including the TUI liveness checks, uses the authority.
+        assert authority.output_reads == ["panel-claude.txt"] * 3
         command = captured["command"]
         assert isinstance(command, list)
         assert "/run/phase-loop-output/panel-claude.txt" in captured["prompt"]
@@ -423,6 +456,34 @@ def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeyp
         )
         assert captured["cwd"] == output
         assert captured["output_file"] == output / "panel-claude.txt"
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+        shutil.rmtree(output)
+
+
+def test_capture_claude_liveness_rejects_extra_output_without_unsafe_fallback(monkeypatch, tmp_path):
+    capture, authority, stage, root, output = _sibling_namespace(tmp_path)
+    try:
+        def fake_tui(*, output_file, capture_output_reader, **_kwargs):
+            output_file.write_text("UNSAFE\n", encoding="utf-8")
+            (output / "forged.log").write_text("forged\n", encoding="utf-8")
+            capture_output_reader()
+            raise AssertionError("unsafe capture output must not be accepted")
+
+        monkeypatch.setattr(pi, "_under_claude_code", lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(pi, "_run_claude_tui_session", fake_tui)
+        monkeypatch.setattr(
+            pi,
+            "_read_review_output",
+            lambda *_args, **_kwargs: pytest.fail("capture liveness must use authority output reader"),
+        )
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="unsafe captured output set"):
+            pi._exec_claude_tui_leg(
+                stage, output, 30, "artifact", agy_capture=capture,
+                provider_authority=authority,
+            )
+        assert authority.output_reads == ["panel-claude.txt"]
     finally:
         capture.close()
         shutil.rmtree(root)
