@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.14] - 2026-08-14
+
+### Headless Antigravity review corrections (Consiliency/agent-harness#324, Consiliency/agent-harness#325, Consiliency/agent-harness#345)
+
+- The Gemini/Antigravity review leg receives a first-position no-command preamble,
+  retains the staged-copy boundary for review inputs, and handles referenced paths
+  outside that staged workspace without broad permission bypasses.
+- Headless tool-denial diagnostics now retain the bounded exit/stderr detail needed
+  to distinguish permission denial from timeout, authentication failure, or an empty
+  successful response.
+- The opt-in canary evidence producer/parser and installed commands fail closed and
+  remain review evidence only; they do not provision broader Antigravity permissions.
+- The scoped out-of-workspace correction for `Consiliency/agent-harness#345` landed
+  through `Consiliency/agent-harness#350` (`69b24ffe`).
+- Gemini 3.7 Flash and Grok 4.6 defaults are deliberately deferred to v0.7.15 so
+  this release preserves the existing model-routing contract.
+
 ### CI: run the heavy CONFORM chronology proof in two lanes, not four (Consiliency/agent-harness#530, plan `detailed-ci-single-lane-chronology-20260812`)
 
 - The CONFORM chronology node (~40 min per execution) now runs in exactly two of the
