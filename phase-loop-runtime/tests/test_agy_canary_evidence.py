@@ -1136,6 +1136,10 @@ def test_detached_provider_auth_reduction_binds_rows_and_owner_modes(monkeypatch
             evidence._write_replace_at(capture.root_fd, evidence._PROVIDER_REGISTRY_NAME, registry)
         replace_launch("codex", lambda launch: launch["projected_auth"]["records"][0].update({"mode": "0400"}))
         assert evidence._verified_provider_results(root_fd=capture.root_fd)
+        replace_launch("codex", lambda launch: launch["projected_auth"]["records"][0].update({"mode": "0689"}))
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="authentication proof"):
+            evidence._verified_provider_results(root_fd=capture.root_fd)
+        replace_launch("codex", lambda launch: launch["projected_auth"]["records"][0].update({"mode": "0400"}))
         replace_launch("gemini", lambda launch: launch["projected_auth"]["records"][1].update({"sha256": "0" * 64}))
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="authentication proof"):
             evidence._verified_provider_results(root_fd=capture.root_fd)
