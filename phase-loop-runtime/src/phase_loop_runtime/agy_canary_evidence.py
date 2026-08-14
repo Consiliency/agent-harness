@@ -134,6 +134,7 @@ _PROVIDER_EXECUTABLES = {
     "grok": "grok",
 }
 _CAPTURE_PROVIDERS = frozenset(_PROVIDER_EXECUTABLES)
+_MAX_PROVIDER_REVIEW_ATTEMPTS = 2
 
 # Account-local npm shims are intentionally *not* executable authorities: the
 # capture namespace masks /home, and a shim can be repointed between discovery
@@ -691,6 +692,8 @@ class ProviderLaunchAuthority:
         }
         if self.review_launch != launch:
             raise AgyCanaryEvidenceError("provider review attempt was not preflight-authorized")
+        if len(self.review_attempts) >= _MAX_PROVIDER_REVIEW_ATTEMPTS:
+            raise AgyCanaryEvidenceError("provider review attempt limit exceeded")
         self.review_attempts.append({"index": len(self.review_attempts), **launch})
 
     def review_attempt_proof(self) -> dict[str, Any]:
@@ -2011,21 +2014,26 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
                 projection.get("schema") != "agy_provider_projected_auth.v1"):
             raise AgyCanaryEvidenceError("provider authority record is malformed")
         expected_records = authority.get("auth_binds") if provider == "gemini" else None
-        expected_destination = (
-            expected_records[0]["destination"]
-            if isinstance(expected_records, list) and len(expected_records) == 1
-            else _PROVIDER_AUTH_PATHS[provider][1] if provider != "gemini" else None
+        rows = projection.get("records") if isinstance(projection, dict) else None
+        malformed_rows = not isinstance(rows, list) or any(
+            not isinstance(row, dict) or set(row) != {"destination", "uid", "mode", "sha256"} or
+            not isinstance(row.get("uid"), str) or not row["uid"].isdigit() or
+            not isinstance(row.get("mode"), str) or not row["mode"].isdigit() or
+            int(row["mode"], 8) & 0o077 or not _is_digest(row.get("sha256"))
+            for row in rows or []
+        )
+        gemini_drift = provider == "gemini" and (
+            not isinstance(expected_records, list) or not isinstance(rows, list) or
+            len(rows) != len(expected_records) or any(
+                row.get("destination") != record.get("destination") or row.get("uid") != record.get("uid") or
+                row.get("mode") != record.get("mode") or row.get("sha256") != record.get("source_sha256")
+                for row, record in zip(rows, expected_records, strict=True)
+            )
         )
         if (set(projection) != {"schema", "provider", "runtime_destination", "runtime_sha256", "records"} or
                 projection.get("runtime_destination") != f"/run/phase-loop-bin/{_PROVIDER_EXECUTABLES[provider]}" or
-                not _is_digest(projection.get("runtime_sha256")) or not isinstance(projection.get("records"), list) or
-                (len(projection["records"]) != (len(expected_records) if isinstance(expected_records, list) else 1)) or
-                (projection["records"] and expected_destination is None) or
-                any(not isinstance(row, dict) or set(row) != {"destination", "uid", "mode", "sha256"} or
-                    row.get("destination") != expected_destination or
-                    not isinstance(row.get("uid"), str) or not row["uid"].isdigit() or
-                    row.get("mode") != "0600" or not _is_digest(row.get("sha256"))
-                    for row in projection["records"])):
+                not _is_digest(projection.get("runtime_sha256")) or malformed_rows or gemini_drift or
+                (provider != "gemini" and (not isinstance(rows, list) or len(rows) != 1 or rows[0].get("destination") != _PROVIDER_AUTH_PATHS[provider][1]))):
             raise AgyCanaryEvidenceError("provider projected authentication proof is malformed")
         result = _read_json_at(root_fd, entry["result_name"])
         required = {"schema", "provider", "seat_key", "registry_sha256", "authority_sha256", "attempts", "status", "terminal", "detail"}
@@ -2043,6 +2051,8 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
                     not _is_digest(attempts["launch"].get("argv_sha256"))
                 )) or not isinstance(attempts["attempts"], list)):
             raise AgyCanaryEvidenceError("provider review attempt proof is malformed")
+        if len(attempts["attempts"]) > _MAX_PROVIDER_REVIEW_ATTEMPTS:
+            raise AgyCanaryEvidenceError("provider review attempt limit exceeded")
         if attempts["launch"] is None:
             if attempts["attempts"] or attempts["terminal_attempt"] is not None:
                 raise AgyCanaryEvidenceError("provider review attempt proof is inconsistent")

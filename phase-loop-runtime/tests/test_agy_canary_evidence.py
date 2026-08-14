@@ -278,6 +278,12 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_
             retry["attempts"]["terminal_attempt"] = 1
             evidence._write_replace_at(root_fd, gemini["result_name"], retry)
             assert evidence._verified_provider_results(root_fd=root_fd)[("gemini", "gemini-primary")]["status"] == "OK"
+            too_many = json.loads(json.dumps(retry))
+            too_many["attempts"]["attempts"].append({"index": 2, **too_many["attempts"]["launch"]})
+            too_many["attempts"]["terminal_attempt"] = 2
+            evidence._write_replace_at(root_fd, gemini["result_name"], too_many)
+            with pytest.raises(evidence.AgyCanaryEvidenceError, match="attempt limit"):
+                evidence._verified_provider_results(root_fd=root_fd)
             result["attempts"] = {"launch": None, "attempts": [], "terminal_attempt": None}
             evidence._write_replace_at(root_fd, gemini["result_name"], result)
             with pytest.raises(evidence.AgyCanaryEvidenceError, match="lacks an actual review attempt"):
