@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import hashlib
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from phase_loop_runtime import agy_canary_evidence as evidence
+from phase_loop_runtime import cli
 from phase_loop_runtime.cli import main
 
 
@@ -808,6 +810,60 @@ def test_namespace_binds_trusted_home_agi_at_fixed_path_without_exposing_home(mo
             evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid").agy_command(["agy", "--version"])
     finally:
         shutil.rmtree(root)
+
+
+def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_path):
+    """The public command, not its sink helper, must bind the private payload."""
+    from phase_loop_runtime.advisor_board.schema import Board, Seat
+    from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
+    from phase_loop_runtime.advisor_board import composition
+    from phase_loop_runtime import panel_invoker
+
+    root = _private_root(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    contents = {"review-instructions.md": "instructions", "review-bundle.md": "bundle"}
+    for name, value in contents.items():
+        path = stage / name
+        path.write_text(value)
+        path.chmod(0o600)
+    settings = _settings(tmp_path, [])
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    try:
+        evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
+        staged = evidence.retain_staged_files(capture=capture, review_dir=stage)
+        events = [
+            {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+            {"sequence": 1, "session_id": "s", "type": "tool_result", "call_id": "a", "outcome": "success", "content": contents["review-instructions.md"]},
+            {"sequence": 2, "session_id": "s", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+            {"sequence": 3, "session_id": "s", "type": "tool_result", "call_id": "b", "outcome": "success", "content": contents["review-bundle.md"]},
+            {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
+        ]
+        evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(item) for item in events), stderr="", staged=staged)
+        expected = evidence.capture_summary(capture)
+    finally:
+        capture.close()
+    board = Board("synthetic", "test", (
+        Seat("gemini-3.6-flash", "high", harness="gemini"), Seat("gpt-5.6-sol", "high", harness="codex"), Seat("grok-4.5", "high", harness="grok"),
+    ))
+    result = PanelResult(tuple(PanelLegResult(leg=seat.harness or "x", seat_key="gemini-primary" if seat.harness == "gemini" else seat.harness, status="OK", text="AGREE") for seat in board.seats))
+    object.__setattr__(result, "_agy_canary_capture", expected)
+    monkeypatch.setattr(composition, "compose_review_board", lambda: board)
+    monkeypatch.setattr(panel_invoker, "invoke_board", lambda *_args, **_kwargs: result)
+    artifact = tmp_path / "review.md"
+    artifact.write_text("review")
+    monkeypatch.setenv("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", str(root))
+    args = argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="board.json")
+    assert cli._advisor_board_command(args=args) == 0
+    ledger = json.loads((root / "agy-launch-ledger.json").read_text())
+    board_bytes = (root / "board.json").read_bytes()
+    assert ledger["private_board"]["sha256"] == evidence._sha256(board_bytes)
+    assert json.loads(board_bytes)["agy_canary_capture"] == ledger["private_board"]["capture"]
+    assert evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary", seal=False)["attempt_ids"] == ["gemini-1"]
+    (root / "board.json").write_text("{}")
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="drifted"):
+        evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary", seal=False)
+    shutil.rmtree(root)
 
 
 def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp_path):
