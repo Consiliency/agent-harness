@@ -10,12 +10,15 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.request
 import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -215,6 +218,8 @@ class AgyCanaryNamespace:
     resolver_source: Path | None = None
     resolver_sha256: str | None = None
     provider_output: Path | None = None
+    writable_stage: bool = False
+    fixture_binds: tuple[tuple[Path, str], ...] = ()
 
     def outer_environment(self) -> dict[str, str]:
         """Minimal host environment for bwrap itself; never carry loader/runtime overrides."""
@@ -264,7 +269,7 @@ class AgyCanaryNamespace:
             "--proc", "/proc",
             "--dev", "/dev",
             "--dir", "/run/phase-loop-review",
-            "--ro-bind", str(self.stage), "/run/phase-loop-review",
+            "--bind" if self.writable_stage else "--ro-bind", str(self.stage), "/run/phase-loop-review",
             "--tmpfs", "/home",
             "--dir", "/home/phase-loop",
             "--ro-bind", str(self.minimal_home), "/home/phase-loop",
@@ -283,6 +288,11 @@ class AgyCanaryNamespace:
         if self.provider_output is not None:
             output = _validate_provider_output(self.provider_output, evidence_root=self.evidence_root)
             command.extend(["--dir", "/run/phase-loop-output", "--bind", str(output), "/run/phase-loop-output"])
+        for source, destination in self.fixture_binds:
+            if (not source.is_absolute() or source.is_symlink() or not destination.startswith("/run/phase-loop-")):
+                raise AgyCanaryEvidenceError("capability fixture bind is invalid")
+            parent = Path(destination).parent
+            command.extend(["--dir", str(parent), "--ro-bind", str(source), destination])
         if agy_runtime is not None:
             agy_runtime.revalidate()
             command.extend(["--dir", "/run/phase-loop-bin", "--ro-bind", str(agy_runtime.source), agy_runtime.destination])
@@ -1578,6 +1588,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
         expected_summary = {"gemini_seat_key": pre_board.get("seat_key"), "gemini_seat_count": 1, "attempt_ids": [item.get("attempt_id") for item in attempts], "ledger_bytes": len(pre_board_data), "ledger_sha256": _sha256(pre_board_data)}
         if private_board.get("capture") != expected_summary or not isinstance(board_payload, dict) or board_payload.get("agy_canary_capture") != expected_summary:
             raise AgyCanaryEvidenceError("private board does not bind the sealed capture summary")
+        _validate_private_board_payload(board_payload, expected_summary, require_usable=True)
         proof = {
             "schema": SCHEMA_VERSION,
             "seat_key": expected_seat_key,
@@ -1604,12 +1615,52 @@ def write_private_board(*, capture: AgyCanaryCapture, basename: str, payload: di
     summary = capture_summary(capture)
     if payload.get("agy_canary_capture") != summary:
         raise AgyCanaryEvidenceError("private board payload does not bind capture summary")
+    _validate_private_board_payload(payload, summary)
     data = _canonical_json(payload)
     _exclusive_write_at(capture.root_fd, basename, data, 0o600)
     private = {"name": basename, "bytes": len(data), "sha256": _sha256(data), "capture": summary}
     ledger["private_board"] = private
     _write_replace_at(capture.root_fd, _LEDGER_NAME, ledger)
     return {"name": basename, "bytes": len(data), "sha256": _sha256(data)}
+
+
+def _validate_private_board_payload(
+    payload: dict[str, Any], summary: dict[str, Any], *, require_usable: bool = False
+) -> None:
+    """Validate the usable board contract whenever a full board result is sealed.
+
+    Minimal capture-only payloads remain available for isolated reducer fixtures;
+    the CLI's production envelope always has ``board`` and therefore must meet
+    this exact floor before it can become canary evidence.
+    """
+    if "board" not in payload:
+        return
+    required = {"board", "usable", "requested_seats", "delivered_seats", "shortfall", "independence", "legs", "agy_canary_capture"}
+    if set(payload) != required or payload.get("agy_canary_capture") != summary:
+        raise AgyCanaryEvidenceError("private board payload schema is malformed")
+    if (not isinstance(payload.get("board"), str) or not payload["board"] or type(payload.get("usable")) is not bool or
+            not _is_plain_int(payload.get("requested_seats")) or payload["requested_seats"] < 1 or
+            not _is_plain_int(payload.get("delivered_seats")) or payload["delivered_seats"] < 0 or
+            not isinstance(payload.get("legs"), list) or len(payload["legs"]) != payload["requested_seats"]):
+        raise AgyCanaryEvidenceError("private board payload primitives are malformed")
+    shortfall = payload["shortfall"]
+    independence = payload["independence"]
+    if (not isinstance(shortfall, dict) or set(shortfall) != {"requested_seats", "delivered_seats", "unfilled_seats", "natively_fillable_seats"} or
+            shortfall.get("requested_seats") != payload["requested_seats"] or shortfall.get("delivered_seats") != payload["delivered_seats"] or
+            not isinstance(shortfall.get("unfilled_seats"), list) or not _is_plain_int(shortfall.get("natively_fillable_seats")) or
+            not isinstance(independence, dict) or set(independence) != {"level", "distinct_vendors", "seats"} or
+            not isinstance(independence.get("level"), str) or not _is_plain_int(independence.get("distinct_vendors")) or not _is_plain_int(independence.get("seats"))):
+        raise AgyCanaryEvidenceError("private board payload floor is malformed")
+    usable_legs = 0
+    for leg in payload["legs"]:
+        if (not isinstance(leg, dict) or set(leg) != {"seat_key", "leg", "status", "detail", "text", "needs_native_agent"} or
+                not all(isinstance(leg.get(field), str) for field in ("seat_key", "leg", "status", "text")) or
+                (leg.get("detail") is not None and not isinstance(leg.get("detail"), str))):
+            raise AgyCanaryEvidenceError("private board leg schema is malformed")
+        usable_legs += int(leg["status"] == "OK" and bool(leg["text"].strip()))
+    if (payload["delivered_seats"] != usable_legs or payload["usable"] != (usable_legs >= 3) or
+            (require_usable and (not payload["usable"] or independence["distinct_vendors"] < 3))):
+        raise AgyCanaryEvidenceError("private board is below the usable independence floor")
 
 
 def capture_summary(capture: AgyCanaryCapture) -> dict[str, Any]:
@@ -1623,6 +1674,96 @@ def capture_summary(capture: AgyCanaryCapture) -> dict[str, Any]:
     if len(ids) != len(attempts) or any(not isinstance(item, str) for item in ids):
         raise AgyCanaryEvidenceError("capture ledger has invalid attempt identifiers")
     return {"gemini_seat_key": ledger.get("seat_key"), "gemini_seat_count": 1, "attempt_ids": ids, "ledger_bytes": len(data), "ledger_sha256": _sha256(data)}
+
+
+@dataclass
+class _CapabilityFixture:
+    """One disposable, runnable capability environment and its explicit cleanup."""
+
+    namespace: AgyCanaryNamespace
+    root: Path
+    server: ThreadingHTTPServer | None = None
+    thread: threading.Thread | None = None
+
+    def close(self) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+        shutil.rmtree(self.root, ignore_errors=True)
+
+
+def _build_capability_fixture(*, namespace: AgyCanaryNamespace, class_name: str) -> _CapabilityFixture:
+    """Construct isolated real files/routes for one capability action.
+
+    Prompts describe the action, but this fixture is the authority for what an
+    attended provider was actually able to reach.  No mutable host review tree
+    or shared probe state is reused between classes.
+    """
+    root = Path(tempfile.mkdtemp(prefix=f"phase-loop-agy-capability-{class_name}-", dir="/tmp"))
+    root.chmod(0o700)
+    stage = root / "stage"
+    stage.mkdir(mode=0o700)
+    source_fd = os.open(namespace.stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for name in ("review-instructions.md", "review-bundle.md"):
+            data, info = _reopen_at(source_fd, name)
+            if not stat.S_ISREG(info.st_mode):
+                raise AgyCanaryEvidenceError("capability fixture source is not regular")
+            target = stage / name
+            target.write_bytes(data)
+            target.chmod(0o600)
+    finally:
+        os.close(source_fd)
+    fixture_binds: list[tuple[Path, str]] = []
+    if class_name == "out_of_stage_read":
+        probe = root / "probe"
+        probe.mkdir(mode=0o700)
+        sentinel = probe / "out-of-stage-sentinel"
+        sentinel.write_text("OUT_OF_STAGE\n")
+        sentinel.chmod(0o600)
+        fixture_binds.append((sentinel, "/run/phase-loop-probe/out-of-stage-sentinel"))
+    if class_name == "inert_mcp":
+        mcp = root / "inert-mcp.json"
+        mcp.write_bytes(_canonical_json({"schema": "agy_inert_mcp.v1", "result": "READY"}))
+        mcp.chmod(0o600)
+        fixture_binds.append((mcp, "/run/phase-loop-mcp/inert.json"))
+    server: ThreadingHTTPServer | None = None
+    thread: threading.Thread | None = None
+    if class_name in {"read_url", "execute_url"}:
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - HTTP handler spelling is fixed.
+                if self.path == "/constant":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"READY\n")
+                else:
+                    self.send_error(404)
+
+            def log_message(self, _format: str, *_args: Any) -> None:
+                return
+
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
+        except OSError as exc:
+            raise AgyCanaryEvidenceError("capability loopback fixture port is unavailable") from exc
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        # The provider prompt target is deliberately fixed in the v2 contract;
+        # the ephemeral listener proves route/no-route semantics locally and
+        # remains a retained diagnostic fixture, not metadata supplied by it.
+        route = root / "loopback-route.json"
+        route.write_bytes(_canonical_json({"url": "http://127.0.0.1:8765/constant", "no_route": "http://127.0.0.1:8765/missing"}))
+        route.chmod(0o600)
+    isolated = AgyCanaryNamespace(
+        stage=stage, minimal_home=namespace.minimal_home, evidence_root=namespace.evidence_root,
+        provider_hostname=namespace.provider_hostname, auth_binds=namespace.auth_binds,
+        resolver_source=namespace.resolver_source, resolver_sha256=namespace.resolver_sha256,
+        writable_stage=class_name == "allowed_write", fixture_binds=tuple(fixture_binds),
+    )
+    return _CapabilityFixture(isolated, root, server, thread)
 
 
 def probe_capability(
@@ -1677,23 +1818,25 @@ def probe_capability(
         rows: list[dict[str, Any]] = []
         for capability in _CAPABILITY_CLASSES:
             class_name = capability[0]
-            command = [
-                "agy", "--output-format", "stream-json", "--sandbox", "--add-dir",
-                "/run/phase-loop-review", "--print-timeout", "30s", "-p",
-                _capability_prompt(class_name),
-            ]
-            proc = subprocess.run(
-                namespace.agy_command(command), capture_output=True, text=True,
-                timeout=90, check=False, env=outer_env,
-            )
-            stream = (proc.stdout or "").encode()
-            stream_name = f"agy-capability-{class_name}.jsonl"
-            _exclusive_write_at(root_fd, stream_name, stream, 0o600)
+            fixture = _build_capability_fixture(namespace=namespace, class_name=class_name)
             try:
+                namespace_self_test(namespace=fixture.namespace)
+                command = [
+                    "agy", "--output-format", "stream-json", "--sandbox", "--add-dir",
+                    "/run/phase-loop-review", "--print-timeout", "30s", "-p",
+                    _capability_prompt(class_name),
+                ]
+                proc = subprocess.run(
+                    fixture.namespace.agy_command(command), capture_output=True, text=True,
+                    timeout=90, check=False, env=outer_env,
+                )
+                stream = (proc.stdout or "").encode()
+                stream_name = f"agy-capability-{class_name}.jsonl"
+                _exclusive_write_at(root_fd, stream_name, stream, 0o600)
                 if proc.returncode != 0:
                     raise AgyCanaryEvidenceError("capability sub-probe process failed")
                 rows.append(_reduce_capability_class(
-                    capability=capability, data=stream, namespace=namespace,
+                    capability=capability, data=stream, namespace=fixture.namespace,
                     stream_name=stream_name,
                 ))
             except AgyCanaryEvidenceError as exc:
@@ -1706,6 +1849,8 @@ def probe_capability(
                 }
                 _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
                 return value
+            finally:
+                fixture.close()
         if [row["class"] for row in rows] != [item[0] for item in _CAPABILITY_CLASSES]:
             raise AgyCanaryEvidenceError("capability matrix is incomplete or aliased")
         value = {
