@@ -1026,7 +1026,14 @@ def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_outpu
         assert authority.read_expected_output("result.json") == b"accepted"
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="not empty"):
             authority.write_expected_output("second.json", b"forged")
+        (output / "result.json").unlink()
+        (output / "result.json").symlink_to(source)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="not empty"):
+            authority.write_expected_output("result.json", b"forged")
+        (output / "result.json").unlink()
         (output / "extra.log").write_bytes(b"forged")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="not empty"):
+            authority.write_expected_output("result.json", b"forged")
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="output set"):
             authority.read_expected_output("result.json")
         (output / "extra.log").unlink()
@@ -1166,7 +1173,7 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
     shutil.rmtree(root)
 
 
-def test_advisor_board_cli_real_invoker_capture_path_requires_bound_stage(monkeypatch, tmp_path):
+def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(monkeypatch, tmp_path):
     from phase_loop_runtime.advisor_board.schema import Board, Seat
     from phase_loop_runtime.advisor_board import composition
     from phase_loop_runtime import panel_invoker
@@ -1210,7 +1217,10 @@ def test_advisor_board_cli_real_invoker_capture_path_requires_bound_stage(monkey
     artifact = tmp_path / "artifact.md"; artifact.write_text("review")
     monkeypatch.setenv("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", str(root))
     assert cli._advisor_board_command(args=argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="real.json")) == 2
-    assert not seen and not self_tests
+    assert seen and self_tests
+    binding = json.loads((root / "agy_canary_stage_binding.json").read_text())
+    assert binding["plan_sha256"] == evidence._sha256(b"review")
+    assert binding["instruction_generator"] == "phase_loop_runtime.panel_invoker._resolve_brief.v1"
     shutil.rmtree(root)
 
 

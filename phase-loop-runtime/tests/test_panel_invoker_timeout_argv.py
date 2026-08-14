@@ -183,15 +183,10 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
         bundle.write_text("read bundle\n")
         instructions.chmod(0o600)
         bundle.chmod(0o600)
-        settings = tmp_path / "settings.json"
-        settings.write_text(json.dumps({
-            "permissions": {"allow": []},
-            "toolPermission": "request-review",
-            "allowNonWorkspaceAccess": False,
-        }))
-        settings.chmod(0o600)
-        evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
-        staged = evidence.retain_staged_files(capture=capture, review_dir=review_dir)
+        staged = {
+            "review-bundle.md": {"retained": "staged-review-bundle.md", "bytes": 12, "sha256": "0" * 64},
+            "review-instructions.md": {"retained": "staged-review-instructions.md", "bytes": 18, "sha256": "0" * 64},
+        }
         home = tmp_path / "minimal-home"
         home.mkdir(mode=0o700)
         namespace = evidence.AgyCanaryNamespace(
@@ -215,6 +210,7 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
 
         monkeypatch.setattr(pi, "_leg_auth_ok", lambda *args, **kwargs: (True, ""))
         monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
+        monkeypatch.setattr(pi, "record_launch", lambda **_kwargs: None)
         out_dir = tmp_path / "out"
         out_dir.mkdir(mode=0o700)
         class TestAuthority:
@@ -222,6 +218,8 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
                 self.preflights: list[list[str]] = []
                 self.self_tests: list[list[str]] = []
                 self.output_reads: list[str] = []
+                self.output_writes: list[str] = []
+                self.auth_proofs = 0
 
             def preflight(self, argv):
                 self.preflights.append(list(argv))
@@ -237,6 +235,15 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
             def read_expected_output(self, name):
                 self.output_reads.append(name)
                 return (out_dir / name).read_bytes()
+
+            def write_expected_output(self, name, data):
+                self.output_writes.append(name)
+                (out_dir / name).write_bytes(data)
+                return self.read_expected_output(name)
+
+            def projected_auth_proof(self):
+                self.auth_proofs += 1
+                return {"schema": "projected_auth.v1", "provider": "gemini", "records": []}
 
         authority = TestAuthority()
         rc, review, _log = pi._exec_leg(
@@ -264,6 +271,8 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
         assert authority.preflights and authority.self_tests
         assert authority.preflights[0][0] == "agy"
         assert authority.output_reads == ["panel-gemini.txt"]
+        assert authority.output_writes == ["panel-gemini.txt"]
+        assert authority.auth_proofs == 1
     finally:
         capture.close()
         shutil.rmtree(root)
@@ -293,6 +302,8 @@ def _sibling_namespace(tmp_path: Path):
             self.preflights: list[list[str]] = []
             self.self_tests: list[list[str]] = []
             self.output_reads: list[str] = []
+            self.output_writes: list[str] = []
+            self.auth_proofs = 0
 
         def preflight(self, argv):
             self.preflights.append(list(argv))
@@ -311,6 +322,17 @@ def _sibling_namespace(tmp_path: Path):
             if entries != [output / name] or (output / name).is_symlink():
                 raise evidence.AgyCanaryEvidenceError("unsafe captured output set")
             return (output / name).read_bytes()
+
+        def write_expected_output(self, name, data):
+            if list(output.iterdir()):
+                raise evidence.AgyCanaryEvidenceError("unsafe captured output set")
+            self.output_writes.append(name)
+            (output / name).write_bytes(data)
+            return self.read_expected_output(name)
+
+        def projected_auth_proof(self):
+            self.auth_proofs += 1
+            return {"schema": "projected_auth.v1", "provider": "test", "records": []}
 
     return capture, TestAuthority(), stage, root, output
 
@@ -390,6 +412,8 @@ def test_capture_enabled_grok_uses_sibling_namespace_without_ledger_launch(monke
         assert authority.preflights and authority.self_tests
         assert authority.preflights[0][0] == "grok"
         assert authority.output_reads == ["panel-grok.txt"]
+        assert authority.output_writes == ["panel-grok.txt"]
+        assert authority.auth_proofs == 1
         command = captured["command"]
         assert isinstance(command, list)
         prompt = command[command.index("-p") + 1]
