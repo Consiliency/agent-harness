@@ -157,8 +157,19 @@ def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
     assert "Trusted" in publish
     assert "Publishing (OIDC)" in publish
     assert "workflow_dispatch" in publish
+    assert "pull_request:" in publish
     assert "Verify tag matches phase-loop-runtime version" in publish
     assert "python -m build --sdist --wheel --outdir dist phase-loop-runtime" in publish
+    assert "Verify exact wheel in an isolated locked environment" in publish
+    assert "--group test" in publish
+    assert "--locked" in publish
+    assert "--no-install-project" in publish
+    assert "phase_loop_runtime.agy_canary_evidence" in publish
+    assert "agy-canary-finalize" in publish
+    assert "sha256sum dist/* | tee release/SHA256SUMS" in publish
+    assert "sha256sum --check release/SHA256SUMS" in publish
+    assert "if: startsWith(github.ref, 'refs/tags/v')" in publish
+    assert publish.count("python -m build --sdist --wheel") == 1
     assert "pypa/gh-action-pypi-publish" in publish
     assert "id-token: write" in publish
     assert "PYPI_API_TOKEN" not in publish
