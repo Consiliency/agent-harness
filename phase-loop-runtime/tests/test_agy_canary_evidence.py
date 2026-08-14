@@ -226,13 +226,12 @@ def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch)
         root.rmdir()
 
 
-def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
+def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
-        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        capture = None
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             instructions = review / "review-instructions.md"
@@ -241,6 +240,11 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
             bundle.write_text("review this\n")
             instructions.chmod(0o600)
             bundle.chmod(0o600)
+            capture = _prepare_production_capture(
+                monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+                seat_key="gemini-primary", plan_bytes=bundle.read_bytes(),
+            )
+            _bind_stage(capture, review)
             staged = evidence.retain_staged_files(capture=capture, review_dir=review)
             events = [
                 {"sequence": 0, "session_id": "s1", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
@@ -253,10 +257,11 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
             evidence.write_private_board(
                 capture=capture,
                 basename="board.json",
-                payload={"agy_canary_capture": evidence.capture_summary(capture)},
+                payload=_usable_private_board(evidence.capture_summary(capture)),
             )
         finally:
-            capture.close()
+            if capture is not None:
+                capture.close()
         proof = evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
         assert proof["attempt_ids"] == ["gemini-1"]
         assert proof["attempts"][0]["counts"] == {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}
@@ -264,19 +269,23 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
         shutil.rmtree(root)
 
 
-def test_capture_reducer_rejects_missing_or_swapped_private_board(tmp_path):
+def test_capture_reducer_rejects_missing_or_swapped_private_board(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
-        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        capture = None
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             for name in ("review-instructions.md", "review-bundle.md"):
                 path = review / name
                 path.write_text(name)
                 path.chmod(0o600)
+            capture = _prepare_production_capture(
+                monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+                seat_key="gemini-primary", plan_bytes=(review / "review-bundle.md").read_bytes(),
+            )
+            _bind_stage(capture, review)
             staged = evidence.retain_staged_files(capture=capture, review_dir=review)
             events = [
                 {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
@@ -286,10 +295,11 @@ def test_capture_reducer_rejects_missing_or_swapped_private_board(tmp_path):
                 {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
             ]
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
-            evidence.write_private_board(capture=capture, basename="board.json", payload={"agy_canary_capture": evidence.capture_summary(capture)})
+            evidence.write_private_board(capture=capture, basename="board.json", payload=_usable_private_board(evidence.capture_summary(capture)))
             (root / "board.json").write_text('{"agy_canary_capture":"swapped"}')
         finally:
-            capture.close()
+            if capture is not None:
+                capture.close()
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="private board payload bytes drifted"):
             evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
     finally:
@@ -330,7 +340,7 @@ def test_stream_rejects_duplicate_staged_read_even_when_one_copy_has_right_conte
 
 def _prepare_production_capture(
     *, monkeypatch, tmp_path: Path, root: Path, settings: Path, seat_key: str,
-    auth_paths: tuple[Path, ...] = (),
+    auth_paths: tuple[Path, ...] = (), plan_bytes: bytes = b"review this\n",
 ) -> evidence.AgyCanaryCapture:
     evidence.clean_settings(
         evidence_root=root, settings_path=settings,
@@ -368,6 +378,7 @@ def _prepare_production_capture(
         "bootstrap": {"returncode": 0, "installation": installation},
         "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
         "blobs": {"plans/canary.md": "a", "plans/manifest.json": "b"},
+        "input_sha256": {"plans/canary.md": evidence._sha256(plan_bytes)},
     }))
     release = {
         "version": "0.7.14",
@@ -382,6 +393,30 @@ def _prepare_production_capture(
         customization_home=tmp_path, project_dir=tmp_path, source_env={},
     )
     return evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+
+
+def _bind_stage(capture: evidence.AgyCanaryCapture, review: Path) -> None:
+    evidence.bind_staged_review_inputs(
+        capture=capture, review_dir=review,
+        bundle_bytes=(review / "review-bundle.md").read_bytes(),
+        instruction_bytes=(review / "review-instructions.md").read_bytes(),
+        generator_identity="phase_loop_runtime.panel_invoker._resolve_brief.v1",
+    )
+
+
+def _usable_private_board(summary: dict[str, object]) -> dict[str, object]:
+    legs = [
+        {"seat_key": summary["gemini_seat_key"], "leg": "gemini", "status": "OK", "detail": None, "text": "AGREE", "needs_native_agent": None},
+        {"seat_key": "codex", "leg": "codex", "status": "OK", "detail": None, "text": "AGREE", "needs_native_agent": None},
+        {"seat_key": "grok", "leg": "grok", "status": "OK", "detail": None, "text": "AGREE", "needs_native_agent": None},
+    ]
+    return {
+        "board": "synthetic", "usable": True, "requested_seats": 3,
+        "delivered_seats": 3,
+        "shortfall": {"requested_seats": 3, "delivered_seats": 3, "unfilled_seats": [], "natively_fillable_seats": 0},
+        "independence": {"level": "synthetic", "distinct_vendors": 3, "seats": 3},
+        "legs": legs, "agy_canary_capture": summary,
+    }
 
 
 def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
@@ -442,24 +477,29 @@ def test_bwrap_auth_bind_is_visible_only_at_child_lookup_path(tmp_path):
         shutil.rmtree(root)
 
 
-def test_capture_reducer_rejects_unpaired_tool_evidence(tmp_path):
+def test_capture_reducer_rejects_unpaired_tool_evidence(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
-        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        capture = None
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             for name in ("review-instructions.md", "review-bundle.md"):
                 path = review / name
                 path.write_text(name)
                 path.chmod(0o600)
+            capture = _prepare_production_capture(
+                monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+                seat_key="gemini-primary", plan_bytes=(review / "review-bundle.md").read_bytes(),
+            )
+            _bind_stage(capture, review)
             staged = evidence.retain_staged_files(capture=capture, review_dir=review)
             broken = {"sequence": 0, "session_id": "s1", "type": "tool_call", "call_id": "bad", "tool": "command", "target": "true"}
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret prompt"], returncode=0, stdout=json.dumps(broken), stderr="", staged=staged)
         finally:
-            capture.close()
+            if capture is not None:
+                capture.close()
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="complete"):
             evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
     finally:
@@ -468,19 +508,23 @@ def test_capture_reducer_rejects_unpaired_tool_evidence(tmp_path):
         root.rmdir()
 
 
-def test_capture_reducer_rejects_denied_command_and_alias_stage_read(tmp_path):
+def test_capture_reducer_rejects_denied_command_and_alias_stage_read(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
-        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        capture = None
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             for name in ("review-instructions.md", "review-bundle.md"):
                 path = review / name
                 path.write_text(name)
                 path.chmod(0o600)
+            capture = _prepare_production_capture(
+                monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+                seat_key="gemini-primary", plan_bytes=(review / "review-bundle.md").read_bytes(),
+            )
+            _bind_stage(capture, review)
             staged = evidence.retain_staged_files(capture=capture, review_dir=review)
             events = [
                 {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/not-stage/review-instructions.md"},
@@ -491,7 +535,8 @@ def test_capture_reducer_rejects_denied_command_and_alias_stage_read(tmp_path):
             ]
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
         finally:
-            capture.close()
+            if capture is not None:
+                capture.close()
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="prohibited tool attempt"):
             evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
     finally:
@@ -500,19 +545,23 @@ def test_capture_reducer_rejects_denied_command_and_alias_stage_read(tmp_path):
         root.rmdir()
 
 
-def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(tmp_path):
+def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
-        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        capture = None
         try:
-            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
             review = tmp_path / "review"
             review.mkdir()
             for name in ("review-instructions.md", "review-bundle.md"):
                 path = review / name
                 path.write_text(name)
                 path.chmod(0o600)
+            capture = _prepare_production_capture(
+                monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+                seat_key="gemini-primary", plan_bytes=(review / "review-bundle.md").read_bytes(),
+            )
+            _bind_stage(capture, review)
             staged = evidence.retain_staged_files(capture=capture, review_dir=review)
             events = [
                 {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
@@ -523,7 +572,8 @@ def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(t
             ]
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
         finally:
-            capture.close()
+            if capture is not None:
+                capture.close()
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="schema"):
             evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
     finally:
@@ -969,8 +1019,13 @@ def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_outpu
         )
         command = authority.command(["codex", "exec", "review"])
         assert "/run/phase-loop-bin/codex" in command
-        (output / "result.json").write_bytes(b"accepted")
+        proof = authority.projected_auth_proof()
+        assert proof["provider"] == "codex" and proof["records"] == []
+        assert "authenticated" not in proof and "logged_in" not in proof
+        assert authority.write_expected_output("result.json", b"accepted") == b"accepted"
         assert authority.read_expected_output("result.json") == b"accepted"
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="not empty"):
+            authority.write_expected_output("second.json", b"forged")
         (output / "extra.log").write_bytes(b"forged")
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="output set"):
             authority.read_expected_output("result.json")
@@ -980,6 +1035,34 @@ def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_outpu
             authority.command(["codex", "exec", "review"])
     finally:
         shutil.rmtree(output)
+        shutil.rmtree(root)
+
+
+def test_stage_binding_rejects_swapped_plan_or_parent_instruction(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    try:
+        (stage / "review-bundle.md").write_text("attested plan")
+        (stage / "review-instructions.md").write_text("canonical instructions")
+        for name in ("review-bundle.md", "review-instructions.md"):
+            (stage / name).chmod(0o600)
+        capture = _prepare_production_capture(
+            monkeypatch=monkeypatch, tmp_path=tmp_path, root=root,
+            settings=_settings(tmp_path, []), seat_key="gemini-primary",
+            plan_bytes=b"attested plan",
+        )
+        try:
+            _bind_stage(capture, stage)
+            (stage / "review-bundle.md").write_text("swapped plan")
+            (stage / "review-bundle.md").chmod(0o600)
+            with pytest.raises(evidence.AgyCanaryEvidenceError, match="binding bytes drifted"):
+                evidence.prepare_provider_launch_authorities(
+                    capture=capture, stage=stage, providers=("gemini",)
+                )
+        finally:
+            capture.close()
+    finally:
         shutil.rmtree(root)
 
 
@@ -1035,9 +1118,13 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
         path.write_text(value)
         path.chmod(0o600)
     settings = _settings(tmp_path, [])
-    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    capture = None
     try:
-        evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
+        capture = _prepare_production_capture(
+            monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+            seat_key="gemini-primary", plan_bytes=(stage / "review-bundle.md").read_bytes(),
+        )
+        _bind_stage(capture, stage)
         staged = evidence.retain_staged_files(capture=capture, review_dir=stage)
         events = [
             {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
@@ -1049,7 +1136,8 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
         evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(item) for item in events), stderr="", staged=staged)
         expected = evidence.capture_summary(capture)
     finally:
-        capture.close()
+        if capture is not None:
+            capture.close()
     board = Board("synthetic", "test", (
         Seat("gemini-3.6-flash", "high", harness="gemini"), Seat("gpt-5.6-sol", "high", harness="codex"), Seat("grok-4.5", "high", harness="grok"),
     ))
@@ -1078,14 +1166,14 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
     shutil.rmtree(root)
 
 
-def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
+def test_advisor_board_cli_real_invoker_capture_path_requires_bound_stage(monkeypatch, tmp_path):
     from phase_loop_runtime.advisor_board.schema import Board, Seat
     from phase_loop_runtime.advisor_board import composition
     from phase_loop_runtime import panel_invoker
     root = _private_root(tmp_path)
     capture = _prepare_production_capture(
         monkeypatch=monkeypatch, tmp_path=tmp_path, root=root,
-        settings=_settings(tmp_path, []), seat_key="gemini:gemini-3.6-flash:high",
+        settings=_settings(tmp_path, []), seat_key="gemini:gemini-3.6-flash:high", plan_bytes=b"review",
     )
     capture.close()
     source = tmp_path / "agy"; source.write_bytes(b"agy"); source.chmod(0o700)
@@ -1121,11 +1209,8 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
     monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", fake_liveness)
     artifact = tmp_path / "artifact.md"; artifact.write_text("review")
     monkeypatch.setenv("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", str(root))
-    assert cli._advisor_board_command(args=argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="real.json")) == 1
-    ledger = json.loads((root / "agy-launch-ledger.json").read_text())
-    assert len(ledger["attempts"]) == 1 and self_tests and seen[0][0] == "/usr/bin/bwrap" and "--clearenv" in seen[0] and "/run/phase-loop-bin/agy" in seen[0]
-    with pytest.raises(evidence.AgyCanaryEvidenceError, match="usable independence floor"):
-        evidence.verify_capture(evidence_root=root, expected_seat_key="gemini:gemini-3.6-flash:high", seal=False)
+    assert cli._advisor_board_command(args=argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="real.json")) == 2
+    assert not seen and not self_tests
     shutil.rmtree(root)
 
 
