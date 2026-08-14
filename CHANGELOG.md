@@ -6,6 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: offload heavy execution to the tailnet host `ai` (Consiliency/agent-harness#530, plan `detailed-dagger-offload-ci-20260812`)
+
+- `.github/workflows/test.yml` gains an explicit `elig` -> `{offload | hosted}` -> `gate`
+  job graph. Eligibility is computed in a STEP (a job-level `if:` cannot read `secrets`)
+  and drives exactly one suite path: same-repo events with `TS_AUTHKEY` offload to `ai`
+  via the `Consiliency/ci-actions` `dagger-offload` composite, pinned to a full commit
+  SHA; forks and no-secret events run the suite on the hosted runner. The offload path is
+  fail-closed -- an unreachable host is red, never a silent hosted fallback.
+- `gate` is the single required check for the suite. A conditionally-skipped job SATISFIES
+  a required status check, so requiring `offload`/`hosted` directly would let a run with no
+  suite at all report green; `gate` cannot be skipped and fails unless exactly one of them
+  really succeeded.
+- New `ci/dagger/` module runs the suite in per-interpreter containers, reimplementing the
+  two-lane chronology rule per container (there is no `matrix.python-version` inside
+  Dagger), probing that the mounted `.git` carries a COMPLETE object database, and
+  exporting junit from both retaining stages so the evidence contract survives the move.
+- `.github/CODEOWNERS` now names the CI surface: the aggregate check runs from the PR's own
+  workflow definition, so those paths need code-owner review to stop `gate` being
+  self-certifiable. Enforcement is a ruleset flag, applied by the maintainer.
+- CI-execution changes only; no shipped runtime behaviour changes.
+
 ### CI: run the heavy CONFORM chronology proof in two lanes, not four (Consiliency/agent-harness#530, plan `detailed-ci-single-lane-chronology-20260812`)
 
 - The CONFORM chronology node (~40 min per execution) now runs in exactly two of the
