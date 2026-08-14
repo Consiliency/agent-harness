@@ -328,31 +328,83 @@ def test_stream_rejects_duplicate_staged_read_even_when_one_copy_has_right_conte
         evidence._parse_stream("\n".join(json.dumps(event) for event in events).encode(), require_staged_reads=True)
 
 
+def _prepare_production_capture(
+    *, monkeypatch, tmp_path: Path, root: Path, settings: Path, seat_key: str,
+    auth_paths: tuple[Path, ...] = (),
+) -> evidence.AgyCanaryCapture:
+    evidence.clean_settings(
+        evidence_root=root, settings_path=settings,
+        maintenance_lock=tmp_path / "prepare-maintenance.lock",
+    )
+    staged = {}
+    for name in ("review-instructions.md", "review-bundle.md"):
+        retained = f"agy-capability-stage-{name}"
+        raw_stage = name.encode()
+        (root / retained).write_bytes(raw_stage)
+        staged[name] = {"name": retained, "bytes": len(raw_stage), "sha256": evidence._sha256(raw_stage)}
+    rows = []
+    for class_name, tool, target, outcome in evidence._CAPABILITY_CLASSES:
+        name = f"agy-capability-{class_name}.jsonl"
+        raw = _capability_stream(class_name).encode()
+        (root / name).write_bytes(raw)
+        rows.append({
+            "class": class_name, "tool": tool, "target": target,
+            "attempt": True, "execution": True, "result": "text", "outcome": outcome,
+            "stream": {"name": name, "bytes": len(raw), "sha256": evidence._sha256(raw)},
+        })
+    (root / "agy_capability_probe.json").write_text(json.dumps({
+        "schema": "agy_capability_probe.v2", "agy_version": "1.1.13",
+        "help_sha256": "a" * 64, "mode": "stream_json", "complete": True,
+        "classes": rows, "staged": staged,
+    }))
+    installation = {
+        "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
+        "distribution_root": "/tool/site-packages", "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
+        "direct_url_sha256": "a" * 64, "archive_hash": "sha256=" + "b" * 64,
+        "archive_url_sha256": "c" * 64,
+    }
+    monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda: installation)
+    (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({
+        "bootstrap": {"returncode": 0, "installation": installation},
+        "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
+        "blobs": {"plans/canary.md": "a", "plans/manifest.json": "b"},
+    }))
+    release = {
+        "version": "0.7.14",
+        "artifacts": [{"filename": "phase_loop_runtime.whl", "sha256": "b" * 64, "url_sha256": "c" * 64}],
+    }
+    monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
+    harness = tmp_path / "agent-harness"
+    harness.mkdir(exist_ok=True)
+    evidence.prepare_canary(
+        evidence_root=root, settings_path=settings, seat_key=seat_key,
+        auth_paths=auth_paths, agent_harness_repo=harness, handoff_commit="d" * 40,
+        customization_home=tmp_path, project_dir=tmp_path, source_env={},
+    )
+    return evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+
+
 def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
-    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    settings = _settings(tmp_path, [])
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"credential":"private"}')
+    auth.chmod(0o600)
+    capture = _prepare_production_capture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+        seat_key="gemini-primary", auth_paths=(auth,),
+    )
     try:
-        settings = _settings(tmp_path, [])
-        evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary", source_inventory=_source_inventory(tmp_path))
-        auth = tmp_path / "auth.json"
-        auth.write_text('{"credential":"private"}')
-        auth.chmod(0o600)
-        home, binds = evidence.build_minimal_home(
-            evidence_root=root, settings_path=settings, auth_paths=(auth,)
-        )
         ledger = evidence._read_json_at(capture.root_fd, "agy-launch-ledger.json")
-        ledger["minimal_home"] = str(home)
-        ledger["auth_binds"] = [{"source": str(auth), "destination": binds[0][1], "source_sha256": evidence._sha256(auth.read_bytes())}]
-        evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
-        evidence._exclusive_write_at(capture.root_fd, "agy_canary_prepare.json", evidence._canonical_json({"schema": "agy_canary_prepare.v1", "seat_key": ledger["seat_key"], "ledger_sha256": evidence._sha256(evidence._canonical_json(ledger))}), 0o600)
+        destination = ledger["auth_binds"][0]["destination"]
         resolver = tmp_path / "resolv.conf"
         resolver.write_text("nameserver 127.0.0.1\n")
         monkeypatch.setattr(evidence, "_resolver_snapshot", lambda: (resolver, evidence._sha256(resolver.read_bytes())))
-        stage = tmp_path / "stage"
+        stage = tmp_path / "launch-stage"
         stage.mkdir()
         namespace = evidence.capture_namespace(capture=capture, stage=stage)
         command = namespace.command(["agy", "--version"])
-        assert binds[0][1] in command
+        assert destination in command
         assert str(auth) in command
         assert str(resolver) in command
     finally:
@@ -945,12 +997,21 @@ def test_provider_launch_authority_rejects_legacy_prepare_without_immutable_auth
         )
         ledger.update({"minimal_home": str(home), "auth_binds": []})
         evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
+        evidence._exclusive_write_at(
+            capture.root_fd, "agy_canary_prepare.json",
+            evidence._canonical_json({
+                "schema": "agy_canary_prepare.v1", "seat_key": ledger["seat_key"],
+                "ledger_sha256": evidence._sha256(evidence._canonical_json(ledger)),
+            }), 0o600,
+        )
         stage = tmp_path / "legacy-stage"
         stage.mkdir()
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="invalid private evidence record"):
             evidence.prepare_provider_launch_authorities(
                 capture=capture, stage=stage, providers=("gemini",)
             )
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="invalid private evidence record"):
+            evidence.capture_namespace(capture=capture, stage=stage)
     finally:
         capture.close()
         if home is not None:
@@ -1022,51 +1083,11 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
     from phase_loop_runtime.advisor_board import composition
     from phase_loop_runtime import panel_invoker
     root = _private_root(tmp_path)
-    settings = _settings(tmp_path, [])
-    evidence.clean_settings(
-        evidence_root=root, settings_path=settings, maintenance_lock=tmp_path / "maintenance.lock"
+    capture = _prepare_production_capture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, root=root,
+        settings=_settings(tmp_path, []), seat_key="gemini:gemini-3.6-flash:high",
     )
-    staged: dict[str, dict[str, object]] = {}
-    for name in ("review-instructions.md", "review-bundle.md"):
-        retained = f"agy-capability-stage-{name}"
-        raw = name.encode()
-        (root / retained).write_bytes(raw)
-        staged[name] = {"name": retained, "bytes": len(raw), "sha256": evidence._sha256(raw)}
-    rows = []
-    for class_name, tool, target, outcome in evidence._CAPABILITY_CLASSES:
-        name = f"agy-capability-{class_name}.jsonl"
-        raw = _capability_stream(class_name).encode()
-        (root / name).write_bytes(raw)
-        rows.append({
-            "class": class_name, "tool": tool, "target": target, "attempt": True,
-            "execution": True, "result": "text", "outcome": outcome,
-            "stream": {"name": name, "bytes": len(raw), "sha256": evidence._sha256(raw)},
-        })
-    (root / "agy_capability_probe.json").write_text(json.dumps({
-        "schema": "agy_capability_probe.v2", "agy_version": "1.1.13",
-        "help_sha256": "a" * 64, "mode": "stream_json", "complete": True,
-        "classes": rows, "staged": staged,
-    }))
-    installation = {
-        "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
-        "distribution_root": "/tool/site-packages", "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
-        "direct_url_sha256": "a" * 64, "archive_hash": "sha256=" + "b" * 64,
-        "archive_url_sha256": "c" * 64,
-    }
-    monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda: installation)
-    (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({
-        "bootstrap": {"returncode": 0, "installation": installation},
-        "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
-        "blobs": {"plans/canary.md": "a", "plans/manifest.json": "b"},
-    }))
-    release = {"version": "0.7.14", "artifacts": [{"filename": "phase_loop_runtime.whl", "sha256": "b" * 64, "url_sha256": "c" * 64}]}
-    monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
-    harness = tmp_path / "agent-harness"; harness.mkdir()
-    evidence.prepare_canary(
-        evidence_root=root, settings_path=settings, seat_key="gemini:gemini-3.6-flash:high",
-        agent_harness_repo=harness, handoff_commit="d" * 40,
-        customization_home=tmp_path, project_dir=tmp_path, source_env={},
-    )
+    capture.close()
     source = tmp_path / "agy"; source.write_bytes(b"agy"); source.chmod(0o700)
     info = source.stat()
     runtime = evidence._TrustedAgyRuntime(source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))

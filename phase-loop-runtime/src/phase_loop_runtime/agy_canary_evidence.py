@@ -2855,32 +2855,13 @@ def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostna
     """Recover the prepare-sealed minimal HOME for one production child launch."""
     ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
     prepare = _read_json_at(capture.root_fd, _PREPARE_NAME)
-    try:
-        authority = _read_json_at(capture.root_fd, _LAUNCH_AUTHORITY_NAME)
-    except AgyCanaryEvidenceError:
-        authority = None
-    if authority is None:
-        # Kept solely for isolated reducer fixtures constructed before the
-        # production prepare command existed.  A real prepare receipt always
-        # contains the immutable authority record below.
-        if (prepare.get("schema") != "agy_canary_prepare.v1" or
-                prepare.get("seat_key") != ledger.get("seat_key") or
-                prepare.get("ledger_sha256") != _sha256(_canonical_json(ledger))):
-            raise AgyCanaryEvidenceError("capture namespace requires the exact prepare receipt")
-        name = ledger.get("minimal_home")
-        if not isinstance(name, str) or not Path(name).is_absolute():
-            raise AgyCanaryEvidenceError("prepare did not seal a minimal HOME")
-        authority = {"capture_mode": ledger.get("capture_mode"), "minimal_home": {"path": name, "identity": _minimal_home_identity(Path(name))}, "auth_binds": ledger.get("auth_binds", [])}
-        legacy = True
-    else:
-        legacy = False
+    authority = _read_json_at(capture.root_fd, _LAUNCH_AUTHORITY_NAME)
     if (not isinstance(prepare, dict) or prepare.get("schema") != "agy_canary_prepare.v1" or
-            (not legacy and (prepare.get("authority_name") != _LAUNCH_AUTHORITY_NAME or
+            prepare.get("authority_name") != _LAUNCH_AUTHORITY_NAME or
             prepare.get("authority_sha256") != _sha256(_canonical_json(authority)) or
-            prepare.get("seat_key") != authority.get("seat_key")))):
+            prepare.get("seat_key") != authority.get("seat_key")):
         raise AgyCanaryEvidenceError("capture namespace requires the exact prepare receipt")
-    if not legacy:
-        _validate_launch_authority(authority=authority, ledger=ledger, root_fd=capture.root_fd)
+    _validate_launch_authority(authority=authority, ledger=ledger, root_fd=capture.root_fd)
     if authority.get("capture_mode") != "stream_json":
         raise AgyCanaryEvidenceError("production launch has no supported stream-json authority")
     minimal = authority.get("minimal_home")
