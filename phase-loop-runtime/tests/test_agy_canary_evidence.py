@@ -988,7 +988,8 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
     assert cli._advisor_board_command(args=argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="real.json")) == 1
     ledger = json.loads((root / "agy-launch-ledger.json").read_text())
     assert len(ledger["attempts"]) == 1 and seen[0][0] == "/usr/bin/bwrap" and "--clearenv" in seen[0] and "/run/phase-loop-bin/agy" in seen[0]
-    assert evidence.verify_capture(evidence_root=root, expected_seat_key="gemini:gemini-3.6-flash:high", seal=False)["attempt_ids"] == ["gemini-1"]
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="usable independence floor"):
+        evidence.verify_capture(evidence_root=root, expected_seat_key="gemini:gemini-3.6-flash:high", seal=False)
     shutil.rmtree(root)
 
 
