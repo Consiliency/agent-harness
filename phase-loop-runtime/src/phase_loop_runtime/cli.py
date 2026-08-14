@@ -417,6 +417,8 @@ def build_parser() -> argparse.ArgumentParser:
     agy_finalize_sub.add_argument("--manifest")
     agy_finalize_sub.add_argument("--plan-slug")
     agy_finalize_sub.add_argument("--check-committed", help="Read-only reverse validation against an immutable dotfiles commit.")
+    agy_finalize_sub.add_argument("--agent-harness-repo")
+    agy_finalize_sub.add_argument("--handoff-commit")
     # DECOUPLE SL-1: the dotfiles-domain commands (adoption-bundle, sync-skills,
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
@@ -1121,12 +1123,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 if args.check_committed:
-                    if not args.dotfiles_repo or not args.plan or not args.manifest or not args.plan_slug:
-                        raise AgyCanaryEvidenceError("--check-committed requires --dotfiles-repo, --plan, --manifest, and --plan-slug")
+                    if not args.dotfiles_repo or not args.plan or not args.manifest or not args.plan_slug or not args.agent_harness_repo or not args.handoff_commit:
+                        raise AgyCanaryEvidenceError("--check-committed requires dotfiles and immutable agent-harness handoff inputs")
                     from .agy_canary_evidence import check_committed_final
                     result = check_committed_final(
                         dotfiles_repo=Path(args.dotfiles_repo), commit=args.check_committed,
                         plan_path=Path(args.plan), manifest_path=Path(args.manifest), plan_slug=args.plan_slug,
+                        agent_harness_repo=Path(args.agent_harness_repo), handoff_commit=args.handoff_commit,
                     )
                 else:
                     result = finalize_canary(
@@ -1764,6 +1767,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
     from .agy_canary_evidence import (
         AgyCanaryEvidenceError,
+        capture_summary,
         consume_capture_environment,
         write_private_board,
     )
@@ -1897,6 +1901,12 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             ],
         }
         if capture is not None:
+            expected_capture = capture_summary(capture)
+            if getattr(result, "_agy_canary_capture", None) != expected_capture:
+                print("advisor-board: capture summary was not bound by invocation", file=sys.stderr)
+                capture.close()
+                return 2
+            payload["agy_canary_capture"] = expected_capture
             try:
                 private = write_private_board(
                     capture=capture, basename=private_board_name, payload=payload

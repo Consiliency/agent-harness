@@ -60,6 +60,41 @@ def _account_home() -> Path:
 
 
 @dataclass(frozen=True)
+class _TrustedAgyRuntime:
+    source: Path
+    device: int
+    inode: int
+    mode: int
+    sha256: str
+    destination: str = "/run/phase-loop-bin/agy"
+
+    def revalidate(self) -> None:
+        info = self.source.lstat()
+        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or
+                (info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)) != (self.device, self.inode, self.mode) or
+                _sha256(self.source.read_bytes()) != self.sha256):
+            raise AgyCanaryEvidenceError("trusted agy executable drifted before namespace launch")
+
+
+def _trusted_agy_runtime() -> _TrustedAgyRuntime:
+    """Resolve agy from immutable account/system locations, never HOME or PATH."""
+    home = _account_home()
+    candidates = (home / ".local/bin/agy", Path("/usr/local/bin/agy"), Path("/usr/bin/agy"))
+    for source in candidates:
+        try:
+            info = source.lstat()
+        except FileNotFoundError:
+            continue
+        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or
+                not os.access(source, os.X_OK) or stat.S_IMODE(info.st_mode) & 0o022 or
+                info.st_uid not in {0, os.getuid()}):
+            raise AgyCanaryEvidenceError("trusted agy executable is unsafe")
+        return _TrustedAgyRuntime(source=source, device=info.st_dev, inode=info.st_ino,
+                                  mode=stat.S_IMODE(info.st_mode), sha256=_sha256(source.read_bytes()))
+    raise AgyCanaryEvidenceError("trusted agy executable is unavailable")
+
+
+@dataclass(frozen=True)
 class _OpenedSettings:
     parent_fd: int
     name: str
@@ -96,7 +131,13 @@ class AgyCanaryNamespace:
     resolver_source: Path | None = None
     resolver_sha256: str | None = None
 
-    def command(self, argv: list[str]) -> list[str]:
+    def agy_command(self, argv: list[str]) -> list[str]:
+        if not argv or argv[0] != "agy":
+            raise AgyCanaryEvidenceError("namespace agy command must start with agy")
+        runtime = _trusted_agy_runtime()
+        return self.command([runtime.destination, *argv[1:]], agy_runtime=runtime)
+
+    def command(self, argv: list[str], *, agy_runtime: _TrustedAgyRuntime | None = None) -> list[str]:
         bwrap = Path("/usr/bin/bwrap")
         if not bwrap.is_file() or not os.access(bwrap, os.X_OK):
             raise AgyCanaryEvidenceError("capture requires /usr/bin/bwrap")
@@ -130,6 +171,9 @@ class AgyCanaryNamespace:
             "--setenv", "XDG_RUNTIME_DIR", "/run/user/phase-loop",
             "--chdir", "/run/phase-loop-review",
         ]
+        if agy_runtime is not None:
+            agy_runtime.revalidate()
+            command.extend(["--dir", "/run/phase-loop-bin", "--ro-bind", str(agy_runtime.source), agy_runtime.destination])
         # `/etc/resolv.conf` is often a symlink into `/run`; the fresh `/run`
         # otherwise leaves the child unable to resolve the provider.  Bind only
         # the resolved regular source back at its expected target.
@@ -1190,10 +1234,13 @@ def probe_capability(
     the returned bytes satisfy the strict parser.  It is intentionally attended
     because it consumes the operator's authenticated subscription.
     """
+    runtime = _trusted_agy_runtime()
+    if agy_executable not in {"agy", str(runtime.source)}:
+        raise AgyCanaryEvidenceError("agy probe executable must be the trusted agy path")
     root, root_fd = _validate_private_root(evidence_root)
     try:
-        version_proc = subprocess.run([agy_executable, "--version"], capture_output=True, text=True, timeout=15, check=False)
-        help_proc = subprocess.run([agy_executable, "--help"], capture_output=True, text=True, timeout=15, check=False)
+        version_proc = subprocess.run([str(runtime.source), "--version"], capture_output=True, text=True, timeout=15, check=False)
+        help_proc = subprocess.run([str(runtime.source), "--help"], capture_output=True, text=True, timeout=15, check=False)
         version = (version_proc.stdout or version_proc.stderr).strip()
         help_text = (help_proc.stdout or help_proc.stderr)
         if version_proc.returncode != 0 or help_proc.returncode != 0:
@@ -1208,11 +1255,11 @@ def probe_capability(
             return value
         namespace_self_test(namespace=namespace)
         command = [
-            agy_executable, "--output-format", "stream-json", "--sandbox", "--add-dir",
+            "agy", "--output-format", "stream-json", "--sandbox", "--add-dir",
             "/run/phase-loop-review", "--print-timeout", "30s", "-p",
             "Read review-instructions.md and review-bundle.md only. Do not use any other tool. Reply with READY.",
         ]
-        proc = subprocess.run(namespace.command(command), capture_output=True, text=True, timeout=90, check=False)
+        proc = subprocess.run(namespace.agy_command(command), capture_output=True, text=True, timeout=90, check=False)
         stream = (proc.stdout or "").encode()
         try:
             _session, calls, _terminal = _parse_stream(stream, require_staged_reads=True)
@@ -1842,7 +1889,8 @@ def check_private_final(
 
 
 def check_committed_final(
-    *, dotfiles_repo: Path, commit: str, plan_path: Path, manifest_path: Path, plan_slug: str
+    *, dotfiles_repo: Path, commit: str, plan_path: Path, manifest_path: Path, plan_slug: str,
+    agent_harness_repo: Path, handoff_commit: str,
 ) -> dict[str, Any]:
     """Reverse the fixed transform from immutable git objects without private files."""
     repo = dotfiles_repo.resolve(strict=True)
@@ -1864,6 +1912,11 @@ def check_committed_final(
         repo=repo, attestation=payload["attestation"], plan_relative=plan_relative,
         manifest_relative=manifest_relative, plan_before=before_plan, manifest_before=before_manifest,
     )
+    release = payload["attestation"]["release"]
+    if release != _reconcile_release_lineage(
+        repo=agent_harness_repo.resolve(strict=True), handoff_commit=handoff_commit
+    ):
+        raise AgyCanaryEvidenceError("committed release identity does not reauthenticate immutable handoff lineage")
     try:
         before_value = json.loads(before_manifest)
         after_value = json.loads(after_manifest)

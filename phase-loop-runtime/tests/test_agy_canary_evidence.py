@@ -526,11 +526,11 @@ def test_probe_selects_1_1_13_stream_json_only_after_strict_parse(monkeypatch, t
 
         def fake_run(command, **_kwargs):
             calls.append(command)
-            if command == ["agy", "--version"]:
+            if command[-1:] == ["--version"]:
                 return Proc("1.1.13\n")
-            if command == ["agy", "--help"]:
+            if command[-1:] == ["--help"]:
                 return Proc("--output-format text, json, stream-json")
-            return Proc(events if "agy" in command else "")
+            return Proc(events if any(str(item).endswith("/agy") for item in command) else "")
 
         monkeypatch.setattr(evidence.subprocess, "run", fake_run)
         result = evidence.probe_capability(evidence_root=root, namespace=namespace)
@@ -561,9 +561,9 @@ def test_probe_rejects_terminal_only_stream_even_when_process_succeeds(monkeypat
                 self.stdout = stdout
 
         def fake_run(command, **_kwargs):
-            if command == ["agy", "--version"]:
+            if command[-1:] == ["--version"]:
                 return Proc("1.1.13\n")
-            if command == ["agy", "--help"]:
+            if command[-1:] == ["--help"]:
                 return Proc("--output-format text, json, stream-json")
             return Proc(json.dumps({"sequence": 0, "session_id": "p", "type": "terminal", "text": "READY"}))
 
@@ -603,9 +603,9 @@ def test_probe_rejects_staged_read_content_that_does_not_match_stage(monkeypatch
                 self.stdout = stdout
 
         def fake_run(command, **_kwargs):
-            if command == ["agy", "--version"]:
+            if command[-1:] == ["--version"]:
                 return Proc("1.1.13\n")
-            if command == ["agy", "--help"]:
+            if command[-1:] == ["--help"]:
                 return Proc("--output-format text, json, stream-json")
             return Proc(stream)
 
@@ -726,9 +726,11 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json"], check=True)
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", "finalize"], check=True)
         committed = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
         assert evidence.check_committed_final(
             dotfiles_repo=repo, commit=committed, plan_path=Path("plans/canary.md"),
             manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+            agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
         )["commit"] == committed
         bootstrap = json.loads((root / "agy_canary_bootstrap_attestation.json").read_text())
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="release"):
@@ -784,6 +786,26 @@ def test_namespace_masks_all_xdg_sources_and_finalizer_requires_tracked_repo(tmp
             evidence.freeze_customization_inventory(home=tmp_path, project_dir=tmp_path, env={"XDG_CONFIG_HOME": "/tmp/host-config"})
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap-attested dotfiles repository"):
             evidence.finalize_canary(evidence_root=root, expected_seat_key="gemini-primary")
+    finally:
+        shutil.rmtree(root)
+
+
+def test_namespace_binds_trusted_home_agi_at_fixed_path_without_exposing_home(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        source = tmp_path / "agy"
+        source.write_bytes(b"trusted-agy")
+        source.chmod(0o700)
+        info = source.stat()
+        runtime = evidence._TrustedAgyRuntime(source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))
+        monkeypatch.setattr(evidence, "_trusted_agy_runtime", lambda: runtime)
+        command = evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid").agy_command(["agy", "--version"])
+        assert "--tmpfs" in command and "/home" in command
+        assert str(source) in command and runtime.destination in command
+        assert command[-3:] == ["--", runtime.destination, "--version"]
+        source.write_bytes(b"replaced")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="drifted"):
+            evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid").agy_command(["agy", "--version"])
     finally:
         shutil.rmtree(root)
 
