@@ -1265,14 +1265,17 @@ def probe_capability(
     because it consumes the operator's authenticated subscription.
     """
     runtime = _trusted_agy_runtime()
+    outer_env = namespace.outer_environment() if namespace is not None else {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    }
     if agy_executable not in {"agy", str(runtime.source)}:
         raise AgyCanaryEvidenceError("agy probe executable must be the trusted agy path")
     root, root_fd = _validate_private_root(evidence_root)
     try:
         runtime.revalidate()
-        version_proc = subprocess.run([str(runtime.source), "--version"], capture_output=True, text=True, timeout=15, check=False)
+        version_proc = subprocess.run([str(runtime.source), "--version"], capture_output=True, text=True, timeout=15, check=False, env=outer_env)
         runtime.revalidate()
-        help_proc = subprocess.run([str(runtime.source), "--help"], capture_output=True, text=True, timeout=15, check=False)
+        help_proc = subprocess.run([str(runtime.source), "--help"], capture_output=True, text=True, timeout=15, check=False, env=outer_env)
         version = (version_proc.stdout or version_proc.stderr).strip()
         help_text = (help_proc.stdout or help_proc.stderr)
         if version_proc.returncode != 0 or help_proc.returncode != 0:
@@ -1291,7 +1294,7 @@ def probe_capability(
             "/run/phase-loop-review", "--print-timeout", "30s", "-p",
             "Read review-instructions.md and review-bundle.md only. Do not use any other tool. Reply with READY.",
         ]
-        proc = subprocess.run(namespace.agy_command(command), capture_output=True, text=True, timeout=90, check=False)
+        proc = subprocess.run(namespace.agy_command(command), capture_output=True, text=True, timeout=90, check=False, env=outer_env)
         stream = (proc.stdout or "").encode()
         try:
             _session, calls, _terminal = _parse_stream(stream, require_staged_reads=True)
@@ -1801,6 +1804,11 @@ def prepare_canary(
 def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostname: str = "antigravity.google") -> AgyCanaryNamespace:
     """Recover the prepare-sealed minimal HOME for one production child launch."""
     ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
+    prepare = _read_json_at(capture.root_fd, _PREPARE_NAME)
+    if (not isinstance(prepare, dict) or prepare.get("schema") != "agy_canary_prepare.v1" or
+            prepare.get("seat_key") != ledger.get("seat_key") or
+            prepare.get("ledger_sha256") != _sha256(_canonical_json(ledger))):
+        raise AgyCanaryEvidenceError("capture namespace requires the exact prepare receipt")
     if ledger.get("capture_mode") != "stream_json":
         raise AgyCanaryEvidenceError("production launch has no supported stream-json authority")
     name = ledger.get("minimal_home")

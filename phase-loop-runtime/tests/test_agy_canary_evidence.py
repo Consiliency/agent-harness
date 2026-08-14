@@ -330,6 +330,7 @@ def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch
         ledger["minimal_home"] = str(home)
         ledger["auth_binds"] = [{"source": str(auth), "destination": binds[0][1], "source_sha256": evidence._sha256(auth.read_bytes())}]
         evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
+        evidence._exclusive_write_at(capture.root_fd, "agy_canary_prepare.json", evidence._canonical_json({"schema": "agy_canary_prepare.v1", "seat_key": ledger["seat_key"], "ledger_sha256": evidence._sha256(evidence._canonical_json(ledger))}), 0o600)
         resolver = tmp_path / "resolv.conf"
         resolver.write_text("nameserver 127.0.0.1\n")
         monkeypatch.setattr(evidence, "_resolver_snapshot", lambda: (resolver, evidence._sha256(resolver.read_bytes())))
@@ -526,8 +527,8 @@ def test_probe_selects_1_1_13_stream_json_only_after_strict_parse(monkeypatch, t
             def __init__(self, stdout):
                 self.stdout = stdout
 
-        def fake_run(command, **_kwargs):
-            calls.append(command)
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs.get("env")))
             if command[-1:] == ["--version"]:
                 return Proc("1.1.13\n")
             if command[-1:] == ["--help"]:
@@ -538,7 +539,8 @@ def test_probe_selects_1_1_13_stream_json_only_after_strict_parse(monkeypatch, t
         result = evidence.probe_capability(evidence_root=root, namespace=namespace)
         assert result["complete"] is True
         assert result["mode"] == "stream_json"
-        assert any("--output-format" in command for command in calls)
+        assert any("--output-format" in command for command, _env in calls)
+        assert all(env is not None and not any(name.startswith(("LD_", "DYLD_", "PYTHON")) for name in env) for _command, env in calls)
     finally:
         for path in root.iterdir():
             path.unlink()
@@ -898,6 +900,7 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
         ledger = evidence.create_capture(capture=capture, settings_path=_settings(tmp_path, []), seat_key="gemini:gemini-3.6-flash:high", source_inventory=_source_inventory(tmp_path))
         ledger.update({"minimal_home": str(home), "auth_binds": []})
         evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
+        evidence._exclusive_write_at(capture.root_fd, "agy_canary_prepare.json", evidence._canonical_json({"schema": "agy_canary_prepare.v1", "seat_key": ledger["seat_key"], "ledger_sha256": evidence._sha256(evidence._canonical_json(ledger))}), 0o600)
     finally:
         capture.close()
     source = tmp_path / "agy"; source.write_bytes(b"agy"); source.chmod(0o700)
