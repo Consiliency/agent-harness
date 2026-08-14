@@ -389,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     agy_probe_sub.add_argument("--evidence-root", required=True)
     agy_probe_sub.add_argument("--agy-executable", default="agy")
     agy_probe_sub.add_argument("--stage", help="Private staged review directory for the attended probe.")
-    agy_probe_sub.add_argument("--minimal-home", help="Reducer-generated minimal HOME for the attended probe.")
+    agy_probe_sub.add_argument("--settings-path", help="Already-cleaned settings source used to derive the minimal HOME.")
     agy_probe_sub.add_argument("--provider-host", default="antigravity.google")
     agy_attest_sub = subparsers.add_parser("agy-canary-bootstrap-attest")
     agy_attest_sub.add_argument("--evidence-root", required=True)
@@ -398,6 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
     agy_prepare_sub.add_argument("--evidence-root", required=True)
     agy_prepare_sub.add_argument("--settings-path", required=True)
     agy_prepare_sub.add_argument("--seat-key", required=True)
+    agy_prepare_sub.add_argument("--auth-bind", action="append", default=[])
     agy_verify_sub = subparsers.add_parser("agy-canary-verify")
     agy_verify_sub.add_argument("--evidence-root", required=True)
     agy_verify_sub.add_argument("--seat-key", required=True)
@@ -405,6 +406,10 @@ def build_parser() -> argparse.ArgumentParser:
     agy_finalize_sub.add_argument("--evidence-root", required=True)
     agy_finalize_sub.add_argument("--seat-key", required=True)
     agy_finalize_sub.add_argument("--check-private-final", action="store_true")
+    agy_finalize_sub.add_argument("--dotfiles-repo")
+    agy_finalize_sub.add_argument("--plan")
+    agy_finalize_sub.add_argument("--manifest")
+    agy_finalize_sub.add_argument("--plan-slug")
     # DECOUPLE SL-1: the dotfiles-domain commands (adoption-bundle, sync-skills,
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
@@ -1073,13 +1078,16 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if command == "agy-canary-probe":
                 namespace = None
-                if args.stage or args.minimal_home:
-                    if not args.stage or not args.minimal_home:
-                        raise AgyCanaryEvidenceError("--stage and --minimal-home must be supplied together")
-                    from .agy_canary_evidence import AgyCanaryNamespace
+                if args.stage or args.settings_path:
+                    if not args.stage or not args.settings_path:
+                        raise AgyCanaryEvidenceError("--stage and --settings-path must be supplied together")
+                    from .agy_canary_evidence import AgyCanaryNamespace, build_minimal_home
+                    probe_home, _probe_auth_binds = build_minimal_home(
+                        evidence_root=Path(args.evidence_root), settings_path=Path(args.settings_path)
+                    )
                     namespace = AgyCanaryNamespace(
                         stage=Path(args.stage),
-                        minimal_home=Path(args.minimal_home),
+                        minimal_home=probe_home,
                         evidence_root=Path(args.evidence_root),
                         provider_hostname=args.provider_host,
                     )
@@ -1096,6 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
                     evidence_root=Path(args.evidence_root),
                     settings_path=Path(args.settings_path),
                     seat_key=args.seat_key,
+                    auth_paths=tuple(Path(path) for path in args.auth_bind),
                 )
             elif command == "agy-canary-verify":
                 result = verify_capture(
@@ -1106,6 +1115,10 @@ def main(argv: list[str] | None = None) -> int:
                     evidence_root=Path(args.evidence_root),
                     expected_seat_key=args.seat_key,
                     check_only=bool(args.check_private_final),
+                    dotfiles_repo=Path(args.dotfiles_repo) if args.dotfiles_repo else None,
+                    plan_path=Path(args.plan) if args.plan else None,
+                    manifest_path=Path(args.manifest) if args.manifest else None,
+                    plan_slug=args.plan_slug,
                 )
         except AgyCanaryEvidenceError as exc:
             print(f"phase-loop {command}: {exc}", file=sys.stderr)

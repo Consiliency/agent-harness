@@ -11,9 +11,10 @@ import json
 import os
 import secrets
 import shutil
-import socket
 import stat
 import subprocess
+import sys
+import tempfile
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +72,8 @@ class AgyCanaryNamespace:
     minimal_home: Path
     evidence_root: Path
     provider_hostname: str
+    auth_binds: tuple[tuple[Path, str], ...] = ()
+    resolver_source: Path | None = None
 
     def command(self, argv: list[str]) -> list[str]:
         bwrap = shutil.which("bwrap")
@@ -81,7 +84,7 @@ class AgyCanaryNamespace:
         # `/tmp` and `/run` are fresh tmpfs mounts.  Thus the direct `/tmp` child
         # holding evidence is absent even though the immutable host filesystem is
         # mounted read-only for the provider executable and CA roots.
-        return [
+        command = [
             bwrap,
             "--die-with-parent",
             "--new-session",
@@ -99,9 +102,28 @@ class AgyCanaryNamespace:
             "--setenv", "XDG_CONFIG_HOME", "/home/phase-loop/.config",
             "--setenv", "XDG_DATA_HOME", "/home/phase-loop/.local/share",
             "--chdir", "/run/phase-loop-review",
-            "--",
-            *argv,
         ]
+        # `/etc/resolv.conf` is often a symlink into `/run`; the fresh `/run`
+        # otherwise leaves the child unable to resolve the provider.  Bind only
+        # the resolved regular source back at its expected target.
+        if self.resolver_source is not None:
+            target = Path("/etc/resolv.conf").resolve(strict=True)
+            if not target.is_relative_to(Path("/run")):
+                raise AgyCanaryEvidenceError("resolver source is not an expected /run target")
+            parents: list[Path] = []
+            current = target.parent
+            while current != Path("/run"):
+                parents.append(current)
+                current = current.parent
+            for parent in reversed(parents):
+                command.extend(["--dir", str(parent)])
+            command.extend(["--ro-bind", str(self.resolver_source), str(target)])
+        for source, destination in self.auth_binds:
+            if not source.is_absolute() or Path(destination).is_absolute() is False:
+                raise AgyCanaryEvidenceError("auth bind paths must be absolute")
+            command.extend(["--ro-bind", str(source), destination])
+        command.extend(["--", *argv])
+        return command
 
 
 def _sha256(data: bytes) -> str:
@@ -532,7 +554,9 @@ def consume_capture_environment(env: dict[str, str] | None = None) -> AgyCanaryC
     return AgyCanaryCapture(root=root, root_fd=root_fd)
 
 
-def inventory_customizations(*, home: Path, env: dict[str, str] | None = None) -> dict[str, list[str]]:
+def inventory_customizations(
+    *, home: Path, env: dict[str, str] | None = None, project_dir: Path | None = None
+) -> dict[str, list[str]]:
     """Reject every known executable customization source before a child launch."""
     home = home.resolve(strict=True)
     sources = {
@@ -540,7 +564,15 @@ def inventory_customizations(*, home: Path, env: dict[str, str] | None = None) -
         "plugins": [home / ".gemini" / "antigravity-cli" / "plugins"],
         "mcp": [home / ".gemini" / "antigravity-cli" / "mcp.json"],
         "project": [home / ".gemini" / "antigravity-cli" / "project-settings.json"],
+        "system": [
+            Path("/etc/antigravity"), Path("/etc/gemini"),
+            Path("/usr/share/antigravity"), Path("/usr/local/share/antigravity"),
+        ],
     }
+    if project_dir is not None:
+        sources["project"].extend([
+            project_dir / ".gemini", project_dir / ".antigravity", project_dir / ".mcp.json",
+        ])
     found: dict[str, list[str]] = {key: [] for key in sources}
     for kind, paths in sources.items():
         for path in paths:
@@ -556,19 +588,46 @@ def inventory_customizations(*, home: Path, env: dict[str, str] | None = None) -
     return found
 
 
-def build_minimal_home(*, capture: AgyCanaryCapture, settings_path: Path) -> Path:
+def _validated_auth_binds(auth_paths: tuple[Path, ...], minimal_home: Path) -> tuple[tuple[Path, str], ...]:
+    binds: list[tuple[Path, str]] = []
+    auth_dir = minimal_home / ".gemini" / "antigravity-cli" / "auth"
+    auth_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    for source in auth_paths:
+        if not source.is_absolute() or source.is_symlink():
+            raise AgyCanaryEvidenceError("authentication bind must be an absolute regular file")
+        parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            data, info = _reopen_at(parent_fd, source.name)
+            if not stat.S_ISREG(info.st_mode):
+                raise AgyCanaryEvidenceError("authentication bind must be a regular file")
+        finally:
+            os.close(parent_fd)
+        destination = auth_dir / source.name
+        destination.write_bytes(b"")  # required bind target, never a copied credential
+        destination.chmod(0o600)
+        binds.append((source.resolve(strict=True), str(destination)))
+        # Never retain authentication bytes; the digest proves the exact file the
+        # operator bound without disclosing it in a record or prompt.
+        _ = _sha256(data)
+    return tuple(binds)
+
+
+def build_minimal_home(
+    *, evidence_root: Path, settings_path: Path, auth_paths: tuple[Path, ...] = ()
+) -> tuple[Path, tuple[tuple[Path, str], ...]]:
     """Create a private minimal HOME that exposes only reducer-validated settings.
 
     Authentication material is intentionally not copied here.  An attended
     operator may add an explicit read-only bind after proving its required path;
     this helper otherwise fails closed rather than falling back to normal HOME.
     """
-    name = f"minimal-home-{secrets.token_hex(8)}"
-    os.mkdir(name, 0o700, dir_fd=capture.root_fd)
-    root = capture.root / name
-    config = root / ".config"
-    config.mkdir(mode=0o700)
-    target = config / "agy-settings.json"
+    root = Path(tempfile.mkdtemp(prefix="phase-loop-agy-home-", dir="/tmp"))
+    root.chmod(0o700)
+    if evidence_root.resolve(strict=True) in root.parents:
+        raise AgyCanaryEvidenceError("minimal HOME must not be beneath evidence root")
+    config = root / ".gemini" / "antigravity-cli"
+    config.mkdir(parents=True, mode=0o700)
+    target = config / "settings.json"
     opened = _open_settings(settings_path)
     try:
         data = opened.data
@@ -576,26 +635,33 @@ def build_minimal_home(*, capture: AgyCanaryCapture, settings_path: Path) -> Pat
         os.close(opened.parent_fd)
     target.write_bytes(data)
     target.chmod(0o600)
+    binds = _validated_auth_binds(auth_paths, root)
     inventory_customizations(home=root, env={})
-    return root
+    return root, binds
 
 
 def namespace_self_test(*, namespace: AgyCanaryNamespace) -> dict[str, Any]:
     """Prove the fixed stage path and evidence-root masking before provider launch."""
-    test_argv = [
-        "/bin/sh", "-c",
-        "test -r /run/phase-loop-review/review-instructions.md && "
-        "test -r /run/phase-loop-review/review-bundle.md && "
-        "test ! -e \"$1\"",
-        "phase-loop-namespace-test", str(namespace.evidence_root),
-    ]
-    proc = subprocess.run(namespace.command(test_argv), capture_output=True, text=True, timeout=30, check=False)
+    test_program = (
+        "import socket, ssl, pathlib, os; "
+        "assert pathlib.Path('/run/phase-loop-review/review-instructions.md').is_file(); "
+        "assert pathlib.Path('/run/phase-loop-review/review-bundle.md').is_file(); "
+        "assert not pathlib.Path('/tmp/' + os.environ['PL_EVIDENCE_BASENAME']).exists(); "
+        f"socket.getaddrinfo({namespace.provider_hostname!r}, 443, type=socket.SOCK_STREAM); "
+        f"s=socket.create_connection(({namespace.provider_hostname!r}, 443), timeout=10); "
+        f"ssl.create_default_context().wrap_socket(s, server_hostname={namespace.provider_hostname!r}).close()"
+    )
+    child_env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(_CUSTOMIZATION_ENV_PREFIXES)
+    }
+    child_env["PL_EVIDENCE_BASENAME"] = namespace.evidence_root.name
+    proc = subprocess.run(
+        namespace.command([sys.executable, "-I", "-c", test_program]),
+        capture_output=True, text=True, timeout=30, check=False, env=child_env,
+    )
     if proc.returncode != 0:
         raise AgyCanaryEvidenceError("bwrap namespace masking self-test failed")
-    try:
-        socket.getaddrinfo(namespace.provider_hostname, 443, type=socket.SOCK_STREAM)
-    except OSError as exc:
-        raise AgyCanaryEvidenceError("provider DNS self-test failed") from exc
     return {"schema": "agy_namespace_self_test.v1", "stage": "/run/phase-loop-review", "evidence_root_hidden": True, "provider_hostname": namespace.provider_hostname}
 
 
@@ -839,7 +905,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
                 succeeded = result.get("outcome") == "success"
                 if tool == "read_file":
                     basename = Path(target).name
-                    if basename in reads and target.endswith(basename):
+                    if basename in reads and target == f"/run/phase-loop-review/{basename}":
                         reads[basename].append(result)
                     else:
                         counts["out_of_stage_read"] += 1
@@ -849,6 +915,8 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
                     counts["non_read_tool"] += 1
                 if succeeded and tool != "read_file":
                     raise AgyCanaryEvidenceError("accepted attempt executed a non-read tool")
+            if any(counts.values()):
+                raise AgyCanaryEvidenceError("accepted attempt contains a prohibited tool attempt")
             for name, expected in staged.items():
                 if not isinstance(expected, dict) or not reads.get(name):
                     raise AgyCanaryEvidenceError(f"accepted attempt did not read {name}")
@@ -971,11 +1039,29 @@ def bootstrap_attest(
     }
     nonce = secrets.token_hex(24)
     child_env["PHASE_LOOP_AGY_CANARY_BOOTSTRAP_NONCE"] = nonce
+    script_bytes = (repo / "bootstrap.sh").read_bytes()
+    committed_script = subprocess.run(["git", "-C", str(repo), "show", "HEAD:bootstrap.sh"], capture_output=True, check=False)
+    if committed_script.returncode != 0 or committed_script.stdout != script_bytes:
+        raise AgyCanaryEvidenceError("bootstrap script bytes differ from committed HEAD")
     before = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
-    child = subprocess.run(list(bootstrap_command), cwd=repo, env=child_env, capture_output=True, text=True, timeout=1800, check=False)
+    child_process = subprocess.Popen(
+        list(bootstrap_command), cwd=repo, env=child_env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        _stdout, _stderr = child_process.communicate(timeout=1800)
+    except subprocess.TimeoutExpired as exc:
+        child_process.kill()
+        child_process.communicate()
+        raise AgyCanaryEvidenceError("direct bootstrap child timed out") from exc
+    child_rc = child_process.returncode
     after = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
-    if child.returncode != 0:
+    if child_rc != 0:
         raise AgyCanaryEvidenceError("direct bootstrap child failed")
+    installed = subprocess.run(["phase-loop", "version"], capture_output=True, text=True, timeout=30, check=False)
+    installed_version = (installed.stdout or installed.stderr).strip()
+    if installed.returncode != 0 or "0.7.14" not in installed_version:
+        raise AgyCanaryEvidenceError("bootstrap did not install the expected phase-loop version")
     root, root_fd = _validate_private_root(evidence_root)
     try:
         value = {
@@ -985,10 +1071,14 @@ def bootstrap_attest(
             "nonce_sha256": _sha256(nonce.encode()),
             "bootstrap": {
                 "argv": list(bootstrap_command),
-                "returncode": child.returncode,
+                "pid": child_process.pid,
+                "returncode": child_rc,
+                "script_sha256": _sha256(script_bytes),
+                "script_blob": identities["bootstrap.sh"],
                 "before_uv_tools_sha256": _sha256((before.stdout or "").encode()),
                 "after_uv_tools_sha256": _sha256((after.stdout or "").encode()),
                 "environment_names": sorted(child_env),
+                "installed_phase_loop_version_sha256": _sha256(installed_version.encode()),
             },
         }
         _exclusive_write_at(root_fd, "agy_canary_bootstrap_attestation.json", _canonical_json(value), 0o600)
@@ -997,7 +1087,9 @@ def bootstrap_attest(
         os.close(root_fd)
 
 
-def prepare_canary(*, evidence_root: Path, settings_path: Path, seat_key: str) -> dict[str, Any]:
+def prepare_canary(
+    *, evidence_root: Path, settings_path: Path, seat_key: str, auth_paths: tuple[Path, ...] = ()
+) -> dict[str, Any]:
     """Bind cleanup lineage and a positively complete capability probe before launch."""
     root, root_fd = _validate_private_root(evidence_root)
     try:
@@ -1018,8 +1110,15 @@ def prepare_canary(*, evidence_root: Path, settings_path: Path, seat_key: str) -
             seat_key=seat_key,
             capture_mode=str(probe["mode"]),
         )
-        minimal_home = build_minimal_home(capture=capture, settings_path=settings_path)
-        ledger["minimal_home"] = minimal_home.name
+        minimal_home, auth_binds = build_minimal_home(
+            evidence_root=capture.root, settings_path=settings_path, auth_paths=auth_paths
+        )
+        ledger["minimal_home"] = str(minimal_home)
+        ledger["auth_binds"] = [
+            {"source": str(source), "destination": destination,
+             "source_sha256": _sha256(_reopen_at(os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC), source.name)[0])}
+            for source, destination in auth_binds
+        ]
         _write_replace_at(root_fd, _LEDGER_NAME, ledger)
         value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "bootstrap_sha256": _sha256(_canonical_json(bootstrap)), "ledger_sha256": _sha256(_canonical_json(ledger)), "seat_key": seat_key}
         _exclusive_write_at(root_fd, _PREPARE_NAME, _canonical_json(value), 0o600)
@@ -1034,14 +1133,34 @@ def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostna
     if ledger.get("capture_mode") != "stream_json":
         raise AgyCanaryEvidenceError("production launch has no supported stream-json authority")
     name = ledger.get("minimal_home")
-    if not isinstance(name, str) or Path(name).name != name:
+    if not isinstance(name, str) or not Path(name).is_absolute():
         raise AgyCanaryEvidenceError("prepare did not seal a minimal HOME")
-    home = capture.root / name
+    home = Path(name)
     info = home.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
         raise AgyCanaryEvidenceError("sealed minimal HOME is invalid")
-    inventory_customizations(home=home, env={})
-    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname)
+    inventory_customizations(home=home, env={}, project_dir=stage)
+    auth_records = ledger.get("auth_binds", [])
+    if not isinstance(auth_records, list):
+        raise AgyCanaryEvidenceError("prepare has malformed authentication binds")
+    auth_binds: list[tuple[Path, str]] = []
+    for record in auth_records:
+        if not isinstance(record, dict) or not isinstance(record.get("source"), str) or not isinstance(record.get("destination"), str):
+            raise AgyCanaryEvidenceError("prepare has malformed authentication bind")
+        source = Path(record["source"])
+        parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            data, _info = _reopen_at(parent_fd, source.name)
+        finally:
+            os.close(parent_fd)
+        if _sha256(data) != record.get("source_sha256"):
+            raise AgyCanaryEvidenceError("authentication bind bytes drifted")
+        auth_binds.append((source, str(record["destination"])))
+    resolver = Path("/etc/resolv.conf").resolve(strict=True)
+    resolver_info = resolver.lstat()
+    if stat.S_ISLNK(resolver_info.st_mode) or not stat.S_ISREG(resolver_info.st_mode):
+        raise AgyCanaryEvidenceError("resolved resolver source is not regular")
+    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname, auth_binds=tuple(auth_binds), resolver_source=resolver)
 
 
 def _replace_regular_file(path: Path, data: bytes) -> None:

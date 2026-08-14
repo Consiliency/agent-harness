@@ -269,6 +269,38 @@ def test_capture_reducer_rejects_unpaired_tool_evidence(tmp_path):
         root.rmdir()
 
 
+def test_capture_reducer_rejects_denied_command_and_alias_stage_read(tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        settings = _settings(tmp_path, [])
+        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        try:
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            review = tmp_path / "review"
+            review.mkdir()
+            for name in ("review-instructions.md", "review-bundle.md"):
+                path = review / name
+                path.write_text(name)
+                path.chmod(0o600)
+            staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+            events = [
+                {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/not-stage/review-instructions.md"},
+                {"sequence": 1, "session_id": "s", "type": "tool_result", "call_id": "a", "outcome": "success", "sha256": staged["review-instructions.md"]["sha256"], "bytes": staged["review-instructions.md"]["bytes"]},
+                {"sequence": 2, "session_id": "s", "type": "tool_call", "call_id": "b", "tool": "command", "target": "true"},
+                {"sequence": 3, "session_id": "s", "type": "tool_result", "call_id": "b", "outcome": "denied"},
+                {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
+            ]
+            evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
+        finally:
+            capture.close()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="prohibited tool attempt"):
+            evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
+    finally:
+        for path in root.iterdir():
+            path.unlink()
+        root.rmdir()
+
+
 def test_namespace_masks_evidence_root_and_uses_fixed_stage(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     try:
@@ -285,6 +317,26 @@ def test_namespace_masks_evidence_root_and_uses_fixed_stage(monkeypatch, tmp_pat
         assert "/run/phase-loop-review" in command
         assert str(root) not in command
     finally:
+        root.rmdir()
+
+
+def test_minimal_home_keeps_auth_bytes_outside_evidence_and_binds_read_only(tmp_path):
+    root = _private_root(tmp_path)
+    home = None
+    try:
+        auth = tmp_path / "auth.json"
+        auth.write_text('{"token":"private"}')
+        auth.chmod(0o600)
+        home, binds = evidence.build_minimal_home(
+            evidence_root=root, settings_path=_settings(tmp_path, []), auth_paths=(auth,)
+        )
+        assert root not in home.parents
+        assert binds == ((auth, str(home / ".gemini" / "antigravity-cli" / "auth" / "auth.json")),)
+        assert (home / ".gemini" / "antigravity-cli" / "settings.json").is_file()
+        assert Path(binds[0][1]).read_bytes() == b""
+    finally:
+        if home is not None:
+            shutil.rmtree(home)
         root.rmdir()
 
 
@@ -319,7 +371,6 @@ def test_probe_selects_1_1_13_stream_json_only_after_strict_parse(monkeypatch, t
 
         monkeypatch.setattr(evidence.subprocess, "run", fake_run)
         monkeypatch.setattr(evidence.shutil, "which", lambda _name: "/usr/bin/bwrap")
-        monkeypatch.setattr(evidence.socket, "getaddrinfo", lambda *_args, **_kwargs: [])
         result = evidence.probe_capability(evidence_root=root, namespace=namespace)
         assert result["complete"] is True
         assert result["mode"] == "stream_json"
