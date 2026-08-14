@@ -1072,6 +1072,31 @@ def test_projected_auth_proof_rejects_row_substitution(tmp_path):
         evidence._validate_projected_auth_proof(proof={**proof, "records": []}, provider="codex", runtime=runtime, records=records)
 
 
+def test_provider_authority_factory_reclaims_output_when_projection_fails(monkeypatch, tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    output = tmp_path / "provider-output"
+    source = tmp_path / "agy"
+    source.write_bytes(b"runtime")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedProviderRuntime("gemini", source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))
+    capture = type("Capture", (), {"root": tmp_path, "root_fd": -1})()
+    authority = {"minimal_home": {"path": str(home), "identity": "ok"}, "auth_binds": []}
+    monkeypatch.setattr(evidence, "_require_prepare_authority", lambda **_kwargs: ({}, {}, authority))
+    monkeypatch.setattr(evidence, "_validate_stage_binding", lambda **_kwargs: None)
+    monkeypatch.setattr(evidence, "_minimal_home_identity", lambda _home: "ok")
+    monkeypatch.setattr(evidence, "_resolver_snapshot", lambda: (None, None))
+    monkeypatch.setattr(evidence, "_trusted_provider_runtime", lambda _provider: runtime)
+    monkeypatch.setattr(evidence.tempfile, "mkdtemp", lambda **_kwargs: str(output.mkdir() or output))
+    monkeypatch.setattr(evidence, "_projected_auth_proof", lambda **_kwargs: (_ for _ in ()).throw(evidence.AgyCanaryEvidenceError("projection failed")))
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="projection failed"):
+        evidence.prepare_provider_launch_authorities(capture=capture, stage=stage, providers=("gemini",))
+    assert not output.exists()
+
+
 def test_real_source_inventory_rejects_environment_override_and_generated_capture_never_claims_complete(tmp_path):
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="customization source"):
         evidence.freeze_customization_inventory(
