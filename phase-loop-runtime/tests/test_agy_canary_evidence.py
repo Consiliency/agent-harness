@@ -234,11 +234,127 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
                 {"sequence": 4, "session_id": "s1", "type": "terminal", "text": "Looks good\nAGREE"},
             ]
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret prompt"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
+            evidence.write_private_board(
+                capture=capture,
+                basename="board.json",
+                payload={"agy_canary_capture": evidence.capture_summary(capture)},
+            )
         finally:
             capture.close()
         proof = evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
         assert proof["attempt_ids"] == ["gemini-1"]
         assert proof["attempts"][0]["counts"] == {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}
+    finally:
+        shutil.rmtree(root)
+
+
+def test_capture_reducer_rejects_missing_or_swapped_private_board(tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        settings = _settings(tmp_path, [])
+        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        try:
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            review = tmp_path / "review"
+            review.mkdir()
+            for name in ("review-instructions.md", "review-bundle.md"):
+                path = review / name
+                path.write_text(name)
+                path.chmod(0o600)
+            staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+            events = [
+                {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+                {"sequence": 1, "session_id": "s", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "review-instructions.md"},
+                {"sequence": 2, "session_id": "s", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+                {"sequence": 3, "session_id": "s", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "review-bundle.md"},
+                {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
+            ]
+            evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
+            evidence.write_private_board(capture=capture, basename="board.json", payload={"agy_canary_capture": evidence.capture_summary(capture)})
+            (root / "board.json").write_text('{"agy_canary_capture":"swapped"}')
+        finally:
+            capture.close()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="private board payload bytes drifted"):
+            evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
+    finally:
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [
+            {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+            {"sequence": 1, "session_id": "s", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+        ],
+        [
+            {"sequence": 0, "session_id": "s", "type": "terminal", "text": "AGREE"},
+            {"sequence": 1, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+        ],
+    ],
+)
+def test_stream_rejects_interleaved_or_post_terminal_events(events):
+    with pytest.raises(evidence.AgyCanaryEvidenceError):
+        evidence._parse_stream("\n".join(json.dumps(event) for event in events).encode())
+
+
+def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    try:
+        settings = _settings(tmp_path, [])
+        evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+        auth = tmp_path / "auth.json"
+        auth.write_text('{"credential":"private"}')
+        auth.chmod(0o600)
+        home, binds = evidence.build_minimal_home(
+            evidence_root=root, settings_path=settings, auth_paths=(auth,)
+        )
+        ledger = evidence._read_json_at(capture.root_fd, "agy-launch-ledger.json")
+        ledger["minimal_home"] = str(home)
+        ledger["auth_binds"] = [{"source": str(auth), "destination": binds[0][1], "source_sha256": evidence._sha256(auth.read_bytes())}]
+        evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
+        resolver = tmp_path / "resolv.conf"
+        resolver.write_text("nameserver 127.0.0.1\n")
+        monkeypatch.setattr(evidence, "_resolver_snapshot", lambda: (resolver, evidence._sha256(resolver.read_bytes())))
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        namespace = evidence.capture_namespace(capture=capture, stage=stage)
+        command = namespace.command(["agy", "--version"])
+        assert binds[0][1] in command
+        assert str(auth) in command
+        assert str(resolver) in command
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+
+
+def test_bwrap_auth_bind_is_visible_only_at_child_lookup_path(tmp_path):
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("bwrap is unavailable")
+    root = _private_root(tmp_path)
+    try:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        home = tmp_path / "home"
+        (home / ".gemini" / "antigravity-cli" / "auth").mkdir(parents=True)
+        home.chmod(0o700)
+        placeholder = home / ".gemini" / "antigravity-cli" / "auth" / "auth.json"
+        placeholder.write_bytes(b"")
+        placeholder.chmod(0o600)
+        auth = tmp_path / "auth.json"
+        auth.write_text("dummy-private-auth")
+        auth.chmod(0o600)
+        destination = "/home/phase-loop/.gemini/antigravity-cli/auth/auth.json"
+        namespace = evidence.AgyCanaryNamespace(
+            stage=stage, minimal_home=home, evidence_root=root,
+            provider_hostname="example.invalid", auth_binds=((auth, destination),),
+        )
+        proc = evidence.subprocess.run(
+            namespace.command(["/bin/sh", "-c", f"test \"$(cat {destination})\" = dummy-private-auth"]),
+            capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
     finally:
         shutil.rmtree(root)
 
@@ -360,9 +476,9 @@ def test_minimal_home_keeps_auth_bytes_outside_evidence_and_binds_read_only(tmp_
             evidence_root=root, settings_path=_settings(tmp_path, []), auth_paths=(auth,)
         )
         assert root not in home.parents
-        assert binds == ((auth, str(home / ".gemini" / "antigravity-cli" / "auth" / "auth.json")),)
+        assert binds == ((auth, "/home/phase-loop/.gemini/antigravity-cli/auth/auth.json"),)
         assert (home / ".gemini" / "antigravity-cli" / "settings.json").is_file()
-        assert Path(binds[0][1]).read_bytes() == b""
+        assert (home / ".gemini" / "antigravity-cli" / "auth" / "auth.json").read_bytes() == b""
     finally:
         if home is not None:
             shutil.rmtree(home)
@@ -489,13 +605,24 @@ def test_probe_rejects_staged_read_content_that_does_not_match_stage(monkeypatch
         root.rmdir()
 
 
-def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path):
+def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatch):
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
-        (root / "cleanup-state.json").write_text(json.dumps({"state": "committed"}))
+        evidence.clean_settings(
+            evidence_root=root,
+            settings_path=settings,
+            maintenance_lock=tmp_path / "maintenance.lock",
+        )
         (root / "agy_capability_probe.json").write_text(json.dumps({"complete": True, "mode": "stream_json"}))
-        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({"bootstrap": {"returncode": 0}}))
+        installation = {
+            "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
+            "distribution_root": "/tool/site-packages", "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
+            "direct_url_sha256": "a" * 64, "archive_hash": "sha256:" + "b" * 64,
+            "archive_url_sha256": "c" * 64,
+        }
+        monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda: installation)
+        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({"bootstrap": {"returncode": 0, "installation": installation}}))
         prepared = evidence.prepare_canary(evidence_root=root, settings_path=settings, seat_key="gemini-primary")
         assert prepared["seat_key"] == "gemini-primary"
         ledger = json.loads((root / "agy-launch-ledger.json").read_text())

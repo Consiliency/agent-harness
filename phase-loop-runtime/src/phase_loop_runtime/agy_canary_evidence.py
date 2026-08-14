@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -621,10 +622,13 @@ def _validated_auth_binds(auth_paths: tuple[Path, ...], minimal_home: Path) -> t
                 raise AgyCanaryEvidenceError("authentication bind must be a regular file")
         finally:
             os.close(parent_fd)
-        destination = auth_dir / source.name
-        destination.write_bytes(b"")  # required bind target, never a copied credential
-        destination.chmod(0o600)
-        binds.append((source.resolve(strict=True), str(destination)))
+        host_destination = auth_dir / source.name
+        host_destination.write_bytes(b"")  # required bind target, never a copied credential
+        host_destination.chmod(0o600)
+        # bwrap mounts ``minimal_home`` at /home/phase-loop; later auth binds
+        # must therefore target this in-namespace path, not the hidden host temp HOME.
+        destination = f"/home/phase-loop/.gemini/antigravity-cli/auth/{source.name}"
+        binds.append((source.resolve(strict=True), destination))
         # Never retain authentication bytes; the digest proves the exact file the
         # operator bound without disclosing it in a record or prompt.
         _ = _sha256(data)
@@ -657,6 +661,41 @@ def build_minimal_home(
     binds = _validated_auth_binds(auth_paths, root)
     inventory_customizations(home=root, env={})
     return root, binds
+
+
+def _resolver_snapshot() -> tuple[Path, str]:
+    """Descriptor-read the only resolver file a fresh /run namespace may rebind."""
+    resolver = Path("/etc/resolv.conf").resolve(strict=True)
+    info = resolver.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise AgyCanaryEvidenceError("resolved resolver source is not regular")
+    resolver_fd = os.open(resolver, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(resolver_fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(resolver_fd)
+    return resolver, _sha256(b"".join(chunks))
+
+
+def build_probe_namespace(
+    *, evidence_root: Path, stage: Path, settings_path: Path,
+    auth_paths: tuple[Path, ...] = (), provider_hostname: str = "antigravity.google",
+) -> AgyCanaryNamespace:
+    """Derive the probe namespace from the owned settings/auth sources, never argv HOME."""
+    home, auth_binds = build_minimal_home(
+        evidence_root=evidence_root, settings_path=settings_path, auth_paths=auth_paths
+    )
+    resolver, resolver_sha256 = _resolver_snapshot()
+    return AgyCanaryNamespace(
+        stage=stage, minimal_home=home, evidence_root=evidence_root,
+        provider_hostname=provider_hostname, auth_binds=auth_binds,
+        resolver_source=resolver, resolver_sha256=resolver_sha256,
+    )
 
 
 def namespace_self_test(*, namespace: AgyCanaryNamespace) -> dict[str, Any]:
@@ -820,6 +859,7 @@ def _parse_stream(
     sequence = -1
     terminal: dict[str, Any] | None = None
     session: str | None = None
+    pending_call: str | None = None
     for raw in data.splitlines():
         try:
             event = json.loads(raw)
@@ -839,23 +879,27 @@ def _parse_stream(
         elif session != current_session:
             raise AgyCanaryEvidenceError("stream mixes sessions")
         kind = event.get("type")
+        if terminal is not None:
+            raise AgyCanaryEvidenceError("stream contains an event after terminal")
         if kind == "tool_call":
             call_id = event.get("call_id")
-            if not isinstance(call_id, str) or call_id in calls:
+            if not isinstance(call_id, str) or call_id in calls or pending_call is not None:
                 raise AgyCanaryEvidenceError("stream tool call identity is invalid")
             calls[call_id] = event
+            pending_call = call_id
         elif kind == "tool_result":
             call_id = event.get("call_id")
-            if not isinstance(call_id, str) or call_id not in calls or "result" in calls[call_id]:
+            if not isinstance(call_id, str) or call_id != pending_call or "result" in calls.get(call_id, {}):
                 raise AgyCanaryEvidenceError("stream tool result is unmatched")
             calls[call_id]["result"] = event
+            pending_call = None
         elif kind == "terminal":
-            if terminal is not None or not isinstance(event.get("text"), str):
+            if pending_call is not None or terminal is not None or not isinstance(event.get("text"), str):
                 raise AgyCanaryEvidenceError("stream terminal event is invalid")
             terminal = event
         else:
             raise AgyCanaryEvidenceError("stream event kind is unsupported")
-    if session is None or terminal is None or any("result" not in call for call in calls.values()):
+    if session is None or terminal is None or pending_call is not None or any("result" not in call for call in calls.values()):
         raise AgyCanaryEvidenceError("stream does not contain complete calls and terminal result")
     if require_staged_reads:
         expected = {
@@ -951,10 +995,14 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
         for item in attempts:
             if not isinstance(item, dict) or item.get("seat_key") != expected_seat_key:
                 raise AgyCanaryEvidenceError("capture contains an unbound attempt")
+            if item.get("returncode") != 0:
+                raise AgyCanaryEvidenceError("capture attempt did not exit zero")
             stream = item.get("stream")
             staged = item.get("staged")
             if not isinstance(stream, dict) or not isinstance(staged, dict):
                 raise AgyCanaryEvidenceError("capture launch record is incomplete")
+            if set(staged) != {"review-instructions.md", "review-bundle.md"}:
+                raise AgyCanaryEvidenceError("capture staged input set is not exact")
             raw = _read_regular_at(root_fd, str(stream.get("name", "")))
             if len(raw) != stream.get("bytes") or _sha256(raw) != stream.get("sha256"):
                 raise AgyCanaryEvidenceError("sealed stream bytes drifted")
@@ -973,6 +1021,8 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
                 if tool == "read_file":
                     basename = Path(target).name
                     if basename in reads and target == f"/run/phase-loop-review/{basename}":
+                        if result.get("outcome") != "success":
+                            raise AgyCanaryEvidenceError("accepted staged read did not succeed")
                         reads[basename].append(result)
                     else:
                         counts["out_of_stage_read"] += 1
@@ -998,6 +1048,21 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
             final_text = str(terminal["text"])
         if not final_text.strip():
             raise AgyCanaryEvidenceError("final Gemini review is empty")
+        private_board = ledger.get("private_board")
+        if not isinstance(private_board, dict):
+            raise AgyCanaryEvidenceError("capture has no sealed private board payload")
+        name = private_board.get("name")
+        if not isinstance(name, str):
+            raise AgyCanaryEvidenceError("private board binding has no name")
+        board_bytes = _read_regular_at(root_fd, name)
+        if len(board_bytes) != private_board.get("bytes") or _sha256(board_bytes) != private_board.get("sha256"):
+            raise AgyCanaryEvidenceError("private board payload bytes drifted")
+        try:
+            board_payload = json.loads(board_bytes)
+        except json.JSONDecodeError as exc:
+            raise AgyCanaryEvidenceError("private board payload is not JSON") from exc
+        if not isinstance(board_payload, dict) or board_payload.get("agy_canary_capture") != private_board.get("capture"):
+            raise AgyCanaryEvidenceError("private board does not bind the sealed capture summary")
         proof = {
             "schema": SCHEMA_VERSION,
             "seat_key": expected_seat_key,
@@ -1005,6 +1070,7 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
             "capture_mode": mode,
             "attempts": output_attempts,
             "accepted_review_sha256": _sha256(final_text.encode()),
+            "private_board_sha256": private_board["sha256"],
         }
         _write_replace_at(root_fd, "agy_canary_proof.json", proof)
         return proof
@@ -1016,8 +1082,17 @@ def write_private_board(*, capture: AgyCanaryCapture, basename: str, payload: di
     """Create the full board payload only in the validated private root."""
     if not basename or Path(basename).name != basename:
         raise AgyCanaryEvidenceError("private board name must be a basename")
+    ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
+    if "private_board" in ledger:
+        raise AgyCanaryEvidenceError("capture private board payload is already sealed")
+    summary = capture_summary(capture)
+    if payload.get("agy_canary_capture") != summary:
+        raise AgyCanaryEvidenceError("private board payload does not bind capture summary")
     data = _canonical_json(payload)
     _exclusive_write_at(capture.root_fd, basename, data, 0o600)
+    private = {"name": basename, "bytes": len(data), "sha256": _sha256(data), "capture": summary}
+    ledger["private_board"] = private
+    _write_replace_at(capture.root_fd, _LEDGER_NAME, ledger)
     return {"name": basename, "bytes": len(data), "sha256": _sha256(data)}
 
 
@@ -1087,6 +1162,55 @@ def probe_capability(
         os.close(root_fd)
 
 
+def _installed_phase_loop_identity() -> dict[str, str]:
+    """Inspect the console script's own interpreter/distribution, not this process."""
+    command = shutil.which("phase-loop")
+    if command is None:
+        raise AgyCanaryEvidenceError("phase-loop console script is not installed")
+    script = Path(command).resolve(strict=True)
+    if not script.is_file() or script.is_symlink():
+        raise AgyCanaryEvidenceError("phase-loop console script is not canonical")
+    first_line = script.read_text(encoding="utf-8", errors="strict").splitlines()[0:1]
+    if len(first_line) != 1 or not first_line[0].startswith("#!"):
+        raise AgyCanaryEvidenceError("phase-loop console script has no canonical interpreter")
+    interpreter = Path(first_line[0][2:])
+    if not interpreter.is_absolute() or not interpreter.is_file() or not os.access(interpreter, os.X_OK):
+        raise AgyCanaryEvidenceError("phase-loop interpreter is not canonical")
+    program = (
+        "import importlib.metadata as m,json,pathlib,phase_loop_runtime; "
+        "d=m.distribution('phase-loop-runtime'); root=pathlib.Path(d.locate_file('')).resolve(); "
+        "module=pathlib.Path(phase_loop_runtime.__file__).resolve(); "
+        "direct=next((pathlib.Path(d.locate_file(f)) for f in d.files or [] if f.name=='direct_url.json'),None); "
+        "value={'version':d.version,'distribution_root':str(root),'module_origin':str(module),"
+        "'direct_url_sha256':__import__('hashlib').sha256(direct.read_bytes()).hexdigest() if direct else '',"
+        "'direct_url':json.loads(direct.read_text()) if direct else {}}; print(json.dumps(value,sort_keys=True))"
+    )
+    proc = subprocess.run(
+        [str(interpreter), "-I", "-c", program], capture_output=True, text=True, timeout=30,
+        check=False,
+    )
+    try:
+        value = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("phase-loop interpreter did not identify its distribution") from exc
+    if proc.returncode != 0 or not isinstance(value, dict) or not all(isinstance(value.get(key), str) for key in ("version", "distribution_root", "module_origin", "direct_url_sha256")):
+        raise AgyCanaryEvidenceError("phase-loop installed distribution identity is invalid")
+    root = Path(value["distribution_root"])
+    module = Path(value["module_origin"])
+    direct = value.get("direct_url")
+    if not module.is_relative_to(root) or not isinstance(direct, dict):
+        raise AgyCanaryEvidenceError("phase-loop module ownership is invalid")
+    archive = direct.get("archive_info")
+    if not isinstance(direct.get("url"), str) or not isinstance(archive, dict) or not isinstance(archive.get("hash"), str):
+        raise AgyCanaryEvidenceError("phase-loop direct-wheel provenance is unavailable")
+    return {
+        "console_script": str(script), "interpreter": str(interpreter),
+        "version": value["version"], "distribution_root": str(root),
+        "module_origin": str(module), "direct_url_sha256": value["direct_url_sha256"],
+        "archive_hash": archive["hash"], "archive_url_sha256": _sha256(direct["url"].encode()),
+    }
+
+
 def bootstrap_attest(
     *, evidence_root: Path, dotfiles_repo: Path, bootstrap_command: tuple[str, ...] = ("bash", "bootstrap.sh")
 ) -> dict[str, Any]:
@@ -1139,9 +1263,8 @@ def bootstrap_attest(
     after = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
     if child_rc != 0:
         raise AgyCanaryEvidenceError("direct bootstrap child failed")
-    installed = subprocess.run(["phase-loop", "version"], capture_output=True, text=True, timeout=30, check=False)
-    installed_version = (installed.stdout or installed.stderr).strip()
-    if installed.returncode != 0 or "0.7.14" not in installed_version:
+    installation = _installed_phase_loop_identity()
+    if installation["version"] != "0.7.14":
         raise AgyCanaryEvidenceError("bootstrap did not install the expected phase-loop version")
     root, root_fd = _validate_private_root(evidence_root)
     try:
@@ -1159,7 +1282,7 @@ def bootstrap_attest(
                 "before_uv_tools_sha256": _sha256((before.stdout or "").encode()),
                 "after_uv_tools_sha256": _sha256((after.stdout or "").encode()),
                 "environment_names": sorted(child_env),
-                "installed_phase_loop_version_sha256": _sha256(installed_version.encode()),
+                "installation": installation,
             },
         }
         _exclusive_write_at(root_fd, "agy_canary_bootstrap_attestation.json", _canonical_json(value), 0o600)
@@ -1168,15 +1291,52 @@ def bootstrap_attest(
         os.close(root_fd)
 
 
+def _rederive_cleanup_lineage(*, root_fd: int, settings_path: Path) -> dict[str, Any]:
+    """Reopen the sealed preimage and current settings; never trust a cleanup flag."""
+    cleanup = _read_json_at(root_fd, _CLEANUP_STATE_NAME)
+    if cleanup.get("state") != "committed":
+        raise AgyCanaryEvidenceError("settings cleanup has not committed")
+    before_bytes = _read_regular_at(root_fd, _SETTINGS_SNAPSHOT_NAME)
+    before = _parse_policy(before_bytes)
+    expected, result = _derive_replacement(before)
+    opened = _open_settings(settings_path)
+    try:
+        current_bytes = opened.data
+        current = _parse_policy(current_bytes)
+        current_mode = opened.mode
+    finally:
+        os.close(opened.parent_fd)
+    if cleanup.get("settings_path_sha256") != _sha256(str(settings_path).encode()):
+        raise AgyCanaryEvidenceError("cleanup settings source does not match prepare source")
+    if cleanup.get("before_sha256") != _sha256(before_bytes):
+        raise AgyCanaryEvidenceError("cleanup sealed preimage bytes drifted")
+    if cleanup.get("recovery_snapshot_sha256") != _sha256(before_bytes):
+        raise AgyCanaryEvidenceError("cleanup snapshot lineage is incomplete")
+    if cleanup.get("before_mode") != format(current_mode, "04o"):
+        raise AgyCanaryEvidenceError("cleanup settings mode lineage drifted")
+    if current != expected or result != cleanup.get("result"):
+        raise AgyCanaryEvidenceError("cleanup structural delta does not match current settings")
+    facts = _policy_facts(current)
+    if not all(facts.values()):
+        raise AgyCanaryEvidenceError("cleanup current policy is not strict and empty")
+    return {
+        "cleanup": cleanup,
+        "settings_sha256": _sha256(current_bytes),
+        "settings_bytes": len(current_bytes),
+        "settings_mode": format(current_mode, "04o"),
+    }
+
+
 def prepare_canary(
     *, evidence_root: Path, settings_path: Path, seat_key: str, auth_paths: tuple[Path, ...] = ()
 ) -> dict[str, Any]:
     """Bind cleanup lineage and a positively complete capability probe before launch."""
     root, root_fd = _validate_private_root(evidence_root)
     try:
-        cleanup = _read_json_at(root_fd, _CLEANUP_STATE_NAME)
-        if cleanup.get("state") != "committed":
-            raise AgyCanaryEvidenceError("settings cleanup has not committed")
+        cleanup_lineage = _rederive_cleanup_lineage(
+            root_fd=root_fd, settings_path=settings_path
+        )
+        cleanup = cleanup_lineage["cleanup"]
         probe = _read_json_at(root_fd, _PROBE_NAME)
         if probe.get("complete") is not True or probe.get("mode") not in {"stream_json", "trajectory_store"}:
             raise AgyCanaryEvidenceError("capability probe has not selected a complete authority")
@@ -1184,6 +1344,9 @@ def prepare_canary(
         bootstrap_result = bootstrap.get("bootstrap")
         if not isinstance(bootstrap_result, dict) or bootstrap_result.get("returncode") != 0:
             raise AgyCanaryEvidenceError("direct bootstrap attestation is incomplete")
+        installation = bootstrap_result.get("installation")
+        if not isinstance(installation, dict) or installation != _installed_phase_loop_identity():
+            raise AgyCanaryEvidenceError("direct bootstrap installed identity no longer matches")
         capture = AgyCanaryCapture(root, root_fd)
         ledger = create_capture(
             capture=capture,
@@ -1205,7 +1368,7 @@ def prepare_canary(
             bind_records.append({"source": str(source), "destination": destination, "source_sha256": _sha256(data)})
         ledger["auth_binds"] = bind_records
         _write_replace_at(root_fd, _LEDGER_NAME, ledger)
-        value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "bootstrap_sha256": _sha256(_canonical_json(bootstrap)), "ledger_sha256": _sha256(_canonical_json(ledger)), "seat_key": seat_key}
+        value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "bootstrap_sha256": _sha256(_canonical_json(bootstrap)), "ledger_sha256": _sha256(_canonical_json(ledger)), "settings_sha256": cleanup_lineage["settings_sha256"], "settings_bytes": cleanup_lineage["settings_bytes"], "settings_mode": cleanup_lineage["settings_mode"], "seat_key": seat_key}
         _exclusive_write_at(root_fd, _PREPARE_NAME, _canonical_json(value), 0o600)
         return value
     finally:
@@ -1241,21 +1404,8 @@ def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostna
         if _sha256(data) != record.get("source_sha256"):
             raise AgyCanaryEvidenceError("authentication bind bytes drifted")
         auth_binds.append((source, str(record["destination"])))
-    resolver = Path("/etc/resolv.conf").resolve(strict=True)
-    resolver_info = resolver.lstat()
-    if stat.S_ISLNK(resolver_info.st_mode) or not stat.S_ISREG(resolver_info.st_mode):
-        raise AgyCanaryEvidenceError("resolved resolver source is not regular")
-    resolver_fd = os.open(resolver, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    try:
-        resolver_bytes = b""
-        while True:
-            chunk = os.read(resolver_fd, 65536)
-            if not chunk:
-                break
-            resolver_bytes += chunk
-    finally:
-        os.close(resolver_fd)
-    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname, auth_binds=tuple(auth_binds), resolver_source=resolver, resolver_sha256=_sha256(resolver_bytes))
+    resolver, resolver_sha256 = _resolver_snapshot()
+    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname, auth_binds=tuple(auth_binds), resolver_source=resolver, resolver_sha256=resolver_sha256)
 
 
 def _replace_regular_file(path: Path, data: bytes) -> None:

@@ -390,6 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
     agy_probe_sub.add_argument("--agy-executable", default="agy")
     agy_probe_sub.add_argument("--stage", help="Private staged review directory for the attended probe.")
     agy_probe_sub.add_argument("--settings-path", help="Already-cleaned settings source used to derive the minimal HOME.")
+    agy_probe_sub.add_argument("--auth-bind", action="append", default=[], help="Explicit read-only authentication source for the attended probe.")
     agy_probe_sub.add_argument("--provider-host", default="antigravity.google")
     agy_attest_sub = subparsers.add_parser("agy-canary-bootstrap-attest")
     agy_attest_sub.add_argument("--evidence-root", required=True)
@@ -1081,14 +1082,11 @@ def main(argv: list[str] | None = None) -> int:
                 if args.stage or args.settings_path:
                     if not args.stage or not args.settings_path:
                         raise AgyCanaryEvidenceError("--stage and --settings-path must be supplied together")
-                    from .agy_canary_evidence import AgyCanaryNamespace, build_minimal_home
-                    probe_home, _probe_auth_binds = build_minimal_home(
-                        evidence_root=Path(args.evidence_root), settings_path=Path(args.settings_path)
-                    )
-                    namespace = AgyCanaryNamespace(
-                        stage=Path(args.stage),
-                        minimal_home=probe_home,
-                        evidence_root=Path(args.evidence_root),
+                    from .agy_canary_evidence import build_probe_namespace
+                    namespace = build_probe_namespace(
+                        evidence_root=Path(args.evidence_root), stage=Path(args.stage),
+                        settings_path=Path(args.settings_path),
+                        auth_paths=tuple(Path(path) for path in args.auth_bind),
                         provider_hostname=args.provider_host,
                     )
                 result = probe_capability(
