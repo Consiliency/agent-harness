@@ -22,6 +22,10 @@ from phase_loop_runtime import agy_canary_evidence as evidence
 from phase_loop_runtime import panel_invoker as pi
 
 
+def _mock_canonical_bwrap(monkeypatch) -> None:
+    monkeypatch.setattr(evidence, "_canonical_bwrap", lambda: Path("/usr/bin/bwrap"))
+
+
 def test_leg_timeout_scales_with_review_size():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -172,6 +176,7 @@ def test_gemini_leg_passes_prompt_inline_on_argv_not_stdin(monkeypatch):
 
 def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeypatch, tmp_path):
     """The production command exposes the host stage only as bwrap's bind source."""
+    _mock_canonical_bwrap(monkeypatch)
     root = Path("/tmp") / f"phase-loop-agy-panel-{os.getpid()}-{tmp_path.name}"
     root.mkdir(mode=0o700)
     capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
@@ -357,6 +362,7 @@ def _assert_sibling_command_is_private(command, env, prompt, *, stage, root, out
 
 
 def test_capture_enabled_codex_uses_sibling_namespace_and_output_mapping(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     captured: dict[str, object] = {}
     try:
@@ -395,6 +401,7 @@ def test_capture_enabled_codex_uses_sibling_namespace_and_output_mapping(monkeyp
 
 
 def test_capture_enabled_grok_uses_sibling_namespace_without_ledger_launch(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     captured: dict[str, object] = {}
     try:
@@ -536,6 +543,7 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
 
 
 def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     captured: dict[str, object] = {}
     try:
@@ -594,6 +602,7 @@ def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeyp
 
 
 def test_capture_claude_liveness_rejects_extra_output_without_unsafe_fallback(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     capture, authority, stage, root, output = _sibling_namespace(tmp_path)
     try:
         def fake_tui(*, output_file, capture_output_reader, **_kwargs):

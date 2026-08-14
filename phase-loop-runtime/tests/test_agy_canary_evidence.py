@@ -689,7 +689,12 @@ def test_duplicate_cross_provider_seat_keys_are_rejected_at_every_evidence_bound
         shutil.rmtree(root)
 
 
+def _mock_canonical_bwrap(monkeypatch) -> None:
+    monkeypatch.setattr(evidence, "_canonical_bwrap", lambda: Path("/usr/bin/bwrap"))
+
+
 def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     root = _private_root(tmp_path)
     settings = _settings(tmp_path, [])
     auth = tmp_path / "auth.json"
@@ -718,8 +723,10 @@ def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch
 
 
 def test_bwrap_auth_bind_is_visible_only_at_child_lookup_path(tmp_path):
-    if not Path("/usr/bin/bwrap").is_file():
-        pytest.skip("bwrap is unavailable")
+    try:
+        evidence._canonical_bwrap()
+    except evidence.AgyCanaryEvidenceError:
+        pytest.skip("canonical bwrap is unavailable")
     root = _private_root(tmp_path)
     try:
         stage = tmp_path / "stage"
@@ -745,6 +752,12 @@ def test_bwrap_auth_bind_is_visible_only_at_child_lookup_path(tmp_path):
         assert proc.returncode == 0, proc.stderr
     finally:
         shutil.rmtree(root)
+
+
+def test_canonical_bwrap_fails_closed_when_not_executable(monkeypatch):
+    monkeypatch.setattr(evidence.os, "access", lambda *_args: False)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="canonical /usr/bin/bwrap"):
+        evidence._canonical_bwrap()
 
 
 def test_capture_reducer_rejects_unpaired_tool_evidence(monkeypatch, tmp_path):
@@ -851,6 +864,7 @@ def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(m
 
 
 def test_namespace_masks_evidence_root_and_uses_fixed_stage(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     root = _private_root(tmp_path)
     try:
         stage = tmp_path / "stage"
@@ -868,7 +882,8 @@ def test_namespace_masks_evidence_root_and_uses_fixed_stage(monkeypatch, tmp_pat
         root.rmdir()
 
 
-def test_namespace_uses_private_fixed_provider_output_mapping_and_pid_namespace(tmp_path):
+def test_namespace_uses_private_fixed_provider_output_mapping_and_pid_namespace(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     root = _private_root(tmp_path)
     output = Path("/tmp") / f"phase-loop-provider-output.test-{os.getpid()}-{tmp_path.name}"
     output.mkdir(mode=0o700)
@@ -983,6 +998,7 @@ def _install_capability_process(monkeypatch, mutation: tuple[str, str] | None = 
 
 
 def test_probe_selects_1_1_13_stream_json_only_after_complete_capability_matrix(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     root = _private_root(tmp_path)
     try:
         calls = _install_capability_process(monkeypatch)
@@ -999,6 +1015,7 @@ def test_probe_selects_1_1_13_stream_json_only_after_complete_capability_matrix(
 
 
 def test_probe_rejects_each_missing_aliased_unpaired_or_wrong_capability_class(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     for class_name, *_rest in evidence._CAPABILITY_CLASSES:
         for mutation in ("omit", "alias", "unpair", "wrong_target", "wrong_outcome"):
             root = _private_root(tmp_path)
@@ -1525,7 +1542,8 @@ def test_real_source_inventory_rejects_environment_override_and_generated_captur
         shutil.rmtree(root)
 
 
-def test_namespace_masks_all_xdg_sources_and_finalizer_requires_tracked_repo(tmp_path):
+def test_namespace_masks_all_xdg_sources_and_finalizer_requires_tracked_repo(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     root = _private_root(tmp_path)
     try:
         namespace = evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid")
@@ -1541,6 +1559,7 @@ def test_namespace_masks_all_xdg_sources_and_finalizer_requires_tracked_repo(tmp
 
 
 def test_namespace_binds_trusted_home_agi_at_fixed_path_without_exposing_home(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     root = _private_root(tmp_path)
     try:
         source = tmp_path / "agy"
@@ -1601,7 +1620,8 @@ def test_native_codex_runtime_requires_fixed_launcher_assets_and_provenance(monk
         runtime.revalidate()
 
 
-def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_output(tmp_path):
+def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_output(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
     root = _private_root(tmp_path)
     output = Path("/tmp") / f"phase-loop-provider-output.test-{os.getpid()}-{tmp_path.name}"
     output.mkdir(mode=0o700)
@@ -1848,19 +1868,32 @@ def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(m
 
 
 def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp_path):
-    monkeypatch.setenv("PATH", "/tmp/fake-bin:/usr/bin")
-    account_home = evidence._account_home()
+    account_home = tmp_path / "kernel-account-home"
+    trusted_uv = account_home / ".local" / "bin" / "uv"
+    trusted_uv.parent.mkdir(parents=True)
+    trusted_uv.write_text("#!/bin/sh\nexit 0\n")
+    trusted_uv.chmod(0o700)
+    attacker_bin = tmp_path / "attacker-bin"
+    attacker_bin.mkdir()
+    attacker_uv = attacker_bin / "uv"
+    attacker_uv.write_text("#!/bin/sh\nexit 1\n")
+    attacker_uv.chmod(0o700)
+    monkeypatch.setattr(evidence, "_account_home", lambda: account_home)
+    monkeypatch.setenv("PATH", f"{attacker_bin}:/usr/bin")
     monkeypatch.setenv("HOME", str(account_home))
     environment = evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"), account_home=account_home)
     assert environment["PATH"].startswith("/trusted:")
-    assert "/tmp/fake-bin" not in environment["PATH"]
-    assert evidence._canonical_bash() != Path("/tmp/fake-bin/bash")
-    assert evidence._canonical_uv() != Path("/tmp/fake-bin/uv")
+    assert str(attacker_bin) not in environment["PATH"]
+    assert evidence._canonical_bash() != attacker_bin / "bash"
+    assert evidence._canonical_uv() == trusted_uv
     fake_home = tmp_path / "attacker-home"
     (fake_home / ".local" / "bin").mkdir(parents=True)
-    (fake_home / ".local" / "bin" / "uv").write_text("#!/bin/sh\nexit 0\n")
+    fake_uv = fake_home / ".local" / "bin" / "uv"
+    fake_uv.write_text("#!/bin/sh\nexit 0\n")
+    fake_uv.chmod(0o700)
     monkeypatch.setenv("HOME", str(fake_home))
-    assert evidence._canonical_uv() != fake_home / ".local" / "bin" / "uv"
+    assert evidence._canonical_uv() == trusted_uv
+    assert evidence._canonical_uv() != fake_uv
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="HOME drift"):
         evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"), account_home=account_home)
 
