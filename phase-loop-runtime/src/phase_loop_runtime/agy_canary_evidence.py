@@ -133,6 +133,7 @@ _PROVIDER_EXECUTABLES = {
     "claude": "claude",
     "grok": "grok",
 }
+_CAPTURE_PROVIDERS = frozenset(_PROVIDER_EXECUTABLES)
 
 # Account-local npm shims are intentionally *not* executable authorities: the
 # capture namespace masks /home, and a shim can be repointed between discovery
@@ -852,8 +853,8 @@ def _validate_projected_auth_proof(
     for row, record in zip(proof["records"], records, strict=True):
         if (not isinstance(row, dict) or set(row) != {"destination", "uid", "mode", "sha256"} or
                 row.get("destination") != record.get("destination") or
-                not isinstance(row.get("uid"), str) or not row["uid"].isdigit() or
-                row.get("mode") != "0600" or not _is_digest(row.get("sha256"))):
+                row.get("uid") != record.get("uid") or row.get("mode") != record.get("mode") or
+                row.get("sha256") != record.get("source_sha256")):
             raise AgyCanaryEvidenceError("provider projected authentication record is malformed")
 
 
@@ -1873,7 +1874,7 @@ def seal_provider_launches(
     launches: tuple[tuple[str, str, ProviderLaunchAuthority], ...],
 ) -> dict[str, Any]:
     """Freeze every captured provider/seat authority before concurrent execution."""
-    if not launches:
+    if len(launches) != len(_CAPTURE_PROVIDERS):
         raise AgyCanaryEvidenceError("provider launch registry is empty")
     _ledger, _prepare, launch_authority = _require_prepare_authority(capture=capture)
     stage_binding = _read_json_at(capture.root_fd, _STAGE_BINDING_NAME)
@@ -1922,7 +1923,7 @@ def _provider_registry(*, root_fd: int) -> dict[str, Any]:
             registry.get("schema") != "agy_provider_launch_registry.v1" or
             not _is_digest(registry.get("launch_authority_sha256")) or
             not _is_digest(registry.get("stage_binding_sha256")) or
-            not isinstance(registry.get("entries"), list) or not registry["entries"]):
+            not isinstance(registry.get("entries"), list) or len(registry["entries"]) != len(_CAPTURE_PROVIDERS)):
         raise AgyCanaryEvidenceError("provider launch registry is malformed")
     seen: set[tuple[str, str]] = set()
     providers: set[str] = set()
@@ -1940,6 +1941,8 @@ def _provider_registry(*, root_fd: int) -> dict[str, Any]:
         if entry["provider"] in providers:
             raise AgyCanaryEvidenceError("provider launch registry provider is duplicated")
         providers.add(entry["provider"])
+    if providers != _CAPTURE_PROVIDERS:
+        raise AgyCanaryEvidenceError("provider launch registry does not cover every provider")
     return registry
 
 
@@ -2015,11 +2018,19 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
                 not isinstance(projection, dict) or projection.get("provider") != provider or
                 projection.get("schema") != "agy_provider_projected_auth.v1"):
             raise AgyCanaryEvidenceError("provider authority record is malformed")
+        expected_records = authority.get("auth_binds") if provider == "gemini" else None
+        expected_destination = (
+            expected_records[0]["destination"]
+            if isinstance(expected_records, list) and len(expected_records) == 1
+            else _PROVIDER_AUTH_PATHS[provider][1] if provider != "gemini" else None
+        )
         if (set(projection) != {"schema", "provider", "runtime_destination", "runtime_sha256", "records"} or
-                not isinstance(projection.get("runtime_destination"), str) or not projection["runtime_destination"] or
+                projection.get("runtime_destination") != f"/run/phase-loop-bin/{_PROVIDER_EXECUTABLES[provider]}" or
                 not _is_digest(projection.get("runtime_sha256")) or not isinstance(projection.get("records"), list) or
+                (len(projection["records"]) != (len(expected_records) if isinstance(expected_records, list) else 1)) or
+                (projection["records"] and expected_destination is None) or
                 any(not isinstance(row, dict) or set(row) != {"destination", "uid", "mode", "sha256"} or
-                    not isinstance(row.get("destination"), str) or not row["destination"] or
+                    row.get("destination") != expected_destination or
                     not isinstance(row.get("uid"), str) or not row["uid"].isdigit() or
                     row.get("mode") != "0600" or not _is_digest(row.get("sha256"))
                     for row in projection["records"])):
@@ -3577,7 +3588,7 @@ def _validate_provider_result_summary(value: Any) -> None:
     if (not isinstance(value, dict) or set(value) != required or
             not _is_digest(value.get("registry_sha256")) or
             not _is_digest(value.get("result_set_sha256")) or
-            not isinstance(value.get("providers"), list) or not value["providers"]):
+            not isinstance(value.get("providers"), list) or len(value["providers"]) != len(_CAPTURE_PROVIDERS)):
         raise AgyCanaryEvidenceError("final proof provider results are malformed")
     identities: set[tuple[str, str]] = set()
     providers: set[str] = set()
@@ -3592,6 +3603,8 @@ def _validate_provider_result_summary(value: Any) -> None:
             raise AgyCanaryEvidenceError("final proof provider results are duplicated")
         identities.add(identity)
         providers.add(item["provider"])
+    if providers != _CAPTURE_PROVIDERS:
+        raise AgyCanaryEvidenceError("final proof provider results do not cover every provider")
 
 
 def _proof_identity(proof: dict[str, Any]) -> dict[str, Any]:

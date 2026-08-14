@@ -2681,6 +2681,16 @@ def _record_capture_review_attempt(
         authority.record_review_attempt(command)
 
 
+def _cleanup_capture_launches(
+    launches: Mapping[str, tuple[ProviderLaunchAuthority, Path, Path]]
+) -> None:
+    """Reclaim pre-thread capture resources after every preparation outcome."""
+    for authority, _stage, scratch in launches.values():
+        if isinstance(authority, ProviderLaunchAuthority) and authority.namespace.provider_output is not None:
+            shutil.rmtree(authority.namespace.provider_output, ignore_errors=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def _exec_claude_tui_leg(
     review_dir: Path,
     out_dir: Path,
@@ -4373,21 +4383,30 @@ def invoke_board(
                     instruction_bytes=instruction_bytes,
                     generator_identity="phase_loop_runtime.panel_invoker._resolve_brief.v1",
                 )
-            authority = prepare_provider_launch_authorities(
-                capture=agy_canary_capture, stage=stage, providers=(provider,)
-            )[provider]
+            try:
+                authority = prepare_provider_launch_authorities(
+                    capture=agy_canary_capture, stage=stage, providers=(provider,)
+                )[provider]
+            except Exception:
+                _cleanup_capture_launches(capture_launches)
+                shutil.rmtree(scratch, ignore_errors=True)
+                raise
             capture_launches[str(seat.seat_key)] = (authority, stage, scratch)
-        seal_provider_launches(
-            capture=agy_canary_capture,
-            launches=tuple(
-                (
-                    provider,
-                    str(seat.seat_key),
-                    capture_launches[str(seat.seat_key)][0],
-                )
-                for seat, provider in zip(capture_seats, providers, strict=True)
-            ),
-        )
+        try:
+            seal_provider_launches(
+                capture=agy_canary_capture,
+                launches=tuple(
+                    (
+                        provider,
+                        str(seat.seat_key),
+                        capture_launches[str(seat.seat_key)][0],
+                    )
+                    for seat, provider in zip(capture_seats, providers, strict=True)
+                ),
+            )
+        except Exception:
+            _cleanup_capture_launches(capture_launches)
+            raise
 
     def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
         return PanelLegResult(
@@ -4682,3 +4701,5 @@ def invoke_board(
     finally:
         if research_run is not None:
             research_run.close()
+        if agy_canary_capture is not None:
+            _cleanup_capture_launches(capture_launches)
